@@ -1,0 +1,20 @@
+[
+  {
+    "guid": "b7e3f1a9-2c4d-4856-9a1b-8def23456789",
+    "name": "Tentacle",
+    "description": "Custom home screen, smart playlists, and content discovery for Jellyfin. Companion plugin for the Tentacle dashboard.",
+    "overview": "Custom home screen with hero spotlight, smart playlists, and a Discover tab — powered by the Tentacle dashboard.",
+    "owner": "lucas-romanenko",
+    "category": "General",
+    "versions": [
+      {
+        "version": "2.0.0.0",
+        "changelog": "Initial public release. Self-contained plugin replacing 5 legacy plugins.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/lucas-romanenko/jellyfin-tentacle/releases/download/plugin-v2.0.0/tentacle-plugin-v2.0.0.0.zip",
+        "checksum": "cdc6c62b1063143e7aaf2fb5753033fb",
+        "timestamp": "2026-03-26T00:00:00Z"
+      }
+    ]
+  }
+]

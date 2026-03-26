@@ -1,0 +1,114 @@
+name: Plugin Release
+
+on:
+  push:
+    tags:
+      - 'plugin-v*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          TAG="${GITHUB_REF#refs/tags/plugin-v}"
+          echo "version=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "full_version=${TAG}.0" >> "$GITHUB_OUTPUT"
+
+      - name: Build plugin
+        run: |
+          cd tentacle-plugin
+          dotnet build -c Release /p:Version=${{ steps.version.outputs.full_version }}
+
+      - name: Create zip
+        run: |
+          cd tentacle-plugin/bin/Release/net9.0
+          zip -j tentacle-plugin-v${{ steps.version.outputs.full_version }}.zip Jellyfin.Plugin.Tentacle.dll
+
+      - name: Compute checksum
+        id: checksum
+        run: |
+          CHECKSUM=$(md5sum tentacle-plugin/bin/Release/net9.0/tentacle-plugin-v${{ steps.version.outputs.full_version }}.zip | awk '{print $1}')
+          echo "md5=${CHECKSUM}" >> "$GITHUB_OUTPUT"
+
+      - name: Update manifest.json
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          FULL_VERSION="${{ steps.version.outputs.full_version }}"
+          CHECKSUM="${{ steps.checksum.outputs.md5 }}"
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          python3 <<'PYEOF'
+          import json, os
+
+          version = os.environ.get("VERSION", "${{ steps.version.outputs.version }}")
+          full_version = os.environ.get("FULL_VERSION", "${{ steps.version.outputs.full_version }}")
+          checksum = os.environ.get("CHECKSUM", "${{ steps.checksum.outputs.md5 }}")
+          timestamp = os.environ.get("TIMESTAMP", "${{ env.TIMESTAMP }}")
+
+          with open("tentacle-plugin/manifest.json", "r") as f:
+              manifest = json.load(f)
+
+          new_entry = {
+              "version": full_version,
+              "changelog": f"Release v{version}",
+              "targetAbi": "10.11.0.0",
+              "sourceUrl": f"https://github.com/lucas-romanenko/jellyfin-tentacle/releases/download/plugin-v{version}/tentacle-plugin-v{full_version}.zip",
+              "checksum": checksum,
+              "timestamp": timestamp
+          }
+
+          # Replace existing entry with same major.minor.patch or prepend
+          versions = manifest[0]["versions"]
+          replaced = False
+          for i, v in enumerate(versions):
+              if v["version"] == full_version:
+                  versions[i] = new_entry
+                  replaced = True
+                  break
+          if not replaced:
+              versions.insert(0, new_entry)
+
+          with open("tentacle-plugin/manifest.json", "w") as f:
+              json.dump(manifest, f, indent=2)
+              f.write("\n")
+          PYEOF
+
+      - name: Commit updated manifest
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git checkout main
+          git add tentacle-plugin/manifest.json
+          git diff --cached --quiet && echo "No manifest changes" || (git commit -m "Update plugin manifest for v${{ steps.version.outputs.version }}" && git push origin main)
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Jellyfin Tentacle Plugin v${{ steps.version.outputs.version }}"
+          body: |
+            ## Jellyfin Tentacle Plugin v${{ steps.version.outputs.version }}
+
+            ### Install
+            1. In Jellyfin → Dashboard → Plugins → Repositories → Add:
+               ```
+               https://raw.githubusercontent.com/lucas-romanenko/jellyfin-tentacle/main/tentacle-plugin/manifest.json
+               ```
+            2. Go to Catalog → Tentacle → Install
+            3. Restart Jellyfin
+
+            **Checksum (MD5):** `${{ steps.checksum.outputs.md5 }}`
+          files: |
+            tentacle-plugin/bin/Release/net9.0/tentacle-plugin-v${{ steps.version.outputs.full_version }}.zip

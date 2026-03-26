@@ -109,20 +109,15 @@ The dashboard works standalone, but the plugin is needed for the custom home scr
 
 ### Install the Plugin
 
-1. Build the plugin:
-   ```bash
-   cd tentacle-plugin
-   dotnet build -c Release
+1. In Jellyfin, go to **Dashboard → Plugins → Repositories → Add**
+2. Paste the repository URL:
    ```
-2. Copy the DLL to your Jellyfin plugins directory:
-   ```bash
-   mkdir -p /path/to/jellyfin/plugins/Tentacle
-   cp bin/Release/net9.0/Jellyfin.Plugin.Tentacle.dll /path/to/jellyfin/plugins/Tentacle/
+   https://raw.githubusercontent.com/lucas-romanenko/jellyfin-tentacle/main/tentacle-plugin/manifest.json
    ```
-3. Restart Jellyfin
-4. Configure the plugin in Jellyfin → Dashboard → Plugins → Tentacle:
+3. Go to **Catalog**, find **Tentacle**, click **Install**
+4. Restart Jellyfin
+5. Configure: **Dashboard → Plugins → Tentacle**
    - Set **Tentacle URL** to your dashboard address (e.g. `http://192.168.1.100:8888`)
-   - Set **Home Config Path** to the mounted `tentacle-home.json` location
 
 ---
 
