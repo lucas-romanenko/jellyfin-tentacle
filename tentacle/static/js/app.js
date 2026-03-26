@@ -765,8 +765,9 @@ async function testConnection(type) {
 }
 
 function getWebhookUrl() {
-  const host = document.getElementById('webhook_host').value.trim();
+  let host = document.getElementById('webhook_host').value.trim();
   if (!host) return null;
+  host = host.replace(/^https?:\/\//, '');
   return `http://${host}/api/radarr/webhook`;
 }
 
@@ -794,8 +795,9 @@ async function testWebhookUrl() {
 
 // ── Sonarr Webhook ────────────────────────────────────────────────────────
 function getSonarrWebhookUrl() {
-  const host = document.getElementById('sonarr_webhook_host').value.trim();
+  let host = document.getElementById('sonarr_webhook_host').value.trim();
   if (!host) return null;
+  host = host.replace(/^https?:\/\//, '');
   return `http://${host}/api/sonarr/webhook`;
 }
 
