@@ -1,6 +1,5 @@
 # Project config (contains credentials/IPs)
 CLAUDE.md
-deploy.sh
 .claude
 tentacle/.claude/
 

@@ -44,10 +44,10 @@ jobs:
 
       - name: Update manifest.json
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          FULL_VERSION="${{ steps.version.outputs.full_version }}"
-          CHECKSUM="${{ steps.checksum.outputs.md5 }}"
-          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          export VERSION="${{ steps.version.outputs.version }}"
+          export FULL_VERSION="${{ steps.version.outputs.full_version }}"
+          export CHECKSUM="${{ steps.checksum.outputs.md5 }}"
+          export TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
           python3 <<'PYEOF'
           import json, os
