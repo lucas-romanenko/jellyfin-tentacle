@@ -136,6 +136,25 @@ def test_connection(body: ConnectionTest, db: Session = Depends(get_db)):
     raise HTTPException(400, "Unknown connection type")
 
 
+class WebhookTest(BaseModel):
+    url: str
+
+
+@router.post("/test-webhook")
+def test_webhook(body: WebhookTest):
+    """Proxy a webhook test through the backend to avoid mixed-content browser issues."""
+    try:
+        r = requests.post(
+            body.url,
+            json={"eventType": "Test"},
+            timeout=10
+        )
+        r.raise_for_status()
+        return {"success": True, "message": "Webhook test successful"}
+    except Exception as e:
+        raise HTTPException(400, f"Webhook test failed: {str(e)}")
+
+
 class JellyfinLogin(BaseModel):
     username: str
     password: str

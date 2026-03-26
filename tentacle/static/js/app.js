@@ -785,13 +785,8 @@ async function testWebhookUrl() {
   const url = getWebhookUrl();
   if (!url) { toast('Enter a webhook host first', 'error'); return; }
   try {
-    const r = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ eventType: 'Test' })
-    });
-    if (r.ok) toast('Webhook test successful');
-    else toast(`Webhook returned HTTP ${r.status}`, 'error');
+    const r = await api('/api/settings/test-webhook', { method: 'POST', body: JSON.stringify({ url }) });
+    toast(r.message);
   } catch (e) {
     toast('Webhook test failed: ' + e.message, 'error');
   }
@@ -819,13 +814,8 @@ async function testSonarrWebhookUrl() {
   const url = getSonarrWebhookUrl();
   if (!url) { toast('Enter a webhook host first', 'error'); return; }
   try {
-    const r = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ eventType: 'Test' })
-    });
-    if (r.ok) toast('Sonarr webhook test successful');
-    else toast(`Webhook returned HTTP ${r.status}`, 'error');
+    const r = await api('/api/settings/test-webhook', { method: 'POST', body: JSON.stringify({ url }) });
+    toast(r.message);
   } catch (e) {
     toast('Webhook test failed: ' + e.message, 'error');
   }
