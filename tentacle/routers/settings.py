@@ -53,7 +53,7 @@ def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
         set_setting(db, key, value)
 
     # Mark setup complete if all required fields are filled
-    required = ["tmdb_bearer_token", "radarr_url", "radarr_api_key", "jellyfin_url", "jellyfin_api_key"]
+    required = ["jellyfin_url", "jellyfin_api_key"]
     all_set = all(get_setting(db, k) for k in required)
     if all_set:
         set_setting(db, "setup_complete", "true")
@@ -64,8 +64,9 @@ def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
 @router.post("/test")
 def test_connection(body: ConnectionTest, db: Session = Depends(get_db)):
     if body.type == "tmdb":
-        token = body.bearer_token or get_setting(db, "tmdb_bearer_token")
-        if not token or "..." in token:
+        from services.tmdb import get_tmdb_token
+        token = body.bearer_token if (body.bearer_token and "..." not in body.bearer_token) else get_tmdb_token(db)
+        if not token:
             raise HTTPException(400, "No TMDB token configured")
         try:
             r = requests.get(

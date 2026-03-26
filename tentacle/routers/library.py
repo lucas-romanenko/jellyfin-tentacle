@@ -290,9 +290,8 @@ def get_item_detail(media_type: str, tmdb_id: int, db: Session = Depends(get_db)
 @router.get("/tmdb/{media_type}/{tmdb_id}")
 def get_tmdb_detail(media_type: str, tmdb_id: int, db: Session = Depends(get_db)):
     """Fetch item details from TMDB (for items not in library)"""
-    bearer = get_setting(db, "tmdb_bearer_token")
-    if not bearer:
-        raise HTTPException(500, "TMDB bearer token not configured")
+    from services.tmdb import get_tmdb_token
+    bearer = get_tmdb_token(db)
     data_dir = get_setting(db, "data_dir", "/data")
     tmdb = TMDBService(bearer, data_dir)
     if media_type == "series":

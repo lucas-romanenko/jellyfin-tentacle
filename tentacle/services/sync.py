@@ -181,7 +181,8 @@ def sync_provider(
     cancel_check: callable that returns True if sync should be cancelled.
     """
     # Load settings
-    bearer_token = get_setting(db, "tmdb_bearer_token")
+    from services.tmdb import get_tmdb_token
+    bearer_token = get_tmdb_token(db)
     data_dir = get_setting(db, "data_dir", "/data")
     vod_movies_path = Path(get_setting(db, "vod_movies_path", "/mnt/media/vod/Movies"))
     vod_series_path = Path(get_setting(db, "vod_series_path", "/mnt/media/vod/Series"))

@@ -20,6 +20,17 @@ logger = logging.getLogger(__name__)
 TMDB_BASE = "https://api.themoviedb.org/3"
 TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p"
 
+# Built-in TMDB API key for Tentacle (read-only, non-commercial open-source use)
+# Users can override this in Settings with their own token
+TMDB_DEFAULT_TOKEN = "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiIzYTExMzFlMWZlOGQxODdiMzI2OGZkY2RkOWZjYWU0ZiIsIm5iZiI6MTc3NDU2MTU0Ny4zOSwic3ViIjoiNjljNWE5MGJjM2JjMTcwYjg5YWQ4OThjIiwic2NvcGVzIjpbImFwaV9yZWFkIl0sInZlcnNpb24iOjF9._Fi__rAY1Qd5PcpA0KNF6iN1mXLI0Rs2AvDZwmW53Rw"
+
+
+def get_tmdb_token(db) -> str:
+    """Get TMDB token: user override from settings, or built-in default."""
+    from models.database import get_setting
+    token = get_setting(db, "tmdb_bearer_token")
+    return token if token else TMDB_DEFAULT_TOKEN
+
 
 class TMDBService:
     def __init__(self, bearer_token: str, cache_dir: str, match_threshold: float = 0.7):

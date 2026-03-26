@@ -607,7 +607,8 @@ def refresh_all_lists(db: Session = Depends(get_db)):
     if not active_lists:
         return {"success": True, "refreshed": 0, "message": "No active lists"}
 
-    bearer = get_setting(db, "tmdb_bearer_token") or ""
+    from services.tmdb import get_tmdb_token
+    bearer = get_tmdb_token(db)
     trakt_cid = get_setting(db, "trakt_client_id") or ""
     tmdb = _get_tmdb_service(db)
 
@@ -643,7 +644,8 @@ def fetch_list(list_id: int, db: Session = Depends(get_db)):
     if not lst:
         raise HTTPException(404, "List not found")
 
-    bearer_token = get_setting(db, "tmdb_bearer_token") or ""
+    from services.tmdb import get_tmdb_token
+    bearer_token = get_tmdb_token(db)
     trakt_client_id = get_setting(db, "trakt_client_id") or ""
     items = fetch_list_tmdb_ids(lst, bearer_token=bearer_token, trakt_client_id=trakt_client_id)
     if not items:
@@ -711,7 +713,8 @@ def fetch_list(list_id: int, db: Session = Depends(get_db)):
 
 
 def _get_tmdb_service(db: Session) -> Optional[TMDBService]:
-    token = get_setting(db, "tmdb_bearer_token")
+    from services.tmdb import get_tmdb_token
+    token = get_tmdb_token(db)
     if not token:
         return None
     cache_dir = get_setting(db, "data_dir", "/data")

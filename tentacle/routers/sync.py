@@ -228,10 +228,7 @@ def trigger_sync(body: SyncRequest, db: Session = Depends(get_db)):
     if db_running:
         raise HTTPException(400, "A sync is already running for this provider")
 
-    # Check TMDB is configured
-    bearer = get_setting(db, "tmdb_bearer_token")
-    if not bearer:
-        raise HTTPException(400, "TMDB Bearer Token not configured in Settings")
+    # TMDB always available (built-in token as fallback)
 
     _running_syncs[body.provider_id] = True
 

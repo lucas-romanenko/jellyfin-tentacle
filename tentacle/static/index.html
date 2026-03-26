@@ -1299,12 +1299,12 @@ td.primary { color: var(--text); font-weight: 500; }
               <p class="section-desc">Connect Tentacle to your services. All keys are stored locally.</p>
 
               <div class="form-group">
-                <div class="form-label">TMDB Bearer Token</div>
+                <div class="form-label">TMDB Bearer Token <span style="color:var(--text3);font-size:12px">(optional)</span></div>
                 <div style="display:flex;gap:8px">
-                  <input class="form-input mono" id="tmdb_bearer_token" type="password" placeholder="eyJhbGc...">
+                  <input class="form-input mono" id="tmdb_bearer_token" type="password" placeholder="Using built-in key">
                   <button class="btn btn-secondary" onclick="testConnection('tmdb')">Test</button>
                 </div>
-                <div class="form-hint">API Read Access Token from themoviedb.org/settings/api</div>
+                <div class="form-hint">Built-in key works out of the box. Override with your own from themoviedb.org/settings/api</div>
               </div>
 
               <hr class="divider">
@@ -2333,9 +2333,9 @@ td.primary { color: var(--text); font-weight: 500; }
     <p>Let's connect your services to get started. You can change these anytime in Settings.</p>
 
     <div class="form-group">
-      <div class="form-label">TMDB Bearer Token</div>
-      <input class="form-input mono" id="setup-tmdb" type="password" placeholder="eyJhbGc...">
-      <div class="form-hint">Get from themoviedb.org/settings/api → API Read Access Token</div>
+      <div class="form-label">TMDB Bearer Token <span style="color:var(--text3);font-size:12px">(optional)</span></div>
+      <input class="form-input mono" id="setup-tmdb" type="password" placeholder="Using built-in key">
+      <div class="form-hint">Built-in key works out of the box. Override with your own from themoviedb.org/settings/api</div>
     </div>
 
     <div class="form-row">

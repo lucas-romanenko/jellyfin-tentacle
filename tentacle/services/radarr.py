@@ -119,7 +119,8 @@ def scan_radarr_library(db: Session) -> dict:
 
     radarr = RadarrService(radarr_url, radarr_key)
 
-    bearer_token = get_setting(db, "tmdb_bearer_token")
+    from services.tmdb import get_tmdb_token
+    bearer_token = get_tmdb_token(db)
     data_dir = get_setting(db, "data_dir", "/data")
     tmdb = TMDBService(bearer_token, data_dir) if bearer_token else None
 

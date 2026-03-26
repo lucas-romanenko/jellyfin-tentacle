@@ -30,7 +30,8 @@ def run_scheduled_sync():
     try:
         from models.database import ListSubscription
         from routers.lists import fetch_list_tmdb_ids, store_list_items, apply_list_tags_to_library, enrich_items_with_tmdb, _get_tmdb_service
-        bearer = get_setting(db, "tmdb_bearer_token") or ""
+        from services.tmdb import get_tmdb_token
+        bearer = get_tmdb_token(db)
         trakt_cid = get_setting(db, "trakt_client_id") or ""
         tmdb = _get_tmdb_service(db)
         active_lists = db.query(ListSubscription).filter(ListSubscription.active == True).all()
@@ -83,7 +84,7 @@ def run_scheduled_sync():
         logger.info("Refreshing recently added tags")
         refresh_recently_added_tags(db)
 
-        bearer = get_setting(db, "tmdb_bearer_token")
+        bearer = get_tmdb_token(db)
         data_dir = get_setting(db, "data_dir", "/data")
         if bearer:
             tmdb = TMDBService(bearer, data_dir)

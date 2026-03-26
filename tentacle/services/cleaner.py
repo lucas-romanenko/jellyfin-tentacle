@@ -61,12 +61,12 @@ def clean_title(raw_name: str) -> Tuple[Optional[str], Optional[str]]:
     )
 
     # Step 2: Remove standard "PREFIX - " patterns
-    # Handles: "NF - ", "AMZ - ", "D+ - ", "A+ - ", "EN - ", "EN-TOP - "
+    # Handles: "NF - ", "AMZ - ", "D+ - ", "A+ - ", "EN - ", "EN-TOP - ", "NF-DO - "
     prefix_pattern = '|'.join(
         re.escape(p) for p in sorted(STRIP_PREFIXES, key=len, reverse=True)
     )
     name = re.sub(
-        rf'^(?:(?:{prefix_pattern})[-+]?\s*)+[-:.\s]+',
+        rf'^(?:(?:{prefix_pattern})(?:[-+][A-Z0-9]{{1,4}})?\s*)+[-:.\s]+',
         '', name, flags=re.IGNORECASE
     )
 
@@ -95,7 +95,7 @@ def clean_title(raw_name: str) -> Tuple[Optional[str], Optional[str]]:
         year_match = re.search(r'\s(\d{4})\s*$', name)
         if year_match:
             potential_year = year_match.group(1)
-            if 1920 <= int(potential_year) <= 2030:
+            if 1920 <= int(potential_year) <= 2035:
                 year = potential_year
                 name = name[:year_match.start()].strip()
 
@@ -118,7 +118,7 @@ def clean_title(raw_name: str) -> Tuple[Optional[str], Optional[str]]:
         return None, None
 
     # Validate year range
-    if year and not (1900 <= int(year) <= 2030):
+    if year and not (1900 <= int(year) <= 2035):
         year = None
 
     return name, year

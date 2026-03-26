@@ -14,7 +14,8 @@ router = APIRouter(prefix="/api/discover", tags=["discover"])
 
 
 def _get_tmdb(db: Session) -> Optional[TMDBService]:
-    bearer = get_setting(db, "tmdb_bearer_token")
+    from services.tmdb import get_tmdb_token
+    bearer = get_tmdb_token(db)
     data_dir = get_setting(db, "data_dir", "/data")
     if not bearer:
         return None
