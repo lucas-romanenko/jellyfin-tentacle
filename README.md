@@ -73,13 +73,13 @@ services:
     image: ghcr.io/lucas-romanenko/jellyfin-tentacle:latest
     container_name: tentacle
     ports:
-      - "8888:8888"
+      - 8888:8888
     volumes:
-      - ./data:/data
-      - /path/to/jellyfin/smartlists:/mnt/jellyfin/smartlists
-      - /path/to/media/vod:/mnt/media/vod
-      - /path/to/media/movies:/mnt/media/movies    # Radarr library
-      - /path/to/media/tv:/mnt/media/tv            # Sonarr library
+      - ./data:/data                                          # Database, config, cache
+      - /path/to/jellyfin/smartlists:/mnt/jellyfin/smartlists # Jellyfin smart playlists
+      - /path/to/media/vod:/mnt/media/vod                    # IPTV VOD content
+      - /path/to/media/movies:/mnt/media/movies              # Radarr library
+      - /path/to/media/tv:/mnt/media/tv                      # Sonarr library
     restart: unless-stopped
 ```
 

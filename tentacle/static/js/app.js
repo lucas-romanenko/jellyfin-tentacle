@@ -822,23 +822,6 @@ async function testSonarrWebhookUrl() {
 }
 
 // ── Radarr Root Folders ───────────────────────────────────────────────────
-async function fetchRadarrRootFolder() {
-  try {
-    const folders = await api('/api/radarr/rootfolders');
-    if (folders.length === 1) {
-      document.getElementById('radarr_movies_path').value = folders[0].path;
-      toast('Root folder auto-detected: ' + folders[0].path);
-    } else if (folders.length > 1) {
-      document.getElementById('radarr_movies_path').value = folders[0].path;
-      toast(`${folders.length} root folders found — first one selected. Edit if needed.`, 'info');
-    } else {
-      toast('No root folders found in Radarr', 'error');
-    }
-  } catch (e) {
-    toast('Failed to fetch from Radarr: ' + e.message, 'error');
-  }
-}
-
 // ── Modals ─────────────────────────────────────────────────────────────────
 function showModal(id) {
   document.getElementById(id).style.display = 'flex';
