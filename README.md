@@ -70,8 +70,7 @@ Tentacle is a unified dashboard and Jellyfin plugin that brings IPTV, VOD, smart
 # docker-compose.yml
 services:
   tentacle:
-    image: tentacle
-    build: ./tentacle
+    image: ghcr.io/lucas-romanenko/jellyfin-tentacle:latest
     container_name: tentacle
     ports:
       - "8888:8888"
