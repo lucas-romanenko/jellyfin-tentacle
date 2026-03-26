@@ -34,12 +34,12 @@ jobs:
       - name: Create zip
         run: |
           cd tentacle-plugin/bin/Release/net9.0
-          zip -j tentacle-plugin-v${{ steps.version.outputs.full_version }}.zip Jellyfin.Plugin.Tentacle.dll
+          zip -j tentacle-plugin-v${{ steps.version.outputs.version }}.zip Jellyfin.Plugin.Tentacle.dll
 
       - name: Compute checksum
         id: checksum
         run: |
-          CHECKSUM=$(md5sum tentacle-plugin/bin/Release/net9.0/tentacle-plugin-v${{ steps.version.outputs.full_version }}.zip | awk '{print $1}')
+          CHECKSUM=$(md5sum tentacle-plugin/bin/Release/net9.0/tentacle-plugin-v${{ steps.version.outputs.version }}.zip | awk '{print $1}')
           echo "md5=${CHECKSUM}" >> "$GITHUB_OUTPUT"
 
       - name: Update manifest.json
@@ -64,7 +64,7 @@ jobs:
               "version": full_version,
               "changelog": f"Release v{version}",
               "targetAbi": "10.11.0.0",
-              "sourceUrl": f"https://github.com/lucas-romanenko/jellyfin-tentacle/releases/download/plugin-v{version}/tentacle-plugin-v{full_version}.zip",
+              "sourceUrl": f"https://github.com/lucas-romanenko/jellyfin-tentacle/releases/download/plugin-v{version}/tentacle-plugin-v{version}.zip",
               "checksum": checksum,
               "timestamp": timestamp
           }
@@ -111,4 +111,4 @@ jobs:
 
             **Checksum (MD5):** `${{ steps.checksum.outputs.md5 }}`
           files: |
-            tentacle-plugin/bin/Release/net9.0/tentacle-plugin-v${{ steps.version.outputs.full_version }}.zip
+            tentacle-plugin/bin/Release/net9.0/tentacle-plugin-v${{ steps.version.outputs.version }}.zip
