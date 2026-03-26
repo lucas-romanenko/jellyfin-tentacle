@@ -1,0 +1,2374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tentacle</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg0: #0c0c10;
+  --bg1: #13131a;
+  --bg2: #1a1a24;
+  --bg3: #22222e;
+  --border: rgba(255,255,255,0.07);
+  --border2: rgba(255,255,255,0.12);
+  --text: #e2e2ec;
+  --text2: #9090a8;
+  --text3: #5a5a72;
+  --accent: #6c63ff;
+  --accent-dim: rgba(108,99,255,0.15);
+  --accent-hover: #7d75ff;
+  --green: #4ade80;
+  --green-dim: rgba(74,222,128,0.12);
+  --red: #f87171;
+  --red-dim: rgba(248,113,113,0.12);
+  --amber: #fbbf24;
+  --amber-dim: rgba(251,191,36,0.12);
+  --blue: #60a5fa;
+  --blue-dim: rgba(96,165,250,0.12);
+  --pink: #f472b6;
+  --pink-dim: rgba(244,114,182,0.12);
+  --radius: 10px;
+  --radius-sm: 6px;
+  --sidebar-w: 240px;
+}
+
+* { margin:0; padding:0; box-sizing:border-box; }
+
+body {
+  background: var(--bg0);
+  color: var(--text);
+  font-family: 'DM Sans', sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* ── Layout ── */
+.app { display: flex; min-height: 100vh; }
+
+.sidebar {
+  width: var(--sidebar-w);
+  background: var(--bg1);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  position: fixed;
+  top: 0; left: 0;
+  height: 100vh;
+  z-index: 100;
+}
+
+.main {
+  margin-left: var(--sidebar-w);
+  flex: 1;
+  min-height: 100vh;
+}
+
+/* ── Sidebar ── */
+.sidebar-logo {
+  padding: 24px 20px 20px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.logo-icon {
+  width: 32px; height: 32px;
+  background: var(--accent);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.logo-text { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
+.logo-version { font-size: 10px; color: var(--text3); font-family: 'DM Mono', monospace; margin-top: 1px; }
+
+.sidebar-nav { padding: 12px 10px; flex: 1; overflow-y: auto; }
+
+.nav-section { margin-bottom: 20px; }
+
+.nav-section-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text3);
+  padding: 0 10px;
+  margin-bottom: 4px;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  color: var(--text2);
+  font-size: 13.5px;
+  font-weight: 400;
+  transition: all 0.12s;
+  border: none;
+  background: none;
+  width: 100%;
+  text-align: left;
+  text-decoration: none;
+}
+
+.nav-item:hover { background: var(--bg3); color: var(--text); }
+
+.nav-item.active {
+  background: var(--accent-dim);
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.nav-item .icon { font-size: 15px; width: 20px; text-align: center; flex-shrink: 0; }
+
+.nav-badge {
+  margin-left: auto;
+  background: var(--red);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 10px;
+  min-width: 18px;
+  text-align: center;
+}
+
+.sidebar-footer {
+  padding: 12px 10px 20px;
+  border-top: 1px solid var(--border);
+}
+
+/* ── Top bar ── */
+.topbar {
+  height: 56px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 32px;
+  gap: 16px;
+  background: var(--bg1);
+  position: sticky;
+  top: 0;
+  z-index: 50;
+}
+
+.topbar-title { font-size: 15px; font-weight: 600; flex: 1; }
+.topbar-sub { font-size: 12px; color: var(--text3); font-family: 'DM Mono', monospace; }
+
+/* ── Page content ── */
+.page-content { padding: 32px; }
+.page { display: none; }
+.page.active { display: block; }
+
+/* ── Setup overlay ── */
+.setup-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--bg0);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.setup-card {
+  background: var(--bg1);
+  border: 1px solid var(--border2);
+  border-radius: 16px;
+  padding: 40px;
+  width: 100%;
+  max-width: 560px;
+}
+
+.setup-card h2 { font-size: 22px; font-weight: 600; margin-bottom: 6px; }
+.setup-card p { color: var(--text2); font-size: 13px; margin-bottom: 28px; }
+
+/* ── Cards ── */
+.card {
+  background: var(--bg1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.card-title { font-size: 13px; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: 0.05em; }
+
+/* ── Stats grid ── */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.stat-card {
+  background: var(--bg1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  position: relative;
+  overflow: hidden;
+}
+
+.stat-accent {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+}
+
+.stat-label { font-size: 11px; font-weight: 600; color: var(--text3); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px; }
+.stat-value { font-size: 28px; font-weight: 300; letter-spacing: -0.03em; font-family: 'DM Mono', monospace; }
+.stat-sub { font-size: 11px; color: var(--text3); margin-top: 4px; font-family: 'DM Mono', monospace; }
+
+/* ── Forms ── */
+.form-group { margin-bottom: 16px; }
+
+.form-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text2);
+  margin-bottom: 6px;
+}
+
+.form-input {
+  width: 100%;
+  background: var(--bg2);
+  border: 1px solid var(--border2);
+  border-radius: var(--radius-sm);
+  padding: 9px 12px;
+  color: var(--text);
+  font-size: 13px;
+  font-family: 'DM Sans', sans-serif;
+  outline: none;
+  transition: border-color 0.12s;
+}
+
+.form-input:focus { border-color: var(--accent); }
+.form-input::placeholder { color: var(--text3); }
+
+.form-input.mono { font-family: 'DM Mono', monospace; font-size: 12px; }
+
+.form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+.form-hint { font-size: 11px; color: var(--text3); margin-top: 4px; }
+
+/* ── Buttons ── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  border: none;
+  transition: all 0.12s;
+  font-family: 'DM Sans', sans-serif;
+  white-space: nowrap;
+}
+
+.btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none !important; }
+
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover:not(:disabled) { background: var(--accent-hover); transform: translateY(-1px); }
+
+.btn-secondary { background: var(--bg3); color: var(--text); border: 1px solid var(--border2); }
+.btn-secondary:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+
+.btn-danger { background: var(--red-dim); color: var(--red); border: 1px solid rgba(248,113,113,0.2); }
+.btn-danger:hover:not(:disabled) { background: rgba(248,113,113,0.2); }
+
+.btn-success { background: var(--green-dim); color: var(--green); border: 1px solid rgba(74,222,128,0.2); }
+.btn-success:hover:not(:disabled) { background: rgba(74,222,128,0.2); }
+
+.btn-sm { padding: 5px 10px; font-size: 12px; }
+.btn-icon { padding: 7px; border-radius: var(--radius-sm); }
+
+/* ── Status dots ── */
+.dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+.dot-green { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.dot-red { background: var(--red); }
+.dot-amber { background: var(--amber); animation: pulse 1.5s infinite; }
+.dot-gray { background: var(--text3); }
+
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+/* ── Badges ── */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.badge-accent { background: var(--accent-dim); color: var(--accent); }
+.badge-green { background: var(--green-dim); color: var(--green); }
+.badge-red { background: var(--red-dim); color: var(--red); }
+.badge-amber { background: var(--amber-dim); color: var(--amber); }
+.badge-gray { background: var(--bg3); color: var(--text2); }
+.badge-blue { background: var(--blue-dim); color: var(--blue); }
+.badge-pink { background: var(--pink-dim); color: var(--pink); }
+
+/* ── Tables ── */
+.table-wrap { overflow-x: auto; }
+
+table { width: 100%; border-collapse: collapse; }
+
+th {
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text3);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+td {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  color: var(--text2);
+  vertical-align: middle;
+}
+
+tr:last-child td { border-bottom: none; }
+tr:hover td { background: var(--bg2); color: var(--text); }
+td.primary { color: var(--text); font-weight: 500; }
+
+/* ── Dividers ── */
+.divider { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
+
+/* ── Toasts ── */
+.toast-container { position: fixed; bottom: 24px; right: 24px; display: flex; flex-direction: column; gap: 8px; z-index: 9999; }
+
+.toast {
+  background: var(--bg2);
+  border: 1px solid var(--border2);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 340px;
+  animation: toastSlide 0.25s ease;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+}
+
+.toast.success { border-color: rgba(74,222,128,0.3); }
+.toast.error { border-color: rgba(248,113,113,0.3); }
+.toast.info { border-color: rgba(96,165,250,0.3); }
+.toast.loading { border-color: rgba(96,165,250,0.3); }
+.toast-spinner { display:inline-block; width:14px; height:14px; border:2px solid var(--border2); border-top-color:var(--blue); border-radius:50%; animation:spin 0.7s linear infinite; vertical-align:middle; }
+
+@keyframes toastSlide { from{opacity:0;transform:translateX(16px)} to{opacity:1;transform:translateX(0)} }
+
+/* ── Loading ── */
+.spinner { width: 20px; height: 20px; border: 2px solid var(--border2); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; }
+@keyframes spin { to{transform:rotate(360deg)} }
+@keyframes libFadeIn { from{opacity:0;transform:translateY(-8px)} to{opacity:1;transform:translateY(0)} }
+@keyframes libFadeOut { from{opacity:1;transform:translateY(0)} to{opacity:0;transform:translateY(8px)} }
+.lib-card-enter { animation: libFadeIn 0.35s ease-out; }
+.lib-card-exit { animation: libFadeOut 0.3s ease-in forwards; }
+
+.loading-state { display: flex; align-items: center; justify-content: center; padding: 48px; gap: 12px; color: var(--text3); }
+
+.empty-state { text-align: center; padding: 48px; color: var(--text3); }
+.empty-state .empty-icon { font-size: 32px; margin-bottom: 12px; }
+.empty-state p { font-size: 13px; }
+
+/* ── Provider cards ── */
+.provider-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); gap: 14px; margin-bottom: 20px; }
+
+.provider-card {
+  background: var(--bg1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  transition: border-color 0.12s;
+}
+
+.provider-card:hover { border-color: var(--border2); }
+.provider-card.active-provider { border-color: rgba(108,99,255,0.4); }
+
+.provider-card-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 14px; gap: 10px; }
+.provider-card-name { font-size: 14px; font-weight: 600; }
+.provider-card-url { font-size: 11px; color: var(--text3); font-family: 'DM Mono', monospace; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 200px; }
+
+.provider-meta { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.provider-meta-item { font-size: 11px; color: var(--text3); display: flex; align-items: center; gap: 4px; font-family: 'DM Mono', monospace; }
+
+.provider-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* ── Category list ── */
+.cat-controls { display: flex; gap: 10px; margin-bottom: 14px; align-items: center; flex-wrap: wrap; }
+
+.search-box {
+  background: var(--bg2);
+  border: 1px solid var(--border2);
+  border-radius: var(--radius-sm);
+  padding: 7px 12px;
+  color: var(--text);
+  font-size: 13px;
+  font-family: 'DM Sans', sans-serif;
+  outline: none;
+  flex: 1;
+  min-width: 160px;
+  transition: border-color 0.12s;
+}
+.search-box:focus { border-color: var(--accent); }
+.search-box::placeholder { color: var(--text3); }
+
+.filter-group { display: flex; border: 1px solid var(--border2); border-radius: var(--radius-sm); overflow: hidden; }
+.filter-btn { padding: 7px 12px; font-size: 12px; font-weight: 500; cursor: pointer; border: none; background: none; color: var(--text3); transition: all 0.12s; font-family: 'DM Sans', sans-serif; }
+.filter-btn:hover { color: var(--text); background: var(--bg3); }
+.filter-btn.active { background: var(--accent); color: #fff; }
+
+.cat-list { display: flex; flex-direction: column; gap: 4px; max-height: 520px; overflow-y: auto; }
+
+.cat-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg2);
+  border: 1px solid transparent;
+  transition: all 0.1s;
+}
+
+.cat-row:hover { border-color: var(--border2); }
+.cat-row.whitelisted { border-color: rgba(108,99,255,0.25); background: var(--accent-dim); }
+
+.cat-checkbox { width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; flex-shrink: 0; }
+.cat-name { flex: 1; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cat-row.whitelisted .cat-name { color: var(--text); }
+
+/* ── Settings page ── */
+.settings-grid { display: grid; grid-template-columns: 240px 1fr; gap: 24px; }
+
+.settings-nav { display: flex; flex-direction: column; gap: 2px; }
+
+.settings-nav-item {
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text2);
+  transition: all 0.12s;
+  border: none;
+  background: none;
+  text-align: left;
+  font-family: 'DM Sans', sans-serif;
+}
+
+.settings-nav-item:hover { background: var(--bg2); color: var(--text); }
+.settings-nav-item.active { background: var(--accent-dim); color: var(--accent); font-weight: 500; }
+
+.settings-section { display: none; }
+.settings-section.active { display: block; }
+
+.settings-section h3 { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+.settings-section .section-desc { font-size: 13px; color: var(--text2); margin-bottom: 24px; }
+
+.connection-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.connection-row:last-child { border-bottom: none; }
+.connection-info { flex: 1; }
+.connection-name { font-size: 13px; font-weight: 500; margin-bottom: 2px; }
+.connection-status { font-size: 11px; color: var(--text3); display: flex; align-items: center; gap: 4px; }
+
+/* ── Modal ── */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  backdrop-filter: blur(4px);
+}
+
+.modal {
+  background: var(--bg1);
+  border: 1px solid var(--border2);
+  border-radius: 14px;
+  padding: 28px;
+  width: 100%;
+  max-width: 480px;
+  animation: modalIn 0.2s ease;
+}
+
+.modal-wide { max-width: 720px; }
+
+@keyframes modalIn { from{opacity:0;transform:scale(0.96)} to{opacity:1;transform:scale(1)} }
+
+.modal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+.modal-title { font-size: 16px; font-weight: 600; }
+.modal-close { background: none; border: none; color: var(--text3); cursor: pointer; font-size: 18px; padding: 4px; line-height: 1; }
+.modal-close:hover { color: var(--text); }
+
+.modal-footer { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
+
+/* ── Scrollbars ── */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--bg3); border-radius: 10px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text3); }
+
+/* ── Page-specific ── */
+.page-header { margin-bottom: 24px; }
+.page-header-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.page-title { font-size: 20px; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 4px; }
+.page-subtitle { font-size: 13px; color: var(--text3); }
+
+.section-title { font-size: 13px; font-weight: 600; color: var(--text2); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+
+/* Dashboard status grid */
+.dash-status-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.dash-status-card {
+  background: var(--bg1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.dash-status-icon { flex-shrink: 0; }
+.dash-status-label { font-size: 11px; font-weight: 600; color: var(--text3); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 2px; }
+.dash-status-time { font-size: 13px; color: var(--text1); font-family: 'DM Mono', monospace; }
+
+/* Dashboard progress */
+.dash-progress {
+  background: var(--bg1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  margin-bottom: 20px;
+}
+.dash-progress-header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 13px; font-weight: 500; }
+.dash-progress-bar-track { height: 4px; background: var(--bg3); border-radius: 2px; overflow: hidden; }
+.dash-progress-bar-fill { height: 100%; background: var(--accent); border-radius: 2px; transition: width 0.3s ease; width: 0; }
+.dash-progress-detail { font-size: 11px; color: var(--text3); margin-top: 6px; font-family: 'DM Mono', monospace; }
+
+/* Activity feed */
+.activity-item { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.activity-item:last-child { border-bottom: none; }
+.activity-icon { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.activity-msg { font-size: 13px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.activity-time { font-size: 11px; color: var(--text3); font-family: 'DM Mono', monospace; flex-shrink: 0; }
+
+/* Additions feed */
+.feed-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.feed-item:last-child { border-bottom: none; }
+
+.feed-poster {
+  width: 36px; height: 54px;
+  background: var(--bg3);
+  border-radius: 4px;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.feed-poster img { width: 100%; height: 100%; object-fit: cover; }
+
+.feed-info { flex: 1; min-width: 0; }
+.feed-title { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.feed-meta { font-size: 11px; color: var(--text3); margin-top: 3px; display: flex; gap: 8px; align-items: center; }
+.feed-tags { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 5px; }
+
+/* ── Library grid ── */
+.lib-card {
+  background: var(--bg1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.lib-card:hover { border-color: var(--border2); transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,0.3); }
+.lib-card-poster { width: 100%; aspect-ratio: 2/3; background: var(--bg3); position: relative; overflow: hidden; }
+.lib-card-poster img { width: 100%; height: 100%; object-fit: cover; }
+.lib-card-poster-placeholder { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-size: 28px; color: var(--text3); }
+.lib-card-info { padding: 8px; }
+.lib-card-title { font-size: 12px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-bottom: 2px; }
+.lib-card-meta { font-size: 10px; color: var(--text3); font-family: 'DM Mono', monospace; }
+.lib-card-source { position: absolute; top: 6px; right: 6px; }
+
+/* ── History run rows ── */
+.run-row {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+.run-row:last-child { border-bottom: none; }
+.run-row:hover { background: var(--bg2); margin: 0 -20px; padding: 14px 20px; border-radius: var(--radius-sm); }
+.run-header { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+.run-numbers { display: flex; gap: 16px; }
+.run-number { font-size: 12px; color: var(--text3); }
+.run-number span { color: var(--text); font-weight: 500; margin-right: 3px; }
+.run-cats { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+.run-cat-pill {
+  font-size: 11px;
+  font-family: 'DM Mono', monospace;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 8px;
+  color: var(--text2);
+}
+.run-cat-pill.has-new { border-color: rgba(108,99,255,0.3); background: var(--accent-dim); color: var(--accent); }
+
+/* ── Duplicate rows ── */
+.dup-row {
+  padding: 16px 0;
+  border-bottom: 1px solid var(--border);
+}
+.dup-row:last-child { border-bottom: none; }
+.dup-header { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+.dup-title { font-size: 14px; font-weight: 500; }
+.dup-sources { display: flex; gap: 8px; flex-wrap: wrap; }
+.dup-source-card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  font-size: 12px;
+  flex: 1;
+  min-width: 200px;
+}
+.dup-source-card.winner { border-color: rgba(74,222,128,0.3); background: var(--green-dim); }
+.dup-actions { display: flex; gap: 8px; margin-top: 10px; }
+
+/* ── Collection list items ── */
+.list-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+.list-item:last-child { border-bottom: none; }
+.list-info { flex: 1; min-width: 0; }
+.list-name { font-size: 13px; font-weight: 500; margin-bottom: 2px; }
+.list-meta { font-size: 11px; color: var(--text3); font-family: 'DM Mono', monospace; }
+
+/* ── Tag pills in collections ── */
+.tag-pill {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-bottom: 6px;
+}
+.tag-pill-left { display: flex; align-items: center; gap: 10px; }
+.tag-pill-name { font-size: 13px; font-weight: 500; }
+.tag-pill-count { font-size: 11px; color: var(--text3); font-family: 'DM Mono', monospace; }
+
+/* ── Log viewer ── */
+.log-panel {
+  background: #0a0a0f;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.log-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg1);
+}
+.log-panel-title { font-size: 12px; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: 0.06em; }
+.log-body {
+  height: 340px;
+  overflow-y: auto;
+  padding: 10px 14px;
+  font-family: 'DM Mono', monospace;
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+.log-line { display: flex; gap: 10px; margin-bottom: 1px; }
+.log-ts { color: var(--text3); flex-shrink: 0; }
+.log-level { flex-shrink: 0; width: 44px; }
+.log-level.info { color: var(--blue); }
+.log-level.warn { color: var(--amber); }
+.log-level.error { color: var(--red); }
+.log-level.gray { color: var(--text3); }
+.log-msg { color: var(--text2); word-break: break-word; }
+.log-msg.highlight { color: var(--green); }
+.log-msg.error { color: var(--red); }
+
+/* ── Library add button (list mode missing items) ── */
+.lib-card .lib-card-add-btn {
+  position: absolute;
+  bottom: 6px;
+  right: 6px;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.12s;
+  padding: 0;
+}
+.lib-card:hover .lib-card-add-btn { opacity: 1; }
+
+/* ── Library filter bar ── */
+.lib-filters { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
+.lib-filters-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+/* Sort dropdown */
+.lib-sort-select {
+  padding: 7px 10px;
+  font-size: 12px;
+  font-family: 'DM Sans', sans-serif;
+  background: var(--bg1);
+  color: var(--text);
+  border: 1px solid var(--border2);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  outline: none;
+}
+.lib-sort-select:focus { border-color: var(--accent); }
+
+/* Scrollable pill strip */
+.lib-pill-strip {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  flex: 1;
+}
+.lib-pill-strip-inner {
+  display: flex;
+  gap: 6px;
+  overflow-x: hidden;
+  scroll-behavior: smooth;
+  flex: 1;
+  min-width: 0;
+  padding: 2px 0;
+}
+.lib-pill-strip-btn {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 1px solid var(--border2);
+  background: var(--bg2);
+  color: var(--text2);
+  font-size: 13px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.12s;
+  padding: 0;
+}
+.lib-pill-strip-btn:hover { background: var(--bg3); color: var(--text); border-color: var(--accent); }
+.lib-pill-strip-btn.hidden { visibility: hidden; pointer-events: none; }
+.lib-pill-strip-btn.left { margin-right: 6px; }
+.lib-pill-strip-btn.right { margin-left: 6px; }
+
+/* List pills */
+.lib-list-pill {
+  flex-shrink: 0;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  font-family: 'DM Sans', sans-serif;
+  border: 1px solid var(--border2);
+  border-radius: 20px;
+  background: none;
+  color: var(--text3);
+  cursor: pointer;
+  transition: all 0.12s;
+  white-space: nowrap;
+}
+.lib-list-pill:hover { color: var(--text); background: var(--bg3); }
+.lib-list-pill.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* List status filter (sub-filter in list mode) */
+.lib-list-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 8px;
+  padding-left: 10px;
+  border-left: 1px solid var(--border);
+}
+.lib-list-status.hidden { display: none; }
+
+/* Stats bar */
+.lib-stats-bar {
+  font-size: 12px;
+  color: var(--text3);
+  font-family: 'DM Mono', monospace;
+  margin-bottom: 14px;
+}
+
+/* Live TV tabs */
+.live-tabs {
+  display: flex; gap: 2px; margin-bottom: 16px;
+  border-bottom: 1px solid var(--border); padding-bottom: 0;
+}
+.live-tab {
+  padding: 8px 18px; font-size: 13px; font-weight: 500;
+  background: none; border: none; color: var(--text3);
+  cursor: pointer; border-bottom: 2px solid transparent;
+  transition: color 0.15s, border-color 0.15s;
+}
+.live-tab:hover { color: var(--text); }
+.live-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.live-tab-panel { display: none; }
+.live-tab-panel.active { display: block; }
+
+/* Live TV */
+.live-group-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 14px; border-bottom: 1px solid var(--border);
+  transition: background 0.15s;
+}
+.live-group-row:hover { background: var(--bg2); }
+.live-group-row .group-name { font-size: 13px; flex: 1; }
+.live-group-row .group-count {
+  font-size: 11px; color: var(--text3); font-family: 'DM Mono', monospace;
+  min-width: 50px; text-align: right; margin-right: 12px;
+}
+.live-toggle {
+  position: relative; width: 36px; height: 20px; cursor: pointer;
+  background: var(--bg3); border-radius: 10px; border: none;
+  transition: background 0.2s;
+}
+.live-toggle.on { background: var(--accent); }
+.live-toggle::after {
+  content: ''; position: absolute; top: 3px; left: 3px;
+  width: 14px; height: 14px; border-radius: 50%;
+  background: #fff; transition: transform 0.2s;
+}
+.live-toggle.on::after { transform: translateX(16px); }
+.live-ch-row {
+  display: flex; align-items: center; padding: 7px 14px;
+  border-bottom: 1px solid var(--border); gap: 10px;
+}
+.live-ch-row:hover { background: var(--bg2); }
+.live-ch-logo {
+  width: 28px; height: 28px; border-radius: 4px;
+  object-fit: contain; background: var(--bg3); flex-shrink: 0;
+}
+.live-ch-name { font-size: 13px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.live-ch-group {
+  font-size: 11px; color: var(--text3); max-width: 180px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.live-ch-epg { font-size: 10px; color: var(--text3); font-family: 'DM Mono', monospace; }
+.live-ch-epg-badge { font-size: 10px; padding: 1px 6px; border-radius: 3px; white-space: nowrap; }
+.live-ch-epg-badge.has-epg { background: rgba(46,160,67,0.15); color: #3fb950; }
+.live-ch-epg-badge.no-epg { background: rgba(255,255,255,0.06); color: var(--text3); opacity: 0.6; }
+.live-progress {
+  height: 3px; background: var(--bg3); border-radius: 2px; overflow: hidden; margin-top: 8px;
+}
+.live-progress-bar {
+  height: 100%; background: var(--accent); transition: width 0.3s;
+}
+</style>
+</head>
+<body>
+
+<div class="app">
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-logo">
+      <div class="logo-icon">◈</div>
+      <div>
+        <div class="logo-text">Tentacle</div>
+        <div class="logo-version">v1.0.0</div>
+      </div>
+    </div>
+
+    <nav class="sidebar-nav">
+      <div class="nav-section">
+        <button class="nav-item active" data-page="dashboard">
+          <span class="icon">⬡</span> Dashboard
+        </button>
+        <button class="nav-item" data-page="library">
+          <span class="icon">◫</span> Library
+          <span class="nav-badge" id="dup-badge" style="display:none">0</span>
+        </button>
+        <button class="nav-item" data-page="vod">
+          <span class="icon">◉</span> VOD
+        </button>
+        <button class="nav-item" data-page="live-tv">
+          <span class="icon">▶</span> Live TV
+        </button>
+        <button class="nav-item" data-page="discover">
+          <span class="icon">✦</span> Discover
+        </button>
+        <button class="nav-item" data-page="tags">
+          <span class="icon">◈</span> Playlists
+        </button>
+        <button class="nav-item" data-page="home-screen">
+          <span class="icon">⌂</span> Home Screen
+        </button>
+        <button class="nav-item" data-page="settings">
+          <span class="icon">⊙</span> Settings
+        </button>
+      </div>
+    </nav>
+
+    <div class="sidebar-footer">
+      <div style="padding: 8px 10px; background: var(--bg2); border-radius: var(--radius-sm);">
+        <div style="font-size:10px;color:var(--text3);margin-bottom:4px;font-family:'DM Mono',monospace">LAST SYNC</div>
+        <div style="font-size:12px;font-family:'DM Mono',monospace" id="sidebar-last-sync">—</div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Main content -->
+  <div class="main">
+
+    <!-- Top bar -->
+    <div class="topbar">
+      <div class="topbar-title" id="topbar-title">Dashboard</div>
+      <div class="topbar-sub" id="topbar-sub"></div>
+    </div>
+
+    <!-- Pages -->
+    <div class="page-content">
+
+      <!-- ── DASHBOARD ── -->
+      <div class="page active" id="page-dashboard">
+        <div class="page-header">
+          <div class="page-header-row">
+            <div>
+              <div class="page-title">Dashboard</div>
+              <div class="page-subtitle">System status and recent activity</div>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center">
+              <button class="btn btn-primary" id="sync-now-btn" onclick="syncNow()">Sync Now</button>
+              <button class="btn btn-danger" id="sync-cancel-btn" onclick="cancelSync()" style="display:none">Cancel</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Status cards -->
+        <div class="dash-status-grid">
+          <div class="dash-status-card" id="status-vod">
+            <div class="dash-status-icon">
+              <div class="dot dot-gray" id="dot-vod"></div>
+            </div>
+            <div class="dash-status-info">
+              <div class="dash-status-label">VOD Sync</div>
+              <div class="dash-status-time" id="time-vod">—</div>
+            </div>
+          </div>
+          <div class="dash-status-card" id="status-radarr">
+            <div class="dash-status-icon">
+              <div class="dot dot-gray" id="dot-radarr"></div>
+            </div>
+            <div class="dash-status-info">
+              <div class="dash-status-label">Radarr Scan</div>
+              <div class="dash-status-time" id="time-radarr">—</div>
+            </div>
+          </div>
+          <div class="dash-status-card" id="status-sonarr">
+            <div class="dash-status-icon">
+              <div class="dot dot-gray" id="dot-sonarr"></div>
+            </div>
+            <div class="dash-status-info">
+              <div class="dash-status-label">Sonarr Scan</div>
+              <div class="dash-status-time" id="time-sonarr">—</div>
+            </div>
+          </div>
+          <div class="dash-status-card" id="status-jellyfin">
+            <div class="dash-status-icon">
+              <div class="dot dot-gray" id="dot-jellyfin"></div>
+            </div>
+            <div class="dash-status-info">
+              <div class="dash-status-label">Jellyfin Push</div>
+              <div class="dash-status-time" id="time-jellyfin">—</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Sync progress bar (hidden by default) -->
+        <div class="dash-progress" id="dash-progress" style="display:none">
+          <div class="dash-progress-header">
+            <div class="dot dot-amber"></div>
+            <span id="dash-progress-label">Syncing...</span>
+          </div>
+          <div class="dash-progress-bar-track">
+            <div class="dash-progress-bar-fill" id="dash-progress-fill"></div>
+          </div>
+          <div class="dash-progress-detail" id="dash-progress-detail"></div>
+        </div>
+
+        <!-- Library stats -->
+        <div class="stats-grid" style="margin-bottom:20px">
+          <div class="stat-card">
+            <div class="stat-accent" style="background:var(--accent)"></div>
+            <div class="stat-label">Movies</div>
+            <div class="stat-value" id="stat-movies">—</div>
+            <div class="stat-sub" id="stat-movies-sub"></div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-accent" style="background:var(--pink)"></div>
+            <div class="stat-label">Series</div>
+            <div class="stat-value" id="stat-series">—</div>
+            <div class="stat-sub" id="stat-series-sub"></div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-accent" style="background:var(--green)"></div>
+            <div class="stat-label">Downloaded</div>
+            <div class="stat-value" id="stat-downloaded">—</div>
+            <div class="stat-sub" id="stat-downloaded-sub"></div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-accent" style="background:var(--amber)"></div>
+            <div class="stat-label">VOD</div>
+            <div class="stat-value" id="stat-vod">—</div>
+            <div class="stat-sub" id="stat-vod-sub"></div>
+          </div>
+        </div>
+
+        <!-- Recent activity -->
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-header">
+            <div class="card-title">Recent Activity</div>
+            <button class="btn btn-secondary btn-sm" id="activity-more-btn" onclick="loadMoreActivity()" style="display:none">Show More</button>
+          </div>
+          <div id="activity-feed" style="max-height:220px;overflow-y:auto">
+            <div class="loading-state"><div class="spinner"></div> Loading...</div>
+          </div>
+        </div>
+
+        <!-- Sync History (collapsible) -->
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-header" style="cursor:pointer" onclick="toggleDashHistory()">
+            <div class="card-title">Sync History</div>
+            <span id="dash-history-toggle" style="font-size:11px;color:var(--text3)">▸ Show</span>
+          </div>
+          <div id="dash-history-body" style="display:none">
+            <div id="history-summary" style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;padding:16px"></div>
+            <div class="card" style="margin:0 16px 16px;background:var(--bg2)">
+              <div class="card-header">
+                <div class="card-title" style="font-size:13px">Category Growth</div>
+                <select id="chart-category" class="form-input" style="width:200px;padding:5px 10px;font-size:12px" onchange="renderCategoryChart()">
+                  <option value="">Select category...</option>
+                </select>
+              </div>
+              <canvas id="category-chart" height="60"></canvas>
+              <div id="chart-empty" style="text-align:center;padding:20px;color:var(--text3);font-size:12px">Select a category</div>
+            </div>
+            <div style="padding:0 16px 16px">
+              <div id="history-runs"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Advanced actions + Live logs -->
+        <div style="display:grid;grid-template-columns:280px 1fr;gap:16px">
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title">Actions</div>
+            </div>
+            <div style="padding:4px 0;display:flex;flex-direction:column;gap:6px">
+              <button class="btn btn-secondary btn-sm" style="width:100%;text-align:left" onclick="runSync('movies')" id="dash-btn-vod-movies">Sync VOD Movies</button>
+              <button class="btn btn-secondary btn-sm" style="width:100%;text-align:left" onclick="runSync('series')" id="dash-btn-vod-series">Sync VOD Series</button>
+              <button class="btn btn-secondary btn-sm" style="width:100%;text-align:left" onclick="scanRadarr()" id="radarr-scan-btn">Scan Radarr</button>
+              <button class="btn btn-secondary btn-sm" style="width:100%;text-align:left" onclick="scanSonarr()" id="sonarr-scan-btn">Scan Sonarr</button>
+              <button class="btn btn-secondary btn-sm" style="width:100%;text-align:left" onclick="refreshLists(this)">Refresh Lists</button>
+              <button class="btn btn-secondary btn-sm" style="width:100%;text-align:left" onclick="dashRefreshTags(this)">Push Tags to Jellyfin</button>
+              <button class="btn btn-secondary btn-sm" style="width:100%;text-align:left" onclick="writeNfos(this)">Rewrite NFO Files</button>
+            </div>
+          </div>
+
+          <div class="log-panel">
+            <div class="log-panel-header">
+              <div class="log-panel-title">Live Logs</div>
+              <div style="display:flex;gap:8px;align-items:center">
+                <div class="dot dot-gray" id="log-conn-dot" title="SSE connection status"></div>
+                <button class="btn btn-secondary btn-sm" onclick="clearLogPanel()">Clear</button>
+                <button class="btn btn-secondary btn-sm" id="log-scroll-btn" onclick="toggleLogScroll()">↓ Auto-scroll</button>
+              </div>
+            </div>
+            <div class="log-body" id="log-body">
+              <div style="color:var(--text3);font-size:11px;padding:4px 0">Connecting to log stream...</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── VOD ── -->
+      <div class="page" id="page-vod">
+        <div class="page-header">
+          <div class="page-header-row">
+            <div>
+              <div class="page-title">VOD</div>
+              <div class="page-subtitle">Categories, sync & content management</div>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center">
+              <span id="vod-sync-status" style="font-size:12px;color:var(--text3)"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Provider selector -->
+        <div id="vod-no-provider" style="display:none;padding:20px;text-align:center;color:var(--text3);font-size:13px">
+          No VOD provider configured. <a href="#" onclick="showPage('settings');showSettingsSection('providers');return false" style="color:var(--accent)">Add a provider</a> in Settings first.
+        </div>
+
+        <div id="vod-provider-bar" style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+          <select class="form-input" id="vod-provider-select" style="width:240px;padding:6px 10px;font-size:13px" onchange="onVodProviderChange()">
+          </select>
+          <span id="vod-provider-status" style="font-size:12px;color:var(--text3)"></span>
+        </div>
+
+        <!-- Tab bar -->
+        <div id="vod-tabs-bar" style="display:flex;gap:0;border-bottom:1px solid var(--border2);margin-bottom:16px">
+          <button class="live-tab active" data-vodtab="categories" onclick="showVodTab('categories')">Categories</button>
+          <button class="live-tab" data-vodtab="sync" onclick="showVodTab('sync')">Sync</button>
+        </div>
+
+        <!-- Tab: Categories -->
+        <div id="vod-tab-categories">
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title">Categories <span id="vod-cat-count" style="color:var(--text3);font-weight:400"></span></div>
+              <div style="display:flex;gap:8px;align-items:center">
+                <input class="form-input" id="vod-cat-search" placeholder="Search categories..." style="width:200px;padding:5px 10px;font-size:12px" oninput="filterVodCats()">
+                <div class="filter-group">
+                  <button class="filter-btn active" data-vodcatfilter="all" onclick="setVodCatFilter('all',this)">All</button>
+                  <button class="filter-btn" data-vodcatfilter="movie" onclick="setVodCatFilter('movie',this)">Movies</button>
+                  <button class="filter-btn" data-vodcatfilter="series" onclick="setVodCatFilter('series',this)">Series</button>
+                  <button class="filter-btn" data-vodcatfilter="active" onclick="setVodCatFilter('active',this)">Active</button>
+                  <button class="filter-btn" data-vodcatfilter="english" onclick="setVodCatFilter('english',this)">English</button>
+                </div>
+              </div>
+            </div>
+            <div style="padding:8px 16px;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:center">
+              <button class="btn btn-secondary btn-sm" onclick="vodSelectAllVisible(true)">Select All Visible</button>
+              <button class="btn btn-secondary btn-sm" onclick="vodSelectAllVisible(false)">Deselect All Visible</button>
+              <div style="flex:1"></div>
+              <button class="btn btn-secondary btn-sm" onclick="vodFetchCategories()">Refresh from Provider</button>
+              <button class="btn btn-primary btn-sm" onclick="vodSaveCategories()">Save Selection</button>
+            </div>
+            <div id="vod-cat-list" style="max-height:500px;overflow-y:auto">
+              <div class="loading-state"><div class="spinner"></div></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab: Sync -->
+        <div id="vod-tab-sync" style="display:none">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
+            <div class="card">
+              <div class="card-header"><div class="card-title">Sync Actions</div></div>
+              <div style="padding:8px 0;display:flex;flex-direction:column;gap:8px">
+                <button class="btn btn-primary" style="width:100%" onclick="vodRunSync('movies')" id="vod-sync-movies-btn">Sync Movies</button>
+                <button class="btn btn-primary" style="width:100%" onclick="vodRunSync('series')" id="vod-sync-series-btn">Sync Series</button>
+                <button class="btn btn-secondary" style="width:100%" onclick="vodRunSync('full')" id="vod-sync-full-btn">Full Sync (Movies + Series)</button>
+                <button class="btn btn-secondary" style="width:100%" onclick="vodPreviewSync()">Preview (estimate counts)</button>
+              </div>
+            </div>
+            <div class="card">
+              <div class="card-header"><div class="card-title">Status</div></div>
+              <div id="vod-sync-info" style="padding:8px 0;font-size:13px;color:var(--text2)">
+                <p>Select a sync type to start.</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Radarr/Sonarr quick actions -->
+          <div class="card">
+            <div class="card-header"><div class="card-title">Integrations</div></div>
+            <div style="padding:8px 0;display:flex;gap:8px;flex-wrap:wrap">
+              <button class="btn btn-secondary btn-sm" onclick="scanRadarr()">Scan Radarr</button>
+              <button class="btn btn-secondary btn-sm" onclick="scanSonarr()">Scan Sonarr</button>
+              <button class="btn btn-secondary btn-sm" onclick="dashRefreshTags(this)">Push Tags to Jellyfin</button>
+              <button class="btn btn-secondary btn-sm" onclick="writeNfos(this)">Rewrite NFO Files</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── SETTINGS ── -->
+      <div class="page" id="page-settings">
+        <div class="page-header">
+          <div class="page-title">Settings</div>
+          <div class="page-subtitle">Providers, connections & configuration</div>
+        </div>
+
+        <div class="settings-grid">
+          <div class="settings-nav">
+            <button class="settings-nav-item active" data-section="providers">Providers</button>
+            <button class="settings-nav-item" data-section="connections">Connections</button>
+            <button class="settings-nav-item" data-section="paths">Library Paths</button>
+            <button class="settings-nav-item" data-section="sync">Sync Settings</button>
+            <button class="settings-nav-item" data-section="integrations">Integrations</button>
+          </div>
+
+          <div>
+            <!-- Providers -->
+            <div class="settings-section active card" id="section-providers">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+                <div>
+                  <h3>Providers</h3>
+                  <p class="section-desc">IPTV providers for VOD, series, and live TV content</p>
+                </div>
+                <div style="display:flex;gap:8px">
+                  <button class="btn btn-secondary" onclick="showMigrate()">⇄ Migrate</button>
+                  <button class="btn btn-primary" onclick="showAddProvider()">+ Add Provider</button>
+                </div>
+              </div>
+              <div class="provider-grid" id="provider-grid">
+                <div class="loading-state"><div class="spinner"></div> Loading...</div>
+              </div>
+            </div>
+
+            <!-- Connections -->
+            <div class="settings-section card" id="section-connections">
+              <h3>API Connections</h3>
+              <p class="section-desc">Connect Tentacle to your services. All keys are stored locally.</p>
+
+              <div class="form-group">
+                <div class="form-label">TMDB Bearer Token</div>
+                <div style="display:flex;gap:8px">
+                  <input class="form-input mono" id="tmdb_bearer_token" type="password" placeholder="eyJhbGc...">
+                  <button class="btn btn-secondary" onclick="testConnection('tmdb')">Test</button>
+                </div>
+                <div class="form-hint">API Read Access Token from themoviedb.org/settings/api</div>
+              </div>
+
+              <hr class="divider">
+
+              <div class="form-row">
+                <div class="form-group">
+                  <div class="form-label">Radarr URL</div>
+                  <input class="form-input" id="radarr_url" placeholder="http://192.168.2.75:7878">
+                </div>
+                <div class="form-group">
+                  <div class="form-label">Radarr API Key</div>
+                  <div style="display:flex;gap:8px">
+                    <input class="form-input mono" id="radarr_api_key" type="password" placeholder="abc123...">
+                    <button class="btn btn-secondary" onclick="testConnection('radarr')">Test</button>
+                  </div>
+                </div>
+              </div>
+
+              <hr class="divider">
+
+              <div class="form-row">
+                <div class="form-group">
+                  <div class="form-label">Sonarr URL</div>
+                  <input class="form-input" id="sonarr_url" placeholder="http://192.168.2.75:8989">
+                </div>
+                <div class="form-group">
+                  <div class="form-label">Sonarr API Key</div>
+                  <div style="display:flex;gap:8px">
+                    <input class="form-input mono" id="sonarr_api_key" type="password" placeholder="abc123...">
+                    <button class="btn btn-secondary" onclick="testConnection('sonarr')">Test</button>
+                  </div>
+                </div>
+              </div>
+
+              <hr class="divider">
+
+              <div class="form-row">
+                <div class="form-group">
+                  <div class="form-label">Jellyfin URL</div>
+                  <input class="form-input" id="jellyfin_url" placeholder="http://192.168.2.75:8096">
+                </div>
+                <div class="form-group">
+                  <div class="form-label">Jellyfin API Key</div>
+                  <div style="display:flex;gap:8px">
+                    <input class="form-input mono" id="jellyfin_api_key" type="password" placeholder="abc123...">
+                    <button class="btn btn-secondary" onclick="testConnection('jellyfin')">Test</button>
+                  </div>
+                </div>
+              </div>
+
+              <div style="margin-top:20px">
+                <button class="btn btn-primary" onclick="saveSettings()">Save Connections</button>
+              </div>
+            </div>
+
+            <!-- Paths -->
+            <div class="settings-section card" id="section-paths">
+              <h3>Library Paths</h3>
+              <p class="section-desc">Paths where media files are stored. Must be accessible inside the container.</p>
+
+              <div class="form-group">
+                <div class="form-label">VOD Movies Path</div>
+                <input class="form-input mono" id="vod_movies_path" placeholder="/mnt/media/vod/Movies">
+                <div class="form-hint">Where .strm files for VOD movies are created</div>
+              </div>
+
+              <div class="form-group">
+                <div class="form-label">VOD Series Path</div>
+                <input class="form-input mono" id="vod_series_path" placeholder="/mnt/media/vod/Series">
+              </div>
+
+              <div class="form-group">
+                <div class="form-label">Radarr Root Folder Path</div>
+                <div style="display:flex;gap:8px">
+                  <input class="form-input mono" id="radarr_movies_path" placeholder="/data/movies">
+                  <button class="btn btn-secondary" onclick="fetchRadarrRootFolder()">Fetch</button>
+                </div>
+                <div class="form-hint">Path as Radarr sees it inside its container. Click Fetch to auto-detect.</div>
+              </div>
+
+              <div class="form-group">
+                <div class="form-label">Sonarr Series Path</div>
+                <input class="form-input mono" id="sonarr_series_path" placeholder="/mnt/media/tv">
+              </div>
+
+              <div style="margin-top:20px">
+                <button class="btn btn-primary" onclick="saveSettings()">Save Paths</button>
+              </div>
+            </div>
+
+            <!-- Sync -->
+            <div class="settings-section card" id="section-sync">
+              <h3>Sync Settings</h3>
+              <p class="section-desc">Configure how and when syncs run.</p>
+
+              <div class="form-group">
+                <div class="form-label">Sync Schedule (Cron)</div>
+                <input class="form-input mono" id="sync_schedule" placeholder="0 3 * * *">
+                <div class="form-hint">Default: 3am daily. Use cron format.</div>
+              </div>
+
+              <div class="form-group">
+                <div class="form-label">Recently Added Window (days)</div>
+                <input class="form-input" id="recently_added_days" placeholder="30" type="number" min="1" max="365">
+                <div class="form-hint">How long items stay in "Recently Added" collections</div>
+              </div>
+
+              <div class="form-group">
+                <div class="form-label">TMDB Match Threshold</div>
+                <input class="form-input" id="tmdb_match_threshold" placeholder="0.7" type="number" min="0.1" max="1.0" step="0.05">
+                <div class="form-hint">Minimum confidence for TMDB title match (0.1–1.0). Higher = stricter.</div>
+              </div>
+
+              <div style="margin-top:20px">
+                <button class="btn btn-primary" onclick="saveSettings()">Save Sync Settings</button>
+              </div>
+            </div>
+
+            <!-- Integrations -->
+            <div class="settings-section card" id="section-integrations">
+              <h3>Integrations</h3>
+              <p class="section-desc">Paths for external integrations managed by Tentacle.</p>
+
+              <div class="form-group">
+                <div class="form-label">Jellyfin User</div>
+                <div id="jellyfin-login-status" style="display:none;padding:10px 12px;background:var(--green-dim);border:1px solid rgba(74,222,128,0.15);border-radius:var(--radius-sm);display:none">
+                  <div style="display:flex;align-items:center;justify-content:space-between">
+                    <span style="color:var(--green);font-size:13px;font-weight:500" id="jellyfin-logged-in-label"></span>
+                    <button class="btn btn-secondary btn-sm" onclick="showJellyfinLogin()">Change</button>
+                  </div>
+                  <div style="font-size:11px;color:var(--text3);margin-top:4px;font-family:'DM Mono',monospace" id="jellyfin-user-id-display"></div>
+                </div>
+                <div id="jellyfin-login-form">
+                  <div class="form-row" style="margin-bottom:8px">
+                    <input class="form-input" id="jf-username" placeholder="Username">
+                    <input class="form-input" id="jf-password" type="password" placeholder="Password">
+                    <button class="btn btn-primary" onclick="jellyfinLogin()" id="jf-login-btn">Login</button>
+                  </div>
+                  <div class="form-hint">Authenticate with Jellyfin to link your user. Password is not stored.</div>
+                  <div id="jf-login-error" style="font-size:11px;color:var(--red);margin-top:4px;display:none"></div>
+                </div>
+              </div>
+
+              <hr class="divider">
+
+              <div class="form-group">
+                <div class="form-label">Trakt Client ID</div>
+                <input class="form-input mono" id="trakt_client_id" type="password" placeholder="Enter Trakt API client ID">
+                <div class="form-hint">Required for Trakt list subscriptions. Create an app at trakt.tv/oauth/applications to get a Client ID.</div>
+              </div>
+
+              <div class="form-group">
+                <div class="form-label">Logo.dev API Key</div>
+                <input class="form-input mono" id="logodev_api_key" type="password" placeholder="pk_...">
+                <div class="form-hint">Optional. Enables streaming service logos on playlist artwork. Get a key at logo.dev</div>
+              </div>
+
+              <hr class="divider">
+
+              <div class="form-group">
+                <div class="form-label">Jellyfin Discover Tab</div>
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+                  <input type="checkbox" id="discover_in_jellyfin">
+                  <span style="font-size:13px;color:var(--text2)">Add a "Discover" tab to the Jellyfin home page showing trending content</span>
+                </label>
+              </div>
+
+              <hr class="divider">
+
+              <div class="form-group">
+                <div class="form-label">Radarr Webhook URL</div>
+                <div style="display:flex;gap:8px;align-items:center">
+                  <input class="form-input mono" id="webhook_host" placeholder="192.168.2.75:8888" style="max-width:200px">
+                  <span style="color:var(--text3);font-family:'DM Mono',monospace;font-size:12px;white-space:nowrap">/api/radarr/webhook</span>
+                  <button class="btn btn-secondary" onclick="copyWebhookUrl()">Copy</button>
+                  <button class="btn btn-secondary" onclick="testWebhookUrl()">Test</button>
+                </div>
+                <div class="form-hint">Paste into Radarr → Settings → Connect → Webhook</div>
+              </div>
+
+              <div class="form-group">
+                <div class="form-label">Sonarr Webhook URL</div>
+                <div style="display:flex;gap:8px;align-items:center">
+                  <input class="form-input mono" id="sonarr_webhook_host" placeholder="192.168.2.75:8888" style="max-width:200px">
+                  <span style="color:var(--text3);font-family:'DM Mono',monospace;font-size:12px;white-space:nowrap">/api/sonarr/webhook</span>
+                  <button class="btn btn-secondary" onclick="copySonarrWebhookUrl()">Copy</button>
+                  <button class="btn btn-secondary" onclick="testSonarrWebhookUrl()">Test</button>
+                </div>
+                <div class="form-hint">Paste into Sonarr → Settings → Connect → Webhook</div>
+              </div>
+
+              <div style="margin-top:20px">
+                <button class="btn btn-primary" onclick="saveSettings()">Save Integrations</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── LIBRARY ── -->
+      <div class="page" id="page-library">
+        <div class="page-header">
+          <div class="page-header-row">
+            <div>
+              <div class="page-title">Library</div>
+              <div class="page-subtitle">Movies, series & duplicates</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Library tabs -->
+        <div style="display:flex;gap:0;border-bottom:1px solid var(--border2);margin-bottom:16px">
+          <button class="live-tab active" data-libtab="browse" onclick="showLibTab('browse')">Browse</button>
+          <button class="live-tab" data-libtab="duplicates" onclick="showLibTab('duplicates')">Duplicates <span class="nav-badge" id="lib-dup-badge" style="display:none;margin-left:6px">0</span></button>
+        </div>
+
+        <div id="lib-tab-browse">
+        <!-- Filter bar -->
+        <div class="lib-filters">
+          <!-- Row 1: Search + Sort -->
+          <div class="lib-filters-row">
+            <input class="search-box" id="lib-search" placeholder="Search titles..." oninput="searchLibrary()" style="width:220px">
+            <select class="lib-sort-select" id="lib-sort" onchange="setLibSort(this.value)">
+              <option value="date_desc">Recently Added</option>
+              <option value="title_asc">Title A–Z</option>
+              <option value="title_desc">Title Z–A</option>
+              <option value="rating">Highest Rated</option>
+              <option value="year_desc">Year (Newest)</option>
+              <option value="year_asc">Year (Oldest)</option>
+            </select>
+            <div style="margin-left:auto">
+              <span class="lib-stats-bar" id="lib-stats"></span>
+            </div>
+          </div>
+          <!-- Row 2: Media type + Source -->
+          <div class="lib-filters-row">
+            <div class="filter-group" id="lib-type-group">
+              <button class="filter-btn active" data-libtype="all" onclick="setLibType('all',this)">All</button>
+              <button class="filter-btn" data-libtype="movie" onclick="setLibType('movie',this)">Movies</button>
+              <button class="filter-btn" data-libtype="series" onclick="setLibType('series',this)">Shows</button>
+            </div>
+            <div class="filter-group" id="lib-src-group">
+              <button class="filter-btn active" data-libsrc="all" onclick="setLibSrc('all',this)">All Sources</button>
+              <button class="filter-btn" data-libsrc="vod" onclick="setLibSrc('vod',this)">VOD</button>
+              <button class="filter-btn" data-libsrc="radarr" onclick="setLibSrc('radarr',this)">Downloaded</button>
+            </div>
+          </div>
+          <!-- Row 3: Scrollable list pills -->
+          <div class="lib-filters-row" id="lib-list-row" style="display:none">
+            <span style="font-size:11px;color:var(--text3);white-space:nowrap;font-weight:500">Lists</span>
+            <div class="lib-pill-strip" id="lib-list-strip">
+              <button class="lib-pill-strip-btn left hidden" id="lib-list-scroll-left" onclick="scrollListPills(-1)">‹</button>
+              <div class="lib-pill-strip-inner" id="lib-list-pills"></div>
+              <button class="lib-pill-strip-btn right hidden" id="lib-list-scroll-right" onclick="scrollListPills(1)">›</button>
+            </div>
+            <!-- List mode sub-filter -->
+            <div class="lib-list-status hidden" id="lib-list-status">
+              <div class="filter-group">
+                <button class="filter-btn active" data-liststatus="all" onclick="setLibListStatus('all',this)">All</button>
+                <button class="filter-btn" data-liststatus="in_library" onclick="setLibListStatus('in_library',this)">In Library</button>
+                <button class="filter-btn" data-liststatus="missing" onclick="setLibListStatus('missing',this)">Missing</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Source breakdown pills -->
+        <div id="lib-source-pills" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px"></div>
+
+        <!-- Library grid -->
+        <div id="lib-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px"></div>
+        <div id="lib-load-more" style="text-align:center;margin-top:20px;display:none">
+          <button class="btn btn-secondary" onclick="loadMoreLibrary()">Load more</button>
+        </div>
+        </div><!-- /lib-tab-browse -->
+
+        <div id="lib-tab-duplicates" style="display:none">
+          <div id="dup-stats" style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px"></div>
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title">Duplicates</div>
+              <div style="display:flex;gap:8px;align-items:center">
+                <div class="filter-group">
+                  <button class="filter-btn active" data-dupfilter="pending" onclick="setDupFilter('pending',this)">Pending</button>
+                  <button class="filter-btn" data-dupfilter="resolved" onclick="setDupFilter('resolved',this)">Resolved</button>
+                  <button class="filter-btn" data-dupfilter="all" onclick="setDupFilter('all',this)">All</button>
+                </div>
+                <button class="btn btn-secondary btn-sm" onclick="resolveAllKeepRadarr()">Resolve All → Keep Downloaded</button>
+              </div>
+            </div>
+            <div id="dup-list"></div>
+          </div>
+        </div><!-- /lib-tab-duplicates -->
+      </div>
+
+      <!-- History page removed — merged into Dashboard -->
+
+      <!-- Lists page removed — merged into Discover tab -->
+
+      <!-- ── PLAYLISTS ── -->
+      <div class="page" id="page-tags">
+        <div class="page-header">
+          <div class="page-header-row">
+            <div>
+              <div class="page-title">Playlists</div>
+              <div class="page-subtitle">Create and manage Jellyfin playlists</div>
+            </div>
+            <div style="display:flex;gap:8px">
+              <button class="btn btn-secondary" onclick="showAddTagRule()">+ Create Playlist</button>
+              <button class="btn btn-primary" onclick="syncPlaylistsToJellyfin()">Sync to Jellyfin</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Custom Playlists -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">Custom Playlists</div>
+            <span style="font-size:11px;color:var(--text3)">Filter your library by genre, rating, year & more</span>
+          </div>
+          <div id="tag-rules-list">
+            <div class="loading-state"><div class="spinner"></div></div>
+          </div>
+        </div>
+
+        <!-- List Playlists -->
+        <div class="card" style="margin-top:20px">
+          <div class="card-header">
+            <div class="card-title">List Playlists</div>
+            <span style="font-size:11px;color:var(--text3)">Enable to create Jellyfin playlists from your list subscriptions</span>
+          </div>
+          <div id="list-playlists-container">
+            <div class="loading-state"><div class="spinner"></div></div>
+          </div>
+        </div>
+
+        <!-- How Playlists Work -->
+        <div class="card" style="margin-top:20px">
+          <div class="card-header" style="cursor:pointer" onclick="document.getElementById('playlist-help-body').style.display = document.getElementById('playlist-help-body').style.display === 'none' ? 'block' : 'none'">
+            <div class="card-title" style="display:flex;align-items:center;gap:8px">
+              <span style="font-size:14px">?</span> How Playlists Work
+            </div>
+            <span style="font-size:11px;color:var(--text3)">Click to expand</span>
+          </div>
+          <div id="playlist-help-body" style="display:none;padding:0 16px 16px;font-size:13px;color:var(--text2);line-height:1.7">
+            <p style="margin:0 0 12px">Create playlists by combining filters. Tentacle finds all matching content in your Jellyfin library and keeps the playlist updated automatically on every sync.</p>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+              <div>
+                <div style="font-weight:600;color:var(--text);margin-bottom:4px">Available Filters</div>
+                <div style="display:flex;flex-direction:column;gap:4px">
+                  <span><strong>Genre</strong> — TMDB genres (Comedy, Action, Horror, etc.)</span>
+                  <span><strong>Year</strong> — Release year (exact, before, or after)</span>
+                  <span><strong>Rating</strong> — TMDB community rating (0-10)</span>
+                  <span><strong>Runtime</strong> — Movie length in minutes</span>
+                </div>
+              </div>
+              <div>
+                <div style="font-weight:600;color:var(--text);margin-bottom:4px">Content Filters</div>
+                <div style="display:flex;flex-direction:column;gap:4px">
+                  <span><strong>Source</strong> — VOD provider (Netflix, Amazon, etc.) — only VOD content</span>
+                  <span><strong>List</strong> — Subscribed lists (IMDB Top 250, Trakt, etc.)</span>
+                  <span><strong>Downloaded</strong> — Content downloaded via Radarr</span>
+                </div>
+              </div>
+            </div>
+            <p style="margin:12px 0 0;color:var(--text3);font-size:12px">Genre, Year, and Rating filters query Jellyfin directly and match all content in your library. Source, List, and Downloaded filters match content that Tentacle has tagged.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── HOME SCREEN ── -->
+      <div class="page" id="page-home-screen">
+        <div class="page-header">
+          <div class="page-header-row">
+            <div>
+              <div class="page-title">Home Screen</div>
+              <div class="page-subtitle">Hero spotlight, playlist rows & Jellyfin sections</div>
+            </div>
+            <div style="display:flex;gap:8px">
+              <button class="btn btn-secondary" onclick="showAddHomeRow()">+ Add Row</button>
+              <button class="btn btn-primary" onclick="pushHomeConfig()">Push to Jellyfin</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Hero picker -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">Hero Spotlight</div>
+            <span id="home-config-status" style="font-size:11px;color:var(--text3)"></span>
+          </div>
+          <div style="padding:0 16px 16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <select id="home-hero-select" class="input" style="max-width:360px;flex:1" onchange="updateHeroPick()">
+              <option value="">— disabled —</option>
+            </select>
+            <select id="home-hero-sort" class="input" style="max-width:180px" onchange="updateHeroSort()">
+              <option value="random_desc">Random</option>
+              <option value="communityrating_desc">Top Rated</option>
+              <option value="releasedate_desc">Newest First</option>
+              <option value="releasedate_asc">Oldest First</option>
+              <option value="name_asc">A &rarr; Z</option>
+              <option value="datecreated_desc">Recently Added</option>
+            </select>
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text2);cursor:pointer;white-space:nowrap">
+              <input type="checkbox" id="home-hero-require-logo" onchange="updateHeroSort()" checked>
+              Title image only
+            </label>
+          </div>
+        </div>
+
+        <!-- Row list -->
+        <div class="card" style="margin-top:20px">
+          <div class="card-header">
+            <div class="card-title">Home Rows</div>
+            <span style="font-size:11px;color:var(--text3)">Drag to reorder</span>
+          </div>
+          <div style="padding:0 16px 16px">
+            <div id="home-rows-list"></div>
+            <div id="add-row-inline" style="display:none;margin-top:8px">
+              <div style="display:flex;gap:8px;align-items:center">
+                <select id="add-row-select" class="form-input" style="flex:1">
+                  <option value="">Select a playlist...</option>
+                </select>
+                <button class="btn btn-primary btn-sm" onclick="confirmAddHomeRow()">Add</button>
+                <button class="btn btn-secondary btn-sm" onclick="hideAddHomeRow()">Cancel</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── DISCOVER ── -->
+      <div class="page" id="page-discover">
+        <div class="page-header">
+          <div class="page-header-row">
+            <div>
+              <div class="page-title">Discover</div>
+              <div class="page-subtitle">Trending, popular & list subscriptions</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Discover tabs -->
+        <div style="display:flex;gap:0;border-bottom:1px solid var(--border2);margin-bottom:16px">
+          <button class="live-tab active" data-discovertab="browse" onclick="showDiscoverTab('browse')">Browse</button>
+          <button class="live-tab" data-discovertab="lists" onclick="showDiscoverTab('lists')">My Lists</button>
+        </div>
+
+        <div id="discover-tab-browse">
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:16px">
+            <div style="position:relative;display:flex;align-items:center">
+              <input type="text" id="discover-search-input" placeholder="Search TMDB…" autocomplete="off" style="padding:6px 30px 6px 10px;border-radius:4px;border:1px solid var(--border2);background:var(--bg2);color:var(--text);font-size:13px;width:200px;outline:none;font-family:'DM Sans',sans-serif" oninput="onDiscoverSearchInput(this)">
+              <button id="discover-search-clear" onclick="clearDiscoverSearch()" style="display:none;position:absolute;right:4px;border:none;background:transparent;color:var(--text3);font-size:16px;cursor:pointer;padding:2px 4px">&times;</button>
+            </div>
+            <div class="filter-group">
+              <button class="filter-btn active" data-disctype="all" onclick="setDiscoverType('all',this)">All</button>
+              <button class="filter-btn" data-disctype="movies" onclick="setDiscoverType('movies',this)">Movies</button>
+              <button class="filter-btn" data-disctype="series" onclick="setDiscoverType('series',this)">Shows</button>
+            </div>
+          </div>
+          <div id="discover-section-tabs" style="display:flex;gap:0;border-bottom:1px solid var(--border2);margin-bottom:16px"></div>
+          <div id="discover-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px"></div>
+        </div>
+
+        <div id="discover-tab-lists" style="display:none">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+            <p style="color:var(--text3);font-size:13px;margin:0">IMDb, Trakt & Letterboxd list subscriptions</p>
+            <button class="btn btn-primary" onclick="showAddList()">+ Add List</button>
+          </div>
+          <div id="lists-active">
+            <div class="loading-state"><div class="spinner"></div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Duplicates page removed — merged into Library tab -->
+
+      <!-- ── LIVE TV PAGE ── -->
+      <div class="page" id="page-live-tv">
+        <div class="page-header">
+          <div class="page-header-row">
+            <div>
+              <div class="page-title">Live TV</div>
+              <div class="page-subtitle">Channels, groups & EPG</div>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center">
+              <span id="live-sync-status" style="font-size:12px;color:var(--text3)"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Stats row -->
+        <div id="live-stats" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px"></div>
+
+        <!-- Tab bar -->
+        <div class="live-tabs">
+          <button class="live-tab active" data-livetab="groups" onclick="showLiveTab('groups')">Groups</button>
+          <button class="live-tab" data-livetab="channels" onclick="showLiveTab('channels')">Channels</button>
+          <button class="live-tab" data-livetab="setup" onclick="showLiveTab('setup')">Jellyfin Setup</button>
+        </div>
+
+        <!-- No provider warning -->
+        <div id="live-no-provider" style="display:none;padding:20px;text-align:center;color:var(--text3);font-size:13px">
+          No IPTV provider configured. <a href="#" onclick="showPage('settings');showSettingsSection('providers');return false" style="color:var(--accent)">Add a provider</a> in Settings first.
+        </div>
+
+        <!-- Tab: Groups -->
+        <div class="live-tab-panel active" id="live-panel-groups">
+          <!-- Empty state: no groups yet -->
+          <div id="live-groups-empty" class="card" style="display:none">
+            <div style="padding:40px;text-align:center">
+              <p style="color:var(--text3);font-size:13px;margin-bottom:16px">No channel groups yet. Fetch groups from your provider to get started.</p>
+              <button class="btn btn-primary" onclick="liveSyncGroups()">Sync Groups</button>
+            </div>
+          </div>
+          <!-- Loaded state: groups exist -->
+          <div id="live-groups-loaded" class="card" style="display:none">
+            <div class="card-header">
+              <div class="card-title">Channel Groups <span id="live-groups-summary" style="color:var(--text3);font-weight:400"></span></div>
+              <div style="display:flex;gap:8px;align-items:center">
+                <input class="form-input" id="live-group-search" placeholder="Search groups..." style="width:200px;padding:5px 10px;font-size:12px" oninput="filterLiveGroups()">
+                <button class="btn btn-secondary btn-sm" onclick="toggleAllGroups(true)">Select All</button>
+                <button class="btn btn-secondary btn-sm" onclick="toggleAllGroups(false)">Deselect All</button>
+              </div>
+            </div>
+            <div id="live-groups" style="max-height:500px;overflow-y:auto"></div>
+            <div style="padding:12px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+              <button class="btn btn-secondary btn-sm" onclick="liveSyncGroups()">Refresh</button>
+              <button class="btn btn-primary btn-sm" onclick="saveLiveGroups()">Save &amp; Sync Channels</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab: Channels -->
+        <div class="live-tab-panel" id="live-panel-channels">
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title">Channels <span id="live-ch-count" style="color:var(--text3);font-weight:400"></span></div>
+              <div style="display:flex;gap:8px;align-items:center">
+                <input class="form-input" id="live-ch-search" placeholder="Search channels..." style="width:200px;padding:5px 10px;font-size:12px" oninput="searchLiveChannels()">
+                <select class="form-input" id="live-ch-group-filter" style="width:160px;padding:5px 10px;font-size:12px" onchange="filterLiveChannels()">
+                  <option value="">All Groups</option>
+                </select>
+                <select class="form-input" id="live-ch-epg-filter" style="width:120px;padding:5px 10px;font-size:12px" onchange="filterLiveChannelsByEpg()">
+                  <option value="">All</option>
+                  <option value="has_epg">Has EPG</option>
+                  <option value="no_epg">No EPG</option>
+                </select>
+                <button class="btn btn-secondary btn-sm" onclick="toggleAllChannels(true)">Select All</button>
+                <button class="btn btn-secondary btn-sm" onclick="toggleAllChannels(false)">Deselect All</button>
+              </div>
+            </div>
+            <div id="live-channels"></div>
+            <div id="live-ch-pagination" style="display:flex;justify-content:center;gap:8px;padding:12px"></div>
+            <div style="padding:12px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+              <span id="live-epg-status" style="font-size:12px;color:var(--text3)"></span>
+              <div style="display:flex;gap:8px">
+                <button class="btn btn-primary btn-sm" onclick="saveLiveChannels()">Save</button>
+                <button class="btn btn-secondary btn-sm" onclick="liveSyncEpg()">Sync EPG</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab: Jellyfin Setup -->
+        <div class="live-tab-panel" id="live-panel-setup">
+          <div class="card">
+            <h3 style="margin-bottom:4px">Jellyfin Live TV Setup</h3>
+            <p style="color:var(--text3);font-size:13px;margin-bottom:20px">Add these URLs in Jellyfin to connect your IPTV channels.</p>
+
+            <!-- Server base URL -->
+            <div style="margin-bottom:20px">
+              <div class="form-label">Server Address</div>
+              <!-- Edit mode -->
+              <div id="live-setup-edit" style="display:flex;align-items:center;gap:6px">
+                <span style="color:var(--text3);font-size:13px;font-family:monospace">http://</span>
+                <input class="form-input" id="live-setup-host" placeholder="192.168.1.100" style="width:180px;font-family:monospace;font-size:13px" oninput="updateSetupUrls()">
+                <span style="color:var(--text3);font-size:13px;font-family:monospace">:</span>
+                <input class="form-input" id="live-setup-port" value="8888" style="width:70px;font-family:monospace;font-size:13px" oninput="updateSetupUrls()">
+                <button class="btn btn-primary" style="padding:5px 14px;font-size:12px" onclick="saveSetupAddress()">Save</button>
+              </div>
+              <!-- Locked mode -->
+              <div id="live-setup-locked" style="display:none;align-items:center;gap:8px">
+                <span id="live-setup-address-display" style="font-family:monospace;font-size:13px;padding:8px 12px;background:var(--bg2);border-radius:6px;color:var(--green);flex:1"></span>
+                <button class="btn btn-secondary" style="padding:5px 12px;font-size:12px" onclick="editSetupAddress()">Edit</button>
+              </div>
+              <p style="color:var(--text3);font-size:11px;margin-top:4px">The LAN IP and port of this Tentacle server (what Jellyfin can reach)</p>
+            </div>
+
+            <!-- Step 1: Tuner -->
+            <div style="margin-bottom:24px">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+                <span style="background:var(--accent);color:#fff;width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:600">1</span>
+                <span style="font-weight:600;font-size:14px">Add Tuner</span>
+              </div>
+              <p style="color:var(--text3);font-size:13px;margin-bottom:8px">
+                Jellyfin Dashboard → Live TV → <strong>Add Tuner</strong> → Type: <strong>HD Homerun</strong>
+              </p>
+              <div style="display:flex;align-items:center;gap:8px">
+                <span id="live-setup-tuner-preview" style="flex:1;font-family:monospace;font-size:13px;padding:8px 12px;background:var(--bg2);border-radius:6px;color:var(--text1)"></span>
+                <button class="btn btn-secondary" style="padding:5px 12px;font-size:12px" onclick="copyLiveSetup('tuner', this)">Copy</button>
+              </div>
+            </div>
+
+            <!-- Step 2: Guide -->
+            <div style="margin-bottom:24px">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+                <span style="background:var(--accent);color:#fff;width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:600">2</span>
+                <span style="font-weight:600;font-size:14px">Add TV Guide Data</span>
+              </div>
+              <p style="color:var(--text3);font-size:13px;margin-bottom:8px">
+                Live TV → TV Guide Data Providers → <strong>Add</strong> → Type: <strong>XMLTV</strong>
+              </p>
+              <div style="display:flex;align-items:center;gap:8px">
+                <span id="live-setup-xmltv-preview" style="flex:1;font-family:monospace;font-size:13px;padding:8px 12px;background:var(--bg2);border-radius:6px;color:var(--text1)"></span>
+                <button class="btn btn-secondary" style="padding:5px 12px;font-size:12px" onclick="copyLiveSetup('xmltv', this)">Copy</button>
+              </div>
+            </div>
+
+            <!-- Step 3: Map channels -->
+            <div>
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+                <span style="background:var(--accent);color:#fff;width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:600">3</span>
+                <span style="font-weight:600;font-size:14px">Map Channels</span>
+              </div>
+              <p style="color:var(--text3);font-size:13px">
+                After adding both, go to Live TV → <strong>Map Channels</strong> to match tuner channels with guide data. Jellyfin will auto-match most channels by name.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- ── MODALS ── -->
+
+<!-- Add Provider Modal -->
+<div class="modal-overlay" id="modal-add-provider" style="display:none">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title" id="provider-modal-title">Add Provider</div>
+      <button class="modal-close" onclick="closeModal('modal-add-provider')">✕</button>
+    </div>
+
+    <input type="hidden" id="edit-provider-id">
+
+    <div class="form-group">
+      <div class="form-label">Provider Name</div>
+      <input class="form-input" id="p-name" placeholder="My IPTV Provider">
+    </div>
+
+    <div class="form-group">
+      <div class="form-label">Server URL</div>
+      <input class="form-input mono" id="p-url" placeholder="http://provider.com:8080">
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <div class="form-label">Username</div>
+        <input class="form-input" id="p-user" placeholder="username">
+      </div>
+      <div class="form-group">
+        <div class="form-label">Password</div>
+        <input class="form-input" id="p-pass" type="password" placeholder="password">
+      </div>
+    </div>
+
+    <div class="form-group">
+      <div class="form-label">Priority</div>
+      <input class="form-input" id="p-priority" type="number" value="1" min="1" max="10">
+      <div class="form-hint">Lower number = higher priority when deduplicating</div>
+    </div>
+
+    <div class="form-group" style="display:flex;align-items:center;gap:10px">
+      <input type="checkbox" id="p-require-tmdb" style="width:auto" checked>
+      <label for="p-require-tmdb" style="font-size:13px;color:var(--text1);cursor:pointer">Only import VOD with a TMDB match</label>
+    </div>
+    <div class="form-hint" style="margin-top:-8px">When unchecked, content without a TMDB match will be imported using the provider's title.</div>
+
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-add-provider')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveProvider()">Save Provider</button>
+    </div>
+  </div>
+</div>
+
+<!-- Delete Provider Confirmation Modal -->
+<div class="modal-overlay" id="modal-delete-provider" style="display:none">
+  <div class="modal" style="max-width:440px">
+    <div class="modal-header">
+      <div class="modal-title">Delete Provider</div>
+      <button class="modal-close" onclick="closeModal('modal-delete-provider')">✕</button>
+    </div>
+    <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">
+      Are you sure you want to delete <strong id="delete-provider-name"></strong>?
+    </p>
+    <p style="font-size:12px;color:var(--danger);line-height:1.5;margin-bottom:20px">
+      This will permanently remove the provider and all associated content — VOD movies, series, categories, Live TV channels, groups, and sync history.
+    </p>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn btn-secondary" onclick="closeModal('modal-delete-provider')">Cancel</button>
+      <button class="btn btn-danger" onclick="executeDeleteProvider()">Delete Everything</button>
+    </div>
+  </div>
+</div>
+
+<!-- Duplicate Resolution Confirm Modal -->
+<div class="modal-overlay" id="modal-resolve-dup" style="display:none">
+  <div class="modal" style="max-width:440px">
+    <div class="modal-header">
+      <div class="modal-title" id="resolve-dup-title">Resolve Duplicate</div>
+      <button class="modal-close" onclick="closeModal('modal-resolve-dup')">&#10005;</button>
+    </div>
+    <p id="resolve-dup-message" style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px"></p>
+    <p id="resolve-dup-warning" style="font-size:12px;color:var(--danger);line-height:1.5;margin-bottom:20px"></p>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn btn-secondary" onclick="closeModal('modal-resolve-dup')">Cancel</button>
+      <button class="btn btn-danger" id="resolve-dup-confirm" onclick="">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<!-- Provider Categories Modal -->
+<div class="modal-overlay" id="modal-categories" style="display:none">
+  <div class="modal modal-wide">
+    <div class="modal-header">
+      <div class="modal-title" id="cat-modal-title">Manage Categories</div>
+      <button class="modal-close" onclick="closeModal('modal-categories')">✕</button>
+    </div>
+
+    <div class="cat-controls">
+      <input class="search-box" type="text" id="cat-search" placeholder="Search categories..." oninput="filterCats()">
+      <div class="filter-group">
+        <button class="filter-btn active" data-filter="all" onclick="setCatFilter('all',this)">All</button>
+        <button class="filter-btn" data-filter="movie" onclick="setCatFilter('movie',this)">Movies</button>
+        <button class="filter-btn" data-filter="series" onclick="setCatFilter('series',this)">Series</button>
+        <button class="filter-btn" data-filter="active" onclick="setCatFilter('active',this)">Active</button>
+        <button class="filter-btn" data-filter="english" onclick="setCatFilter('english',this)">English</button>
+      </div>
+      <div style="margin-left:auto;display:flex;gap:8px">
+        <button class="btn btn-secondary btn-sm" onclick="selectAllVisible(true)">Select All</button>
+        <button class="btn btn-secondary btn-sm" onclick="selectAllVisible(false)">Deselect All</button>
+        <button class="btn btn-primary btn-sm" onclick="saveSelectedCategories()">Save</button>
+      </div>
+    </div>
+
+    <div class="cat-list" id="cat-list">
+      <div class="loading-state"><div class="spinner"></div></div>
+    </div>
+
+    <div style="margin-top:12px;font-size:12px;color:var(--text3)" id="cat-count"></div>
+  </div>
+</div>
+
+<!-- Migration Modal -->
+<div class="modal-overlay" id="modal-migrate" style="display:none">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">Migrate Provider</div>
+      <button class="modal-close" onclick="closeModal('modal-migrate')">✕</button>
+    </div>
+
+    <p style="font-size:13px;color:var(--text2);margin-bottom:20px;line-height:1.6">
+      Rewrites all <code style="font-family:'DM Mono',monospace;background:var(--bg3);padding:1px 5px;border-radius:3px">.strm</code>
+      files from the old provider to stream from the new provider, matched by title.
+      Content that doesn't exist on the new provider will be flagged.
+    </p>
+
+    <div class="form-group">
+      <div class="form-label">From Provider</div>
+      <select class="form-input" id="migrate-from"></select>
+    </div>
+
+    <div class="form-group">
+      <div class="form-label">To Provider</div>
+      <select class="form-input" id="migrate-to"></select>
+    </div>
+
+    <div id="migrate-preview" style="display:none;background:var(--bg2);border-radius:var(--radius-sm);padding:12px;margin-bottom:16px;font-size:12px;font-family:'DM Mono',monospace;color:var(--text2)"></div>
+
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="previewMigration()">Preview</button>
+      <button class="btn btn-secondary" onclick="closeModal('modal-migrate')">Cancel</button>
+      <button class="btn btn-primary" onclick="runMigration(false)">Migrate</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add List Modal -->
+<div class="modal-overlay" id="modal-add-list" style="display:none">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title" id="list-modal-title">Add List</div>
+      <button class="modal-close" onclick="closeModal('modal-add-list')">✕</button>
+    </div>
+
+    <div class="form-group">
+      <div class="form-label">URL</div>
+      <input class="form-input mono" id="l-url" placeholder="https://www.imdb.com/chart/top/" oninput="onModalUrlInput()" style="font-size:14px">
+      <div class="form-hint" id="l-url-hint" style="margin-top:4px">Supports IMDb lists, charts, watchlists, Trakt, and Letterboxd</div>
+    </div>
+
+    <div class="form-group">
+      <div class="form-label">Name</div>
+      <input class="form-input" id="l-name" placeholder="e.g. My Watchlist, Top 250, etc." oninput="onModalNameInput()">
+    </div>
+
+    <input type="hidden" id="l-type" value="imdb_rss">
+
+    <div class="form-group">
+      <div class="form-label">Tag</div>
+      <input class="form-input" id="l-tag" placeholder="Auto-filled from name" oninput="document.getElementById('l-tag').dataset.manualEdit='1'">
+      <div class="form-hint">Jellyfin collection/playlist name — auto-fills from name above</div>
+    </div>
+
+    <div class="form-group" style="display:flex;align-items:center;gap:10px">
+      <input type="checkbox" id="l-auto-fetch" checked style="width:15px;height:15px;accent-color:var(--accent)">
+      <div>
+        <div class="form-label" style="margin:0">Fetch list after adding</div>
+        <div class="form-hint">Immediately fetch and resolve all items from this list</div>
+      </div>
+    </div>
+
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-add-list')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveList()">Add List</button>
+    </div>
+  </div>
+</div>
+
+<!-- List Coverage Modal -->
+<div class="modal-overlay" id="modal-list-coverage" style="display:none">
+  <div class="modal" style="max-width:1200px;width:95vw;max-height:90vh;display:flex;flex-direction:column">
+    <div class="modal-header">
+      <div class="modal-title" id="coverage-modal-title">List Coverage</div>
+      <button class="modal-close" onclick="closeModal('modal-list-coverage')">✕</button>
+    </div>
+
+    <div id="coverage-loading" style="text-align:center;padding:40px">
+      <div class="spinner" style="margin:0 auto 12px"></div>
+      <div style="color:var(--text3);font-size:13px">Loading coverage data...</div>
+    </div>
+
+    <div id="coverage-content" style="display:none;overflow-y:auto;flex:1;min-height:0">
+      <!-- Filter buttons -->
+      <div id="coverage-summary" style="display:flex;gap:10px;margin-bottom:18px;flex-wrap:wrap"></div>
+
+      <!-- Add-all buttons (shown when Missing filter active) -->
+      <div id="coverage-actions" style="display:none;margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-primary btn-sm" id="coverage-add-all-btn" onclick="addAllMissingToRadarr()" style="display:none">Add all to Radarr</button>
+      </div>
+
+      <!-- Single unified grid -->
+      <div id="coverage-grid" class="coverage-grid"></div>
+    </div>
+  </div>
+</div>
+
+<style>
+.coverage-grid {
+  display:grid;
+  grid-template-columns:repeat(auto-fill, minmax(110px, 1fr));
+  gap:10px;
+  padding:2px;
+}
+.coverage-filter-btn { opacity:0.7; }
+.coverage-filter-btn.active { opacity:1; }
+.coverage-filter-btn:hover { opacity:1; }
+.coverage-card {
+  position:relative;
+  border-radius:var(--radius-sm);
+  overflow:hidden;
+  background:var(--bg2);
+  border:1px solid var(--border);
+  transition:border-color 0.12s;
+}
+.coverage-card:hover { border-color:var(--border2); }
+.coverage-card img {
+  width:100%;
+  aspect-ratio:2/3;
+  object-fit:cover;
+  display:block;
+}
+.coverage-card .no-poster {
+  width:100%;
+  aspect-ratio:2/3;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  background:var(--bg3);
+  color:var(--text3);
+  font-size:22px;
+}
+.coverage-card .card-title {
+  padding:5px 6px;
+  font-size:10px;
+  line-height:1.3;
+  color:var(--text2);
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.coverage-card .card-add-btn {
+  position:absolute;
+  top:4px;
+  right:4px;
+  width:22px;
+  height:22px;
+  border-radius:50%;
+  border:none;
+  background:var(--accent);
+  color:#fff;
+  font-size:14px;
+  line-height:1;
+  cursor:pointer;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  opacity:0;
+  transition:opacity 0.12s;
+}
+.coverage-card:hover .card-add-btn { opacity:1; }
+.coverage-card .card-add-btn:disabled { opacity:0.4!important; cursor:not-allowed; }
+</style>
+
+<!-- Tag Rule Modal -->
+<div class="modal-overlay" id="modal-tag-rule" style="display:none">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title" id="tag-rule-modal-title">Create Playlist</div>
+      <button class="modal-close" onclick="closeModal('modal-tag-rule')">✕</button>
+    </div>
+
+    <input type="hidden" id="edit-rule-id">
+
+    <div class="form-row">
+      <div class="form-group" style="flex:2">
+        <div class="form-label">Playlist Name</div>
+        <input class="form-input" id="tr-name" placeholder="e.g. Comedy Classics" oninput="onCollectionNameInput()">
+      </div>
+      <div class="form-group" style="flex:1">
+        <div class="form-label">Media Type</div>
+        <select class="form-input" id="tr-apply-to">
+          <option value="both">All</option>
+          <option value="movies">Movies</option>
+          <option value="series">Series</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <div class="form-label">Filters <span style="font-weight:400;color:var(--text3)">(all must match)</span></div>
+      <div id="tr-conditions"></div>
+      <button class="btn btn-secondary btn-sm" style="margin-top:8px" onclick="addRuleCondition()">+ Add Filter</button>
+    </div>
+
+    <input type="hidden" id="tr-tag">
+    <div class="form-group" style="display:flex;align-items:center;gap:10px">
+      <input type="checkbox" id="tr-active" checked style="width:15px;height:15px;accent-color:var(--accent)">
+      <div class="form-label" style="margin:0">Active</div>
+    </div>
+
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-tag-rule')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveTagRule()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add to Radarr/Sonarr modal -->
+<div class="modal-overlay" id="modal-add-to-radarr" style="display:none">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title" id="add-arr-modal-title">Add to Radarr</div>
+      <button class="modal-close" onclick="closeModal('modal-add-to-radarr')">&#10005;</button>
+    </div>
+    <div id="add-radarr-movie-info" style="display:flex;gap:16px;margin-bottom:20px"></div>
+    <div class="form-group">
+      <div class="form-label">Quality Profile</div>
+      <select class="form-input" id="add-radarr-quality"></select>
+    </div>
+    <div id="sonarr-extra-fields" style="display:none">
+      <div class="form-group">
+        <div class="form-label">Monitor</div>
+        <select class="form-input" id="add-sonarr-monitor">
+          <option value="all">All Episodes</option>
+          <option value="firstSeason">First Season</option>
+          <option value="lastSeason">Last Season</option>
+          <option value="pilot">Pilot Only</option>
+          <option value="none">None</option>
+        </select>
+      </div>
+      <div class="form-group" style="display:flex;align-items:center;gap:8px">
+        <input type="checkbox" id="add-sonarr-season-folder" checked>
+        <label class="form-label" for="add-sonarr-season-folder" style="margin:0;cursor:pointer">Season Folder</label>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-add-to-radarr')">Cancel</button>
+      <button class="btn btn-primary" id="add-radarr-confirm-btn" onclick="confirmAddToArr()">Add</button>
+    </div>
+  </div>
+</div>
+
+<!-- Media detail modal -->
+<div class="modal-overlay" id="modal-media-detail" style="display:none">
+  <div class="modal modal-wide">
+    <div class="modal-header">
+      <div class="modal-title" id="detail-title">—</div>
+      <button class="modal-close" onclick="closeModal('modal-media-detail')">✕</button>
+    </div>
+    <div id="detail-body"></div>
+  </div>
+</div>
+
+<!-- Toast container -->
+<div class="toast-container" id="toasts"></div>
+
+<!-- Setup overlay -->
+<div class="setup-overlay" id="setup-overlay" style="display:none">
+  <div class="setup-card">
+    <div style="font-size:28px;margin-bottom:16px">◈</div>
+    <h2>Welcome to Tentacle</h2>
+    <p>Let's connect your services to get started. You can change these anytime in Settings.</p>
+
+    <div class="form-group">
+      <div class="form-label">TMDB Bearer Token</div>
+      <input class="form-input mono" id="setup-tmdb" type="password" placeholder="eyJhbGc...">
+      <div class="form-hint">Get from themoviedb.org/settings/api → API Read Access Token</div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <div class="form-label">Radarr URL</div>
+        <input class="form-input" id="setup-radarr-url" placeholder="http://192.168.2.75:7878">
+      </div>
+      <div class="form-group">
+        <div class="form-label">Radarr API Key</div>
+        <input class="form-input mono" id="setup-radarr-key" type="password">
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <div class="form-label">Jellyfin URL</div>
+        <input class="form-input" id="setup-jellyfin-url" placeholder="http://192.168.2.75:8096">
+      </div>
+      <div class="form-group">
+        <div class="form-label">Jellyfin API Key</div>
+        <input class="form-input mono" id="setup-jellyfin-key" type="password">
+      </div>
+    </div>
+
+    <button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:8px" onclick="completeSetup()">
+      Get Started →
+    </button>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="/static/js/app.js?v=12"></script>
+<script src="/static/js/pages.js?v=12"></script>
+</body>
+</html>

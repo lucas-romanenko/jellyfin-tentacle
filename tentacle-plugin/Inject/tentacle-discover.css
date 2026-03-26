@@ -1,0 +1,462 @@
+/* Tentacle Discover Tab — ElegantFin-matched */
+
+/* ── Overlay container ────────────────────────────────────────────── */
+.md-discover-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 99;
+  background: linear-gradient(0deg, #111827 35%, #1d2635);
+  overflow-y: auto;
+  padding-top: 7em;
+  font-family: "Inter", system-ui, sans-serif;
+}
+
+/* ── Section tabs (pill style) ────────────────────────────────────── */
+.md-section-tabs {
+  display: flex;
+  gap: 8px;
+  padding: 0 3.3%;
+  margin-bottom: 20px;
+}
+.md-section-tab {
+  padding: 8px 18px;
+  font-size: 13px;
+  font-weight: 500;
+  border: 0.06em solid hsl(214, 13%, 32%);
+  background: rgba(17, 24, 39, 0.85);
+  color: rgb(156, 163, 175);
+  cursor: pointer;
+  transition: all 125ms;
+  border-radius: 1em;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: inherit;
+}
+.md-section-tab:hover {
+  color: rgb(209, 213, 219);
+  background: rgba(255, 255, 255, 0.08);
+}
+.md-section-tab.md-section-active {
+  background: rgb(209, 213, 219);
+  color: #111827;
+  border-color: rgb(209, 213, 219);
+}
+.md-section-count {
+  font-size: 11px;
+  background: rgba(255,255,255,.1);
+  color: inherit;
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-weight: 400;
+}
+.md-section-tab.md-section-active .md-section-count {
+  background: rgba(0,0,0,.15);
+  color: inherit;
+}
+
+/* ── Content area ──────────────────────────────────────────────────── */
+.md-discover-content {
+  min-height: 300px;
+}
+
+/* ── Grid ──────────────────────────────────────────────────────────── */
+.md-discover-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 1em;
+  padding: 0 3.3% 20px;
+}
+
+.md-card {
+  cursor: pointer;
+  border-radius: 1em;
+  overflow: hidden;
+  transition: transform 125ms, box-shadow 125ms, border-color 125ms;
+  position: relative;
+  border: 0.12em solid hsl(214, 13%, 22%);
+  background: linear-gradient(0deg, #111827, 25%, #1d2635);
+  box-shadow: 0 0 0.25em 0 rgba(0, 0, 0, 0.4);
+}
+.md-card:hover {
+  transform: scale(1.02);
+  border-color: rgba(255, 255, 255, 0.3);
+  box-shadow: 0 4px 16px rgba(0,0,0,.5);
+}
+
+.md-card-poster {
+  position: relative;
+  aspect-ratio: 2/3;
+  background: #1d2635;
+  overflow: hidden;
+}
+.md-card-poster img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  transition: transform 125ms;
+}
+.md-card:hover .md-card-poster img {
+  transform: scale(1.025);
+}
+.md-card-poster-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 32px;
+  color: rgb(156, 163, 175);
+}
+
+.md-card-badge {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 0.5em;
+  font-weight: 600;
+  letter-spacing: .3px;
+  backdrop-filter: blur(5px);
+}
+.md-badge-inlib {
+  background: rgba(41, 154, 93, .85);
+  color: #fff;
+}
+.md-badge-type {
+  background: rgba(17, 24, 39, .75);
+  color: rgb(156, 163, 175);
+  border: 0.06em solid hsl(214, 13%, 32%);
+}
+
+.md-card-add {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 0.06em solid rgba(255,255,255,.2);
+  background: rgba(79, 70, 229, .9);
+  color: #fff;
+  font-size: 18px;
+  font-weight: 700;
+  cursor: pointer;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  transition: all 125ms;
+  backdrop-filter: blur(5px);
+}
+.md-card:hover .md-card-add { display: flex; }
+.md-card-add:hover {
+  background: rgb(79, 70, 229);
+  transform: scale(1.1);
+}
+
+.md-card-info {
+  padding: 8px 8px 6px;
+}
+.md-card-title {
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: rgb(209, 213, 219);
+}
+.md-card-meta {
+  font-size: 11px;
+  color: rgb(156, 163, 175);
+  margin-top: 2px;
+}
+.md-card-list-tag {
+  font-size: 10px;
+  color: rgb(117, 111, 226);
+  margin-top: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Header / filter bar ───────────────────────────────────────────── */
+.md-discover-header {
+  padding: 20px 3.3% 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.md-discover-title {
+  font-size: 24px;
+  font-weight: 600;
+  color: rgb(209, 213, 219);
+}
+.md-filter-group {
+  display: flex;
+  gap: 6px;
+}
+.md-filter-btn {
+  padding: 6px 16px;
+  font-size: 12px;
+  font-weight: 500;
+  border: 0.06em solid hsl(214, 13%, 32%);
+  border-radius: 1em;
+  background: rgba(17, 24, 39, 0.85);
+  color: rgb(156, 163, 175);
+  cursor: pointer;
+  transition: all 125ms;
+  font-family: inherit;
+}
+.md-filter-btn.md-active {
+  background: rgb(209, 213, 219);
+  color: #111827;
+  border-color: rgb(209, 213, 219);
+}
+.md-filter-btn:hover:not(.md-active) {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgb(209, 213, 219);
+}
+
+/* ── Search box ────────────────────────────────────────────────────── */
+.md-search-box {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.md-search-input {
+  padding: 7px 32px 7px 12px;
+  border-radius: 0.5em;
+  border: 0.06em solid hsla(0, 0%, 100%, 0.2);
+  background: rgb(55, 65, 81);
+  color: rgb(209, 213, 219);
+  font-size: 13px;
+  width: 220px;
+  outline: none;
+  transition: border-color 125ms;
+  font-family: inherit;
+}
+.md-search-input::placeholder {
+  color: rgb(156, 163, 175);
+}
+.md-search-input:focus {
+  border-color: rgb(37, 99, 235);
+}
+.md-search-clear {
+  position: absolute;
+  right: 4px;
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  color: rgb(156, 163, 175);
+  font-size: 16px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+}
+.md-search-clear:hover {
+  color: #fff;
+  background: rgba(255,255,255,.1);
+}
+
+/* ── Detail modal ───────────────────────────────────────────────────── */
+.md-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(0,0,0,.66);
+  backdrop-filter: blur(5px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity .2s;
+}
+.md-modal-overlay.md-visible { opacity: 1; }
+
+.md-modal {
+  background: rgba(30, 40, 54, 0.95);
+  border: 0.06em solid hsl(214, 13%, 32%);
+  border-radius: 1em;
+  max-width: 680px;
+  width: 92%;
+  max-height: 85vh;
+  overflow-y: auto;
+  position: relative;
+  box-shadow: 0 8px 32px rgba(0,0,0,.5);
+}
+
+.md-modal-backdrop {
+  width: 100%;
+  aspect-ratio: 16/9;
+  background: #111827;
+  overflow: hidden;
+  border-radius: 1em 1em 0 0;
+  position: relative;
+}
+.md-modal-backdrop img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.md-modal-backdrop-gradient {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 60%;
+  background: linear-gradient(transparent, rgba(30, 40, 54, 0.95));
+}
+
+.md-modal-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 10;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 0.06em solid rgba(255,255,255,.2);
+  background: rgba(17, 24, 39, .7);
+  color: rgb(209, 213, 219);
+  font-size: 18px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(5px);
+  transition: all 125ms;
+}
+.md-modal-close:hover {
+  background: rgba(17, 24, 39, .9);
+  border-color: rgba(255,255,255,.3);
+}
+
+.md-modal-body {
+  padding: 20px 24px 24px;
+}
+.md-modal-title {
+  font-size: 24px;
+  font-weight: 600;
+  color: rgb(209, 213, 219);
+  margin-bottom: 4px;
+}
+.md-modal-subtitle {
+  font-size: 13px;
+  color: rgb(156, 163, 175);
+  margin-bottom: 12px;
+}
+.md-modal-overview {
+  font-size: 14px;
+  color: rgb(156, 163, 175);
+  line-height: 1.6;
+  margin-bottom: 16px;
+}
+
+.md-download-btn {
+  padding: 10px 24px;
+  border-radius: 0.5em;
+  border: 0.06em solid rgb(117, 111, 226);
+  background: rgb(61, 54, 178);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 125ms;
+  font-family: inherit;
+}
+.md-download-btn:hover {
+  filter: brightness(1.15);
+}
+.md-download-btn:active {
+  transform: scale(0.98);
+}
+.md-download-btn:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+
+.md-download-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.md-select {
+  padding: 8px 12px;
+  border-radius: 0.5em;
+  border: 0.06em solid hsla(0, 0%, 100%, 0.2);
+  background: rgb(55, 65, 81);
+  color: rgb(209, 213, 219);
+  font-size: 13px;
+  min-width: 160px;
+  font-family: inherit;
+}
+
+.md-download-status {
+  font-size: 13px;
+  margin-top: 8px;
+  min-height: 20px;
+}
+
+.md-inlib-badge {
+  display: inline-block;
+  padding: 6px 16px;
+  border-radius: 0.5em;
+  background: rgba(41, 154, 93, .15);
+  color: rgb(50, 167, 105);
+  border: 0.06em solid rgba(50, 167, 105, .3);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+/* ── Loading state ──────────────────────────────────────────────────── */
+.md-loading {
+  text-align: center;
+  padding: 60px 20px;
+  color: rgb(156, 163, 175);
+  font-size: 14px;
+}
+.md-spinner {
+  display: inline-block;
+  width: 24px;
+  height: 24px;
+  border: 2px solid rgba(255,255,255,.1);
+  border-top-color: rgb(117, 111, 226);
+  border-radius: 50%;
+  animation: md-spin .8s linear infinite;
+  margin-bottom: 8px;
+}
+@keyframes md-spin { to { transform: rotate(360deg); } }
+
+/* ── Responsive ─────────────────────────────────────────────────────── */
+@media (max-width: 600px) {
+  .md-discover-grid {
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap: 10px;
+  }
+  .md-discover-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .md-section-tabs {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .md-section-tab {
+    padding: 6px 14px;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  .md-modal { width: 96%; }
+}

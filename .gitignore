@@ -1,0 +1,30 @@
+# Project config (contains credentials/IPs)
+CLAUDE.md
+deploy.sh
+.claude
+tentacle/.claude/
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+myenv/
+.venv/
+
+# C# build artifacts
+tentacle-plugin/bin/
+tentacle-plugin/obj/
+
+# Data / runtime
+tentacle/data/
+*.dll
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.user
+

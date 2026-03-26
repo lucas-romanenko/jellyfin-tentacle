@@ -1,0 +1,637 @@
+/* Tentacle Home — Homepage styling */
+/* Injected into index.html via Harmony patch */
+/* Visual style adapted from jellyfin-plugin-media-bar + jellyfin-plugin-home-sections */
+
+/* ── Loading ────────────────────────────────────────────────────────── */
+.mh-loading {
+  display: flex;
+  justify-content: center;
+  padding: 80px 0;
+}
+.mh-spinner {
+  width: 36px; height: 36px;
+  border: 3px solid rgba(255,255,255,0.1);
+  border-top-color: rgba(255,255,255,0.6);
+  border-radius: 50%;
+  animation: mh-spin 0.8s linear infinite;
+}
+.mh-spinner-sm {
+  width: 20px; height: 20px;
+  border: 2px solid rgba(255,255,255,0.1);
+  border-top-color: rgba(255,255,255,0.5);
+  border-radius: 50%;
+  animation: mh-spin 0.8s linear infinite;
+}
+@keyframes mh-spin { to { transform: rotate(360deg); } }
+
+.mh-loading-row {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 180px;
+}
+
+/* ── Hero Section ───────────────────────────────────────────────────── */
+.mh-hero {
+  position: relative;
+  width: 100%;
+  height: 90vh;
+  min-height: 450px;
+  max-height: 800px;
+  overflow: hidden;
+  margin-bottom: 0;
+}
+
+.mh-hero-slide {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transition: opacity 0.5s ease-in-out;
+  pointer-events: none;
+  display: none;
+}
+.mh-hero-slide.active {
+  opacity: 1;
+  pointer-events: auto;
+  display: block;
+}
+
+/* ── Ken Burns Backdrop ────────────────────────────────────────────── */
+.mh-hero-backdrop {
+  position: absolute;
+  inset: 0;
+  background-size: cover;
+  background-position: center 20%;
+  border-radius: 5px;
+  z-index: 1;
+}
+.mh-hero-slide.active .mh-hero-backdrop {
+  animation: mh-kenburns 10s ease-out forwards;
+}
+@keyframes mh-kenburns {
+  from { transform: scale3d(1, 1, 1); }
+  to   { transform: scale3d(1.1, 1.1, 1); }
+}
+
+/* Dark overlay for readability */
+.mh-hero-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.2);
+  z-index: 2;
+  mask-image: linear-gradient(to top, transparent 2%, rgba(0,0,0,0.5) 6%, black 8%);
+  -webkit-mask-image: linear-gradient(to top, transparent 2%, rgba(0,0,0,0.5) 6%, black 8%);
+}
+
+/* Gradient for text legibility — strong left-side darkening */
+.mh-hero-gradient {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  background: linear-gradient(
+    105deg,
+    rgba(0,0,0,0.9) 0%,
+    rgba(0,0,0,0.7) 35%,
+    rgba(0,0,0,0.3) 60%,
+    transparent 80%
+  );
+}
+
+/* ── Hero Logo ─────────────────────────────────────────────────────── */
+.mh-hero-logo-container {
+  position: absolute;
+  width: 40%;
+  height: 35%;
+  top: 15vh;
+  left: 4vw;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+}
+
+.mh-hero-logo {
+  max-height: 70%;
+  max-width: 100%;
+  object-fit: contain;
+  filter: brightness(1.1) drop-shadow(0 2px 12px rgba(0,0,0,0.6));
+}
+
+/* Entry animation for logo */
+.mh-hero-slide.active .mh-hero-logo {
+  animation: mh-frosted 1.2s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+@keyframes mh-frosted {
+  from { filter: brightness(1) blur(8px); opacity: 0.7; }
+  to   { filter: brightness(1.1) blur(0); opacity: 1; }
+}
+
+/* ── Hero Title (fallback when no logo) ────────────────────────────── */
+.mh-hero-title {
+  font-size: 3em;
+  font-weight: 700;
+  margin: 0 0 12px;
+  text-shadow: 0 2px 12px rgba(0,0,0,0.8);
+  line-height: 1.1;
+  color: #fff;
+}
+
+/* ── Hero Info (metadata line) ─────────────────────────────────────── */
+.mh-hero-info {
+  position: absolute;
+  top: calc(50% + 0vh);
+  left: 4vw;
+  z-index: 5;
+  color: #fff;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 0.95em;
+}
+
+.mh-hero-info .mh-separator {
+  color: #7fffd4;
+  font-size: 0.6em;
+}
+
+.mh-hero-rating {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.mh-hero-rating .mh-star {
+  color: #FFD700;
+  font-size: 1em;
+}
+
+.mh-hero-age-rating {
+  background: rgba(255,255,255,0.8);
+  color: #000;
+  padding: 1px 6px;
+  border-radius: 5px;
+  font-size: 0.85em;
+  font-weight: 600;
+}
+
+/* ── Hero Genre line ───────────────────────────────────────────────── */
+.mh-hero-genre {
+  position: absolute;
+  top: calc(50% + 4vh);
+  left: 4vw;
+  z-index: 5;
+  color: #fff;
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+  font-size: 0.9em;
+}
+
+.mh-hero-genre .mh-genre-sep {
+  color: #7fffd4;
+  font-size: 0.8em;
+  align-self: center;
+}
+
+/* ── Hero Overview/Plot ────────────────────────────────────────────── */
+.mh-hero-overview {
+  position: absolute;
+  top: calc(50% + 8vh);
+  left: 4vw;
+  width: 40%;
+  z-index: 5;
+  color: #fff;
+  font-size: 0.92em;
+  line-height: 1.6;
+  text-align: justify;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ── Hero Buttons ──────────────────────────────────────────────────── */
+.mh-hero-buttons {
+  position: absolute;
+  top: calc(50% + 17vh);
+  left: 4vw;
+  z-index: 5;
+  display: flex;
+  gap: 15px;
+  align-items: center;
+}
+
+.mh-hero-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 24px;
+  border: none;
+  border-radius: 8px;
+  font-size: 1em;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+.mh-hero-btn:hover {
+  opacity: 0.85;
+  transform: scale(1.03);
+}
+.mh-hero-btn-play {
+  background: rgba(255,255,255,0.95);
+  color: #111;
+}
+.mh-hero-btn-play:hover {
+  background: #fff;
+}
+.mh-hero-btn-play .mh-btn-icon {
+  font-size: 1.2em;
+}
+
+.mh-hero-btn-info {
+  width: 50px;
+  height: 50px;
+  border-radius: 50%;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255,255,255,0.15);
+  color: #fff;
+  border: 1px solid rgba(255,255,255,0.3);
+  font-size: 1.3em;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.mh-hero-btn-info:hover {
+  background: rgba(255,255,255,0.25);
+  transform: scale(1.05);
+}
+
+/* ── Hero Dots ─────────────────────────────────────────────────────── */
+.mh-hero-dots {
+  position: absolute;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  right: auto;
+  top: auto;
+  z-index: 5;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  transition: opacity 0.3s ease-in-out;
+}
+
+.mh-hero-dot {
+  display: inline-block;
+  width: 0.5em;
+  height: 0.5em;
+  border-radius: 50%;
+  background: rgba(206, 206, 206, 0.6);
+  cursor: pointer;
+  transform-origin: center;
+  transition:
+    transform 0.5s cubic-bezier(0.4, 0, 0.2, 1),
+    background-color 0.5s ease-in-out;
+}
+.mh-hero-dot.active {
+  background-color: #fff;
+  transform: scale(1.7);
+}
+
+/* ── Hero Left/Right Arrows ────────────────────────────────────────── */
+.mh-hero-arrow {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 5;
+  font-size: 2em;
+  color: rgba(255,255,255,0.5);
+  cursor: pointer;
+  user-select: none;
+  padding: 20px 12px;
+  transition: color 0.2s, background 0.2s;
+  border-radius: 4px;
+}
+.mh-hero-arrow:hover {
+  color: #fff;
+  background: rgba(255,255,255,0.08);
+}
+.mh-hero-arrow-left { left: 12px; }
+.mh-hero-arrow-right { right: 12px; }
+
+/* ── Row Sections ──────────────────────────────────────────────────── */
+#tentacle-home {
+  position: relative;
+}
+
+#mh-rows-container {
+  position: relative;
+  padding: 0 4vw;
+  z-index: 6;
+  margin-top: 0;
+}
+
+.mh-row {
+  margin-bottom: 28px;
+}
+.mh-row.mh-row-hidden {
+  display: none;
+}
+
+.mh-row-header {
+  display: flex;
+  align-items: center;
+  margin-bottom: 10px;
+  padding-left: 2px;
+}
+
+.mh-row-title {
+  font-size: 1.4em;
+  font-weight: 600;
+  margin: 0;
+  color: rgba(255,255,255,0.9);
+  letter-spacing: 0.2px;
+}
+
+/* ── Row Scroll Container ──────────────────────────────────────────── */
+.mh-row-scroll {
+  position: relative;
+  overflow: hidden;
+}
+
+.mh-row-items {
+  display: flex;
+  gap: 12px;
+  padding: 8px 4px 12px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+  scroll-behavior: smooth;
+}
+.mh-row-items::-webkit-scrollbar {
+  display: none;
+}
+
+.mh-row-empty {
+  color: rgba(255,255,255,0.4);
+  font-size: 0.85em;
+  padding: 40px 0;
+}
+
+/* ── Row Scroll Arrows ─────────────────────────────────────────────── */
+.mh-row-arrow {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 50px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.2s;
+  font-size: 1.6em;
+  color: rgba(255,255,255,0.8);
+  user-select: none;
+}
+.mh-row-scroll:hover .mh-row-arrow {
+  opacity: 1;
+}
+.mh-row-arrow-left {
+  left: 0;
+  background: linear-gradient(to right, rgba(0,0,0,0.7), transparent);
+}
+.mh-row-arrow-right {
+  right: 0;
+  background: linear-gradient(to left, rgba(0,0,0,0.7), transparent);
+}
+.mh-row-arrow:hover {
+  color: #fff;
+}
+
+/* ── Cards ──────────────────────────────────────────────────────────── */
+.mh-card {
+  flex-shrink: 0;
+  width: 154px;
+  cursor: pointer;
+  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+}
+.mh-card:hover {
+  transform: scale(1.08);
+  z-index: 2;
+}
+
+.mh-card-poster {
+  width: 154px;
+  height: 231px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: rgba(255,255,255,0.05);
+  position: relative;
+}
+.mh-card-poster img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: opacity 0.3s ease;
+}
+.mh-card-no-poster {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 2.5em;
+  color: rgba(255,255,255,0.08);
+  background: linear-gradient(135deg, rgba(255,255,255,0.03), rgba(255,255,255,0.06));
+}
+
+/* Play button overlay on hover */
+.mh-card-play-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0,0,0,0.4);
+  opacity: 0;
+  transition: opacity 0.2s;
+  border-radius: 6px;
+}
+.mh-card:hover .mh-card-play-overlay {
+  opacity: 1;
+}
+.mh-card-play-icon {
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.9);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #111;
+  font-size: 1.4em;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.4);
+  transition: transform 0.15s;
+}
+.mh-card:hover .mh-card-play-icon {
+  transform: scale(1.05);
+}
+
+.mh-card-info {
+  padding: 8px 2px 0;
+}
+
+.mh-card-title {
+  font-size: 0.82em;
+  font-weight: 500;
+  color: rgba(255,255,255,0.85);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.3;
+}
+
+.mh-card-meta {
+  font-size: 0.72em;
+  color: rgba(255,255,255,0.45);
+  margin-top: 2px;
+}
+
+/* ── Wide Cards (Continue Watching, Resume) ───────────────────────── */
+.mh-card-wide {
+  width: 260px;
+}
+.mh-card-poster-wide {
+  width: 260px;
+  height: 146px;
+}
+.mh-card-progress {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 4px;
+  background: rgba(255,255,255,0.15);
+}
+.mh-card-progress-bar {
+  height: 100%;
+  background: #00a4dc;
+  border-radius: 0 2px 2px 0;
+}
+
+/* ── Library Tiles ─────────────────────────────────────────────────── */
+.mh-lib-tile {
+  flex-shrink: 0;
+  width: 200px;
+  cursor: pointer;
+  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.mh-lib-tile:hover {
+  transform: scale(1.05);
+}
+.mh-lib-tile-sm {
+  width: 140px;
+}
+.mh-lib-tile-img {
+  width: 100%;
+  height: 112px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: rgba(255,255,255,0.05);
+}
+.mh-lib-tile-sm .mh-lib-tile-img {
+  height: 80px;
+}
+.mh-lib-tile-img img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.mh-lib-tile-name {
+  padding: 6px 2px 0;
+  font-size: 0.85em;
+  font-weight: 500;
+  color: rgba(255,255,255,0.85);
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Responsive — Landscape Mobile ─────────────────────────────────── */
+@media (max-height: 767px) and (orientation: landscape) {
+  .mh-hero { height: 100vh; }
+  #mh-rows-container { margin-top: 0; }
+  .mh-hero-buttons { transform: scale(0.85); transform-origin: left; top: calc(50% + 14vh); }
+  .mh-hero-dots { transform: translateX(-50%) scale(0.6); }
+  .mh-hero-info { top: calc(50% - 10vh); }
+  .mh-hero-genre { top: calc(50% - 1vh); }
+  .mh-hero-logo-container { height: 30%; top: 10%; }
+}
+
+/* ── Responsive — Portrait Mobile ──────────────────────────────────── */
+@media (max-width: 767px) and (orientation: portrait) {
+  .mh-hero {
+    height: 55vh;
+    min-height: 320px;
+  }
+  .mh-hero-logo-container {
+    width: 75%;
+    height: 25%;
+    left: 50%;
+    transform: translateX(-50%);
+    justify-content: center;
+  }
+  .mh-hero-info {
+    left: 50%;
+    transform: translateX(-50%);
+    text-align: center;
+    white-space: nowrap;
+  }
+  .mh-hero-genre {
+    width: 95%;
+    left: 50%;
+    transform: translateX(-50%);
+    justify-content: center;
+  }
+  .mh-hero-overview { display: none; }
+  .mh-hero-buttons {
+    left: 50%;
+    transform: translateX(-50%) scale(0.95);
+  }
+  .mh-hero-dots {
+    right: auto;
+    left: 50%;
+    transform: translateX(-50%) scale(0.8);
+    top: auto;
+    bottom: 20px;
+  }
+  .mh-hero-gradient {
+    background: rgba(0,0,0,0.25);
+  }
+  .mh-hero-title { font-size: 1.8em; }
+  .mh-hero-logo { max-width: 220px; max-height: 80px; }
+  .mh-hero-arrow { display: none; }
+  .mh-card { width: 120px; }
+  .mh-card-poster { width: 120px; height: 180px; }
+  .mh-card-wide { width: 200px; }
+  .mh-card-poster-wide { width: 200px; height: 112px; }
+  .mh-lib-tile { width: 140px; }
+  .mh-lib-tile-img { height: 80px; }
+  #mh-rows-container { padding: 0 3vw; margin-top: 0; }
+}
+
+/* ── Responsive — 4K/Ultra-wide ────────────────────────────────────── */
+@media (min-width: 2560px) {
+  .mh-hero-buttons { top: calc(50% + 15vh); }
+  .mh-hero-dots { bottom: 28px; }
+  .mh-card { width: 180px; }
+  .mh-card-poster { width: 180px; height: 270px; }
+}

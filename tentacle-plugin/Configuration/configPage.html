@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <title>Tentacle Configuration</title>
+</head>
+<body>
+    <div id="TentacleConfigPage" data-role="page" class="page type-interior pluginConfigurationPage"
+         data-require="emby-input,emby-button,emby-checkbox">
+        <div data-role="content">
+            <div class="content-primary">
+                <h2>Tentacle Plugin Settings</h2>
+                <form id="TentacleConfigForm">
+                    <div class="inputContainer">
+                        <label class="inputLabel" for="txtTentacleUrl">Tentacle Server URL</label>
+                        <input id="txtTentacleUrl" type="text" is="emby-input"
+                               placeholder="http://192.168.2.75:8888" />
+                        <div class="fieldDescription">The URL of your Tentacle server.</div>
+                    </div>
+
+                    <div class="inputContainer">
+                        <label class="inputLabel" for="txtHomeConfigPath">Home Config Path</label>
+                        <input id="txtHomeConfigPath" type="text" is="emby-input"
+                               placeholder="/data/tentacle-home.json" />
+                        <div class="fieldDescription">Path to tentacle-home.json inside the Jellyfin container.</div>
+                    </div>
+
+                    <div class="inputContainer">
+                        <label class="inputLabel" for="txtSmartListsPath">SmartLists Path</label>
+                        <input id="txtSmartListsPath" type="text" is="emby-input"
+                               placeholder="/data/smartlists" />
+                        <div class="fieldDescription">Path to the SmartLists config directory (where config.json files are stored).</div>
+                    </div>
+
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label>
+                            <input id="chkEnabled" type="checkbox" is="emby-checkbox" />
+                            <span>Enable Tentacle Homepage</span>
+                        </label>
+                        <div class="fieldDescription checkboxFieldDescription">
+                            When enabled, the Jellyfin homepage will be driven by Tentacle.
+                        </div>
+                    </div>
+
+                    <div style="margin-top: 1em;">
+                        <button id="btnTestConnection" type="button" is="emby-button" class="raised button-submit">
+                            Test Connection
+                        </button>
+                        <span id="testResult" style="margin-left: 1em;"></span>
+                    </div>
+
+                    <div id="statusInfo" style="margin-top: 1em; display: none;">
+                        <h3>Tentacle Status</h3>
+                        <div id="statusDetails"></div>
+                    </div>
+
+                    <div style="margin-top: 2em;">
+                        <button is="emby-button" type="submit" class="raised button-submit block">
+                            <span>Save</span>
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script type="text/javascript">
+        var TentacleConfig = {
+            pluginUniqueId: 'b7e3f1a9-2c4d-4856-9a1b-8def23456789'
+        };
+
+        document.querySelector('#TentacleConfigPage')
+            .addEventListener('pageshow', function () {
+                Dashboard.showLoadingMsg();
+                ApiClient.getPluginConfiguration(TentacleConfig.pluginUniqueId).then(function (config) {
+                    document.querySelector('#txtTentacleUrl').value = config.TentacleUrl || '';
+                    document.querySelector('#txtHomeConfigPath').value = config.HomeConfigPath || '/data/tentacle-home.json';
+                    document.querySelector('#txtSmartListsPath').value = config.SmartListsPath || '/data/smartlists';
+                    document.querySelector('#chkEnabled').checked = config.Enabled;
+                    Dashboard.hideLoadingMsg();
+                });
+            });
+
+        document.querySelector('#TentacleConfigForm')
+            .addEventListener('submit', function (e) {
+                e.preventDefault();
+                Dashboard.showLoadingMsg();
+                ApiClient.getPluginConfiguration(TentacleConfig.pluginUniqueId).then(function (config) {
+                    config.TentacleUrl = document.querySelector('#txtTentacleUrl').value.trim();
+                    config.HomeConfigPath = document.querySelector('#txtHomeConfigPath').value.trim();
+                    config.SmartListsPath = document.querySelector('#txtSmartListsPath').value.trim();
+                    config.Enabled = document.querySelector('#chkEnabled').checked;
+                    ApiClient.updatePluginConfiguration(TentacleConfig.pluginUniqueId, config).then(function () {
+                        Dashboard.processPluginConfigurationUpdateResult();
+                    });
+                });
+                return false;
+            });
+
+        document.querySelector('#btnTestConnection')
+            .addEventListener('click', function () {
+                var url = document.querySelector('#txtTentacleUrl').value.trim();
+                var resultEl = document.querySelector('#testResult');
+                var statusEl = document.querySelector('#statusInfo');
+                var detailsEl = document.querySelector('#statusDetails');
+
+                if (!url) {
+                    resultEl.innerHTML = '<span style="color:#f44;">Please enter a Tentacle URL first.</span>';
+                    return;
+                }
+
+                resultEl.innerHTML = 'Testing...';
+                statusEl.style.display = 'none';
+
+                fetch(url.replace(/\/+$/, '') + '/api/widget/status')
+                    .then(function (resp) { return resp.json(); })
+                    .then(function (data) {
+                        resultEl.innerHTML = '<span style="color:#4f4;">Connected!</span>';
+                        statusEl.style.display = 'block';
+                        detailsEl.innerHTML =
+                            '<p>Total Movies: ' + (data.total_movies || 'N/A') + '</p>' +
+                            '<p>Total Series: ' + (data.total_series || 'N/A') + '</p>' +
+                            '<p>Last Sync: ' + (data.last_sync || 'N/A') + '</p>';
+                    })
+                    .catch(function (err) {
+                        resultEl.innerHTML = '<span style="color:#f44;">Connection failed: ' + err.message + '</span>';
+                    });
+            });
+    </script>
+</body>
+</html>

@@ -1,0 +1,381 @@
+"""
+Tentacle - SmartLists Router
+Manage Jellyfin SmartList config files.
+"""
+
+import json
+import logging
+from pathlib import Path
+from typing import Optional
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from models.database import get_db, get_setting
+from services.smartlists import (
+    get_desired_smartlists, sync_smartlists, _scan_existing,
+    write_home_config, _notify_jellyfin_plugin, refresh_smartlist_playlists,
+    _get_smartlists_with_playlist_ids, update_playlist_sort, SORT_BY_DISPLAY,
+)
+
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/api/smartlists", tags=["smartlists"])
+
+HOME_CONFIG_PATH = "/data/tentacle-home.json"
+
+# Built-in Jellyfin home sections that can be added to the home screen
+BUILTIN_SECTIONS = [
+    {"section_id": "smalllibrarytiles", "display_name": "My Media"},
+    {"section_id": "smalllibrarytiles_small", "display_name": "My Media (small)"},
+    {"section_id": "activerecordings", "display_name": "Active Recordings"},
+    {"section_id": "resumevideo", "display_name": "Continue Watching"},
+    {"section_id": "resumeaudio", "display_name": "Continue Listening"},
+    {"section_id": "resumebook", "display_name": "Continue Reading"},
+    {"section_id": "latestmedia", "display_name": "Recently Added Media"},
+    {"section_id": "nextup", "display_name": "Next Up"},
+    {"section_id": "livetv", "display_name": "Live TV"},
+]
+BUILTIN_MAP = {s["section_id"]: s for s in BUILTIN_SECTIONS}
+
+
+def _read_home_json(db: Session) -> dict:
+    """Read tentacle-home.json from disk. Returns empty dict if missing."""
+    p = Path(get_setting(db, "home_config_path", HOME_CONFIG_PATH))
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _write_home_json(db: Session, config: dict):
+    """Write tentacle-home.json to disk."""
+    p = Path(get_setting(db, "home_config_path", HOME_CONFIG_PATH))
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(config, indent=2), encoding="utf-8")
+
+
+@router.get("")
+def list_smartlists(db: Session = Depends(get_db)):
+    """List all desired SmartLists with on-disk status."""
+    desired = get_desired_smartlists(db)
+    smartlists_path = Path(get_setting(db, "smartlists_path", "/mnt/jellyfin/smartlists"))
+    existing = _scan_existing(smartlists_path)
+    path_accessible = smartlists_path.exists() and smartlists_path.is_dir()
+
+    result = []
+    for sl in desired:
+        entry = {
+            "name": sl["name"],
+            "tag": sl["tag"],
+            "media_type": sl["media_type"],
+            "enabled": sl["enabled"],
+            "source": sl.get("source", ""),
+            "exists_on_disk": sl["name"] in existing,
+            "sort_by": "releasedate",
+            "sort_order": "Descending",
+        }
+        # Read actual sort from disk config if it exists
+        if sl["name"] in existing:
+            _, config_data = existing[sl["name"]]
+            sort_opts = (config_data.get("Order", {}).get("SortOptions") or [{}])
+            if sort_opts:
+                entry["sort_by"] = SORT_BY_DISPLAY.get(sort_opts[0].get("SortBy", "ReleaseDate"), "releasedate")
+                entry["sort_order"] = sort_opts[0].get("SortOrder", "Descending")
+        result.append(entry)
+
+    result.sort(key=lambda x: x["name"].lower())
+
+    return {
+        "smartlists": result,
+        "path": str(smartlists_path),
+        "path_accessible": path_accessible,
+    }
+
+
+class PlaylistSortRequest(BaseModel):
+    name: str
+    sort_by: str
+    sort_order: str
+
+
+@router.post("/sort")
+def set_playlist_sort(req: PlaylistSortRequest, db: Session = Depends(get_db)):
+    """Update sort order for a playlist and re-populate in Jellyfin."""
+    return update_playlist_sort(req.name, req.sort_by, req.sort_order, db)
+
+
+@router.post("/sync")
+def sync(db: Session = Depends(get_db)):
+    """Run SmartLists sync to disk."""
+    return sync_smartlists(db)
+
+
+@router.post("/write-home-config")
+def write_home(db: Session = Depends(get_db)):
+    """Generate tentacle-home.json. Preserves existing row order and hero pick."""
+    config = write_home_config(db)
+    if not config:
+        return {"status": "error", "message": "No SmartLists with playlist IDs found"}
+    return {"status": "ok", "rows": len(config.get("rows", [])), "config": config}
+
+
+@router.get("/home-config")
+def read_home(db: Session = Depends(get_db)):
+    """Return the current tentacle-home.json contents for UI preview."""
+    config = _read_home_json(db)
+    if not config:
+        return {"exists": False, "config": {}}
+    return {"exists": True, "config": config}
+
+
+@router.post("/refresh-playlists")
+def refresh_playlists(db: Session = Depends(get_db)):
+    """Refresh all SmartList playlists in Jellyfin — queries items and updates playlist contents."""
+    stats = refresh_smartlist_playlists(db)
+    if "error" in stats:
+        return {"success": False, **stats}
+    return {"success": True, **stats}
+
+
+@router.post("/notify")
+def notify(db: Session = Depends(get_db)):
+    """Notify the Jellyfin plugin to reload. Does NOT touch the JSON."""
+    _notify_jellyfin_plugin(db)
+    return {"success": True}
+
+
+# ── Row identity helper ─────────────────────────────────────────────────────
+
+def _row_key(row: dict) -> str:
+    """Unique key for a row: 'playlist:<id>' or 'builtin:<section_id>'."""
+    if row.get("type") == "builtin":
+        return f"builtin:{row.get('section_id', '')}"
+    return f"playlist:{row.get('playlist_id', '')}"
+
+
+# ── Reorder rows ────────────────────────────────────────────────────────────
+
+class ReorderRequest(BaseModel):
+    order: list[str]  # list of row keys like "playlist:abc123" or "builtin:resumevideo"
+
+
+@router.post("/reorder")
+def reorder(req: ReorderRequest, db: Session = Depends(get_db)):
+    """Read JSON, reorder rows to match, write JSON back. That's it."""
+    config = _read_home_json(db)
+    if not config or "rows" not in config:
+        return {"success": False, "message": "No home config found"}
+
+    rows_by_key = {_row_key(r): r for r in config["rows"]}
+
+    new_rows = []
+    for i, key in enumerate(req.order, start=1):
+        if key in rows_by_key:
+            row = rows_by_key.pop(key)
+            row["order"] = i
+            new_rows.append(row)
+
+    # Append any leftover rows not in the request
+    for row in rows_by_key.values():
+        row["order"] = len(new_rows) + 1
+        new_rows.append(row)
+
+    config["rows"] = new_rows
+    _write_home_json(db, config)
+    logger.info(f"Reordered home rows: {[r['display_name'] for r in new_rows]}")
+    return {"success": True, "rows": len(new_rows)}
+
+
+# ── Hero pick ───────────────────────────────────────────────────────────────
+
+class HeroPickRequest(BaseModel):
+    playlist_id: str
+
+
+@router.get("/all-playlists")
+def all_playlists(db: Session = Depends(get_db)):
+    """Return all SmartLists with playlist IDs."""
+    playlists = _get_smartlists_with_playlist_ids(db)
+    playlists.sort(key=lambda x: x["name"].lower())
+    return {"playlists": playlists}
+
+
+@router.get("/available-playlists")
+def available_playlists(db: Session = Depends(get_db)):
+    """Return SmartLists with playlist IDs that are not yet in the home config rows."""
+    all_pl = _get_smartlists_with_playlist_ids(db)
+    config = _read_home_json(db)
+    current_ids = {r.get("playlist_id") for r in config.get("rows", []) if r.get("type", "playlist") == "playlist"}
+    available = [p for p in all_pl if p["playlist_id"] not in current_ids]
+    available.sort(key=lambda x: x["name"].lower())
+    return {"playlists": available}
+
+
+class AddRowRequest(BaseModel):
+    playlist_id: Optional[str] = None
+    section_id: Optional[str] = None
+
+
+@router.post("/add-row")
+def add_row(req: AddRowRequest, db: Session = Depends(get_db)):
+    """Add a playlist or built-in section as a new row to the home config."""
+    config = _read_home_json(db)
+    if not config:
+        config = {"hero": {"enabled": False, "playlist_id": "", "display_name": ""}, "rows": []}
+
+    if req.section_id:
+        # Adding a built-in Jellyfin section
+        builtin = BUILTIN_MAP.get(req.section_id)
+        if not builtin:
+            return {"success": False, "message": "Unknown built-in section"}
+        if any(r.get("type") == "builtin" and r.get("section_id") == req.section_id for r in config["rows"]):
+            return {"success": False, "message": "Already in home screen"}
+        config["rows"].append({
+            "type": "builtin",
+            "section_id": req.section_id,
+            "display_name": builtin["display_name"],
+            "order": len(config["rows"]) + 1,
+        })
+    elif req.playlist_id:
+        # Adding a Tentacle playlist
+        all_playlists = _get_smartlists_with_playlist_ids(db)
+        match = next((p for p in all_playlists if p["playlist_id"] == req.playlist_id), None)
+        if not match:
+            return {"success": False, "message": "Playlist not found"}
+        if any(r.get("playlist_id") == req.playlist_id and r.get("type", "playlist") == "playlist" for r in config["rows"]):
+            return {"success": False, "message": "Already in home screen"}
+        home_row_limit = int(get_setting(db, "home_row_limit", "20") or "20")
+        config["rows"].append({
+            "type": "playlist",
+            "playlist_id": req.playlist_id,
+            "display_name": match["name"],
+            "order": len(config["rows"]) + 1,
+            "max_items": home_row_limit,
+        })
+    else:
+        return {"success": False, "message": "Must provide playlist_id or section_id"}
+
+    _write_home_json(db, config)
+    return {"success": True, "rows": len(config["rows"])}
+
+
+class RemoveRowRequest(BaseModel):
+    row_key: Optional[str] = None  # "playlist:<id>" or "builtin:<section_id>"
+    playlist_id: Optional[str] = None  # backwards compat
+
+
+@router.post("/remove-row")
+def remove_row(req: RemoveRowRequest, db: Session = Depends(get_db)):
+    """Remove a row from the home config."""
+    config = _read_home_json(db)
+    if not config or "rows" not in config:
+        return {"success": False, "message": "No home config"}
+
+    if req.row_key:
+        config["rows"] = [r for r in config["rows"] if _row_key(r) != req.row_key]
+    elif req.playlist_id:
+        config["rows"] = [r for r in config["rows"] if r.get("playlist_id") != req.playlist_id]
+    else:
+        return {"success": False, "message": "Must provide row_key or playlist_id"}
+
+    for i, r in enumerate(config["rows"], start=1):
+        r["order"] = i
+
+    _write_home_json(db, config)
+    return {"success": True, "rows": len(config["rows"])}
+
+
+@router.get("/builtin-sections")
+def list_builtin_sections(db: Session = Depends(get_db)):
+    """Return available built-in Jellyfin sections not yet in the home config."""
+    config = _read_home_json(db)
+    current_ids = {r.get("section_id") for r in config.get("rows", []) if r.get("type") == "builtin"}
+    available = [s for s in BUILTIN_SECTIONS if s["section_id"] not in current_ids]
+    return {"sections": available}
+
+
+class RowMaxItemsRequest(BaseModel):
+    playlist_id: Optional[str] = None
+    row_key: Optional[str] = None
+    max_items: int
+
+
+@router.post("/row-max-items")
+def set_row_max_items(req: RowMaxItemsRequest, db: Session = Depends(get_db)):
+    """Update max_items for a specific row."""
+    config = _read_home_json(db)
+    if not config or "rows" not in config:
+        return {"success": False, "message": "No home config found"}
+
+    val = max(5, min(100, req.max_items))
+    for row in config["rows"]:
+        if req.row_key and _row_key(row) == req.row_key:
+            row["max_items"] = val
+            break
+        elif req.playlist_id and row.get("playlist_id") == req.playlist_id:
+            row["max_items"] = val
+            break
+    else:
+        return {"success": False, "message": "Row not found"}
+
+    _write_home_json(db, config)
+    return {"success": True, "max_items": val}
+
+
+@router.post("/hero")
+def set_hero(req: HeroPickRequest, db: Session = Depends(get_db)):
+    """Read JSON, update hero, write JSON back. That's it."""
+    config = _read_home_json(db)
+    if not config or "rows" not in config:
+        return {"success": False, "message": "No home config found"}
+
+    existing_hero = config.get("hero", {})
+    if req.playlist_id:
+        # Look up display name from rows first, then all playlists
+        matching = next((r for r in config["rows"] if r.get("playlist_id") == req.playlist_id), None)
+        if matching:
+            display_name = matching["display_name"]
+        else:
+            all_playlists = _get_smartlists_with_playlist_ids(db)
+            pl = next((p for p in all_playlists if p["playlist_id"] == req.playlist_id), None)
+            display_name = pl["name"] if pl else req.playlist_id
+        config["hero"] = {
+            "enabled": True,
+            "playlist_id": req.playlist_id,
+            "display_name": display_name,
+            "sort_by": existing_hero.get("sort_by", "random"),
+            "sort_order": existing_hero.get("sort_order", "Descending"),
+            "require_logo": existing_hero.get("require_logo", True),
+        }
+    else:
+        config["hero"] = {"enabled": False, "playlist_id": "", "display_name": "", "sort_by": "random", "sort_order": "Descending", "require_logo": True}
+
+    _write_home_json(db, config)
+    logger.info(f"Updated hero: {req.playlist_id or '(disabled)'}")
+    return {"success": True}
+
+
+class HeroSortRequest(BaseModel):
+    sort_by: str
+    sort_order: str
+    require_logo: Optional[bool] = None
+
+
+@router.post("/hero-sort")
+def set_hero_sort(req: HeroSortRequest, db: Session = Depends(get_db)):
+    """Update hero spotlight sort order."""
+    config = _read_home_json(db)
+    hero = config.get("hero", {})
+    if not hero.get("enabled"):
+        return {"success": False, "message": "Hero is not enabled"}
+
+    hero["sort_by"] = req.sort_by
+    hero["sort_order"] = req.sort_order
+    if req.require_logo is not None:
+        hero["require_logo"] = req.require_logo
+    config["hero"] = hero
+    _write_home_json(db, config)
+    logger.info(f"Updated hero sort: {req.sort_by} {req.sort_order}")
+    return {"success": True}
