@@ -61,17 +61,18 @@
             .addEventListener('submit', function (e) {
                 e.preventDefault();
                 var url = document.querySelector('#txtTentacleUrl').value.trim();
-                Dashboard.showLoadingMsg();
+                showMessage('Saving...', '#aaa');
                 ApiClient.getPluginConfiguration(TentacleConfig.pluginUniqueId).then(function (config) {
                     config.TentacleUrl = url;
-                    ApiClient.updatePluginConfiguration(TentacleConfig.pluginUniqueId, config).then(function () {
-                        Dashboard.hideLoadingMsg();
-                        if (url) {
-                            showMessage('Saved! URL: ' + url, '#4f4');
-                        } else {
-                            showMessage('Saved. No URL set — plugin is inactive.', '#fa0');
-                        }
-                    });
+                    return ApiClient.updatePluginConfiguration(TentacleConfig.pluginUniqueId, config);
+                }).then(function () {
+                    if (url) {
+                        showMessage('Saved! URL: ' + url, '#4f4');
+                    } else {
+                        showMessage('Saved. No URL set — plugin is inactive.', '#fa0');
+                    }
+                }).catch(function (err) {
+                    showMessage('Save failed: ' + (err.message || err), '#f44');
                 });
                 return false;
             });
