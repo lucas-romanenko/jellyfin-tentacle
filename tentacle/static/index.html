@@ -981,11 +981,8 @@ td.primary { color: var(--text); font-weight: 500; }
         <button class="nav-item" data-page="discover">
           <span class="icon">✦</span> Discover
         </button>
-        <button class="nav-item" data-page="tags">
+        <button class="nav-item" data-page="playlists">
           <span class="icon">◈</span> Playlists
-        </button>
-        <button class="nav-item" data-page="home-screen">
-          <span class="icon">⌂</span> Home Screen
         </button>
         <button class="nav-item" data-page="settings">
           <span class="icon">⊙</span> Settings
@@ -1594,12 +1591,12 @@ td.primary { color: var(--text); font-weight: 500; }
       <!-- Lists page removed — merged into Discover tab -->
 
       <!-- ── PLAYLISTS ── -->
-      <div class="page" id="page-tags">
+      <div class="page" id="page-playlists">
         <div class="page-header">
           <div class="page-header-row">
             <div>
               <div class="page-title">Playlists</div>
-              <div class="page-subtitle">Create and manage Jellyfin playlists</div>
+              <div class="page-subtitle">Manage Jellyfin playlists & home screen</div>
             </div>
             <div style="display:flex;gap:8px">
               <button class="btn btn-secondary" onclick="showAddTagRule()">+ Create Playlist</button>
@@ -1608,118 +1605,84 @@ td.primary { color: var(--text); font-weight: 500; }
           </div>
         </div>
 
+        <!-- First-time info banner -->
+        <div id="auto-playlist-banner" style="display:none;padding:12px 16px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;margin-bottom:16px;font-size:13px;color:var(--text2)">
+          Playlists are created automatically from your synced content. Toggle on the ones you want in Jellyfin.
+          <button onclick="dismissAutoPlaylistBanner()" style="background:none;border:none;color:var(--text3);cursor:pointer;float:right;font-size:14px;padding:0 4px">&#10005;</button>
+        </div>
+
+        <!-- Home Screen section (collapsible) -->
+        <div class="card" id="home-screen-card">
+          <div class="card-header" style="cursor:pointer" onclick="toggleHomeScreenSection()">
+            <div class="card-title" style="display:flex;align-items:center;gap:8px">
+              <span id="home-screen-chevron" style="font-size:11px;transition:transform 0.2s">&#9654;</span>
+              Home Screen
+            </div>
+            <span id="home-config-status" style="font-size:11px;color:var(--text3)"></span>
+          </div>
+          <div id="home-screen-body" style="display:none">
+            <!-- Hero picker -->
+            <div style="padding:0 16px 12px">
+              <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:8px">Hero Spotlight</div>
+              <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+                <select id="home-hero-select" class="input" style="max-width:360px;flex:1" onchange="updateHeroPick()">
+                  <option value="">-- disabled --</option>
+                </select>
+                <select id="home-hero-sort" class="input" style="max-width:180px" onchange="updateHeroSort()">
+                  <option value="random_desc">Random</option>
+                  <option value="communityrating_desc">Top Rated</option>
+                  <option value="releasedate_desc">Newest First</option>
+                  <option value="releasedate_asc">Oldest First</option>
+                  <option value="name_asc">A &rarr; Z</option>
+                  <option value="datecreated_desc">Recently Added</option>
+                </select>
+                <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text2);cursor:pointer;white-space:nowrap">
+                  <input type="checkbox" id="home-hero-require-logo" onchange="updateHeroSort()" checked>
+                  Title image only
+                </label>
+              </div>
+            </div>
+            <!-- Home rows -->
+            <div style="padding:0 16px 12px">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+                <div style="font-size:12px;font-weight:600;color:var(--text2)">Home Rows</div>
+                <div style="display:flex;gap:6px">
+                  <button class="btn btn-secondary btn-sm" onclick="showAddHomeRow()" style="font-size:11px;padding:3px 10px">+ Add Row</button>
+                </div>
+              </div>
+              <div id="home-rows-list"></div>
+              <div id="add-row-inline" style="display:none;margin-top:8px">
+                <div style="display:flex;gap:8px;align-items:center">
+                  <select id="add-row-select" class="form-input" style="flex:1">
+                    <option value="">Select a playlist...</option>
+                  </select>
+                  <button class="btn btn-primary btn-sm" onclick="confirmAddHomeRow()">Add</button>
+                  <button class="btn btn-secondary btn-sm" onclick="hideAddHomeRow()">Cancel</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Auto Playlists -->
+        <div class="card" style="margin-top:16px">
+          <div class="card-header">
+            <div class="card-title">Auto Playlists</div>
+            <span style="font-size:11px;color:var(--text3)">Generated from your synced content</span>
+          </div>
+          <div id="auto-playlists-list">
+            <div class="loading-state"><div class="spinner"></div></div>
+          </div>
+        </div>
+
         <!-- Custom Playlists -->
-        <div class="card">
+        <div class="card" style="margin-top:16px">
           <div class="card-header">
             <div class="card-title">Custom Playlists</div>
             <span style="font-size:11px;color:var(--text3)">Filter your library by genre, rating, year & more</span>
           </div>
           <div id="tag-rules-list">
             <div class="loading-state"><div class="spinner"></div></div>
-          </div>
-        </div>
-
-        <!-- List Playlists -->
-        <div class="card" style="margin-top:20px">
-          <div class="card-header">
-            <div class="card-title">List Playlists</div>
-            <span style="font-size:11px;color:var(--text3)">Enable to create Jellyfin playlists from your list subscriptions</span>
-          </div>
-          <div id="list-playlists-container">
-            <div class="loading-state"><div class="spinner"></div></div>
-          </div>
-        </div>
-
-        <!-- How Playlists Work -->
-        <div class="card" style="margin-top:20px">
-          <div class="card-header" style="cursor:pointer" onclick="document.getElementById('playlist-help-body').style.display = document.getElementById('playlist-help-body').style.display === 'none' ? 'block' : 'none'">
-            <div class="card-title" style="display:flex;align-items:center;gap:8px">
-              <span style="font-size:14px">?</span> How Playlists Work
-            </div>
-            <span style="font-size:11px;color:var(--text3)">Click to expand</span>
-          </div>
-          <div id="playlist-help-body" style="display:none;padding:0 16px 16px;font-size:13px;color:var(--text2);line-height:1.7">
-            <p style="margin:0 0 12px">Create playlists by combining filters. Tentacle finds all matching content in your Jellyfin library and keeps the playlist updated automatically on every sync.</p>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-              <div>
-                <div style="font-weight:600;color:var(--text);margin-bottom:4px">Available Filters</div>
-                <div style="display:flex;flex-direction:column;gap:4px">
-                  <span><strong>Genre</strong> — TMDB genres (Comedy, Action, Horror, etc.)</span>
-                  <span><strong>Year</strong> — Release year (exact, before, or after)</span>
-                  <span><strong>Rating</strong> — TMDB community rating (0-10)</span>
-                  <span><strong>Runtime</strong> — Movie length in minutes</span>
-                </div>
-              </div>
-              <div>
-                <div style="font-weight:600;color:var(--text);margin-bottom:4px">Content Filters</div>
-                <div style="display:flex;flex-direction:column;gap:4px">
-                  <span><strong>Source</strong> — VOD provider (Netflix, Amazon, etc.) — only VOD content</span>
-                  <span><strong>List</strong> — Subscribed lists (IMDB Top 250, Trakt, etc.)</span>
-                  <span><strong>Downloaded</strong> — Content downloaded via Radarr</span>
-                </div>
-              </div>
-            </div>
-            <p style="margin:12px 0 0;color:var(--text3);font-size:12px">Genre, Year, and Rating filters query Jellyfin directly and match all content in your library. Source, List, and Downloaded filters match content that Tentacle has tagged.</p>
-          </div>
-        </div>
-      </div>
-
-      <!-- ── HOME SCREEN ── -->
-      <div class="page" id="page-home-screen">
-        <div class="page-header">
-          <div class="page-header-row">
-            <div>
-              <div class="page-title">Home Screen</div>
-              <div class="page-subtitle">Hero spotlight, playlist rows & Jellyfin sections</div>
-            </div>
-            <div style="display:flex;gap:8px">
-              <button class="btn btn-secondary" onclick="showAddHomeRow()">+ Add Row</button>
-            </div>
-          </div>
-        </div>
-
-        <!-- Hero picker -->
-        <div class="card">
-          <div class="card-header">
-            <div class="card-title">Hero Spotlight</div>
-            <span id="home-config-status" style="font-size:11px;color:var(--text3)"></span>
-          </div>
-          <div style="padding:0 16px 16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-            <select id="home-hero-select" class="input" style="max-width:360px;flex:1" onchange="updateHeroPick()">
-              <option value="">— disabled —</option>
-            </select>
-            <select id="home-hero-sort" class="input" style="max-width:180px" onchange="updateHeroSort()">
-              <option value="random_desc">Random</option>
-              <option value="communityrating_desc">Top Rated</option>
-              <option value="releasedate_desc">Newest First</option>
-              <option value="releasedate_asc">Oldest First</option>
-              <option value="name_asc">A &rarr; Z</option>
-              <option value="datecreated_desc">Recently Added</option>
-            </select>
-            <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text2);cursor:pointer;white-space:nowrap">
-              <input type="checkbox" id="home-hero-require-logo" onchange="updateHeroSort()" checked>
-              Title image only
-            </label>
-          </div>
-        </div>
-
-        <!-- Row list -->
-        <div class="card" style="margin-top:20px">
-          <div class="card-header">
-            <div class="card-title">Home Rows</div>
-            <span style="font-size:11px;color:var(--text3)">Drag to reorder</span>
-          </div>
-          <div style="padding:0 16px 16px">
-            <div id="home-rows-list"></div>
-            <div id="add-row-inline" style="display:none;margin-top:8px">
-              <div style="display:flex;gap:8px;align-items:center">
-                <select id="add-row-select" class="form-input" style="flex:1">
-                  <option value="">Select a playlist...</option>
-                </select>
-                <button class="btn btn-primary btn-sm" onclick="confirmAddHomeRow()">Add</button>
-                <button class="btn btn-secondary btn-sm" onclick="hideAddHomeRow()">Cancel</button>
-              </div>
-            </div>
           </div>
         </div>
       </div>
@@ -2234,7 +2197,7 @@ td.primary { color: var(--text); font-weight: 500; }
     <div class="form-row">
       <div class="form-group" style="flex:2">
         <div class="form-label">Playlist Name</div>
-        <input class="form-input" id="tr-name" placeholder="e.g. Comedy Classics" oninput="onCollectionNameInput()">
+        <input class="form-input" id="tr-name" placeholder="e.g. Netflix Comedies" oninput="onCollectionNameInput()">
       </div>
       <div class="form-group" style="flex:1">
         <div class="form-label">Media Type</div>
@@ -2246,10 +2209,58 @@ td.primary { color: var(--text); font-weight: 500; }
       </div>
     </div>
 
-    <div class="form-group">
-      <div class="form-label">Filters <span style="font-weight:400;color:var(--text3)">(all must match)</span></div>
-      <div id="tr-conditions"></div>
-      <button class="btn btn-secondary btn-sm" style="margin-top:8px" onclick="addRuleCondition()">+ Add Filter</button>
+    <!-- Friendly content source picker -->
+    <div class="form-group" id="tr-source-section">
+      <div class="form-label">Content</div>
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--text2)">
+          <input type="radio" name="tr-content-source" value="all" checked onchange="onContentSourceChange()"> All content in library
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--text2)">
+          <input type="radio" name="tr-content-source" value="source" onchange="onContentSourceChange()"> From a provider
+          <select class="form-input" id="tr-source-pick" style="flex:1;max-width:200px;display:none" onchange="onContentSourceChange()"></select>
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--text2)">
+          <input type="radio" name="tr-content-source" value="list" onchange="onContentSourceChange()"> From a list
+          <select class="form-input" id="tr-list-pick" style="flex:1;max-width:200px;display:none" onchange="onContentSourceChange()"></select>
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--text2)">
+          <input type="radio" name="tr-content-source" value="downloaded" onchange="onContentSourceChange()"> Downloaded only (Radarr/Sonarr)
+        </label>
+      </div>
+    </div>
+
+    <!-- Simple filters -->
+    <div class="form-group" id="tr-simple-filters">
+      <div class="form-label">Filters <span style="font-weight:400;color:var(--text3)">(optional)</span></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <div style="flex:1;min-width:120px">
+          <div style="font-size:11px;color:var(--text3);margin-bottom:4px">Genre</div>
+          <input class="form-input" id="tr-filter-genre" placeholder="e.g. Comedy">
+        </div>
+        <div style="flex:1;min-width:100px">
+          <div style="font-size:11px;color:var(--text3);margin-bottom:4px">Min Rating</div>
+          <input class="form-input" id="tr-filter-rating" type="number" min="0" max="10" step="0.5" placeholder="e.g. 7">
+        </div>
+        <div style="flex:1;min-width:100px">
+          <div style="font-size:11px;color:var(--text3);margin-bottom:4px">Year (after)</div>
+          <input class="form-input" id="tr-filter-year" type="number" min="1900" max="2030" placeholder="e.g. 2020">
+        </div>
+      </div>
+    </div>
+
+    <!-- Advanced toggle -->
+    <div style="margin-bottom:12px">
+      <a href="#" onclick="toggleAdvancedFilters();return false" style="font-size:12px;color:var(--text3)">
+        <span id="tr-advanced-label">Show advanced filters</span>
+      </a>
+    </div>
+    <div id="tr-advanced-section" style="display:none">
+      <div class="form-group">
+        <div class="form-label">Advanced Filters <span style="font-weight:400;color:var(--text3)">(all must match)</span></div>
+        <div id="tr-conditions"></div>
+        <button class="btn btn-secondary btn-sm" style="margin-top:8px" onclick="addRuleCondition()">+ Add Filter</button>
+      </div>
     </div>
 
     <input type="hidden" id="tr-tag">
@@ -2528,7 +2539,7 @@ td.primary { color: var(--text); font-weight: 500; }
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<script src="/static/js/app.js?v=15"></script>
-<script src="/static/js/pages.js?v=15"></script>
+<script src="/static/js/app.js?v=16"></script>
+<script src="/static/js/pages.js?v=16"></script>
 </body>
 </html>

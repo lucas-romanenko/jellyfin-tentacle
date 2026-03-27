@@ -132,14 +132,79 @@ def _create_jellyfin_playlist(name: str, user_id: str, jellyfin_url: str, jellyf
 
 
 def get_desired_smartlists(db: Session) -> list:
-    """Build the full list of SmartList definitions from user-created tag rules
-    and list subscriptions with playlist_enabled=True.
+    """Build the full list of SmartList definitions from:
+    1. Enabled auto playlists (source, list, built-in)
+    2. Custom playlists (tag rules)
     """
-    from models.database import ListSubscription
+    from models.database import ListSubscription, ListItem, AutoPlaylistToggle, Movie, Series
     smartlists = []
     existing_tags = set()
 
-    # Custom playlists from tag rules
+    # ── Auto playlists (source-based, from enabled toggles) ──
+    toggles = {t.key: t.enabled for t in db.query(AutoPlaylistToggle).all()}
+
+    # Source playlists from VOD content
+    movie_tags = db.query(Movie.source_tag).filter(
+        Movie.source_tag.isnot(None), Movie.source_tag != "",
+        Movie.source != "radarr",
+    ).distinct().all()
+    for (source_tag,) in movie_tags:
+        key = f"source:{source_tag}:movies"
+        tag = f"{source_tag} Movies"
+        if toggles.get(key) and tag not in existing_tags:
+            smartlists.append({"name": tag, "tag": tag, "media_type": ["Movie"], "enabled": True, "source": "auto"})
+            existing_tags.add(tag)
+
+    series_tags = db.query(Series.source_tag).filter(
+        Series.source_tag.isnot(None), Series.source_tag != "",
+        Series.source != "sonarr",
+    ).distinct().all()
+    for (source_tag,) in series_tags:
+        key = f"source:{source_tag}:series"
+        tag = f"{source_tag} TV"
+        if toggles.get(key) and tag not in existing_tags:
+            smartlists.append({"name": tag, "tag": tag, "media_type": ["Series"], "enabled": True, "source": "auto"})
+            existing_tags.add(tag)
+
+    # Built-in playlists
+    builtin_map = {
+        "builtin:recently_added_movies": ("Recently Added Movies", ["Movie"]),
+        "builtin:recently_added_tv": ("Recently Added TV", ["Series"]),
+        "builtin:downloaded_movies": ("Downloaded Movies", ["Movie"]),
+        "builtin:downloaded_tv": ("Downloaded TV", ["Series"]),
+    }
+    for bkey, (bname, bmedia) in builtin_map.items():
+        if toggles.get(bkey) and bname not in existing_tags:
+            smartlists.append({"name": bname, "tag": bname, "media_type": bmedia, "enabled": True, "source": "auto"})
+            existing_tags.add(bname)
+
+    # ── List playlists (use ListSubscription.playlist_enabled) ──
+    enabled_lists = db.query(ListSubscription).filter(
+        ListSubscription.playlist_enabled == True,
+        ListSubscription.active == True,
+    ).all()
+    for lst in enabled_lists:
+        if lst.tag in existing_tags:
+            continue
+        item_types = db.query(ListItem.media_type).filter(
+            ListItem.list_id == lst.id,
+            ListItem.media_type.isnot(None),
+        ).distinct().all()
+        types = {t[0] for t in item_types if t[0]}
+        if types == {"movie"}:
+            media = ["Movie"]
+        elif types == {"series"}:
+            media = ["Series"]
+        else:
+            media = ["Movie", "Series"]
+
+        smartlists.append({
+            "name": lst.tag, "tag": lst.tag, "media_type": media,
+            "enabled": True, "source": "list",
+        })
+        existing_tags.add(lst.tag)
+
+    # ── Custom playlists from tag rules ──
     active_rules = db.query(TagRule).filter(TagRule.active == True).all()
     for rule in active_rules:
         if rule.output_tag in existing_tags:
@@ -166,34 +231,6 @@ def get_desired_smartlists(db: Session) -> list:
             sl_entry["expressions"] = _conditions_to_expressions(rule.conditions)
         smartlists.append(sl_entry)
         existing_tags.add(rule.output_tag)
-
-    # List subscription playlists (IMDB Top 250, Trakt lists, etc.)
-    enabled_lists = db.query(ListSubscription).filter(
-        ListSubscription.playlist_enabled == True,
-        ListSubscription.active == True,
-    ).all()
-    for lst in enabled_lists:
-        if lst.tag in existing_tags:
-            continue
-        # Determine media type from list items
-        from models.database import ListItem
-        item_types = db.query(ListItem.media_type).filter(
-            ListItem.list_id == lst.id,
-            ListItem.media_type.isnot(None),
-        ).distinct().all()
-        types = {t[0] for t in item_types if t[0]}
-        if types == {"movie"}:
-            media = ["Movie"]
-        elif types == {"series"}:
-            media = ["Series"]
-        else:
-            media = ["Movie", "Series"]
-
-        smartlists.append({
-            "name": lst.tag, "tag": lst.tag, "media_type": media,
-            "enabled": True, "source": "list",
-        })
-        existing_tags.add(lst.tag)
 
     return smartlists
 

@@ -66,8 +66,7 @@ function showPage(name) {
     library: ['Library', 'Movies, series & duplicates'],
     'live-tv': ['Live TV', 'Channels, groups & EPG'],
     discover: ['Discover', 'Trending, popular & list subscriptions'],
-    tags: ['Playlists', 'Custom & auto playlists'],
-    'home-screen': ['Home Screen', 'Hero spotlight & playlist rows'],
+    playlists: ['Playlists', 'Manage Jellyfin playlists & home screen'],
     settings: ['Settings', 'Providers, connections & config'],
   };
 
@@ -79,8 +78,7 @@ function showPage(name) {
   if (name === 'settings') { loadSettings(); loadProviders(); }
   if (name === 'vod') loadVodPage();
   if (name === 'library') loadLibrary();
-  if (name === 'tags') loadTags();
-  if (name === 'home-screen') loadHomeScreenPage();
+  if (name === 'playlists') loadPlaylistsPage();
   if (name === 'discover') loadDiscover();
   if (name === 'live-tv') loadLiveTV();
 }
@@ -449,7 +447,7 @@ function renderGettingStarted(cfg, dash) {
     { done: cfg.has_providers, label: 'IPTV provider added', hint: '<a href="#" onclick="showPage(\'settings\');return false">Settings → Providers → Add Provider</a>' },
     { done: dash.status.vod_sync.timestamp || (dash.library.total_movies + dash.library.total_series) > 0, label: 'Content synced' },
     { done: cfg.has_playlists, label: 'Playlists created', hint: '<a href="#" onclick="showPage(\'playlists\');return false">Go to Playlists</a>' },
-    { done: cfg.has_home_screen, label: 'Home screen configured', hint: '<a href="#" onclick="showPage(\'home-screen\');return false">Go to Home Screen</a>' },
+    { done: cfg.has_home_screen, label: 'Home screen configured', hint: '<a href="#" onclick="showPage(\'playlists\');return false">Go to Playlists → Home Screen</a>' },
   ];
 
   const allDone = checks.every(c => c.done);
@@ -546,6 +544,7 @@ const _activityColors = {
   vod_sync: 'var(--accent)', radarr_scan: 'var(--green)', sonarr_scan: 'var(--pink)',
   radarr_add: 'var(--green)', sonarr_add: 'var(--pink)', radarr_remove: 'var(--red)',
   sonarr_remove: 'var(--red)', jellyfin_push: 'var(--amber)', list_fetch: 'var(--accent)',
+  new_playlists: 'var(--purple)',
 };
 
 function renderActivityFeed(entries) {
@@ -559,13 +558,18 @@ function renderActivityFeed(entries) {
     return;
   }
 
-  el.innerHTML = entries.map(e => `
+  el.innerHTML = entries.map(e => {
+    let msg = e.message;
+    if (e.event === 'new_playlists') {
+      msg += ` <a href="#" onclick="showPage('playlists');return false" style="color:var(--accent);font-size:12px">View &rarr;</a>`;
+    }
+    return `
     <div class="activity-item">
       <div class="activity-icon" style="background:${_activityColors[e.event] || 'var(--text3)'}"></div>
-      <div class="activity-msg">${e.message}</div>
+      <div class="activity-msg">${msg}</div>
       <div class="activity-time">${dashTimeAgo(e.created_at) || ''}</div>
-    </div>
-  `).join('');
+    </div>`;
+  }).join('');
 
   if (btn) btn.style.display = entries.length >= 15 ? '' : 'none';
 }

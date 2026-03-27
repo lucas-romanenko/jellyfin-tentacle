@@ -127,6 +127,19 @@ def _run_sync_background(provider_id: int, sync_type: str):
             except Exception as e:
                 logger.error(f"[VOD sync] Jellyfin pipeline failed: {e}")
 
+            # Notify about new auto playlists available
+            try:
+                from routers.smartlists import _compute_auto_playlists
+                auto_pls = _compute_auto_playlists(db)
+                new_available = [p for p in auto_pls if not p["enabled"] and p["category"] == "source"]
+                if new_available:
+                    names = [p["name"] for p in new_available[:3]]
+                    suffix = f" and {len(new_available) - 3} more" if len(new_available) > 3 else ""
+                    log_activity(db, "new_playlists",
+                                 f"{len(new_available)} new playlist{'s' if len(new_available) != 1 else ''} available: {', '.join(names)}{suffix}")
+            except Exception as e:
+                logger.debug(f"[VOD sync] Auto playlist check failed: {e}")
+
         phase = "complete" if run.status == "completed" else "cancelled" if run.status == "cancelled" else "error"
         _notify_sync_progress(provider_id, phase, "", {
             **cumulative,

@@ -964,7 +964,7 @@ async function saveQuickList() {
 // ── PLAYLISTS PAGE ────────────────────────────────────────────────────────
 let _smartlistSortCache = {};
 
-async function loadTags() {
+async function loadPlaylistsPage() {
   // Fetch sort info for all playlists
   try {
     const data = await api('/api/smartlists');
@@ -973,50 +973,118 @@ async function loadTags() {
       _smartlistSortCache[sl.name] = { sort_by: sl.sort_by, sort_order: sl.sort_order };
     }
   } catch {}
+
+  // Show first-time banner
+  const banner = document.getElementById('auto-playlist-banner');
+  if (banner && !localStorage.getItem('tentacle_dismiss_auto_banner')) {
+    banner.style.display = '';
+  }
+
+  loadAutoPlaylists();
   loadTagRules();
-  loadListPlaylists();
+  loadHomeScreen();
 }
 
-async function loadListPlaylists() {
-  const el = document.getElementById('list-playlists-container');
+function dismissAutoPlaylistBanner() {
+  localStorage.setItem('tentacle_dismiss_auto_banner', '1');
+  const el = document.getElementById('auto-playlist-banner');
+  if (el) el.style.display = 'none';
+}
+
+function toggleHomeScreenSection() {
+  const body = document.getElementById('home-screen-body');
+  const chevron = document.getElementById('home-screen-chevron');
+  if (body.style.display === 'none') {
+    body.style.display = '';
+    chevron.style.transform = 'rotate(90deg)';
+  } else {
+    body.style.display = 'none';
+    chevron.style.transform = '';
+  }
+}
+
+// ── Auto Playlists ──────────────────────────────────────────────────────
+
+const _autoCategoryLabels = { source: 'Sources', list: 'Lists', builtin: 'Built-in' };
+const _autoCategoryOrder = ['source', 'list', 'builtin'];
+
+async function loadAutoPlaylists() {
+  const el = document.getElementById('auto-playlists-list');
   try {
-    const lists = await api('/api/lists');
-    if (!lists.length) {
-      el.innerHTML = `<div style="padding:16px;text-align:center;color:var(--text3);font-size:13px">
-        No list subscriptions yet. <a href="#" onclick="showPage('discover');setTimeout(()=>showDiscoverTab('lists'),100);return false" style="color:var(--accent)">Add a list</a> first.
+    const data = await api('/api/smartlists/auto-playlists');
+    const playlists = data.auto_playlists || [];
+
+    if (!playlists.length) {
+      el.innerHTML = `<div style="padding:24px;text-align:center;color:var(--text3);font-size:13px">
+        No auto playlists yet. Sync a provider, import a list, or scan Radarr to see playlists here.
       </div>`;
       return;
     }
 
-    el.innerHTML = lists.map(l => `
-      <div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)">
-        <label style="position:relative;display:inline-block;width:36px;height:20px;flex-shrink:0;cursor:pointer">
-          <input type="checkbox" ${l.playlist_enabled ? 'checked' : ''} onchange="toggleListPlaylist(${l.id})"
-            style="opacity:0;width:0;height:0;position:absolute">
-          <span style="position:absolute;top:0;left:0;right:0;bottom:0;background:${l.playlist_enabled ? 'var(--accent)' : 'var(--bg3)'};border-radius:10px;transition:0.2s"></span>
-          <span style="position:absolute;top:2px;left:${l.playlist_enabled ? '18px' : '2px'};width:16px;height:16px;background:white;border-radius:50%;transition:0.2s"></span>
-        </label>
-        <div style="flex:1;min-width:0">
-          <div style="font-size:13px;font-weight:500">${l.name}</div>
-          <div style="font-size:11px;color:var(--text3)">${l.last_item_count || 0} items · ${l.type}</div>
-        </div>
-        ${l.playlist_enabled ? _sortDropdown(l.tag) : ''}
-        <div style="font-size:11px;color:var(--text3);font-family:'DM Mono',monospace">${l.tag}</div>
-      </div>
-    `).join('');
+    // Group by category
+    const groups = {};
+    for (const p of playlists) {
+      const cat = p.category || 'other';
+      if (!groups[cat]) groups[cat] = [];
+      groups[cat].push(p);
+    }
+
+    let html = '';
+    for (const cat of _autoCategoryOrder) {
+      const items = groups[cat];
+      if (!items || !items.length) continue;
+      html += `<div style="padding:8px 16px 4px;font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:0.5px">${_autoCategoryLabels[cat] || cat}</div>`;
+      for (const p of items) {
+        const checked = p.enabled ? 'checked' : '';
+        const toggleBg = p.enabled ? 'var(--accent)' : 'var(--bg3)';
+        const togglePos = p.enabled ? '18px' : '2px';
+        const countBadge = p.item_count ? `<span style="font-size:11px;color:var(--text3);font-family:'DM Mono',monospace">${p.item_count}</span>` : '';
+        const sortDrop = p.enabled ? _sortDropdown(p.name) : '';
+        html += `
+          <div style="display:flex;align-items:center;gap:12px;padding:8px 16px;border-bottom:1px solid var(--border)">
+            <label style="position:relative;display:inline-block;width:36px;height:20px;flex-shrink:0;cursor:pointer">
+              <input type="checkbox" ${checked} onchange="toggleAutoPlaylist('${escapeAttr(p.key)}')"
+                style="opacity:0;width:0;height:0;position:absolute">
+              <span style="position:absolute;top:0;left:0;right:0;bottom:0;background:${toggleBg};border-radius:10px;transition:0.2s"></span>
+              <span style="position:absolute;top:2px;left:${togglePos};width:16px;height:16px;background:white;border-radius:50%;transition:0.2s"></span>
+            </label>
+            <div style="flex:1;min-width:0">
+              <div style="font-size:13px;font-weight:500">${p.name}</div>
+              <div style="font-size:11px;color:var(--text3)">${p.origin}</div>
+            </div>
+            ${sortDrop}
+            ${countBadge}
+          </div>`;
+      }
+    }
+    el.innerHTML = html;
+
+    // Hide banner if user already has enabled playlists
+    if (playlists.some(p => p.enabled)) {
+      dismissAutoPlaylistBanner();
+    }
   } catch (e) {
-    el.innerHTML = `<div style="padding:16px;color:var(--text3);font-size:13px">Failed to load lists</div>`;
+    el.innerHTML = `<div style="padding:16px;color:var(--text3);font-size:13px">Failed to load auto playlists</div>`;
   }
 }
 
-async function toggleListPlaylist(listId) {
+async function toggleAutoPlaylist(key) {
+  // Find current state from the checkbox (it already toggled)
+  const el = document.getElementById('auto-playlists-list');
+  const checkbox = el.querySelector(`input[onchange*="${CSS.escape(key)}"]`);
+  const enabled = checkbox ? checkbox.checked : true;
+
   try {
-    const r = await api(`/api/lists/${listId}/playlist-toggle`, { method: 'POST' });
-    toast(r.playlist_enabled ? 'Playlist enabled — syncing to Jellyfin' : 'Playlist disabled', 'success');
-    loadListPlaylists();
+    const r = await api('/api/smartlists/auto-playlists/toggle', {
+      method: 'POST',
+      body: { key, enabled },
+    });
+    toast(r.message || (enabled ? 'Playlist enabled' : 'Playlist disabled'));
+    // Reload to reflect updated state
+    setTimeout(() => loadAutoPlaylists(), 500);
   } catch (e) {
     toast(e.message, 'error');
-    loadListPlaylists();
+    loadAutoPlaylists();
   }
 }
 
@@ -1056,11 +1124,6 @@ async function syncPlaylistsToJellyfin() {
   } catch (e) {
     toast('Sync failed: ' + e.message, 'error');
   }
-}
-
-// ── HOME SCREEN PAGE ──────────────────────────────────────────────────────
-async function loadHomeScreenPage() {
-  loadHomeScreen();
 }
 
 async function loadListSubscriptions() {
@@ -1447,14 +1510,22 @@ async function loadHomeScreen() {
   try {
     const data = await api('/api/smartlists/home-config');
     if (!data.exists || !data.config.rows) {
-      statusEl.textContent = 'No config yet';
-      listEl.innerHTML = '<div class="empty-state" style="padding:24px"><p>No home config generated yet. Click "Push to Jellyfin" to create one.</p></div>';
+      statusEl.textContent = 'Not configured';
+      listEl.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text3);font-size:13px">Enable some auto playlists above, then add them as rows here.</div>';
       return;
     }
 
     const config = data.config;
     homeRows = (config.rows || []).sort((a, b) => a.order - b.order);
-    statusEl.innerHTML = `<span style="color:var(--green)">${homeRows.length} rows configured</span>`;
+    statusEl.innerHTML = `<span style="color:var(--green)">${homeRows.length} rows</span>`;
+
+    // Auto-expand if home screen has config
+    const body = document.getElementById('home-screen-body');
+    const chevron = document.getElementById('home-screen-chevron');
+    if (body && homeRows.length > 0) {
+      body.style.display = '';
+      if (chevron) chevron.style.transform = 'rotate(90deg)';
+    }
 
     // Populate hero dropdown from ALL available playlists, not just home rows
     try {
@@ -1758,10 +1829,10 @@ const RULE_FIELDS = [
   { value: 'genre', label: 'Genre', operators: ['contains'] },
   { value: 'rating', label: 'Rating', operators: ['greater_than', 'less_than'] },
   { value: 'year', label: 'Year', operators: ['equals', 'greater_than', 'less_than'] },
-  { value: 'source', label: 'Source (VOD)', operators: ['equals'], hint: 'VOD provider source — only applies to streamed content' },
-  { value: 'list', label: 'List', operators: ['equals'], hint: 'Content on a subscribed list' },
+  { value: 'source', label: 'Provider', operators: ['equals'] },
+  { value: 'list', label: 'Imported List', operators: ['equals'] },
   { value: 'runtime', label: 'Runtime (min)', operators: ['greater_than', 'less_than'] },
-  { value: 'downloaded', label: 'Downloaded', operators: ['equals'], hint: 'Content downloaded via Radarr' },
+  { value: 'downloaded', label: 'Downloaded', operators: ['equals'] },
 ];
 
 const OP_LABELS = { contains: 'contains', equals: 'equals', greater_than: '>', less_than: '<' };
@@ -1806,7 +1877,7 @@ async function loadTagRules() {
         let display = `${fld ? fld.label : c.field} ${OP_LABELS[c.operator] || c.operator} ${c.value}`;
         if (c.field === 'downloaded') display = c.value === 'yes' ? 'Downloaded (Radarr)' : 'VOD only';
         else if (c.field === 'list') display = `List: ${c.value}`;
-        else if (c.field === 'source') display = `Source: ${c.value}`;
+        else if (c.field === 'source') display = `Provider: ${c.value}`;
         return `<span class="badge badge-gray">${display}</span>`;
       }).join(' ');
 
@@ -1818,7 +1889,7 @@ async function loadTagRules() {
               <span class="badge badge-accent">${typeLabels[rule.apply_to] || rule.apply_to}</span>
               ${condStr}
             </div>
-            <div class="list-meta" style="margin-top:4px">Jellyfin playlist: <strong>${rule.output_tag}</strong></div>
+            <div class="list-meta" style="margin-top:4px">${rule.active ? '<span style="color:var(--green)">Active</span>' : '<span style="color:var(--text3)">Inactive</span>'}</div>
           </div>
           <div style="display:flex;gap:6px;align-items:center">
             ${_sortDropdown(rule.output_tag)}
@@ -1844,7 +1915,7 @@ async function _ensureConditionOptions() {
   return _conditionOptions;
 }
 
-function showAddTagRule() {
+async function showAddTagRule() {
   document.getElementById('tag-rule-modal-title').textContent = 'Create Playlist';
   document.getElementById('edit-rule-id').value = '';
   document.getElementById('tr-name').value = '';
@@ -1853,8 +1924,57 @@ function showAddTagRule() {
   document.getElementById('tr-apply-to').value = 'both';
   document.getElementById('tr-active').checked = true;
   document.getElementById('tr-conditions').innerHTML = '';
-  addRuleCondition();
+
+  // Reset friendly builder
+  const radios = document.querySelectorAll('input[name="tr-content-source"]');
+  for (const r of radios) r.checked = r.value === 'all';
+  document.getElementById('tr-source-pick').style.display = 'none';
+  document.getElementById('tr-list-pick').style.display = 'none';
+  document.getElementById('tr-filter-genre').value = '';
+  document.getElementById('tr-filter-rating').value = '';
+  document.getElementById('tr-filter-year').value = '';
+  document.getElementById('tr-source-section').style.display = '';
+  document.getElementById('tr-simple-filters').style.display = '';
+  document.getElementById('tr-advanced-section').style.display = 'none';
+  document.getElementById('tr-advanced-label').textContent = 'Show advanced filters';
+
+  // Populate source/list dropdowns
+  await _ensureConditionOptions();
+  const srcPick = document.getElementById('tr-source-pick');
+  srcPick.innerHTML = '<option value="">Select...</option>' +
+    (_conditionOptions?.sources || []).map(s => `<option value="${escapeAttr(s)}">${s}</option>`).join('');
+  const listPick = document.getElementById('tr-list-pick');
+  listPick.innerHTML = '<option value="">Select...</option>' +
+    (_conditionOptions?.lists || []).map(l => `<option value="${escapeAttr(l.tag)}">${l.name}</option>`).join('');
+
   showModal('modal-tag-rule');
+}
+
+function onContentSourceChange() {
+  const selected = document.querySelector('input[name="tr-content-source"]:checked')?.value || 'all';
+  document.getElementById('tr-source-pick').style.display = selected === 'source' ? '' : 'none';
+  document.getElementById('tr-list-pick').style.display = selected === 'list' ? '' : 'none';
+}
+
+function toggleAdvancedFilters() {
+  const section = document.getElementById('tr-advanced-section');
+  const label = document.getElementById('tr-advanced-label');
+  const sourceSection = document.getElementById('tr-source-section');
+  const simpleFilters = document.getElementById('tr-simple-filters');
+  if (section.style.display === 'none') {
+    section.style.display = '';
+    sourceSection.style.display = 'none';
+    simpleFilters.style.display = 'none';
+    label.textContent = 'Use simple builder';
+    if (!document.getElementById('tr-conditions').children.length) {
+      addRuleCondition();
+    }
+  } else {
+    section.style.display = 'none';
+    sourceSection.style.display = '';
+    simpleFilters.style.display = '';
+    label.textContent = 'Show advanced filters';
+  }
 }
 
 function onCollectionNameInput() {
@@ -1881,6 +2001,13 @@ async function editTagRule(id) {
   const condEl = document.getElementById('tr-conditions');
   condEl.innerHTML = '';
   for (const cond of (rule.conditions || [])) addRuleCondition(cond.field, cond.operator, cond.value);
+
+  // Editing always uses advanced mode (existing rules have raw conditions)
+  document.getElementById('tr-source-section').style.display = 'none';
+  document.getElementById('tr-simple-filters').style.display = 'none';
+  document.getElementById('tr-advanced-section').style.display = '';
+  document.getElementById('tr-advanced-label').textContent = 'Use simple builder';
+
   showModal('modal-tag-rule');
 }
 
@@ -1954,14 +2081,42 @@ async function saveTagRule() {
   if (!output_tag && name) output_tag = name;
   if (!name || !output_tag) { toast('Playlist name is required', 'error'); return; }
 
-  const condRows = document.getElementById('tr-conditions').children;
+  const isAdvanced = document.getElementById('tr-advanced-section').style.display !== 'none';
   const conditions = [];
-  for (const row of condRows) {
-    const field = row.querySelector('[data-cond-field]').value;
-    const operator = row.querySelector('[data-cond-op]').value;
-    const value = row.querySelector('[data-cond-val]').value.trim();
-    if (!value) { toast('All condition values are required', 'error'); return; }
-    conditions.push({ field, operator, value });
+
+  if (isAdvanced) {
+    // Read from raw condition builder
+    const condRows = document.getElementById('tr-conditions').children;
+    for (const row of condRows) {
+      const field = row.querySelector('[data-cond-field]').value;
+      const operator = row.querySelector('[data-cond-op]').value;
+      const value = row.querySelector('[data-cond-val]').value.trim();
+      if (!value) { toast('All condition values are required', 'error'); return; }
+      conditions.push({ field, operator, value });
+    }
+  } else {
+    // Build from friendly builder
+    const contentSource = document.querySelector('input[name="tr-content-source"]:checked')?.value || 'all';
+    if (contentSource === 'source') {
+      const src = document.getElementById('tr-source-pick').value;
+      if (!src) { toast('Select a provider source', 'error'); return; }
+      conditions.push({ field: 'source', operator: 'equals', value: src });
+    } else if (contentSource === 'list') {
+      const lst = document.getElementById('tr-list-pick').value;
+      if (!lst) { toast('Select a list', 'error'); return; }
+      conditions.push({ field: 'list', operator: 'equals', value: lst });
+    } else if (contentSource === 'downloaded') {
+      conditions.push({ field: 'downloaded', operator: 'equals', value: 'yes' });
+    }
+
+    const genre = document.getElementById('tr-filter-genre').value.trim();
+    if (genre) conditions.push({ field: 'genre', operator: 'contains', value: genre });
+
+    const rating = document.getElementById('tr-filter-rating').value.trim();
+    if (rating) conditions.push({ field: 'rating', operator: 'greater_than', value: rating });
+
+    const year = document.getElementById('tr-filter-year').value.trim();
+    if (year) conditions.push({ field: 'year', operator: 'greater_than', value: year });
   }
 
   if (!conditions.length) { toast('At least one filter is required', 'error'); return; }
@@ -3319,11 +3474,11 @@ async function vodPreviewSync() {
     fetchList, deleteList, showListCoverage, showAddList, saveList,
     // Coverage modal
     addAllMissingToRadarr, addAllMissingToArr, setCoverageFilter,
-    // Tags page
-    loadTags, showAddTagRule, editTagRule, deleteTagRule, saveTagRule,
+    // Playlists page (unified: auto playlists + custom + home screen)
+    loadPlaylistsPage, loadAutoPlaylists, toggleAutoPlaylist, dismissAutoPlaylistBanner, toggleHomeScreenSection,
+    showAddTagRule, editTagRule, deleteTagRule, saveTagRule, onContentSourceChange, toggleAdvancedFilters,
     addRuleCondition, updateCondOps, onCollectionNameInput, syncSmartLists, refreshTags, syncPlaylistsToJellyfin, setPlaylistSort,
-    // Home Screen page
-    loadHomeScreenPage, pushHomeConfig, updateHeroPick, updateHeroSort, saveRowMaxItems, saveRowMaxItemsByKey,
+    pushHomeConfig, updateHeroPick, updateHeroSort, saveRowMaxItems, saveRowMaxItemsByKey,
     showAddHomeRow, hideAddHomeRow, confirmAddHomeRow, removeHomeRow, removeHomeRowByKey,
     homeRowDragStart, homeRowDragOver, homeRowDrop, rowKey,
     // Library

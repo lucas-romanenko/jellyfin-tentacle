@@ -297,6 +297,14 @@ class HomeRowOrder(Base):
     display_order = Column(Integer, nullable=False, default=0)
 
 
+# ─── Auto Playlist Toggles ────────────────────────────────────────────────────
+
+class AutoPlaylistToggle(Base):
+    __tablename__ = "auto_playlist_toggles"
+    key = Column(String, primary_key=True)  # e.g. "source:Netflix:movies", "builtin:recently_added_movies"
+    enabled = Column(Boolean, default=False)
+
+
 # ─── Activity Log ─────────────────────────────────────────────────────────────
 
 class ActivityLog(Base):

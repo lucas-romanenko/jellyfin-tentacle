@@ -11,7 +11,11 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from models.database import get_db, get_setting
+from sqlalchemy import func
+from models.database import (
+    get_db, get_setting, Movie, Series, Provider,
+    ListSubscription, ListItem, AutoPlaylistToggle,
+)
 from services.smartlists import (
     get_desired_smartlists, sync_smartlists, _scan_existing,
     write_home_config, _notify_jellyfin_plugin, refresh_smartlist_playlists,
@@ -379,3 +383,172 @@ def set_hero_sort(req: HeroSortRequest, db: Session = Depends(get_db)):
     _write_home_json(db, config)
     logger.info(f"Updated hero sort: {req.sort_by} {req.sort_order}")
     return {"success": True}
+
+
+# ── Auto Playlists ─────────────────────────────────────────────────────────
+
+def _compute_auto_playlists(db: Session) -> list:
+    """Compute all possible auto playlists from synced content, lists, and built-ins."""
+    results = []
+
+    # ── Source playlists (from IPTV providers) ──
+    # Get distinct source_tags and which media types have content
+    movie_tags = db.query(
+        Movie.source_tag, Movie.provider_id, func.count(Movie.id)
+    ).filter(
+        Movie.source_tag.isnot(None), Movie.source_tag != "",
+        Movie.source != "radarr",
+    ).group_by(Movie.source_tag, Movie.provider_id).all()
+
+    series_tags = db.query(
+        Series.source_tag, Series.provider_id, func.count(Series.id)
+    ).filter(
+        Series.source_tag.isnot(None), Series.source_tag != "",
+        Series.source != "sonarr",
+    ).group_by(Series.source_tag, Series.provider_id).all()
+
+    # Map provider_id to name
+    providers = {p.id: p.name for p in db.query(Provider).all()}
+
+    # Build source playlists
+    seen_source_keys = set()
+    for source_tag, provider_id, count in movie_tags:
+        key = f"source:{source_tag}:movies"
+        if key not in seen_source_keys:
+            seen_source_keys.add(key)
+            results.append({
+                "key": key,
+                "name": f"{source_tag} Movies",
+                "tag": f"{source_tag} Movies",
+                "category": "source",
+                "origin": f"Provider: {providers.get(provider_id, 'Unknown')}",
+                "media_type": ["Movie"],
+                "item_count": count,
+            })
+
+    for source_tag, provider_id, count in series_tags:
+        key = f"source:{source_tag}:series"
+        if key not in seen_source_keys:
+            seen_source_keys.add(key)
+            results.append({
+                "key": key,
+                "name": f"{source_tag} TV",
+                "tag": f"{source_tag} TV",
+                "category": "source",
+                "origin": f"Provider: {providers.get(provider_id, 'Unknown')}",
+                "media_type": ["Series"],
+                "item_count": count,
+            })
+
+    # ── List playlists ──
+    lists = db.query(ListSubscription).filter(ListSubscription.active == True).all()
+    for lst in lists:
+        item_count = db.query(func.count(ListItem.id)).filter(
+            ListItem.list_id == lst.id
+        ).scalar() or 0
+        results.append({
+            "key": f"list:{lst.id}",
+            "name": lst.tag or lst.name,
+            "tag": lst.tag,
+            "category": "list",
+            "origin": f"{lst.type.replace('_', ' ').title()} list",
+            "media_type": ["Movie", "Series"],
+            "item_count": item_count,
+            "list_id": lst.id,
+            "playlist_enabled": lst.playlist_enabled,
+        })
+
+    # ── Built-in playlists ──
+    radarr_count = db.query(func.count(Movie.id)).filter(Movie.source == "radarr").scalar() or 0
+    sonarr_count = db.query(func.count(Series.id)).filter(Series.source == "sonarr").scalar() or 0
+    from datetime import datetime, timedelta
+    recently_added_days = int(get_setting(db, "recently_added_days", "30"))
+    cutoff = datetime.utcnow() - timedelta(days=recently_added_days)
+    recent_movies = db.query(func.count(Movie.id)).filter(Movie.date_added >= cutoff).scalar() or 0
+    recent_series = db.query(func.count(Series.id)).filter(Series.date_added >= cutoff).scalar() or 0
+
+    builtins = [
+        {"key": "builtin:recently_added_movies", "name": "Recently Added Movies",
+         "tag": "Recently Added Movies", "origin": f"Last {recently_added_days} days",
+         "media_type": ["Movie"], "item_count": recent_movies},
+        {"key": "builtin:recently_added_tv", "name": "Recently Added TV",
+         "tag": "Recently Added TV", "origin": f"Last {recently_added_days} days",
+         "media_type": ["Series"], "item_count": recent_series},
+    ]
+    if radarr_count:
+        builtins.append({"key": "builtin:downloaded_movies", "name": "Downloaded Movies",
+                         "tag": "Downloaded Movies", "origin": "From Radarr",
+                         "media_type": ["Movie"], "item_count": radarr_count})
+    if sonarr_count:
+        builtins.append({"key": "builtin:downloaded_tv", "name": "Downloaded TV",
+                         "tag": "Downloaded TV", "origin": "From Sonarr",
+                         "media_type": ["Series"], "item_count": sonarr_count})
+
+    for b in builtins:
+        b["category"] = "builtin"
+    results.extend(builtins)
+
+    # ── Resolve enabled state from DB ──
+    toggles = {t.key: t.enabled for t in db.query(AutoPlaylistToggle).all()}
+    for r in results:
+        if r["category"] == "list":
+            # Lists use their own playlist_enabled field
+            r["enabled"] = r.pop("playlist_enabled", False)
+        else:
+            r["enabled"] = toggles.get(r["key"], False)
+
+    return results
+
+
+@router.get("/auto-playlists")
+def list_auto_playlists(db: Session = Depends(get_db)):
+    """Return all possible auto playlists with enabled state."""
+    return {"auto_playlists": _compute_auto_playlists(db)}
+
+
+class AutoPlaylistToggleRequest(BaseModel):
+    key: str
+    enabled: bool
+
+
+@router.post("/auto-playlists/toggle")
+def toggle_auto_playlist(req: AutoPlaylistToggleRequest, db: Session = Depends(get_db)):
+    """Toggle an auto playlist on/off. Triggers sync to Jellyfin."""
+    import threading
+
+    # List playlists use ListSubscription.playlist_enabled
+    if req.key.startswith("list:"):
+        list_id = int(req.key.replace("list:", ""))
+        lst = db.query(ListSubscription).filter(ListSubscription.id == list_id).first()
+        if not lst:
+            return {"success": False, "message": "List not found"}
+        lst.playlist_enabled = req.enabled
+        db.commit()
+    else:
+        # Source / built-in playlists use AutoPlaylistToggle
+        toggle = db.query(AutoPlaylistToggle).filter(AutoPlaylistToggle.key == req.key).first()
+        if toggle:
+            toggle.enabled = req.enabled
+        else:
+            db.add(AutoPlaylistToggle(key=req.key, enabled=req.enabled))
+        db.commit()
+
+    # Background sync to Jellyfin
+    def _sync_bg():
+        from models.database import SessionLocal
+        bg_db = SessionLocal()
+        try:
+            sync_smartlists(bg_db)
+            refresh_smartlist_playlists(bg_db)
+            write_home_config(bg_db)
+            _notify_jellyfin_plugin(bg_db)
+        except Exception as e:
+            logger.error(f"Auto playlist sync failed: {e}")
+        finally:
+            bg_db.close()
+
+    thread = threading.Thread(target=_sync_bg, daemon=True)
+    thread.start()
+
+    action = "enabled" if req.enabled else "disabled"
+    return {"success": True, "message": f"Playlist {action}", "enabled": req.enabled}
