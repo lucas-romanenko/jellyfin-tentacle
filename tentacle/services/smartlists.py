@@ -381,17 +381,7 @@ def write_home_config(db: Session) -> dict:
             r["display_name"] = name_by_id.get(r["playlist_id"], r["display_name"])
             rows.append(r)
 
-    # Bootstrap: first-time generation adds all SmartLists so users start with content.
-    if not existing_rows:
-        existing_ids = set()
-        new_smartlists = [sl for sl in smartlists if sl["playlist_id"] not in existing_ids]
-        new_smartlists.sort(key=lambda x: x["name"].lower())
-        for sl in new_smartlists:
-            rows.append({
-                "type": "playlist",
-                "playlist_id": sl["playlist_id"],
-                "display_name": sl["name"],
-            })
+    # No auto-bootstrap: users add rows manually via the Home Screen page.
 
     # Renumber and set max_items for playlist rows
     for i, r in enumerate(rows, start=1):
@@ -399,18 +389,9 @@ def write_home_config(db: Session) -> dict:
         if r.get("type", "playlist") == "playlist":
             r.setdefault("max_items", home_row_limit)
 
-    # Hero: preserve existing pick only if its playlist still exists, otherwise reset
+    # Hero: preserve existing pick only if its playlist still exists, otherwise disabled
     if existing_hero and existing_hero.get("playlist_id") in current_ids:
         hero = existing_hero
-    elif smartlists:
-        hero = {
-            "enabled": True,
-            "playlist_id": smartlists[0]["playlist_id"],
-            "display_name": smartlists[0]["name"],
-            "sort_by": "random",
-            "sort_order": "Descending",
-            "require_logo": True,
-        }
     else:
         hero = {"enabled": False, "playlist_id": "", "display_name": "", "sort_by": "random", "sort_order": "Descending", "require_logo": True}
 
