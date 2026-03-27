@@ -2,7 +2,9 @@
 
 **Turn Jellyfin into a full-featured streaming platform.**
 
-<!-- Banner coming soon -->
+<p align="center">
+  <img src="docs/images/banner.png" alt="Jellyfin Tentacle" width="800">
+</p>
 
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 [![Jellyfin](https://img.shields.io/badge/Jellyfin-10.10+-00A4DC?logo=jellyfin&logoColor=white)](https://jellyfin.org/)
