@@ -184,8 +184,8 @@ def sync_provider(
     from services.tmdb import get_tmdb_token
     bearer_token = get_tmdb_token(db)
     data_dir = get_setting(db, "data_dir", "/data")
-    vod_movies_path = Path("/mnt/media/vod/Movies")
-    vod_series_path = Path("/mnt/media/vod/Series")
+    vod_movies_path = Path("/media/vod/movies")
+    vod_series_path = Path("/media/vod/shows")
     match_threshold = float(get_setting(db, "tmdb_match_threshold", "0.7"))
     recently_added_days = int(get_setting(db, "recently_added_days", "30"))
     require_tmdb = provider.require_tmdb_match if provider.require_tmdb_match is not None else True

@@ -77,10 +77,11 @@ tentacle:
   ports:
     - 8888:8888
   volumes:
-    - ./tentacle-data:/data                    # Required — database, config, cache
-    - /your/vod:/mnt/media/vod               # IPTV VOD content (creates Movies/ and Series/ inside)
-    - /your/movies:/mnt/media/movies           # Same folder Radarr downloads to
-    - /your/tv:/mnt/media/tv                   # Same folder Sonarr downloads to
+    - ./tentacle-data:/data                        # Required — database and config
+    - /your/movies:/media/movies                   # Radarr movie downloads
+    - /your/shows:/media/shows                     # Sonarr TV downloads
+    - /your/vod-movies:/media/vod/movies           # IPTV VOD movies
+    - /your/vod-shows:/media/vod/shows             # IPTV VOD series
   restart: unless-stopped
 ```
 
@@ -91,9 +92,9 @@ docker compose up -d
 Open `http://localhost:8888` — the setup wizard will guide you through connecting Jellyfin. Only a Jellyfin URL and API key are required. TMDB metadata works out of the box with a built-in key.
 
 > **Volume notes:**
-> - `./tentacle-data:/data` is the only required volume. The other three are optional depending on which features you use.
-> - Only mount what you need — skip `/mnt/media/movies` and `/mnt/media/tv` if you don't use Radarr/Sonarr, skip `/mnt/media/vod` if you don't have an IPTV provider.
-> - The right side of each mount (`/data`, `/mnt/media/...`) is fixed — don't change these. Only change the left side to match your host paths.
+> - `./tentacle-data:/data` is the only required volume. The other four are optional depending on which features you use.
+> - Only mount what you need — skip `/media/movies` and `/media/shows` if you don't use Radarr/Sonarr, skip `/media/vod/...` if you don't have an IPTV provider.
+> - The right side of each mount (`/data`, `/media/...`) is fixed — don't change these. Only change the left side to match your host paths.
 > - Settings → Library Paths shows which mounts Tentacle can see. Green = mounted, red = missing.
 
 ### After Starting

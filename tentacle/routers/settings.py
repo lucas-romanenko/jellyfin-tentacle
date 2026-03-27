@@ -204,12 +204,14 @@ def check_paths():
     paths = [
         {"key": "data", "path": "/data", "label": "Database & Config", "required": True,
          "mount_example": "./tentacle-data:/data"},
-        {"key": "vod", "path": "/mnt/media/vod", "label": "VOD Content",
-         "mount_example": "/your/vod:/mnt/media/vod"},
-        {"key": "movies", "path": "/mnt/media/movies", "label": "Radarr Movies",
-         "mount_example": "/your/movies:/mnt/media/movies"},
-        {"key": "tv", "path": "/mnt/media/tv", "label": "Sonarr TV Shows",
-         "mount_example": "/your/tv:/mnt/media/tv"},
+        {"key": "vod_movies", "path": "/media/vod/movies", "label": "VOD Movies",
+         "mount_example": "/your/vod-movies:/media/vod/movies"},
+        {"key": "vod_shows", "path": "/media/vod/shows", "label": "VOD Shows",
+         "mount_example": "/your/vod-shows:/media/vod/shows"},
+        {"key": "movies", "path": "/media/movies", "label": "Radarr Movies",
+         "mount_example": "/your/movies:/media/movies"},
+        {"key": "shows", "path": "/media/shows", "label": "Sonarr TV Shows",
+         "mount_example": "/your/shows:/media/shows"},
     ]
     result = {}
     for info in paths:
@@ -244,11 +246,11 @@ def check_stale_files(db: Session = Depends(get_db)):
         return {"show": False}
 
     # Scan VOD folders for existing .strm / .nfo files
-    movies_path = Path("/mnt/media/vod/Movies")
-    series_path = Path("/mnt/media/vod/Series")
+    movies_path = Path("/media/vod/movies")
+    shows_path = Path("/media/vod/shows")
     strm_count = 0
     nfo_count = 0
-    for vod_dir in [movies_path, series_path]:
+    for vod_dir in [movies_path, shows_path]:
         if vod_dir.exists():
             strm_count += len(list(vod_dir.rglob("*.strm")))
             nfo_count += len(list(vod_dir.rglob("*.nfo")))
@@ -263,12 +265,12 @@ def check_stale_files(db: Session = Depends(get_db)):
 def delete_stale_files(db: Session = Depends(get_db)):
     """Delete all .strm and .nfo files in VOD folders, then remove empty directories."""
     import shutil
-    movies_path = Path("/mnt/media/vod/Movies")
-    series_path = Path("/mnt/media/vod/Series")
+    movies_path = Path("/media/vod/movies")
+    shows_path = Path("/media/vod/shows")
     deleted_strm = 0
     deleted_nfo = 0
 
-    for vod_dir in [movies_path, series_path]:
+    for vod_dir in [movies_path, shows_path]:
         if not vod_dir.exists():
             continue
         for f in vod_dir.rglob("*.strm"):
