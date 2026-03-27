@@ -1557,6 +1557,7 @@ async function homeRowDrop(e) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ order: homeRows.map(r => rowKey(r)) }),
     });
+    pushHomeConfig();
   } catch (err) {
     toast('Failed to save row order: ' + err.message, 'error');
   }
@@ -1705,6 +1706,7 @@ async function confirmAddHomeRow() {
       toast('Row added');
       hideAddHomeRow();
       loadHomeScreen();
+      pushHomeConfig();
     } else {
       toast(r.message || 'Failed to add row', 'error');
     }
@@ -1723,6 +1725,7 @@ async function removeHomeRow(playlistId) {
     if (r.success) {
       toast('Row removed');
       loadHomeScreen();
+      pushHomeConfig();
     } else {
       toast(r.message || 'Failed to remove row', 'error');
     }
@@ -1741,6 +1744,7 @@ async function removeHomeRowByKey(key) {
     if (r.success) {
       toast('Row removed');
       loadHomeScreen();
+      pushHomeConfig();
     } else {
       toast(r.message || 'Failed to remove row', 'error');
     }

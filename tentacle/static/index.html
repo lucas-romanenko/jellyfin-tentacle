@@ -1022,7 +1022,7 @@ td.primary { color: var(--text); font-weight: 500; }
               <div class="page-subtitle">System status and recent activity</div>
             </div>
             <div style="display:flex;gap:8px;align-items:center">
-              <button class="btn btn-primary" id="sync-now-btn" onclick="syncNow()">Sync Now</button>
+              <button class="btn btn-primary" id="sync-now-btn" onclick="syncNow()">Sync All</button>
               <button class="btn btn-danger" id="sync-cancel-btn" onclick="cancelSync()" style="display:none">Cancel</button>
             </div>
           </div>
@@ -1066,6 +1066,15 @@ td.primary { color: var(--text); font-weight: 500; }
               <div class="dash-status-time" id="time-jellyfin">—</div>
             </div>
           </div>
+        </div>
+
+        <!-- Getting Started checklist (shown for new users) -->
+        <div class="card" id="getting-started" style="display:none;margin-bottom:16px;border-left:3px solid var(--accent)">
+          <div class="card-header">
+            <div class="card-title">Getting Started</div>
+            <button class="btn btn-secondary btn-sm" onclick="dismissGettingStarted()" style="font-size:11px">Dismiss</button>
+          </div>
+          <div id="getting-started-items" style="padding:4px 0"></div>
         </div>
 
         <!-- Sync progress bar (hidden by default) -->
@@ -1143,13 +1152,14 @@ td.primary { color: var(--text); font-weight: 500; }
           </div>
         </div>
 
-        <!-- Advanced actions + Live logs -->
+        <!-- Advanced actions (collapsible) + Live logs -->
         <div style="display:grid;grid-template-columns:280px 1fr;gap:16px">
           <div class="card">
-            <div class="card-header">
-              <div class="card-title">Actions</div>
+            <div class="card-header" style="cursor:pointer" onclick="toggleAdvancedActions()">
+              <div class="card-title">Advanced</div>
+              <span id="advanced-toggle" style="font-size:11px;color:var(--text3)">&#9656; Show</span>
             </div>
-            <div style="padding:4px 0;display:flex;flex-direction:column;gap:6px">
+            <div id="advanced-actions-body" style="display:none;padding:4px 0;flex-direction:column;gap:6px">
               <button class="btn btn-secondary btn-sm" style="width:100%;text-align:left" onclick="runSync('movies')" id="dash-btn-vod-movies">Sync VOD Movies</button>
               <button class="btn btn-secondary btn-sm" style="width:100%;text-align:left" onclick="runSync('series')" id="dash-btn-vod-series">Sync VOD Series</button>
               <button class="btn btn-secondary btn-sm" style="width:100%;text-align:left" onclick="scanRadarr()" id="radarr-scan-btn">Scan Radarr</button>
@@ -1256,15 +1266,9 @@ td.primary { color: var(--text); font-weight: 500; }
             </div>
           </div>
 
-          <!-- Radarr/Sonarr quick actions -->
-          <div class="card">
-            <div class="card-header"><div class="card-title">Integrations</div></div>
-            <div style="padding:8px 0;display:flex;gap:8px;flex-wrap:wrap">
-              <button class="btn btn-secondary btn-sm" onclick="scanRadarr()">Scan Radarr</button>
-              <button class="btn btn-secondary btn-sm" onclick="scanSonarr()">Scan Sonarr</button>
-              <button class="btn btn-secondary btn-sm" onclick="dashRefreshTags(this)">Push Tags to Jellyfin</button>
-              <button class="btn btn-secondary btn-sm" onclick="writeNfos(this)">Rewrite NFO Files</button>
-            </div>
+          <!-- VOD sync info: full pipeline runs automatically -->
+          <div style="padding:8px 0;font-size:12px;color:var(--text3)">
+            After syncing, Tentacle automatically scans Jellyfin, pushes tags, and updates playlists.
           </div>
         </div>
       </div>
@@ -1670,7 +1674,6 @@ td.primary { color: var(--text); font-weight: 500; }
             </div>
             <div style="display:flex;gap:8px">
               <button class="btn btn-secondary" onclick="showAddHomeRow()">+ Add Row</button>
-              <button class="btn btn-primary" onclick="pushHomeConfig()">Push to Jellyfin</button>
             </div>
           </div>
         </div>
@@ -2321,6 +2324,7 @@ td.primary { color: var(--text); font-weight: 500; }
       <div class="setup-pip" data-step="3"></div>
       <div class="setup-pip" data-step="4"></div>
       <div class="setup-pip" data-step="5"></div>
+      <div class="setup-pip" data-step="6"></div>
     </div>
 
     <!-- Step 1: Jellyfin connection -->
@@ -2480,11 +2484,51 @@ td.primary { color: var(--text); font-weight: 500; }
         <a href="#" onclick="skipSetup();return false" style="color:var(--text3);font-size:12px;text-decoration:none">Skip everything — I'll configure later</a>
       </div>
     </div>
+
+    <!-- Step 6: Install Jellyfin Plugin -->
+    <div class="setup-step" id="setup-step-6" style="display:none">
+      <div style="font-size:28px;margin-bottom:16px">🧩</div>
+      <h2>Install the Jellyfin Plugin</h2>
+      <p>The Tentacle plugin adds a custom home screen and discover tab to Jellyfin. It's optional but recommended.</p>
+
+      <div style="background:var(--bg2);border-radius:8px;padding:16px;margin:16px 0">
+        <div style="font-weight:600;margin-bottom:12px">How to install:</div>
+        <ol style="margin:0;padding-left:20px;line-height:2">
+          <li>Open <strong>Jellyfin Dashboard → Plugins → Repositories</strong></li>
+          <li>Click <strong>+</strong> to add a new repository</li>
+          <li>Paste the manifest URL below and name it <strong>Tentacle</strong></li>
+          <li>Go to <strong>Catalog</strong>, find <strong>Tentacle</strong>, click <strong>Install</strong></li>
+          <li><strong>Restart Jellyfin</strong> to activate the plugin</li>
+        </ol>
+      </div>
+
+      <div class="form-group">
+        <div class="form-label">Plugin Manifest URL</div>
+        <div style="display:flex;gap:8px">
+          <input class="form-input mono" id="setup-plugin-url" readonly
+            value="https://raw.githubusercontent.com/lucas-romanenko/jellyfin-tentacle/main/tentacle-plugin/manifest.json"
+            style="font-size:12px">
+          <button class="btn btn-secondary" onclick="copyPluginUrl()" style="white-space:nowrap">Copy</button>
+        </div>
+      </div>
+
+      <div style="background:var(--bg2);border-radius:8px;padding:12px;margin:12px 0;font-size:13px;color:var(--text2)">
+        After installing, go to <strong>Jellyfin → Plugins → Tentacle → Settings</strong> and set the Tentacle URL to this server's address.
+      </div>
+
+      <div style="display:flex;gap:8px;margin-top:16px">
+        <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="setupGoTo(5)">← Back</button>
+        <button class="btn btn-primary" style="flex:1;justify-content:center" onclick="finishSetup()">Done →</button>
+      </div>
+      <div style="text-align:center;margin-top:12px">
+        <a href="#" onclick="finishSetup();return false" style="color:var(--text3);font-size:12px;text-decoration:none">Skip — I'll install later</a>
+      </div>
+    </div>
   </div>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<script src="/static/js/app.js?v=14"></script>
-<script src="/static/js/pages.js?v=14"></script>
+<script src="/static/js/app.js?v=15"></script>
+<script src="/static/js/pages.js?v=15"></script>
 </body>
 </html>

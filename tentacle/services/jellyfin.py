@@ -453,3 +453,163 @@ class JellyfinService:
     def get_item_by_id(self, item_id: str) -> Optional[dict]:
         """Check if an item exists by ID."""
         return self._get(self._item_path(item_id))
+
+    def wait_for_library_scan(self, expected_count: int = 0, media_type: str = "Movie",
+                              max_wait: int = 120, poll_interval: int = 10) -> bool:
+        """Wait for a library scan to complete by polling item count.
+
+        Triggers a scan, then polls until item count stabilizes or increases
+        past expected_count. Returns True if scan appears complete.
+        """
+        import time
+
+        self.trigger_library_scan()
+        logger.info(f"[Jellyfin] Triggered library scan, waiting for indexing (max {max_wait}s)...")
+
+        # Give Jellyfin a moment to start scanning
+        time.sleep(5)
+
+        prev_count = 0
+        stable_checks = 0
+        elapsed = 5
+
+        while elapsed < max_wait:
+            items = self._fetch_all_items(media_type)
+            current_count = len(items)
+
+            if current_count == prev_count and current_count > 0:
+                stable_checks += 1
+                if stable_checks >= 2:
+                    logger.info(f"[Jellyfin] Library scan appears complete: {current_count} {media_type} items (stable)")
+                    return True
+            else:
+                stable_checks = 0
+
+            if expected_count > 0 and current_count >= expected_count:
+                logger.info(f"[Jellyfin] Library scan complete: {current_count} >= {expected_count} expected {media_type} items")
+                return True
+
+            prev_count = current_count
+            time.sleep(poll_interval)
+            elapsed += poll_interval
+
+        logger.warning(f"[Jellyfin] Library scan wait timed out after {max_wait}s")
+        return False
+
+
+def push_tags_to_jellyfin(db, log_prefix: str = "Pipeline") -> int:
+    """Push tags from Tentacle DB to Jellyfin for all movies and series.
+
+    Shared helper used by VOD sync, nightly sync, and refresh-tags.
+    Returns total number of items successfully tagged.
+    """
+    from models.database import Movie, Series, get_setting
+
+    jf_url = get_setting(db, "jellyfin_url")
+    jf_key = get_setting(db, "jellyfin_api_key")
+    jf_uid = get_setting(db, "jellyfin_user_id", "")
+    if not jf_url or not jf_key:
+        logger.info(f"[{log_prefix}] Jellyfin not configured — skipping tag push")
+        return 0
+
+    jf = JellyfinService(jf_url, jf_key, jf_uid)
+    jf_tagged = 0
+
+    # Push movie tags
+    jf_movie_lookup, jf_movie_title_lookup = jf.get_tmdb_lookup_with_fallback("Movie")
+    for movie in db.query(Movie).filter(Movie.tags.isnot(None)).all():
+        try:
+            jf_item = jf_movie_lookup.get(movie.tmdb_id)
+            if not jf_item and movie.title:
+                norm = JellyfinService._normalize_title(movie.title)
+                jf_item = jf_movie_title_lookup.get((norm, str(movie.year or "")))
+                if not jf_item:
+                    jf_item = jf_movie_title_lookup.get((norm, ""))
+            if jf_item:
+                existing_tags = set(jf_item.get("Tags", []))
+                desired_tags = set(movie.tags)
+                if not desired_tags.issubset(existing_tags):
+                    merged = list(existing_tags | desired_tags)
+                    if jf.set_item_tags(jf_item["Id"], merged):
+                        jf_tagged += 1
+        except Exception:
+            pass
+
+    # Push series tags
+    jf_series_lookup, jf_series_title_lookup = jf.get_tmdb_lookup_with_fallback("Series")
+    for series in db.query(Series).filter(Series.tags.isnot(None)).all():
+        try:
+            jf_item = jf_series_lookup.get(series.tmdb_id)
+            if not jf_item and series.title:
+                norm = JellyfinService._normalize_title(series.title)
+                jf_item = jf_series_title_lookup.get((norm, str(series.year or "")))
+                if not jf_item:
+                    jf_item = jf_series_title_lookup.get((norm, ""))
+            if jf_item:
+                existing_tags = set(jf_item.get("Tags", []))
+                desired_tags = set(series.tags)
+                if not desired_tags.issubset(existing_tags):
+                    merged = list(existing_tags | desired_tags)
+                    if jf.set_item_tags(jf_item["Id"], merged):
+                        jf_tagged += 1
+        except Exception:
+            pass
+
+    logger.info(f"[{log_prefix}] Pushed tags to Jellyfin for {jf_tagged} items")
+    return jf_tagged
+
+
+def run_full_jellyfin_pipeline(db, log_prefix: str = "Pipeline") -> dict:
+    """Run the complete Jellyfin integration pipeline after content changes.
+
+    1. Trigger Jellyfin library scan (so new .strm files are indexed)
+    2. Wait for scan to complete
+    3. Push tags via API
+    4. Refresh SmartList playlists
+    5. Write home config
+
+    Returns stats dict.
+    """
+    from models.database import get_setting, set_setting, log_activity
+    from datetime import datetime
+
+    stats = {"library_scan": False, "tags_pushed": 0, "playlists_refreshed": False}
+
+    jf_url = get_setting(db, "jellyfin_url")
+    jf_key = get_setting(db, "jellyfin_api_key")
+    jf_uid = get_setting(db, "jellyfin_user_id", "")
+
+    if not jf_url or not jf_key:
+        logger.info(f"[{log_prefix}] Jellyfin not configured — skipping pipeline")
+        return stats
+
+    # Step 1+2: Library scan + wait
+    jf = JellyfinService(jf_url, jf_key, jf_uid)
+    try:
+        stats["library_scan"] = jf.wait_for_library_scan(max_wait=120)
+    except Exception as e:
+        logger.warning(f"[{log_prefix}] Library scan failed: {e}")
+
+    # Step 3: Push tags
+    try:
+        from services.tagger import refresh_recently_added_tags
+        refresh_recently_added_tags(db)
+
+        tagged = push_tags_to_jellyfin(db, log_prefix)
+        stats["tags_pushed"] = tagged
+        if tagged > 0:
+            set_setting(db, "last_jellyfin_push", datetime.utcnow().isoformat())
+            log_activity(db, "jellyfin_push", f"Pushed tags to Jellyfin — {tagged} items updated")
+    except Exception as e:
+        logger.error(f"[{log_prefix}] Tag push failed: {e}")
+
+    # Step 4+5: Refresh playlists + home config
+    try:
+        from services.smartlists import sync_smartlists
+        sync_smartlists(db)
+        stats["playlists_refreshed"] = True
+        logger.info(f"[{log_prefix}] SmartLists synced and playlists refreshed")
+    except Exception as e:
+        logger.warning(f"[{log_prefix}] SmartList sync failed: {e}")
+
+    return stats

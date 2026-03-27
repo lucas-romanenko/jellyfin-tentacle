@@ -177,7 +177,19 @@ def test_provider_connection(provider: Provider):
 
 @router.get("")
 def list_providers(db: Session = Depends(get_db)):
+    from models.database import SyncRun
     providers = db.query(Provider).order_by(Provider.priority).all()
+
+    # Get last completed sync per provider
+    last_syncs = {}
+    for p in providers:
+        last_run = db.query(SyncRun).filter(
+            SyncRun.provider_id == p.id,
+            SyncRun.status == "completed"
+        ).order_by(SyncRun.completed_at.desc()).first()
+        if last_run and last_run.completed_at:
+            last_syncs[p.id] = last_run.completed_at.isoformat()
+
     return [
         {
             "id": p.id,
@@ -188,6 +200,7 @@ def list_providers(db: Session = Depends(get_db)):
             "priority": p.priority,
             "status": p.status,
             "last_tested": p.last_tested,
+            "last_synced": last_syncs.get(p.id),
             "expiry": p.expiry,
             "max_connections": p.max_connections,
             "created_at": p.created_at,

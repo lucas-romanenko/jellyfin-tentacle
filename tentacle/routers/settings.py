@@ -48,6 +48,8 @@ def get_settings_raw(db: Session = Depends(get_db)):
 @router.post("")
 def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
     sensitive_keys = {"tmdb_bearer_token", "tmdb_api_key", "radarr_api_key", "sonarr_api_key", "jellyfin_api_key", "trakt_client_id"}
+    was_setup_complete = get_setting(db, "setup_complete") == "true"
+
     for key, value in body.settings.items():
         # Don't overwrite sensitive keys if they look masked
         if key in sensitive_keys and value and "..." in value:
@@ -60,7 +62,64 @@ def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
     if all_set:
         set_setting(db, "setup_complete", "true")
 
+    # First-time setup: auto-scan Radarr/Sonarr if configured, so existing content is picked up
+    if all_set and not was_setup_complete:
+        _trigger_post_setup_scan()
+
     return {"success": True}
+
+
+def _trigger_post_setup_scan():
+    """After setup wizard completes, scan Radarr/Sonarr in the background
+    so the user's existing library is immediately available."""
+    import threading
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    def _post_setup_background():
+        from models.database import SessionLocal, get_setting, set_setting, log_activity
+        from datetime import datetime
+        db = SessionLocal()
+        try:
+            radarr_url = get_setting(db, "radarr_url")
+            radarr_key = get_setting(db, "radarr_api_key")
+            if radarr_url and radarr_key:
+                logger.info("[Post-setup] Auto-scanning Radarr library...")
+                from services.radarr import scan_radarr_library
+                result = scan_radarr_library(db)
+                set_setting(db, "last_radarr_scan", datetime.utcnow().isoformat())
+                n = result.get("new", 0) if isinstance(result, dict) else 0
+                if n:
+                    log_activity(db, "radarr_scan", f"Post-setup Radarr scan — {n} movie{'s' if n != 1 else ''} imported")
+                logger.info(f"[Post-setup] Radarr scan complete: {n} new movies")
+
+            sonarr_url = get_setting(db, "sonarr_url")
+            sonarr_key = get_setting(db, "sonarr_api_key")
+            if sonarr_url and sonarr_key:
+                logger.info("[Post-setup] Auto-scanning Sonarr library...")
+                from services.sonarr import scan_sonarr_library
+                result = scan_sonarr_library(db)
+                set_setting(db, "last_sonarr_scan", datetime.utcnow().isoformat())
+                n = result.get("new", 0) if isinstance(result, dict) else 0
+                if n:
+                    log_activity(db, "sonarr_scan", f"Post-setup Sonarr scan — {n} series imported")
+                logger.info(f"[Post-setup] Sonarr scan complete: {n} new series")
+
+            # Run full Jellyfin pipeline if anything was scanned
+            if (radarr_url and radarr_key) or (sonarr_url and sonarr_key):
+                from services.jellyfin import run_full_jellyfin_pipeline
+                run_full_jellyfin_pipeline(db, log_prefix="Post-setup")
+                logger.info("[Post-setup] Jellyfin pipeline complete")
+
+        except Exception as e:
+            logger.error(f"[Post-setup] Auto-scan failed: {e}", exc_info=True)
+        finally:
+            db.close()
+
+    thread = threading.Thread(target=_post_setup_background, daemon=True)
+    thread.start()
+    logging.getLogger(__name__).info("[Post-setup] Triggered background Radarr/Sonarr scan after setup wizard")
 
 
 @router.post("/test")

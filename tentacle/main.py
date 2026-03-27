@@ -85,6 +85,12 @@ def run_scheduled_sync():
         logger.info("Refreshing recently added tags")
         refresh_recently_added_tags(db)
 
+        # Run full Jellyfin pipeline: library scan → wait → push tags → refresh playlists → home config
+        logger.info("Running Jellyfin pipeline (scan, tags, playlists)")
+        from services.jellyfin import run_full_jellyfin_pipeline
+        pipeline_stats = run_full_jellyfin_pipeline(db, log_prefix="Nightly sync")
+        logger.info(f"Jellyfin pipeline complete: {pipeline_stats}")
+
         bearer = get_tmdb_token(db)
         data_dir = get_setting(db, "data_dir", "/data")
         if bearer:
@@ -94,10 +100,6 @@ def run_scheduled_sync():
         logger.info("Syncing playlist artwork")
         from routers.collections import sync_playlist_artwork
         sync_playlist_artwork(db)
-
-        logger.info("Syncing SmartLists")
-        from services.smartlists import sync_smartlists
-        sync_smartlists(db)
 
         logger.info("Scheduled sync complete")
     except Exception as e:

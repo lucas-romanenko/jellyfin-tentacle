@@ -34,7 +34,6 @@ _sync_lock = threading.Lock()
 class SyncRequest(BaseModel):
     provider_id: int
     sync_type: str = "full"  # full | movies | series
-    full_pipeline: bool = False  # Also run Radarr/Sonarr scan + Jellyfin push after VOD sync
 
 
 def _notify_sync_progress(provider_id: int, phase: str, category: str, stats: dict):
@@ -50,8 +49,8 @@ def _notify_sync_progress(provider_id: int, phase: str, category: str, stats: di
                 pass
 
 
-def _run_sync_background(provider_id: int, sync_type: str, full_pipeline: bool = False):
-    """Run sync in background thread. If full_pipeline=True, also runs Radarr/Sonarr scan + tag refresh + Jellyfin push."""
+def _run_sync_background(provider_id: int, sync_type: str):
+    """Run sync in background thread. Always runs the full Jellyfin pipeline after VOD sync."""
     from models.database import SessionLocal
     cancel_event = threading.Event()
     _cancel_flags[provider_id] = cancel_event
@@ -118,74 +117,15 @@ def _run_sync_background(provider_id: int, sync_type: str, full_pipeline: bool =
                 msg = "VOD sync completed — no streams found in enabled categories"
             log_activity(db, "vod_sync", msg)
 
-        # Full pipeline: Radarr scan, Sonarr scan, tag refresh, SmartLists sync
-        if full_pipeline and run.status == "completed" and not cancel_event.is_set():
-            _notify_sync_progress(provider_id, "radarr_scan", "Scanning Radarr...", cumulative)
+        # Full pipeline: Jellyfin library scan → wait for indexing → push tags → refresh playlists
+        if run.status == "completed" and not cancel_event.is_set():
+            _notify_sync_progress(provider_id, "jellyfin_scan", "Scanning Jellyfin library...", cumulative)
             try:
-                from services.radarr import scan_radarr_library
-                result = scan_radarr_library(db)
-                set_setting(db, "last_radarr_scan", datetime.utcnow().isoformat())
-                n = result.get("new", 0) if isinstance(result, dict) else 0
-                log_activity(db, "radarr_scan", f"Radarr scan — {n} new movie{'s' if n != 1 else ''}" if n else "Radarr scan — no new movies")
+                from services.jellyfin import run_full_jellyfin_pipeline
+                pipeline_stats = run_full_jellyfin_pipeline(db, log_prefix="VOD sync")
+                logger.info(f"[VOD sync] Pipeline complete: {pipeline_stats}")
             except Exception as e:
-                logger.error(f"[Full pipeline] Radarr scan failed: {e}")
-
-            _notify_sync_progress(provider_id, "sonarr_scan", "Scanning Sonarr...", cumulative)
-            try:
-                from services.sonarr import scan_sonarr_library
-                result = scan_sonarr_library(db)
-                set_setting(db, "last_sonarr_scan", datetime.utcnow().isoformat())
-                n = result.get("new", 0) if isinstance(result, dict) else 0
-                log_activity(db, "sonarr_scan", f"Sonarr scan — {n} new series" if n else "Sonarr scan — no new series")
-            except Exception as e:
-                logger.error(f"[Full pipeline] Sonarr scan failed: {e}")
-
-            _notify_sync_progress(provider_id, "jellyfin_push", "Pushing to Jellyfin...", cumulative)
-            try:
-                refresh_recently_added_tags(db)
-                # Push tags via the same logic as refresh-tags endpoint
-                from services.jellyfin import JellyfinService
-                jf_url = get_setting(db, "jellyfin_url")
-                jf_key = get_setting(db, "jellyfin_api_key")
-                jf_uid = get_setting(db, "jellyfin_user_id", "")
-                if jf_url and jf_key:
-                    jf = JellyfinService(jf_url, jf_key, jf_uid)
-                    jf_tagged = 0
-                    # Tag movies
-                    jf_movie_lookup, jf_movie_title_lookup = jf.get_tmdb_lookup_with_fallback("Movie")
-                    for movie in db.query(Movie).filter(Movie.tags.isnot(None)).all():
-                        try:
-                            jf_item = jf_movie_lookup.get(movie.tmdb_id)
-                            if not jf_item and movie.title:
-                                norm = JellyfinService._normalize_title(movie.title)
-                                jf_item = jf_movie_title_lookup.get((norm, str(movie.year or "")))
-                            if jf_item and jf.set_item_tags(jf_item["Id"], movie.tags):
-                                jf_tagged += 1
-                        except Exception:
-                            pass
-                    # Tag series
-                    jf_series_lookup, jf_series_title_lookup = jf.get_tmdb_lookup_with_fallback("Series")
-                    for series in db.query(Series).filter(Series.tags.isnot(None)).all():
-                        try:
-                            jf_item = jf_series_lookup.get(series.tmdb_id)
-                            if not jf_item and series.title:
-                                norm = JellyfinService._normalize_title(series.title)
-                                jf_item = jf_series_title_lookup.get((norm, str(series.year or "")))
-                            if jf_item and jf.set_item_tags(jf_item["Id"], series.tags):
-                                jf_tagged += 1
-                        except Exception:
-                            pass
-                    if jf_tagged:
-                        set_setting(db, "last_jellyfin_push", datetime.utcnow().isoformat())
-                        log_activity(db, "jellyfin_push", f"Pushed tags to Jellyfin — {jf_tagged} items updated")
-                    logger.info(f"[Full pipeline] Jellyfin tags pushed: {jf_tagged}")
-
-                # Sync SmartLists
-                from services.smartlists import sync_smartlists
-                sync_smartlists(db)
-                logger.info("[Full pipeline] SmartLists synced")
-            except Exception as e:
-                logger.error(f"[Full pipeline] Jellyfin push failed: {e}")
+                logger.error(f"[VOD sync] Jellyfin pipeline failed: {e}")
 
         phase = "complete" if run.status == "completed" else "cancelled" if run.status == "cancelled" else "error"
         _notify_sync_progress(provider_id, phase, "", {
@@ -234,7 +174,7 @@ def trigger_sync(body: SyncRequest, db: Session = Depends(get_db)):
 
     thread = threading.Thread(
         target=_run_sync_background,
-        args=(body.provider_id, body.sync_type, body.full_pipeline),
+        args=(body.provider_id, body.sync_type),
         daemon=True
     )
     thread.start()
@@ -514,6 +454,15 @@ def get_dashboard(db: Session = Depends(get_db)):
     except ImportError:
         pass
 
+    # --- Config flags (what's configured) ---
+    radarr_configured = bool(get_setting(db, "radarr_url") and get_setting(db, "radarr_api_key"))
+    sonarr_configured = bool(get_setting(db, "sonarr_url") and get_setting(db, "sonarr_api_key"))
+    has_providers = db.query(Provider).filter(Provider.active == True).count() > 0
+    has_playlists = bool(get_setting(db, "last_jellyfin_push"))
+    from services.smartlists import get_home_config
+    home_config = get_home_config(db)
+    has_home_screen = bool(home_config and home_config.get("rows"))
+
     return {
         "status": {
             "vod_sync": {"timestamp": last_vod_sync, "status": last_vod_status, "new_items": last_vod_new},
@@ -532,6 +481,13 @@ def get_dashboard(db: Session = Depends(get_db)):
             "vod_sync": is_syncing,
             "radarr_scan": radarr_scanning,
             "sonarr_scan": sonarr_scanning,
+        },
+        "config": {
+            "radarr": radarr_configured,
+            "sonarr": sonarr_configured,
+            "has_providers": has_providers,
+            "has_playlists": has_playlists,
+            "has_home_screen": has_home_screen,
         },
     }
 

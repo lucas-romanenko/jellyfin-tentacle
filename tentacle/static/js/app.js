@@ -339,11 +339,26 @@ async function completeSetup() {
 
   try {
     await api('/api/settings', { method: 'POST', body: { settings } });
-    document.getElementById('setup-overlay').style.display = 'none';
-    toast('Setup complete!');
-    loadDashboard();
+    // Go to plugin install step instead of finishing
+    setupGoTo(6);
   } catch (e) {
     toast(e.message, 'error');
+  }
+}
+
+function finishSetup() {
+  document.getElementById('setup-overlay').style.display = 'none';
+  toast('Setup complete!');
+  loadDashboard();
+}
+
+async function copyPluginUrl() {
+  const url = document.getElementById('setup-plugin-url').value;
+  try {
+    await navigator.clipboard.writeText(url);
+    toast('Copied!');
+  } catch (_) {
+    toast('Copy failed — use HTTPS or copy manually', 'error');
   }
 }
 
@@ -361,11 +376,16 @@ async function loadDashboard() {
       api('/api/sync/activity?limit=15'),
     ]);
     state.providers = providers;
+    const cfg = dash.config || {};
 
-    // Status cards
+    // Status cards — hide Radarr/Sonarr if not configured
     updateStatusCard('vod', dash.status.vod_sync.timestamp, dash.status.vod_sync.status === 'failed' ? 'error' : null, dash.running.vod_sync);
-    updateStatusCard('radarr', dash.status.radarr_scan.timestamp, null, dash.running.radarr_scan);
-    updateStatusCard('sonarr', dash.status.sonarr_scan.timestamp, null, dash.running.sonarr_scan);
+    const radarrCard = document.getElementById('status-radarr');
+    const sonarrCard = document.getElementById('status-sonarr');
+    if (radarrCard) radarrCard.style.display = cfg.radarr ? '' : 'none';
+    if (sonarrCard) sonarrCard.style.display = cfg.sonarr ? '' : 'none';
+    if (cfg.radarr) updateStatusCard('radarr', dash.status.radarr_scan.timestamp, null, dash.running.radarr_scan);
+    if (cfg.sonarr) updateStatusCard('sonarr', dash.status.sonarr_scan.timestamp, null, dash.running.sonarr_scan);
     updateStatusCard('jellyfin', dash.status.jellyfin_push.timestamp);
 
     // Sidebar last sync
@@ -396,6 +416,9 @@ async function loadDashboard() {
     // Activity feed
     renderActivityFeed(activity);
 
+    // Getting Started checklist
+    renderGettingStarted(cfg, dash);
+
     // Sync running state
     if (dash.running.vod_sync && !state._syncProviderId) {
       // Restore sync polling if a sync is running
@@ -408,6 +431,64 @@ async function loadDashboard() {
     }
   } catch (e) {
     console.error('Dashboard load error:', e);
+  }
+}
+
+function renderGettingStarted(cfg, dash) {
+  const el = document.getElementById('getting-started');
+  const items = document.getElementById('getting-started-items');
+  if (!el || !items) return;
+
+  // Don't show if user dismissed it
+  if (localStorage.getItem('tentacle_dismiss_checklist')) { el.style.display = 'none'; return; }
+
+  const checks = [
+    { done: true, label: 'Jellyfin connected' },
+    { done: cfg.radarr, label: 'Radarr configured', hint: 'Optional — <a href="#" onclick="navigateTo(\'settings\');return false">Settings → Connections</a>' },
+    { done: cfg.sonarr, label: 'Sonarr configured', hint: 'Optional — <a href="#" onclick="navigateTo(\'settings\');return false">Settings → Connections</a>' },
+    { done: cfg.has_providers, label: 'IPTV provider added', hint: '<a href="#" onclick="navigateTo(\'settings\');return false">Settings → Providers → Add Provider</a>' },
+    { done: dash.status.vod_sync.timestamp || (dash.library.total_movies + dash.library.total_series) > 0, label: 'Content synced' },
+    { done: cfg.has_playlists, label: 'Playlists created', hint: '<a href="#" onclick="navigateTo(\'playlists\');return false">Go to Playlists</a>' },
+    { done: cfg.has_home_screen, label: 'Home screen configured', hint: '<a href="#" onclick="navigateTo(\'home-screen\');return false">Go to Home Screen</a>' },
+  ];
+
+  const allDone = checks.every(c => c.done);
+  // Also hide if user has been using the system for a while (has synced + has playlists)
+  if (allDone) { el.style.display = 'none'; return; }
+
+  // Show scanning banner if post-setup scan is running
+  const scanning = dash.running.radarr_scan || dash.running.sonarr_scan;
+  let html = '';
+  if (scanning) {
+    html += `<div style="padding:8px 12px;background:var(--bg2);border-radius:6px;margin-bottom:8px;font-size:13px;color:var(--amber)">Scanning your library... ${dash.library.radarr_movies} movies, ${dash.library.sonarr_series} series found so far</div>`;
+  }
+
+  for (const c of checks) {
+    const icon = c.done ? '<span style="color:var(--green)">&#10003;</span>' : '<span style="color:var(--text3)">&#9675;</span>';
+    const opacity = c.done ? 'opacity:0.5' : '';
+    const hint = !c.done && c.hint ? ` <span style="font-size:11px;color:var(--text3)">${c.hint}</span>` : '';
+    html += `<div style="padding:4px 12px;font-size:13px;${opacity}">${icon} ${c.label}${hint}</div>`;
+  }
+
+  items.innerHTML = html;
+  el.style.display = '';
+}
+
+function dismissGettingStarted() {
+  localStorage.setItem('tentacle_dismiss_checklist', '1');
+  const el = document.getElementById('getting-started');
+  if (el) el.style.display = 'none';
+}
+
+function toggleAdvancedActions() {
+  const body = document.getElementById('advanced-actions-body');
+  const toggle = document.getElementById('advanced-toggle');
+  if (body.style.display === 'none') {
+    body.style.display = 'flex';
+    toggle.innerHTML = '&#9662; Hide';
+  } else {
+    body.style.display = 'none';
+    toggle.innerHTML = '&#9656; Show';
   }
 }
 
@@ -559,6 +640,7 @@ function renderProviderCard(p) {
         <div class="provider-meta-item">Expires: ${expiry}</div>
         <div class="provider-meta-item">Max: ${p.max_connections || '?'} streams</div>
         ${p.last_tested ? `<div class="provider-meta-item">Tested: ${new Date(p.last_tested).toLocaleDateString()}</div>` : ''}
+        ${p.last_synced ? `<div class="provider-meta-item">Synced: ${dashTimeAgo(p.last_synced)}</div>` : ''}
       </div>
 
       <div class="provider-actions">
@@ -1078,7 +1160,7 @@ async function syncNow() {
   try {
     await api('/api/sync/trigger', {
       method: 'POST',
-      body: { provider_id: provider.id, sync_type: 'full', full_pipeline: true }
+      body: { provider_id: provider.id, sync_type: 'full' }
     });
     toast('Full sync started — VOD, Radarr, Sonarr, Jellyfin', 'info');
     pollSyncProgress();
@@ -1170,15 +1252,9 @@ function pollSyncProgress() {
           }
           detail.textContent = line;
         }
-      } else if (p.phase === 'radarr_scan') {
-        if (label) label.textContent = 'Scanning Radarr...';
-        if (detail) detail.textContent = p.category || '';
-      } else if (p.phase === 'sonarr_scan') {
-        if (label) label.textContent = 'Scanning Sonarr...';
-        if (detail) detail.textContent = p.category || '';
-      } else if (p.phase === 'jellyfin_push') {
-        if (label) label.textContent = 'Pushing to Jellyfin...';
-        if (detail) detail.textContent = p.category || '';
+      } else if (p.phase === 'jellyfin_scan') {
+        if (label) label.textContent = 'Syncing to Jellyfin...';
+        if (detail) detail.textContent = 'Scanning library, pushing tags, updating playlists';
       } else if (p.phase === 'complete') {
         const n = ((p.stats||{}).movies_new||0) + ((p.stats||{}).series_new||0);
         toast(n > 0 ? `Sync complete — ${n} new items` : 'Sync complete', 'success');
