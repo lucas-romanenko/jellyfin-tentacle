@@ -819,8 +819,7 @@ async function loadSettings() {
     const fields = [
       'tmdb_bearer_token', 'radarr_url', 'radarr_api_key',
       'sonarr_url', 'sonarr_api_key',
-      'jellyfin_url', 'jellyfin_api_key', 'vod_movies_path',
-      'vod_series_path', 'radarr_movies_path', 'sonarr_series_path',
+      'jellyfin_url', 'jellyfin_api_key',
       'sync_schedule', 'recently_added_days', 'tmdb_match_threshold',
       'webhook_host', 'sonarr_webhook_host', 'trakt_client_id', 'logodev_api_key'
     ];
@@ -838,8 +837,7 @@ async function saveSettings() {
   const fields = [
     'tmdb_bearer_token', 'radarr_url', 'radarr_api_key',
     'sonarr_url', 'sonarr_api_key',
-    'jellyfin_url', 'jellyfin_api_key', 'vod_movies_path',
-    'vod_series_path', 'radarr_movies_path', 'sonarr_series_path',
+    'jellyfin_url', 'jellyfin_api_key',
     'sync_schedule', 'recently_added_days', 'tmdb_match_threshold',
     'webhook_host', 'sonarr_webhook_host', 'trakt_client_id', 'logodev_api_key'
   ];

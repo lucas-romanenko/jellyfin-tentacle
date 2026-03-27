@@ -1280,7 +1280,6 @@ td.primary { color: var(--text); font-weight: 500; }
           <div class="settings-nav">
             <button class="settings-nav-item active" data-section="providers">Providers</button>
             <button class="settings-nav-item" data-section="connections">Connections</button>
-            <button class="settings-nav-item" data-section="paths">Library Paths</button>
             <button class="settings-nav-item" data-section="sync">Sync Settings</button>
             <button class="settings-nav-item" data-section="integrations">Integrations</button>
           </div>
@@ -1367,40 +1366,6 @@ td.primary { color: var(--text); font-weight: 500; }
 
               <div style="margin-top:20px">
                 <button class="btn btn-primary" onclick="saveSettings()">Save Connections</button>
-              </div>
-            </div>
-
-            <!-- Paths -->
-            <div class="settings-section card" id="section-paths">
-              <h3>Library Paths</h3>
-              <p class="section-desc">Paths where media files are stored. Must be accessible inside the container.</p>
-
-              <div class="form-group">
-                <div class="form-label">VOD Movies Path</div>
-                <input class="form-input mono" id="vod_movies_path" placeholder="/mnt/media/vod/Movies">
-                <div class="form-hint">Where .strm files for VOD movies are created</div>
-              </div>
-
-              <div class="form-group">
-                <div class="form-label">VOD Series Path</div>
-                <input class="form-input mono" id="vod_series_path" placeholder="/mnt/media/vod/Series">
-                <div class="form-hint">Where .strm files for VOD series are created</div>
-              </div>
-
-              <div class="form-group">
-                <div class="form-label">Radarr Movies Path</div>
-                <input class="form-input mono" id="radarr_movies_path" placeholder="/mnt/media/movies">
-                <div class="form-hint">Path to Radarr downloads inside the Tentacle container (from your docker-compose volumes)</div>
-              </div>
-
-              <div class="form-group">
-                <div class="form-label">Sonarr Series Path</div>
-                <input class="form-input mono" id="sonarr_series_path" placeholder="/mnt/media/tv">
-                <div class="form-hint">Path to Sonarr downloads inside the Tentacle container (from your docker-compose volumes)</div>
-              </div>
-
-              <div style="margin-top:20px">
-                <button class="btn btn-primary" onclick="saveSettings()">Save Paths</button>
               </div>
             </div>
 

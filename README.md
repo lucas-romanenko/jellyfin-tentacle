@@ -1,6 +1,6 @@
 # Jellyfin Tentacle
 
-**The all-in-one media manager for Jellyfin.**
+**Turn Jellyfin into a full-featured streaming platform.**
 
 <!-- Banner coming soon -->
 
@@ -12,7 +12,9 @@
 
 ## What is Tentacle?
 
-Tentacle is a unified dashboard and Jellyfin plugin that brings IPTV, VOD, smart playlists, content discovery, and home screen customization into a single app. It replaces Threadfin, manual tagging scripts, and fragmented tools — giving you one place to manage everything that shows up in Jellyfin.
+Tentacle is a dashboard + Jellyfin plugin that adds IPTV live TV, VOD libraries from your IPTV provider, smart playlists, a Netflix-style home screen with hero spotlight, and content discovery — all from a single Docker container. No databases, no message queues, no build steps.
+
+Add your IPTV provider and your Jellyfin home screen fills with curated rows, a hero banner, and a Discover tab showing what's trending. Connect Radarr and Sonarr, and downloads are automatically tagged, organized into playlists, and surfaced on the home screen.
 
 <!-- Screenshots coming soon -->
 
@@ -21,17 +23,17 @@ Tentacle is a unified dashboard and Jellyfin plugin that brings IPTV, VOD, smart
 ## Features
 
 ### 📺 Live TV & IPTV
-- Add your IPTV provider (Xtream, M3U URL, or M3U file)
+- Add your IPTV provider (Xtream, M3U URL, or M3U file) — replaces Threadfin
 - Browse and enable channel groups — only sync what you want
 - Full EPG program guide with automatic refresh
 - Built-in HDHomeRun emulation — Jellyfin sees Tentacle as a native tuner
 - Stream proxy handles provider redirects and HLS-to-MPEG-TS conversion
 
-### 🎬 VOD & Library
-- Provider movies and series appear in Jellyfin with posters, metadata, and proper titles
-- TMDB matching ensures clean, accurate library entries
-- `.strm` + `.nfo` files written automatically — no manual work
-- English-language filtering with smart country prefix detection
+### 🎬 VOD Library from IPTV
+- Your IPTV provider's movies and series appear in Jellyfin with posters, plots, and correct titles
+- Automatic TMDB matching — no manual metadata cleanup
+- `.strm` + `.nfo` files generated for each title
+- English-language filtering with smart country/prefix detection
 
 ### 🏷️ Smart Playlists & Tags
 - Auto-tag content by source: "Netflix Movies", "HBO MAX Series", etc.
@@ -45,11 +47,11 @@ Tentacle is a unified dashboard and Jellyfin plugin that brings IPTV, VOD, smart
 - See what's missing from your library and add to Radarr/Sonarr in one click
 - Discover tab injected directly into Jellyfin via the companion plugin
 
-### 🏠 Custom Home Screen
+### 🏠 Netflix-Style Home Screen
 - Drag-and-drop row ordering for the Jellyfin home page
-- Hero spotlight with backdrop and logo images
+- Hero spotlight banner with backdrop and logo images
 - Mix playlist rows with native Jellyfin sections (Continue Watching, Next Up, etc.)
-- Independent sort options per row and for the hero
+- Independent sort options per row and for the hero carousel
 
 ### 📥 Radarr & Sonarr Integration
 - Automatic library scanning via webhooks — new downloads tagged and organized instantly
@@ -114,7 +116,7 @@ The Tentacle plugin communicates with the dashboard via its API — no shared vo
 > - `./tentacle-data:/data` is the only required volume. Everything else is optional depending on which features you use.
 > - `/mnt/media/vod` — only needed if you add an IPTV provider for VOD content. Point this to a folder inside a Jellyfin library.
 > - `/mnt/media/movies` and `/mnt/media/tv` — mount the same paths your Radarr/Sonarr containers use, so Tentacle can write NFO files alongside downloads.
-> - All paths are configurable in **Settings → Library Paths** if your mounts differ from the defaults.
+> - Paths are hardcoded defaults inside the container — just make sure your docker-compose volume mounts point to the right places.
 
 ### After Starting
 
@@ -159,7 +161,7 @@ The dashboard works standalone, but the plugin is needed for the custom home scr
 │  │  Tentacle Plugin                        │    │
 │  │  • Custom home screen rows & hero       │    │
 │  │  • Discover tab (trending/popular)      │    │
-│  │  • Smart playlist refresh               │    │
+│  │  • Injects CSS/JS via Harmony patch     │    │
 │  └──────────────────┬──────────────────────┘    │
 │                     │ fetches config via API      │
 └─────────────────────┼───────────────────────────┘
@@ -170,14 +172,14 @@ The dashboard works standalone, but the plugin is needed for the custom home scr
 ┌─────────────────────┴───────────────────────────┐
 │              Tentacle Dashboard                  │
 │  • VOD sync & NFO generation                    │
-│  • Live TV / IPTV management                    │
+│  • Live TV with HDHomeRun emulation             │
 │  • Smart playlists & tag engine                 │
 │  • Content discovery (TMDB)                     │
-│  • Radarr & Sonarr integration                  │
+│  • Radarr & Sonarr webhook integration          │
 └──────┬──────────┬──────────┬───────────┬────────┘
        │          │          │           │
-    IPTV       TMDB      Radarr      Sonarr
-   Provider    API       /Sonarr      API
+    IPTV       TMDB       Radarr      Sonarr
+   Provider    API         API         API
 ```
 
 ---
