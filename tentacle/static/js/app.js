@@ -444,12 +444,12 @@ function renderGettingStarted(cfg, dash) {
 
   const checks = [
     { done: true, label: 'Jellyfin connected' },
-    { done: cfg.radarr, label: 'Radarr configured', hint: 'Optional — <a href="#" onclick="navigateTo(\'settings\');return false">Settings → Connections</a>' },
-    { done: cfg.sonarr, label: 'Sonarr configured', hint: 'Optional — <a href="#" onclick="navigateTo(\'settings\');return false">Settings → Connections</a>' },
-    { done: cfg.has_providers, label: 'IPTV provider added', hint: '<a href="#" onclick="navigateTo(\'settings\');return false">Settings → Providers → Add Provider</a>' },
+    { done: cfg.radarr, label: 'Radarr configured', hint: 'Optional — <a href="#" onclick="showPage(\'settings\');return false">Settings → Connections</a>' },
+    { done: cfg.sonarr, label: 'Sonarr configured', hint: 'Optional — <a href="#" onclick="showPage(\'settings\');return false">Settings → Connections</a>' },
+    { done: cfg.has_providers, label: 'IPTV provider added', hint: '<a href="#" onclick="showPage(\'settings\');return false">Settings → Providers → Add Provider</a>' },
     { done: dash.status.vod_sync.timestamp || (dash.library.total_movies + dash.library.total_series) > 0, label: 'Content synced' },
-    { done: cfg.has_playlists, label: 'Playlists created', hint: '<a href="#" onclick="navigateTo(\'playlists\');return false">Go to Playlists</a>' },
-    { done: cfg.has_home_screen, label: 'Home screen configured', hint: '<a href="#" onclick="navigateTo(\'home-screen\');return false">Go to Home Screen</a>' },
+    { done: cfg.has_playlists, label: 'Playlists created', hint: '<a href="#" onclick="showPage(\'playlists\');return false">Go to Playlists</a>' },
+    { done: cfg.has_home_screen, label: 'Home screen configured', hint: '<a href="#" onclick="showPage(\'home-screen\');return false">Go to Home Screen</a>' },
   ];
 
   const allDone = checks.every(c => c.done);
