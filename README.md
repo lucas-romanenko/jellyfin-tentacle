@@ -35,8 +35,8 @@ Add your IPTV provider and your Jellyfin home screen fills with curated rows, a 
 - `.strm` + `.nfo` files generated for each title
 - English-language filtering with smart country/prefix detection
 
-### 🏷️ Smart Playlists & Tags
-- Auto-tag content by source: "Netflix Movies", "HBO MAX Series", etc.
+### 🏷️ Smart Playlists
+- Auto playlists generated from synced content — toggle on the ones you want in Jellyfin
 - Create custom playlists with filters: genre, rating, year, runtime, source
 - Native Jellyfin queries for genre/rating playlists — sees your entire library, not just IPTV content
 - Auto-generated playlist artwork via Logo.dev
@@ -78,7 +78,7 @@ tentacle:
     - 8888:8888
   volumes:
     - ./tentacle-data:/data                    # Required — database, config, cache
-    - /your/vod:/mnt/media/vod                 # IPTV VOD content (creates Movies/ and Series/ inside)
+    - /your/vod:/mnt/media/vod               # IPTV VOD content (creates Movies/ and Series/ inside)
     - /your/movies:/mnt/media/movies           # Same folder Radarr downloads to
     - /your/tv:/mnt/media/tv                   # Same folder Sonarr downloads to
   restart: unless-stopped
@@ -103,6 +103,10 @@ Open `http://localhost:8888` — the setup wizard will guide you through connect
 3. **IPTV Provider** — add via the VOD page (optional)
 4. **Radarr / Sonarr** — URL + API key in Settings → Connections (optional)
 5. **Check paths** — Settings → Library Paths to verify your volume mounts are correct
+6. **Playlists** — go to Jellyfin → Playlists tab to enable auto playlists from your synced content
+7. **Home Screen** — go to Jellyfin → Home Screen tab to set up the hero spotlight and playlist rows
+
+> **First-time users with existing VOD files:** If Tentacle detects `.strm` files in your VOD folders from a previous tool (xtream-sync, etc.), it will offer to clean them up so you can start fresh with proper metadata and tagging.
 
 ---
 
