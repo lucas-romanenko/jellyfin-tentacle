@@ -23,6 +23,16 @@ NATIVE_FIELDS = {"genre", "rating", "year"}
 TENTACLE_FIELDS = {"source", "source_tag", "list", "downloaded", "runtime"}
 
 
+def _extract_source_value(conditions: list) -> str | None:
+    """If the conditions contain a source or source_tag equals condition,
+    return the value. The tagger appends a type suffix (Movies/TV) to these."""
+    for cond in conditions:
+        field = cond.get("field", "")
+        if field in ("source", "source_tag") and cond.get("operator") == "equals":
+            return cond.get("value", "")
+    return None
+
+
 def _classify_conditions(conditions: list) -> str:
     """Classify tag rule conditions as 'native' (can query Jellyfin directly),
     'tentacle' (requires Tentacle tags), or 'mixed'."""
@@ -139,7 +149,16 @@ def get_desired_smartlists(db: Session) -> list:
             media = ["Movie"]
         elif rule.apply_to == "series":
             media = ["Series"]
-        sl_entry = {"name": rule.output_tag, "tag": rule.output_tag, "media_type": media, "enabled": True, "source": "custom"}
+        # Compute the correct tag for Jellyfin queries.
+        # Source/source_tag conditions need the media type suffix because the tagger
+        # writes tags like "Netflix Movies" / "Netflix TV", not just "Netflix".
+        tag = rule.output_tag
+        source_value = _extract_source_value(rule.conditions or [])
+        if source_value and len(media) == 1:
+            type_suffix = "Movies" if media == ["Movie"] else "TV"
+            tag = f"{source_value} {type_suffix}"
+
+        sl_entry = {"name": rule.output_tag, "tag": tag, "media_type": media, "enabled": True, "source": "custom"}
         # If all conditions are Jellyfin-native (genre/rating/year),
         # query Jellyfin directly instead of going through Tentacle tags
         classification = _classify_conditions(rule.conditions or [])
