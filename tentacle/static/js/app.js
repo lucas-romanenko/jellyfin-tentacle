@@ -417,6 +417,9 @@ async function loadDashboard() {
     // Getting Started checklist
     renderGettingStarted(cfg, dash);
 
+    // Stale VOD files check (first startup only)
+    checkStaleFiles();
+
     // Sync running state
     if (dash.running.vod_sync && !state._syncProviderId) {
       // Restore sync polling if a sync is running
@@ -476,6 +479,42 @@ function dismissGettingStarted() {
   localStorage.setItem('tentacle_dismiss_checklist', '1');
   const el = document.getElementById('getting-started');
   if (el) el.style.display = 'none';
+}
+
+// ── Stale VOD Files ──────────────────────────────────────────────────────
+let _staleData = null;
+
+async function checkStaleFiles() {
+  try {
+    const data = await api('/api/settings/stale-files');
+    if (!data.show) return;
+    _staleData = data;
+    document.getElementById('stale-strm-count').textContent = data.strm_count;
+    document.getElementById('stale-files-banner').style.display = '';
+  } catch (e) { /* ignore */ }
+}
+
+function confirmDeleteStaleFiles() {
+  if (!_staleData) return;
+  document.getElementById('stale-confirm-strm').textContent = _staleData.strm_count;
+  document.getElementById('stale-confirm-nfo').textContent = _staleData.nfo_count;
+  document.getElementById('stale-confirm-modal').style.display = 'flex';
+}
+
+async function executeDeleteStaleFiles() {
+  document.getElementById('stale-confirm-modal').style.display = 'none';
+  try {
+    const res = await api('/api/settings/stale-files/delete', { method: 'POST' });
+    document.getElementById('stale-files-banner').style.display = 'none';
+    toast(`Deleted ${res.deleted_strm} .strm and ${res.deleted_nfo} .nfo files`);
+  } catch (e) {
+    toast('Failed to delete files', 'error');
+  }
+}
+
+async function dismissStaleFiles() {
+  try { await api('/api/settings/stale-files/dismiss', { method: 'POST' }); } catch (e) { /* ignore */ }
+  document.getElementById('stale-files-banner').style.display = 'none';
 }
 
 function toggleAdvancedActions() {

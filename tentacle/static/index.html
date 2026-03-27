@@ -1074,6 +1074,39 @@ td.primary { color: var(--text); font-weight: 500; }
           <div id="getting-started-items" style="padding:4px 0"></div>
         </div>
 
+        <!-- Stale VOD files warning (first startup only) -->
+        <div class="card" id="stale-files-banner" style="display:none;margin-bottom:16px;border-left:3px solid var(--amber)">
+          <div class="card-header">
+            <div class="card-title" style="color:var(--amber)">Existing VOD Files Detected</div>
+          </div>
+          <div style="padding:0 16px 16px;font-size:13px;color:var(--text2);line-height:1.5">
+            <p style="margin:0 0 8px">Found <strong id="stale-strm-count">0</strong> existing .strm files in your VOD folders that weren't created by Tentacle. These may be from a previous tool (xtream-sync, manual scripts, etc.).</p>
+            <p style="margin:0 0 12px">Tentacle can't manage these files &mdash; they won't appear in your library or get tagged. Would you like to delete them and start fresh? You can then add your IPTV provider and Tentacle will recreate everything with proper metadata and tagging.</p>
+            <div style="display:flex;gap:8px">
+              <button class="btn btn-danger btn-sm" onclick="confirmDeleteStaleFiles()">Delete All &amp; Start Fresh</button>
+              <button class="btn btn-secondary btn-sm" onclick="dismissStaleFiles()">Keep &amp; Ignore</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Stale files delete confirmation modal -->
+        <div class="modal-overlay" id="stale-confirm-modal" style="display:none">
+          <div class="modal" style="max-width:440px">
+            <div class="modal-header">
+              <div class="modal-title" style="color:var(--amber)">Confirm Deletion</div>
+              <button class="modal-close" onclick="document.getElementById('stale-confirm-modal').style.display='none'">&times;</button>
+            </div>
+            <div style="padding:16px;font-size:13px;color:var(--text2);line-height:1.5">
+              <p style="margin:0 0 12px">This will delete <strong id="stale-confirm-strm">0</strong> .strm files and <strong id="stale-confirm-nfo">0</strong> .nfo files from your VOD folders. Empty directories will also be removed.</p>
+              <p style="margin:0 0 16px;color:var(--red)">This cannot be undone.</p>
+              <div style="display:flex;gap:8px;justify-content:flex-end">
+                <button class="btn btn-secondary btn-sm" onclick="document.getElementById('stale-confirm-modal').style.display='none'">Cancel</button>
+                <button class="btn btn-danger btn-sm" onclick="executeDeleteStaleFiles()">Delete All</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- Sync progress bar (hidden by default) -->
         <div class="dash-progress" id="dash-progress" style="display:none">
           <div class="dash-progress-header">
@@ -2539,7 +2572,7 @@ td.primary { color: var(--text); font-weight: 500; }
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<script src="/static/js/app.js?v=16"></script>
-<script src="/static/js/pages.js?v=16"></script>
+<script src="/static/js/app.js?v=17"></script>
+<script src="/static/js/pages.js?v=17"></script>
 </body>
 </html>

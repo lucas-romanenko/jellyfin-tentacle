@@ -228,6 +228,74 @@ def check_paths():
     return result
 
 
+@router.get("/stale-files")
+def check_stale_files(db: Session = Depends(get_db)):
+    """Check for .strm files in VOD folders that Tentacle didn't create.
+    Only relevant on first startup when DB is empty but VOD folders have content."""
+    # Don't show if user already dismissed or has synced content
+    if get_setting(db, "stale_files_dismissed") == "true":
+        return {"show": False}
+
+    from models.database import Movie, Series, SyncRun
+    has_content = db.query(Movie).filter(Movie.source.like("provider_%")).count() > 0
+    has_series = db.query(Series).filter(Series.source.like("provider_%")).count() > 0
+    has_synced = db.query(SyncRun).filter(SyncRun.status == "completed").count() > 0
+    if has_content or has_series or has_synced:
+        return {"show": False}
+
+    # Scan VOD folders for existing .strm / .nfo files
+    movies_path = Path("/mnt/media/vod/Movies")
+    series_path = Path("/mnt/media/vod/Series")
+    strm_count = 0
+    nfo_count = 0
+    for vod_dir in [movies_path, series_path]:
+        if vod_dir.exists():
+            strm_count += len(list(vod_dir.rglob("*.strm")))
+            nfo_count += len(list(vod_dir.rglob("*.nfo")))
+
+    if strm_count == 0:
+        return {"show": False}
+
+    return {"show": True, "strm_count": strm_count, "nfo_count": nfo_count}
+
+
+@router.post("/stale-files/delete")
+def delete_stale_files(db: Session = Depends(get_db)):
+    """Delete all .strm and .nfo files in VOD folders, then remove empty directories."""
+    import shutil
+    movies_path = Path("/mnt/media/vod/Movies")
+    series_path = Path("/mnt/media/vod/Series")
+    deleted_strm = 0
+    deleted_nfo = 0
+
+    for vod_dir in [movies_path, series_path]:
+        if not vod_dir.exists():
+            continue
+        for f in vod_dir.rglob("*.strm"):
+            f.unlink(missing_ok=True)
+            deleted_strm += 1
+        for f in vod_dir.rglob("*.nfo"):
+            f.unlink(missing_ok=True)
+            deleted_nfo += 1
+        # Remove empty directories bottom-up
+        for dirpath in sorted(vod_dir.rglob("*"), reverse=True):
+            if dirpath.is_dir():
+                try:
+                    dirpath.rmdir()  # only removes if empty
+                except OSError:
+                    pass
+
+    set_setting(db, "stale_files_dismissed", "true")
+    return {"success": True, "deleted_strm": deleted_strm, "deleted_nfo": deleted_nfo}
+
+
+@router.post("/stale-files/dismiss")
+def dismiss_stale_files(db: Session = Depends(get_db)):
+    """Permanently dismiss the stale files warning."""
+    set_setting(db, "stale_files_dismissed", "true")
+    return {"success": True}
+
+
 class WebhookTest(BaseModel):
     url: str
 
