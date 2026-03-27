@@ -19,8 +19,4 @@ public class PluginConfiguration : BasePluginConfiguration
     /// </summary>
     public string SmartListsPath { get; set; } = string.Empty;
 
-    /// <summary>
-    /// Gets or sets a value indicating whether the plugin is enabled.
-    /// </summary>
-    public bool Enabled { get; set; }
 }

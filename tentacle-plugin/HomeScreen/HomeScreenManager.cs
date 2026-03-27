@@ -32,7 +32,7 @@ public class HomeScreenManager
     public HomeConfig? GetHomeConfig()
     {
         var plugin = Plugin.Instance;
-        if (plugin == null || !plugin.Configuration.Enabled)
+        if (plugin == null || string.IsNullOrEmpty(plugin.Configuration.TentacleUrl))
         {
             return null;
         }

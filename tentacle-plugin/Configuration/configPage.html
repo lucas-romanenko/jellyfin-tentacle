@@ -6,46 +6,33 @@
 </head>
 <body>
     <div id="TentacleConfigPage" data-role="page" class="page type-interior pluginConfigurationPage"
-         data-require="emby-input,emby-button,emby-checkbox">
+         data-require="emby-input,emby-button">
         <div data-role="content">
             <div class="content-primary">
-                <h2>Tentacle Plugin Settings</h2>
+                <h2>Tentacle</h2>
                 <form id="TentacleConfigForm">
                     <div class="inputContainer">
-                        <label class="inputLabel" for="txtTentacleUrl">Tentacle Server URL</label>
+                        <label class="inputLabel" for="txtTentacleUrl">Tentacle URL</label>
                         <input id="txtTentacleUrl" type="text" is="emby-input"
-                               placeholder="http://localhost:8888" />
-                        <div class="fieldDescription">The URL of your Tentacle server. The plugin fetches home screen config and playlist data from this URL.</div>
+                               placeholder="http://192.168.1.100:8888" />
+                        <div class="fieldDescription">The URL where your Tentacle dashboard is running (e.g. <code>http://192.168.1.100:8888</code>). The plugin uses this to fetch home screen layout and playlist data.</div>
                     </div>
 
-                    <div class="checkboxContainer checkboxContainer-withDescription">
-                        <label>
-                            <input id="chkEnabled" type="checkbox" is="emby-checkbox" />
-                            <span>Enable Tentacle Homepage</span>
-                        </label>
-                        <div class="fieldDescription checkboxFieldDescription">
-                            When enabled, the Jellyfin homepage will be driven by Tentacle.
-                        </div>
-                    </div>
-
-                    <div style="margin-top: 1em;">
-                        <button id="btnTestConnection" type="button" is="emby-button" class="raised button-submit">
-                            Test Connection
-                        </button>
-                        <span id="testResult" style="margin-left: 1em;"></span>
-                    </div>
-
-                    <div id="statusInfo" style="margin-top: 1em; display: none;">
-                        <h3>Tentacle Status</h3>
-                        <div id="statusDetails"></div>
-                    </div>
-
-                    <div style="margin-top: 2em;">
-                        <button is="emby-button" type="submit" class="raised button-submit block">
+                    <div style="margin-top: 1em; display: flex; gap: 1em; align-items: center; flex-wrap: wrap;">
+                        <button is="emby-button" type="submit" class="raised button-submit">
                             <span>Save</span>
                         </button>
+                        <button id="btnTestConnection" type="button" is="emby-button" class="raised">
+                            Test Connection
+                        </button>
+                        <span id="saveResult" style="font-size: 14px;"></span>
                     </div>
                 </form>
+
+                <div id="statusInfo" style="margin-top: 1.5em; display: none; padding: 1em; background: rgba(255,255,255,0.05); border-radius: 8px;">
+                    <h3 style="margin: 0 0 0.5em 0;">Tentacle Status</h3>
+                    <div id="statusDetails" style="font-size: 14px;"></div>
+                </div>
             </div>
         </div>
     </div>
@@ -55,12 +42,17 @@
             pluginUniqueId: 'b7e3f1a9-2c4d-4856-9a1b-8def23456789'
         };
 
+        function showMessage(text, color) {
+            var el = document.querySelector('#saveResult');
+            el.innerHTML = '<span style="color:' + color + '">' + text + '</span>';
+            setTimeout(function () { el.innerHTML = ''; }, 5000);
+        }
+
         document.querySelector('#TentacleConfigPage')
             .addEventListener('pageshow', function () {
                 Dashboard.showLoadingMsg();
                 ApiClient.getPluginConfiguration(TentacleConfig.pluginUniqueId).then(function (config) {
                     document.querySelector('#txtTentacleUrl').value = config.TentacleUrl || '';
-                    document.querySelector('#chkEnabled').checked = config.Enabled;
                     Dashboard.hideLoadingMsg();
                 });
             });
@@ -68,12 +60,17 @@
         document.querySelector('#TentacleConfigForm')
             .addEventListener('submit', function (e) {
                 e.preventDefault();
+                var url = document.querySelector('#txtTentacleUrl').value.trim();
                 Dashboard.showLoadingMsg();
                 ApiClient.getPluginConfiguration(TentacleConfig.pluginUniqueId).then(function (config) {
-                    config.TentacleUrl = document.querySelector('#txtTentacleUrl').value.trim();
-                    config.Enabled = document.querySelector('#chkEnabled').checked;
+                    config.TentacleUrl = url;
                     ApiClient.updatePluginConfiguration(TentacleConfig.pluginUniqueId, config).then(function () {
-                        Dashboard.processPluginConfigurationUpdateResult();
+                        Dashboard.hideLoadingMsg();
+                        if (url) {
+                            showMessage('Saved! URL: ' + url, '#4f4');
+                        } else {
+                            showMessage('Saved. No URL set — plugin is inactive.', '#fa0');
+                        }
                     });
                 });
                 return false;
@@ -82,30 +79,34 @@
         document.querySelector('#btnTestConnection')
             .addEventListener('click', function () {
                 var url = document.querySelector('#txtTentacleUrl').value.trim();
-                var resultEl = document.querySelector('#testResult');
                 var statusEl = document.querySelector('#statusInfo');
                 var detailsEl = document.querySelector('#statusDetails');
 
                 if (!url) {
-                    resultEl.innerHTML = '<span style="color:#f44;">Please enter a Tentacle URL first.</span>';
+                    showMessage('Enter a Tentacle URL first.', '#f44');
                     return;
                 }
 
-                resultEl.innerHTML = 'Testing...';
+                showMessage('Testing...', '#aaa');
                 statusEl.style.display = 'none';
 
-                fetch(url.replace(/\/+$/, '') + '/api/widget/status')
-                    .then(function (resp) { return resp.json(); })
+                var testUrl = url.replace(/\/+$/, '') + '/api/widget/status';
+                fetch(testUrl)
+                    .then(function (resp) {
+                        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                        return resp.json();
+                    })
                     .then(function (data) {
-                        resultEl.innerHTML = '<span style="color:#4f4;">Connected!</span>';
+                        showMessage('Connected!', '#4f4');
                         statusEl.style.display = 'block';
                         detailsEl.innerHTML =
-                            '<p>Total Movies: ' + (data.total_movies || 'N/A') + '</p>' +
-                            '<p>Total Series: ' + (data.total_series || 'N/A') + '</p>' +
-                            '<p>Last Sync: ' + (data.last_sync || 'N/A') + '</p>';
+                            '<div>Movies: <strong>' + (data.total_movies || 0) + '</strong></div>' +
+                            '<div>Series: <strong>' + (data.total_series || 0) + '</strong></div>' +
+                            '<div>Last Sync: ' + (data.last_sync || 'Never') + '</div>';
                     })
                     .catch(function (err) {
-                        resultEl.innerHTML = '<span style="color:#f44;">Connection failed: ' + err.message + '</span>';
+                        showMessage('Connection failed: ' + err.message, '#f44');
+                        statusEl.style.display = 'none';
                     });
             });
     </script>
