@@ -50,16 +50,20 @@
     if (!isHomePage()) return;
     var slider = document.querySelector('.emby-tabs-slider');
     if (!slider) { setTimeout(tryInject, 300); return; }
-    if (slider.querySelector('#mdDiscoverTab')) return;
 
-    if (MD.enabled === null) {
-      apiGet('TentacleDiscover/Config').then(function (cfg) {
-        MD.enabled = cfg && cfg.discover_in_jellyfin === true;
-        if (MD.enabled) addTab(slider);
-      }).catch(function () { MD.enabled = false; });
-    } else if (MD.enabled) {
-      addTab(slider);
-    }
+    // Always re-check config from server (plugin clears cache on refresh)
+    apiGet('TentacleDiscover/Config').then(function (cfg) {
+      MD.enabled = cfg && cfg.discover_in_jellyfin === true;
+      var existingTab = slider.querySelector('#mdDiscoverTab');
+      if (MD.enabled && !existingTab) {
+        addTab(slider);
+      } else if (!MD.enabled && existingTab) {
+        existingTab.remove();
+        if (MD.active) hideDiscover();
+      }
+    }).catch(function () {
+      MD.enabled = false;
+    });
   }
 
   // ── Tab button ────────────────────────────────────────────────────

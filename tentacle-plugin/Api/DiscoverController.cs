@@ -29,6 +29,17 @@ public class TentacleDiscoverController : ControllerBase
         _logger = logger;
     }
 
+    /// <summary>
+    /// Clears the discover config and items caches.
+    /// Called from TentacleController.Refresh().
+    /// </summary>
+    public static void ClearCache()
+    {
+        _cachedConfig = null;
+        _configCacheExpiry = DateTime.MinValue;
+        _itemsCache.Clear();
+    }
+
     private string GetTentacleUrl()
     {
         var config = Plugin.Instance?.Configuration;

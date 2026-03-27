@@ -66,7 +66,30 @@ def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
     if all_set and not was_setup_complete:
         _trigger_post_setup_scan()
 
+    # If discover toggle changed, notify the Jellyfin plugin to clear its cache
+    if "discover_in_jellyfin" in body.settings:
+        _notify_plugin_discover_changed(db)
+
     return {"success": True}
+
+
+def _notify_plugin_discover_changed(db: Session):
+    """Notify the Jellyfin plugin to clear its discover config cache."""
+    import logging
+    jellyfin_url = get_setting(db, "jellyfin_url", "")
+    jellyfin_key = get_setting(db, "jellyfin_api_key", "")
+    if not jellyfin_url or not jellyfin_key:
+        return
+    try:
+        r = requests.post(
+            f"{jellyfin_url.rstrip('/')}/Tentacle/Refresh",
+            headers={"X-Emby-Token": jellyfin_key},
+            timeout=5,
+        )
+        if r.ok:
+            logging.getLogger(__name__).info("Notified Jellyfin plugin to clear discover cache")
+    except Exception:
+        pass
 
 
 def _trigger_post_setup_scan():
