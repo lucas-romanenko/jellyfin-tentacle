@@ -34,12 +34,13 @@ function setupNavigation() {
 
 async function checkSetup() {
   try {
-    const settings = await api('/api/settings/raw');
-    if (settings.setup_complete !== 'true') {
+    const s = await api('/api/settings/raw');
+    if (s.setup_complete !== 'true') {
       document.getElementById('setup-overlay').style.display = 'flex';
       // Pre-fill with existing values if any
-      if (settings.radarr_url) document.getElementById('setup-radarr-url').value = settings.radarr_url;
-      if (settings.jellyfin_url) document.getElementById('setup-jellyfin-url').value = settings.jellyfin_url;
+      if (s.jellyfin_url) document.getElementById('setup-jellyfin-url').value = s.jellyfin_url;
+      if (s.radarr_url) document.getElementById('setup-radarr-url').value = s.radarr_url;
+      if (s.sonarr_url) document.getElementById('setup-sonarr-url').value = s.sonarr_url;
     }
   } catch (e) {}
 }
@@ -152,7 +153,27 @@ function toast(msg, type = 'success', duration = 3500) {
   return el;
 }
 
-// ── Setup ─────────────────────────────────────────────────────────────────
+// ── Setup Wizard ──────────────────────────────────────────────────────────
+let _setupStep = 1;
+// Track whether user skipped from step 3 to 5 (no Radarr/Sonarr)
+let _setupSkippedArr = false;
+
+function setupGoTo(step) {
+  _setupStep = step;
+  document.querySelectorAll('.setup-step').forEach(el => el.style.display = 'none');
+  document.getElementById(`setup-step-${step}`).style.display = 'block';
+  // Update progress pips
+  document.querySelectorAll('.setup-pip').forEach(pip => {
+    const s = parseInt(pip.dataset.step);
+    pip.className = 'setup-pip' + (s < step ? ' done' : s === step ? ' active' : '');
+  });
+}
+
+// Back button on step 5 — go to 4 if they came from arr, or 2 if they skipped
+function setupGoBack() {
+  setupGoTo(_setupSkippedArr ? 2 : 4);
+}
+
 async function testSetupJellyfin() {
   const url = document.getElementById('setup-jellyfin-url').value.trim();
   const key = document.getElementById('setup-jellyfin-key').value.trim();
@@ -167,27 +188,159 @@ async function testSetupJellyfin() {
   }
 }
 
-async function completeSetup() {
+async function setupStep1Next() {
   const jfUrl = document.getElementById('setup-jellyfin-url').value.trim();
   const jfKey = document.getElementById('setup-jellyfin-key').value.trim();
-
   if (!jfUrl || !jfKey) {
-    toast('Jellyfin URL and API key are required to get started.', 'error');
+    toast('Jellyfin URL and API key are required', 'error');
+    return;
+  }
+  // Save Jellyfin settings immediately so login endpoint can use them
+  try {
+    await api('/api/settings', { method: 'POST', body: { settings: { jellyfin_url: jfUrl, jellyfin_api_key: jfKey } } });
+  } catch (e) {
+    toast(e.message, 'error');
+    return;
+  }
+  setupGoTo(2);
+}
+
+async function setupStep2Next() {
+  const username = document.getElementById('setup-jf-username').value.trim();
+  const password = document.getElementById('setup-jf-password').value;
+  const errorEl = document.getElementById('setup-jf-login-error');
+  const successEl = document.getElementById('setup-jf-login-success');
+  const btn = document.getElementById('setup-login-btn');
+
+  if (!username) {
+    errorEl.textContent = 'Username is required';
+    errorEl.style.display = 'block';
+    successEl.style.display = 'none';
     return;
   }
 
-  const settings = {
-    tmdb_bearer_token: document.getElementById('setup-tmdb').value.trim(),
-    radarr_url: document.getElementById('setup-radarr-url').value.trim(),
-    radarr_api_key: document.getElementById('setup-radarr-key').value.trim(),
-    jellyfin_url: jfUrl,
-    jellyfin_api_key: jfKey,
-  };
+  btn.disabled = true;
+  btn.textContent = 'Logging in...';
+  errorEl.style.display = 'none';
+  successEl.style.display = 'none';
+
+  try {
+    const r = await api('/api/settings/jellyfin-login', {
+      method: 'POST',
+      body: { username, password }
+    });
+    successEl.textContent = `Logged in as ${r.username}`;
+    successEl.style.display = 'block';
+    // Brief pause so user sees success, then advance
+    setTimeout(() => setupGoTo(3), 600);
+  } catch (e) {
+    errorEl.textContent = e.message || 'Login failed';
+    errorEl.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Login & Continue →';
+  }
+}
+
+async function testSetupArr(type) {
+  const url = document.getElementById(`setup-${type}-url`).value.trim();
+  const key = document.getElementById(`setup-${type}-key`).value.trim();
+  const el = document.getElementById(`setup-${type}-result`);
+  if (!url || !key) { el.innerHTML = '<span style="color:var(--red)">Enter URL and API key</span>'; return; }
+  el.innerHTML = 'Testing...';
+  try {
+    const r = await api('/api/settings/test', { method: 'POST', body: { type, url, api_key: key } });
+    el.innerHTML = `<span style="color:var(--green)">${r.message}</span>`;
+  } catch (e) {
+    el.innerHTML = `<span style="color:var(--red)">${e.message}</span>`;
+  }
+}
+
+async function setupStep3Next() {
+  // Save Radarr/Sonarr settings
+  const settings = {};
+  const radarrUrl = document.getElementById('setup-radarr-url').value.trim();
+  const radarrKey = document.getElementById('setup-radarr-key').value.trim();
+  const sonarrUrl = document.getElementById('setup-sonarr-url').value.trim();
+  const sonarrKey = document.getElementById('setup-sonarr-key').value.trim();
+  if (radarrUrl) settings.radarr_url = radarrUrl;
+  if (radarrKey) settings.radarr_api_key = radarrKey;
+  if (sonarrUrl) settings.sonarr_url = sonarrUrl;
+  if (sonarrKey) settings.sonarr_api_key = sonarrKey;
+
+  if (Object.keys(settings).length) {
+    try {
+      await api('/api/settings', { method: 'POST', body: { settings } });
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+  }
+
+  _setupSkippedArr = false;
+
+  // Show webhook step only if at least one arr was configured
+  if (radarrUrl || sonarrUrl) {
+    // Pre-populate webhook host from Tentacle's own URL if possible
+    const webhookHost = document.getElementById('setup-webhook-host');
+    if (!webhookHost.value) {
+      webhookHost.value = window.location.host;
+    }
+    updateSetupWebhookUrls();
+    // Show relevant webhook sections
+    document.getElementById('setup-webhook-radarr-section').style.display = radarrUrl ? 'block' : 'none';
+    document.getElementById('setup-webhook-sonarr-section').style.display = sonarrUrl ? 'block' : 'none';
+    setupGoTo(4);
+  } else {
+    setupGoTo(5);
+  }
+}
+
+function updateSetupWebhookUrls() {
+  let host = document.getElementById('setup-webhook-host').value.trim();
+  if (!host) {
+    document.getElementById('setup-webhook-urls').style.display = 'none';
+    return;
+  }
+  host = host.replace(/^https?:\/\//, '');
+  document.getElementById('setup-radarr-webhook-url').value = `http://${host}/api/radarr/webhook`;
+  document.getElementById('setup-sonarr-webhook-url').value = `http://${host}/api/sonarr/webhook`;
+  document.getElementById('setup-webhook-urls').style.display = 'block';
+}
+
+async function copySetupWebhook(type) {
+  const url = document.getElementById(`setup-${type}-webhook-url`).value;
+  if (!url) return;
+  try {
+    await navigator.clipboard.writeText(url);
+    toast('Copied!');
+  } catch (_) {
+    toast('Copy failed — use HTTPS or copy manually', 'error');
+  }
+}
+
+async function completeSetup() {
+  const settings = {};
+  const tmdb = document.getElementById('setup-tmdb').value.trim();
+  const trakt = document.getElementById('setup-trakt').value.trim();
+  const logodev = document.getElementById('setup-logodev').value.trim();
+  if (tmdb) settings.tmdb_bearer_token = tmdb;
+  if (trakt) settings.trakt_client_id = trakt;
+  if (logodev) settings.logodev_api_key = logodev;
+
+  // Save webhook host if it was set
+  const webhookHost = document.getElementById('setup-webhook-host').value.trim();
+  if (webhookHost) {
+    const host = webhookHost.replace(/^https?:\/\//, '');
+    settings.webhook_host = host;
+    settings.sonarr_webhook_host = host;
+  }
+
+  settings.setup_complete = 'true';
 
   try {
     await api('/api/settings', { method: 'POST', body: { settings } });
     document.getElementById('setup-overlay').style.display = 'none';
-    toast('Setup complete! Add your first provider to get started.');
+    toast('Setup complete!');
     loadDashboard();
   } catch (e) {
     toast(e.message, 'error');

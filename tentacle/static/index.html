@@ -196,6 +196,16 @@ body {
 .setup-card h2 { font-size: 22px; font-weight: 600; margin-bottom: 6px; }
 .setup-card p { color: var(--text2); font-size: 13px; margin-bottom: 28px; }
 
+.setup-pip {
+  flex: 1;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--bg3);
+  transition: background 0.2s;
+}
+.setup-pip.active { background: var(--accent); }
+.setup-pip.done { background: var(--green); }
+
 /* ── Cards ── */
 .card {
   background: var(--bg1);
@@ -2328,56 +2338,177 @@ td.primary { color: var(--text); font-weight: 500; }
 <!-- Setup overlay -->
 <div class="setup-overlay" id="setup-overlay" style="display:none">
   <div class="setup-card">
-    <div style="font-size:28px;margin-bottom:16px">◈</div>
-    <h2>Welcome to Tentacle</h2>
-    <p>Connect Jellyfin to get started. Everything else is optional and can be configured later in Settings.</p>
+    <!-- Progress bar -->
+    <div id="setup-progress" style="display:flex;gap:6px;margin-bottom:24px">
+      <div class="setup-pip active" data-step="1"></div>
+      <div class="setup-pip" data-step="2"></div>
+      <div class="setup-pip" data-step="3"></div>
+      <div class="setup-pip" data-step="4"></div>
+      <div class="setup-pip" data-step="5"></div>
+    </div>
 
-    <div class="form-row">
+    <!-- Step 1: Jellyfin connection -->
+    <div class="setup-step" id="setup-step-1">
+      <div style="font-size:28px;margin-bottom:16px">◈</div>
+      <h2>Connect Jellyfin</h2>
+      <p>Tentacle needs your Jellyfin server URL and an API key to get started.</p>
+
       <div class="form-group">
-        <div class="form-label">Jellyfin URL <span style="color:var(--red);font-size:12px">*required</span></div>
-        <input class="form-input" id="setup-jellyfin-url" placeholder="http://localhost:8096">
+        <div class="form-label">Jellyfin URL</div>
+        <input class="form-input" id="setup-jellyfin-url" placeholder="http://192.168.1.100:8096">
       </div>
       <div class="form-group">
-        <div class="form-label">Jellyfin API Key <span style="color:var(--red);font-size:12px">*required</span></div>
+        <div class="form-label">API Key</div>
         <input class="form-input mono" id="setup-jellyfin-key" type="password">
-        <div class="form-hint">Jellyfin Dashboard → API Keys → Create</div>
+        <div class="form-hint">Jellyfin → Dashboard → API Keys → +</div>
+      </div>
+      <div style="margin-bottom:16px">
+        <button class="btn btn-secondary" onclick="testSetupJellyfin()" style="font-size:12px">Test Connection</button>
+        <span id="setup-jellyfin-result" style="margin-left:8px;font-size:12px"></span>
+      </div>
+
+      <button class="btn btn-primary" style="width:100%;justify-content:center" onclick="setupStep1Next()">
+        Next →
+      </button>
+    </div>
+
+    <!-- Step 2: Jellyfin login -->
+    <div class="setup-step" id="setup-step-2" style="display:none">
+      <h2>Login to Jellyfin</h2>
+      <p>Tentacle needs a Jellyfin user account to create and manage playlists. Use an admin account for full access.</p>
+
+      <div class="form-group">
+        <div class="form-label">Jellyfin Username</div>
+        <input class="form-input" id="setup-jf-username">
+      </div>
+      <div class="form-group">
+        <div class="form-label">Jellyfin Password</div>
+        <input class="form-input" id="setup-jf-password" type="password">
+      </div>
+      <div id="setup-jf-login-error" style="color:var(--red);font-size:12px;margin-bottom:12px;display:none"></div>
+      <div id="setup-jf-login-success" style="color:var(--green);font-size:12px;margin-bottom:12px;display:none"></div>
+
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="setupGoTo(1)">← Back</button>
+        <button class="btn btn-primary" style="flex:1;justify-content:center" id="setup-login-btn" onclick="setupStep2Next()">Login & Continue →</button>
       </div>
     </div>
-    <div style="margin-bottom:16px">
-      <button class="btn btn-secondary" onclick="testSetupJellyfin()" style="font-size:12px">Test Connection</button>
-      <span id="setup-jellyfin-result" style="margin-left:8px;font-size:12px"></span>
-    </div>
 
-    <hr class="divider" style="margin:20px 0">
+    <!-- Step 3: Radarr & Sonarr -->
+    <div class="setup-step" id="setup-step-3" style="display:none">
+      <h2>Radarr & Sonarr</h2>
+      <p>Connect your download managers so Tentacle can tag and track downloaded content.</p>
 
-    <div class="form-group">
-      <div class="form-label">TMDB Bearer Token <span style="color:var(--text3);font-size:12px">(optional)</span></div>
-      <input class="form-input mono" id="setup-tmdb" type="password" placeholder="Using built-in key">
-      <div class="form-hint">Built-in key works out of the box. Override with your own from themoviedb.org/settings/api</div>
-    </div>
-
-    <div class="form-row">
       <div class="form-group">
-        <div class="form-label">Radarr URL <span style="color:var(--text3);font-size:12px">(optional)</span></div>
-        <input class="form-input" id="setup-radarr-url" placeholder="http://localhost:7878">
+        <div class="form-label">Radarr URL</div>
+        <input class="form-input" id="setup-radarr-url" placeholder="http://192.168.1.100:7878">
       </div>
       <div class="form-group">
         <div class="form-label">Radarr API Key</div>
         <input class="form-input mono" id="setup-radarr-key" type="password">
       </div>
+      <div style="margin-bottom:16px">
+        <button class="btn btn-secondary" onclick="testSetupArr('radarr')" style="font-size:12px">Test Radarr</button>
+        <span id="setup-radarr-result" style="margin-left:8px;font-size:12px"></span>
+      </div>
+
+      <hr class="divider" style="margin:16px 0">
+
+      <div class="form-group">
+        <div class="form-label">Sonarr URL</div>
+        <input class="form-input" id="setup-sonarr-url" placeholder="http://192.168.1.100:8989">
+      </div>
+      <div class="form-group">
+        <div class="form-label">Sonarr API Key</div>
+        <input class="form-input mono" id="setup-sonarr-key" type="password">
+      </div>
+      <div style="margin-bottom:16px">
+        <button class="btn btn-secondary" onclick="testSetupArr('sonarr')" style="font-size:12px">Test Sonarr</button>
+        <span id="setup-sonarr-result" style="margin-left:8px;font-size:12px"></span>
+      </div>
+
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="setupGoTo(2)">← Back</button>
+        <button class="btn btn-primary" style="flex:1;justify-content:center" onclick="setupStep3Next()">Next →</button>
+      </div>
+      <div style="text-align:center;margin-top:10px">
+        <a href="#" onclick="_setupSkippedArr=true;setupGoTo(5);return false" style="color:var(--text3);font-size:12px;text-decoration:none">Skip — I don't use Radarr/Sonarr</a>
+      </div>
     </div>
 
-    <button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:8px" onclick="completeSetup()">
-      Get Started →
-    </button>
-    <div style="text-align:center;margin-top:12px">
-      <a href="#" onclick="skipSetup();return false" style="color:var(--text3);font-size:12px;text-decoration:none">Skip for now — I'll configure later</a>
+    <!-- Step 4: Webhooks -->
+    <div class="setup-step" id="setup-step-4" style="display:none">
+      <h2>Webhook Setup</h2>
+      <p>So Radarr/Sonarr can notify Tentacle when new content downloads. Add these URLs in each app under Settings → Connect → Webhook.</p>
+
+      <div class="form-group">
+        <div class="form-label">Tentacle IP:Port</div>
+        <input class="form-input" id="setup-webhook-host" placeholder="192.168.1.100:8888" oninput="updateSetupWebhookUrls()">
+        <div class="form-hint">The address Radarr/Sonarr can reach Tentacle at</div>
+      </div>
+
+      <div id="setup-webhook-urls" style="display:none">
+        <div id="setup-webhook-radarr-section" style="display:none;margin-bottom:16px">
+          <div class="form-label">Radarr Webhook URL</div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input class="form-input mono" id="setup-radarr-webhook-url" readonly style="flex:1;font-size:12px;background:var(--bg3)">
+            <button class="btn btn-secondary btn-sm" onclick="copySetupWebhook('radarr')">Copy</button>
+          </div>
+          <div class="form-hint" style="margin-top:6px">Radarr → Settings → Connect → + → Webhook<br>Triggers: On Import, On Movie Added, On Movie Delete, On Movie File Delete</div>
+        </div>
+
+        <div id="setup-webhook-sonarr-section" style="display:none">
+          <div class="form-label">Sonarr Webhook URL</div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input class="form-input mono" id="setup-sonarr-webhook-url" readonly style="flex:1;font-size:12px;background:var(--bg3)">
+            <button class="btn btn-secondary btn-sm" onclick="copySetupWebhook('sonarr')">Copy</button>
+          </div>
+          <div class="form-hint" style="margin-top:6px">Sonarr → Settings → Connect → + → Webhook<br>Triggers: On Import, On Series Delete, On Episode File Delete</div>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:8px;margin-top:16px">
+        <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="setupGoTo(3)">← Back</button>
+        <button class="btn btn-primary" style="flex:1;justify-content:center" onclick="setupGoTo(5)">Next →</button>
+      </div>
+    </div>
+
+    <!-- Step 5: Optional services -->
+    <div class="setup-step" id="setup-step-5" style="display:none">
+      <h2>Optional Services</h2>
+      <p>These are completely optional. TMDB metadata works out of the box with a built-in key.</p>
+
+      <div class="form-group">
+        <div class="form-label">TMDB Bearer Token</div>
+        <input class="form-input mono" id="setup-tmdb" type="password" placeholder="Using built-in key">
+        <div class="form-hint">Built-in key works automatically. Override with your own from themoviedb.org if needed.</div>
+      </div>
+
+      <div class="form-group">
+        <div class="form-label">Trakt Client ID</div>
+        <input class="form-input mono" id="setup-trakt" type="password">
+        <div class="form-hint">For subscribing to Trakt lists. Get one at trakt.tv/oauth/applications</div>
+      </div>
+
+      <div class="form-group">
+        <div class="form-label">Logo.dev API Key</div>
+        <input class="form-input mono" id="setup-logodev" type="password">
+        <div class="form-hint">For auto-generated playlist artwork. Get one at logo.dev</div>
+      </div>
+
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <button class="btn btn-secondary" style="flex:1;justify-content:center" onclick="setupGoBack()">← Back</button>
+        <button class="btn btn-primary" style="flex:1;justify-content:center" onclick="completeSetup()">Get Started →</button>
+      </div>
+      <div style="text-align:center;margin-top:12px">
+        <a href="#" onclick="skipSetup();return false" style="color:var(--text3);font-size:12px;text-decoration:none">Skip everything — I'll configure later</a>
+      </div>
     </div>
   </div>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<script src="/static/js/app.js?v=13"></script>
-<script src="/static/js/pages.js?v=13"></script>
+<script src="/static/js/app.js?v=14"></script>
+<script src="/static/js/pages.js?v=14"></script>
 </body>
 </html>
