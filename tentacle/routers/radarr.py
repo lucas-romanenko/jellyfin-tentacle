@@ -86,7 +86,7 @@ def write_nfos(db: Session = Depends(get_db)):
 
     _nfo_running = True
     try:
-        radarr_movies_path = get_setting(db, "radarr_movies_path", "/mnt/media/movies")
+        radarr_movies_path = "/mnt/media/movies"
         logger.info(f"[NFO] Writing NFOs using base path: {radarr_movies_path}")
 
         movies = db.query(Movie).filter(Movie.source == "radarr").all()

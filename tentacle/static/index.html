@@ -1281,6 +1281,7 @@ td.primary { color: var(--text); font-weight: 500; }
             <button class="settings-nav-item active" data-section="providers">Providers</button>
             <button class="settings-nav-item" data-section="connections">Connections</button>
             <button class="settings-nav-item" data-section="sync">Sync Settings</button>
+            <button class="settings-nav-item" data-section="paths">Library Paths</button>
             <button class="settings-nav-item" data-section="integrations">Integrations</button>
           </div>
 
@@ -1397,10 +1398,20 @@ td.primary { color: var(--text); font-weight: 500; }
               </div>
             </div>
 
+            <!-- Library Paths -->
+            <div class="settings-section card" id="section-paths">
+              <h3>Library Paths</h3>
+              <p class="section-desc">Volume mounts detected inside the container. Add missing mounts to your <code>docker-compose.yml</code> and restart.</p>
+
+              <div id="paths-status" style="margin-bottom:16px">
+                <div class="loading-state"><div class="spinner"></div> Checking paths...</div>
+              </div>
+            </div>
+
             <!-- Integrations -->
             <div class="settings-section card" id="section-integrations">
               <h3>Integrations</h3>
-              <p class="section-desc">Paths for external integrations managed by Tentacle.</p>
+              <p class="section-desc">External service connections and webhooks.</p>
 
               <div class="form-group">
                 <div class="form-label">Jellyfin User</div>

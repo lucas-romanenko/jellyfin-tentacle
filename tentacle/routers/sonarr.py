@@ -67,7 +67,7 @@ def write_nfos(db: Session = Depends(get_db)):
     from pathlib import Path
     from services.tagger import apply_tag_rules, get_list_tags_for_tmdb_id
 
-    sonarr_series_path = get_setting(db, "sonarr_series_path", "/mnt/media/tv")
+    sonarr_series_path = "/mnt/media/tv"
     logger.info(f"[NFO] Writing series NFOs using base path: {sonarr_series_path}")
 
     all_series = db.query(Series).filter(Series.source == "sonarr").all()

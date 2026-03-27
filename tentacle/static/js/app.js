@@ -830,7 +830,42 @@ async function loadSettings() {
     showJellyfinLoginState(settings['jellyfin_user_id'] || '', settings['jellyfin_user_name'] || '');
     const discoverCb = document.getElementById('discover_in_jellyfin');
     if (discoverCb) discoverCb.checked = (settings['discover_in_jellyfin'] || '').toLowerCase() === 'true';
+    loadPathStatus();
   } catch (e) {}
+}
+
+async function loadPathStatus() {
+  const container = document.getElementById('paths-status');
+  if (!container) return;
+  try {
+    const paths = await api('/api/settings/paths');
+    let html = '';
+    for (const [key, info] of Object.entries(paths)) {
+      const ok = info.mounted && info.writable;
+      const icon = ok
+        ? '<span style="color:var(--green);font-size:16px">&#10003;</span>'
+        : '<span style="color:var(--red);font-size:16px">&#10007;</span>';
+      let status;
+      if (ok) {
+        status = '<span style="color:var(--green);font-size:12px">Mounted</span>';
+      } else if (info.required) {
+        status = '<span style="color:var(--red);font-size:12px">Not mounted — this is required</span>';
+      } else {
+        status = '<span style="color:var(--text3);font-size:12px">Not mounted — add a volume mount to your docker-compose.yml and restart</span>';
+      }
+      html += `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;${key !== 'tv' ? 'border-bottom:1px solid var(--border);' : ''}">
+        <span style="width:20px;text-align:center">${icon}</span>
+        <div style="flex:1">
+          <div style="font-size:13px;font-weight:500;color:var(--text1)">${info.label}</div>
+          <code style="font-size:11px;color:var(--text3)">${info.path}</code>
+        </div>
+        <div>${status}</div>
+      </div>`;
+    }
+    container.innerHTML = html;
+  } catch (e) {
+    container.innerHTML = '<div style="color:var(--red);font-size:12px">Failed to check paths</div>';
+  }
 }
 
 async function saveSettings() {

@@ -3,6 +3,8 @@ Tentacle - Settings Router
 Handles all settings API endpoints
 """
 
+import os
+from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -135,6 +137,36 @@ def test_connection(body: ConnectionTest, db: Session = Depends(get_db)):
             raise HTTPException(400, f"Jellyfin connection failed: {str(e)}")
 
     raise HTTPException(400, "Unknown connection type")
+
+
+@router.get("/paths")
+def check_paths():
+    """Check which media paths are mounted and accessible."""
+    paths = [
+        {"key": "data", "path": "/data", "label": "Database & Config", "required": True,
+         "mount_example": "./tentacle-data:/data"},
+        {"key": "vod", "path": "/mnt/media/vod", "label": "VOD Content",
+         "mount_example": "/your/vod:/mnt/media/vod"},
+        {"key": "movies", "path": "/mnt/media/movies", "label": "Radarr Movies",
+         "mount_example": "/your/movies:/mnt/media/movies"},
+        {"key": "tv", "path": "/mnt/media/tv", "label": "Sonarr TV Shows",
+         "mount_example": "/your/tv:/mnt/media/tv"},
+    ]
+    result = {}
+    for info in paths:
+        p = Path(info["path"])
+        mounted = p.exists() and p.is_dir()
+        writable = mounted and os.access(str(p), os.W_OK)
+        result[info["key"]] = {
+            "path": info["path"],
+            "label": info["label"],
+            "mounted": mounted,
+            "writable": writable,
+            "mount_example": info["mount_example"],
+        }
+        if info.get("required"):
+            result[info["key"]]["required"] = True
+    return result
 
 
 class WebhookTest(BaseModel):

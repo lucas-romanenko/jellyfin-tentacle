@@ -68,21 +68,20 @@ Add your IPTV provider and your Jellyfin home screen fills with curated rows, a 
 
 ## Quick Start
 
-### Minimum Setup (Jellyfin only)
-
-If you just want to get Tentacle running and explore the UI:
+Add Tentacle to your existing `docker-compose.yml` — replace the paths on the left side of each volume mount with your own:
 
 ```yaml
-# docker-compose.yml
-services:
-  tentacle:
-    image: ghcr.io/lucas-romanenko/jellyfin-tentacle:latest
-    container_name: tentacle
-    ports:
-      - 8888:8888
-    volumes:
-      - ./tentacle-data:/data    # Database, config, TMDB cache
-    restart: unless-stopped
+tentacle:
+  image: ghcr.io/lucas-romanenko/jellyfin-tentacle:latest
+  container_name: tentacle
+  ports:
+    - 8888:8888
+  volumes:
+    - ./tentacle-data:/data                    # Required — database, config, cache
+    - /your/vod:/mnt/media/vod                 # IPTV VOD content (creates Movies/ and Series/ inside)
+    - /your/movies:/mnt/media/movies           # Same folder Radarr downloads to
+    - /your/tv:/mnt/media/tv                   # Same folder Sonarr downloads to
+  restart: unless-stopped
 ```
 
 ```bash
@@ -91,32 +90,11 @@ docker compose up -d
 
 Open `http://localhost:8888` — the setup wizard will guide you through connecting Jellyfin. Only a Jellyfin URL and API key are required. TMDB metadata works out of the box with a built-in key.
 
-### Full Setup (VOD + Radarr/Sonarr)
-
-To use IPTV VOD sync, Radarr/Sonarr integration, or smart playlists, mount the media paths:
-
-```yaml
-services:
-  tentacle:
-    image: ghcr.io/lucas-romanenko/jellyfin-tentacle:latest
-    container_name: tentacle
-    ports:
-      - 8888:8888
-    volumes:
-      - ./tentacle-data:/data                      # Database, config, TMDB cache, smartlists (required)
-      - /path/to/media/vod:/mnt/media/vod          # Where VOD .strm files will be created
-      - /path/to/media/movies:/mnt/media/movies    # Same folder Radarr downloads to
-      - /path/to/media/tv:/mnt/media/tv            # Same folder Sonarr downloads to
-    restart: unless-stopped
-```
-
-The Tentacle plugin communicates with the dashboard via its API — no shared volumes needed between Jellyfin and Tentacle containers. Just configure the Tentacle URL in the plugin settings.
-
 > **Volume notes:**
-> - `./tentacle-data:/data` is the only required volume. Everything else is optional depending on which features you use.
-> - `/mnt/media/vod` — only needed if you add an IPTV provider for VOD content. Point this to a folder inside a Jellyfin library.
-> - `/mnt/media/movies` and `/mnt/media/tv` — mount the same paths your Radarr/Sonarr containers use, so Tentacle can write NFO files alongside downloads.
-> - Paths are hardcoded defaults inside the container — just make sure your docker-compose volume mounts point to the right places.
+> - `./tentacle-data:/data` is the only required volume. The other three are optional depending on which features you use.
+> - Only mount what you need — skip `/mnt/media/movies` and `/mnt/media/tv` if you don't use Radarr/Sonarr, skip `/mnt/media/vod` if you don't have an IPTV provider.
+> - The right side of each mount (`/data`, `/mnt/media/...`) is fixed — don't change these. Only change the left side to match your host paths.
+> - Settings → Library Paths shows which mounts Tentacle can see. Green = mounted, red = missing.
 
 ### After Starting
 
@@ -124,6 +102,7 @@ The Tentacle plugin communicates with the dashboard via its API — no shared vo
 2. **TMDB** — works automatically with built-in key, or override with your own from [themoviedb.org](https://www.themoviedb.org/settings/api)
 3. **IPTV Provider** — add via the VOD page (optional)
 4. **Radarr / Sonarr** — URL + API key in Settings → Connections (optional)
+5. **Check paths** — Settings → Library Paths to verify your volume mounts are correct
 
 ---
 
