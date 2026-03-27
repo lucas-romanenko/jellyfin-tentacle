@@ -65,8 +65,7 @@ function showPage(name) {
     vod: ['VOD', 'Categories, sync & content'],
     library: ['Library', 'Movies, series & duplicates'],
     'live-tv': ['Live TV', 'Channels, groups & EPG'],
-    discover: ['Discover', 'Trending, popular & list subscriptions'],
-    playlists: ['Playlists', 'Manage Jellyfin playlists & home screen'],
+    jellyfin: ['Jellyfin', 'Home screen, playlists & discover'],
     settings: ['Settings', 'Providers, connections & config'],
   };
 
@@ -78,8 +77,7 @@ function showPage(name) {
   if (name === 'settings') { loadSettings(); loadProviders(); }
   if (name === 'vod') loadVodPage();
   if (name === 'library') loadLibrary();
-  if (name === 'playlists') loadPlaylistsPage();
-  if (name === 'discover') loadDiscover();
+  if (name === 'jellyfin') loadJellyfinPage();
   if (name === 'live-tv') loadLiveTV();
 }
 
@@ -104,6 +102,21 @@ function showLibTab(tab) {
   document.getElementById('lib-tab-browse').style.display = tab === 'browse' ? '' : 'none';
   document.getElementById('lib-tab-duplicates').style.display = tab === 'duplicates' ? '' : 'none';
   if (tab === 'duplicates') loadDuplicates();
+}
+
+function showJellyfinTab(tab) {
+  document.querySelectorAll('[data-jftab]').forEach(t => t.classList.remove('active'));
+  document.querySelector(`[data-jftab="${tab}"]`)?.classList.add('active');
+  document.getElementById('jf-tab-home').style.display = tab === 'home' ? '' : 'none';
+  document.getElementById('jf-tab-playlists').style.display = tab === 'playlists' ? '' : 'none';
+  document.getElementById('jf-tab-discover').style.display = tab === 'discover' ? '' : 'none';
+  // Show/hide action buttons (only relevant on playlists tab)
+  const actions = document.getElementById('jf-tab-actions');
+  if (actions) actions.style.display = tab === 'playlists' ? 'flex' : 'none';
+  // Load tab content on switch
+  if (tab === 'playlists') { loadAutoPlaylists(); loadTagRules(); }
+  if (tab === 'discover') loadDiscover();
+  if (tab === 'home') loadHomeScreen();
 }
 
 function showDiscoverTab(tab) {
@@ -449,8 +462,8 @@ function renderGettingStarted(cfg, dash) {
     { done: cfg.sonarr, label: 'Sonarr configured', hint: 'Optional — <a href="#" onclick="showPage(\'settings\');return false">Settings → Connections</a>' },
     { done: cfg.has_providers, label: 'IPTV provider added', hint: '<a href="#" onclick="showPage(\'settings\');return false">Settings → Providers → Add Provider</a>' },
     { done: dash.status.vod_sync.timestamp || (dash.library.total_movies + dash.library.total_series) > 0, label: 'Content synced' },
-    { done: cfg.has_playlists, label: 'Playlists created', hint: '<a href="#" onclick="showPage(\'playlists\');return false">Go to Playlists</a>' },
-    { done: cfg.has_home_screen, label: 'Home screen configured', hint: '<a href="#" onclick="showPage(\'playlists\');return false">Go to Playlists → Home Screen</a>' },
+    { done: cfg.has_playlists, label: 'Playlists created', hint: '<a href="#" onclick="showPage(\'jellyfin\');showJellyfinTab(\'playlists\');return false">Go to Jellyfin → Playlists</a>' },
+    { done: cfg.has_home_screen, label: 'Home screen configured', hint: '<a href="#" onclick="showPage(\'jellyfin\');showJellyfinTab(\'home\');return false">Go to Jellyfin → Home Screen</a>' },
   ];
 
   const allDone = checks.every(c => c.done);
@@ -600,7 +613,7 @@ function renderActivityFeed(entries) {
   el.innerHTML = entries.map(e => {
     let msg = e.message;
     if (e.event === 'new_playlists') {
-      msg += ` <a href="#" onclick="showPage('playlists');return false" style="color:var(--accent);font-size:12px">View &rarr;</a>`;
+      msg += ` <a href="#" onclick="showPage('jellyfin');showJellyfinTab('playlists');return false" style="color:var(--accent);font-size:12px">View &rarr;</a>`;
     }
     return `
     <div class="activity-item">
@@ -953,8 +966,6 @@ async function loadSettings() {
       if (el && settings[key]) el.value = settings[key];
     });
     showJellyfinLoginState(settings['jellyfin_user_id'] || '', settings['jellyfin_user_name'] || '');
-    const discoverCb = document.getElementById('discover_in_jellyfin');
-    if (discoverCb) discoverCb.checked = (settings['discover_in_jellyfin'] || '').toLowerCase() === 'true';
     loadPathStatus();
   } catch (e) {}
 }
@@ -1007,8 +1018,6 @@ async function saveSettings() {
     const el = document.getElementById(key);
     if (el) settings[key] = el.value.trim();
   });
-  const discoverCb = document.getElementById('discover_in_jellyfin');
-  if (discoverCb) settings['discover_in_jellyfin'] = discoverCb.checked ? 'true' : 'false';
   try {
     await api('/api/settings', { method: 'POST', body: { settings } });
     toast('Settings saved');

@@ -978,11 +978,8 @@ td.primary { color: var(--text); font-weight: 500; }
         <button class="nav-item" data-page="live-tv">
           <span class="icon">▶</span> Live TV
         </button>
-        <button class="nav-item" data-page="discover">
-          <span class="icon">✦</span> Discover
-        </button>
-        <button class="nav-item" data-page="playlists">
-          <span class="icon">◈</span> Playlists
+        <button class="nav-item" data-page="jellyfin">
+          <span class="icon">◈</span> Jellyfin
         </button>
         <button class="nav-item" data-page="settings">
           <span class="icon">⊙</span> Settings
@@ -1484,16 +1481,6 @@ td.primary { color: var(--text); font-weight: 500; }
               <hr class="divider">
 
               <div class="form-group">
-                <div class="form-label">Jellyfin Discover Tab</div>
-                <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-                  <input type="checkbox" id="discover_in_jellyfin">
-                  <span style="font-size:13px;color:var(--text2)">Add a "Discover" tab to the Jellyfin home page showing trending content</span>
-                </label>
-              </div>
-
-              <hr class="divider">
-
-              <div class="form-group">
                 <div class="form-label">Radarr Webhook URL</div>
                 <div style="display:flex;gap:8px;align-items:center">
                   <input class="form-input mono" id="webhook_host" placeholder="your-server-ip:8888" style="max-width:200px">
@@ -1624,39 +1611,35 @@ td.primary { color: var(--text); font-weight: 500; }
       <!-- Lists page removed — merged into Discover tab -->
 
       <!-- ── PLAYLISTS ── -->
-      <div class="page" id="page-playlists">
+      <div class="page" id="page-jellyfin">
         <div class="page-header">
           <div class="page-header-row">
             <div>
-              <div class="page-title">Playlists</div>
-              <div class="page-subtitle">Manage Jellyfin playlists & home screen</div>
+              <div class="page-title">Jellyfin</div>
+              <div class="page-subtitle">Home screen, playlists & discover</div>
             </div>
-            <div style="display:flex;gap:8px">
+            <div id="jf-tab-actions" style="display:flex;gap:8px">
               <button class="btn btn-secondary" onclick="showAddTagRule()">+ Create Playlist</button>
               <button class="btn btn-primary" onclick="syncPlaylistsToJellyfin()">Sync to Jellyfin</button>
             </div>
           </div>
         </div>
 
-        <!-- First-time info banner -->
-        <div id="auto-playlist-banner" style="display:none;padding:12px 16px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;margin-bottom:16px;font-size:13px;color:var(--text2)">
-          Playlists are created automatically from your synced content. Toggle on the ones you want in Jellyfin.
-          <button onclick="dismissAutoPlaylistBanner()" style="background:none;border:none;color:var(--text3);cursor:pointer;float:right;font-size:14px;padding:0 4px">&#10005;</button>
+        <!-- Jellyfin tabs -->
+        <div style="display:flex;gap:0;border-bottom:1px solid var(--border2);margin-bottom:16px">
+          <button class="live-tab active" data-jftab="home" onclick="showJellyfinTab('home')">Home Screen</button>
+          <button class="live-tab" data-jftab="playlists" onclick="showJellyfinTab('playlists')">Playlists</button>
+          <button class="live-tab" data-jftab="discover" onclick="showJellyfinTab('discover')">Discover</button>
         </div>
 
-        <!-- Home Screen section (collapsible) -->
-        <div class="card" id="home-screen-card">
-          <div class="card-header" style="cursor:pointer" onclick="toggleHomeScreenSection()">
-            <div class="card-title" style="display:flex;align-items:center;gap:8px">
-              <span id="home-screen-chevron" style="font-size:11px;transition:transform 0.2s">&#9654;</span>
-              Home Screen
+        <!-- ── HOME SCREEN TAB ── -->
+        <div id="jf-tab-home">
+          <!-- Hero picker -->
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title">Hero Spotlight</div>
             </div>
-            <span id="home-config-status" style="font-size:11px;color:var(--text3)"></span>
-          </div>
-          <div id="home-screen-body" style="display:none">
-            <!-- Hero picker -->
-            <div style="padding:0 16px 12px">
-              <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:8px">Hero Spotlight</div>
+            <div style="padding:0 16px 16px">
               <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
                 <select id="home-hero-select" class="input" style="max-width:360px;flex:1" onchange="updateHeroPick()">
                   <option value="">-- disabled --</option>
@@ -1675,14 +1658,15 @@ td.primary { color: var(--text); font-weight: 500; }
                 </label>
               </div>
             </div>
-            <!-- Home rows -->
-            <div style="padding:0 16px 12px">
-              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-                <div style="font-size:12px;font-weight:600;color:var(--text2)">Home Rows</div>
-                <div style="display:flex;gap:6px">
-                  <button class="btn btn-secondary btn-sm" onclick="showAddHomeRow()" style="font-size:11px;padding:3px 10px">+ Add Row</button>
-                </div>
-              </div>
+          </div>
+
+          <!-- Home rows -->
+          <div class="card" style="margin-top:16px">
+            <div class="card-header">
+              <div class="card-title">Home Rows</div>
+              <button class="btn btn-secondary btn-sm" onclick="showAddHomeRow()" style="font-size:11px;padding:3px 10px">+ Add Row</button>
+            </div>
+            <div style="padding:0 16px 16px">
               <div id="home-rows-list"></div>
               <div id="add-row-inline" style="display:none;margin-top:8px">
                 <div style="display:flex;gap:8px;align-items:center">
@@ -1697,69 +1681,80 @@ td.primary { color: var(--text); font-weight: 500; }
           </div>
         </div>
 
-        <!-- Auto Playlists -->
-        <div class="card" style="margin-top:16px">
-          <div class="card-header">
-            <div class="card-title">Auto Playlists</div>
-            <span style="font-size:11px;color:var(--text3)">Generated from your synced content</span>
+        <!-- ── PLAYLISTS TAB ── -->
+        <div id="jf-tab-playlists" style="display:none">
+          <!-- First-time info banner -->
+          <div id="auto-playlist-banner" style="display:none;padding:12px 16px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;margin-bottom:16px;font-size:13px;color:var(--text2)">
+            Playlists are created automatically from your synced content. Toggle on the ones you want in Jellyfin.
+            <button onclick="dismissAutoPlaylistBanner()" style="background:none;border:none;color:var(--text3);cursor:pointer;float:right;font-size:14px;padding:0 4px">&#10005;</button>
           </div>
-          <div id="auto-playlists-list">
-            <div class="loading-state"><div class="spinner"></div></div>
-          </div>
-        </div>
 
-        <!-- Custom Playlists -->
-        <div class="card" style="margin-top:16px">
-          <div class="card-header">
-            <div class="card-title">Custom Playlists</div>
-            <span style="font-size:11px;color:var(--text3)">Filter your library by genre, rating, year & more</span>
+          <!-- Auto Playlists -->
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title">Auto Playlists</div>
+              <span style="font-size:11px;color:var(--text3)">Generated from your synced content</span>
+            </div>
+            <div id="auto-playlists-list">
+              <div class="loading-state"><div class="spinner"></div></div>
+            </div>
           </div>
-          <div id="tag-rules-list">
-            <div class="loading-state"><div class="spinner"></div></div>
-          </div>
-        </div>
-      </div>
 
-      <!-- ── DISCOVER ── -->
-      <div class="page" id="page-discover">
-        <div class="page-header">
-          <div class="page-header-row">
-            <div>
-              <div class="page-title">Discover</div>
-              <div class="page-subtitle">Trending, popular & list subscriptions</div>
+          <!-- Custom Playlists -->
+          <div class="card" style="margin-top:16px">
+            <div class="card-header">
+              <div class="card-title">Custom Playlists</div>
+              <span style="font-size:11px;color:var(--text3)">Filter your library by genre, rating, year & more</span>
+            </div>
+            <div id="tag-rules-list">
+              <div class="loading-state"><div class="spinner"></div></div>
             </div>
           </div>
         </div>
 
-        <!-- Discover tabs -->
-        <div style="display:flex;gap:0;border-bottom:1px solid var(--border2);margin-bottom:16px">
-          <button class="live-tab active" data-discovertab="browse" onclick="showDiscoverTab('browse')">Browse</button>
-          <button class="live-tab" data-discovertab="lists" onclick="showDiscoverTab('lists')">My Lists</button>
-        </div>
-
-        <div id="discover-tab-browse">
-          <div style="display:flex;gap:8px;align-items:center;margin-bottom:16px">
-            <div style="position:relative;display:flex;align-items:center">
-              <input type="text" id="discover-search-input" placeholder="Search TMDB…" autocomplete="off" style="padding:6px 30px 6px 10px;border-radius:4px;border:1px solid var(--border2);background:var(--bg2);color:var(--text);font-size:13px;width:200px;outline:none;font-family:'DM Sans',sans-serif" oninput="onDiscoverSearchInput(this)">
-              <button id="discover-search-clear" onclick="clearDiscoverSearch()" style="display:none;position:absolute;right:4px;border:none;background:transparent;color:var(--text3);font-size:16px;cursor:pointer;padding:2px 4px">&times;</button>
-            </div>
-            <div class="filter-group">
-              <button class="filter-btn active" data-disctype="all" onclick="setDiscoverType('all',this)">All</button>
-              <button class="filter-btn" data-disctype="movies" onclick="setDiscoverType('movies',this)">Movies</button>
-              <button class="filter-btn" data-disctype="series" onclick="setDiscoverType('series',this)">Shows</button>
+        <!-- ── DISCOVER TAB ── -->
+        <div id="jf-tab-discover" style="display:none">
+          <!-- Discover in Jellyfin toggle -->
+          <div class="card" style="margin-bottom:16px">
+            <div style="padding:16px;display:flex;align-items:center;justify-content:space-between">
+              <div>
+                <div style="font-size:13px;font-weight:600;color:var(--text)">Show in Jellyfin</div>
+                <div style="font-size:12px;color:var(--text3);margin-top:2px">Add a "Discover" tab to the Jellyfin home page showing trending content</div>
+              </div>
+              <input type="checkbox" id="discover_in_jellyfin" onchange="saveDiscoverInJellyfin()" style="flex-shrink:0">
             </div>
           </div>
-          <div id="discover-section-tabs" style="display:flex;gap:0;border-bottom:1px solid var(--border2);margin-bottom:16px"></div>
-          <div id="discover-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px"></div>
-        </div>
 
-        <div id="discover-tab-lists" style="display:none">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-            <p style="color:var(--text3);font-size:13px;margin:0">IMDb, Trakt & Letterboxd list subscriptions</p>
-            <button class="btn btn-primary" onclick="showAddList()">+ Add List</button>
+          <!-- Discover browse/lists tabs -->
+          <div style="display:flex;gap:0;border-bottom:1px solid var(--border2);margin-bottom:16px">
+            <button class="live-tab active" data-discovertab="browse" onclick="showDiscoverTab('browse')">Browse</button>
+            <button class="live-tab" data-discovertab="lists" onclick="showDiscoverTab('lists')">My Lists</button>
           </div>
-          <div id="lists-active">
-            <div class="loading-state"><div class="spinner"></div></div>
+
+          <div id="discover-tab-browse">
+            <div style="display:flex;gap:8px;align-items:center;margin-bottom:16px">
+              <div style="position:relative;display:flex;align-items:center">
+                <input type="text" id="discover-search-input" placeholder="Search TMDB…" autocomplete="off" style="padding:6px 30px 6px 10px;border-radius:4px;border:1px solid var(--border2);background:var(--bg2);color:var(--text);font-size:13px;width:200px;outline:none;font-family:'DM Sans',sans-serif" oninput="onDiscoverSearchInput(this)">
+                <button id="discover-search-clear" onclick="clearDiscoverSearch()" style="display:none;position:absolute;right:4px;border:none;background:transparent;color:var(--text3);font-size:16px;cursor:pointer;padding:2px 4px">&times;</button>
+              </div>
+              <div class="filter-group">
+                <button class="filter-btn active" data-disctype="all" onclick="setDiscoverType('all',this)">All</button>
+                <button class="filter-btn" data-disctype="movies" onclick="setDiscoverType('movies',this)">Movies</button>
+                <button class="filter-btn" data-disctype="series" onclick="setDiscoverType('series',this)">Shows</button>
+              </div>
+            </div>
+            <div id="discover-section-tabs" style="display:flex;gap:0;border-bottom:1px solid var(--border2);margin-bottom:16px"></div>
+            <div id="discover-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px"></div>
+          </div>
+
+          <div id="discover-tab-lists" style="display:none">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+              <p style="color:var(--text3);font-size:13px;margin:0">IMDb, Trakt & Letterboxd list subscriptions</p>
+              <button class="btn btn-primary" onclick="showAddList()">+ Add List</button>
+            </div>
+            <div id="lists-active">
+              <div class="loading-state"><div class="spinner"></div></div>
+            </div>
           </div>
         </div>
       </div>
@@ -2572,7 +2567,7 @@ td.primary { color: var(--text); font-weight: 500; }
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<script src="/static/js/app.js?v=17"></script>
-<script src="/static/js/pages.js?v=17"></script>
+<script src="/static/js/app.js?v=18"></script>
+<script src="/static/js/pages.js?v=18"></script>
 </body>
 </html>

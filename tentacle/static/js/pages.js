@@ -964,7 +964,7 @@ async function saveQuickList() {
 // ── PLAYLISTS PAGE ────────────────────────────────────────────────────────
 let _smartlistSortCache = {};
 
-async function loadPlaylistsPage() {
+async function loadJellyfinPage() {
   // Fetch sort info for all playlists
   try {
     const data = await api('/api/smartlists');
@@ -974,15 +974,35 @@ async function loadPlaylistsPage() {
     }
   } catch {}
 
-  // Show first-time banner
-  const banner = document.getElementById('auto-playlist-banner');
-  if (banner && !localStorage.getItem('tentacle_dismiss_auto_banner')) {
-    banner.style.display = '';
-  }
+  // Load the discover_in_jellyfin toggle state
+  try {
+    const cfg = await api('/api/discover/config');
+    const cb = document.getElementById('discover_in_jellyfin');
+    if (cb) cb.checked = cfg.discover_in_jellyfin;
+  } catch {}
 
-  loadAutoPlaylists();
-  loadTagRules();
-  loadHomeScreen();
+  // Load the currently active tab's content
+  const activeTab = document.querySelector('[data-jftab].active');
+  const tab = activeTab ? activeTab.getAttribute('data-jftab') : 'home';
+  if (tab === 'home') loadHomeScreen();
+  if (tab === 'playlists') {
+    const banner = document.getElementById('auto-playlist-banner');
+    if (banner && !localStorage.getItem('tentacle_dismiss_auto_banner')) banner.style.display = '';
+    loadAutoPlaylists();
+    loadTagRules();
+  }
+  if (tab === 'discover') loadDiscover();
+}
+
+async function saveDiscoverInJellyfin() {
+  const cb = document.getElementById('discover_in_jellyfin');
+  if (!cb) return;
+  try {
+    await api('/api/settings', { method: 'POST', body: { settings: { discover_in_jellyfin: cb.checked ? 'true' : 'false' } } });
+    toast(cb.checked ? 'Discover tab enabled in Jellyfin' : 'Discover tab disabled in Jellyfin');
+  } catch (e) {
+    toast(e.message, 'error');
+  }
 }
 
 function dismissAutoPlaylistBanner() {
@@ -991,17 +1011,7 @@ function dismissAutoPlaylistBanner() {
   if (el) el.style.display = 'none';
 }
 
-function toggleHomeScreenSection() {
-  const body = document.getElementById('home-screen-body');
-  const chevron = document.getElementById('home-screen-chevron');
-  if (body.style.display === 'none') {
-    body.style.display = '';
-    chevron.style.transform = 'rotate(90deg)';
-  } else {
-    body.style.display = 'none';
-    chevron.style.transform = '';
-  }
-}
+// toggleHomeScreenSection removed — Home Screen is now a full tab
 
 // ── Auto Playlists ──────────────────────────────────────────────────────
 
@@ -1504,28 +1514,17 @@ let homeRows = [];
 
 async function loadHomeScreen() {
   const listEl = document.getElementById('home-rows-list');
-  const statusEl = document.getElementById('home-config-status');
   const heroSelect = document.getElementById('home-hero-select');
 
   try {
     const data = await api('/api/smartlists/home-config');
     if (!data.exists || !data.config.rows) {
-      statusEl.textContent = 'Not configured';
-      listEl.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text3);font-size:13px">Enable some auto playlists above, then add them as rows here.</div>';
+      listEl.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text3);font-size:13px">Enable some playlists first, then add them as rows here.</div>';
       return;
     }
 
     const config = data.config;
     homeRows = (config.rows || []).sort((a, b) => a.order - b.order);
-    statusEl.innerHTML = `<span style="color:var(--green)">${homeRows.length} rows</span>`;
-
-    // Auto-expand if home screen has config
-    const body = document.getElementById('home-screen-body');
-    const chevron = document.getElementById('home-screen-chevron');
-    if (body && homeRows.length > 0) {
-      body.style.display = '';
-      if (chevron) chevron.style.transform = 'rotate(90deg)';
-    }
 
     // Populate hero dropdown from ALL available playlists, not just home rows
     try {
@@ -2592,7 +2591,7 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath) {
 
 function setDiscoverType(type, btn) {
   _discoverType = type;
-  document.querySelectorAll('#page-discover .filter-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('#jf-tab-discover .filter-btn').forEach(b => b.classList.remove('active'));
   if (btn) btn.classList.add('active');
   if (_discoverSearchQuery) {
     doDiscoverSearch(_discoverSearchQuery);
@@ -3474,8 +3473,8 @@ async function vodPreviewSync() {
     fetchList, deleteList, showListCoverage, showAddList, saveList,
     // Coverage modal
     addAllMissingToRadarr, addAllMissingToArr, setCoverageFilter,
-    // Playlists page (unified: auto playlists + custom + home screen)
-    loadPlaylistsPage, loadAutoPlaylists, toggleAutoPlaylist, dismissAutoPlaylistBanner, toggleHomeScreenSection,
+    // Jellyfin page (home screen + playlists + discover tabs)
+    loadJellyfinPage, loadAutoPlaylists, toggleAutoPlaylist, dismissAutoPlaylistBanner, saveDiscoverInJellyfin,
     showAddTagRule, editTagRule, deleteTagRule, saveTagRule, onContentSourceChange, toggleAdvancedFilters,
     addRuleCondition, updateCondOps, onCollectionNameInput, syncSmartLists, refreshTags, syncPlaylistsToJellyfin, setPlaylistSort,
     pushHomeConfig, updateHeroPick, updateHeroSort, saveRowMaxItems, saveRowMaxItemsByKey,
