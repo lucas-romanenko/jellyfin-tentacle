@@ -6,8 +6,9 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
-    <Version>2.0.0.0</Version>
-    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <Version>2.5.1.0</Version>
+    <AssemblyTitle>Tentacle</AssemblyTitle>
+    <Description>Self-contained Jellyfin homepage plugin for Tentacle</Description>
   </PropertyGroup>
 
   <ItemGroup>
