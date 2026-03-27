@@ -42,89 +42,81 @@
                 </div>
             </div>
         </div>
-    </div>
 
-    <script type="text/javascript">
-        var PLUGIN_ID = 'b7e3f1a9-2c4d-4856-9a1b-8def23456789';
+        <script type="text/javascript">
+            var PLUGIN_ID = 'b7e3f1a9-2c4d-4856-9a1b-8def23456789';
 
-        // Load saved URL on page show
-        document.querySelector('#TentacleConfigPage').addEventListener('pageshow', function () {
-            try {
+            document.querySelector('#TentacleConfigPage').addEventListener('pageshow', function () {
+                Dashboard.showLoadingMsg();
                 ApiClient.getPluginConfiguration(PLUGIN_ID).then(function (config) {
                     document.querySelector('#txtTentacleUrl').value = config.TentacleUrl || '';
+                    Dashboard.hideLoadingMsg();
                 });
-            } catch (e) {}
-        });
-
-        // Also try loading immediately in case pageshow already fired
-        try {
-            ApiClient.getPluginConfiguration(PLUGIN_ID).then(function (config) {
-                document.querySelector('#txtTentacleUrl').value = config.TentacleUrl || '';
             });
-        } catch (e) {}
 
-        function TentacleSave() {
-            var url = document.querySelector('#txtTentacleUrl').value.trim();
-            var msgEl = document.querySelector('#saveMsg');
-            msgEl.style.display = 'block';
-            msgEl.style.color = '#aaa';
-            msgEl.textContent = 'Saving...';
+            function TentacleSave() {
+                var url = document.querySelector('#txtTentacleUrl').value.trim();
+                var msgEl = document.querySelector('#saveMsg');
+                msgEl.style.display = 'block';
+                msgEl.style.color = '#aaa';
+                msgEl.textContent = 'Saving...';
 
-            ApiClient.getPluginConfiguration(PLUGIN_ID).then(function (config) {
-                config.TentacleUrl = url;
-                return ApiClient.updatePluginConfiguration(PLUGIN_ID, config);
-            }).then(function () {
-                msgEl.style.color = '#4caf50';
-                msgEl.textContent = url ? 'Saved: ' + url : 'Saved (no URL set — plugin inactive)';
-                Dashboard.processPluginConfigurationUpdateResult();
-            })['catch'](function (err) {
-                msgEl.style.color = '#f44336';
-                msgEl.textContent = 'Save failed: ' + (err.message || err);
-            });
-        }
-
-        function TentacleTest() {
-            var url = document.querySelector('#txtTentacleUrl').value.trim();
-            var resultEl = document.querySelector('#testResult');
-            var statusEl = document.querySelector('#statusInfo');
-            var detailsEl = document.querySelector('#statusDetails');
-
-            if (!url) {
-                resultEl.innerHTML = '<span style="color:#f44336;">Enter a URL first</span>';
-                return;
+                ApiClient.getPluginConfiguration(PLUGIN_ID).then(function (config) {
+                    config.TentacleUrl = url;
+                    return ApiClient.updatePluginConfiguration(PLUGIN_ID, config);
+                }).then(function (result) {
+                    msgEl.style.color = '#4caf50';
+                    msgEl.textContent = url ? 'Saved: ' + url : 'Saved (no URL set — plugin inactive)';
+                    Dashboard.processPluginConfigurationUpdateResult(result);
+                })['catch'](function (err) {
+                    msgEl.style.color = '#f44336';
+                    msgEl.textContent = 'Save failed: ' + (err.message || err);
+                });
             }
 
-            resultEl.innerHTML = '<span style="color:#aaa;">Testing...</span>';
-            statusEl.style.display = 'none';
+            function TentacleTest() {
+                var url = document.querySelector('#txtTentacleUrl').value.trim();
+                var resultEl = document.querySelector('#testResult');
+                var statusEl = document.querySelector('#statusInfo');
+                var detailsEl = document.querySelector('#statusDetails');
 
-            var xhr = new XMLHttpRequest();
-            xhr.open('GET', url.replace(/\/+$/, '') + '/api/widget/status', true);
-            xhr.timeout = 5000;
-            xhr.onload = function () {
-                if (xhr.status === 200) {
-                    try {
-                        var data = JSON.parse(xhr.responseText);
-                        resultEl.innerHTML = '<span style="color:#4caf50;">Connected!</span>';
-                        statusEl.style.display = 'block';
-                        detailsEl.innerHTML =
-                            '<div>Movies: <strong>' + (data.total_movies || 0) + '</strong></div>' +
-                            '<div>Series: <strong>' + (data.total_series || 0) + '</strong></div>' +
-                            '<div>Last Sync: ' + (data.last_sync || 'Never') + '</div>';
-                    } catch (e) {
-                        resultEl.innerHTML = '<span style="color:#f44336;">Invalid response</span>';
-                    }
-                } else {
-                    resultEl.innerHTML = '<span style="color:#f44336;">HTTP ' + xhr.status + '</span>';
+                if (!url) {
+                    resultEl.innerHTML = '<span style="color:#f44336;">Enter a URL first</span>';
+                    return;
                 }
-            };
-            xhr.onerror = function () {
-                resultEl.innerHTML = '<span style="color:#f44336;">Connection failed</span>';
-            };
-            xhr.ontimeout = function () {
-                resultEl.innerHTML = '<span style="color:#f44336;">Timed out</span>';
-            };
-            xhr.send();
-        }
-    </script>
+
+                resultEl.innerHTML = '<span style="color:#aaa;">Testing...</span>';
+                statusEl.style.display = 'none';
+
+                var xhr = new XMLHttpRequest();
+                xhr.open('GET', url.replace(/\/+$/, '') + '/api/widget/status', true);
+                xhr.timeout = 5000;
+                xhr.onload = function () {
+                    if (xhr.status === 200) {
+                        try {
+                            var data = JSON.parse(xhr.responseText);
+                            resultEl.innerHTML = '<span style="color:#4caf50;">Connected!</span>';
+                            statusEl.style.display = 'block';
+                            detailsEl.innerHTML =
+                                '<div>Movies: <strong>' + (data.total_movies || 0) + '</strong></div>' +
+                                '<div>Series: <strong>' + (data.total_series || 0) + '</strong></div>' +
+                                '<div>Last Sync: ' + (data.last_sync || 'Never') + '</div>';
+                        } catch (e) {
+                            resultEl.innerHTML = '<span style="color:#f44336;">Invalid response</span>';
+                        }
+                    } else {
+                        resultEl.innerHTML = '<span style="color:#f44336;">HTTP ' + xhr.status + '</span>';
+                    }
+                };
+                xhr.onerror = function () {
+                    resultEl.innerHTML = '<span style="color:#f44336;">Connection failed</span>';
+                };
+                xhr.ontimeout = function () {
+                    resultEl.innerHTML = '<span style="color:#f44336;">Timed out</span>';
+                };
+                xhr.send();
+            }
+        </script>
+    </div>
 </body>
 </html>
