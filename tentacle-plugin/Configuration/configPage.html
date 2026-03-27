@@ -9,107 +9,96 @@
          data-require="emby-input,emby-button">
         <div data-role="content">
             <div class="content-primary">
-                <form id="TentacleConfigForm">
-                    <div class="verticalSection">
-                        <h2 class="sectionTitle">Tentacle</h2>
-                        <div class="inputContainer">
-                            <label class="inputLabel inputLabelUnfocused" for="txtTentacleUrl">Tentacle URL</label>
-                            <input id="txtTentacleUrl" type="text" is="emby-input"
-                                   placeholder="http://192.168.1.100:8888" />
-                            <div class="fieldDescription">The URL where your Tentacle dashboard is running. The plugin uses this to fetch home screen layout and playlist data.</div>
-                        </div>
+                <div class="verticalSection">
+                    <h2 class="sectionTitle">Tentacle</h2>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="txtTentacleUrl">Tentacle URL</label>
+                        <input id="txtTentacleUrl" type="text" is="emby-input"
+                               placeholder="http://192.168.1.100:8888" />
+                        <div class="fieldDescription">The URL where your Tentacle dashboard is running. The plugin uses this to fetch home screen layout and playlist data.</div>
                     </div>
+                </div>
 
-                    <div class="verticalSection" style="margin-top:1em;">
-                        <button is="emby-button" type="submit" class="raised button-submit block">
-                            <span>Save</span>
-                        </button>
-                    </div>
+                <div class="verticalSection" style="margin-top:1em;">
+                    <button is="emby-button" type="button" class="raised button-submit block"
+                            onclick="TentacleSave()">
+                        <span>Save</span>
+                    </button>
+                </div>
 
-                    <div id="saveMsg" class="verticalSection" style="margin-top:0.5em;display:none;">
-                        <p id="saveMsgText" style="font-size:14px;"></p>
-                    </div>
+                <div id="saveMsg" style="margin-top:0.5em;padding:0.5em;display:none;font-size:14px;"></div>
 
-                    <div class="verticalSection" style="margin-top:1em;">
-                        <button id="btnTestConnection" is="emby-button" type="button" class="raised">
-                            <span>Test Connection</span>
-                        </button>
-                        <span id="testResult" style="margin-left:1em;font-size:14px;"></span>
-                    </div>
+                <div class="verticalSection" style="margin-top:1em;">
+                    <button is="emby-button" type="button" class="raised"
+                            onclick="TentacleTest()">
+                        <span>Test Connection</span>
+                    </button>
+                    <span id="testResult" style="margin-left:1em;font-size:14px;"></span>
+                </div>
 
-                    <div id="statusInfo" class="verticalSection" style="margin-top:1em;display:none;">
-                        <h3 class="sectionTitle">Tentacle Status</h3>
-                        <div id="statusDetails" style="font-size:14px;"></div>
-                    </div>
-                </form>
+                <div id="statusInfo" class="verticalSection" style="margin-top:1em;display:none;">
+                    <h3 class="sectionTitle">Tentacle Status</h3>
+                    <div id="statusDetails" style="font-size:14px;"></div>
+                </div>
             </div>
         </div>
     </div>
 
     <script type="text/javascript">
-        var TentacleConfigPage = {
-            pluginUniqueId: 'b7e3f1a9-2c4d-4856-9a1b-8def23456789'
-        };
+        var PLUGIN_ID = 'b7e3f1a9-2c4d-4856-9a1b-8def23456789';
 
+        // Load saved URL on page show
         document.querySelector('#TentacleConfigPage').addEventListener('pageshow', function () {
-            Dashboard.showLoadingMsg();
-            ApiClient.getPluginConfiguration(TentacleConfigPage.pluginUniqueId).then(function (config) {
-                document.querySelector('#txtTentacleUrl').value = config.TentacleUrl || '';
-                Dashboard.hideLoadingMsg();
-            }, function () {
-                Dashboard.hideLoadingMsg();
-            });
-        });
-
-        document.querySelector('#TentacleConfigForm').addEventListener('submit', function (e) {
-            e.preventDefault();
-
-            var url = document.querySelector('#txtTentacleUrl').value.trim();
-            Dashboard.showLoadingMsg();
-
-            ApiClient.getPluginConfiguration(TentacleConfigPage.pluginUniqueId).then(function (config) {
-                config.TentacleUrl = url;
-                ApiClient.updatePluginConfiguration(TentacleConfigPage.pluginUniqueId, config).then(function () {
-                    Dashboard.processPluginConfigurationUpdateResult();
-
-                    var msgEl = document.querySelector('#saveMsg');
-                    var msgText = document.querySelector('#saveMsgText');
-                    msgEl.style.display = 'block';
-                    if (url) {
-                        msgText.innerHTML = '<span style="color:#4caf50;">Saved: ' + url + '</span>';
-                    } else {
-                        msgText.innerHTML = '<span style="color:#ff9800;">Saved. No URL set — plugin is inactive.</span>';
-                    }
-                    setTimeout(function () { msgEl.style.display = 'none'; }, 8000);
-                }, function (err) {
-                    Dashboard.hideLoadingMsg();
-                    Dashboard.alert('Save failed');
+            try {
+                ApiClient.getPluginConfiguration(PLUGIN_ID).then(function (config) {
+                    document.querySelector('#txtTentacleUrl').value = config.TentacleUrl || '';
                 });
-            }, function (err) {
-                Dashboard.hideLoadingMsg();
-                Dashboard.alert('Failed to load config');
-            });
-
-            return false;
+            } catch (e) {}
         });
 
-        document.querySelector('#btnTestConnection').addEventListener('click', function () {
+        // Also try loading immediately in case pageshow already fired
+        try {
+            ApiClient.getPluginConfiguration(PLUGIN_ID).then(function (config) {
+                document.querySelector('#txtTentacleUrl').value = config.TentacleUrl || '';
+            });
+        } catch (e) {}
+
+        function TentacleSave() {
+            var url = document.querySelector('#txtTentacleUrl').value.trim();
+            var msgEl = document.querySelector('#saveMsg');
+            msgEl.style.display = 'block';
+            msgEl.style.color = '#aaa';
+            msgEl.textContent = 'Saving...';
+
+            ApiClient.getPluginConfiguration(PLUGIN_ID).then(function (config) {
+                config.TentacleUrl = url;
+                return ApiClient.updatePluginConfiguration(PLUGIN_ID, config);
+            }).then(function () {
+                msgEl.style.color = '#4caf50';
+                msgEl.textContent = url ? 'Saved: ' + url : 'Saved (no URL set — plugin inactive)';
+                Dashboard.processPluginConfigurationUpdateResult();
+            })['catch'](function (err) {
+                msgEl.style.color = '#f44336';
+                msgEl.textContent = 'Save failed: ' + (err.message || err);
+            });
+        }
+
+        function TentacleTest() {
             var url = document.querySelector('#txtTentacleUrl').value.trim();
             var resultEl = document.querySelector('#testResult');
             var statusEl = document.querySelector('#statusInfo');
             var detailsEl = document.querySelector('#statusDetails');
 
             if (!url) {
-                resultEl.innerHTML = '<span style="color:#f44336;">Enter a Tentacle URL first.</span>';
+                resultEl.innerHTML = '<span style="color:#f44336;">Enter a URL first</span>';
                 return;
             }
 
             resultEl.innerHTML = '<span style="color:#aaa;">Testing...</span>';
             statusEl.style.display = 'none';
 
-            var testUrl = url.replace(/\/+$/, '') + '/api/widget/status';
             var xhr = new XMLHttpRequest();
-            xhr.open('GET', testUrl, true);
+            xhr.open('GET', url.replace(/\/+$/, '') + '/api/widget/status', true);
             xhr.timeout = 5000;
             xhr.onload = function () {
                 if (xhr.status === 200) {
@@ -122,20 +111,20 @@
                             '<div>Series: <strong>' + (data.total_series || 0) + '</strong></div>' +
                             '<div>Last Sync: ' + (data.last_sync || 'Never') + '</div>';
                     } catch (e) {
-                        resultEl.innerHTML = '<span style="color:#f44336;">Invalid response from server</span>';
+                        resultEl.innerHTML = '<span style="color:#f44336;">Invalid response</span>';
                     }
                 } else {
                     resultEl.innerHTML = '<span style="color:#f44336;">HTTP ' + xhr.status + '</span>';
                 }
             };
             xhr.onerror = function () {
-                resultEl.innerHTML = '<span style="color:#f44336;">Connection failed — check URL and CORS</span>';
+                resultEl.innerHTML = '<span style="color:#f44336;">Connection failed</span>';
             };
             xhr.ontimeout = function () {
-                resultEl.innerHTML = '<span style="color:#f44336;">Timed out — is Tentacle running?</span>';
+                resultEl.innerHTML = '<span style="color:#f44336;">Timed out</span>';
             };
             xhr.send();
-        });
+        }
     </script>
 </body>
 </html>
