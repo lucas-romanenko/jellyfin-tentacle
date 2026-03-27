@@ -66,6 +66,10 @@ Tentacle is a unified dashboard and Jellyfin plugin that brings IPTV, VOD, smart
 
 ## Quick Start
 
+### Minimum Setup (Jellyfin only)
+
+If you just want to get Tentacle running and explore the UI:
+
 ```yaml
 # docker-compose.yml
 services:
@@ -75,11 +79,7 @@ services:
     ports:
       - 8888:8888
     volumes:
-      - ./data:/data                                          # Database, config, cache
-      - /path/to/jellyfin/smartlists:/mnt/jellyfin/smartlists # Jellyfin smart playlists
-      - /path/to/media/vod:/mnt/media/vod                    # IPTV VOD content
-      - /path/to/media/movies:/mnt/media/movies              # Radarr library
-      - /path/to/media/tv:/mnt/media/tv                      # Sonarr library
+      - ./tentacle-data:/data    # Database, config, TMDB cache
     restart: unless-stopped
 ```
 
@@ -87,11 +87,41 @@ services:
 docker compose up -d
 ```
 
-Open `http://localhost:8888` and configure your connections in **Settings**:
-1. **Jellyfin** — URL and API key
-2. **TMDB** — Bearer token ([get one here](https://www.themoviedb.org/settings/api))
-3. **IPTV Provider** — server URL, username, password
-4. **Radarr / Sonarr** — URL and API key (optional)
+Open `http://localhost:8888` — the setup wizard will guide you through connecting Jellyfin. Only a Jellyfin URL and API key are required. TMDB metadata works out of the box with a built-in key.
+
+### Full Setup (VOD + Radarr/Sonarr)
+
+To use IPTV VOD sync, Radarr/Sonarr integration, or smart playlists, mount the media paths:
+
+```yaml
+services:
+  tentacle:
+    image: ghcr.io/lucas-romanenko/jellyfin-tentacle:latest
+    container_name: tentacle
+    ports:
+      - 8888:8888
+    volumes:
+      - ./tentacle-data:/data                      # Database, config, TMDB cache, smartlists (required)
+      - /path/to/media/vod:/mnt/media/vod          # Where VOD .strm files will be created
+      - /path/to/media/movies:/mnt/media/movies    # Same folder Radarr downloads to
+      - /path/to/media/tv:/mnt/media/tv            # Same folder Sonarr downloads to
+    restart: unless-stopped
+```
+
+The Tentacle plugin communicates with the dashboard via its API — no shared volumes needed between Jellyfin and Tentacle containers. Just configure the Tentacle URL in the plugin settings.
+
+> **Volume notes:**
+> - `./tentacle-data:/data` is the only required volume. Everything else is optional depending on which features you use.
+> - `/mnt/media/vod` — only needed if you add an IPTV provider for VOD content. Point this to a folder inside a Jellyfin library.
+> - `/mnt/media/movies` and `/mnt/media/tv` — mount the same paths your Radarr/Sonarr containers use, so Tentacle can write NFO files alongside downloads.
+> - All paths are configurable in **Settings → Library Paths** if your mounts differ from the defaults.
+
+### After Starting
+
+1. **Jellyfin** — URL + API key (Dashboard → API Keys → Create) — *required*
+2. **TMDB** — works automatically with built-in key, or override with your own from [themoviedb.org](https://www.themoviedb.org/settings/api)
+3. **IPTV Provider** — add via the VOD page (optional)
+4. **Radarr / Sonarr** — URL + API key in Settings → Connections (optional)
 
 ---
 
@@ -131,7 +161,7 @@ The dashboard works standalone, but the plugin is needed for the custom home scr
 │  │  • Discover tab (trending/popular)      │    │
 │  │  • Smart playlist refresh               │    │
 │  └──────────────────┬──────────────────────┘    │
-│                     │ reads tentacle-home.json   │
+│                     │ fetches config via API      │
 └─────────────────────┼───────────────────────────┘
                       │
             Jellyfin API (tags, playlists,

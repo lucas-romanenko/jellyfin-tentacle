@@ -449,7 +449,7 @@ def seed_defaults(db):
         "sync_schedule": "0 3 * * *",
         "recently_added_days": "30",
         "tmdb_match_threshold": "0.7",
-        "smartlists_path": "/mnt/jellyfin/smartlists",
+        "smartlists_path": "/data/smartlists",
         "jellyfin_user_id": "",
         "jellyfin_user_name": "",
         "logodev_api_key": "",

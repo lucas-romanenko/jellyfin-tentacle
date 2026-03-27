@@ -14,22 +14,8 @@
                     <div class="inputContainer">
                         <label class="inputLabel" for="txtTentacleUrl">Tentacle Server URL</label>
                         <input id="txtTentacleUrl" type="text" is="emby-input"
-                               placeholder="http://192.168.2.75:8888" />
-                        <div class="fieldDescription">The URL of your Tentacle server.</div>
-                    </div>
-
-                    <div class="inputContainer">
-                        <label class="inputLabel" for="txtHomeConfigPath">Home Config Path</label>
-                        <input id="txtHomeConfigPath" type="text" is="emby-input"
-                               placeholder="/data/tentacle-home.json" />
-                        <div class="fieldDescription">Path to tentacle-home.json inside the Jellyfin container.</div>
-                    </div>
-
-                    <div class="inputContainer">
-                        <label class="inputLabel" for="txtSmartListsPath">SmartLists Path</label>
-                        <input id="txtSmartListsPath" type="text" is="emby-input"
-                               placeholder="/data/smartlists" />
-                        <div class="fieldDescription">Path to the SmartLists config directory (where config.json files are stored).</div>
+                               placeholder="http://localhost:8888" />
+                        <div class="fieldDescription">The URL of your Tentacle server. The plugin fetches home screen config and playlist data from this URL.</div>
                     </div>
 
                     <div class="checkboxContainer checkboxContainer-withDescription">
@@ -74,8 +60,6 @@
                 Dashboard.showLoadingMsg();
                 ApiClient.getPluginConfiguration(TentacleConfig.pluginUniqueId).then(function (config) {
                     document.querySelector('#txtTentacleUrl').value = config.TentacleUrl || '';
-                    document.querySelector('#txtHomeConfigPath').value = config.HomeConfigPath || '/data/tentacle-home.json';
-                    document.querySelector('#txtSmartListsPath').value = config.SmartListsPath || '/data/smartlists';
                     document.querySelector('#chkEnabled').checked = config.Enabled;
                     Dashboard.hideLoadingMsg();
                 });
@@ -87,8 +71,6 @@
                 Dashboard.showLoadingMsg();
                 ApiClient.getPluginConfiguration(TentacleConfig.pluginUniqueId).then(function (config) {
                     config.TentacleUrl = document.querySelector('#txtTentacleUrl').value.trim();
-                    config.HomeConfigPath = document.querySelector('#txtHomeConfigPath').value.trim();
-                    config.SmartListsPath = document.querySelector('#txtSmartListsPath').value.trim();
                     config.Enabled = document.querySelector('#chkEnabled').checked;
                     ApiClient.updatePluginConfiguration(TentacleConfig.pluginUniqueId, config).then(function () {
                         Dashboard.processPluginConfigurationUpdateResult();

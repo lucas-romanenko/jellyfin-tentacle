@@ -1312,7 +1312,7 @@ td.primary { color: var(--text); font-weight: 500; }
               <div class="form-row">
                 <div class="form-group">
                   <div class="form-label">Radarr URL</div>
-                  <input class="form-input" id="radarr_url" placeholder="http://192.168.2.75:7878">
+                  <input class="form-input" id="radarr_url" placeholder="http://localhost:7878">
                 </div>
                 <div class="form-group">
                   <div class="form-label">Radarr API Key</div>
@@ -1328,7 +1328,7 @@ td.primary { color: var(--text); font-weight: 500; }
               <div class="form-row">
                 <div class="form-group">
                   <div class="form-label">Sonarr URL</div>
-                  <input class="form-input" id="sonarr_url" placeholder="http://192.168.2.75:8989">
+                  <input class="form-input" id="sonarr_url" placeholder="http://localhost:8989">
                 </div>
                 <div class="form-group">
                   <div class="form-label">Sonarr API Key</div>
@@ -1344,7 +1344,7 @@ td.primary { color: var(--text); font-weight: 500; }
               <div class="form-row">
                 <div class="form-group">
                   <div class="form-label">Jellyfin URL</div>
-                  <input class="form-input" id="jellyfin_url" placeholder="http://192.168.2.75:8096">
+                  <input class="form-input" id="jellyfin_url" placeholder="http://localhost:8096">
                 </div>
                 <div class="form-group">
                   <div class="form-label">Jellyfin API Key</div>
@@ -1476,7 +1476,7 @@ td.primary { color: var(--text); font-weight: 500; }
               <div class="form-group">
                 <div class="form-label">Radarr Webhook URL</div>
                 <div style="display:flex;gap:8px;align-items:center">
-                  <input class="form-input mono" id="webhook_host" placeholder="192.168.2.75:8888" style="max-width:200px">
+                  <input class="form-input mono" id="webhook_host" placeholder="your-server-ip:8888" style="max-width:200px">
                   <span style="color:var(--text3);font-family:'DM Mono',monospace;font-size:12px;white-space:nowrap">/api/radarr/webhook</span>
                   <button class="btn btn-secondary" onclick="copyWebhookUrl()">Copy</button>
                   <button class="btn btn-secondary" onclick="testWebhookUrl()">Test</button>
@@ -1487,7 +1487,7 @@ td.primary { color: var(--text); font-weight: 500; }
               <div class="form-group">
                 <div class="form-label">Sonarr Webhook URL</div>
                 <div style="display:flex;gap:8px;align-items:center">
-                  <input class="form-input mono" id="sonarr_webhook_host" placeholder="192.168.2.75:8888" style="max-width:200px">
+                  <input class="form-input mono" id="sonarr_webhook_host" placeholder="your-server-ip:8888" style="max-width:200px">
                   <span style="color:var(--text3);font-family:'DM Mono',monospace;font-size:12px;white-space:nowrap">/api/sonarr/webhook</span>
                   <button class="btn btn-secondary" onclick="copySonarrWebhookUrl()">Copy</button>
                   <button class="btn btn-secondary" onclick="testSonarrWebhookUrl()">Test</button>
@@ -2330,7 +2330,25 @@ td.primary { color: var(--text); font-weight: 500; }
   <div class="setup-card">
     <div style="font-size:28px;margin-bottom:16px">◈</div>
     <h2>Welcome to Tentacle</h2>
-    <p>Let's connect your services to get started. You can change these anytime in Settings.</p>
+    <p>Connect Jellyfin to get started. Everything else is optional and can be configured later in Settings.</p>
+
+    <div class="form-row">
+      <div class="form-group">
+        <div class="form-label">Jellyfin URL <span style="color:var(--red);font-size:12px">*required</span></div>
+        <input class="form-input" id="setup-jellyfin-url" placeholder="http://localhost:8096">
+      </div>
+      <div class="form-group">
+        <div class="form-label">Jellyfin API Key <span style="color:var(--red);font-size:12px">*required</span></div>
+        <input class="form-input mono" id="setup-jellyfin-key" type="password">
+        <div class="form-hint">Jellyfin Dashboard → API Keys → Create</div>
+      </div>
+    </div>
+    <div style="margin-bottom:16px">
+      <button class="btn btn-secondary" onclick="testSetupJellyfin()" style="font-size:12px">Test Connection</button>
+      <span id="setup-jellyfin-result" style="margin-left:8px;font-size:12px"></span>
+    </div>
+
+    <hr class="divider" style="margin:20px 0">
 
     <div class="form-group">
       <div class="form-label">TMDB Bearer Token <span style="color:var(--text3);font-size:12px">(optional)</span></div>
@@ -2340,8 +2358,8 @@ td.primary { color: var(--text); font-weight: 500; }
 
     <div class="form-row">
       <div class="form-group">
-        <div class="form-label">Radarr URL</div>
-        <input class="form-input" id="setup-radarr-url" placeholder="http://192.168.2.75:7878">
+        <div class="form-label">Radarr URL <span style="color:var(--text3);font-size:12px">(optional)</span></div>
+        <input class="form-input" id="setup-radarr-url" placeholder="http://localhost:7878">
       </div>
       <div class="form-group">
         <div class="form-label">Radarr API Key</div>
@@ -2349,25 +2367,17 @@ td.primary { color: var(--text); font-weight: 500; }
       </div>
     </div>
 
-    <div class="form-row">
-      <div class="form-group">
-        <div class="form-label">Jellyfin URL</div>
-        <input class="form-input" id="setup-jellyfin-url" placeholder="http://192.168.2.75:8096">
-      </div>
-      <div class="form-group">
-        <div class="form-label">Jellyfin API Key</div>
-        <input class="form-input mono" id="setup-jellyfin-key" type="password">
-      </div>
-    </div>
-
     <button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:8px" onclick="completeSetup()">
       Get Started →
     </button>
+    <div style="text-align:center;margin-top:12px">
+      <a href="#" onclick="skipSetup();return false" style="color:var(--text3);font-size:12px;text-decoration:none">Skip for now — I'll configure later</a>
+    </div>
   </div>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<script src="/static/js/app.js?v=12"></script>
-<script src="/static/js/pages.js?v=12"></script>
+<script src="/static/js/app.js?v=13"></script>
+<script src="/static/js/pages.js?v=13"></script>
 </body>
 </html>

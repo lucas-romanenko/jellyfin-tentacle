@@ -14,7 +14,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-RUN mkdir -p /data
+RUN mkdir -p /data/smartlists
 
 EXPOSE 8888
 

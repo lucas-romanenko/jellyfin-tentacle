@@ -8,20 +8,16 @@ namespace Jellyfin.Plugin.Tentacle.Configuration;
 public class PluginConfiguration : BasePluginConfiguration
 {
     /// <summary>
-    /// Gets or sets the Tentacle server URL (e.g. http://192.168.2.75:8888).
+    /// Gets or sets the Tentacle server URL (e.g. http://localhost:8888).
     /// </summary>
     public string TentacleUrl { get; set; } = string.Empty;
 
     /// <summary>
-    /// Gets or sets the path to tentacle-home.json inside the Jellyfin container.
+    /// Gets or sets the path to the SmartLists config directory (optional).
+    /// Only needed if you want the plugin's scheduled task to refresh playlists independently.
+    /// Leave empty to let the Tentacle backend handle playlist management via API.
     /// </summary>
-    public string HomeConfigPath { get; set; } = "/data/tentacle-home.json";
-
-    /// <summary>
-    /// Gets or sets the path to the SmartLists config directory.
-    /// This is where SmartList config.json files are stored by the Tentacle server.
-    /// </summary>
-    public string SmartListsPath { get; set; } = "/data/smartlists";
+    public string SmartListsPath { get; set; } = string.Empty;
 
     /// <summary>
     /// Gets or sets a value indicating whether the plugin is enabled.

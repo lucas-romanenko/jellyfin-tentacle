@@ -201,7 +201,7 @@ def _scan_existing(smartlists_path: Path) -> dict:
 
 def sync_smartlists(db: Session) -> dict:
     """Sync SmartList config files to disk. Returns {created, updated, total}."""
-    smartlists_path_str = get_setting(db, "smartlists_path", "/mnt/jellyfin/smartlists")
+    smartlists_path_str = get_setting(db, "smartlists_path", "/data/smartlists")
     smartlists_path = Path(smartlists_path_str)
 
     if not smartlists_path.exists():
@@ -324,7 +324,7 @@ def sync_smartlists(db: Session) -> dict:
 
 def _get_smartlists_with_playlist_ids(db: Session) -> list:
     """Scan existing SmartList configs and return those with a non-empty JellyfinPlaylistId."""
-    smartlists_path = Path(get_setting(db, "smartlists_path", "/mnt/jellyfin/smartlists"))
+    smartlists_path = Path(get_setting(db, "smartlists_path", "/data/smartlists"))
     existing = _scan_existing(smartlists_path)
     result = []
     for name, (_folder, data) in existing.items():
@@ -558,7 +558,7 @@ def refresh_smartlist_playlists(db: Session) -> dict:
     jellyfin_url = get_setting(db, "jellyfin_url", "")
     jellyfin_key = get_setting(db, "jellyfin_api_key", "")
     jellyfin_uid = get_setting(db, "jellyfin_user_id", "")
-    smartlists_path = Path(get_setting(db, "smartlists_path", "/mnt/jellyfin/smartlists"))
+    smartlists_path = Path(get_setting(db, "smartlists_path", "/data/smartlists"))
 
     if not jellyfin_url or not jellyfin_key:
         return {"error": "Jellyfin not configured", "processed": 0}
@@ -684,7 +684,7 @@ def update_playlist_sort(name: str, sort_by: str, sort_order: str, db) -> dict:
     if sort_order not in ("Ascending", "Descending"):
         return {"success": False, "message": f"Invalid sort_order: {sort_order}"}
 
-    smartlists_path = Path(get_setting(db, "smartlists_path", "/mnt/jellyfin/smartlists"))
+    smartlists_path = Path(get_setting(db, "smartlists_path", "/data/smartlists"))
     existing = _scan_existing(smartlists_path)
 
     if name not in existing:

@@ -153,14 +153,35 @@ function toast(msg, type = 'success', duration = 3500) {
 }
 
 // ── Setup ─────────────────────────────────────────────────────────────────
+async function testSetupJellyfin() {
+  const url = document.getElementById('setup-jellyfin-url').value.trim();
+  const key = document.getElementById('setup-jellyfin-key').value.trim();
+  const el = document.getElementById('setup-jellyfin-result');
+  if (!url || !key) { el.innerHTML = '<span style="color:var(--red)">Enter URL and API key first</span>'; return; }
+  el.innerHTML = 'Testing...';
+  try {
+    const r = await api('/api/settings/test', { method: 'POST', body: { type: 'jellyfin', url, api_key: key } });
+    el.innerHTML = `<span style="color:var(--green)">${r.message}</span>`;
+  } catch (e) {
+    el.innerHTML = `<span style="color:var(--red)">${e.message}</span>`;
+  }
+}
+
 async function completeSetup() {
+  const jfUrl = document.getElementById('setup-jellyfin-url').value.trim();
+  const jfKey = document.getElementById('setup-jellyfin-key').value.trim();
+
+  if (!jfUrl || !jfKey) {
+    toast('Jellyfin URL and API key are required to get started.', 'error');
+    return;
+  }
+
   const settings = {
     tmdb_bearer_token: document.getElementById('setup-tmdb').value.trim(),
     radarr_url: document.getElementById('setup-radarr-url').value.trim(),
     radarr_api_key: document.getElementById('setup-radarr-key').value.trim(),
-    jellyfin_url: document.getElementById('setup-jellyfin-url').value.trim(),
-    jellyfin_api_key: document.getElementById('setup-jellyfin-key').value.trim(),
-    setup_complete: 'true',
+    jellyfin_url: jfUrl,
+    jellyfin_api_key: jfKey,
   };
 
   try {
@@ -171,6 +192,11 @@ async function completeSetup() {
   } catch (e) {
     toast(e.message, 'error');
   }
+}
+
+function skipSetup() {
+  document.getElementById('setup-overlay').style.display = 'none';
+  api('/api/settings', { method: 'POST', body: { settings: { setup_complete: 'true' } } });
 }
 
 // ── Dashboard ─────────────────────────────────────────────────────────────

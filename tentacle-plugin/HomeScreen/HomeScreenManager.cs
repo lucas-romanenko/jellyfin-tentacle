@@ -1,6 +1,6 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
+using System.Net.Http;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
@@ -8,24 +8,26 @@ using Microsoft.Extensions.Logging;
 namespace Jellyfin.Plugin.Tentacle.HomeScreen;
 
 /// <summary>
-/// Reads and caches tentacle-home.json configuration.
+/// Fetches and caches home configuration from the Tentacle API.
 /// </summary>
 public class HomeScreenManager
 {
     private readonly ILogger<HomeScreenManager> _logger;
+    private readonly IHttpClientFactory _httpClientFactory;
     private readonly object _cacheLock = new();
     private HomeConfig? _cachedConfig;
     private DateTime _cacheExpiry = DateTime.MinValue;
     private static readonly TimeSpan CacheDuration = TimeSpan.FromSeconds(5);
 
-    public HomeScreenManager(ILogger<HomeScreenManager> logger)
+    public HomeScreenManager(ILogger<HomeScreenManager> logger, IHttpClientFactory httpClientFactory)
     {
         _logger = logger;
+        _httpClientFactory = httpClientFactory;
     }
 
     /// <summary>
     /// Gets the current home configuration, with 5-second caching.
-    /// Returns null if the file doesn't exist or is invalid.
+    /// Fetches from Tentacle API. Returns null if unavailable.
     /// </summary>
     public HomeConfig? GetHomeConfig()
     {
@@ -43,7 +45,7 @@ public class HomeScreenManager
             }
         }
 
-        var config = LoadFromDisk(plugin.Configuration.HomeConfigPath);
+        var config = FetchFromApi(plugin.Configuration.TentacleUrl);
 
         lock (_cacheLock)
         {
@@ -55,7 +57,7 @@ public class HomeScreenManager
     }
 
     /// <summary>
-    /// Clears the cached config so the next call re-reads from disk.
+    /// Clears the cached config so the next call re-fetches from the API.
     /// </summary>
     public void ClearCache()
     {
@@ -68,31 +70,42 @@ public class HomeScreenManager
         _logger.LogInformation("[Tentacle] Home config cache cleared");
     }
 
-    private HomeConfig? LoadFromDisk(string path)
+    private HomeConfig? FetchFromApi(string tentacleUrl)
     {
+        if (string.IsNullOrEmpty(tentacleUrl))
+        {
+            _logger.LogDebug("Tentacle URL not configured");
+            return null;
+        }
+
         try
         {
-            if (!File.Exists(path))
+            var client = _httpClientFactory.CreateClient();
+            client.Timeout = TimeSpan.FromSeconds(3);
+            var url = $"{tentacleUrl.TrimEnd('/')}/api/smartlists/home-config";
+            var response = client.GetAsync(url).GetAwaiter().GetResult();
+
+            if (!response.IsSuccessStatusCode)
             {
-                _logger.LogDebug("Tentacle home config not found at {Path}", path);
+                _logger.LogWarning("Tentacle API returned {Status} for home-config", response.StatusCode);
                 return null;
             }
 
-            var json = File.ReadAllText(path);
-            var config = JsonSerializer.Deserialize<HomeConfig>(json, JsonOptions);
+            var json = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+            var wrapper = JsonSerializer.Deserialize<HomeConfigResponse>(json, JsonOptions);
 
-            if (config == null)
+            if (wrapper?.Config == null)
             {
-                _logger.LogWarning("Tentacle home config at {Path} deserialized to null", path);
+                _logger.LogDebug("Tentacle returned empty home config");
                 return null;
             }
 
-            _logger.LogInformation("[Tentacle] Loaded home config with {RowCount} rows from {Path}", config.Rows?.Count ?? 0, path);
-            return config;
+            _logger.LogInformation("[Tentacle] Loaded home config with {RowCount} rows from API", wrapper.Config.Rows?.Count ?? 0);
+            return wrapper.Config;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to read Tentacle home config from {Path}", path);
+            _logger.LogDebug(ex, "Failed to fetch home config from Tentacle API");
             return null;
         }
     }
@@ -102,6 +115,18 @@ public class HomeScreenManager
         PropertyNameCaseInsensitive = true,
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
     };
+}
+
+/// <summary>
+/// Wrapper for the /api/smartlists/home-config response.
+/// </summary>
+internal class HomeConfigResponse
+{
+    [JsonPropertyName("exists")]
+    public bool Exists { get; set; }
+
+    [JsonPropertyName("config")]
+    public HomeConfig? Config { get; set; }
 }
 
 /// <summary>

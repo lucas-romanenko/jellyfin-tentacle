@@ -33,7 +33,7 @@ Live TV is **fully working**:
 
 ## HOW STREAMING WORKS
 
-The provider (currently `cf.iptbears.shop`) is behind Cloudflare. `.ts` streams are blocked (302 → `cloudflare-terms-of-service-abuse.com`). `.m3u8` requests get a valid 302 redirect to a tokenized URL on the real streaming server.
+Some IPTV providers are behind Cloudflare. In those cases, `.ts` streams may be blocked (302 → `cloudflare-terms-of-service-abuse.com`). `.m3u8` requests typically get a valid 302 redirect to a tokenized URL on the real streaming server.
 
 **The redirect chain:**
 1. `http://PROVIDER/live/USER/PASS/STREAM_ID.m3u8` → 302 redirect

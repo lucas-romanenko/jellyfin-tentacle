@@ -60,7 +60,7 @@ def _write_home_json(db: Session, config: dict):
 def list_smartlists(db: Session = Depends(get_db)):
     """List all desired SmartLists with on-disk status."""
     desired = get_desired_smartlists(db)
-    smartlists_path = Path(get_setting(db, "smartlists_path", "/mnt/jellyfin/smartlists"))
+    smartlists_path = Path(get_setting(db, "smartlists_path", "/data/smartlists"))
     existing = _scan_existing(smartlists_path)
     path_accessible = smartlists_path.exists() and smartlists_path.is_dir()
 
