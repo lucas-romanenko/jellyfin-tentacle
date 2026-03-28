@@ -264,15 +264,7 @@ async function loadLibrary() {
   loadLibListPills();
   await fetchLibraryPage();
   // Update duplicates tab badge
-  try {
-    const dupData = await api('/api/duplicates');
-    const pending = (dupData.duplicates || []).filter(d => d.resolution === 'pending').length;
-    const badge = document.getElementById('lib-dup-badge');
-    if (badge) {
-      if (pending > 0) { badge.style.display = 'inline'; badge.textContent = pending; }
-      else badge.style.display = 'none';
-    }
-  } catch {}
+  _updateDupBadges();
 }
 
 async function loadLibListPills() {
@@ -2316,6 +2308,13 @@ async function _updateDupBadges() {
         if (pending > 0) { el.style.display = 'inline'; el.textContent = pending; }
         else el.style.display = 'none';
       }
+    }
+    // Auto-refresh duplicates list if the tab is currently visible
+    const dupTab = document.getElementById('lib-tab-duplicates');
+    if (dupTab && dupTab.style.display !== 'none') {
+      pages.dup.items = data.duplicates;
+      renderDupStats(data);
+      renderDupList();
     }
   } catch {}
 }

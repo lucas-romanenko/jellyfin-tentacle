@@ -147,7 +147,7 @@ def check_and_record_duplicate(
             tmdb_id=tmdb_id,
             media_type=media_type,
             sources=[
-                {"source": existing.source, "path": existing.strm_path or existing.radarr_path or ""},
+                {"source": existing.source, "path": existing.strm_path or getattr(existing, 'radarr_path', None) or getattr(existing, 'sonarr_path', None) or ""},
                 new_source
             ],
             resolution="pending"

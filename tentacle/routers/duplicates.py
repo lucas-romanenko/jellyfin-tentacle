@@ -161,8 +161,9 @@ def resolve_duplicate(dup_id: int, body: ResolveRequest, db: Session = Depends(g
 
     _apply_resolution(dup, body.resolution, db)
 
-    # Clean up — resolved duplicates don't need to stay in DB
-    db.delete(dup)
+    # Mark as resolved (keep in DB for stats/history)
+    dup.resolution = body.resolution
+    dup.resolved_at = datetime.now(datetime.timezone.utc)
     db.commit()
 
     return {"success": True}
@@ -179,7 +180,8 @@ def resolve_all(body: ResolveAllRequest, db: Session = Depends(get_db)):
             _apply_resolution(dup, body.resolution, db)
         except Exception as e:
             logger.error(f"Failed to apply resolution for tmdb:{dup.tmdb_id}: {e}")
-        db.delete(dup)
+        dup.resolution = body.resolution
+        dup.resolved_at = datetime.now(datetime.timezone.utc)
     db.commit()
 
     return {"success": True, "count": count}
