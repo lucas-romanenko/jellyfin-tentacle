@@ -453,8 +453,8 @@ def _sync_movies(
 
             tmdb_id = metadata["tmdb_id"]
 
-            # Skip if already seen this run (cross-category dedup)
-            if tmdb_id in seen_tmdb_ids:
+            # Skip if already seen this run or in library from this provider
+            if tmdb_id in seen_tmdb_ids or tmdb_id in existing_provider_tmdb_ids:
                 cat_existing += 1
                 stats["existing"] += 1
                 if item_idx % 10 == 0 or item_idx == total_in_cat:
@@ -463,8 +463,9 @@ def _sync_movies(
 
             seen_tmdb_ids.add(tmdb_id)
 
-            # Skip if already in library from this provider
-            if tmdb_id in existing_provider_tmdb_ids:
+            # Also check DB directly in case of prior partial sync
+            if db.query(Movie).filter(Movie.tmdb_id == tmdb_id, Movie.provider_id == provider.id).first():
+                existing_provider_tmdb_ids.add(tmdb_id)
                 cat_existing += 1
                 stats["existing"] += 1
                 if item_idx % 10 == 0 or item_idx == total_in_cat:
@@ -753,7 +754,7 @@ def _sync_series(
 
             tmdb_id = metadata["tmdb_id"]
 
-            if tmdb_id in seen_tmdb_ids:
+            if tmdb_id in seen_tmdb_ids or tmdb_id in existing_provider_tmdb_ids:
                 cat_existing += 1
                 stats["existing"] += 1
                 if item_idx % 10 == 0 or item_idx == total_in_cat:
@@ -762,7 +763,9 @@ def _sync_series(
 
             seen_tmdb_ids.add(tmdb_id)
 
-            if tmdb_id in existing_provider_tmdb_ids:
+            # Also check DB directly in case of prior partial sync
+            if db.query(Series).filter(Series.tmdb_id == tmdb_id).first():
+                existing_provider_tmdb_ids.add(tmdb_id)
                 cat_existing += 1
                 stats["existing"] += 1
                 if item_idx % 10 == 0 or item_idx == total_in_cat:

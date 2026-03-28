@@ -6,7 +6,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from models.database import get_db, get_setting, Duplicate, Movie, Series
 
@@ -163,7 +163,7 @@ def resolve_duplicate(dup_id: int, body: ResolveRequest, db: Session = Depends(g
 
     # Mark as resolved (keep in DB for stats/history)
     dup.resolution = body.resolution
-    dup.resolved_at = datetime.now(datetime.timezone.utc)
+    dup.resolved_at = datetime.now(timezone.utc)
     db.commit()
 
     return {"success": True}
@@ -181,7 +181,7 @@ def resolve_all(body: ResolveAllRequest, db: Session = Depends(get_db)):
         except Exception as e:
             logger.error(f"Failed to apply resolution for tmdb:{dup.tmdb_id}: {e}")
         dup.resolution = body.resolution
-        dup.resolved_at = datetime.now(datetime.timezone.utc)
+        dup.resolved_at = datetime.now(timezone.utc)
     db.commit()
 
     return {"success": True, "count": count}
