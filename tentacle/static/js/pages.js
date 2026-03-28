@@ -191,36 +191,28 @@ function renderCategoryChart() {
 
 // ── LIBRARY PAGE ──────────────────────────────────────────────────────────
 let _libEventSource = null;
+let _libRefreshTimer = null;
+
+function _debouncedLibRefresh() {
+  clearTimeout(_libRefreshTimer);
+  _libRefreshTimer = setTimeout(async () => {
+    const grid = document.getElementById('lib-grid');
+    if (!grid) return;
+    grid.style.transition = 'opacity 0.3s ease';
+    grid.style.opacity = '0.4';
+    pages.lib.offset = 0;
+    pages.lib.items = [];
+    await fetchLibraryPage();
+    grid.style.opacity = '1';
+  }, 2000);
+}
 
 function connectLibraryStream() {
   if (_libEventSource) return;
   _libEventSource = new EventSource('/api/library/stream');
 
-  _libEventSource.addEventListener('movie_added', (e) => {
-    const grid = document.getElementById('lib-grid');
-    if (!grid) return;
-    grid.style.transition = 'opacity 0.3s ease';
-    grid.style.opacity = '0.4';
-    setTimeout(async () => {
-      pages.lib.offset = 0;
-      pages.lib.items = [];
-      await fetchLibraryPage();
-      grid.style.opacity = '1';
-    }, 300);
-  });
-
-  _libEventSource.addEventListener('series_added', (e) => {
-    const grid = document.getElementById('lib-grid');
-    if (!grid) return;
-    grid.style.transition = 'opacity 0.3s ease';
-    grid.style.opacity = '0.4';
-    setTimeout(async () => {
-      pages.lib.offset = 0;
-      pages.lib.items = [];
-      await fetchLibraryPage();
-      grid.style.opacity = '1';
-    }, 300);
-  });
+  _libEventSource.addEventListener('movie_added', () => _debouncedLibRefresh());
+  _libEventSource.addEventListener('series_added', () => _debouncedLibRefresh());
 
   _libEventSource.addEventListener('movie_removed', (e) => {
     const data = JSON.parse(e.data);
