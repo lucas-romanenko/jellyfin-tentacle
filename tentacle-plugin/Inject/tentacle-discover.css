@@ -409,6 +409,12 @@
   min-height: 20px;
 }
 
+.md-inlib-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
 .md-inlib-badge {
   display: inline-block;
   padding: 6px 16px;
@@ -418,6 +424,25 @@
   border: 0.06em solid rgba(50, 167, 105, .3);
   font-size: 14px;
   font-weight: 500;
+}
+.md-view-library-btn {
+  padding: 8px 20px;
+  border-radius: 0.5em;
+  border: 0.06em solid rgb(50, 167, 105);
+  background: rgb(41, 154, 93);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 125ms;
+  font-family: inherit;
+}
+.md-view-library-btn:hover {
+  filter: brightness(1.15);
+}
+.md-view-library-btn:disabled {
+  opacity: .5;
+  cursor: not-allowed;
 }
 
 /* ── Loading state ──────────────────────────────────────────────────── */

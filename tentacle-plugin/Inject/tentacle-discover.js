@@ -423,7 +423,11 @@
 
     var downloadSection = '';
     if (item.in_library) {
-      downloadSection = '<div class="md-inlib-badge">✓ Already in library</div>';
+      downloadSection =
+        '<div class="md-inlib-row">' +
+          '<div class="md-inlib-badge">✓ Already in library</div>' +
+          '<button id="mdViewInLibrary" class="md-view-library-btn">View in Library</button>' +
+        '</div>';
     } else {
       var isSeries = item.media_type === 'series';
       var arrLabel = isSeries ? 'Sonarr' : 'Radarr';
@@ -468,7 +472,50 @@
       if (e.target === overlay) closeModal();
     });
 
-    if (!item.in_library) loadDownloadOptions(item);
+    if (item.in_library) {
+      var viewBtn = overlay.querySelector('#mdViewInLibrary');
+      if (viewBtn) {
+        viewBtn.addEventListener('click', function () {
+          viewBtn.disabled = true;
+          viewBtn.textContent = 'Finding…';
+          findJellyfinItem(item).then(function (itemId) {
+            if (itemId) {
+              closeModal();
+              window.location.hash = '#/details?id=' + itemId;
+            } else {
+              viewBtn.textContent = 'Not found';
+              viewBtn.disabled = true;
+            }
+          });
+        });
+      }
+    } else {
+      loadDownloadOptions(item);
+    }
+  }
+
+  function findJellyfinItem(item) {
+    var userId = window.ApiClient.getCurrentUserId();
+    var itemType = item.media_type === 'series' ? 'Series' : 'Movie';
+    var url = window.ApiClient.getUrl('Users/' + userId + '/Items', {
+      searchTerm: item.title,
+      IncludeItemTypes: itemType,
+      Recursive: true,
+      Limit: 5,
+    });
+    return window.ApiClient.getJSON(url).then(function (result) {
+      var items = (result && result.Items) || [];
+      // Try exact title + year match
+      var match = items.find(function (i) {
+        var titleMatch = (i.Name || '').toLowerCase() === (item.title || '').toLowerCase();
+        var yearMatch = !item.year || String(i.ProductionYear || '') === String(item.year);
+        return titleMatch && yearMatch;
+      });
+      if (!match) match = items[0];
+      return match ? match.Id : null;
+    }).catch(function () {
+      return null;
+    });
   }
 
   function closeModal() {
