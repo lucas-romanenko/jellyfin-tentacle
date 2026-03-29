@@ -518,6 +518,8 @@ def add_to_radarr(body: AddMissingBody, db: Session = Depends(get_db)):
             )
             if r.status_code < 400:
                 added += 1
+            elif r.status_code == 400 and "MovieExistsValidator" in r.text:
+                already_exists += 1
             else:
                 logger.error(f"Radarr rejected tmdb:{tmdb_id} — HTTP {r.status_code}: {r.text}")
                 failed += 1
