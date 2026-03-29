@@ -330,9 +330,19 @@ def sync_smartlists(db: Session) -> dict:
 
     # Clean up orphaned SmartList folders (deleted tag rules)
     desired_names = {sl["name"] for sl in desired}
+    orphaned = {name: (folder, data) for name, (folder, data) in existing.items() if name not in desired_names}
     removed = 0
-    for name, (folder, data) in existing.items():
-        if name not in desired_names:
+
+    # Safety check: if more than half of existing playlists would be removed,
+    # something is likely wrong (DB issue, toggle reset, etc.) — skip cleanup
+    if orphaned and existing and len(orphaned) > len(existing) / 2:
+        logger.warning(
+            f"Skipping orphan cleanup: {len(orphaned)}/{len(existing)} playlists would be removed "
+            f"— likely a transient issue, not intentional deletions. "
+            f"Orphans: {list(orphaned.keys())}"
+        )
+    else:
+        for name, (folder, data) in orphaned.items():
             # Delete the Jellyfin playlist if it exists
             playlist_id = None
             for entry in (data.get("UserPlaylists") or []):
@@ -436,6 +446,15 @@ def write_home_config(db: Session) -> dict:
             r["type"] = "playlist"
             r["display_name"] = name_by_id.get(r["playlist_id"], r["display_name"])
             rows.append(r)
+
+    # Safety check: if we'd drop more than half the playlist rows, something is wrong
+    existing_playlist_rows = [r for r in existing_rows if r.get("type") != "builtin"]
+    if existing_playlist_rows and len(rows) < len(existing_rows) / 2:
+        logger.warning(
+            f"Home config safety: would drop from {len(existing_rows)} to {len(rows)} rows "
+            f"— keeping existing config to prevent data loss"
+        )
+        return existing_config
 
     # No auto-bootstrap: users add rows manually via the Home Screen page.
 
