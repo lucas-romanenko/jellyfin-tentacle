@@ -603,13 +603,13 @@ def run_full_jellyfin_pipeline(db, log_prefix: str = "Pipeline") -> dict:
     except Exception as e:
         logger.error(f"[{log_prefix}] Tag push failed: {e}")
 
-    # Step 4+5: Refresh playlists + home config
+    # Step 4: Refresh playlist contents only (don't rebuild configs or home layout)
     try:
-        from services.smartlists import sync_smartlists
-        sync_smartlists(db)
+        from services.smartlists import refresh_smartlist_playlists
+        refresh_smartlist_playlists(db)
         stats["playlists_refreshed"] = True
-        logger.info(f"[{log_prefix}] SmartLists synced and playlists refreshed")
+        logger.info(f"[{log_prefix}] Playlist contents refreshed")
     except Exception as e:
-        logger.warning(f"[{log_prefix}] SmartList sync failed: {e}")
+        logger.warning(f"[{log_prefix}] Playlist refresh failed: {e}")
 
     return stats

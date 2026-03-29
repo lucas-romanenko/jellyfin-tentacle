@@ -621,13 +621,13 @@ def refresh_tags(db: Session = Depends(get_db)):
     if nfos_written:
         logger.info(f"[Refresh Tags] Rewrote {nfos_written} NFO files")
 
-    # Sync SmartLists and refresh playlists so new tags take effect
+    # Refresh playlist contents so new tags take effect (don't rebuild configs/home)
     try:
-        from services.smartlists import sync_smartlists
-        sync_smartlists(db)
-        logger.info("[Refresh Tags] SmartLists synced and playlists refreshed")
+        from services.smartlists import refresh_smartlist_playlists
+        refresh_smartlist_playlists(db)
+        logger.info("[Refresh Tags] Playlist contents refreshed")
     except Exception as e:
-        logger.warning(f"[Refresh Tags] SmartList sync failed: {e}")
+        logger.warning(f"[Refresh Tags] Playlist refresh failed: {e}")
 
     # Track last Jellyfin push timestamp
     if jf_tagged > 0:
