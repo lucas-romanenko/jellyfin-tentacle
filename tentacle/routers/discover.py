@@ -38,9 +38,7 @@ def _dedup_and_mark(items: list, known_ids: set) -> list:
         if not tid or tid in seen:
             continue
         seen.add(tid)
-        if tid in known_ids:
-            continue
-        item["in_library"] = False
+        item["in_library"] = tid in known_ids
         result.append(item)
     return result
 
