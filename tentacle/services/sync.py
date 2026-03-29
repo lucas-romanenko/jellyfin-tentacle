@@ -106,6 +106,59 @@ class XtreamClient:
         return f"{self.server}/series/{self.username}/{self.password}/{episode_id}.{container}"
 
 
+# ── Tag Merging ──────────────────────────────────────────────────────────
+
+def _merge_source_tag(tmdb_id: int, media_type: str, source_tag: str, provider_id: int, db: Session):
+    """
+    When a movie/series already exists but appears in another category,
+    merge the new category's source tag into the existing record's tags.
+    Also updates the NFO file if it exists.
+    """
+    if not source_tag:
+        return
+
+    type_label = "Movies" if media_type == "movie" else "TV"
+    new_tag = f"{source_tag} {type_label}"
+
+    Model = Movie if media_type == "movie" else Series
+    record = db.query(Model).filter(
+        Model.tmdb_id == tmdb_id,
+        Model.provider_id == provider_id
+    ).first()
+
+    if not record:
+        return
+
+    tags = record.tags or []
+    if new_tag in tags:
+        return
+
+    tags.append(new_tag)
+    record.tags = list(tags)  # Force SQLAlchemy to detect mutation
+    record.date_updated = datetime.utcnow()
+
+    # Update NFO file with new tags
+    nfo_path = record.nfo_path
+    if nfo_path:
+        try:
+            from pathlib import Path
+            nfo_file = Path(nfo_path)
+            if nfo_file.exists():
+                content = nfo_file.read_text(encoding='utf-8')
+                if f"<tag>{new_tag}</tag>" not in content:
+                    # Insert new tag before closing </movie> or </tvshow>
+                    for closing_tag in ['</movie>', '</tvshow>']:
+                        if closing_tag in content:
+                            content = content.replace(
+                                closing_tag,
+                                f"    <tag>{new_tag}</tag>\n{closing_tag}"
+                            )
+                            nfo_file.write_text(content, encoding='utf-8')
+                            break
+        except Exception:
+            pass  # NFO update is best-effort
+
+
 # ── Duplicate Detection ───────────────────────────────────────────────────
 
 def check_and_record_duplicate(
@@ -422,8 +475,9 @@ def _sync_movies(
             # Get metadata: from parallel batch or title-based lookup
             metadata = tmdb_results.get(idx)
             if not metadata and known_id:
-                # Known title but not in batch — it's existing, skip
+                # Known title but not in batch — it's existing, merge tags
                 if known_id in existing_provider_tmdb_ids or known_id in seen_tmdb_ids:
+                    _merge_source_tag(known_id, "movie", cat.source_tag, provider.id, db)
                     cat_existing += 1
                     stats["existing"] += 1
                     if item_idx % 10 == 0 or item_idx == total_in_cat:
@@ -453,8 +507,9 @@ def _sync_movies(
 
             tmdb_id = metadata["tmdb_id"]
 
-            # Skip if already seen this run or in library from this provider
+            # Skip if already seen this run or in library from this provider — merge tags
             if tmdb_id in seen_tmdb_ids or tmdb_id in existing_provider_tmdb_ids:
+                _merge_source_tag(tmdb_id, "movie", cat.source_tag, provider.id, db)
                 cat_existing += 1
                 stats["existing"] += 1
                 if item_idx % 10 == 0 or item_idx == total_in_cat:
@@ -463,9 +518,10 @@ def _sync_movies(
 
             seen_tmdb_ids.add(tmdb_id)
 
-            # Also check DB directly in case of prior partial sync
+            # Also check DB directly in case of prior partial sync — merge tags
             if db.query(Movie).filter(Movie.tmdb_id == tmdb_id, Movie.provider_id == provider.id).first():
                 existing_provider_tmdb_ids.add(tmdb_id)
+                _merge_source_tag(tmdb_id, "movie", cat.source_tag, provider.id, db)
                 cat_existing += 1
                 stats["existing"] += 1
                 if item_idx % 10 == 0 or item_idx == total_in_cat:
@@ -726,6 +782,7 @@ def _sync_series(
             metadata = tmdb_results.get(idx)
             if not metadata and known_id:
                 if known_id in existing_provider_tmdb_ids or known_id in seen_tmdb_ids:
+                    _merge_source_tag(known_id, "series", cat.source_tag, provider.id, db)
                     cat_existing += 1
                     stats["existing"] += 1
                     if item_idx % 10 == 0 or item_idx == total_in_cat:
@@ -755,6 +812,7 @@ def _sync_series(
             tmdb_id = metadata["tmdb_id"]
 
             if tmdb_id in seen_tmdb_ids or tmdb_id in existing_provider_tmdb_ids:
+                _merge_source_tag(tmdb_id, "series", cat.source_tag, provider.id, db)
                 cat_existing += 1
                 stats["existing"] += 1
                 if item_idx % 10 == 0 or item_idx == total_in_cat:
@@ -763,9 +821,10 @@ def _sync_series(
 
             seen_tmdb_ids.add(tmdb_id)
 
-            # Also check DB directly in case of prior partial sync
+            # Also check DB directly in case of prior partial sync — merge tags
             if db.query(Series).filter(Series.tmdb_id == tmdb_id).first():
                 existing_provider_tmdb_ids.add(tmdb_id)
+                _merge_source_tag(tmdb_id, "series", cat.source_tag, provider.id, db)
                 cat_existing += 1
                 stats["existing"] += 1
                 if item_idx % 10 == 0 or item_idx == total_in_cat:
