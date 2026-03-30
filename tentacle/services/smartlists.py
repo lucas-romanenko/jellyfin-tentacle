@@ -265,7 +265,12 @@ def _scan_existing(smartlists_path: Path) -> dict:
 
 
 def sync_smartlists(db: Session, user_id: int = None) -> dict:
-    """Sync SmartList config files to disk. Returns {created, updated, total}."""
+    """Sync SmartList config files to disk. Returns {created, updated, total}.
+
+    Disk configs and Jellyfin playlists are GLOBAL (shared across all users).
+    The user_id param only affects the per-user home config written at the end.
+    Desired playlists are always computed as the union across ALL users.
+    """
     smartlists_path_str = get_setting(db, "smartlists_path", "/data/smartlists")
     smartlists_path = Path(smartlists_path_str)
 
@@ -276,7 +281,8 @@ def sync_smartlists(db: Session, user_id: int = None) -> dict:
             logger.error(f"Cannot create SmartLists path {smartlists_path}: {e}")
             return {"created": 0, "updated": 0, "total": 0, "error": str(e)}
 
-    desired = get_desired_smartlists(db, user_id=user_id)
+    # Always compute global union of all users' desired playlists for disk management
+    desired = get_desired_smartlists(db)
     existing = _scan_existing(smartlists_path)
     jellyfin_user_id = get_setting(db, "jellyfin_user_id", "")
     jellyfin_url = get_setting(db, "jellyfin_url", "")
@@ -377,10 +383,10 @@ def sync_smartlists(db: Session, user_id: int = None) -> dict:
 
     logger.info(f"SmartLists sync: {created} created, {updated} updated, {removed} removed, {len(desired)} total")
 
-    # After syncing configs, populate playlists via Jellyfin API directly
-    playlist_stats = refresh_smartlist_playlists(db, user_id=user_id)
+    # After syncing configs, populate playlists via Jellyfin API directly (global)
+    playlist_stats = refresh_smartlist_playlists(db)
 
-    # Generate and upload artwork for all playlists
+    # Generate and upload artwork for all playlists (global)
     artwork_stats = {}
     try:
         from routers.collections import sync_playlist_artwork
@@ -388,8 +394,9 @@ def sync_smartlists(db: Session, user_id: int = None) -> dict:
     except Exception as e:
         logger.warning(f"Artwork sync failed: {e}")
 
-    # Generate per-user home config
-    write_home_config(db, user_id=user_id)
+    # Generate per-user home config (only if user_id provided)
+    if user_id is not None:
+        write_home_config(db, user_id=user_id)
 
     return {
         "created": created, "updated": updated, "removed": removed, "total": len(desired),

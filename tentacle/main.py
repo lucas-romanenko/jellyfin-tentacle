@@ -101,21 +101,19 @@ def run_scheduled_sync():
         from routers.collections import sync_playlist_artwork
         sync_playlist_artwork(db)
 
-        # Rebuild per-user smartlist configs and home layouts
+        # Rebuild smartlist configs (global) and per-user home layouts
         from services.smartlists import sync_smartlists, write_home_config, _notify_jellyfin_plugin
+        # Disk configs + Jellyfin playlists are global — sync once
+        sync_smartlists(db)
+        # Home configs are per-user
         users = db.query(TentacleUser).all()
+        for u in users:
+            try:
+                write_home_config(db, user_id=u.id)
+            except Exception as e:
+                logger.warning(f"Per-user home config failed for {u.display_name}: {e}")
         if users:
-            for u in users:
-                try:
-                    sync_smartlists(db, user_id=u.id)
-                    write_home_config(db, user_id=u.id)
-                except Exception as e:
-                    logger.warning(f"Per-user sync failed for {u.display_name}: {e}")
             _notify_jellyfin_plugin(db)
-        else:
-            # No users yet — run global sync for backwards compat
-            sync_smartlists(db)
-            write_home_config(db)
 
         logger.info("Scheduled sync complete")
     except Exception as e:

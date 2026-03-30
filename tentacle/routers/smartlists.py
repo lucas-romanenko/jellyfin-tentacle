@@ -561,15 +561,13 @@ def toggle_auto_playlist(req: AutoPlaylistToggleRequest, db: Session = Depends(g
             db.add(AutoPlaylistToggle(key=req.key, enabled=req.enabled, user_id=user.id))
         db.commit()
 
-    # Background sync to Jellyfin
+    # Background sync to Jellyfin (global disk sync + per-user home config)
     user_id = user.id
     def _sync_bg():
         from models.database import SessionLocal
         bg_db = SessionLocal()
         try:
-            sync_smartlists(bg_db, user_id=user_id)
-            refresh_smartlist_playlists(bg_db, user_id=user_id)
-            write_home_config(bg_db, user_id=user_id)
+            sync_smartlists(bg_db, user_id=user_id)  # disk sync is global, home config per-user
             _notify_jellyfin_plugin(bg_db)
         except Exception as e:
             logger.error(f"Auto playlist sync failed: {e}")
