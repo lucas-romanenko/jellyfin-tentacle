@@ -3482,7 +3482,7 @@ async function vodPreviewSync() {
     // Log viewer
     clearLogPanel, toggleLogScroll,
     // Radarr / Sonarr
-    scanRadarr, scanSonarr, writeNfos, loadListPlaylists, toggleListPlaylist,
+    scanRadarr, scanSonarr, writeNfos,
     // Migration
     showMigrate, previewMigration, runMigration,
     // VOD

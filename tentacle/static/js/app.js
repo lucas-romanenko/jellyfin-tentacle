@@ -57,7 +57,14 @@ async function showLoginOverlay() {
   document.getElementById('login-password-form').style.display = 'none';
 
   try {
-    const users = await fetch('/api/auth/users').then(r => r.json());
+    const resp = await fetch('/api/auth/users');
+    if (!resp.ok) {
+      // Jellyfin not configured yet — go straight to setup wizard
+      overlay.style.display = 'none';
+      document.getElementById('setup-overlay').style.display = 'flex';
+      return;
+    }
+    const users = await resp.json();
     if (!users.length) {
       grid.innerHTML = '<div style="color:var(--text2)">No users found. Check Jellyfin connection.</div>';
       return;
