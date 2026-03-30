@@ -445,11 +445,24 @@ async function setupStep2Next() {
   successEl.style.display = 'none';
 
   try {
-    const r = await api('/api/settings/jellyfin-login', {
+    // Use the real login endpoint — creates TentacleUser + sets session cookie
+    const r = await fetch('/api/auth/login', {
       method: 'POST',
-      body: { username, password }
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
     });
-    successEl.textContent = `Logged in as ${r.username}`;
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.detail || 'Login failed');
+    }
+    const user = await r.json();
+    state.currentUser = user;
+    // Also save jellyfin_user_id/name in settings for backwards compat
+    await api('/api/settings', { method: 'POST', body: { settings: {
+      jellyfin_user_id: user.jellyfin_user_id,
+      jellyfin_user_name: user.display_name,
+    }}});
+    successEl.textContent = `Logged in as ${user.display_name}`;
     successEl.style.display = 'block';
     // Brief pause so user sees success, then advance
     setTimeout(() => setupGoTo(3), 600);
@@ -569,9 +582,8 @@ async function completeSetup() {
 }
 
 function finishSetup() {
-  document.getElementById('setup-overlay').style.display = 'none';
-  toast('Setup complete!');
-  loadDashboard();
+  // Full reload so checkAuth() runs with the session cookie set during setup
+  window.location.reload();
 }
 
 async function copyPluginUrl() {
