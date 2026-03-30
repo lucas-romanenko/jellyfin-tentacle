@@ -1104,7 +1104,11 @@ async function loadSettings() {
       const el = document.getElementById(key);
       if (el && settings[key]) el.value = settings[key];
     });
-    showJellyfinLoginState(settings['jellyfin_user_id'] || '', settings['jellyfin_user_name'] || '');
+    // Show current auth user in Jellyfin integration section
+    const jfLabel = document.getElementById('jellyfin-logged-in-label');
+    if (jfLabel && state.currentUser) {
+      jfLabel.textContent = `Logged in as: ${state.currentUser.display_name}`;
+    }
     loadPathStatus();
   } catch (e) {}
 }
@@ -1165,60 +1169,7 @@ async function saveSettings() {
   }
 }
 
-function showJellyfinLoginState(userId, userName) {
-  const statusEl = document.getElementById('jellyfin-login-status');
-  const formEl = document.getElementById('jellyfin-login-form');
-  if (userId && userName) {
-    document.getElementById('jellyfin-logged-in-label').textContent = `Logged in as: ${userName}`;
-    document.getElementById('jellyfin-user-id-display').textContent = `ID: ${userId}`;
-    statusEl.style.display = 'block';
-    formEl.style.display = 'none';
-  } else {
-    statusEl.style.display = 'none';
-    formEl.style.display = 'block';
-  }
-}
-
-function showJellyfinLogin() {
-  document.getElementById('jellyfin-login-status').style.display = 'none';
-  document.getElementById('jellyfin-login-form').style.display = 'block';
-  document.getElementById('jf-username').value = '';
-  document.getElementById('jf-password').value = '';
-  document.getElementById('jf-login-error').style.display = 'none';
-}
-
-async function jellyfinLogin() {
-  const username = document.getElementById('jf-username').value.trim();
-  const password = document.getElementById('jf-password').value;
-  const errorEl = document.getElementById('jf-login-error');
-  const btn = document.getElementById('jf-login-btn');
-
-  if (!username) {
-    errorEl.textContent = 'Username is required';
-    errorEl.style.display = 'block';
-    return;
-  }
-
-  btn.disabled = true;
-  btn.textContent = 'Logging in...';
-  errorEl.style.display = 'none';
-
-  try {
-    const r = await api('/api/settings/jellyfin-login', {
-      method: 'POST',
-      body: { username, password }
-    });
-    toast(`Logged in as ${r.username}`);
-    showJellyfinLoginState(r.user_id, r.username);
-    toast('User saved. Run Sync SmartLists to update existing lists with this user.', 'info', 5000);
-  } catch (e) {
-    errorEl.textContent = e.message || 'Login failed';
-    errorEl.style.display = 'block';
-  } finally {
-    btn.disabled = false;
-    btn.textContent = 'Login';
-  }
-}
+// jellyfinLogin removed — auth handled by login page
 
 async function testConnection(type) {
   const configs = {

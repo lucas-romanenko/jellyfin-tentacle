@@ -510,14 +510,16 @@ def get_home_config(db: Session, user_id: int = None) -> dict:
     """Read and return the current per-user home config contents."""
     path = _user_home_config_path(db, user_id)
     if not path.exists():
-        # Fall back to legacy global file for migration
+        # Fall back to legacy global file only for admin (migration from pre-multi-user)
         if user_id is not None:
-            legacy = Path(get_setting(db, "home_config_path", "/data/tentacle-home.json"))
-            if legacy.exists():
-                try:
-                    return json.loads(legacy.read_text(encoding="utf-8"))
-                except Exception:
-                    pass
+            user = db.query(TentacleUser).filter(TentacleUser.id == user_id).first()
+            if user and user.is_admin:
+                legacy = Path(get_setting(db, "home_config_path", "/data/tentacle-home.json"))
+                if legacy.exists():
+                    try:
+                        return json.loads(legacy.read_text(encoding="utf-8"))
+                    except Exception:
+                        pass
         return {}
     try:
         return json.loads(path.read_text(encoding="utf-8"))

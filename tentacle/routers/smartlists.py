@@ -54,13 +54,14 @@ def _read_home_json(user: TentacleUser) -> dict:
     """Read per-user home config from disk. Returns empty dict if missing."""
     p = _home_config_path(user)
     if not p.exists():
-        # Fall back to legacy global file for migration
-        legacy = Path("/data/tentacle-home.json")
-        if legacy.exists():
-            try:
-                return json.loads(legacy.read_text(encoding="utf-8"))
-            except Exception:
-                pass
+        # Fall back to legacy global file only for admin (migration from pre-multi-user)
+        if user.is_admin:
+            legacy = Path("/data/tentacle-home.json")
+            if legacy.exists():
+                try:
+                    return json.loads(legacy.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
         return {}
     try:
         return json.loads(p.read_text(encoding="utf-8"))

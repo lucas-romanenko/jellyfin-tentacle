@@ -1569,21 +1569,9 @@ td.primary { color: var(--text); font-weight: 500; }
 
               <div class="form-group">
                 <div class="form-label">Jellyfin User</div>
-                <div id="jellyfin-login-status" style="display:none;padding:10px 12px;background:var(--green-dim);border:1px solid rgba(74,222,128,0.15);border-radius:var(--radius-sm);display:none">
-                  <div style="display:flex;align-items:center;justify-content:space-between">
-                    <span style="color:var(--green);font-size:13px;font-weight:500" id="jellyfin-logged-in-label"></span>
-                    <button class="btn btn-secondary btn-sm" onclick="showJellyfinLogin()">Change</button>
-                  </div>
-                  <div style="font-size:11px;color:var(--text3);margin-top:4px;font-family:'DM Mono',monospace" id="jellyfin-user-id-display"></div>
-                </div>
-                <div id="jellyfin-login-form">
-                  <div class="form-row" style="margin-bottom:8px">
-                    <input class="form-input" id="jf-username" placeholder="Username">
-                    <input class="form-input" id="jf-password" type="password" placeholder="Password">
-                    <button class="btn btn-primary" onclick="jellyfinLogin()" id="jf-login-btn">Login</button>
-                  </div>
-                  <div class="form-hint">Authenticate with Jellyfin to link your user. Password is not stored.</div>
-                  <div id="jf-login-error" style="font-size:11px;color:var(--red);margin-top:4px;display:none"></div>
+                <div id="jellyfin-login-status" style="padding:10px 12px;background:var(--green-dim);border:1px solid rgba(74,222,128,0.15);border-radius:var(--radius-sm)">
+                  <span style="color:var(--green);font-size:13px;font-weight:500" id="jellyfin-logged-in-label"></span>
+                  <div style="font-size:11px;color:var(--text3);margin-top:4px">Managed via login page. Sign out and sign in as a different user to change.</div>
                 </div>
               </div>
 
