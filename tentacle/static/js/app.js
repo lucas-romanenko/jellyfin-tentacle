@@ -503,7 +503,7 @@ async function setupStep3Next() {
     // Pre-populate webhook host from Tentacle's own URL if possible
     const webhookHost = document.getElementById('setup-webhook-host');
     if (!webhookHost.value) {
-      webhookHost.value = window.location.host;
+      webhookHost.value = `${window.location.protocol}//${window.location.host}`;
     }
     updateSetupWebhookUrls();
     // Show relevant webhook sections
@@ -516,14 +516,16 @@ async function setupStep3Next() {
 }
 
 function updateSetupWebhookUrls() {
-  let host = document.getElementById('setup-webhook-host').value.trim();
-  if (!host) {
+  let base = document.getElementById('setup-webhook-host').value.trim();
+  if (!base) {
     document.getElementById('setup-webhook-urls').style.display = 'none';
     return;
   }
-  host = host.replace(/^https?:\/\//, '');
-  document.getElementById('setup-radarr-webhook-url').value = `http://${host}/api/radarr/webhook`;
-  document.getElementById('setup-sonarr-webhook-url').value = `http://${host}/api/sonarr/webhook`;
+  // Ensure it has a protocol
+  if (!/^https?:\/\//i.test(base)) base = `http://${base}`;
+  base = base.replace(/\/+$/, '');
+  document.getElementById('setup-radarr-webhook-url').value = `${base}/api/radarr/webhook`;
+  document.getElementById('setup-sonarr-webhook-url').value = `${base}/api/sonarr/webhook`;
   document.getElementById('setup-webhook-urls').style.display = 'block';
 }
 

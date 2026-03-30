@@ -2531,7 +2531,7 @@ td.primary { color: var(--text); font-weight: 500; }
     <!-- Step 2: Jellyfin login -->
     <div class="setup-step" id="setup-step-2" style="display:none">
       <h2>Login to Jellyfin</h2>
-      <p>Tentacle needs a Jellyfin user account to create and manage playlists. Use an admin account for full access.</p>
+      <p>Sign in with your main Jellyfin admin account. You can add more Jellyfin users later from Settings.</p>
 
       <div class="form-group">
         <div class="form-label">Jellyfin Username</div>
@@ -2598,8 +2598,8 @@ td.primary { color: var(--text); font-weight: 500; }
       <p>So Radarr/Sonarr can notify Tentacle when new content downloads. Add these URLs in each app under Settings → Connect → Webhook.</p>
 
       <div class="form-group">
-        <div class="form-label">Tentacle IP:Port</div>
-        <input class="form-input" id="setup-webhook-host" placeholder="192.168.1.100:8888" oninput="updateSetupWebhookUrls()">
+        <div class="form-label">Tentacle URL</div>
+        <input class="form-input" id="setup-webhook-host" placeholder="http://192.168.1.100:8888" oninput="updateSetupWebhookUrls()">
         <div class="form-hint">The address Radarr/Sonarr can reach Tentacle at</div>
       </div>
 
