@@ -351,14 +351,22 @@ class JellyfinService:
 
     # ── Playlist Management ──────────────────────────────────────────────
 
-    def create_playlist(self, name: str, item_ids: List[str] = None) -> Optional[str]:
-        """Create a new playlist. Returns the playlist ID or None."""
+    def create_playlist(self, name: str, item_ids: List[str] = None,
+                        user_id: str = None, is_public: bool = False) -> Optional[str]:
+        """Create a new playlist. Returns the playlist ID or None.
+
+        Args:
+            user_id: Override self.user_id for the playlist owner.
+            is_public: If False, only the owner can see the playlist.
+        """
+        uid = user_id or self.user_id
         body = {
             "Name": name,
             "MediaType": "Video",
+            "IsPublic": is_public,
         }
-        if self.user_id:
-            body["UserId"] = self.user_id
+        if uid:
+            body["UserId"] = uid
         if item_ids:
             body["Ids"] = item_ids
         try:

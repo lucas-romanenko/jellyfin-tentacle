@@ -1,11 +1,12 @@
 """
 Tentacle - SmartLists Service
-Creates and syncs Jellyfin SmartList config files to disk.
-Also generates tentacle-home.json for the Tentacle Jellyfin plugin.
+Creates and syncs per-user Jellyfin SmartList config files to disk.
+Also generates per-user home configs for the Tentacle Jellyfin plugin.
 """
 
 import uuid
 import json
+import shutil
 import logging
 import requests
 from pathlib import Path
@@ -67,6 +68,23 @@ def _conditions_to_expressions(conditions: list) -> list:
     return expressions
 
 
+# ── Per-user SmartLists paths ────────────────────────────────────────────────
+
+def _user_smartlists_path(db: Session, user_id: int) -> Path:
+    """Return per-user SmartLists directory: /data/smartlists/{jellyfin_user_id}/"""
+    user = db.query(TentacleUser).filter(TentacleUser.id == user_id).first()
+    if not user:
+        raise ValueError(f"TentacleUser id={user_id} not found")
+    base = Path(get_setting(db, "smartlists_path", "/data/smartlists"))
+    return base / user.jellyfin_user_id
+
+
+def _get_jellyfin_user_id(db: Session, user_id: int) -> str:
+    """Resolve TentacleUser.id to jellyfin_user_id string."""
+    user = db.query(TentacleUser).filter(TentacleUser.id == user_id).first()
+    return user.jellyfin_user_id if user else ""
+
+
 def _build_config(name: str, tag: str, media_types: list, folder_id: str,
                   enabled: bool = True, jellyfin_user_id: str = "",
                   expressions: list = None) -> dict:
@@ -76,7 +94,7 @@ def _build_config(name: str, tag: str, media_types: list, folder_id: str,
         expressions = [{"MemberName": "Tags", "Operator": "Contains", "TargetValue": tag}]
 
     return {
-        "Public": True,
+        "Public": False,
         "UserPlaylists": user_playlists,
         "Type": "Playlist",
         "Id": folder_id,
@@ -110,6 +128,7 @@ def _build_config(name: str, tag: str, media_types: list, folder_id: str,
 
 
 def _create_jellyfin_playlist(name: str, user_id: str, jellyfin_url: str, jellyfin_key: str) -> str:
+    """Create a private Jellyfin playlist owned by user_id."""
     try:
         r = requests.post(
             f"{jellyfin_url.rstrip('/')}/Playlists",
@@ -121,29 +140,33 @@ def _create_jellyfin_playlist(name: str, user_id: str, jellyfin_url: str, jellyf
                 "Name": name,
                 "UserId": user_id,
                 "MediaType": "Unknown",
+                "IsPublic": False,
             },
             timeout=10,
         )
         r.raise_for_status()
         return r.json().get("Id", "")
     except Exception as e:
-        logger.warning(f"Could not create Jellyfin playlist '{name}': {e}")
+        logger.warning(f"Could not create Jellyfin playlist '{name}' for user {user_id}: {e}")
         return ""
 
 
-def get_desired_smartlists(db: Session) -> list:
+def get_desired_smartlists(db: Session, user_id: int = None) -> list:
     """Build the full list of SmartList definitions from:
-    1. Enabled auto playlists (source, list, built-in)
-    2. Custom playlists (tag rules)
+    1. Enabled auto playlists (source, list, built-in) — filtered by user
+    2. Custom playlists (tag rules) — filtered by user
 
-    All playlists are global (shared across all users).
+    If user_id is None, returns the union across all users (legacy compat).
     """
     from models.database import ListSubscription, ListItem, AutoPlaylistToggle, Movie, Series
     smartlists = []
     existing_tags = set()
 
     # ── Auto playlists (source-based, from enabled toggles) ──
-    toggles = {t.key: t.enabled for t in db.query(AutoPlaylistToggle).all()}
+    toggle_query = db.query(AutoPlaylistToggle)
+    if user_id is not None:
+        toggle_query = toggle_query.filter(AutoPlaylistToggle.user_id == user_id)
+    toggles = {t.key: t.enabled for t in toggle_query.all()}
 
     # Source playlists from VOD content
     movie_tags = db.query(Movie.source_tag).filter(
@@ -181,10 +204,13 @@ def get_desired_smartlists(db: Session) -> list:
             existing_tags.add(bname)
 
     # ── List playlists (use ListSubscription.playlist_enabled) ──
-    enabled_lists = db.query(ListSubscription).filter(
+    list_query = db.query(ListSubscription).filter(
         ListSubscription.playlist_enabled == True,
         ListSubscription.active == True,
-    ).all()
+    )
+    if user_id is not None:
+        list_query = list_query.filter(ListSubscription.user_id == user_id)
+    enabled_lists = list_query.all()
     for lst in enabled_lists:
         if lst.tag in existing_tags:
             continue
@@ -207,7 +233,10 @@ def get_desired_smartlists(db: Session) -> list:
         existing_tags.add(lst.tag)
 
     # ── Custom playlists from tag rules ──
-    active_rules = db.query(TagRule).filter(TagRule.active == True).all()
+    rule_query = db.query(TagRule).filter(TagRule.active == True)
+    if user_id is not None:
+        rule_query = rule_query.filter(TagRule.user_id == user_id)
+    active_rules = rule_query.all()
     for rule in active_rules:
         if rule.output_tag in existing_tags:
             continue
@@ -257,14 +286,77 @@ def _scan_existing(smartlists_path: Path) -> dict:
     return existing
 
 
-def sync_smartlists(db: Session) -> dict:
-    """Sync SmartList config files to disk. Returns {created, updated, total}.
+def migrate_global_smartlists_to_user(db: Session, user_id: int):
+    """One-time migration: move existing global /data/smartlists/* configs
+    into the admin user's per-user directory. Only runs if the user's
+    per-user directory doesn't exist yet and the global dir has content."""
+    try:
+        user_path = _user_smartlists_path(db, user_id)
+    except ValueError:
+        return
 
-    All playlists are global (shared across all users).
+    if user_path.exists():
+        return  # Already migrated
+
+    global_path = Path(get_setting(db, "smartlists_path", "/data/smartlists"))
+    if not global_path.exists():
+        return
+
+    # Check if there are SmartList folders directly in the global path
+    # (not in per-user subdirs — those would be jellyfin_user_id dirs)
+    configs_to_move = []
+    for item in global_path.iterdir():
+        if item.is_dir() and (item / "config.json").exists():
+            configs_to_move.append(item)
+
+    if not configs_to_move:
+        return
+
+    user_path.mkdir(parents=True, exist_ok=True)
+    moved = 0
+    for folder in configs_to_move:
+        dest = user_path / folder.name
+        try:
+            shutil.move(str(folder), str(dest))
+            moved += 1
+        except Exception as e:
+            logger.warning(f"Failed to migrate SmartList folder {folder.name}: {e}")
+
+    if moved:
+        logger.info(f"Migrated {moved} global SmartList configs to user dir {user_path}")
+
+
+def sync_smartlists(db: Session, user_id: int = None) -> dict:
+    """Sync per-user SmartList config files to disk. Returns {created, updated, total}.
+
+    Each user gets their own SmartList directory and Jellyfin playlists (IsPublic=false).
     Does NOT write home config — call write_home_config() separately per-user.
+
+    If user_id is None, syncs for all users.
     """
-    smartlists_path_str = get_setting(db, "smartlists_path", "/data/smartlists")
-    smartlists_path = Path(smartlists_path_str)
+    if user_id is None:
+        # Sync for all users
+        users = db.query(TentacleUser).all()
+        if not users:
+            return {"created": 0, "updated": 0, "removed": 0, "total": 0}
+        combined = {"created": 0, "updated": 0, "removed": 0, "total": 0}
+        for u in users:
+            result = sync_smartlists(db, user_id=u.id)
+            for key in ("created", "updated", "removed", "total"):
+                combined[key] += result.get(key, 0)
+        # Artwork sync is global (once after all users)
+        try:
+            from routers.collections import sync_playlist_artwork
+            combined["artwork"] = sync_playlist_artwork(db)
+        except Exception as e:
+            logger.warning(f"Artwork sync failed: {e}")
+        return combined
+
+    # Single-user sync
+    try:
+        smartlists_path = _user_smartlists_path(db, user_id)
+    except ValueError as e:
+        return {"created": 0, "updated": 0, "total": 0, "error": str(e)}
 
     if not smartlists_path.exists():
         try:
@@ -273,10 +365,9 @@ def sync_smartlists(db: Session) -> dict:
             logger.error(f"Cannot create SmartLists path {smartlists_path}: {e}")
             return {"created": 0, "updated": 0, "total": 0, "error": str(e)}
 
-    # Always compute global union of all users' desired playlists for disk management
-    desired = get_desired_smartlists(db)
+    desired = get_desired_smartlists(db, user_id=user_id)
     existing = _scan_existing(smartlists_path)
-    jellyfin_user_id = get_setting(db, "jellyfin_user_id", "")
+    jf_user_id = _get_jellyfin_user_id(db, user_id)
     jellyfin_url = get_setting(db, "jellyfin_url", "")
     jellyfin_key = get_setting(db, "jellyfin_api_key", "")
 
@@ -294,7 +385,7 @@ def sync_smartlists(db: Session) -> dict:
             # Update existing
             folder, old_data = existing[name]
             folder_id = old_data.get("Id", str(uuid.uuid4()))
-            config = _build_config(name, tag, media_types, folder_id, enabled, jellyfin_user_id, expressions=expressions)
+            config = _build_config(name, tag, media_types, folder_id, enabled, jf_user_id, expressions=expressions)
 
             # Preserve user-managed fields from existing config
             for field in PRESERVED_FIELDS:
@@ -309,10 +400,10 @@ def sync_smartlists(db: Session) -> dict:
                     break
             else:
                 # No linked playlists — create one if we have Jellyfin credentials
-                if jellyfin_user_id and jellyfin_url and jellyfin_key:
-                    playlist_id = _create_jellyfin_playlist(name, jellyfin_user_id, jellyfin_url, jellyfin_key)
+                if jf_user_id and jellyfin_url and jellyfin_key:
+                    playlist_id = _create_jellyfin_playlist(name, jf_user_id, jellyfin_url, jellyfin_key)
                     if playlist_id:
-                        config["UserPlaylists"] = [{"UserId": jellyfin_user_id, "JellyfinPlaylistId": playlist_id}]
+                        config["UserPlaylists"] = [{"UserId": jf_user_id, "JellyfinPlaylistId": playlist_id}]
 
             config_file = folder / "config.json"
             config_file.write_text(json.dumps(config, indent=2), encoding="utf-8")
@@ -323,13 +414,13 @@ def sync_smartlists(db: Session) -> dict:
             folder = smartlists_path / folder_id
             folder.mkdir(parents=True, exist_ok=True)
 
-            config = _build_config(name, tag, media_types, folder_id, enabled, jellyfin_user_id, expressions=expressions)
+            config = _build_config(name, tag, media_types, folder_id, enabled, jf_user_id, expressions=expressions)
 
-            # Create Jellyfin playlist for the new SmartList
-            if jellyfin_user_id and jellyfin_url and jellyfin_key:
-                playlist_id = _create_jellyfin_playlist(name, jellyfin_user_id, jellyfin_url, jellyfin_key)
+            # Create private Jellyfin playlist for this user
+            if jf_user_id and jellyfin_url and jellyfin_key:
+                playlist_id = _create_jellyfin_playlist(name, jf_user_id, jellyfin_url, jellyfin_key)
                 if playlist_id:
-                    config["UserPlaylists"] = [{"UserId": jellyfin_user_id, "JellyfinPlaylistId": playlist_id}]
+                    config["UserPlaylists"] = [{"UserId": jf_user_id, "JellyfinPlaylistId": playlist_id}]
 
             config_file = folder / "config.json"
             config_file.write_text(json.dumps(config, indent=2), encoding="utf-8")
@@ -344,7 +435,7 @@ def sync_smartlists(db: Session) -> dict:
     # something is likely wrong (DB issue, toggle reset, etc.) — skip cleanup
     if orphaned and existing and len(orphaned) > len(existing) / 2:
         logger.warning(
-            f"Skipping orphan cleanup: {len(orphaned)}/{len(existing)} playlists would be removed "
+            f"Skipping orphan cleanup for user {user_id}: {len(orphaned)}/{len(existing)} playlists would be removed "
             f"— likely a transient issue, not intentional deletions. "
             f"Orphans: {list(orphaned.keys())}"
         )
@@ -359,42 +450,39 @@ def sync_smartlists(db: Session) -> dict:
             if playlist_id and jellyfin_url and jellyfin_key:
                 try:
                     from services.jellyfin import JellyfinService
-                    jf = JellyfinService(jellyfin_url, jellyfin_key, jellyfin_user_id)
+                    jf = JellyfinService(jellyfin_url, jellyfin_key, jf_user_id)
                     jf.delete_item(playlist_id)
                 except Exception as e:
                     logger.warning(f"Could not delete Jellyfin playlist for '{name}': {e}")
 
             # Remove the folder from disk
             try:
-                import shutil
                 shutil.rmtree(folder)
                 logger.info(f"Removed orphaned SmartList folder: {name}")
                 removed += 1
             except Exception as e:
                 logger.warning(f"Could not remove folder for '{name}': {e}")
 
-    logger.info(f"SmartLists sync: {created} created, {updated} updated, {removed} removed, {len(desired)} total")
+    logger.info(f"SmartLists sync (user {user_id}): {created} created, {updated} updated, {removed} removed, {len(desired)} total")
 
-    # After syncing configs, populate playlists via Jellyfin API directly (global)
-    playlist_stats = refresh_smartlist_playlists(db)
-
-    # Generate and upload artwork for all playlists (global)
-    artwork_stats = {}
-    try:
-        from routers.collections import sync_playlist_artwork
-        artwork_stats = sync_playlist_artwork(db)
-    except Exception as e:
-        logger.warning(f"Artwork sync failed: {e}")
+    # After syncing configs, populate playlists via Jellyfin API
+    playlist_stats = refresh_smartlist_playlists(db, user_id=user_id)
 
     return {
         "created": created, "updated": updated, "removed": removed, "total": len(desired),
-        "playlists": playlist_stats, "artwork": artwork_stats,
+        "playlists": playlist_stats,
     }
 
 
-def _get_smartlists_with_playlist_ids(db: Session) -> list:
-    """Scan existing SmartList configs and return those with a non-empty JellyfinPlaylistId."""
-    smartlists_path = Path(get_setting(db, "smartlists_path", "/data/smartlists"))
+def _get_smartlists_with_playlist_ids(db: Session, user_id: int = None) -> list:
+    """Scan existing per-user SmartList configs and return those with a non-empty JellyfinPlaylistId."""
+    if user_id is not None:
+        try:
+            smartlists_path = _user_smartlists_path(db, user_id)
+        except ValueError:
+            return []
+    else:
+        smartlists_path = Path(get_setting(db, "smartlists_path", "/data/smartlists"))
     existing = _scan_existing(smartlists_path)
     result = []
     for name, (_folder, data) in existing.items():
@@ -434,10 +522,10 @@ def write_home_config(db: Session, user_id: int = None) -> dict:
     Returns the config dict that was written.
     """
     home_row_limit = int(get_setting(db, "home_row_limit", "20") or "20")
-    smartlists = _get_smartlists_with_playlist_ids(db)
+    smartlists = _get_smartlists_with_playlist_ids(db, user_id=user_id)
 
     if not smartlists:
-        logger.warning("No SmartLists with JellyfinPlaylistId found, skipping home config write")
+        logger.warning(f"No SmartLists with JellyfinPlaylistId found for user {user_id}, skipping home config write")
         return {}
 
     existing_config = get_home_config(db, user_id=user_id)
@@ -626,26 +714,43 @@ def _build_query_params(config: dict) -> dict:
     return params
 
 
-def refresh_smartlist_playlists(db: Session) -> dict:
-    """Read SmartList configs from disk, query Jellyfin for matching items,
+def refresh_smartlist_playlists(db: Session, user_id: int = None) -> dict:
+    """Read per-user SmartList configs from disk, query Jellyfin for matching items,
     and create/update playlists. This replaces the C# SmartLists plugin entirely.
 
+    If user_id is None, refreshes for all users.
     Returns {processed, created, updated, errors}.
     """
+    if user_id is None:
+        users = db.query(TentacleUser).all()
+        if not users:
+            return {"processed": 0, "created": 0, "updated": 0, "errors": 0}
+        combined = {"processed": 0, "created": 0, "updated": 0, "errors": 0}
+        for u in users:
+            result = refresh_smartlist_playlists(db, user_id=u.id)
+            for key in ("processed", "created", "updated", "errors"):
+                combined[key] += result.get(key, 0)
+        return combined
+
     from services.jellyfin import JellyfinService
 
     jellyfin_url = get_setting(db, "jellyfin_url", "")
     jellyfin_key = get_setting(db, "jellyfin_api_key", "")
-    jellyfin_uid = get_setting(db, "jellyfin_user_id", "")
-    smartlists_path = Path(get_setting(db, "smartlists_path", "/data/smartlists"))
+    jf_user_id = _get_jellyfin_user_id(db, user_id)
 
     if not jellyfin_url or not jellyfin_key:
         return {"error": "Jellyfin not configured", "processed": 0}
 
-    jf = JellyfinService(jellyfin_url, jellyfin_key, jellyfin_uid)
+    # Use the target user's Jellyfin ID so playlist operations are scoped to them
+    jf = JellyfinService(jellyfin_url, jellyfin_key, jf_user_id)
 
     if not jf.test_connection():
         return {"error": "Jellyfin connection failed", "processed": 0}
+
+    try:
+        smartlists_path = _user_smartlists_path(db, user_id)
+    except ValueError:
+        return {"error": "User not found", "processed": 0}
 
     existing = _scan_existing(smartlists_path)
     if not existing:
@@ -658,13 +763,13 @@ def refresh_smartlist_playlists(db: Session) -> dict:
             continue
 
         try:
-            _process_single_playlist(jf, folder, config, jellyfin_uid, stats)
+            _process_single_playlist(jf, folder, config, jf_user_id, stats)
         except Exception as e:
             logger.error(f"[SmartLists] Failed to process '{name}': {e}")
             stats["errors"] += 1
 
     logger.info(
-        f"[SmartLists] Playlist refresh: {stats['processed']} processed, "
+        f"[SmartLists] Playlist refresh (user {user_id}): {stats['processed']} processed, "
         f"{stats['created']} created, {stats['updated']} updated, "
         f"{stats['errors']} errors"
     )
@@ -723,8 +828,8 @@ def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats
         logger.info(f"[SmartLists] Updated '{name}': +{len(to_add)} -{len(to_remove_entry_ids)} items (total {len(item_ids)})")
         stats["updated"] += 1
     else:
-        # Create new playlist with items
-        playlist_id = jf.create_playlist(name, item_ids if item_ids else None)
+        # Create new private playlist with items
+        playlist_id = jf.create_playlist(name, item_ids if item_ids else None, user_id=user_id, is_public=False)
         if playlist_id:
             # Save playlist ID back to config
             if user_id:
@@ -754,8 +859,8 @@ SORT_BY_DISPLAY = {
 SORT_BY_TO_CONFIG = {v: k for k, v in SORT_BY_DISPLAY.items()}
 
 
-def update_playlist_sort(name: str, sort_by: str, sort_order: str, db) -> dict:
-    """Update sort order for a playlist config on disk and re-populate in Jellyfin."""
+def update_playlist_sort(name: str, sort_by: str, sort_order: str, db, user_id: int = None) -> dict:
+    """Update sort order for a per-user playlist config on disk and re-populate in Jellyfin."""
     from services.jellyfin import JellyfinService
 
     if sort_by not in VALID_SORT_BY:
@@ -763,7 +868,14 @@ def update_playlist_sort(name: str, sort_by: str, sort_order: str, db) -> dict:
     if sort_order not in ("Ascending", "Descending"):
         return {"success": False, "message": f"Invalid sort_order: {sort_order}"}
 
-    smartlists_path = Path(get_setting(db, "smartlists_path", "/data/smartlists"))
+    if user_id is not None:
+        try:
+            smartlists_path = _user_smartlists_path(db, user_id)
+        except ValueError:
+            return {"success": False, "message": "User not found"}
+    else:
+        smartlists_path = Path(get_setting(db, "smartlists_path", "/data/smartlists"))
+
     existing = _scan_existing(smartlists_path)
 
     if name not in existing:
@@ -783,11 +895,11 @@ def update_playlist_sort(name: str, sort_by: str, sort_order: str, db) -> dict:
     # Re-populate the Jellyfin playlist with the new sort order
     jellyfin_url = get_setting(db, "jellyfin_url")
     jellyfin_key = get_setting(db, "jellyfin_api_key")
-    jellyfin_user_id = get_setting(db, "jellyfin_user_id")
+    jf_user_id = _get_jellyfin_user_id(db, user_id) if user_id else get_setting(db, "jellyfin_user_id")
 
-    if jellyfin_url and jellyfin_key and jellyfin_user_id:
+    if jellyfin_url and jellyfin_key and jf_user_id:
         try:
-            jf = JellyfinService(jellyfin_url, jellyfin_key, jellyfin_user_id)
+            jf = JellyfinService(jellyfin_url, jellyfin_key, jf_user_id)
 
             # Find playlist ID
             playlist_id = None

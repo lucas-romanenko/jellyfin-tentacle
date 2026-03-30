@@ -336,10 +336,12 @@ def delete_provider(provider_id: int, db: Session = Depends(get_db)):
     # write_home_config drops stale rows/hero references.
     try:
         from services.smartlists import sync_smartlists, refresh_smartlist_playlists, write_home_config
+        from models.database import TentacleUser as _TU
         logger.info(f"Rebuilding playlists after deleting provider {provider_name}...")
-        sync_smartlists(db)
-        refresh_smartlist_playlists(db)
-        write_home_config(db)
+        sync_smartlists(db)  # loops all users
+        refresh_smartlist_playlists(db)  # loops all users
+        for _u in db.query(_TU).all():
+            write_home_config(db, user_id=_u.id)
         logger.info(f"Playlist rebuild complete after provider deletion")
     except Exception as e:
         logger.warning(f"Playlist rebuild after provider delete failed (non-fatal): {e}")

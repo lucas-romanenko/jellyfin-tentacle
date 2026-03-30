@@ -55,7 +55,15 @@ def sync_playlist_artwork(db: Session) -> dict:
     if not jellyfin_url or not jellyfin_key:
         return {"error": "Jellyfin not configured", "updated": 0}
 
-    playlists = _get_smartlists_with_playlist_ids(db)
+    # Aggregate playlists across all users (dedupe by playlist_id)
+    from models.database import TentacleUser
+    seen_ids = set()
+    playlists = []
+    for u in db.query(TentacleUser).all():
+        for p in _get_smartlists_with_playlist_ids(db, user_id=u.id):
+            if p["playlist_id"] not in seen_ids:
+                seen_ids.add(p["playlist_id"])
+                playlists.append(p)
     if not playlists:
         return {"updated": 0, "total": 0}
 

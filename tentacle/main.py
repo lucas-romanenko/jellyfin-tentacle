@@ -101,17 +101,18 @@ def run_scheduled_sync():
         from routers.collections import sync_playlist_artwork
         sync_playlist_artwork(db)
 
-        # Rebuild smartlist configs (global) and per-user home layouts
-        from services.smartlists import sync_smartlists, write_home_config, _notify_jellyfin_plugin
-        # Disk configs + Jellyfin playlists are global — sync once
-        sync_smartlists(db)
-        # Home configs are per-user
+        # Rebuild per-user smartlist configs, Jellyfin playlists, and home layouts
+        from services.smartlists import sync_smartlists, write_home_config, _notify_jellyfin_plugin, migrate_global_smartlists_to_user
         users = db.query(TentacleUser).all()
         for u in users:
             try:
+                # One-time migration: move global smartlists to admin's per-user dir
+                migrate_global_smartlists_to_user(db, u.id)
+                # Per-user: disk configs + Jellyfin playlists + home config
+                sync_smartlists(db, user_id=u.id)
                 write_home_config(db, user_id=u.id)
             except Exception as e:
-                logger.warning(f"Per-user home config failed for {u.display_name}: {e}")
+                logger.warning(f"Per-user playlist pipeline failed for {u.display_name}: {e}")
         if users:
             _notify_jellyfin_plugin(db)
 
@@ -164,8 +165,16 @@ async def lifespan(app: FastAPI):
 
         setup_scheduler(db)
 
+        # One-time migration: move global smartlists to per-user directories
+        from models.database import get_setting, TentacleUser as _TU
+        from services.smartlists import migrate_global_smartlists_to_user
+        for _u in db.query(_TU).all():
+            try:
+                migrate_global_smartlists_to_user(db, _u.id)
+            except Exception as e:
+                logger.warning(f"SmartLists migration failed for {_u.display_name}: {e}")
+
         # Validate Jellyfin connection
-        from models.database import get_setting
         jf_url = get_setting(db, "jellyfin_url")
         jf_key = get_setting(db, "jellyfin_api_key")
         jf_uid = get_setting(db, "jellyfin_user_id", "")

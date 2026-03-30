@@ -13,7 +13,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
-from models.database import get_db, SessionLocal, ListSubscription, ListItem, Movie, Series, get_setting, log_activity
+from models.database import get_db, SessionLocal, ListSubscription, ListItem, Movie, Series, TentacleUser, get_setting, log_activity
+from routers.auth import get_user_from_request
 from services.nfo import update_nfo_tags
 from services.tmdb import TMDBService
 from pathlib import Path
@@ -446,8 +447,10 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
 
 
 @router.get("")
-def get_lists(db: Session = Depends(get_db)):
-    lists = db.query(ListSubscription).order_by(ListSubscription.created_at.desc()).all()
+def get_lists(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+    lists = db.query(ListSubscription).filter(
+        ListSubscription.user_id == user.id,
+    ).order_by(ListSubscription.created_at.desc()).all()
     return [
         {
             "id": l.id,
@@ -467,7 +470,7 @@ def get_lists(db: Session = Depends(get_db)):
 
 
 @router.post("")
-def create_list(body: ListCreate, db: Session = Depends(get_db)):
+def create_list(body: ListCreate, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     lst = ListSubscription(
         name=body.name,
         type=body.type,
@@ -475,6 +478,7 @@ def create_list(body: ListCreate, db: Session = Depends(get_db)):
         tag=body.tag,
         auto_add_radarr=body.auto_add_radarr,
         active=body.active,
+        user_id=user.id,
     )
     db.add(lst)
     db.commit()
@@ -568,8 +572,11 @@ def add_to_sonarr(body: AddMissingBody, db: Session = Depends(get_db)):
 
 
 @router.delete("/{list_id}")
-def delete_list(list_id: int, db: Session = Depends(get_db)):
-    lst = db.query(ListSubscription).filter(ListSubscription.id == list_id).first()
+def delete_list(list_id: int, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+    lst = db.query(ListSubscription).filter(
+        ListSubscription.id == list_id,
+        ListSubscription.user_id == user.id,
+    ).first()
     if not lst:
         raise HTTPException(404, "List not found")
     db.delete(lst)
@@ -578,20 +585,25 @@ def delete_list(list_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{list_id}/playlist-toggle")
-def toggle_list_playlist(list_id: int, db: Session = Depends(get_db)):
-    """Toggle whether this list generates a Jellyfin playlist"""
-    lst = db.query(ListSubscription).filter(ListSubscription.id == list_id).first()
+def toggle_list_playlist(list_id: int, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+    """Toggle whether this list generates a per-user Jellyfin playlist"""
+    lst = db.query(ListSubscription).filter(
+        ListSubscription.id == list_id,
+        ListSubscription.user_id == user.id,
+    ).first()
     if not lst:
         raise HTTPException(404, "List not found")
     lst.playlist_enabled = not lst.playlist_enabled
     db.commit()
 
-    # Sync smartlists in background so the UI responds instantly
+    # Per-user sync in background
+    target_user_id = user.id
+
     def _bg_sync():
         from services.smartlists import sync_smartlists
         bg_db = SessionLocal()
         try:
-            sync_smartlists(bg_db)
+            sync_smartlists(bg_db, user_id=target_user_id)
         except Exception as e:
             logging.getLogger(__name__).error(f"Background smartlist sync failed: {e}")
         finally:
@@ -603,9 +615,12 @@ def toggle_list_playlist(list_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/refresh-all")
-def refresh_all_lists(db: Session = Depends(get_db)):
-    """Re-fetch all active lists with TMDB enrichment. Fixes missing metadata."""
-    active_lists = db.query(ListSubscription).filter(ListSubscription.active == True).all()
+def refresh_all_lists(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+    """Re-fetch all active per-user lists with TMDB enrichment. Fixes missing metadata."""
+    active_lists = db.query(ListSubscription).filter(
+        ListSubscription.active == True,
+        ListSubscription.user_id == user.id,
+    ).all()
     if not active_lists:
         return {"success": True, "refreshed": 0, "message": "No active lists"}
 
@@ -640,9 +655,12 @@ def refresh_all_lists(db: Session = Depends(get_db)):
 
 
 @router.post("/{list_id}/fetch")
-def fetch_list(list_id: int, db: Session = Depends(get_db)):
+def fetch_list(list_id: int, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Fetch list items and apply tags to matching library content"""
-    lst = db.query(ListSubscription).filter(ListSubscription.id == list_id).first()
+    lst = db.query(ListSubscription).filter(
+        ListSubscription.id == list_id,
+        ListSubscription.user_id == user.id,
+    ).first()
     if not lst:
         raise HTTPException(404, "List not found")
 
@@ -753,9 +771,12 @@ def enrich_items_with_tmdb(items: list, tmdb: TMDBService):
 
 
 @router.get("/{list_id}/coverage")
-def get_list_coverage(list_id: int, db: Session = Depends(get_db)):
+def get_list_coverage(list_id: int, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Get coverage breakdown: VOD / Radarr / Missing for a list"""
-    lst = db.query(ListSubscription).filter(ListSubscription.id == list_id).first()
+    lst = db.query(ListSubscription).filter(
+        ListSubscription.id == list_id,
+        ListSubscription.user_id == user.id,
+    ).first()
     if not lst:
         raise HTTPException(404, "List not found")
 
@@ -836,9 +857,12 @@ def get_list_coverage(list_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{list_id}/add-missing-to-radarr")
-def add_missing_to_radarr(list_id: int, body: AddMissingBody = None, db: Session = Depends(get_db)):
+def add_missing_to_radarr(list_id: int, body: AddMissingBody = None, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Add missing list items to Radarr"""
-    lst = db.query(ListSubscription).filter(ListSubscription.id == list_id).first()
+    lst = db.query(ListSubscription).filter(
+        ListSubscription.id == list_id,
+        ListSubscription.user_id == user.id,
+    ).first()
     if not lst:
         raise HTTPException(404, "List not found")
 
@@ -895,9 +919,12 @@ def add_missing_to_radarr(list_id: int, body: AddMissingBody = None, db: Session
 
 
 @router.post("/{list_id}/add-missing-to-sonarr")
-def add_missing_to_sonarr(list_id: int, body: AddMissingBody = None, db: Session = Depends(get_db)):
+def add_missing_to_sonarr(list_id: int, body: AddMissingBody = None, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Add missing list items to Sonarr"""
-    lst = db.query(ListSubscription).filter(ListSubscription.id == list_id).first()
+    lst = db.query(ListSubscription).filter(
+        ListSubscription.id == list_id,
+        ListSubscription.user_id == user.id,
+    ).first()
     if not lst:
         raise HTTPException(404, "List not found")
 
