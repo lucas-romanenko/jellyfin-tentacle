@@ -68,16 +68,28 @@ class JellyfinService:
             return False
 
     def _fetch_all_items(self, media_type: str = "Movie") -> List[dict]:
-        """Fetch all items of a type from Jellyfin with ProviderIds and Tags."""
-        data = self._get("/Items", params={
-            "IncludeItemTypes": media_type,
-            "Recursive": "true",
-            "Fields": "ProviderIds,Tags",
-            "Limit": 10000,
-        })
-        if data:
-            return data.get("Items", [])
-        return []
+        """Fetch all items of a type from Jellyfin with ProviderIds and Tags.
+        Paginates automatically for libraries with more than 10,000 items."""
+        all_items = []
+        start_index = 0
+        page_size = 10000
+        while True:
+            data = self._get("/Items", params={
+                "IncludeItemTypes": media_type,
+                "Recursive": "true",
+                "Fields": "ProviderIds,Tags",
+                "Limit": page_size,
+                "StartIndex": start_index,
+            })
+            if not data:
+                break
+            items = data.get("Items", [])
+            all_items.extend(items)
+            total = data.get("TotalRecordCount", 0)
+            start_index += len(items)
+            if start_index >= total or not items:
+                break
+        return all_items
 
     @staticmethod
     def _normalize_title(title: str) -> str:
