@@ -694,27 +694,6 @@ td.primary { color: var(--text); font-weight: 500; }
 .section-title { font-size: 13px; font-weight: 600; color: var(--text2); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
 
 /* Dashboard status grid */
-.dash-status-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 12px;
-  margin-bottom: 20px;
-}
-
-.dash-status-card {
-  background: var(--bg1);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 14px 16px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.dash-status-icon { flex-shrink: 0; }
-.dash-status-label { font-size: 11px; font-weight: 600; color: var(--text3); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 2px; }
-.dash-status-time { font-size: 13px; color: var(--text1); font-family: 'DM Mono', monospace; }
-
 /* Dashboard progress */
 .dash-progress {
   background: var(--bg1);
@@ -1136,62 +1115,13 @@ td.primary { color: var(--text); font-weight: 500; }
           <div class="page-header-row">
             <div>
               <div class="page-title">Dashboard</div>
-              <div class="page-subtitle">System status and recent activity</div>
+              <div class="page-subtitle" id="dash-subtitle">—</div>
             </div>
             <div style="display:flex;gap:8px;align-items:center">
-              <button class="btn btn-primary" id="sync-now-btn" onclick="syncNow()">Sync All</button>
+              <button class="btn btn-primary" id="sync-now-btn" onclick="syncNow()">Sync Now</button>
               <button class="btn btn-danger" id="sync-cancel-btn" onclick="cancelSync()" style="display:none">Cancel</button>
             </div>
           </div>
-        </div>
-
-        <!-- Status cards -->
-        <div class="dash-status-grid">
-          <div class="dash-status-card" id="status-vod">
-            <div class="dash-status-icon">
-              <div class="dot dot-gray" id="dot-vod"></div>
-            </div>
-            <div class="dash-status-info">
-              <div class="dash-status-label">VOD Sync</div>
-              <div class="dash-status-time" id="time-vod">—</div>
-            </div>
-          </div>
-          <div class="dash-status-card" id="status-radarr">
-            <div class="dash-status-icon">
-              <div class="dot dot-gray" id="dot-radarr"></div>
-            </div>
-            <div class="dash-status-info">
-              <div class="dash-status-label">Radarr Scan</div>
-              <div class="dash-status-time" id="time-radarr">—</div>
-            </div>
-          </div>
-          <div class="dash-status-card" id="status-sonarr">
-            <div class="dash-status-icon">
-              <div class="dot dot-gray" id="dot-sonarr"></div>
-            </div>
-            <div class="dash-status-info">
-              <div class="dash-status-label">Sonarr Scan</div>
-              <div class="dash-status-time" id="time-sonarr">—</div>
-            </div>
-          </div>
-          <div class="dash-status-card" id="status-jellyfin">
-            <div class="dash-status-icon">
-              <div class="dot dot-gray" id="dot-jellyfin"></div>
-            </div>
-            <div class="dash-status-info">
-              <div class="dash-status-label">Jellyfin Push</div>
-              <div class="dash-status-time" id="time-jellyfin">—</div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Getting Started checklist (shown for new users) -->
-        <div class="card" id="getting-started" style="display:none;margin-bottom:16px;border-left:3px solid var(--accent)">
-          <div class="card-header">
-            <div class="card-title">Getting Started</div>
-            <button class="btn btn-secondary btn-sm" onclick="dismissGettingStarted()" style="font-size:11px">Dismiss</button>
-          </div>
-          <div id="getting-started-items" style="padding:4px 0"></div>
         </div>
 
         <!-- Stale VOD files warning (first startup only) -->
@@ -1200,16 +1130,14 @@ td.primary { color: var(--text); font-weight: 500; }
             <div class="card-title" style="color:var(--amber)">Existing VOD Files Detected</div>
           </div>
           <div style="padding:0 16px 16px;font-size:13px;color:var(--text2);line-height:1.5">
-            <p style="margin:0 0 8px">Found <strong id="stale-strm-count">0</strong> existing .strm files in your VOD folders that weren't created by Tentacle. These may be from a previous tool (xtream-sync, manual scripts, etc.).</p>
-            <p style="margin:0 0 12px">Tentacle can't manage these files &mdash; they won't appear in your library or get tagged. Would you like to delete them and start fresh? You can then add your IPTV provider and Tentacle will recreate everything with proper metadata and tagging.</p>
+            <p style="margin:0 0 8px">Found <strong id="stale-strm-count">0</strong> existing .strm files in your VOD folders that weren't created by Tentacle.</p>
+            <p style="margin:0 0 12px">These files won't appear in your library. Delete them and let Tentacle recreate everything with proper metadata.</p>
             <div style="display:flex;gap:8px">
               <button class="btn btn-danger btn-sm" onclick="confirmDeleteStaleFiles()">Delete All &amp; Start Fresh</button>
               <button class="btn btn-secondary btn-sm" onclick="dismissStaleFiles()">Keep &amp; Ignore</button>
             </div>
           </div>
         </div>
-
-        <!-- Stale files delete confirmation modal -->
         <div class="modal-overlay" id="stale-confirm-modal" style="display:none">
           <div class="modal" style="max-width:440px">
             <div class="modal-header">
@@ -1217,7 +1145,7 @@ td.primary { color: var(--text); font-weight: 500; }
               <button class="modal-close" onclick="document.getElementById('stale-confirm-modal').style.display='none'">&times;</button>
             </div>
             <div style="padding:16px;font-size:13px;color:var(--text2);line-height:1.5">
-              <p style="margin:0 0 12px">This will delete <strong id="stale-confirm-strm">0</strong> .strm files and <strong id="stale-confirm-nfo">0</strong> .nfo files from your VOD folders. Empty directories will also be removed.</p>
+              <p style="margin:0 0 12px">This will delete <strong id="stale-confirm-strm">0</strong> .strm files and <strong id="stale-confirm-nfo">0</strong> .nfo files from your VOD folders.</p>
               <p style="margin:0 0 16px;color:var(--red)">This cannot be undone.</p>
               <div style="display:flex;gap:8px;justify-content:flex-end">
                 <button class="btn btn-secondary btn-sm" onclick="document.getElementById('stale-confirm-modal').style.display='none'">Cancel</button>
@@ -1227,7 +1155,7 @@ td.primary { color: var(--text); font-weight: 500; }
           </div>
         </div>
 
-        <!-- Sync progress bar (hidden by default) -->
+        <!-- Sync progress (hidden by default) -->
         <div class="dash-progress" id="dash-progress" style="display:none">
           <div class="dash-progress-header">
             <div class="dot dot-amber"></div>
@@ -1267,71 +1195,23 @@ td.primary { color: var(--text); font-weight: 500; }
           </div>
         </div>
 
+        <!-- Last sync summary -->
+        <div class="card" id="dash-last-sync" style="margin-bottom:16px;display:none">
+          <div class="card-header">
+            <div class="card-title">Last Sync</div>
+            <div id="dash-last-sync-time" style="font-size:11px;color:var(--text3);font-family:'DM Mono',monospace"></div>
+          </div>
+          <div id="dash-last-sync-body" style="padding:4px 16px 12px;font-size:13px;color:var(--text2)"></div>
+        </div>
+
         <!-- Recent activity -->
         <div class="card" style="margin-bottom:16px">
           <div class="card-header">
             <div class="card-title">Recent Activity</div>
             <button class="btn btn-secondary btn-sm" id="activity-more-btn" onclick="loadMoreActivity()" style="display:none">Show More</button>
           </div>
-          <div id="activity-feed" style="max-height:220px;overflow-y:auto">
+          <div id="activity-feed" style="max-height:280px;overflow-y:auto">
             <div class="loading-state"><div class="spinner"></div> Loading...</div>
-          </div>
-        </div>
-
-        <!-- Sync History (collapsible) -->
-        <div class="card" style="margin-bottom:16px">
-          <div class="card-header" style="cursor:pointer" onclick="toggleDashHistory()">
-            <div class="card-title">Sync History</div>
-            <span id="dash-history-toggle" style="font-size:11px;color:var(--text3)">▸ Show</span>
-          </div>
-          <div id="dash-history-body" style="display:none">
-            <div id="history-summary" style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;padding:16px"></div>
-            <div class="card" style="margin:0 16px 16px;background:var(--bg2)">
-              <div class="card-header">
-                <div class="card-title" style="font-size:13px">Category Growth</div>
-                <select id="chart-category" class="form-input" style="width:200px;padding:5px 10px;font-size:12px" onchange="renderCategoryChart()">
-                  <option value="">Select category...</option>
-                </select>
-              </div>
-              <canvas id="category-chart" height="60"></canvas>
-              <div id="chart-empty" style="text-align:center;padding:20px;color:var(--text3);font-size:12px">Select a category</div>
-            </div>
-            <div style="padding:0 16px 16px">
-              <div id="history-runs"></div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Advanced actions (collapsible) + Live logs -->
-        <div style="display:grid;grid-template-columns:280px 1fr;gap:16px">
-          <div class="card">
-            <div class="card-header" style="cursor:pointer" onclick="toggleAdvancedActions()">
-              <div class="card-title">Advanced</div>
-              <span id="advanced-toggle" style="font-size:11px;color:var(--text3)">&#9656; Show</span>
-            </div>
-            <div id="advanced-actions-body" style="display:none;padding:4px 0;flex-direction:column;gap:6px">
-              <button class="btn btn-secondary btn-sm" style="width:100%;text-align:left" onclick="runSync('movies')" id="dash-btn-vod-movies">Sync VOD Movies</button>
-              <button class="btn btn-secondary btn-sm" style="width:100%;text-align:left" onclick="runSync('series')" id="dash-btn-vod-series">Sync VOD Series</button>
-              <button class="btn btn-secondary btn-sm" style="width:100%;text-align:left" onclick="scanRadarr()" id="radarr-scan-btn">Scan Radarr</button>
-              <button class="btn btn-secondary btn-sm" style="width:100%;text-align:left" onclick="scanSonarr()" id="sonarr-scan-btn">Scan Sonarr</button>
-              <button class="btn btn-secondary btn-sm" style="width:100%;text-align:left" onclick="refreshLists(this)">Refresh Lists</button>
-              <button class="btn btn-secondary btn-sm" style="width:100%;text-align:left" onclick="dashRefreshTags(this)">Push Tags to Jellyfin</button>
-              <button class="btn btn-secondary btn-sm" style="width:100%;text-align:left" onclick="writeNfos(this)">Rewrite NFO Files</button>
-            </div>
-          </div>
-
-          <div class="log-panel">
-            <div class="log-panel-header">
-              <div class="log-panel-title">Live Logs</div>
-              <div style="display:flex;gap:8px;align-items:center">
-                <div class="dot dot-gray" id="log-conn-dot" title="SSE connection status"></div>
-                <button class="btn btn-secondary btn-sm" onclick="clearLogPanel()">Clear</button>
-                <button class="btn btn-secondary btn-sm" id="log-scroll-btn" onclick="toggleLogScroll()">↓ Auto-scroll</button>
-              </div>
-            </div>
-            <div class="log-body" id="log-body">
-              <div style="color:var(--text3);font-size:11px;padding:4px 0">Connecting to log stream...</div>
-            </div>
           </div>
         </div>
       </div>

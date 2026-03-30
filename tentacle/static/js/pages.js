@@ -3475,8 +3475,6 @@ async function vodPreviewSync() {
     loadLibListPills, setLibList, setLibListStatus, setLibSort, scrollListPills,
     showMediaDetail, showCoverageDetail, filterByTag, searchLibrary, setLibType, setLibSrc,
     loadMoreLibrary, showAddToRadarrModal, showAddToArrModal, confirmAddToRadarr, confirmAddToArr,
-    // History
-    renderCategoryChart,
     // Duplicates
     setDupFilter, resolveDup, resolveAllKeepRadarr,
     // Log viewer

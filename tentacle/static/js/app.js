@@ -228,19 +228,6 @@ function showPage(name) {
 
 // ── Tab switching helpers ──────────────────────────────────────────────────
 
-function toggleDashHistory() {
-  const body = document.getElementById('dash-history-body');
-  const toggle = document.getElementById('dash-history-toggle');
-  if (body.style.display === 'none') {
-    body.style.display = '';
-    toggle.textContent = '▾ Hide';
-    loadHistory();
-  } else {
-    body.style.display = 'none';
-    toggle.textContent = '▸ Show';
-  }
-}
-
 function showLibTab(tab) {
   document.querySelectorAll('[data-libtab]').forEach(t => t.classList.remove('active'));
   document.querySelector(`[data-libtab="${tab}"]`)?.classList.add('active');
@@ -609,20 +596,24 @@ async function loadDashboard() {
     const [dash, providers, activity] = await Promise.all([
       api('/api/sync/dashboard'),
       api('/api/providers'),
-      api('/api/sync/activity?limit=15'),
+      api('/api/sync/activity?limit=10'),
     ]);
     state.providers = providers;
-    const cfg = dash.config || {};
 
-    // Status cards — hide Radarr/Sonarr if not configured
-    updateStatusCard('vod', dash.status.vod_sync.timestamp, dash.status.vod_sync.status === 'failed' ? 'error' : null, dash.running.vod_sync);
-    const radarrCard = document.getElementById('status-radarr');
-    const sonarrCard = document.getElementById('status-sonarr');
-    if (radarrCard) radarrCard.style.display = cfg.radarr ? '' : 'none';
-    if (sonarrCard) sonarrCard.style.display = cfg.sonarr ? '' : 'none';
-    if (cfg.radarr) updateStatusCard('radarr', dash.status.radarr_scan.timestamp, null, dash.running.radarr_scan);
-    if (cfg.sonarr) updateStatusCard('sonarr', dash.status.sonarr_scan.timestamp, null, dash.running.sonarr_scan);
-    updateStatusCard('jellyfin', dash.status.jellyfin_push.timestamp);
+    // Subtitle: status line with health + schedule
+    const subtitle = document.getElementById('dash-subtitle');
+    if (subtitle) {
+      const isRunning = dash.running.vod_sync || dash.running.radarr_scan || dash.running.sonarr_scan;
+      if (isRunning) {
+        subtitle.innerHTML = '<span style="color:var(--amber)">Syncing now...</span>';
+      } else if (dash.status.vod_sync.status === 'failed') {
+        subtitle.innerHTML = `<span style="color:var(--red)">Last sync failed</span> &middot; ${dashNextSync(dash.sync_schedule)}`;
+      } else if (dash.status.vod_sync.timestamp) {
+        subtitle.textContent = `Last sync ${dashTimeAgo(dash.status.vod_sync.timestamp)} \u00B7 ${dashNextSync(dash.sync_schedule)}`;
+      } else {
+        subtitle.textContent = `No syncs yet \u00B7 ${dashNextSync(dash.sync_schedule)}`;
+      }
+    }
 
     // Sidebar last sync
     const sidebarSync = document.getElementById('sidebar-last-sync');
@@ -649,18 +640,17 @@ async function loadDashboard() {
       else { dup.style.display = 'none'; }
     }
 
+    // Last sync summary
+    renderLastSyncSummary(dash.last_sync_summary, dash.status.vod_sync.timestamp);
+
     // Activity feed
     renderActivityFeed(activity);
-
-    // Getting Started checklist
-    renderGettingStarted(cfg, dash);
 
     // Stale VOD files check (first startup only)
     checkStaleFiles();
 
     // Sync running state
     if (dash.running.vod_sync && !state._syncProviderId) {
-      // Restore sync polling if a sync is running
       const active = providers.filter(p => p.active);
       if (active.length) {
         state._syncProviderId = active[0].id;
@@ -673,50 +663,41 @@ async function loadDashboard() {
   }
 }
 
-function renderGettingStarted(cfg, dash) {
-  const el = document.getElementById('getting-started');
-  const items = document.getElementById('getting-started-items');
-  if (!el || !items) return;
+function renderLastSyncSummary(summary, timestamp) {
+  const card = document.getElementById('dash-last-sync');
+  const body = document.getElementById('dash-last-sync-body');
+  const time = document.getElementById('dash-last-sync-time');
+  if (!card || !body) return;
 
-  // Don't show if user dismissed it
-  if (localStorage.getItem('tentacle_dismiss_checklist')) { el.style.display = 'none'; return; }
+  if (!summary) { card.style.display = 'none'; return; }
 
-  const checks = [
-    { done: true, label: 'Jellyfin connected' },
-    { done: cfg.radarr, label: 'Radarr configured', hint: 'Optional — <a href="#" onclick="showPage(\'settings\');return false">Settings → Connections</a>' },
-    { done: cfg.sonarr, label: 'Sonarr configured', hint: 'Optional — <a href="#" onclick="showPage(\'settings\');return false">Settings → Connections</a>' },
-    { done: cfg.has_providers, label: 'IPTV provider added', hint: '<a href="#" onclick="showPage(\'settings\');return false">Settings → Providers → Add Provider</a>' },
-    { done: dash.status.vod_sync.timestamp || (dash.library.total_movies + dash.library.total_series) > 0, label: 'Content synced' },
-    { done: cfg.has_playlists, label: 'Playlists created', hint: '<a href="#" onclick="showPage(\'jellyfin\');showJellyfinTab(\'playlists\');return false">Go to Jellyfin → Playlists</a>' },
-    { done: cfg.has_home_screen, label: 'Home screen configured', hint: '<a href="#" onclick="showPage(\'jellyfin\');showJellyfinTab(\'home\');return false">Go to Jellyfin → Home Screen</a>' },
-  ];
+  card.style.display = '';
+  if (time) time.textContent = timestamp ? dashTimeAgo(timestamp) : '';
 
-  const allDone = checks.every(c => c.done);
-  // Also hide if user has been using the system for a while (has synced + has playlists)
-  if (allDone) { el.style.display = 'none'; return; }
-
-  // Show scanning banner if post-setup scan is running
-  const scanning = dash.running.radarr_scan || dash.running.sonarr_scan;
+  const totalNew = summary.movies_new + summary.series_new;
+  const duration = summary.duration_seconds ? `${Math.round(summary.duration_seconds / 60)}m` : '';
   let html = '';
-  if (scanning) {
-    html += `<div style="padding:8px 12px;background:var(--bg2);border-radius:6px;margin-bottom:8px;font-size:13px;color:var(--amber)">Scanning your library... ${dash.library.radarr_movies} movies, ${dash.library.sonarr_series} series found so far</div>`;
+
+  if (summary.status === 'failed') {
+    html = '<div style="color:var(--red)">Sync failed</div>';
+  } else if (totalNew === 0) {
+    html = `<div style="color:var(--text3)">No new content${duration ? ` \u00B7 ${duration}` : ''}</div>`;
+  } else {
+    const parts = [];
+    if (summary.movies_new) parts.push(`${summary.movies_new} movie${summary.movies_new !== 1 ? 's' : ''}`);
+    if (summary.series_new) parts.push(`${summary.series_new} series`);
+    html = `<div style="margin-bottom:6px"><span style="color:var(--green)">+${totalNew} new</span> \u2014 ${parts.join(', ')}${duration ? ` \u00B7 ${duration}` : ''}</div>`;
+
+    if (summary.categories && summary.categories.length) {
+      html += '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px">';
+      for (const cat of summary.categories) {
+        html += `<span style="font-size:11px;font-family:'DM Mono',monospace;background:var(--accent-dim);color:var(--accent);border:1px solid rgba(108,99,255,0.3);border-radius:4px;padding:1px 7px">${cat.name} +${cat.new}</span>`;
+      }
+      html += '</div>';
+    }
   }
 
-  for (const c of checks) {
-    const icon = c.done ? '<span style="color:var(--green)">&#10003;</span>' : '<span style="color:var(--text3)">&#9675;</span>';
-    const opacity = c.done ? 'opacity:0.5' : '';
-    const hint = !c.done && c.hint ? ` <span style="font-size:11px;color:var(--text3)">${c.hint}</span>` : '';
-    html += `<div style="padding:4px 12px;font-size:13px;${opacity}">${icon} ${c.label}${hint}</div>`;
-  }
-
-  items.innerHTML = html;
-  el.style.display = '';
-}
-
-function dismissGettingStarted() {
-  localStorage.setItem('tentacle_dismiss_checklist', '1');
-  const el = document.getElementById('getting-started');
-  if (el) el.style.display = 'none';
+  body.innerHTML = html;
 }
 
 // ── Stale VOD Files ──────────────────────────────────────────────────────
@@ -755,20 +736,6 @@ async function dismissStaleFiles() {
   document.getElementById('stale-files-banner').style.display = 'none';
 }
 
-function toggleAdvancedActions() {
-  const body = document.getElementById('advanced-actions-body');
-  const toggle = document.getElementById('advanced-toggle');
-  if (body.style.display === 'none') {
-    body.style.display = 'flex';
-    toggle.innerHTML = '&#9662; Hide';
-  } else {
-    body.style.display = 'none';
-    toggle.innerHTML = '&#9656; Show';
-  }
-}
-
-// Note: timeAgo() is defined in pages.js (global scope) and accepts a Date object.
-// dashTimeAgo() accepts an ISO string and is used by dashboard status cards.
 function dashTimeAgo(isoStr) {
   if (!isoStr) return null;
   const d = new Date(isoStr.endsWith('Z') ? isoStr : isoStr + 'Z');
@@ -786,35 +753,17 @@ function dashTimeAgo(isoStr) {
   return d.toLocaleDateString();
 }
 
-function updateStatusCard(key, timestamp, errorStatus, isRunning) {
-  const dot = document.getElementById(`dot-${key}`);
-  const time = document.getElementById(`time-${key}`);
-  if (!dot || !time) return;
-
-  if (isRunning) {
-    dot.className = 'dot dot-amber';
-    time.textContent = 'Running...';
-    return;
+function dashNextSync(cron) {
+  if (!cron) return 'Next sync: 3:00 AM';
+  const parts = cron.trim().split(/\s+/);
+  if (parts.length >= 2) {
+    const h = parseInt(parts[1]) || 0;
+    const m = parseInt(parts[0]) || 0;
+    const ampm = h >= 12 ? 'PM' : 'AM';
+    const h12 = h % 12 || 12;
+    return `Next sync: ${h12}:${String(m).padStart(2, '0')} ${ampm}`;
   }
-
-  if (!timestamp) {
-    dot.className = 'dot dot-gray';
-    time.textContent = 'Never';
-    return;
-  }
-
-  const ago = dashTimeAgo(timestamp);
-  time.textContent = ago;
-
-  if (errorStatus === 'error') {
-    dot.className = 'dot dot-red';
-  } else {
-    // Green if within 24h, amber if older
-    const ts = String(timestamp);
-    const d = new Date(ts.endsWith('Z') ? ts : ts + 'Z');
-    const hrs = (Date.now() - d.getTime()) / 3600000;
-    dot.className = hrs < 25 ? 'dot dot-green' : 'dot dot-amber';
-  }
+  return 'Next sync: 3:00 AM';
 }
 
 const _activityColors = {
@@ -1445,8 +1394,6 @@ function setSyncRunning(running) {
     if (syncBtn) { syncBtn.disabled = true; syncBtn.textContent = 'Syncing...'; }
     if (cancelBtn) { cancelBtn.style.display = ''; cancelBtn.disabled = false; cancelBtn.textContent = 'Cancel'; }
     if (progressEl) progressEl.style.display = '';
-    // Update VOD status card
-    updateStatusCard('vod', null, null, true);
   } else {
     if (syncBtn) { syncBtn.disabled = false; syncBtn.textContent = 'Sync Now'; }
     if (cancelBtn) { cancelBtn.style.display = 'none'; }

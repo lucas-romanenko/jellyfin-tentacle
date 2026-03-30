@@ -477,6 +477,27 @@ def get_dashboard(db: Session = Depends(get_db)):
     home_config = get_home_config(db)
     has_home_screen = bool(home_config and home_config.get("rows"))
 
+    # --- Last sync summary ---
+    last_sync_summary = None
+    if last_vod_run:
+        cats = last_vod_run.category_stats or {}
+        cat_lines = []
+        for cat_name, cat_data in cats.items():
+            new_count = cat_data.get("new", 0)
+            if new_count > 0:
+                cat_lines.append({"name": cat_name, "new": new_count})
+        last_sync_summary = {
+            "movies_new": last_vod_run.movies_new or 0,
+            "movies_existing": last_vod_run.movies_existing or 0,
+            "series_new": last_vod_run.series_new or 0,
+            "series_existing": last_vod_run.series_existing or 0,
+            "duration_seconds": last_vod_run.duration_seconds,
+            "status": last_vod_run.status,
+            "categories": cat_lines,
+        }
+
+    sync_schedule = get_setting(db, "sync_schedule", "0 3 * * *")
+
     return {
         "status": {
             "vod_sync": {"timestamp": last_vod_sync, "status": last_vod_status, "new_items": last_vod_new},
@@ -491,6 +512,8 @@ def get_dashboard(db: Session = Depends(get_db)):
             "pending_duplicates": pending_duplicates,
         },
         "recent_downloads": recent_downloads,
+        "last_sync_summary": last_sync_summary,
+        "sync_schedule": sync_schedule,
         "running": {
             "vod_sync": is_syncing,
             "radarr_scan": radarr_scanning,
