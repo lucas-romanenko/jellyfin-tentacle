@@ -313,15 +313,18 @@ def set_user_admin(body: SetAdminRequest, admin: TentacleUser = Depends(require_
         r.raise_for_status()
         jf_user = r.json()
         policy = jf_user.get("Policy", {})
+        logger.info(f"Setting admin={body.is_admin} for user {body.jellyfin_user_id} (was {policy.get('IsAdministrator')})")
         policy["IsAdministrator"] = body.is_admin
 
         # Update policy in Jellyfin
-        requests.post(
+        pr = requests.post(
             f"{jf_url.rstrip('/')}/Users/{body.jellyfin_user_id}/Policy",
             headers={"X-Emby-Token": jf_key, "Content-Type": "application/json"},
             json=policy,
             timeout=10,
-        ).raise_for_status()
+        )
+        logger.info(f"Jellyfin policy update response: {pr.status_code}")
+        pr.raise_for_status()
 
         # Update TentacleUser if they've logged in before
         tentacle_user = db.query(TentacleUser).filter(
