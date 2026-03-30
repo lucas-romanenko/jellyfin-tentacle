@@ -1207,11 +1207,11 @@ async function saveList() {
   try {
     const created = await api('/api/lists', { method: 'POST', body });
     closeModal('modal-add-list');
+    loadListCards();
     if (autoFetch && created.id) {
       fetchList(created.id);
     } else {
       toast('List subscription added');
-      loadListCards();
     }
   } catch (e) {
     toast(e.message, 'error');
