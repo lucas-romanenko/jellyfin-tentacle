@@ -113,12 +113,23 @@ class LoginRequest(BaseModel):
 
 @router.get("/users")
 def get_jellyfin_users(db: Session = Depends(get_db)):
-    """Fetch public Jellyfin users for the login picker. No auth required."""
+    """Fetch Jellyfin users for the login picker. No auth required.
+    Uses authenticated /Users endpoint (API key) so hidden users are included.
+    Falls back to /Users/Public if no API key configured.
+    """
     jf_url = get_setting(db, "jellyfin_url")
     if not jf_url:
         raise HTTPException(400, "Jellyfin URL not configured")
+    jf_key = get_setting(db, "jellyfin_api_key", "")
     try:
-        r = requests.get(f"{jf_url.rstrip('/')}/Users/Public", timeout=10)
+        if jf_key:
+            r = requests.get(
+                f"{jf_url.rstrip('/')}/Users",
+                headers={"X-Emby-Token": jf_key},
+                timeout=10,
+            )
+        else:
+            r = requests.get(f"{jf_url.rstrip('/')}/Users/Public", timeout=10)
         r.raise_for_status()
         users = r.json()
         return [
