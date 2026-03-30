@@ -222,7 +222,7 @@ def scan_sonarr_library(db: Session) -> dict:
                 year=year,
                 source="sonarr",
                 sonarr_path=series_path,
-                tags=[DOWNLOADED_TV_TAG],
+                tags=[],
                 date_added=datetime.utcnow(),
             )
             # Fetch full TMDB metadata for new series
@@ -308,8 +308,8 @@ def scan_sonarr_library(db: Session) -> dict:
             if not series_folder.exists():
                 continue
 
-            # Build tag list: Downloaded TV + source tag + rule tags + list tags
-            tags = [DOWNLOADED_TV_TAG]
+            # Build tag list: source tag + rule tags + list tags + user attribution
+            tags = []
             if db_series.source_tag:
                 tags.append(db_series.source_tag)
 
@@ -338,7 +338,7 @@ def scan_sonarr_library(db: Session) -> dict:
             if dl_req:
                 req_user = db.query(TentacleUser).filter(TentacleUser.id == dl_req.user_id).first()
                 if req_user:
-                    user_tag = f"Downloaded by {req_user.display_name}"
+                    user_tag = f"{req_user.display_name}'s Downloads"
                     if user_tag not in tags:
                         tags.append(user_tag)
 

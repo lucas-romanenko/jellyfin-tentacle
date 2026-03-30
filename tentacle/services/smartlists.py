@@ -195,15 +195,13 @@ def get_desired_smartlists(db: Session, user_id: int = None) -> list:
     builtin_map = {
         "builtin:recently_added_movies": ("Recently Added Movies", ["Movie"]),
         "builtin:recently_added_tv": ("Recently Added TV", ["Series"]),
-        "builtin:downloaded_movies": ("Downloaded Movies", ["Movie"]),
-        "builtin:downloaded_tv": ("Downloaded TV", ["Series"]),
     }
     for bkey, (bname, bmedia) in builtin_map.items():
         if toggles.get(bkey) and bname not in existing_tags:
             smartlists.append({"name": bname, "tag": bname, "media_type": bmedia, "enabled": True, "source": "auto"})
             existing_tags.add(bname)
 
-    # Per-user "My Downloads" built-in — dynamic tag based on user display name
+    # Per-user downloads playlist — dynamic tag based on user display name
     if user_id is not None and toggles.get("builtin:my_downloads"):
         req_user = db.query(TentacleUser).filter(TentacleUser.id == user_id).first()
         if req_user:
@@ -211,10 +209,10 @@ def get_desired_smartlists(db: Session, user_id: int = None) -> list:
                 DownloadRequest.user_id == user_id,
             ).first()
             if has_requests:
-                user_tag = f"Downloaded by {req_user.display_name}"
+                user_tag = f"{req_user.display_name}'s Downloads"
                 if user_tag not in existing_tags:
                     smartlists.append({
-                        "name": "My Downloads", "tag": user_tag,
+                        "name": user_tag, "tag": user_tag,
                         "media_type": ["Movie", "Series"], "enabled": True, "source": "auto",
                     })
                     existing_tags.add(user_tag)

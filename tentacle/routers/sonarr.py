@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from models.database import get_db, Series, ListItem, ListSubscription, get_setting, log_activity
-from services.sonarr import scan_sonarr_library, SonarrService, DOWNLOADED_TV_TAG
+from services.sonarr import scan_sonarr_library, SonarrService
 from services.nfo import update_nfo_tags, write_series_nfo
 from services.logstream import emit_library_event
 
@@ -91,7 +91,7 @@ def write_nfos(db: Session = Depends(get_db)):
                 continue
 
             # Build tag list
-            tags = [DOWNLOADED_TV_TAG]
+            tags = []
             if db_series.source_tag:
                 tags.append(db_series.source_tag)
 

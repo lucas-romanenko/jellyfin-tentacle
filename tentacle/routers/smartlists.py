@@ -483,8 +483,6 @@ def _compute_auto_playlists(db: Session, user_id: int = None) -> list:
         })
 
     # ── Built-in playlists ──
-    radarr_count = db.query(func.count(Movie.id)).filter(Movie.source == "radarr").scalar() or 0
-    sonarr_count = db.query(func.count(Series.id)).filter(Series.source == "sonarr").scalar() or 0
     from datetime import datetime, timedelta
     recently_added_days = int(get_setting(db, "recently_added_days", "30"))
     cutoff = datetime.utcnow() - timedelta(days=recently_added_days)
@@ -499,16 +497,7 @@ def _compute_auto_playlists(db: Session, user_id: int = None) -> list:
          "tag": "Recently Added TV", "origin": f"Last {recently_added_days} days",
          "media_type": ["Series"], "item_count": recent_series},
     ]
-    if radarr_count:
-        builtins.append({"key": "builtin:downloaded_movies", "name": "Downloaded Movies",
-                         "tag": "Downloaded Movies", "origin": "From Radarr",
-                         "media_type": ["Movie"], "item_count": radarr_count})
-    if sonarr_count:
-        builtins.append({"key": "builtin:downloaded_tv", "name": "Downloaded TV",
-                         "tag": "Downloaded TV", "origin": "From Sonarr",
-                         "media_type": ["Series"], "item_count": sonarr_count})
-
-    # Per-user "My Downloads" playlist — items this user requested via Tentacle UI
+    # Per-user downloads playlist — items this user requested via Tentacle UI
     if user_id is not None:
         req_user = db.query(TentacleUser).filter(TentacleUser.id == user_id).first()
         if req_user:
@@ -516,10 +505,10 @@ def _compute_auto_playlists(db: Session, user_id: int = None) -> list:
                 DownloadRequest.user_id == user_id,
             ).scalar() or 0
             if my_dl_count:
-                user_tag = f"Downloaded by {req_user.display_name}"
+                user_tag = f"{req_user.display_name}'s Downloads"
                 builtins.append({
                     "key": "builtin:my_downloads",
-                    "name": "My Downloads",
+                    "name": f"{req_user.display_name}'s Downloads",
                     "tag": user_tag,
                     "origin": f"Requested by {req_user.display_name}",
                     "media_type": ["Movie", "Series"],

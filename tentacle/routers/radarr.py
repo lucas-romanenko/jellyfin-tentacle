@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from typing import Optional
 
 from models.database import get_db, Provider, Movie, ListItem, ListSubscription, get_setting, log_activity
-from services.radarr import scan_radarr_library, RadarrService, DOWNLOADED_MOVIES_TAG
+from services.radarr import scan_radarr_library, RadarrService
 from services.nfo import update_nfo_tags, write_movie_nfo, make_folder_name
 from services.migration import migrate_provider, preview_migration
 from services.logstream import log_event_generator, get_recent_logs, emit_library_event
@@ -107,7 +107,7 @@ def write_nfos(db: Session = Depends(get_db)):
                     continue
 
                 # Build tag list
-                tags = [DOWNLOADED_MOVIES_TAG]
+                tags = []
                 if db_movie.source_tag:
                     tags.append(db_movie.source_tag)
 
