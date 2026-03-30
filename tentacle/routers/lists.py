@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
-from models.database import get_db, SessionLocal, ListSubscription, ListItem, Movie, Series, TentacleUser, get_setting, log_activity
+from models.database import get_db, SessionLocal, ListSubscription, ListItem, Movie, Series, TentacleUser, DownloadRequest, get_setting, log_activity
 from routers.auth import get_user_from_request
 from services.nfo import update_nfo_tags
 from services.tmdb import TMDBService
@@ -21,6 +21,17 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/lists", tags=["lists"])
+
+
+def _record_download_request(db: Session, tmdb_id: int, media_type: str, user_id: int):
+    """Record who requested a download so the scan can attribute it."""
+    existing = db.query(DownloadRequest).filter(
+        DownloadRequest.tmdb_id == tmdb_id,
+        DownloadRequest.media_type == media_type,
+    ).first()
+    if not existing:
+        db.add(DownloadRequest(tmdb_id=tmdb_id, media_type=media_type, user_id=user_id))
+        db.commit()
 
 
 def _get_radarr_root_folder(radarr_url: str, radarr_key: str) -> str:
@@ -487,7 +498,7 @@ def create_list(body: ListCreate, db: Session = Depends(get_db), user: TentacleU
 
 
 @router.post("/add-to-radarr")
-def add_to_radarr(body: AddMissingBody, db: Session = Depends(get_db)):
+def add_to_radarr(body: AddMissingBody, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Add specific TMDB IDs to Radarr (standalone, no list required)"""
     if not body.tmdb_ids:
         raise HTTPException(400, "No tmdb_ids provided")
@@ -522,6 +533,7 @@ def add_to_radarr(body: AddMissingBody, db: Session = Depends(get_db)):
             )
             if r.status_code < 400:
                 added += 1
+                _record_download_request(db, tmdb_id, "movie", user.id)
             elif r.status_code == 400 and "MovieExistsValidator" in r.text:
                 already_exists += 1
             else:
@@ -535,7 +547,7 @@ def add_to_radarr(body: AddMissingBody, db: Session = Depends(get_db)):
 
 
 @router.post("/add-to-sonarr")
-def add_to_sonarr(body: AddMissingBody, db: Session = Depends(get_db)):
+def add_to_sonarr(body: AddMissingBody, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Add specific TMDB IDs to Sonarr"""
     if not body.tmdb_ids:
         raise HTTPException(400, "No tmdb_ids provided")
@@ -565,6 +577,7 @@ def add_to_sonarr(body: AddMissingBody, db: Session = Depends(get_db)):
         result = sonarr.add_series(tmdb_id, quality_profile_id, root_folder, monitor=monitor, season_folder=season_folder)
         if result:
             added += 1
+            _record_download_request(db, tmdb_id, "series", user.id)
         else:
             failed += 1
 
@@ -908,6 +921,7 @@ def add_missing_to_radarr(list_id: int, body: AddMissingBody = None, db: Session
             )
             if r.status_code < 400:
                 added += 1
+                _record_download_request(db, tmdb_id, "movie", user.id)
             else:
                 logger.error(f"Radarr rejected tmdb:{tmdb_id} — HTTP {r.status_code}: {r.text}")
                 failed += 1
@@ -963,6 +977,7 @@ def add_missing_to_sonarr(list_id: int, body: AddMissingBody = None, db: Session
         result = sonarr.add_series(tmdb_id, quality_profile_id, root_folder, monitor=monitor, season_folder=season_folder)
         if result:
             added += 1
+            _record_download_request(db, tmdb_id, "series", user.id)
         else:
             failed += 1
 

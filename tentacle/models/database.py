@@ -339,6 +339,23 @@ class TentacleUser(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+# ─── Download Requests (track who requested a download via Tentacle UI) ──────
+
+class DownloadRequest(Base):
+    __tablename__ = "download_requests"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tmdb_id = Column(Integer, nullable=False, index=True)
+    media_type = Column(String, nullable=False, default="movie")  # movie | series
+    user_id = Column(Integer, ForeignKey("tentacle_users.id"), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("TentacleUser", backref="download_requests")
+
+    __table_args__ = (
+        UniqueConstraint("tmdb_id", "media_type", name="uq_download_request"),
+    )
+
+
 # ─── Activity Log ─────────────────────────────────────────────────────────────
 
 class ActivityLog(Base):

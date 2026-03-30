@@ -11,7 +11,7 @@ from typing import Optional
 import requests
 from sqlalchemy.orm import Session
 
-from models.database import Movie, Duplicate, get_setting
+from models.database import Movie, Duplicate, DownloadRequest, TentacleUser, get_setting
 from services.tmdb import TMDBService
 from services.nfo import write_movie_nfo, make_folder_name
 from services.tagger import apply_tag_rules, get_list_tags_for_tmdb_id, detect_source_tag_from_studios
@@ -302,6 +302,18 @@ def scan_radarr_library(db: Session) -> dict:
             for lt in list_tags:
                 if lt not in tags:
                     tags.append(lt)
+
+            # Attribution: tag with the user who requested the download
+            dl_req = db.query(DownloadRequest).filter(
+                DownloadRequest.tmdb_id == tmdb_id,
+                DownloadRequest.media_type == "movie",
+            ).first()
+            if dl_req:
+                req_user = db.query(TentacleUser).filter(TentacleUser.id == dl_req.user_id).first()
+                if req_user:
+                    user_tag = f"Downloaded by {req_user.display_name}"
+                    if user_tag not in tags:
+                        tags.append(user_tag)
 
             # Update tags on DB record
             db_movie.tags = tags
