@@ -13,7 +13,7 @@ import logging
 from datetime import datetime
 
 from models.database import create_tables, SessionLocal, seed_defaults, Setting, Provider, SyncRun
-from routers import settings, providers, sync as sync_router, library, duplicates, lists as lists_router, widget, radarr as radarr_router, sonarr as sonarr_router, tags as tags_router, collections as collections_router, smartlists as smartlists_router, discover as discover_router, livetv as livetv_router
+from routers import settings, providers, sync as sync_router, library, duplicates, lists as lists_router, widget, radarr as radarr_router, sonarr as sonarr_router, tags as tags_router, collections as collections_router, smartlists as smartlists_router, discover as discover_router, livetv as livetv_router, auth as auth_router
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
@@ -29,7 +29,7 @@ def run_scheduled_sync():
     from models.database import get_setting
     db = SessionLocal()
     try:
-        from models.database import ListSubscription
+        from models.database import ListSubscription, TentacleUser
         from routers.lists import fetch_list_tmdb_ids, store_list_items, apply_list_tags_to_library, enrich_items_with_tmdb, _get_tmdb_service
         from services.tmdb import get_tmdb_token
         bearer = get_tmdb_token(db)
@@ -100,6 +100,22 @@ def run_scheduled_sync():
         logger.info("Syncing playlist artwork")
         from routers.collections import sync_playlist_artwork
         sync_playlist_artwork(db)
+
+        # Rebuild per-user smartlist configs and home layouts
+        from services.smartlists import sync_smartlists, write_home_config, _notify_jellyfin_plugin
+        users = db.query(TentacleUser).all()
+        if users:
+            for u in users:
+                try:
+                    sync_smartlists(db, user_id=u.id)
+                    write_home_config(db, user_id=u.id)
+                except Exception as e:
+                    logger.warning(f"Per-user sync failed for {u.display_name}: {e}")
+            _notify_jellyfin_plugin(db)
+        else:
+            # No users yet — run global sync for backwards compat
+            sync_smartlists(db)
+            write_home_config(db)
 
         logger.info("Scheduled sync complete")
     except Exception as e:
@@ -189,6 +205,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth_router.router)
 app.include_router(settings.router)
 app.include_router(providers.router)
 app.include_router(sync_router.router)

@@ -10,7 +10,8 @@ from pydantic import BaseModel
 from typing import List, Optional
 
 from sqlalchemy import distinct
-from models.database import get_db, TagRule, Movie, Series, ListSubscription
+from models.database import get_db, TagRule, Movie, Series, ListSubscription, TentacleUser
+from routers.auth import get_user_from_request
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/tags", tags=["tags"])
@@ -59,8 +60,8 @@ class TagRuleUpdate(BaseModel):
 
 
 @router.get("/rules")
-def list_rules(db: Session = Depends(get_db)):
-    rules = db.query(TagRule).order_by(TagRule.created_at.desc()).all()
+def list_rules(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+    rules = db.query(TagRule).filter(TagRule.user_id == user.id).order_by(TagRule.created_at.desc()).all()
     return [
         {
             "id": r.id,
@@ -76,7 +77,7 @@ def list_rules(db: Session = Depends(get_db)):
 
 
 @router.post("/rules")
-def create_rule(body: TagRuleCreate, db: Session = Depends(get_db)):
+def create_rule(body: TagRuleCreate, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     if not body.conditions:
         raise HTTPException(400, "At least one condition is required")
 
@@ -86,6 +87,7 @@ def create_rule(body: TagRuleCreate, db: Session = Depends(get_db)):
         active=body.active,
         apply_to=body.apply_to,
         conditions=[c.model_dump() for c in body.conditions],
+        user_id=user.id,
     )
     db.add(rule)
     db.commit()
@@ -94,8 +96,8 @@ def create_rule(body: TagRuleCreate, db: Session = Depends(get_db)):
 
 
 @router.put("/rules/{rule_id}")
-def update_rule(rule_id: int, body: TagRuleUpdate, db: Session = Depends(get_db)):
-    rule = db.query(TagRule).filter(TagRule.id == rule_id).first()
+def update_rule(rule_id: int, body: TagRuleUpdate, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+    rule = db.query(TagRule).filter(TagRule.id == rule_id, TagRule.user_id == user.id).first()
     if not rule:
         raise HTTPException(404, "Rule not found")
 
@@ -115,8 +117,8 @@ def update_rule(rule_id: int, body: TagRuleUpdate, db: Session = Depends(get_db)
 
 
 @router.delete("/rules/{rule_id}")
-def delete_rule(rule_id: int, db: Session = Depends(get_db)):
-    rule = db.query(TagRule).filter(TagRule.id == rule_id).first()
+def delete_rule(rule_id: int, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+    rule = db.query(TagRule).filter(TagRule.id == rule_id, TagRule.user_id == user.id).first()
     if not rule:
         raise HTTPException(404, "Rule not found")
     db.delete(rule)

@@ -11,6 +11,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
 import os
+import secrets
 
 _data_dir = os.getenv('DATA_DIR', '/data')
 _db_name = "tentacle.db"
@@ -241,6 +242,7 @@ class SyncRun(Base):
 class ListSubscription(Base):
     __tablename__ = "list_subscriptions"
     id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("tentacle_users.id"), nullable=True, index=True)
     name = Column(String, nullable=False)
     type = Column(String, nullable=False)  # trakt | letterboxd | imdb_rss
     url = Column(String, nullable=False)
@@ -252,6 +254,7 @@ class ListSubscription(Base):
     last_item_count = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    user = relationship("TentacleUser", backref="list_subscriptions")
     items = relationship("ListItem", back_populates="list_subscription", cascade="all, delete-orphan")
 
 
@@ -281,6 +284,7 @@ class ListItem(Base):
 class TagRule(Base):
     __tablename__ = "tag_rules"
     id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("tentacle_users.id"), nullable=True, index=True)
     name = Column(String, nullable=False)
     conditions = Column(JSON, default=list)  # [{field, operator, value}]
     output_tag = Column(String, nullable=False)
@@ -288,21 +292,51 @@ class TagRule(Base):
     apply_to = Column(String, default="both")  # movies | series | both
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    user = relationship("TentacleUser", backref="tag_rules")
+
 
 # ─── Home Row Order (display_order persistence for SmartList rows) ───────────
 
 class HomeRowOrder(Base):
     __tablename__ = "home_row_order"
-    playlist_id = Column(String, primary_key=True)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("tentacle_users.id"), nullable=True, index=True)
+    playlist_id = Column(String, nullable=False)
     display_order = Column(Integer, nullable=False, default=0)
+
+    user = relationship("TentacleUser", backref="home_row_orders")
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "playlist_id", name="uq_home_row_user_playlist"),
+    )
 
 
 # ─── Auto Playlist Toggles ────────────────────────────────────────────────────
 
 class AutoPlaylistToggle(Base):
     __tablename__ = "auto_playlist_toggles"
-    key = Column(String, primary_key=True)  # e.g. "source:Netflix:movies", "builtin:recently_added_movies"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("tentacle_users.id"), nullable=True, index=True)
+    key = Column(String, nullable=False)  # e.g. "source:Netflix:movies", "builtin:recently_added_movies"
     enabled = Column(Boolean, default=False)
+
+    user = relationship("TentacleUser", backref="auto_playlist_toggles")
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "key", name="uq_auto_toggle_user_key"),
+    )
+
+
+# ─── Tentacle Users ──────────────────────────────────────────────────────────
+
+class TentacleUser(Base):
+    __tablename__ = "tentacle_users"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    jellyfin_user_id = Column(String, unique=True, nullable=False, index=True)
+    display_name = Column(String, nullable=False)
+    is_admin = Column(Boolean, default=False)
+    profile_image_tag = Column(String, nullable=True)  # Jellyfin image tag for avatar
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 # ─── Activity Log ─────────────────────────────────────────────────────────────
@@ -424,6 +458,9 @@ def _migrate_columns():
         ("provider_categories", "last_sync_matched", "INTEGER"),
         ("provider_categories", "last_sync_skipped", "INTEGER"),
         ("providers", "require_tmdb_match", "BOOLEAN DEFAULT 1"),
+        # Multi-user: add user_id columns
+        ("list_subscriptions", "user_id", "INTEGER REFERENCES tentacle_users(id)"),
+        ("tag_rules", "user_id", "INTEGER REFERENCES tentacle_users(id)"),
     ]
     for table, column, col_type in migrations:
         try:
@@ -431,7 +468,67 @@ def _migrate_columns():
             conn.commit()
         except sqlite3.OperationalError:
             pass  # Column already exists
+
+    # Recreate tables that need PK changes (HomeRowOrder, AutoPlaylistToggle)
+    _migrate_home_row_order(cursor, conn)
+    _migrate_auto_playlist_toggles(cursor, conn)
     conn.close()
+
+
+def _migrate_home_row_order(cursor, conn):
+    """Recreate home_row_order with id PK + user_id column."""
+    try:
+        cursor.execute("SELECT user_id FROM home_row_order LIMIT 1")
+        return  # Already migrated
+    except Exception:
+        pass
+    try:
+        cursor.execute("ALTER TABLE home_row_order RENAME TO _home_row_order_old")
+        cursor.execute("""
+            CREATE TABLE home_row_order (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER REFERENCES tentacle_users(id),
+                playlist_id TEXT NOT NULL,
+                display_order INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(user_id, playlist_id)
+            )
+        """)
+        cursor.execute("""
+            INSERT INTO home_row_order (playlist_id, display_order)
+            SELECT playlist_id, display_order FROM _home_row_order_old
+        """)
+        cursor.execute("DROP TABLE _home_row_order_old")
+        conn.commit()
+    except Exception:
+        pass
+
+
+def _migrate_auto_playlist_toggles(cursor, conn):
+    """Recreate auto_playlist_toggles with id PK + user_id column."""
+    try:
+        cursor.execute("SELECT user_id FROM auto_playlist_toggles LIMIT 1")
+        return  # Already migrated
+    except Exception:
+        pass
+    try:
+        cursor.execute("ALTER TABLE auto_playlist_toggles RENAME TO _auto_toggles_old")
+        cursor.execute("""
+            CREATE TABLE auto_playlist_toggles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER REFERENCES tentacle_users(id),
+                key TEXT NOT NULL,
+                enabled BOOLEAN DEFAULT 0,
+                UNIQUE(user_id, key)
+            )
+        """)
+        cursor.execute("""
+            INSERT INTO auto_playlist_toggles (key, enabled)
+            SELECT key, enabled FROM _auto_toggles_old
+        """)
+        cursor.execute("DROP TABLE _auto_toggles_old")
+        conn.commit()
+    except Exception:
+        pass
 
 
 def create_tables():
@@ -464,9 +561,17 @@ def seed_defaults(db):
         "discover_in_jellyfin": "false",
         "hdhr_tuner_count": "3",
         "hdhr_device_id": "TENTACLE1",
+        "session_secret": secrets.token_hex(32),
     }
     for key, value in defaults.items():
         existing = db.query(Setting).filter(Setting.key == key).first()
         if not existing:
             db.add(Setting(key=key, value=value))
+    db.commit()
+
+
+def migrate_orphaned_data_to_user(db, user_id: int):
+    """Assign any user_id=NULL rows to a user (called on first admin login for migration)."""
+    for model in [ListSubscription, TagRule, HomeRowOrder, AutoPlaylistToggle]:
+        db.query(model).filter(model.user_id == None).update({"user_id": user_id})
     db.commit()

@@ -7,15 +7,16 @@ import json
 import logging
 from pathlib import Path
 from typing import Optional
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from sqlalchemy import func
 from models.database import (
     get_db, get_setting, Movie, Series, Provider,
-    ListSubscription, ListItem, AutoPlaylistToggle,
+    ListSubscription, ListItem, AutoPlaylistToggle, TentacleUser,
 )
+from routers.auth import get_user_from_request
 from services.smartlists import (
     get_desired_smartlists, sync_smartlists, _scan_existing,
     write_home_config, _notify_jellyfin_plugin, refresh_smartlist_playlists,
@@ -25,7 +26,7 @@ from services.smartlists import (
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/smartlists", tags=["smartlists"])
 
-HOME_CONFIG_PATH = "/data/tentacle-home.json"
+HOME_CONFIG_DIR = "/data/home-configs"
 
 # Built-in Jellyfin home sections that can be added to the home screen
 BUILTIN_SECTIONS = [
@@ -42,10 +43,24 @@ BUILTIN_SECTIONS = [
 BUILTIN_MAP = {s["section_id"]: s for s in BUILTIN_SECTIONS}
 
 
-def _read_home_json(db: Session) -> dict:
-    """Read tentacle-home.json from disk. Returns empty dict if missing."""
-    p = Path(get_setting(db, "home_config_path", HOME_CONFIG_PATH))
+def _home_config_path(user: TentacleUser) -> Path:
+    """Return per-user home config file path."""
+    d = Path(HOME_CONFIG_DIR)
+    d.mkdir(parents=True, exist_ok=True)
+    return d / f"{user.jellyfin_user_id}.json"
+
+
+def _read_home_json(user: TentacleUser) -> dict:
+    """Read per-user home config from disk. Returns empty dict if missing."""
+    p = _home_config_path(user)
     if not p.exists():
+        # Fall back to legacy global file for migration
+        legacy = Path("/data/tentacle-home.json")
+        if legacy.exists():
+            try:
+                return json.loads(legacy.read_text(encoding="utf-8"))
+            except Exception:
+                pass
         return {}
     try:
         return json.loads(p.read_text(encoding="utf-8"))
@@ -53,17 +68,17 @@ def _read_home_json(db: Session) -> dict:
         return {}
 
 
-def _write_home_json(db: Session, config: dict):
-    """Write tentacle-home.json to disk."""
-    p = Path(get_setting(db, "home_config_path", HOME_CONFIG_PATH))
+def _write_home_json(user: TentacleUser, config: dict):
+    """Write per-user home config to disk."""
+    p = _home_config_path(user)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(config, indent=2), encoding="utf-8")
 
 
 @router.get("")
-def list_smartlists(db: Session = Depends(get_db)):
+def list_smartlists(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """List all desired SmartLists with on-disk status."""
-    desired = get_desired_smartlists(db)
+    desired = get_desired_smartlists(db, user_id=user.id)
     smartlists_path = Path(get_setting(db, "smartlists_path", "/data/smartlists"))
     existing = _scan_existing(smartlists_path)
     path_accessible = smartlists_path.exists() and smartlists_path.is_dir()
@@ -111,24 +126,24 @@ def set_playlist_sort(req: PlaylistSortRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/sync")
-def sync(db: Session = Depends(get_db)):
+def sync(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Run SmartLists sync to disk."""
-    return sync_smartlists(db)
+    return sync_smartlists(db, user_id=user.id)
 
 
 @router.post("/write-home-config")
-def write_home(db: Session = Depends(get_db)):
-    """Generate tentacle-home.json. Preserves existing row order and hero pick."""
-    config = write_home_config(db)
+def write_home(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+    """Generate per-user home config. Preserves existing row order and hero pick."""
+    config = write_home_config(db, user_id=user.id)
     if not config:
         return {"status": "error", "message": "No SmartLists with playlist IDs found"}
     return {"status": "ok", "rows": len(config.get("rows", [])), "config": config}
 
 
 @router.get("/home-config")
-def read_home(db: Session = Depends(get_db)):
-    """Return the current tentacle-home.json contents for UI preview."""
-    config = _read_home_json(db)
+def read_home(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+    """Return the current per-user home config contents."""
+    config = _read_home_json(user)
     if not config:
         return {"exists": False, "config": {}}
     return {"exists": True, "config": config}
@@ -166,9 +181,9 @@ class ReorderRequest(BaseModel):
 
 
 @router.post("/reorder")
-def reorder(req: ReorderRequest, db: Session = Depends(get_db)):
+def reorder(req: ReorderRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Read JSON, reorder rows to match, write JSON back. That's it."""
-    config = _read_home_json(db)
+    config = _read_home_json(user)
     if not config or "rows" not in config:
         return {"success": False, "message": "No home config found"}
 
@@ -187,8 +202,8 @@ def reorder(req: ReorderRequest, db: Session = Depends(get_db)):
         new_rows.append(row)
 
     config["rows"] = new_rows
-    _write_home_json(db, config)
-    logger.info(f"Reordered home rows: {[r['display_name'] for r in new_rows]}")
+    _write_home_json(user, config)
+    logger.info(f"Reordered home rows for {user.display_name}: {[r['display_name'] for r in new_rows]}")
     return {"success": True, "rows": len(new_rows)}
 
 
@@ -207,10 +222,10 @@ def all_playlists(db: Session = Depends(get_db)):
 
 
 @router.get("/available-playlists")
-def available_playlists(db: Session = Depends(get_db)):
+def available_playlists(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Return SmartLists with playlist IDs that are not yet in the home config rows."""
     all_pl = _get_smartlists_with_playlist_ids(db)
-    config = _read_home_json(db)
+    config = _read_home_json(user)
     current_ids = {r.get("playlist_id") for r in config.get("rows", []) if r.get("type", "playlist") == "playlist"}
     available = [p for p in all_pl if p["playlist_id"] not in current_ids]
     available.sort(key=lambda x: x["name"].lower())
@@ -223,9 +238,9 @@ class AddRowRequest(BaseModel):
 
 
 @router.post("/add-row")
-def add_row(req: AddRowRequest, db: Session = Depends(get_db)):
+def add_row(req: AddRowRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Add a playlist or built-in section as a new row to the home config."""
-    config = _read_home_json(db)
+    config = _read_home_json(user)
     if not config:
         config = {"hero": {"enabled": False, "playlist_id": "", "display_name": ""}, "rows": []}
 
@@ -261,7 +276,7 @@ def add_row(req: AddRowRequest, db: Session = Depends(get_db)):
     else:
         return {"success": False, "message": "Must provide playlist_id or section_id"}
 
-    _write_home_json(db, config)
+    _write_home_json(user, config)
     return {"success": True, "rows": len(config["rows"])}
 
 
@@ -271,9 +286,9 @@ class RemoveRowRequest(BaseModel):
 
 
 @router.post("/remove-row")
-def remove_row(req: RemoveRowRequest, db: Session = Depends(get_db)):
+def remove_row(req: RemoveRowRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Remove a row from the home config."""
-    config = _read_home_json(db)
+    config = _read_home_json(user)
     if not config or "rows" not in config:
         return {"success": False, "message": "No home config"}
 
@@ -287,14 +302,14 @@ def remove_row(req: RemoveRowRequest, db: Session = Depends(get_db)):
     for i, r in enumerate(config["rows"], start=1):
         r["order"] = i
 
-    _write_home_json(db, config)
+    _write_home_json(user, config)
     return {"success": True, "rows": len(config["rows"])}
 
 
 @router.get("/builtin-sections")
-def list_builtin_sections(db: Session = Depends(get_db)):
+def list_builtin_sections(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Return available built-in Jellyfin sections not yet in the home config."""
-    config = _read_home_json(db)
+    config = _read_home_json(user)
     current_ids = {r.get("section_id") for r in config.get("rows", []) if r.get("type") == "builtin"}
     available = [s for s in BUILTIN_SECTIONS if s["section_id"] not in current_ids]
     return {"sections": available}
@@ -307,9 +322,9 @@ class RowMaxItemsRequest(BaseModel):
 
 
 @router.post("/row-max-items")
-def set_row_max_items(req: RowMaxItemsRequest, db: Session = Depends(get_db)):
+def set_row_max_items(req: RowMaxItemsRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Update max_items for a specific row."""
-    config = _read_home_json(db)
+    config = _read_home_json(user)
     if not config or "rows" not in config:
         return {"success": False, "message": "No home config found"}
 
@@ -324,14 +339,14 @@ def set_row_max_items(req: RowMaxItemsRequest, db: Session = Depends(get_db)):
     else:
         return {"success": False, "message": "Row not found"}
 
-    _write_home_json(db, config)
+    _write_home_json(user, config)
     return {"success": True, "max_items": val}
 
 
 @router.post("/hero")
-def set_hero(req: HeroPickRequest, db: Session = Depends(get_db)):
+def set_hero(req: HeroPickRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Read JSON, update hero, write JSON back. That's it."""
-    config = _read_home_json(db)
+    config = _read_home_json(user)
     if not config or "rows" not in config:
         return {"success": False, "message": "No home config found"}
 
@@ -356,7 +371,7 @@ def set_hero(req: HeroPickRequest, db: Session = Depends(get_db)):
     else:
         config["hero"] = {"enabled": False, "playlist_id": "", "display_name": "", "sort_by": "random", "sort_order": "Descending", "require_logo": True}
 
-    _write_home_json(db, config)
+    _write_home_json(user, config)
     logger.info(f"Updated hero: {req.playlist_id or '(disabled)'}")
     return {"success": True}
 
@@ -368,9 +383,9 @@ class HeroSortRequest(BaseModel):
 
 
 @router.post("/hero-sort")
-def set_hero_sort(req: HeroSortRequest, db: Session = Depends(get_db)):
+def set_hero_sort(req: HeroSortRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Update hero spotlight sort order."""
-    config = _read_home_json(db)
+    config = _read_home_json(user)
     hero = config.get("hero", {})
     if not hero.get("enabled"):
         return {"success": False, "message": "Hero is not enabled"}
@@ -380,14 +395,14 @@ def set_hero_sort(req: HeroSortRequest, db: Session = Depends(get_db)):
     if req.require_logo is not None:
         hero["require_logo"] = req.require_logo
     config["hero"] = hero
-    _write_home_json(db, config)
+    _write_home_json(user, config)
     logger.info(f"Updated hero sort: {req.sort_by} {req.sort_order}")
     return {"success": True}
 
 
 # ── Auto Playlists ─────────────────────────────────────────────────────────
 
-def _compute_auto_playlists(db: Session) -> list:
+def _compute_auto_playlists(db: Session, user_id: int = None) -> list:
     """Compute all possible auto playlists from synced content, lists, and built-ins."""
     results = []
 
@@ -440,8 +455,11 @@ def _compute_auto_playlists(db: Session) -> list:
                 "item_count": count,
             })
 
-    # ── List playlists ──
-    lists = db.query(ListSubscription).filter(ListSubscription.active == True).all()
+    # ── List playlists (per-user) ──
+    list_q = db.query(ListSubscription).filter(ListSubscription.active == True)
+    if user_id is not None:
+        list_q = list_q.filter(ListSubscription.user_id == user_id)
+    lists = list_q.all()
     for lst in lists:
         item_count = db.query(func.count(ListItem.id)).filter(
             ListItem.list_id == lst.id
@@ -488,8 +506,11 @@ def _compute_auto_playlists(db: Session) -> list:
         b["category"] = "builtin"
     results.extend(builtins)
 
-    # ── Resolve enabled state from DB ──
-    toggles = {t.key: t.enabled for t in db.query(AutoPlaylistToggle).all()}
+    # ── Resolve enabled state from DB (per-user) ──
+    toggle_q = db.query(AutoPlaylistToggle)
+    if user_id is not None:
+        toggle_q = toggle_q.filter(AutoPlaylistToggle.user_id == user_id)
+    toggles = {t.key: t.enabled for t in toggle_q.all()}
     for r in results:
         if r["category"] == "list":
             # Lists use their own playlist_enabled field
@@ -501,9 +522,9 @@ def _compute_auto_playlists(db: Session) -> list:
 
 
 @router.get("/auto-playlists")
-def list_auto_playlists(db: Session = Depends(get_db)):
+def list_auto_playlists(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Return all possible auto playlists with enabled state."""
-    return {"auto_playlists": _compute_auto_playlists(db)}
+    return {"auto_playlists": _compute_auto_playlists(db, user_id=user.id)}
 
 
 class AutoPlaylistToggleRequest(BaseModel):
@@ -512,35 +533,42 @@ class AutoPlaylistToggleRequest(BaseModel):
 
 
 @router.post("/auto-playlists/toggle")
-def toggle_auto_playlist(req: AutoPlaylistToggleRequest, db: Session = Depends(get_db)):
+def toggle_auto_playlist(req: AutoPlaylistToggleRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Toggle an auto playlist on/off. Triggers sync to Jellyfin."""
     import threading
 
     # List playlists use ListSubscription.playlist_enabled
     if req.key.startswith("list:"):
         list_id = int(req.key.replace("list:", ""))
-        lst = db.query(ListSubscription).filter(ListSubscription.id == list_id).first()
+        lst = db.query(ListSubscription).filter(
+            ListSubscription.id == list_id,
+            ListSubscription.user_id == user.id,
+        ).first()
         if not lst:
             return {"success": False, "message": "List not found"}
         lst.playlist_enabled = req.enabled
         db.commit()
     else:
-        # Source / built-in playlists use AutoPlaylistToggle
-        toggle = db.query(AutoPlaylistToggle).filter(AutoPlaylistToggle.key == req.key).first()
+        # Source / built-in playlists use AutoPlaylistToggle (per-user)
+        toggle = db.query(AutoPlaylistToggle).filter(
+            AutoPlaylistToggle.key == req.key,
+            AutoPlaylistToggle.user_id == user.id,
+        ).first()
         if toggle:
             toggle.enabled = req.enabled
         else:
-            db.add(AutoPlaylistToggle(key=req.key, enabled=req.enabled))
+            db.add(AutoPlaylistToggle(key=req.key, enabled=req.enabled, user_id=user.id))
         db.commit()
 
     # Background sync to Jellyfin
+    user_id = user.id
     def _sync_bg():
         from models.database import SessionLocal
         bg_db = SessionLocal()
         try:
-            sync_smartlists(bg_db)
-            refresh_smartlist_playlists(bg_db)
-            write_home_config(bg_db)
+            sync_smartlists(bg_db, user_id=user_id)
+            refresh_smartlist_playlists(bg_db, user_id=user_id)
+            write_home_config(bg_db, user_id=user_id)
             _notify_jellyfin_plugin(bg_db)
         except Exception as e:
             logger.error(f"Auto playlist sync failed: {e}")

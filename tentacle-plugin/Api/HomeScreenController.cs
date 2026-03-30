@@ -49,7 +49,7 @@ public class TentacleHomeController : ControllerBase
     [Authorize]
     public ActionResult GetSections([FromQuery] Guid userId)
     {
-        var config = _homeScreenManager.GetHomeConfig();
+        var config = _homeScreenManager.GetHomeConfig(userId);
         if (config == null)
         {
             return Ok(new { enabled = false, sections = Array.Empty<object>() });
@@ -133,7 +133,7 @@ public class TentacleHomeController : ControllerBase
 
         // Read max_items from home config for this row (default 20)
         var limit = 20;
-        var config = _homeScreenManager.GetHomeConfig();
+        var config = _homeScreenManager.GetHomeConfig(userId);
         if (config?.Rows != null)
         {
             var row = config.Rows.FirstOrDefault(r => r.PlaylistId == playlistId);
@@ -183,7 +183,7 @@ public class TentacleHomeController : ControllerBase
     [Authorize]
     public ActionResult GetHeroItems([FromQuery] Guid userId)
     {
-        var config = _homeScreenManager.GetHomeConfig();
+        var config = _homeScreenManager.GetHomeConfig(userId);
         if (config?.Hero is not { Enabled: true } hero || string.IsNullOrEmpty(hero.PlaylistId))
         {
             return Ok(new QueryResult<BaseItemDto>());
@@ -354,9 +354,9 @@ public class TentacleHomeController : ControllerBase
     /// </summary>
     [HttpGet("HeroConfig")]
     [Authorize]
-    public ActionResult GetHeroConfig()
+    public ActionResult GetHeroConfig([FromQuery] Guid userId)
     {
-        var homeConfig = _homeScreenManager.GetHomeConfig();
+        var homeConfig = _homeScreenManager.GetHomeConfig(userId);
         if (homeConfig?.Hero is { Enabled: true } hero && !string.IsNullOrEmpty(hero.PlaylistId))
         {
             return Ok(new { enabled = true, playlistId = hero.PlaylistId, displayName = hero.DisplayName });

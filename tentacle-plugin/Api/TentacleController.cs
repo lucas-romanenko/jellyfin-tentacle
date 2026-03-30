@@ -1,3 +1,4 @@
+using System;
 using Jellyfin.Plugin.Tentacle.HomeScreen;
 using Jellyfin.Plugin.Tentacle.Playlists;
 using Microsoft.AspNetCore.Authorization;
@@ -74,9 +75,9 @@ public class TentacleController : ControllerBase
     /// </summary>
     [HttpGet("HomeConfig")]
     [Authorize]
-    public ActionResult GetHomeConfig()
+    public ActionResult GetHomeConfig([FromQuery] Guid userId)
     {
-        var config = _homeScreenManager.GetHomeConfig();
+        var config = _homeScreenManager.GetHomeConfig(userId);
         if (config == null)
         {
             return Ok(new { enabled = false, message = "No home config loaded" });

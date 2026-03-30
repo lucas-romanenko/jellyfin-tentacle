@@ -19,9 +19,10 @@ from pydantic import BaseModel
 from models.database import get_db, Provider, SyncRun, Movie, Series, Duplicate, ActivityLog, get_setting, set_setting, log_activity
 from services.sync import sync_provider
 from services.tagger import refresh_recently_added_tags
+from routers.auth import require_admin
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/sync", tags=["sync"])
+router = APIRouter(prefix="/api/sync", tags=["sync"], dependencies=[Depends(require_admin)])
 
 # Track running syncs and their progress
 _running_syncs: dict = {}

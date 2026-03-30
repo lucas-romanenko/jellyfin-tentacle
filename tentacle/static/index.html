@@ -203,6 +203,125 @@ body {
   background: var(--bg3);
   transition: background 0.2s;
 }
+
+/* ── Login overlay ── */
+.login-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--bg0);
+  z-index: 2000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.login-logo {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 48px;
+}
+
+.login-logo .logo-icon { width: 40px; height: 40px; font-size: 20px; }
+.login-logo .logo-text { font-size: 20px; }
+
+.login-subtitle {
+  color: var(--text2);
+  font-size: 14px;
+  margin-bottom: 36px;
+  margin-top: -36px;
+}
+
+.user-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+  justify-content: center;
+  max-width: 600px;
+}
+
+.user-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  padding: 16px 20px;
+  border-radius: var(--radius);
+  border: 1px solid transparent;
+  transition: all 0.15s;
+  min-width: 100px;
+}
+
+.user-card:hover, .user-card:focus {
+  background: var(--bg2);
+  border-color: var(--border2);
+}
+
+.user-card.selected {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.user-avatar {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  background: var(--bg3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 28px;
+  font-weight: 600;
+  color: var(--text2);
+  overflow: hidden;
+}
+
+.user-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.user-card-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  text-align: center;
+}
+
+.login-password-form {
+  margin-top: 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  max-width: 280px;
+}
+
+.login-password-form input {
+  width: 100%;
+  text-align: center;
+}
+
+.login-error {
+  color: var(--red);
+  font-size: 12px;
+  min-height: 18px;
+}
+
+.login-back {
+  color: var(--text3);
+  font-size: 12px;
+  cursor: pointer;
+  margin-top: 8px;
+  text-decoration: none;
+}
+
+.login-back:hover { color: var(--text2); }
 .setup-pip.active { background: var(--accent); }
 .setup-pip.done { background: var(--green); }
 
@@ -972,25 +1091,29 @@ td.primary { color: var(--text); font-weight: 500; }
           <span class="icon">◫</span> Library
           <span class="nav-badge" id="dup-badge" style="display:none">0</span>
         </button>
-        <button class="nav-item" data-page="vod">
+        <button class="nav-item" data-page="vod" data-admin-only>
           <span class="icon">◉</span> VOD
         </button>
-        <button class="nav-item" data-page="live-tv">
+        <button class="nav-item" data-page="live-tv" data-admin-only>
           <span class="icon">▶</span> Live TV
         </button>
         <button class="nav-item" data-page="jellyfin">
           <span class="icon">◈</span> Jellyfin
         </button>
-        <button class="nav-item" data-page="settings">
+        <button class="nav-item" data-page="settings" data-admin-only>
           <span class="icon">⊙</span> Settings
         </button>
       </div>
     </nav>
 
     <div class="sidebar-footer">
-      <div style="padding: 8px 10px; background: var(--bg2); border-radius: var(--radius-sm);">
+      <div style="padding: 8px 10px; background: var(--bg2); border-radius: var(--radius-sm); margin-bottom: 8px;" data-admin-only>
         <div style="font-size:10px;color:var(--text3);margin-bottom:4px;font-family:'DM Mono',monospace">LAST SYNC</div>
         <div style="font-size:12px;font-family:'DM Mono',monospace" id="sidebar-last-sync">—</div>
+      </div>
+      <div style="padding: 8px 10px; display:flex; align-items:center; justify-content:space-between; gap:8px;">
+        <div style="font-size:12px; color:var(--text2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" id="sidebar-user" title="Logged in user"></div>
+        <button onclick="doLogout()" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:11px;white-space:nowrap;padding:2px 6px;border-radius:4px;" title="Sign out" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--text3)'">Sign out</button>
       </div>
     </div>
   </aside>
@@ -2352,6 +2475,22 @@ td.primary { color: var(--text); font-weight: 500; }
 
 <!-- Toast container -->
 <div class="toast-container" id="toasts"></div>
+
+<!-- Login overlay -->
+<div class="login-overlay" id="login-overlay" style="display:none">
+  <div class="login-logo">
+    <div class="logo-icon">🐙</div>
+    <div><div class="logo-text">Tentacle</div></div>
+  </div>
+  <p class="login-subtitle">Who's watching?</p>
+  <div class="user-grid" id="login-user-grid"></div>
+  <div class="login-password-form" id="login-password-form" style="display:none">
+    <input type="password" class="form-input" id="login-password" placeholder="Enter password" autocomplete="current-password">
+    <button class="btn btn-primary" style="width:100%;justify-content:center" id="login-submit-btn" onclick="submitLogin()">Sign In</button>
+    <div class="login-error" id="login-error"></div>
+    <a class="login-back" onclick="loginBackToUsers()">← Back</a>
+  </div>
+</div>
 
 <!-- Setup overlay -->
 <div class="setup-overlay" id="setup-overlay" style="display:none">

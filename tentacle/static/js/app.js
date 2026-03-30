@@ -8,17 +8,152 @@ const state = {
   categories: [],
   catFilter: 'all',
   editingProviderId: null,
+  currentUser: null,  // { id, jellyfin_user_id, display_name, is_admin, profile_image_tag, jellyfin_url }
+  _loginSelectedUser: null,  // Jellyfin user selected on login page
 };
 
 // ── Init ──────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async () => {
   setupNavigation();
+  const authed = await checkAuth();
+  if (!authed) return;  // Login overlay shown, wait for login
+  await postLoginInit();
+});
+
+async function checkAuth() {
+  try {
+    const me = await fetch('/api/auth/me');
+    if (me.ok) {
+      state.currentUser = await me.json();
+      applyUserRole();
+      return true;
+    }
+  } catch (e) {}
+  // Not authenticated — show login
+  showLoginOverlay();
+  return false;
+}
+
+async function postLoginInit() {
   await checkSetup();
   loadDashboard();
-  loadProviders();  // Populate state.providers for sync buttons
+  loadProviders();
   checkRunningSyncs();
   setInterval(loadDashboard, 30000);
-});
+}
+
+// ── Login ─────────────────────────────────────────────────────────────────
+
+async function showLoginOverlay() {
+  const overlay = document.getElementById('login-overlay');
+  overlay.style.display = 'flex';
+  const grid = document.getElementById('login-user-grid');
+  grid.innerHTML = '<div style="color:var(--text3)">Loading users...</div>';
+  document.getElementById('login-password-form').style.display = 'none';
+
+  try {
+    const users = await fetch('/api/auth/users').then(r => r.json());
+    if (!users.length) {
+      grid.innerHTML = '<div style="color:var(--text2)">No users found. Check Jellyfin connection.</div>';
+      return;
+    }
+    grid.innerHTML = users.map(u => {
+      const avatarUrl = u.image_tag
+        ? `${u.jellyfin_url}/Users/${u.id}/Images/Primary?tag=${u.image_tag}&quality=90&maxWidth=150`
+        : '';
+      const avatarContent = avatarUrl
+        ? `<img src="${avatarUrl}" alt="${u.name}">`
+        : u.name.charAt(0).toUpperCase();
+      return `<div class="user-card" tabindex="0" onclick="selectLoginUser(${JSON.stringify(u).replace(/"/g, '&quot;')},this)" onkeydown="if(event.key==='Enter')this.click()">
+        <div class="user-avatar">${avatarContent}</div>
+        <div class="user-card-name">${u.name}</div>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    grid.innerHTML = `<div style="color:var(--red)">Failed to load users: ${e.message}</div>`;
+  }
+}
+
+function selectLoginUser(user, el) {
+  state._loginSelectedUser = user;
+  document.querySelectorAll('.user-card').forEach(c => c.classList.remove('selected'));
+  el.classList.add('selected');
+
+  if (!user.has_password) {
+    // No password — login immediately
+    doLogin(user.name, '');
+    return;
+  }
+  // Show password form
+  const form = document.getElementById('login-password-form');
+  form.style.display = 'flex';
+  document.getElementById('login-error').textContent = '';
+  const input = document.getElementById('login-password');
+  input.value = '';
+  setTimeout(() => input.focus(), 50);
+  // Enter key submits
+  input.onkeydown = (e) => { if (e.key === 'Enter') submitLogin(); };
+}
+
+async function submitLogin() {
+  if (!state._loginSelectedUser) return;
+  const pw = document.getElementById('login-password').value;
+  await doLogin(state._loginSelectedUser.name, pw);
+}
+
+async function doLogin(username, password) {
+  const btn = document.getElementById('login-submit-btn');
+  const errEl = document.getElementById('login-error');
+  if (btn) btn.disabled = true;
+  errEl.textContent = '';
+  try {
+    const r = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      errEl.textContent = err.detail || 'Login failed';
+      return;
+    }
+    state.currentUser = await r.json();
+    document.getElementById('login-overlay').style.display = 'none';
+    applyUserRole();
+    await postLoginInit();
+  } catch (e) {
+    errEl.textContent = e.message;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function loginBackToUsers() {
+  state._loginSelectedUser = null;
+  document.getElementById('login-password-form').style.display = 'none';
+  document.querySelectorAll('.user-card').forEach(c => c.classList.remove('selected'));
+}
+
+function applyUserRole() {
+  if (!state.currentUser) return;
+  const isAdmin = state.currentUser.is_admin;
+  // Hide admin-only nav items for non-admin users
+  document.querySelectorAll('[data-admin-only]').forEach(el => {
+    el.style.display = isAdmin ? '' : 'none';
+  });
+  // Show user name in sidebar
+  const userEl = document.getElementById('sidebar-user');
+  if (userEl) {
+    userEl.textContent = state.currentUser.display_name;
+    userEl.style.display = '';
+  }
+}
+
+async function doLogout() {
+  await fetch('/api/auth/logout', { method: 'POST' });
+  state.currentUser = null;
+  showLoginOverlay();
+}
 
 function setupNavigation() {
   // Sidebar nav
@@ -143,6 +278,10 @@ async function api(url, options = {}) {
     merged.body = JSON.stringify(merged.body);
   }
   const r = await fetch(url, merged);
+  if (r.status === 401) {
+    showLoginOverlay();
+    throw new Error('Session expired');
+  }
   if (!r.ok) {
     const err = await r.json().catch(() => ({ detail: r.statusText }));
     throw new Error(err.detail || 'Request failed');

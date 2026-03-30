@@ -15,8 +15,7 @@ public class HomeScreenManager
     private readonly ILogger<HomeScreenManager> _logger;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly object _cacheLock = new();
-    private HomeConfig? _cachedConfig;
-    private DateTime _cacheExpiry = DateTime.MinValue;
+    private readonly Dictionary<string, (HomeConfig? Config, DateTime Expiry)> _userCache = new();
     private static readonly TimeSpan CacheDuration = TimeSpan.FromSeconds(5);
 
     public HomeScreenManager(ILogger<HomeScreenManager> logger, IHttpClientFactory httpClientFactory)
@@ -26,10 +25,10 @@ public class HomeScreenManager
     }
 
     /// <summary>
-    /// Gets the current home configuration, with 5-second caching.
-    /// Fetches from Tentacle API. Returns null if unavailable.
+    /// Gets the current home configuration for a specific Jellyfin user, with 5-second caching.
+    /// Fetches from Tentacle API with userId query param. Returns null if unavailable.
     /// </summary>
-    public HomeConfig? GetHomeConfig()
+    public HomeConfig? GetHomeConfig(Guid userId = default)
     {
         var plugin = Plugin.Instance;
         if (plugin == null || string.IsNullOrEmpty(plugin.Configuration.TentacleUrl))
@@ -37,40 +36,40 @@ public class HomeScreenManager
             return null;
         }
 
+        var cacheKey = userId == default ? "_global" : userId.ToString("N");
+
         lock (_cacheLock)
         {
-            if (_cachedConfig != null && DateTime.UtcNow < _cacheExpiry)
+            if (_userCache.TryGetValue(cacheKey, out var entry) && DateTime.UtcNow < entry.Expiry)
             {
-                return _cachedConfig;
+                return entry.Config;
             }
         }
 
-        var config = FetchFromApi(plugin.Configuration.TentacleUrl);
+        var config = FetchFromApi(plugin.Configuration.TentacleUrl, userId);
 
         lock (_cacheLock)
         {
-            _cachedConfig = config;
-            _cacheExpiry = DateTime.UtcNow.Add(CacheDuration);
+            _userCache[cacheKey] = (config, DateTime.UtcNow.Add(CacheDuration));
         }
 
         return config;
     }
 
     /// <summary>
-    /// Clears the cached config so the next call re-fetches from the API.
+    /// Clears all cached configs so the next call re-fetches from the API.
     /// </summary>
     public void ClearCache()
     {
         lock (_cacheLock)
         {
-            _cachedConfig = null;
-            _cacheExpiry = DateTime.MinValue;
+            _userCache.Clear();
         }
 
         _logger.LogInformation("[Tentacle] Home config cache cleared");
     }
 
-    private HomeConfig? FetchFromApi(string tentacleUrl)
+    private HomeConfig? FetchFromApi(string tentacleUrl, Guid userId = default)
     {
         if (string.IsNullOrEmpty(tentacleUrl))
         {
@@ -83,6 +82,11 @@ public class HomeScreenManager
             var client = _httpClientFactory.CreateClient();
             client.Timeout = TimeSpan.FromSeconds(3);
             var url = $"{tentacleUrl.TrimEnd('/')}/api/smartlists/home-config";
+            if (userId != default)
+            {
+                url += $"?userId={userId:N}";
+            }
+
             var response = client.GetAsync(url).GetAwaiter().GetResult();
 
             if (!response.IsSuccessStatusCode)

@@ -11,7 +11,7 @@ import requests
 from pathlib import Path
 from sqlalchemy.orm import Session
 
-from models.database import get_setting, TagRule
+from models.database import get_setting, TagRule, TentacleUser
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +131,7 @@ def _create_jellyfin_playlist(name: str, user_id: str, jellyfin_url: str, jellyf
         return ""
 
 
-def get_desired_smartlists(db: Session) -> list:
+def get_desired_smartlists(db: Session, user_id: int = None) -> list:
     """Build the full list of SmartList definitions from:
     1. Enabled auto playlists (source, list, built-in)
     2. Custom playlists (tag rules)
@@ -141,7 +141,10 @@ def get_desired_smartlists(db: Session) -> list:
     existing_tags = set()
 
     # ── Auto playlists (source-based, from enabled toggles) ──
-    toggles = {t.key: t.enabled for t in db.query(AutoPlaylistToggle).all()}
+    toggle_q = db.query(AutoPlaylistToggle)
+    if user_id is not None:
+        toggle_q = toggle_q.filter(AutoPlaylistToggle.user_id == user_id)
+    toggles = {t.key: t.enabled for t in toggle_q.all()}
 
     # Source playlists from VOD content
     movie_tags = db.query(Movie.source_tag).filter(
@@ -179,10 +182,13 @@ def get_desired_smartlists(db: Session) -> list:
             existing_tags.add(bname)
 
     # ── List playlists (use ListSubscription.playlist_enabled) ──
-    enabled_lists = db.query(ListSubscription).filter(
+    list_q = db.query(ListSubscription).filter(
         ListSubscription.playlist_enabled == True,
         ListSubscription.active == True,
-    ).all()
+    )
+    if user_id is not None:
+        list_q = list_q.filter(ListSubscription.user_id == user_id)
+    enabled_lists = list_q.all()
     for lst in enabled_lists:
         if lst.tag in existing_tags:
             continue
@@ -205,7 +211,10 @@ def get_desired_smartlists(db: Session) -> list:
         existing_tags.add(lst.tag)
 
     # ── Custom playlists from tag rules ──
-    active_rules = db.query(TagRule).filter(TagRule.active == True).all()
+    rule_q = db.query(TagRule).filter(TagRule.active == True)
+    if user_id is not None:
+        rule_q = rule_q.filter(TagRule.user_id == user_id)
+    active_rules = rule_q.all()
     for rule in active_rules:
         if rule.output_tag in existing_tags:
             continue
@@ -255,7 +264,7 @@ def _scan_existing(smartlists_path: Path) -> dict:
     return existing
 
 
-def sync_smartlists(db: Session) -> dict:
+def sync_smartlists(db: Session, user_id: int = None) -> dict:
     """Sync SmartList config files to disk. Returns {created, updated, total}."""
     smartlists_path_str = get_setting(db, "smartlists_path", "/data/smartlists")
     smartlists_path = Path(smartlists_path_str)
@@ -267,7 +276,7 @@ def sync_smartlists(db: Session) -> dict:
             logger.error(f"Cannot create SmartLists path {smartlists_path}: {e}")
             return {"created": 0, "updated": 0, "total": 0, "error": str(e)}
 
-    desired = get_desired_smartlists(db)
+    desired = get_desired_smartlists(db, user_id=user_id)
     existing = _scan_existing(smartlists_path)
     jellyfin_user_id = get_setting(db, "jellyfin_user_id", "")
     jellyfin_url = get_setting(db, "jellyfin_url", "")
@@ -369,7 +378,7 @@ def sync_smartlists(db: Session) -> dict:
     logger.info(f"SmartLists sync: {created} created, {updated} updated, {removed} removed, {len(desired)} total")
 
     # After syncing configs, populate playlists via Jellyfin API directly
-    playlist_stats = refresh_smartlist_playlists(db)
+    playlist_stats = refresh_smartlist_playlists(db, user_id=user_id)
 
     # Generate and upload artwork for all playlists
     artwork_stats = {}
@@ -379,8 +388,8 @@ def sync_smartlists(db: Session) -> dict:
     except Exception as e:
         logger.warning(f"Artwork sync failed: {e}")
 
-    # Generate tentacle-home.json
-    write_home_config(db)
+    # Generate per-user home config
+    write_home_config(db, user_id=user_id)
 
     return {
         "created": created, "updated": updated, "removed": removed, "total": len(desired),
@@ -411,14 +420,24 @@ def _get_smartlists_with_playlist_ids(db: Session) -> list:
     return result
 
 
-def write_home_config(db: Session) -> dict:
-    """Generate and write tentacle-home.json based on current SmartLists.
+def _user_home_config_path(db: Session, user_id: int = None) -> Path:
+    """Return per-user home config path, or legacy global path if no user."""
+    if user_id is not None:
+        user = db.query(TentacleUser).filter(TentacleUser.id == user_id).first()
+        if user:
+            d = Path("/data/home-configs")
+            d.mkdir(parents=True, exist_ok=True)
+            return d / f"{user.jellyfin_user_id}.json"
+    return Path(get_setting(db, "home_config_path", "/data/tentacle-home.json"))
+
+
+def write_home_config(db: Session, user_id: int = None) -> dict:
+    """Generate and write per-user home config based on current SmartLists.
 
     Preserves existing row order, hero pick, and built-in Jellyfin sections.
     Only playlist rows are validated against disk (built-in sections are always kept).
     Returns the config dict that was written.
     """
-    home_config_path = get_setting(db, "home_config_path", "/data/tentacle-home.json")
     home_row_limit = int(get_setting(db, "home_row_limit", "20") or "20")
     smartlists = _get_smartlists_with_playlist_ids(db)
 
@@ -426,7 +445,7 @@ def write_home_config(db: Session) -> dict:
         logger.warning("No SmartLists with JellyfinPlaylistId found, skipping home config write")
         return {}
 
-    existing_config = get_home_config(db)
+    existing_config = get_home_config(db, user_id=user_id)
     existing_rows = existing_config.get("rows", []) if existing_config else []
     existing_hero = existing_config.get("hero") if existing_config else None
 
@@ -476,27 +495,34 @@ def write_home_config(db: Session) -> dict:
     }
 
     try:
-        path = Path(home_config_path)
+        path = _user_home_config_path(db, user_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(config, indent=2), encoding="utf-8")
-        logger.info(f"Wrote tentacle-home.json with {len(rows)} rows to {home_config_path}")
+        logger.info(f"Wrote home config with {len(rows)} rows to {path}")
     except Exception as e:
-        logger.error(f"Failed to write tentacle-home.json: {e}")
+        logger.error(f"Failed to write home config: {e}")
         return {}
 
     return config
 
 
-def get_home_config(db: Session) -> dict:
-    """Read and return the current tentacle-home.json contents."""
-    home_config_path = get_setting(db, "home_config_path", "/data/tentacle-home.json")
-    path = Path(home_config_path)
+def get_home_config(db: Session, user_id: int = None) -> dict:
+    """Read and return the current per-user home config contents."""
+    path = _user_home_config_path(db, user_id)
     if not path.exists():
+        # Fall back to legacy global file for migration
+        if user_id is not None:
+            legacy = Path(get_setting(db, "home_config_path", "/data/tentacle-home.json"))
+            if legacy.exists():
+                try:
+                    return json.loads(legacy.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
         return {}
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception as e:
-        logger.error(f"Failed to read tentacle-home.json: {e}")
+        logger.error(f"Failed to read home config from {path}: {e}")
         return {}
 
 
@@ -603,7 +629,7 @@ def _build_query_params(config: dict) -> dict:
     return params
 
 
-def refresh_smartlist_playlists(db: Session) -> dict:
+def refresh_smartlist_playlists(db: Session, user_id: int = None) -> dict:
     """Read SmartList configs from disk, query Jellyfin for matching items,
     and create/update playlists. This replaces the C# SmartLists plugin entirely.
 

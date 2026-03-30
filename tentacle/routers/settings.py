@@ -12,8 +12,9 @@ from typing import Optional, Dict
 import requests
 
 from models.database import get_db, Setting, get_setting, set_setting
+from routers.auth import require_admin
 
-router = APIRouter(prefix="/api/settings", tags=["settings"])
+router = APIRouter(prefix="/api/settings", tags=["settings"], dependencies=[Depends(require_admin)])
 
 
 class SettingsUpdate(BaseModel):

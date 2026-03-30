@@ -118,7 +118,7 @@ public class TentacleResultsHandler
 
         // Read max_items from home config for this row (default 20)
         var limit = 20;
-        var config = _homeScreenManager.GetHomeConfig();
+        var config = _homeScreenManager.GetHomeConfig(payload.UserId);
         if (config?.Rows != null)
         {
             var row = config.Rows.FirstOrDefault(r => r.PlaylistId == playlistId);
