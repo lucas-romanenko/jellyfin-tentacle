@@ -9,10 +9,10 @@ from pydantic import BaseModel
 from datetime import datetime, timezone
 from pathlib import Path
 from models.database import get_db, get_setting, Duplicate, Movie, Series
-from routers.auth import require_admin
+from routers.auth import get_current_user
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/duplicates", tags=["duplicates"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/api/duplicates", tags=["duplicates"], dependencies=[Depends(get_current_user)])
 
 
 def _apply_resolution(dup: Duplicate, resolution: str, db: Session):

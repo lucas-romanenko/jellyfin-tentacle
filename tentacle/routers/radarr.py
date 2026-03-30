@@ -17,10 +17,10 @@ from services.nfo import update_nfo_tags, write_movie_nfo, make_folder_name
 from services.migration import migrate_provider, preview_migration
 from services.logstream import log_event_generator, get_recent_logs, emit_library_event
 
-from routers.auth import require_admin
+from routers.auth import get_current_user
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/radarr", tags=["radarr"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/api/radarr", tags=["radarr"], dependencies=[Depends(get_current_user)])
 
 _scan_running = False
 
