@@ -117,10 +117,8 @@ async function doLogin(username, password) {
       errEl.textContent = err.detail || 'Login failed';
       return;
     }
-    state.currentUser = await r.json();
-    document.getElementById('login-overlay').style.display = 'none';
-    applyUserRole();
-    await postLoginInit();
+    // Full page reload to clear all cached SPA state from previous user session
+    window.location.reload();
   } catch (e) {
     errEl.textContent = e.message;
   } finally {
