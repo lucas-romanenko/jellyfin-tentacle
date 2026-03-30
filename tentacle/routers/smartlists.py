@@ -77,9 +77,9 @@ def _write_home_json(user: TentacleUser, config: dict):
 
 
 @router.get("")
-def list_smartlists(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+def list_smartlists(db: Session = Depends(get_db)):
     """List all desired SmartLists with on-disk status."""
-    desired = get_desired_smartlists(db, user_id=user.id)
+    desired = get_desired_smartlists(db)
     smartlists_path = Path(get_setting(db, "smartlists_path", "/data/smartlists"))
     existing = _scan_existing(smartlists_path)
     path_accessible = smartlists_path.exists() and smartlists_path.is_dir()
@@ -127,9 +127,9 @@ def set_playlist_sort(req: PlaylistSortRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/sync")
-def sync(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+def sync(db: Session = Depends(get_db)):
     """Run SmartLists sync to disk."""
-    return sync_smartlists(db, user_id=user.id)
+    return sync_smartlists(db)
 
 
 @router.post("/write-home-config")
@@ -403,7 +403,7 @@ def set_hero_sort(req: HeroSortRequest, db: Session = Depends(get_db), user: Ten
 
 # ── Auto Playlists ─────────────────────────────────────────────────────────
 
-def _compute_auto_playlists(db: Session, user_id: int = None) -> list:
+def _compute_auto_playlists(db: Session) -> list:
     """Compute all possible auto playlists from synced content, lists, and built-ins."""
     results = []
 
@@ -456,11 +456,8 @@ def _compute_auto_playlists(db: Session, user_id: int = None) -> list:
                 "item_count": count,
             })
 
-    # ── List playlists (per-user) ──
-    list_q = db.query(ListSubscription).filter(ListSubscription.active == True)
-    if user_id is not None:
-        list_q = list_q.filter(ListSubscription.user_id == user_id)
-    lists = list_q.all()
+    # ── List playlists ──
+    lists = db.query(ListSubscription).filter(ListSubscription.active == True).all()
     for lst in lists:
         item_count = db.query(func.count(ListItem.id)).filter(
             ListItem.list_id == lst.id
@@ -507,11 +504,8 @@ def _compute_auto_playlists(db: Session, user_id: int = None) -> list:
         b["category"] = "builtin"
     results.extend(builtins)
 
-    # ── Resolve enabled state from DB (per-user) ──
-    toggle_q = db.query(AutoPlaylistToggle)
-    if user_id is not None:
-        toggle_q = toggle_q.filter(AutoPlaylistToggle.user_id == user_id)
-    toggles = {t.key: t.enabled for t in toggle_q.all()}
+    # ── Resolve enabled state from DB ──
+    toggles = {t.key: t.enabled for t in db.query(AutoPlaylistToggle).all()}
     for r in results:
         if r["category"] == "list":
             # Lists use their own playlist_enabled field
@@ -523,9 +517,9 @@ def _compute_auto_playlists(db: Session, user_id: int = None) -> list:
 
 
 @router.get("/auto-playlists")
-def list_auto_playlists(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+def list_auto_playlists(db: Session = Depends(get_db)):
     """Return all possible auto playlists with enabled state."""
-    return {"auto_playlists": _compute_auto_playlists(db, user_id=user.id)}
+    return {"auto_playlists": _compute_auto_playlists(db)}
 
 
 class AutoPlaylistToggleRequest(BaseModel):
@@ -534,40 +528,35 @@ class AutoPlaylistToggleRequest(BaseModel):
 
 
 @router.post("/auto-playlists/toggle")
-def toggle_auto_playlist(req: AutoPlaylistToggleRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+def toggle_auto_playlist(req: AutoPlaylistToggleRequest, db: Session = Depends(get_db)):
     """Toggle an auto playlist on/off. Triggers sync to Jellyfin."""
     import threading
 
     # List playlists use ListSubscription.playlist_enabled
     if req.key.startswith("list:"):
         list_id = int(req.key.replace("list:", ""))
-        lst = db.query(ListSubscription).filter(
-            ListSubscription.id == list_id,
-            ListSubscription.user_id == user.id,
-        ).first()
+        lst = db.query(ListSubscription).filter(ListSubscription.id == list_id).first()
         if not lst:
             return {"success": False, "message": "List not found"}
         lst.playlist_enabled = req.enabled
         db.commit()
     else:
-        # Source / built-in playlists use AutoPlaylistToggle (per-user)
+        # Source / built-in playlists use AutoPlaylistToggle
         toggle = db.query(AutoPlaylistToggle).filter(
             AutoPlaylistToggle.key == req.key,
-            AutoPlaylistToggle.user_id == user.id,
         ).first()
         if toggle:
             toggle.enabled = req.enabled
         else:
-            db.add(AutoPlaylistToggle(key=req.key, enabled=req.enabled, user_id=user.id))
+            db.add(AutoPlaylistToggle(key=req.key, enabled=req.enabled))
         db.commit()
 
-    # Background sync to Jellyfin (global disk sync + per-user home config)
-    user_id = user.id
+    # Background sync to Jellyfin
     def _sync_bg():
         from models.database import SessionLocal
         bg_db = SessionLocal()
         try:
-            sync_smartlists(bg_db, user_id=user_id)  # disk sync is global, home config per-user
+            sync_smartlists(bg_db)
             _notify_jellyfin_plugin(bg_db)
         except Exception as e:
             logger.error(f"Auto playlist sync failed: {e}")

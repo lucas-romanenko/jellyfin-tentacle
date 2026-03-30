@@ -131,23 +131,19 @@ def _create_jellyfin_playlist(name: str, user_id: str, jellyfin_url: str, jellyf
         return ""
 
 
-def get_desired_smartlists(db: Session, user_id: int = None) -> list:
+def get_desired_smartlists(db: Session) -> list:
     """Build the full list of SmartList definitions from:
     1. Enabled auto playlists (source, list, built-in)
     2. Custom playlists (tag rules)
 
-    When user_id is provided, returns only that user's playlists.
-    When user_id is None, returns the global union across all users.
+    All playlists are global (shared across all users).
     """
     from models.database import ListSubscription, ListItem, AutoPlaylistToggle, Movie, Series
     smartlists = []
     existing_tags = set()
 
     # ── Auto playlists (source-based, from enabled toggles) ──
-    toggle_q = db.query(AutoPlaylistToggle)
-    if user_id is not None:
-        toggle_q = toggle_q.filter(AutoPlaylistToggle.user_id == user_id)
-    toggles = {t.key: t.enabled for t in toggle_q.all()}
+    toggles = {t.key: t.enabled for t in db.query(AutoPlaylistToggle).all()}
 
     # Source playlists from VOD content
     movie_tags = db.query(Movie.source_tag).filter(
@@ -185,13 +181,10 @@ def get_desired_smartlists(db: Session, user_id: int = None) -> list:
             existing_tags.add(bname)
 
     # ── List playlists (use ListSubscription.playlist_enabled) ──
-    list_q = db.query(ListSubscription).filter(
+    enabled_lists = db.query(ListSubscription).filter(
         ListSubscription.playlist_enabled == True,
         ListSubscription.active == True,
-    )
-    if user_id is not None:
-        list_q = list_q.filter(ListSubscription.user_id == user_id)
-    enabled_lists = list_q.all()
+    ).all()
     for lst in enabled_lists:
         if lst.tag in existing_tags:
             continue
@@ -214,10 +207,7 @@ def get_desired_smartlists(db: Session, user_id: int = None) -> list:
         existing_tags.add(lst.tag)
 
     # ── Custom playlists from tag rules ──
-    rule_q = db.query(TagRule).filter(TagRule.active == True)
-    if user_id is not None:
-        rule_q = rule_q.filter(TagRule.user_id == user_id)
-    active_rules = rule_q.all()
+    active_rules = db.query(TagRule).filter(TagRule.active == True).all()
     for rule in active_rules:
         if rule.output_tag in existing_tags:
             continue
@@ -267,12 +257,11 @@ def _scan_existing(smartlists_path: Path) -> dict:
     return existing
 
 
-def sync_smartlists(db: Session, user_id: int = None) -> dict:
+def sync_smartlists(db: Session) -> dict:
     """Sync SmartList config files to disk. Returns {created, updated, total}.
 
-    Disk configs and Jellyfin playlists are GLOBAL (shared across all users).
-    The user_id param only affects the per-user home config written at the end.
-    Desired playlists are always computed as the union across ALL users.
+    All playlists are global (shared across all users).
+    Does NOT write home config — call write_home_config() separately per-user.
     """
     smartlists_path_str = get_setting(db, "smartlists_path", "/data/smartlists")
     smartlists_path = Path(smartlists_path_str)
@@ -396,10 +385,6 @@ def sync_smartlists(db: Session, user_id: int = None) -> dict:
         artwork_stats = sync_playlist_artwork(db)
     except Exception as e:
         logger.warning(f"Artwork sync failed: {e}")
-
-    # Generate per-user home config (only if user_id provided)
-    if user_id is not None:
-        write_home_config(db, user_id=user_id)
 
     return {
         "created": created, "updated": updated, "removed": removed, "total": len(desired),
@@ -641,7 +626,7 @@ def _build_query_params(config: dict) -> dict:
     return params
 
 
-def refresh_smartlist_playlists(db: Session, user_id: int = None) -> dict:
+def refresh_smartlist_playlists(db: Session) -> dict:
     """Read SmartList configs from disk, query Jellyfin for matching items,
     and create/update playlists. This replaces the C# SmartLists plugin entirely.
 
