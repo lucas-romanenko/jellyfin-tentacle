@@ -16,10 +16,10 @@ from services.artwork import generate_playlist_poster, _get_source_tag_from_rule
 # Persists across calls within the same container lifetime
 _uploaded_artwork: dict[str, bool] = {}
 
-from routers.auth import get_current_user
+from routers.auth import require_admin
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/collections", tags=["collections"], dependencies=[Depends(get_current_user)])
+router = APIRouter(prefix="/api/collections", tags=["collections"], dependencies=[Depends(require_admin)])
 
 
 def upload_playlist_artwork(jellyfin_url: str, jellyfin_key: str, playlist_id: str, image_path: str) -> bool:

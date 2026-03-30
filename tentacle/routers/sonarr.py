@@ -13,10 +13,10 @@ from services.sonarr import scan_sonarr_library, SonarrService, DOWNLOADED_TV_TA
 from services.nfo import update_nfo_tags, write_series_nfo
 from services.logstream import emit_library_event
 
-from routers.auth import get_current_user
+from routers.auth import require_admin
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/sonarr", tags=["sonarr"], dependencies=[Depends(get_current_user)])
+router = APIRouter(prefix="/api/sonarr", tags=["sonarr"], dependencies=[Depends(require_admin)])
 
 _scan_running = False
 

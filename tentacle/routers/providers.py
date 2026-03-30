@@ -20,9 +20,9 @@ from models.database import (
     get_db, Provider, ProviderCategory, CategorySnapshot, Setting,
     Movie, Series, Duplicate, SyncRun, LiveChannel, LiveChannelGroup, EPGProgram,
 )
-from routers.auth import get_current_user
+from routers.auth import require_admin
 
-router = APIRouter(prefix="/api/providers", tags=["providers"], dependencies=[Depends(get_current_user)])
+router = APIRouter(prefix="/api/providers", tags=["providers"], dependencies=[Depends(require_admin)])
 
 HEADERS = {"User-Agent": "TiviMate/4.7.0 (Linux; Android 12)"}
 

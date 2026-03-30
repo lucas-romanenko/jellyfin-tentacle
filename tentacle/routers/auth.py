@@ -175,6 +175,7 @@ def login(body: LoginRequest, response: Response, db: Session = Depends(get_db))
     jf_user_id = data["User"]["Id"]
     jf_user_name = data["User"]["Name"]
     jf_image_tag = data["User"].get("PrimaryImageTag")
+    jf_is_admin = data["User"].get("Policy", {}).get("IsAdministrator", False)
 
     # Create or update TentacleUser
     user = db.query(TentacleUser).filter(TentacleUser.jellyfin_user_id == jf_user_id).first()
@@ -184,7 +185,7 @@ def login(body: LoginRequest, response: Response, db: Session = Depends(get_db))
         user = TentacleUser(
             jellyfin_user_id=jf_user_id,
             display_name=jf_user_name,
-            is_admin=is_first_user,  # First user becomes admin
+            is_admin=jf_is_admin,  # Sync admin status from Jellyfin
             profile_image_tag=jf_image_tag,
         )
         db.add(user)
@@ -196,10 +197,11 @@ def login(body: LoginRequest, response: Response, db: Session = Depends(get_db))
             # Also update the legacy settings for backwards compat
             set_setting(db, "jellyfin_user_id", jf_user_id)
             set_setting(db, "jellyfin_user_name", jf_user_name)
-            logger.info(f"First user '{jf_user_name}' promoted to admin, orphaned data migrated")
+            logger.info(f"First user '{jf_user_name}' set as admin, orphaned data migrated")
     else:
         user.display_name = jf_user_name
         user.profile_image_tag = jf_image_tag
+        user.is_admin = jf_is_admin  # Sync admin status on every login
 
     db.commit()
 
@@ -244,12 +246,84 @@ def get_me(user: TentacleUser = Depends(get_current_user), db: Session = Depends
     }
 
 
-@router.post("/promote/{user_id}")
-def promote_user(user_id: int, admin: TentacleUser = Depends(require_admin), db: Session = Depends(get_db)):
-    """Promote a user to admin. Only admins can do this."""
-    target = db.query(TentacleUser).filter(TentacleUser.id == user_id).first()
-    if not target:
-        raise HTTPException(404, "User not found")
-    target.is_admin = True
-    db.commit()
-    return {"success": True, "display_name": target.display_name}
+@router.get("/managed-users")
+def get_managed_users(admin: TentacleUser = Depends(require_admin), db: Session = Depends(get_db)):
+    """List all Jellyfin users with their admin status. Admin only."""
+    jf_url = get_setting(db, "jellyfin_url")
+    jf_key = get_setting(db, "jellyfin_api_key", "")
+    if not jf_url or not jf_key:
+        raise HTTPException(400, "Jellyfin not configured")
+    try:
+        r = requests.get(
+            f"{jf_url.rstrip('/')}/Users",
+            headers={"X-Emby-Token": jf_key},
+            timeout=10,
+        )
+        r.raise_for_status()
+        users = r.json()
+        return [
+            {
+                "id": u["Id"],
+                "name": u["Name"],
+                "is_admin": u.get("Policy", {}).get("IsAdministrator", False),
+                "image_tag": u.get("PrimaryImageTag"),
+                "has_logged_in": db.query(TentacleUser).filter(
+                    TentacleUser.jellyfin_user_id == u["Id"]
+                ).first() is not None,
+            }
+            for u in users
+        ]
+    except requests.RequestException as e:
+        raise HTTPException(502, f"Could not reach Jellyfin: {e}")
+
+
+class SetAdminRequest(BaseModel):
+    jellyfin_user_id: str
+    is_admin: bool
+
+
+@router.post("/set-admin")
+def set_user_admin(body: SetAdminRequest, admin: TentacleUser = Depends(require_admin), db: Session = Depends(get_db)):
+    """Toggle a Jellyfin user's admin status. Updates both Jellyfin and Tentacle."""
+    jf_url = get_setting(db, "jellyfin_url")
+    jf_key = get_setting(db, "jellyfin_api_key", "")
+    if not jf_url or not jf_key:
+        raise HTTPException(400, "Jellyfin not configured")
+
+    # Prevent removing your own admin
+    if body.jellyfin_user_id == admin.jellyfin_user_id and not body.is_admin:
+        raise HTTPException(400, "Cannot remove your own admin status")
+
+    try:
+        # Fetch current user policy from Jellyfin
+        r = requests.get(
+            f"{jf_url.rstrip('/')}/Users/{body.jellyfin_user_id}",
+            headers={"X-Emby-Token": jf_key},
+            timeout=10,
+        )
+        r.raise_for_status()
+        jf_user = r.json()
+        policy = jf_user.get("Policy", {})
+        policy["IsAdministrator"] = body.is_admin
+
+        # Update policy in Jellyfin
+        requests.post(
+            f"{jf_url.rstrip('/')}/Users/{body.jellyfin_user_id}/Policy",
+            headers={"X-Emby-Token": jf_key, "Content-Type": "application/json"},
+            json=policy,
+            timeout=10,
+        ).raise_for_status()
+
+        # Update TentacleUser if they've logged in before
+        tentacle_user = db.query(TentacleUser).filter(
+            TentacleUser.jellyfin_user_id == body.jellyfin_user_id
+        ).first()
+        if tentacle_user:
+            tentacle_user.is_admin = body.is_admin
+            db.commit()
+
+        return {"success": True, "is_admin": body.is_admin}
+    except requests.HTTPError as e:
+        raise HTTPException(502, f"Jellyfin API error: {e}")
+    except requests.RequestException as e:
+        raise HTTPException(502, f"Could not reach Jellyfin: {e}")

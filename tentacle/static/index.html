@@ -1084,23 +1084,23 @@ td.primary { color: var(--text); font-weight: 500; }
 
     <nav class="sidebar-nav">
       <div class="nav-section">
-        <button class="nav-item active" data-page="dashboard">
+        <button class="nav-item active" data-page="dashboard" data-admin-only>
           <span class="icon">⬡</span> Dashboard
         </button>
         <button class="nav-item" data-page="library">
           <span class="icon">◫</span> Library
           <span class="nav-badge" id="dup-badge" style="display:none">0</span>
         </button>
-        <button class="nav-item" data-page="vod">
+        <button class="nav-item" data-page="vod" data-admin-only>
           <span class="icon">◉</span> VOD
         </button>
-        <button class="nav-item" data-page="live-tv">
+        <button class="nav-item" data-page="live-tv" data-admin-only>
           <span class="icon">▶</span> Live TV
         </button>
         <button class="nav-item" data-page="jellyfin">
           <span class="icon">◈</span> Jellyfin
         </button>
-        <button class="nav-item" data-page="settings">
+        <button class="nav-item" data-page="settings" data-admin-only>
           <span class="icon">⊙</span> Settings
         </button>
       </div>
@@ -1437,6 +1437,7 @@ td.primary { color: var(--text); font-weight: 500; }
             <button class="settings-nav-item" data-section="sync">Sync Settings</button>
             <button class="settings-nav-item" data-section="paths">Library Paths</button>
             <button class="settings-nav-item" data-section="integrations">Integrations</button>
+            <button class="settings-nav-item" data-section="users">Users</button>
           </div>
 
           <div>
@@ -1615,6 +1616,15 @@ td.primary { color: var(--text); font-weight: 500; }
 
               <div style="margin-top:20px">
                 <button class="btn btn-primary" onclick="saveSettings()">Save Integrations</button>
+              </div>
+            </div>
+
+            <!-- Users Section -->
+            <div class="settings-section card" id="section-users">
+              <h3>Users</h3>
+              <p class="section-desc">Manage Jellyfin user permissions. Admin users get full access to Tentacle. Non-admin users can only browse the library and customize their home screen.</p>
+              <div id="users-list" style="margin-top:16px">
+                <div style="color:var(--text3);font-size:13px">Loading users...</div>
               </div>
             </div>
           </div>

@@ -35,11 +35,16 @@ async function checkAuth() {
 }
 
 async function postLoginInit() {
-  await checkSetup();
-  loadDashboard();
-  loadProviders();
-  checkRunningSyncs();
-  setInterval(loadDashboard, 30000);
+  if (state.currentUser && state.currentUser.is_admin) {
+    await checkSetup();
+    loadDashboard();
+    loadProviders();
+    checkRunningSyncs();
+    setInterval(loadDashboard, 30000);
+  } else {
+    // Non-admin: go straight to Library
+    showPage('library');
+  }
 }
 
 // ── Login ─────────────────────────────────────────────────────────────────
@@ -266,6 +271,61 @@ function showSettingsSection(name) {
   document.querySelectorAll('.settings-nav-item').forEach(n => n.classList.remove('active'));
   document.getElementById(`section-${name}`)?.classList.add('active');
   document.querySelector(`.settings-nav-item[data-section="${name}"]`)?.classList.add('active');
+  if (name === 'users') loadUsers();
+}
+
+async function loadUsers() {
+  const el = document.getElementById('users-list');
+  try {
+    const users = await api('/api/auth/managed-users');
+    if (!users.length) {
+      el.innerHTML = '<div style="color:var(--text3)">No users found.</div>';
+      return;
+    }
+    const jfUrl = state.currentUser?.jellyfin_url || '';
+    el.innerHTML = users.map(u => {
+      const avatarUrl = u.image_tag
+        ? `${jfUrl}/Users/${u.id}/Images/Primary?tag=${u.image_tag}&quality=90&maxWidth=80`
+        : '';
+      const avatar = avatarUrl
+        ? `<img src="${avatarUrl}" style="width:36px;height:36px;border-radius:50%;object-fit:cover">`
+        : `<div style="width:36px;height:36px;border-radius:50%;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:600;color:var(--text2)">${u.name.charAt(0).toUpperCase()}</div>`;
+      const badge = u.is_admin
+        ? '<span style="font-size:10px;padding:2px 6px;background:var(--green-dim);color:var(--green);border-radius:4px;font-weight:500">ADMIN</span>'
+        : '<span style="font-size:10px;padding:2px 6px;background:var(--bg3);color:var(--text3);border-radius:4px">USER</span>';
+      const loginStatus = u.has_logged_in
+        ? ''
+        : ' <span style="font-size:10px;color:var(--text3)">(never logged in)</span>';
+      const toggleDisabled = u.id === state.currentUser?.jellyfin_user_id ? ' disabled title="Cannot change your own admin status"' : '';
+      const toggleChecked = u.is_admin ? ' checked' : '';
+      return `<div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)">
+        ${avatar}
+        <div style="flex:1;min-width:0">
+          <div style="font-size:13px;font-weight:500">${u.name}${loginStatus}</div>
+          <div style="margin-top:2px">${badge}</div>
+        </div>
+        <label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text3);cursor:pointer">
+          Admin
+          <input type="checkbox"${toggleChecked}${toggleDisabled} onchange="toggleUserAdmin('${u.id}', this.checked)">
+        </label>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    el.innerHTML = `<div style="color:var(--red)">Failed to load users: ${e.message}</div>`;
+  }
+}
+
+async function toggleUserAdmin(jellyfinUserId, isAdmin) {
+  try {
+    await api('/api/auth/set-admin', {
+      method: 'POST',
+      body: { jellyfin_user_id: jellyfinUserId, is_admin: isAdmin },
+    });
+    loadUsers();
+  } catch (e) {
+    alert('Failed to update admin status: ' + e.message);
+    loadUsers();
+  }
 }
 
 // ── API Helper ────────────────────────────────────────────────────────────
