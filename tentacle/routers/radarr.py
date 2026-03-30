@@ -180,7 +180,10 @@ def write_nfos(db: Session = Depends(get_db)):
         _nfo_running = False
 
 
-@router.post("/webhook")
+webhook_router = APIRouter(prefix="/api/radarr", tags=["radarr"])
+
+
+@webhook_router.post("/webhook")
 def radarr_webhook(payload: dict, db: Session = Depends(get_db)):
     """Radarr webhook — triggered on Download, MovieAdded, MovieDelete, MovieFileDelete events."""
     event_type = payload.get("eventType", "unknown")

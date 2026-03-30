@@ -155,7 +155,10 @@ def write_nfos(db: Session = Depends(get_db)):
     return {"success": True, "written": written, "skipped": skipped}
 
 
-@router.post("/webhook")
+webhook_router = APIRouter(prefix="/api/sonarr", tags=["sonarr"])
+
+
+@webhook_router.post("/webhook")
 def sonarr_webhook(payload: dict, db: Session = Depends(get_db)):
     """Sonarr webhook — triggered on Download, SeriesAdd, SeriesDelete, EpisodeFileDelete events."""
     event_type = payload.get("eventType", "unknown")
