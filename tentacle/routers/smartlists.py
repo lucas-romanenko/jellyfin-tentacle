@@ -352,8 +352,10 @@ def set_row_max_items(req: RowMaxItemsRequest, db: Session = Depends(get_db), us
 def set_hero(req: HeroPickRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Read JSON, update hero, write JSON back. That's it."""
     config = _read_home_json(user)
-    if not config or "rows" not in config:
-        return {"success": False, "message": "No home config found"}
+    if not config:
+        config = {"hero": {"enabled": False, "playlist_id": "", "display_name": ""}, "rows": []}
+    if "rows" not in config:
+        config["rows"] = []
 
     existing_hero = config.get("hero", {})
     if req.playlist_id:

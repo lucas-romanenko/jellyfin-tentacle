@@ -463,7 +463,7 @@ function renderLibCard(item) {
     : `<div class="lib-card-poster-placeholder">◫</div>`;
 
   let badges = '';
-  if (item.source === 'radarr') badges += `<span class="badge badge-green" style="font-size:9px;padding:1px 5px">DL</span>`;
+  if (item.source === 'radarr' || item.source === 'sonarr') badges += `<span class="badge badge-green" style="font-size:9px;padding:1px 5px">DL</span>`;
   if (item.source_tag) badges += `<span class="badge badge-accent" style="font-size:9px;padding:1px 5px">${item.source_tag}</span>`;
   const sourceBadge = badges ? `<div class="lib-card-source" style="display:flex;flex-direction:column;gap:3px;align-items:flex-end">${badges}</div>` : '';
 
@@ -1502,12 +1502,7 @@ async function loadHomeScreen() {
 
   try {
     const data = await api('/api/smartlists/home-config');
-    if (!data.exists || !data.config.rows) {
-      listEl.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text3);font-size:13px">Enable some playlists first, then add them as rows here.</div>';
-      return;
-    }
-
-    const config = data.config;
+    const config = data.exists ? data.config : {};
     homeRows = (config.rows || []).sort((a, b) => a.order - b.order);
 
     // Populate hero dropdown from ALL available playlists, not just home rows
@@ -1540,7 +1535,11 @@ async function loadHomeScreen() {
       logoCheckbox.checked = config.hero.require_logo !== false;
     }
 
-    renderHomeRows();
+    if (!homeRows.length) {
+      listEl.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text3);font-size:13px">No rows configured — the default Jellyfin home screen will be used.</div>';
+    } else {
+      renderHomeRows();
+    }
   } catch (e) {
     listEl.innerHTML = '<div class="empty-state" style="padding:24px"><p>Failed to load home config</p></div>';
   }
@@ -2523,9 +2522,11 @@ function renderDiscoverGrid(items) {
     const poster = item.poster_path
       ? `<img src="https://image.tmdb.org/t/p/w185${item.poster_path}" loading="lazy" onerror="this.parentElement.innerHTML='<div class=\\'lib-card-poster-placeholder\\'>◫</div>'">`
       : `<div class="lib-card-poster-placeholder">◫</div>`;
-    const badge = `<span class="badge" style="font-size:9px;padding:1px 5px;background:var(--bg3);color:var(--text3)">${item.media_type === 'movie' ? 'Movie' : 'Show'}</span>`;
-    const addBtn = `<button onclick="event.stopPropagation();showAddToArrModal(${item.tmdb_id},'${escapeJS(item.title)}','${escapeJS(item.year||'')}','${escapeJS(item.poster_path||'')}','${item.media_type}')" class="lib-card-add-btn" title="Add to ${item.media_type === 'series' ? 'Sonarr' : 'Radarr'}">+</button>`;
-    const clickHandler = `onclick="showDiscoverDetail(${item.tmdb_id},'${escapeAttr(item.media_type)}','${escapeJS(item.title)}','${escapeJS(item.year||'')}','${escapeJS(item.poster_path||'')}')"`;
+    const badge = item.in_library
+      ? `<span class="badge badge-green" style="font-size:9px;padding:1px 5px">In Library</span>`
+      : `<span class="badge" style="font-size:9px;padding:1px 5px;background:var(--bg3);color:var(--text3)">${item.media_type === 'movie' ? 'Movie' : 'Show'}</span>`;
+    const addBtn = item.in_library ? '' : `<button onclick="event.stopPropagation();showAddToArrModal(${item.tmdb_id},'${escapeJS(item.title)}','${escapeJS(item.year||'')}','${escapeJS(item.poster_path||'')}','${item.media_type}')" class="lib-card-add-btn" title="Add to ${item.media_type === 'series' ? 'Sonarr' : 'Radarr'}">+</button>`;
+    const clickHandler = `onclick="showDiscoverDetail(${item.tmdb_id},'${escapeAttr(item.media_type)}','${escapeJS(item.title)}','${escapeJS(item.year||'')}','${escapeJS(item.poster_path||'')}',${!!item.in_library})"`;
     const listTag = item.list_name ? `<div style="font-size:10px;color:var(--accent);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeAttr(item.list_name)}</div>` : '';
     return `
       <div class="lib-card" ${clickHandler}>
@@ -2543,7 +2544,7 @@ function renderDiscoverGrid(items) {
   }).join('');
 }
 
-async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath) {
+async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, inLibrary) {
   showModal('modal-media-detail');
   document.getElementById('detail-title').textContent = 'Loading...';
   document.getElementById('detail-body').innerHTML = '<div class="loading-state"><div class="spinner"></div></div>';
@@ -2552,6 +2553,9 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath) {
     const data = await api(`/api/discover/detail/${mediaType}/${tmdbId}`);
     const isSeries = mediaType === 'series';
     const arrLabel = isSeries ? 'Sonarr' : 'Radarr';
+    const actionBtn = inLibrary
+      ? `<span class="badge badge-green" style="font-size:12px;padding:4px 10px">In Library</span>`
+      : `<button class="btn btn-primary btn-sm" onclick="closeModal('modal-media-detail');showAddToArrModal(${tmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}','${mediaType}')">Add to ${arrLabel}</button>`;
     document.getElementById('detail-title').textContent = data.title || title || 'Unknown';
     document.getElementById('detail-body').innerHTML = `
       <div style="display:flex;gap:20px">
@@ -2563,7 +2567,7 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath) {
             ${(data.genres||[]).map(g => `<span class="badge badge-gray">${g}</span>`).join('')}
           </div>
           <div style="margin-top:8px">
-            <button class="btn btn-primary btn-sm" onclick="closeModal('modal-media-detail');showAddToArrModal(${tmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}','${mediaType}')">Add to ${arrLabel}</button>
+            ${actionBtn}
           </div>
         </div>
       </div>`;

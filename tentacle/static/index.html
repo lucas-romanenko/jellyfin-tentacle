@@ -1620,8 +1620,6 @@ td.primary { color: var(--text); font-weight: 500; }
               <div class="page-subtitle">Home screen, playlists & discover</div>
             </div>
             <div id="jf-tab-actions" style="display:flex;gap:8px">
-              <button class="btn btn-secondary" onclick="showAddTagRule()">+ Create Playlist</button>
-              <button class="btn btn-primary" onclick="syncPlaylistsToJellyfin()">Sync to Jellyfin</button>
             </div>
           </div>
         </div>
@@ -1705,7 +1703,7 @@ td.primary { color: var(--text); font-weight: 500; }
           <div class="card" style="margin-top:16px">
             <div class="card-header">
               <div class="card-title">Custom Playlists</div>
-              <span style="font-size:11px;color:var(--text3)">Filter your library by genre, rating, year & more</span>
+              <button class="btn btn-secondary btn-sm" onclick="showAddTagRule()" style="font-size:11px;padding:3px 10px">+ Create</button>
             </div>
             <div id="tag-rules-list">
               <div class="loading-state"><div class="spinner"></div></div>
