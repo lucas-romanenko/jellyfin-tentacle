@@ -270,17 +270,9 @@ def scan_radarr_library(db: Session) -> dict:
     # Single commit for all DB changes
     db.commit()
 
-    # Write NFO files for all downloaded movies
+    # Compute tags and write NFO files for all downloaded movies
     for tmdb_id, db_movie in movies_needing_nfo:
         try:
-            if not db_movie.radarr_path:
-                continue
-
-            # Get movie folder from file path
-            movie_folder = Path(db_movie.radarr_path).parent
-            if not movie_folder.exists():
-                continue
-
             # Build tag list: source tag + rule tags + list tags + user attribution
             tags = []
             if db_movie.source_tag:
@@ -318,7 +310,15 @@ def scan_radarr_library(db: Session) -> dict:
             # Update tags on DB record
             db_movie.tags = tags
 
-            # Build NFO metadata from DB record
+            # Write NFO if movie folder exists on disk
+            if not db_movie.radarr_path:
+                continue
+            # Remap Radarr's container path to Tentacle's mount
+            local_path = db_movie.radarr_path.replace("/data/movies", "/media/movies", 1)
+            movie_folder = Path(local_path).parent
+            if not movie_folder.exists():
+                continue
+
             nfo_metadata = {
                 "title": db_movie.title,
                 "tmdb_id": tmdb_id,
@@ -331,8 +331,6 @@ def scan_radarr_library(db: Session) -> dict:
                 "backdrop_path": db_movie.backdrop_path,
             }
 
-            # Write NFO to movie folder
-            # Match NFO filename to actual video file
             video_file = None
             for ext in ('.mkv', '.mp4', '.avi', '.m4v'):
                 files = list(movie_folder.glob(f'*{ext}'))
@@ -346,7 +344,7 @@ def scan_radarr_library(db: Session) -> dict:
                 stats["nfo_written"] += 1
 
         except Exception as e:
-            logger.debug(f"NFO write failed for {db_movie.title}: {e}")
+            logger.debug(f"NFO/tag processing failed for {db_movie.title}: {e}")
 
     db.commit()
 

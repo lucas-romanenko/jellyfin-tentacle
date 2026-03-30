@@ -298,16 +298,9 @@ def scan_sonarr_library(db: Session) -> dict:
     # Single commit for all DB changes
     db.commit()
 
-    # Write NFO files for all downloaded series
+    # Compute tags and write NFO files for all downloaded series
     for tmdb_id, db_series in series_needing_nfo:
         try:
-            if not db_series.sonarr_path:
-                continue
-
-            series_folder = Path(db_series.sonarr_path)
-            if not series_folder.exists():
-                continue
-
             # Build tag list: source tag + rule tags + list tags + user attribution
             tags = []
             if db_series.source_tag:
@@ -345,6 +338,15 @@ def scan_sonarr_library(db: Session) -> dict:
             # Update tags on DB record
             db_series.tags = tags
 
+            # Write NFO if series folder exists on disk
+            if not db_series.sonarr_path:
+                continue
+            # Remap Sonarr's container path to Tentacle's mount
+            local_path = db_series.sonarr_path.replace("/data/shows", "/media/shows", 1)
+            series_folder = Path(local_path)
+            if not series_folder.exists():
+                continue
+
             # Build NFO metadata from DB record
             nfo_metadata = {
                 "title": db_series.title,
@@ -365,7 +367,7 @@ def scan_sonarr_library(db: Session) -> dict:
                 stats["nfo_written"] += 1
 
         except Exception as e:
-            logger.debug(f"NFO write failed for {db_series.title}: {e}")
+            logger.debug(f"NFO/tag processing failed for {db_series.title}: {e}")
 
     db.commit()
 
