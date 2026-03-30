@@ -135,6 +135,9 @@ def get_desired_smartlists(db: Session, user_id: int = None) -> list:
     """Build the full list of SmartList definitions from:
     1. Enabled auto playlists (source, list, built-in)
     2. Custom playlists (tag rules)
+
+    When user_id is provided, returns only that user's playlists.
+    When user_id is None, returns the global union across all users.
     """
     from models.database import ListSubscription, ListItem, AutoPlaylistToggle, Movie, Series
     smartlists = []
