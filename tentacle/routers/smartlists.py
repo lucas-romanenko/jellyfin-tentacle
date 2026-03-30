@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from models.database import (
     get_db, get_setting, Movie, Series, Provider,
-    ListSubscription, ListItem, AutoPlaylistToggle, TentacleUser,
+    ListSubscription, ListItem, AutoPlaylistToggle, TentacleUser, DownloadRequest,
 )
 from routers.auth import get_user_from_request
 from services.smartlists import (
@@ -507,6 +507,24 @@ def _compute_auto_playlists(db: Session, user_id: int = None) -> list:
         builtins.append({"key": "builtin:downloaded_tv", "name": "Downloaded TV",
                          "tag": "Downloaded TV", "origin": "From Sonarr",
                          "media_type": ["Series"], "item_count": sonarr_count})
+
+    # Per-user "My Downloads" playlist — items this user requested via Tentacle UI
+    if user_id is not None:
+        req_user = db.query(TentacleUser).filter(TentacleUser.id == user_id).first()
+        if req_user:
+            my_dl_count = db.query(func.count(DownloadRequest.id)).filter(
+                DownloadRequest.user_id == user_id,
+            ).scalar() or 0
+            if my_dl_count:
+                user_tag = f"Downloaded by {req_user.display_name}"
+                builtins.append({
+                    "key": "builtin:my_downloads",
+                    "name": "My Downloads",
+                    "tag": user_tag,
+                    "origin": f"Requested by {req_user.display_name}",
+                    "media_type": ["Movie", "Series"],
+                    "item_count": my_dl_count,
+                })
 
     for b in builtins:
         b["category"] = "builtin"
