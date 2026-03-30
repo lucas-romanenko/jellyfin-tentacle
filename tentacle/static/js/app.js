@@ -504,6 +504,8 @@ async function setupStep3Next() {
   if (Object.keys(settings).length) {
     try {
       await api('/api/settings', { method: 'POST', body: { settings } });
+      // Start scanning Radarr/Sonarr in background immediately
+      api('/api/settings/initial-scan', { method: 'POST' }).catch(() => {});
     } catch (e) {
       toast(e.message, 'error');
     }

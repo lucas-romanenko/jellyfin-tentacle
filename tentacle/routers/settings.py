@@ -49,8 +49,6 @@ def get_settings_raw(db: Session = Depends(get_db)):
 @router.post("")
 def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
     sensitive_keys = {"tmdb_bearer_token", "tmdb_api_key", "radarr_api_key", "sonarr_api_key", "jellyfin_api_key", "trakt_client_id"}
-    was_setup_complete = get_setting(db, "setup_complete") == "true"
-
     for key, value in body.settings.items():
         # Don't overwrite sensitive keys if they look masked
         if key in sensitive_keys and value and "..." in value:
@@ -62,10 +60,6 @@ def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
     all_set = all(get_setting(db, k) for k in required)
     if all_set:
         set_setting(db, "setup_complete", "true")
-
-    # First-time setup: auto-scan Radarr/Sonarr if configured, so existing content is picked up
-    if all_set and not was_setup_complete:
-        _trigger_post_setup_scan()
 
     # If discover toggle changed, notify the Jellyfin plugin to clear its cache
     if "discover_in_jellyfin" in body.settings:
@@ -93,9 +87,15 @@ def _notify_plugin_discover_changed(db: Session):
         pass
 
 
+@router.post("/initial-scan")
+def trigger_initial_scan():
+    """Trigger background Radarr/Sonarr scan during setup wizard."""
+    _trigger_post_setup_scan()
+    return {"success": True}
+
+
 def _trigger_post_setup_scan():
-    """After setup wizard completes, scan Radarr/Sonarr in the background
-    so the user's existing library is immediately available."""
+    """Scan Radarr/Sonarr in the background so the user's existing library is immediately available."""
     import threading
     import logging
 

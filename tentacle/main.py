@@ -29,7 +29,7 @@ def run_scheduled_sync():
     from models.database import get_setting
     db = SessionLocal()
     try:
-        from models.database import ListSubscription, TentacleUser
+        from models.database import ListSubscription
         from routers.lists import fetch_list_tmdb_ids, store_list_items, apply_list_tags_to_library, enrich_items_with_tmdb, _get_tmdb_service
         from services.tmdb import get_tmdb_token
         bearer = get_tmdb_token(db)
@@ -100,21 +100,6 @@ def run_scheduled_sync():
         logger.info("Syncing playlist artwork")
         from routers.collections import sync_playlist_artwork
         sync_playlist_artwork(db)
-
-        # Rebuild per-user smartlist configs, Jellyfin playlists, and home layouts
-        from services.smartlists import sync_smartlists, write_home_config, _notify_jellyfin_plugin, migrate_global_smartlists_to_user
-        users = db.query(TentacleUser).all()
-        for u in users:
-            try:
-                # One-time migration: move global smartlists to admin's per-user dir
-                migrate_global_smartlists_to_user(db, u.id)
-                # Per-user: disk configs + Jellyfin playlists + home config
-                sync_smartlists(db, user_id=u.id)
-                write_home_config(db, user_id=u.id)
-            except Exception as e:
-                logger.warning(f"Per-user playlist pipeline failed for {u.display_name}: {e}")
-        if users:
-            _notify_jellyfin_plugin(db)
 
         logger.info("Scheduled sync complete")
     except Exception as e:
