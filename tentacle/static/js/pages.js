@@ -504,7 +504,7 @@ async function showAddToArrModal(tmdbId, title, year, posterPath, mediaType) {
   const select = document.getElementById('add-radarr-quality');
   select.innerHTML = '<option value="">Loading...</option>';
   try {
-    const endpoint = isSeries ? '/api/sonarr/quality-profiles' : '/api/radarr/quality-profiles';
+    const endpoint = isSeries ? '/api/lists/sonarr-profiles' : '/api/lists/radarr-profiles';
     const profiles = await api(endpoint);
     select.innerHTML = profiles.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
   } catch (e) {

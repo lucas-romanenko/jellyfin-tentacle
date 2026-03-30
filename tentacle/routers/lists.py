@@ -55,6 +55,38 @@ def _get_radarr_root_folder(radarr_url: str, radarr_key: str) -> str:
     return "/data/movies"  # sensible fallback
 
 
+@router.get("/radarr-profiles")
+def radarr_profiles(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+    """Get Radarr quality profiles (accessible to all users for Add to Radarr modal)."""
+    radarr_url = get_setting(db, "radarr_url")
+    radarr_key = get_setting(db, "radarr_api_key")
+    if not radarr_url or not radarr_key:
+        raise HTTPException(400, "Radarr not configured")
+    try:
+        r = requests.get(f"{radarr_url.rstrip('/')}/api/v3/qualityprofile",
+                         headers={"X-Api-Key": radarr_key}, timeout=10)
+        r.raise_for_status()
+        return [{"id": p["id"], "name": p["name"]} for p in r.json()]
+    except Exception as e:
+        raise HTTPException(502, f"Failed to fetch Radarr profiles: {e}")
+
+
+@router.get("/sonarr-profiles")
+def sonarr_profiles(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+    """Get Sonarr quality profiles (accessible to all users for Add to Sonarr modal)."""
+    sonarr_url = get_setting(db, "sonarr_url")
+    sonarr_key = get_setting(db, "sonarr_api_key")
+    if not sonarr_url or not sonarr_key:
+        raise HTTPException(400, "Sonarr not configured")
+    try:
+        r = requests.get(f"{sonarr_url.rstrip('/')}/api/v3/qualityprofile",
+                         headers={"X-Api-Key": sonarr_key}, timeout=10)
+        r.raise_for_status()
+        return [{"id": p["id"], "name": p["name"]} for p in r.json()]
+    except Exception as e:
+        raise HTTPException(502, f"Failed to fetch Sonarr profiles: {e}")
+
+
 class ListCreate(BaseModel):
     name: str
     type: str
