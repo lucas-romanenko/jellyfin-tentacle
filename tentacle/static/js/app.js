@@ -290,13 +290,18 @@ async function loadUsers() {
       const avatar = avatarUrl
         ? `<img src="${avatarUrl}" style="width:36px;height:36px;border-radius:50%;object-fit:cover">`
         : `<div style="width:36px;height:36px;border-radius:50%;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:600;color:var(--text2)">${u.name.charAt(0).toUpperCase()}</div>`;
+      const ownerBadge = u.is_owner ? ' <span style="font-size:10px;padding:2px 6px;background:var(--accent-dim);color:var(--accent);border-radius:4px;font-weight:500">OWNER</span>' : '';
       const badge = u.is_admin
-        ? '<span style="font-size:10px;padding:2px 6px;background:var(--green-dim);color:var(--green);border-radius:4px;font-weight:500">ADMIN</span>'
+        ? '<span style="font-size:10px;padding:2px 6px;background:var(--green-dim);color:var(--green);border-radius:4px;font-weight:500">ADMIN</span>' + ownerBadge
         : '<span style="font-size:10px;padding:2px 6px;background:var(--bg3);color:var(--text3);border-radius:4px">USER</span>';
       const loginStatus = u.has_logged_in
         ? ''
         : ' <span style="font-size:10px;color:var(--text3)">(never logged in)</span>';
-      const toggleDisabled = u.id === state.currentUser?.jellyfin_user_id ? ' disabled title="Cannot change your own admin status"' : '';
+      const toggleDisabled = u.is_owner
+        ? ' disabled title="Owner — admin cannot be removed"'
+        : u.id === state.currentUser?.jellyfin_user_id
+          ? ' disabled title="Cannot change your own admin status"'
+          : '';
       const toggleChecked = u.is_admin ? ' checked' : '';
       return `<div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)">
         ${avatar}

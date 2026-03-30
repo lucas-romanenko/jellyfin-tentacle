@@ -253,6 +253,8 @@ def get_managed_users(admin: TentacleUser = Depends(require_admin), db: Session 
     jf_key = get_setting(db, "jellyfin_api_key", "")
     if not jf_url or not jf_key:
         raise HTTPException(400, "Jellyfin not configured")
+    first_user = db.query(TentacleUser).order_by(TentacleUser.id).first()
+    first_jf_id = first_user.jellyfin_user_id if first_user else None
     try:
         r = requests.get(
             f"{jf_url.rstrip('/')}/Users",
@@ -270,6 +272,7 @@ def get_managed_users(admin: TentacleUser = Depends(require_admin), db: Session 
                 "has_logged_in": db.query(TentacleUser).filter(
                     TentacleUser.jellyfin_user_id == u["Id"]
                 ).first() is not None,
+                "is_owner": u["Id"] == first_jf_id,
             }
             for u in users
         ]
@@ -293,6 +296,12 @@ def set_user_admin(body: SetAdminRequest, admin: TentacleUser = Depends(require_
     # Prevent removing your own admin
     if body.jellyfin_user_id == admin.jellyfin_user_id and not body.is_admin:
         raise HTTPException(400, "Cannot remove your own admin status")
+
+    # Prevent removing admin from the initial setup user (lowest ID = first login)
+    if not body.is_admin:
+        first_user = db.query(TentacleUser).order_by(TentacleUser.id).first()
+        if first_user and first_user.jellyfin_user_id == body.jellyfin_user_id:
+            raise HTTPException(400, "Cannot remove admin from the initial setup user")
 
     try:
         # Fetch current user policy from Jellyfin
