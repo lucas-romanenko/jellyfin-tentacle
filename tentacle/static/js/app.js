@@ -261,7 +261,9 @@ function showDiscoverTab(tab) {
   document.querySelector(`[data-discovertab="${tab}"]`)?.classList.add('active');
   document.getElementById('discover-tab-browse').style.display = tab === 'browse' ? '' : 'none';
   document.getElementById('discover-tab-lists').style.display = tab === 'lists' ? '' : 'none';
+  document.getElementById('discover-tab-activity').style.display = tab === 'activity' ? '' : 'none';
   if (tab === 'lists') loadLists();
+  if (tab === 'activity') loadActivity();
 }
 
 function showSettingsSection(name) {
