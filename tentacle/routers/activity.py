@@ -165,7 +165,10 @@ def _build_activity(db: Session) -> dict:
                     for item in result:
                         movie = item.get("movie", {})
                         tmdb_id = movie.get("tmdbId")
-                        progress = item.get("progress", 0) or 0
+                        # Calculate progress from size and sizeleft
+                        total = item.get("size", 0) or 0
+                        left = item.get("sizeleft", 0) or 0
+                        progress = ((total - left) / total * 100) if total > 0 else 0
                         # Map Radarr status to simple status
                         status = "downloading"
                         tracked = item.get("trackedDownloadStatus", "")
@@ -174,7 +177,7 @@ def _build_activity(db: Session) -> dict:
                             status = "warning"
                         elif dl_state == "importPending":
                             status = "importing"
-                        elif progress == 0:
+                        elif dl_state == "downloading" and progress == 0:
                             status = "queued"
 
                         poster = _get_poster(db, tmdb_id, "movie")
@@ -197,7 +200,10 @@ def _build_activity(db: Session) -> dict:
                         series = item.get("series", {})
                         episode = item.get("episode", {})
                         tmdb_id = series.get("tmdbId")
-                        progress = item.get("progress", 0) or 0
+                        # Calculate progress from size and sizeleft
+                        total = item.get("size", 0) or 0
+                        left = item.get("sizeleft", 0) or 0
+                        progress = ((total - left) / total * 100) if total > 0 else 0
                         status = "downloading"
                         tracked = item.get("trackedDownloadStatus", "")
                         dl_state = item.get("trackedDownloadState", "")
@@ -205,7 +211,7 @@ def _build_activity(db: Session) -> dict:
                             status = "warning"
                         elif dl_state == "importPending":
                             status = "importing"
-                        elif progress == 0:
+                        elif dl_state == "downloading" and progress == 0:
                             status = "queued"
 
                         ep_label = ""
