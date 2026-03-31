@@ -228,6 +228,9 @@ def _build_downloads(db: Session) -> list:
                         elif dl_state == "downloading" and progress == 0:
                             status = "queued"
 
+                        raw_timeleft = item.get("timeleft")
+                        logger.info(f"Radarr queue item: title={movie.get('title')}, timeleft={raw_timeleft!r}, size={item.get('size')}, sizeleft={item.get('sizeleft')}")
+
                         poster = _get_poster(db, tmdb_id, "movie") or _extract_poster(movie)
                         downloads.append({
                             "tmdb_id": tmdb_id,
