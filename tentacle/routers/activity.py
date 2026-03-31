@@ -15,7 +15,6 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from models.database import get_db, get_setting, Movie, Series
-from routers.auth import get_user_from_request
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/activity", tags=["activity"])
@@ -257,7 +256,7 @@ def _get_poster(db: Session, tmdb_id: int, media_type: str) -> Optional[str]:
 
 
 @router.get("")
-def get_activity(db: Session = Depends(get_db), user=Depends(get_user_from_request)):
+def get_activity(db: Session = Depends(get_db)):
     """Return current download queue and unreleased monitored items."""
     now = time.time()
     if _cache["data"] is not None and (now - _cache["ts"]) < CACHE_TTL:
