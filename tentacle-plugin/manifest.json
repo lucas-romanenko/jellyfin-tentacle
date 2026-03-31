@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "2.11.0.0",
+        "changelog": "Release v2.11.0",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/lucas-romanenko/jellyfin-tentacle/releases/download/plugin-v2.11.0/tentacle-plugin-v2.11.0.zip",
+        "checksum": "d1371f4da4b0304d1f78629510e6bf7f",
+        "timestamp": "2026-03-31T11:15:01Z"
+      },
+      {
         "version": "2.10.0.0",
         "changelog": "Release v2.10.0",
         "targetAbi": "10.11.0.0",
