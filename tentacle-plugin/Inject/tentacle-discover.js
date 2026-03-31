@@ -249,11 +249,9 @@
       MD.activityData = activity;
       MD.sections = data.sections || [];
 
-      // Prepend activity section if there's any data
+      // Always show activity tab
       var activityCount = (activity.downloads || []).length + (activity.unreleased || []).length;
-      if (activityCount > 0) {
-        MD.sections.unshift({ id: 'activity', title: 'Activity', items: [], _activityCount: activityCount });
-      }
+      MD.sections.unshift({ id: 'activity', title: 'Activity', items: [], _activityCount: activityCount });
 
       renderSectionTabs();
       if (MD.sections.length > 0) {
