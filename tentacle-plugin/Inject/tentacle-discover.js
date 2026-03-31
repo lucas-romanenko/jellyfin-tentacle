@@ -251,7 +251,7 @@
 
       // Always show activity tab
       var activityCount = (activity.downloads || []).length + (activity.unreleased || []).length;
-      MD.sections.unshift({ id: 'activity', title: 'Activity', items: [], _activityCount: activityCount });
+      MD.sections.push({ id: 'activity', title: 'Activity', items: [], _activityCount: activityCount });
 
       renderSectionTabs();
       startActivityPolling();

@@ -479,6 +479,9 @@
 @keyframes md-spin { to { transform: rotate(360deg); } }
 
 /* ── Activity section ───────────────────────────────────────────────── */
+.md-activity-tab {
+  margin-left: auto;
+}
 .md-activity-tab.md-section-active {
   background: rgb(79, 70, 229);
   color: #fff;
