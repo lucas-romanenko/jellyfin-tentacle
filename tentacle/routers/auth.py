@@ -85,7 +85,12 @@ def get_user_from_request(request: Request, db: Session = Depends(get_db)) -> Te
     # Try userId query param (Jellyfin user ID, not internal ID)
     jf_user_id = request.query_params.get("userId")
     if jf_user_id:
-        user = db.query(TentacleUser).filter(TentacleUser.jellyfin_user_id == jf_user_id).first()
+        # Normalize: strip dashes for comparison (SDK sends with dashes, Jellyfin stores without)
+        normalized = jf_user_id.replace("-", "")
+        user = db.query(TentacleUser).filter(TentacleUser.jellyfin_user_id == normalized).first()
+        if not user:
+            # Also try the original value in case it was stored with dashes
+            user = db.query(TentacleUser).filter(TentacleUser.jellyfin_user_id == jf_user_id).first()
         if user:
             return user
     raise HTTPException(401, "Not authenticated")
