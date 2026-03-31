@@ -13,7 +13,7 @@ import logging
 from datetime import datetime
 
 from models.database import create_tables, SessionLocal, seed_defaults, Setting, Provider, SyncRun
-from routers import settings, providers, sync as sync_router, library, duplicates, lists as lists_router, widget, radarr as radarr_router, sonarr as sonarr_router, tags as tags_router, collections as collections_router, smartlists as smartlists_router, discover as discover_router, livetv as livetv_router, auth as auth_router
+from routers import settings, providers, sync as sync_router, library, duplicates, lists as lists_router, widget, radarr as radarr_router, sonarr as sonarr_router, tags as tags_router, collections as collections_router, smartlists as smartlists_router, discover as discover_router, livetv as livetv_router, auth as auth_router, activity as activity_router
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
@@ -213,6 +213,7 @@ app.include_router(tags_router.router)
 app.include_router(collections_router.router)
 app.include_router(smartlists_router.router)
 app.include_router(discover_router.router)
+app.include_router(activity_router.router)
 app.include_router(livetv_router.router)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")

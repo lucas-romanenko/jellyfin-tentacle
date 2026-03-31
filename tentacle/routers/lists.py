@@ -545,6 +545,7 @@ def add_to_radarr(body: AddMissingBody, db: Session = Depends(get_db), user: Ten
     added = 0
     already_exists = 0
     failed = 0
+    release_date = None
 
     for tmdb_id in body.tmdb_ids:
         if db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first():
@@ -566,6 +567,24 @@ def add_to_radarr(body: AddMissingBody, db: Session = Depends(get_db), user: Ten
             if r.status_code < 400:
                 added += 1
                 _record_download_request(db, tmdb_id, "movie", user.id)
+                # Extract release date for feedback
+                if not release_date:
+                    try:
+                        movie_data = r.json()
+                        from datetime import datetime as _dt
+                        now = _dt.utcnow()
+                        for field in ("digitalRelease", "physicalRelease", "inCinemas"):
+                            val = movie_data.get(field)
+                            if val:
+                                try:
+                                    dt = _dt.fromisoformat(val.replace("Z", "+00:00")).replace(tzinfo=None)
+                                    if dt > now:
+                                        release_date = val[:10]
+                                        break
+                                except (ValueError, TypeError):
+                                    pass
+                    except Exception:
+                        pass
             elif r.status_code == 400 and "MovieExistsValidator" in r.text:
                 already_exists += 1
             else:
@@ -575,7 +594,10 @@ def add_to_radarr(body: AddMissingBody, db: Session = Depends(get_db), user: Ten
             logger.error(f"Failed to add tmdb:{tmdb_id} to Radarr: {e}")
             failed += 1
 
-    return {"added": added, "already_exists": already_exists, "failed": failed}
+    result = {"added": added, "already_exists": already_exists, "failed": failed}
+    if release_date:
+        result["release_date"] = release_date
+    return result
 
 
 @router.post("/add-to-sonarr")

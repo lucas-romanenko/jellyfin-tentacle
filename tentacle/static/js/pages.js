@@ -537,7 +537,13 @@ async function confirmAddToArr() {
   try {
     const r = await api(endpoint, { method: 'POST', body });
     if (r.added > 0) {
-      toast(`Added to ${arrName}`);
+      if (r.release_date && new Date(r.release_date) > new Date()) {
+        const rd = new Date(r.release_date);
+        const label = rd.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+        toast(`Added to ${arrName} — releases ${label}, will download when available`, 'info', 6000);
+      } else {
+        toast(`Added to ${arrName}`);
+      }
       closeModal('modal-add-to-radarr');
     } else if (r.already_exists > 0) {
       toast(`Already in ${arrName}`, 'info');
@@ -2464,6 +2470,109 @@ async function runMigration(dryRun) {
   }
 }
 
+// ── ACTIVITY (Downloads + Upcoming) ───────────────────────────────────────
+let _activityPollTimer = null;
+
+function startActivityPolling() {
+  stopActivityPolling();
+  loadActivity();
+  _activityPollTimer = setInterval(loadActivity, 15000);
+}
+
+function stopActivityPolling() {
+  if (_activityPollTimer) {
+    clearInterval(_activityPollTimer);
+    _activityPollTimer = null;
+  }
+}
+
+async function loadActivity() {
+  try {
+    const data = await api('/api/activity');
+    renderActivity(data);
+  } catch (_) {
+    // Silently hide on error
+    const el = document.getElementById('activity-section');
+    if (el) el.style.display = 'none';
+  }
+}
+
+function renderActivity(data) {
+  const section = document.getElementById('activity-section');
+  const dlContainer = document.getElementById('activity-downloads');
+  const dlList = document.getElementById('activity-downloads-list');
+  const urContainer = document.getElementById('activity-unreleased');
+  const urList = document.getElementById('activity-unreleased-list');
+
+  const hasDownloads = data.downloads && data.downloads.length > 0;
+  const hasUnreleased = data.unreleased && data.unreleased.length > 0;
+
+  if (!hasDownloads && !hasUnreleased) {
+    section.style.display = 'none';
+    return;
+  }
+  section.style.display = '';
+
+  // Downloads
+  if (hasDownloads) {
+    dlContainer.style.display = '';
+    dlList.innerHTML = data.downloads.map(d => {
+      const poster = d.poster_path
+        ? `<img src="https://image.tmdb.org/t/p/w92${d.poster_path}" style="width:80px;height:120px;object-fit:cover;border-radius:6px">`
+        : `<div style="width:80px;height:120px;background:var(--bg3);border-radius:6px;display:flex;align-items:center;justify-content:center;color:var(--text3);font-size:20px">◫</div>`;
+      const statusColors = { downloading: 'var(--blue)', importing: 'var(--green)', queued: 'var(--text3)', warning: 'var(--amber)' };
+      const barColor = statusColors[d.status] || 'var(--blue)';
+      const pct = Math.round(d.progress);
+      const statusLabel = d.status === 'downloading' ? `${pct}%` : d.status === 'importing' ? 'Importing' : d.status === 'queued' ? 'Queued' : 'Warning';
+      const epLabel = d.episode ? `<span style="color:var(--text3);font-size:10px">${d.episode}</span>` : '';
+      const etaLabel = d.eta ? `<span style="color:var(--text3);font-size:10px">ETA ${d.eta}</span>` : '';
+      return `
+        <div style="flex-shrink:0;width:80px;text-align:center">
+          <div style="position:relative">
+            ${poster}
+            <div style="position:absolute;bottom:0;left:0;right:0;height:4px;background:var(--bg3);border-radius:0 0 6px 6px;overflow:hidden">
+              <div style="height:100%;width:${pct}%;background:${barColor};transition:width 0.5s"></div>
+            </div>
+          </div>
+          <div style="font-size:11px;font-weight:500;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${d.title}">${d.title}</div>
+          <div style="font-size:10px;color:${barColor};font-weight:600">${statusLabel}</div>
+          ${epLabel}
+          ${etaLabel}
+        </div>`;
+    }).join('');
+  } else {
+    dlContainer.style.display = 'none';
+  }
+
+  // Unreleased
+  if (hasUnreleased) {
+    urContainer.style.display = '';
+    urList.innerHTML = data.unreleased.map(u => {
+      const poster = u.poster_path
+        ? `<img src="https://image.tmdb.org/t/p/w92${u.poster_path}" style="width:80px;height:120px;object-fit:cover;border-radius:6px;opacity:0.7">`
+        : `<div style="width:80px;height:120px;background:var(--bg3);border-radius:6px;display:flex;align-items:center;justify-content:center;color:var(--text3);font-size:20px;opacity:0.7">◫</div>`;
+      const releaseDate = u.release_date || '';
+      let relLabel = releaseDate;
+      if (releaseDate) {
+        const dt = new Date(releaseDate + 'T00:00:00');
+        const now = new Date();
+        const diffDays = Math.ceil((dt - now) / 86400000);
+        if (diffDays <= 0) relLabel = 'Soon';
+        else if (diffDays <= 30) relLabel = `${diffDays}d`;
+        else relLabel = dt.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+      }
+      return `
+        <div style="flex-shrink:0;width:80px;text-align:center">
+          ${poster}
+          <div style="font-size:11px;font-weight:500;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${u.title}">${u.title}</div>
+          <div style="font-size:10px;color:var(--text3)">${relLabel}</div>
+        </div>`;
+    }).join('');
+  } else {
+    urContainer.style.display = 'none';
+  }
+}
+
 // ── DISCOVER PAGE ────────────────────────────────────────────────────────
 let _discoverType = 'all';
 let _discoverSections = [];
@@ -3491,6 +3600,8 @@ async function vodPreviewSync() {
     loadVodPage, onVodProviderChange, showVodTab, loadVodCategories, vodFetchCategories,
     filterVodCats, setVodCatFilter, vodSelectAllVisible, vodToggleCat, vodSaveCategories,
     vodRunSync, vodPreviewSync,
+    // Activity
+    loadActivity, startActivityPolling, stopActivityPolling,
     // Discover
     loadDiscover, setDiscoverType, switchDiscoverSection, showDiscoverDetail,
     onDiscoverSearchInput, clearDiscoverSearch,

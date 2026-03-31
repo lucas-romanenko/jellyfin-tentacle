@@ -1731,6 +1731,18 @@ td.primary { color: var(--text); font-weight: 500; }
           </div>
 
           <div id="discover-tab-browse">
+            <!-- Activity: Downloads + Upcoming -->
+            <div id="activity-section" style="display:none;margin-bottom:20px">
+              <div id="activity-downloads" style="display:none">
+                <div style="font-size:12px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Downloading</div>
+                <div id="activity-downloads-list" style="display:flex;gap:12px;overflow-x:auto;padding-bottom:8px"></div>
+              </div>
+              <div id="activity-unreleased" style="display:none;margin-top:12px">
+                <div style="font-size:12px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Upcoming Releases</div>
+                <div id="activity-unreleased-list" style="display:flex;gap:12px;overflow-x:auto;padding-bottom:8px"></div>
+              </div>
+            </div>
+
             <div style="display:flex;gap:8px;align-items:center;margin-bottom:16px">
               <div style="position:relative;display:flex;align-items:center">
                 <input type="text" id="discover-search-input" placeholder="Search TMDB…" autocomplete="off" style="padding:6px 30px 6px 10px;border-radius:4px;border:1px solid var(--border2);background:var(--bg2);color:var(--text);font-size:13px;width:200px;outline:none;font-family:'DM Sans',sans-serif" oninput="onDiscoverSearchInput(this)">

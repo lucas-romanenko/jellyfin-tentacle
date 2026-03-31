@@ -196,6 +196,10 @@ function showPage(name) {
   if (state.currentPage === 'library' && name !== 'library') {
     if (typeof disconnectLibraryStream === 'function') disconnectLibraryStream();
   }
+  // Stop activity polling when leaving jellyfin page
+  if (state.currentPage === 'jellyfin' && name !== 'jellyfin') {
+    if (typeof stopActivityPolling === 'function') stopActivityPolling();
+  }
 
   state.currentPage = name;
 
@@ -247,7 +251,8 @@ function showJellyfinTab(tab) {
   if (actions) actions.style.display = tab === 'playlists' ? 'flex' : 'none';
   // Load tab content on switch
   if (tab === 'playlists') { loadAutoPlaylists(); loadTagRules(); }
-  if (tab === 'discover') loadDiscover();
+  if (tab === 'discover') { loadDiscover(); startActivityPolling(); }
+  else { stopActivityPolling(); }
   if (tab === 'home') loadHomeScreen();
 }
 
