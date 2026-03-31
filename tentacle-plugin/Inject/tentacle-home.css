@@ -46,14 +46,14 @@
   position: absolute;
   inset: 0;
   opacity: 0;
-  transition: opacity 0.5s ease-in-out;
+  visibility: hidden;
+  transition: opacity 0.8s ease-in-out, visibility 0.8s;
   pointer-events: none;
-  display: none;
 }
 .mh-hero-slide.active {
   opacity: 1;
+  visibility: visible;
   pointer-events: auto;
-  display: block;
 }
 
 /* ── Ken Burns Backdrop ────────────────────────────────────────────── */
