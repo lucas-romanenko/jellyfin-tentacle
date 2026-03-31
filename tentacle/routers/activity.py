@@ -23,11 +23,18 @@ router = APIRouter(prefix="/api/activity", tags=["activity"])
 _unreleased_cache: dict = {"data": None, "ts": 0}
 UNRELEASED_TTL = 300  # 5 minutes
 
+# ── Throttled refresh (don't spam Radarr/Sonarr command queue) ────────────
+_last_refresh: dict = {"radarr": 0, "sonarr": 0}
+REFRESH_INTERVAL = 10  # seconds between RefreshMonitoredDownloads calls
 
-def _trigger_refresh(url: str, api_key: str) -> None:
-    """Tell Radarr/Sonarr to re-check download client progress immediately.
-    Fire-and-forget — the refresh updates their internal state so the NEXT
-    queue fetch returns fresh data. Creates a pipeline effect."""
+
+def _trigger_refresh_throttled(key: str, url: str, api_key: str) -> None:
+    """Tell Radarr/Sonarr to re-check download client progress.
+    Throttled to once per REFRESH_INTERVAL to avoid command queue backlog."""
+    now = time.time()
+    if (now - _last_refresh[key]) < REFRESH_INTERVAL:
+        return
+    _last_refresh[key] = now
     try:
         requests.post(
             f"{url.rstrip('/')}/api/v3/command",
@@ -36,7 +43,7 @@ def _trigger_refresh(url: str, api_key: str) -> None:
             timeout=2,
         )
     except Exception:
-        pass  # best-effort, don't block
+        pass
 
 
 def _fetch_radarr_queue(url: str, api_key: str) -> list:
@@ -175,12 +182,12 @@ def _build_downloads(db: Session) -> list:
     downloads = []
     futures = {}
     with ThreadPoolExecutor(max_workers=4) as pool:
-        # Fire refresh commands first (fire-and-forget, preps data for next poll)
+        # Fire throttled refresh commands (preps data for next poll cycle)
         if radarr_url and radarr_key:
-            pool.submit(_trigger_refresh, radarr_url, radarr_key)
+            pool.submit(_trigger_refresh_throttled, "radarr", radarr_url, radarr_key)
             futures["radarr"] = pool.submit(_fetch_radarr_queue, radarr_url, radarr_key)
         if sonarr_url and sonarr_key:
-            pool.submit(_trigger_refresh, sonarr_url, sonarr_key)
+            pool.submit(_trigger_refresh_throttled, "sonarr", sonarr_url, sonarr_key)
             futures["sonarr"] = pool.submit(_fetch_sonarr_queue, sonarr_url, sonarr_key)
 
         for key, future in futures.items():

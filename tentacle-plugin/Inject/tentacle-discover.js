@@ -254,6 +254,7 @@
       MD.sections.unshift({ id: 'activity', title: 'Activity', items: [], _activityCount: activityCount });
 
       renderSectionTabs();
+      startActivityPolling();
       if (MD.sections.length > 0) {
         var targetId = MD.activeSection || MD.sections[0].id;
         var found = MD.sections.find(function (s) { return s.id === targetId; });
@@ -332,13 +333,9 @@
       btn.classList.toggle('md-section-active', btn.getAttribute('data-section') === sectionId);
     });
 
-    // Start/stop activity polling based on active tab
     if (sectionId === 'activity') {
       renderActivity();
-      startActivityPolling();
       return;
-    } else {
-      stopActivityPolling();
     }
 
     var section = MD.sections && MD.sections.find(function (s) { return s.id === sectionId; });
@@ -696,20 +693,23 @@
   function startActivityPolling() {
     stopActivityPolling();
     MD.activityTimer = setInterval(function () {
-      if (!MD.active || MD.activeSection !== 'activity') {
+      if (!MD.active) {
         stopActivityPolling();
         return;
       }
       apiGet('TentacleDiscover/Activity').then(function (data) {
         MD.activityData = data;
-        // Update tab count
+        // Always update tab badge count
         var activitySection = MD.sections && MD.sections.find(function (s) { return s.id === 'activity'; });
         if (activitySection) {
           activitySection._activityCount = (data.downloads || []).length + (data.unreleased || []).length;
           var tabBtn = document.querySelector('.md-section-tab[data-section="activity"] .md-section-count');
           if (tabBtn) tabBtn.textContent = activitySection._activityCount;
         }
-        renderActivity();
+        // Only re-render if user is viewing the activity tab
+        if (MD.activeSection === 'activity') {
+          renderActivity();
+        }
       }).catch(function () {});
     }, 3000);
   }
