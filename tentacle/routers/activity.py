@@ -126,14 +126,8 @@ def _format_time(timeleft: str) -> str:
     if not timeleft:
         return ""
     try:
-        parts = timeleft.split(":")
-        if len(parts) == 3:
-            h, m, s = int(parts[0]), int(parts[1]), int(parts[2])
-            if h > 0:
-                return f"{h}h {m}m"
-            return f"{m}m"
-        # Handle day format like "1.02:30:00"
-        if "." in timeleft:
+        # Handle day format like "1.02:30:00" first
+        if "." in timeleft.split(":")[0]:
             day_rest = timeleft.split(".")
             days = int(day_rest[0])
             rest = day_rest[1].split(":")
@@ -141,6 +135,14 @@ def _format_time(timeleft: str) -> str:
             if days > 0:
                 return f"{days}d {h}h"
             return f"{h}h"
+        parts = timeleft.split(":")
+        if len(parts) == 3:
+            h, m, s = int(parts[0]), int(parts[1]), int(parts[2])
+            if h == 0 and m == 0 and s == 0:
+                return ""
+            if h > 0:
+                return f"{h}h {m}m"
+            return f"{m}m {s}s" if m < 2 else f"{m}m"
     except (ValueError, IndexError):
         pass
     return timeleft
