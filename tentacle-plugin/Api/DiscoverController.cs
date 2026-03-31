@@ -24,7 +24,7 @@ public class TentacleDiscoverController : ControllerBase
     private static string? _cachedConfig;
     private static DateTime _configCacheExpiry = DateTime.MinValue;
 
-    // In-memory cache for activity data (10 seconds)
+    // No cache for activity data — always fetch fresh for real-time progress
     private static string? _cachedActivity;
     private static DateTime _activityCacheExpiry = DateTime.MinValue;
 
@@ -140,17 +140,12 @@ public class TentacleDiscoverController : ControllerBase
 
     /// <summary>
     /// Proxies activity data (downloads + unreleased) from Tentacle.
-    /// Cached for 10 seconds.
+    /// No cache — always fetches fresh data for real-time progress.
     /// </summary>
     [HttpGet("Activity")]
     [Authorize]
     public async Task<ActionResult> GetActivity()
     {
-        if (_cachedActivity != null && DateTime.UtcNow < _activityCacheExpiry)
-        {
-            return Content(_cachedActivity, "application/json");
-        }
-
         var baseUrl = GetTentacleUrl();
         if (string.IsNullOrEmpty(baseUrl))
         {
@@ -160,8 +155,6 @@ public class TentacleDiscoverController : ControllerBase
         try
         {
             var response = await HttpClient.GetStringAsync($"{baseUrl}/api/activity");
-            _cachedActivity = response;
-            _activityCacheExpiry = DateTime.UtcNow.AddSeconds(10);
             return Content(response, "application/json");
         }
         catch (Exception ex)

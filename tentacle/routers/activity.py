@@ -21,7 +21,7 @@ router = APIRouter(prefix="/api/activity", tags=["activity"])
 
 # ── In-memory cache (10s TTL) ─────────────────────────────────────────────
 _cache: dict = {"data": None, "ts": 0}
-CACHE_TTL = 10  # seconds
+CACHE_TTL = 3  # seconds
 
 
 def _fetch_radarr_queue(url: str, api_key: str) -> list:
