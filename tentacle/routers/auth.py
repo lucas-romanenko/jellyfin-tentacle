@@ -92,11 +92,12 @@ def get_user_from_request(request: Request, db: Session = Depends(get_db)) -> Te
 
 
 def require_admin(request: Request, db: Session = Depends(get_db)) -> Optional[TentacleUser]:
-    """Require admin role. Allows access in bootstrap mode (no users yet)."""
+    """Require admin role. Allows access in bootstrap mode (no users yet).
+    Supports both session cookie and ?userId= query param (for plugin API calls)."""
     # Bootstrap mode: if no users exist, allow unauthenticated access
     if db.query(TentacleUser).count() == 0:
         return None
-    user = get_current_user(request, db)
+    user = get_user_from_request(request, db)
     if not user.is_admin:
         raise HTTPException(403, "Admin access required")
     return user

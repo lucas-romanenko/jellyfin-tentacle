@@ -556,7 +556,8 @@
 
   function loadDownloadOptions(item) {
     var isSeries = item.media_type === 'series';
-    var profileEp = isSeries ? 'TentacleDiscover/SonarrProfiles' : 'TentacleDiscover/RadarrProfiles';
+    var uid = window.ApiClient.getCurrentUserId();
+    var profileEp = isSeries ? 'TentacleDiscover/SonarrProfiles?userId=' + uid : 'TentacleDiscover/RadarrProfiles?userId=' + uid;
 
     apiGet(profileEp).then(function (profiles) {
       profiles = profiles || [];
@@ -589,7 +590,8 @@
     status.textContent = '';
 
     var isSeries = item.media_type === 'series';
-    var ep = isSeries ? 'TentacleDiscover/AddToSonarr' : 'TentacleDiscover/AddToRadarr';
+    var uid = window.ApiClient.getCurrentUserId();
+    var ep = isSeries ? 'TentacleDiscover/AddToSonarr?userId=' + uid : 'TentacleDiscover/AddToRadarr?userId=' + uid;
 
     var body = {
       tmdb_ids: [item.tmdb_id],
