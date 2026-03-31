@@ -482,6 +482,10 @@
 .md-activity-tab {
   margin-left: auto;
 }
+.md-activity-tab .md-section-count.has-activity {
+  background: rgb(79, 70, 229);
+  color: #fff;
+}
 .md-activity-tab.md-section-active {
   background: rgb(79, 70, 229);
   color: #fff;

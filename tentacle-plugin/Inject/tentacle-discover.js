@@ -313,9 +313,10 @@
 
     tabsEl.innerHTML = MD.sections.map(function (sec) {
       var count = sec.id === 'activity' ? (sec._activityCount || 0) : sec.items.length;
+      var hasActivity = sec.id === 'activity' && count > 0 ? ' has-activity' : '';
       return '<button class="md-section-tab' + (sec.id === 'activity' ? ' md-activity-tab' : '') + '" data-section="' + sec.id + '">' +
         esc(SECTION_LABELS[sec.id] || sec.title) +
-        '<span class="md-section-count">' + count + '</span>' +
+        '<span class="md-section-count' + hasActivity + '">' + count + '</span>' +
       '</button>';
     }).join('');
 
@@ -722,7 +723,10 @@
         if (activitySection) {
           activitySection._activityCount = (data.downloads || []).length + (data.unreleased || []).length;
           var tabBtn = document.querySelector('.md-section-tab[data-section="activity"] .md-section-count');
-          if (tabBtn) tabBtn.textContent = activitySection._activityCount;
+          if (tabBtn) {
+            tabBtn.textContent = activitySection._activityCount;
+            tabBtn.classList.toggle('has-activity', activitySection._activityCount > 0);
+          }
         }
         // Only re-render if user is viewing the activity tab
         if (MD.activeSection === 'activity') {
