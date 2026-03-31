@@ -360,12 +360,20 @@
         var poster = item.poster_path
           ? '<img src="https://image.tmdb.org/t/p/w185' + item.poster_path + '" loading="lazy" onerror="this.style.display=\'none\'">'
           : '<div class="md-card-poster-placeholder">&#9707;</div>';
-        var badge = item.in_library
-          ? '<div class="md-card-badge md-badge-inlib">In Library</div>'
-          : '<div class="md-card-badge md-badge-type">' + (item.media_type === 'movie' ? 'Movie' : 'Show') + '</div>';
-        var addBtn = !item.in_library
-          ? '<button class="md-card-add" data-tmdb="' + item.tmdb_id + '">+</button>'
-          : '';
+        var dlInfo = getDownloadInfo(item.tmdb_id);
+        var badge, addBtn;
+        if (dlInfo) {
+          var pct = (dlInfo.progress || 0).toFixed(1);
+          var statusText = dlInfo.status === 'importing' ? 'Importing' : dlInfo.status === 'queued' ? 'Queued' : 'Downloading ' + pct + '%';
+          badge = '<div class="md-card-badge md-badge-downloading">' + statusText + '</div>';
+          addBtn = '';
+        } else if (item.in_library) {
+          badge = '<div class="md-card-badge md-badge-inlib">In Library</div>';
+          addBtn = '';
+        } else {
+          badge = '<div class="md-card-badge md-badge-type">' + (item.media_type === 'movie' ? 'Movie' : 'Show') + '</div>';
+          addBtn = '<button class="md-card-add" data-tmdb="' + item.tmdb_id + '">+</button>';
+        }
         var listTag = item.list_name
           ? '<div class="md-card-list-tag">' + esc(item.list_name) + '</div>'
           : '';
@@ -447,7 +455,17 @@
       : '';
 
     var downloadSection = '';
-    if (item.in_library) {
+    var modalDlInfo = getDownloadInfo(item.tmdb_id);
+    if (modalDlInfo) {
+      var dlPct = (modalDlInfo.progress || 0).toFixed(1);
+      var dlStatus = modalDlInfo.status === 'importing' ? 'Importing…' : modalDlInfo.status === 'queued' ? 'Queued' : 'Downloading ' + dlPct + '%';
+      var dlEta = modalDlInfo.eta ? ' · ETA ' + modalDlInfo.eta : '';
+      var dlSize = modalDlInfo.size_remaining ? ' · ' + modalDlInfo.size_remaining + ' left' : '';
+      downloadSection =
+        '<div class="md-inlib-row">' +
+          '<div class="md-downloading-badge">' + dlStatus + dlEta + dlSize + '</div>' +
+        '</div>';
+    } else if (item.in_library) {
       downloadSection =
         '<div class="md-inlib-row">' +
           '<div class="md-inlib-badge">✓ Already in library</div>' +
@@ -719,6 +737,11 @@
       clearInterval(MD.activityTimer);
       MD.activityTimer = null;
     }
+  }
+
+  function getDownloadInfo(tmdbId) {
+    if (!tmdbId || !MD.activityData || !MD.activityData.downloads) return null;
+    return MD.activityData.downloads.find(function (dl) { return dl.tmdb_id == tmdbId; }) || null;
   }
 
   function esc(str) {
