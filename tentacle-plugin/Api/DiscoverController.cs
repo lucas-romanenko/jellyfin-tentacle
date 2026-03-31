@@ -24,6 +24,10 @@ public class TentacleDiscoverController : ControllerBase
     private static string? _cachedConfig;
     private static DateTime _configCacheExpiry = DateTime.MinValue;
 
+    // In-memory cache for activity data (10 seconds)
+    private static string? _cachedActivity;
+    private static DateTime _activityCacheExpiry = DateTime.MinValue;
+
     public TentacleDiscoverController(ILogger<TentacleDiscoverController> logger)
     {
         _logger = logger;
@@ -38,6 +42,8 @@ public class TentacleDiscoverController : ControllerBase
         _cachedConfig = null;
         _configCacheExpiry = DateTime.MinValue;
         _itemsCache.Clear();
+        _cachedActivity = null;
+        _activityCacheExpiry = DateTime.MinValue;
     }
 
     private string GetTentacleUrl()
@@ -112,6 +118,39 @@ public class TentacleDiscoverController : ControllerBase
         {
             _logger.LogWarning("[Tentacle Discover] Failed to fetch config: {Error}", ex.Message);
             return Ok(new { discover_in_jellyfin = false });
+        }
+    }
+
+    /// <summary>
+    /// Proxies activity data (downloads + unreleased) from Tentacle.
+    /// Cached for 10 seconds.
+    /// </summary>
+    [HttpGet("Activity")]
+    [Authorize]
+    public async Task<ActionResult> GetActivity()
+    {
+        if (_cachedActivity != null && DateTime.UtcNow < _activityCacheExpiry)
+        {
+            return Content(_cachedActivity, "application/json");
+        }
+
+        var baseUrl = GetTentacleUrl();
+        if (string.IsNullOrEmpty(baseUrl))
+        {
+            return Ok(new { downloads = Array.Empty<object>(), unreleased = Array.Empty<object>() });
+        }
+
+        try
+        {
+            var response = await HttpClient.GetStringAsync($"{baseUrl}/api/activity");
+            _cachedActivity = response;
+            _activityCacheExpiry = DateTime.UtcNow.AddSeconds(10);
+            return Content(response, "application/json");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("[Tentacle Discover] Failed to fetch activity: {Error}", ex.Message);
+            return Ok(new { downloads = Array.Empty<object>(), unreleased = Array.Empty<object>() });
         }
     }
 
