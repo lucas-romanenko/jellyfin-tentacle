@@ -514,8 +514,8 @@
   border-color: rgba(255, 255, 255, 0.2);
 }
 .md-activity-poster {
-  width: 50px;
-  min-width: 50px;
+  width: 70px;
+  min-width: 70px;
   aspect-ratio: 2/3;
   border-radius: 0.5em;
   overflow: hidden;

@@ -172,6 +172,21 @@ def _get_poster(db: Session, tmdb_id: int, media_type: str) -> Optional[str]:
         return s[0] if s else None
 
 
+def _extract_poster(arr_item: dict) -> Optional[str]:
+    """Extract TMDB poster path from Radarr/Sonarr images array."""
+    for img in arr_item.get("images", []):
+        if img.get("coverType") == "poster":
+            url = img.get("remoteUrl", "")
+            # Radarr returns full TMDB URL like https://image.tmdb.org/t/p/original/abc.jpg
+            # Extract "/abc.jpg" — the path after the size segment
+            if "/t/p/" in url:
+                after = url.split("/t/p/")[1]  # "original/abc.jpg"
+                slash_idx = after.find("/")
+                if slash_idx >= 0:
+                    return after[slash_idx:]  # "/abc.jpg"
+    return None
+
+
 def _build_downloads(db: Session) -> list:
     """Fetch queue from Radarr/Sonarr — always fresh, no cache."""
     radarr_url = get_setting(db, "radarr_url")
@@ -210,7 +225,7 @@ def _build_downloads(db: Session) -> list:
                         elif dl_state == "downloading" and progress == 0:
                             status = "queued"
 
-                        poster = _get_poster(db, tmdb_id, "movie")
+                        poster = _get_poster(db, tmdb_id, "movie") or _extract_poster(movie)
                         downloads.append({
                             "tmdb_id": tmdb_id,
                             "title": movie.get("title", item.get("title", "")),
@@ -247,7 +262,7 @@ def _build_downloads(db: Session) -> list:
                         if episode:
                             ep_label = f"S{episode.get('seasonNumber', 0):02d}E{episode.get('episodeNumber', 0):02d}"
 
-                        poster = _get_poster(db, tmdb_id, "series")
+                        poster = _get_poster(db, tmdb_id, "series") or _extract_poster(series)
                         downloads.append({
                             "tmdb_id": tmdb_id,
                             "title": series.get("title", item.get("title", "")),
