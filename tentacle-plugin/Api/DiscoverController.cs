@@ -238,7 +238,7 @@ public class TentacleDiscoverController : ControllerBase
             var content = new StringContent(body.GetRawText(), System.Text.Encoding.UTF8, "application/json");
             var response = await HttpClient.PostAsync(AppendUserId($"{baseUrl}/api/lists/add-to-radarr"), content);
             var result = await response.Content.ReadAsStringAsync();
-            return Content(result, "application/json");
+            return new ContentResult { Content = result, ContentType = "application/json", StatusCode = (int)response.StatusCode };
         }
         catch (Exception ex)
         {
@@ -265,7 +265,7 @@ public class TentacleDiscoverController : ControllerBase
             var content = new StringContent(body.GetRawText(), System.Text.Encoding.UTF8, "application/json");
             var response = await HttpClient.PostAsync(AppendUserId($"{baseUrl}/api/lists/add-to-sonarr"), content);
             var result = await response.Content.ReadAsStringAsync();
-            return Content(result, "application/json");
+            return new ContentResult { Content = result, ContentType = "application/json", StatusCode = (int)response.StatusCode };
         }
         catch (Exception ex)
         {
