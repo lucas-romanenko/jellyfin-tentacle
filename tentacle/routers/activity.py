@@ -25,7 +25,7 @@ UNRELEASED_TTL = 300  # 5 minutes
 
 # ── Throttled refresh (don't spam Radarr/Sonarr command queue) ────────────
 _last_refresh: dict = {"radarr": 0, "sonarr": 0}
-REFRESH_INTERVAL = 10  # seconds between RefreshMonitoredDownloads calls
+REFRESH_INTERVAL = 5  # seconds between RefreshMonitoredDownloads calls
 
 
 def _trigger_refresh_throttled(key: str, url: str, api_key: str) -> None:
