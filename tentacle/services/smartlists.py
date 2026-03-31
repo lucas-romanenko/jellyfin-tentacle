@@ -482,9 +482,18 @@ def sync_smartlists(db: Session, user_id: int = None) -> dict:
     # After syncing configs, populate playlists via Jellyfin API
     playlist_stats = refresh_smartlist_playlists(db, user_id=user_id)
 
+    # Sync artwork for this user's playlists
+    artwork_result = None
+    try:
+        from routers.collections import sync_playlist_artwork
+        artwork_result = sync_playlist_artwork(db)
+    except Exception as e:
+        logger.warning(f"Artwork sync failed: {e}")
+
     return {
         "created": created, "updated": updated, "removed": removed, "total": len(desired),
         "playlists": playlist_stats,
+        "artwork": artwork_result,
     }
 
 
