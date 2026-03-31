@@ -47,7 +47,7 @@
   inset: 0;
   opacity: 0;
   visibility: hidden;
-  transition: opacity 0.8s ease-in-out, visibility 0.8s;
+  transition: opacity 1.2s ease-in-out, visibility 1.2s;
   pointer-events: none;
 }
 .mh-hero-slide.active {
@@ -65,8 +65,12 @@
   border-radius: 5px;
   z-index: 1;
 }
-.mh-hero-slide.active .mh-hero-backdrop {
+.mh-hero-backdrop {
   animation: mh-kenburns 10s ease-out forwards;
+  animation-play-state: paused;
+}
+.mh-hero-slide.active .mh-hero-backdrop {
+  animation-play-state: running;
 }
 @keyframes mh-kenburns {
   from { transform: scale3d(1, 1, 1); }
