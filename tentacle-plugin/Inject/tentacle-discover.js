@@ -9,13 +9,15 @@
     enabled: null,
     sections: null,
     mediaFilter: 'all',    // all | movies | series
-    activeSection: null,    // trending | popular | missing | upcoming
+    activeSection: null,    // trending | popular | missing | upcoming | activity
     active: false,
     loaded: false,
     searchQuery: '',
     searchTimeout: null,
     searchMode: false,
     searchResults: [],
+    activityData: null,
+    activityTimer: null,
   };
 
   // ── Bootstrap ─────────────────────────────────────────────────────
@@ -131,6 +133,7 @@
 
   function hideDiscover() {
     MD.active = false;
+    stopActivityPolling();
 
     var btn = document.getElementById('mdDiscoverTab');
     if (btn) btn.classList.remove('emby-tab-button-active');
@@ -233,10 +236,26 @@
     if (content) content.innerHTML = '<div class="md-loading"><div class="md-spinner"></div><br>Loading…</div>';
 
     var typeParam = MD.mediaFilter === 'all' ? 'all' : MD.mediaFilter === 'movies' ? 'movies' : 'series';
-    apiGet('TentacleDiscover/Items?type=' + typeParam).then(function (data) {
+
+    // Fetch discover items and activity in parallel
+    var itemsPromise = apiGet('TentacleDiscover/Items?type=' + typeParam);
+    var activityPromise = apiGet('TentacleDiscover/Activity').catch(function () {
+      return { downloads: [], unreleased: [] };
+    });
+
+    Promise.all([itemsPromise, activityPromise]).then(function (results) {
+      var data = results[0];
+      var activity = results[1];
+      MD.activityData = activity;
       MD.sections = data.sections || [];
+
+      // Prepend activity section if there's any data
+      var activityCount = (activity.downloads || []).length + (activity.unreleased || []).length;
+      if (activityCount > 0) {
+        MD.sections.unshift({ id: 'activity', title: 'Activity', items: [], _activityCount: activityCount });
+      }
+
       renderSectionTabs();
-      // Activate first section or previously active
       if (MD.sections.length > 0) {
         var targetId = MD.activeSection || MD.sections[0].id;
         var found = MD.sections.find(function (s) { return s.id === targetId; });
@@ -282,6 +301,7 @@
 
   // ── Section tabs ──────────────────────────────────────────────────
   var SECTION_LABELS = {
+    activity: 'Activity',
     trending: 'Trending',
     popular: 'Popular',
     missing: 'From Your Lists',
@@ -293,9 +313,10 @@
     if (!tabsEl || !MD.sections) return;
 
     tabsEl.innerHTML = MD.sections.map(function (sec) {
-      return '<button class="md-section-tab" data-section="' + sec.id + '">' +
+      var count = sec.id === 'activity' ? (sec._activityCount || 0) : sec.items.length;
+      return '<button class="md-section-tab' + (sec.id === 'activity' ? ' md-activity-tab' : '') + '" data-section="' + sec.id + '">' +
         esc(SECTION_LABELS[sec.id] || sec.title) +
-        '<span class="md-section-count">' + sec.items.length + '</span>' +
+        '<span class="md-section-count">' + count + '</span>' +
       '</button>';
     }).join('');
 
@@ -312,6 +333,15 @@
     document.querySelectorAll('.md-section-tab').forEach(function (btn) {
       btn.classList.toggle('md-section-active', btn.getAttribute('data-section') === sectionId);
     });
+
+    // Start/stop activity polling based on active tab
+    if (sectionId === 'activity') {
+      renderActivity();
+      startActivityPolling();
+      return;
+    } else {
+      stopActivityPolling();
+    }
 
     var section = MD.sections && MD.sections.find(function (s) { return s.id === sectionId; });
     if (!section) return;
@@ -584,6 +614,111 @@
       btn.disabled = false;
       btn.textContent = 'Retry';
     });
+  }
+
+  // ── Activity rendering ────────────────────────────────────────────
+  function renderActivity() {
+    var content = document.getElementById('mdDiscoverContent');
+    if (!content || !MD.activityData) return;
+
+    var downloads = MD.activityData.downloads || [];
+    var unreleased = MD.activityData.unreleased || [];
+    var html = '';
+
+    if (downloads.length > 0) {
+      html += '<div class="md-activity-section">' +
+        '<div class="md-activity-section-title">Downloading</div>' +
+        '<div class="md-activity-grid">' +
+        downloads.map(function (dl) {
+          var poster = dl.poster_path
+            ? '<img src="https://image.tmdb.org/t/p/w185' + dl.poster_path + '" loading="lazy" onerror="this.style.display=\'none\'">'
+            : '<div class="md-card-poster-placeholder">&#9707;</div>';
+          var statusClass = 'md-dl-' + (dl.status || 'downloading');
+          var statusLabel = dl.status === 'importing' ? 'Importing' :
+            dl.status === 'queued' ? 'Queued' :
+            dl.status === 'warning' ? 'Warning' : 'Downloading';
+          var progressPct = Math.min(Math.max(dl.progress || 0, 0), 100);
+          var epLabel = dl.episode ? ' · ' + esc(dl.episode) : '';
+          var etaLabel = dl.eta ? ' · ' + esc(dl.eta) : '';
+          var sizeLabel = dl.size_remaining ? esc(dl.size_remaining) + ' left' : '';
+          var qualityLabel = dl.quality ? esc(dl.quality) : '';
+          var metaParts = [qualityLabel, sizeLabel].filter(Boolean).join(' · ');
+
+          return '<div class="md-activity-card">' +
+            '<div class="md-activity-poster">' + poster + '</div>' +
+            '<div class="md-activity-info">' +
+              '<div class="md-activity-title">' + esc(dl.title) + epLabel + '</div>' +
+              '<div class="md-activity-meta">' + (dl.year || '') + (metaParts ? ' · ' + metaParts : '') + '</div>' +
+              '<div class="md-activity-progress">' +
+                '<div class="md-progress-bar"><div class="md-progress-fill ' + statusClass + '" style="width:' + progressPct + '%"></div></div>' +
+                '<span class="md-progress-label">' + statusLabel + ' · ' + progressPct.toFixed(1) + '%' + etaLabel + '</span>' +
+              '</div>' +
+            '</div>' +
+          '</div>';
+        }).join('') +
+        '</div></div>';
+    }
+
+    if (unreleased.length > 0) {
+      html += '<div class="md-activity-section">' +
+        '<div class="md-activity-section-title">Upcoming Releases</div>' +
+        '<div class="md-activity-grid">' +
+        unreleased.map(function (item) {
+          var poster = item.poster_path
+            ? '<img src="https://image.tmdb.org/t/p/w185' + item.poster_path + '" loading="lazy" onerror="this.style.display=\'none\'">'
+            : '<div class="md-card-poster-placeholder">&#9707;</div>';
+          var daysUntil = '';
+          if (item.release_date) {
+            var rd = new Date(item.release_date + 'T00:00:00');
+            var now = new Date();
+            var diff = Math.ceil((rd - now) / 86400000);
+            daysUntil = diff <= 0 ? 'Releasing soon' : diff === 1 ? 'Tomorrow' : diff + ' days';
+          }
+          return '<div class="md-activity-card">' +
+            '<div class="md-activity-poster">' + poster + '</div>' +
+            '<div class="md-activity-info">' +
+              '<div class="md-activity-title">' + esc(item.title) + '</div>' +
+              '<div class="md-activity-meta">' + (item.year || '') + ' · ' + esc(item.release_date || '') + '</div>' +
+              (daysUntil ? '<div class="md-activity-countdown">' + esc(daysUntil) + '</div>' : '') +
+            '</div>' +
+          '</div>';
+        }).join('') +
+        '</div></div>';
+    }
+
+    if (!html) {
+      html = '<div class="md-loading">No active downloads or upcoming releases</div>';
+    }
+
+    content.innerHTML = html;
+  }
+
+  function startActivityPolling() {
+    stopActivityPolling();
+    MD.activityTimer = setInterval(function () {
+      if (!MD.active || MD.activeSection !== 'activity') {
+        stopActivityPolling();
+        return;
+      }
+      apiGet('TentacleDiscover/Activity').then(function (data) {
+        MD.activityData = data;
+        // Update tab count
+        var activitySection = MD.sections && MD.sections.find(function (s) { return s.id === 'activity'; });
+        if (activitySection) {
+          activitySection._activityCount = (data.downloads || []).length + (data.unreleased || []).length;
+          var tabBtn = document.querySelector('.md-section-tab[data-section="activity"] .md-section-count');
+          if (tabBtn) tabBtn.textContent = activitySection._activityCount;
+        }
+        renderActivity();
+      }).catch(function () {});
+    }, 15000);
+  }
+
+  function stopActivityPolling() {
+    if (MD.activityTimer) {
+      clearInterval(MD.activityTimer);
+      MD.activityTimer = null;
+    }
   }
 
   function esc(str) {

@@ -464,6 +464,108 @@
 }
 @keyframes md-spin { to { transform: rotate(360deg); } }
 
+/* ── Activity section ───────────────────────────────────────────────── */
+.md-activity-tab.md-section-active {
+  background: rgb(79, 70, 229);
+  color: #fff;
+  border-color: rgb(79, 70, 229);
+}
+.md-activity-tab.md-section-active .md-section-count {
+  background: rgba(255,255,255,.2);
+}
+.md-activity-section {
+  padding: 0 3.3% 24px;
+}
+.md-activity-section-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: rgb(209, 213, 219);
+  margin-bottom: 12px;
+}
+.md-activity-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.md-activity-card {
+  display: flex;
+  gap: 14px;
+  padding: 12px;
+  border-radius: 0.75em;
+  border: 0.06em solid hsl(214, 13%, 22%);
+  background: rgba(17, 24, 39, 0.6);
+  transition: border-color 125ms;
+}
+.md-activity-card:hover {
+  border-color: rgba(255, 255, 255, 0.2);
+}
+.md-activity-poster {
+  width: 50px;
+  min-width: 50px;
+  aspect-ratio: 2/3;
+  border-radius: 0.5em;
+  overflow: hidden;
+  background: #1d2635;
+}
+.md-activity-poster img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.md-activity-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+}
+.md-activity-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: rgb(209, 213, 219);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.md-activity-meta {
+  font-size: 12px;
+  color: rgb(156, 163, 175);
+}
+.md-activity-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 2px;
+}
+.md-progress-bar {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255,255,255,.1);
+  overflow: hidden;
+}
+.md-progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 1s ease;
+}
+.md-dl-downloading { background: rgb(79, 70, 229); }
+.md-dl-importing { background: rgb(41, 154, 93); }
+.md-dl-queued { background: rgb(156, 163, 175); }
+.md-dl-warning { background: rgb(234, 179, 8); }
+.md-progress-label {
+  font-size: 11px;
+  color: rgb(156, 163, 175);
+  white-space: nowrap;
+}
+.md-activity-countdown {
+  font-size: 12px;
+  font-weight: 500;
+  color: rgb(117, 111, 226);
+}
+
 /* ── Responsive ─────────────────────────────────────────────────────── */
 @media (max-width: 600px) {
   .md-discover-grid {
