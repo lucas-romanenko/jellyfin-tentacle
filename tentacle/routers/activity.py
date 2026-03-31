@@ -24,6 +24,21 @@ _unreleased_cache: dict = {"data": None, "ts": 0}
 UNRELEASED_TTL = 300  # 5 minutes
 
 
+def _trigger_refresh(url: str, api_key: str) -> None:
+    """Tell Radarr/Sonarr to re-check download client progress immediately.
+    Fire-and-forget — the refresh updates their internal state so the NEXT
+    queue fetch returns fresh data. Creates a pipeline effect."""
+    try:
+        requests.post(
+            f"{url.rstrip('/')}/api/v3/command",
+            headers={"X-Api-Key": api_key},
+            json={"name": "RefreshMonitoredDownloads"},
+            timeout=2,
+        )
+    except Exception:
+        pass  # best-effort, don't block
+
+
 def _fetch_radarr_queue(url: str, api_key: str) -> list:
     """Fetch active download queue from Radarr."""
     try:
@@ -159,10 +174,13 @@ def _build_downloads(db: Session) -> list:
 
     downloads = []
     futures = {}
-    with ThreadPoolExecutor(max_workers=2) as pool:
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        # Fire refresh commands first (fire-and-forget, preps data for next poll)
         if radarr_url and radarr_key:
+            pool.submit(_trigger_refresh, radarr_url, radarr_key)
             futures["radarr"] = pool.submit(_fetch_radarr_queue, radarr_url, radarr_key)
         if sonarr_url and sonarr_key:
+            pool.submit(_trigger_refresh, sonarr_url, sonarr_key)
             futures["sonarr"] = pool.submit(_fetch_sonarr_queue, sonarr_url, sonarr_key)
 
         for key, future in futures.items():
