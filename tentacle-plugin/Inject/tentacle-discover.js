@@ -711,7 +711,7 @@
         }
         renderActivity();
       }).catch(function () {});
-    }, 5000);
+    }, 3000);
   }
 
   function stopActivityPolling() {
