@@ -6,19 +6,17 @@
   <img src="docs/images/banner.png" alt="Jellyfin Tentacle" width="800">
 </p>
 
-[![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
-[![Jellyfin](https://img.shields.io/badge/Jellyfin-10.10+-00A4DC?logo=jellyfin&logoColor=white)](https://jellyfin.org/)
+[![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)](https://ghcr.io/lucas-romanenko/jellyfin-tentacle)
+[![Jellyfin](https://img.shields.io/badge/Jellyfin-10.11+-00A4DC?logo=jellyfin&logoColor=white)](https://jellyfin.org/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 ---
 
 ## What is Tentacle?
 
-Tentacle is a dashboard + Jellyfin plugin that adds IPTV live TV, VOD libraries from your IPTV provider, smart playlists, a Netflix-style home screen with hero spotlight, and content discovery — all from a single Docker container. No databases, no message queues, no build steps.
+Tentacle is a dashboard + Jellyfin plugin + Android TV app that adds IPTV live TV, VOD libraries from your IPTV provider, smart playlists, a Netflix-style home screen with hero spotlight, content discovery, and real-time download tracking — all from a single Docker container. No external databases, no message queues, no build steps.
 
-Add your IPTV provider and your Jellyfin home screen fills with curated rows, a hero banner, and a Discover tab showing what's trending. Connect Radarr and Sonarr, and downloads are automatically tagged, organized into playlists, and surfaced on the home screen.
-
-<!-- Screenshots coming soon -->
+Add your IPTV provider and your Jellyfin home screen fills with curated rows, a hero banner with Ken Burns crossfade, and a Discover tab showing what's trending. Connect Radarr and Sonarr, and downloads are automatically tagged, organized into playlists, and surfaced on the home screen. Multiple Jellyfin users get their own independent home screen layout, playlists, and content preferences.
 
 ---
 
@@ -27,7 +25,7 @@ Add your IPTV provider and your Jellyfin home screen fills with curated rows, a 
 ### 📺 Live TV & IPTV
 - Add your IPTV provider (Xtream, M3U URL, or M3U file) — replaces Threadfin
 - Browse and enable channel groups — only sync what you want
-- Full EPG program guide with automatic refresh
+- Full EPG program guide with automatic refresh and auto-chaining
 - Built-in HDHomeRun emulation — Jellyfin sees Tentacle as a native tuner
 - Stream proxy handles provider redirects and HLS-to-MPEG-TS conversion
 
@@ -41,30 +39,46 @@ Add your IPTV provider and your Jellyfin home screen fills with curated rows, a 
 - Auto playlists generated from synced content — toggle on the ones you want in Jellyfin
 - Create custom playlists with filters: genre, rating, year, runtime, source
 - Native Jellyfin queries for genre/rating playlists — sees your entire library, not just IPTV content
+- Per-playlist sort order (release date, name, rating, recently added, random)
 - Auto-generated playlist artwork via Logo.dev
 
 ### 🔍 Content Discovery
 - Trending, popular, and upcoming titles from TMDB
-- Subscribe to IMDb, Trakt, and Letterboxd lists
-- See what's missing from your library and add to Radarr/Sonarr in one click
+- Subscribe to IMDb, Trakt, and Letterboxd lists — auto-generate playlists from them
+- See what's missing from your library and add to Radarr/Sonarr with quality profile selection
 - Discover tab injected directly into Jellyfin via the companion plugin
+
+### 📊 Activity Tracking
+- Real-time download queue from Radarr and Sonarr with progress bars
+- Unreleased monitored movies with countdown badges
+- Activity tab in both Jellyfin (web UI) and the Android TV app
+- Polls every 3 seconds for live progress updates
 
 ### 🏠 Netflix-Style Home Screen
 - Drag-and-drop row ordering for the Jellyfin home page
-- Hero spotlight banner with backdrop and logo images
+- Hero spotlight banner with Ken Burns zoom and smooth crossfade transitions
 - Mix playlist rows with native Jellyfin sections (Continue Watching, Next Up, etc.)
 - Independent sort options per row and for the hero carousel
+- Per-user — each Jellyfin user customizes their own home screen independently
+
+### 👥 Multi-User Support
+- Netflix-style Jellyfin user picker on login
+- Per-user playlists, auto-playlist toggles, list subscriptions, and home screen layout
+- Admin / non-admin roles synced from Jellyfin — non-admins see Library + Jellyfin pages only
+- Owner protection — the first user can't have admin removed
 
 ### 📥 Radarr & Sonarr Integration
 - Automatic library scanning via webhooks — new downloads tagged and organized instantly
 - NFO files written for all downloaded content
 - Tags pushed to Jellyfin via API for `.mkv` files (Jellyfin ignores NFO tags for real video files)
 - Duplicate detection when Radarr downloads content that already exists as VOD
+- Quality profile selection when adding content from Discover
 
 ### ⚡ Lightweight
 - Single Docker container — FastAPI + SQLite + APScheduler
 - No external databases, message queues, or caches required
 - Vanilla HTML/JS frontend — no build step, no framework bloat
+- Built-in TMDB API key — zero-config metadata out of the box
 
 ---
 
@@ -113,16 +127,17 @@ Open `http://localhost:8888` — the setup wizard will guide you through connect
 
 ---
 
-## Plugin Installation
+## Components
 
-Tentacle is a monorepo with two components:
+Tentacle is a monorepo with three components:
 
 | Component | What it is | Where it runs |
 |-----------|-----------|---------------|
-| **Dashboard** | FastAPI web app | Docker container (port 8888) |
+| **Dashboard** | FastAPI web app (Python) | Docker container (port 8888) |
 | **Plugin** | Jellyfin plugin (C#) | Inside Jellyfin's plugin directory |
+| **Android TV App** | Custom Jellyfin Android TV fork (Kotlin) | Android TV / Fire TV devices |
 
-The dashboard works standalone, but the plugin is needed for the custom home screen, hero spotlight, and Discover tab inside Jellyfin.
+The dashboard works standalone. The plugin adds the custom home screen, hero spotlight, Discover tab, and Activity tab inside Jellyfin's web UI. The Android TV app provides the same experience on TV devices with D-pad navigation.
 
 ### Install the Plugin
 
@@ -136,6 +151,10 @@ The dashboard works standalone, but the plugin is needed for the custom home scr
 5. Configure: **Dashboard → Plugins → Tentacle**
    - Set **Tentacle URL** to your dashboard address (e.g. `http://192.168.1.100:8888`)
 
+### Install the Android TV App
+
+The Android TV app is in a [separate repository](https://github.com/lucas-romanenko/jellyfin-tentacle-androidtv). Download the latest APK from [GitHub Releases](https://github.com/lucas-romanenko/jellyfin-tentacle-androidtv/releases) and sideload it. The app coexists with the official Jellyfin Android TV app (different app ID).
+
 ---
 
 ## Architecture
@@ -147,6 +166,7 @@ The dashboard works standalone, but the plugin is needed for the custom home scr
 │  │  Tentacle Plugin                        │    │
 │  │  • Custom home screen rows & hero       │    │
 │  │  • Discover tab (trending/popular)      │    │
+│  │  • Activity tab (downloads/upcoming)    │    │
 │  │  • Injects CSS/JS via Harmony patch     │    │
 │  └──────────────────┬──────────────────────┘    │
 │                     │ fetches config via API      │
@@ -157,15 +177,26 @@ The dashboard works standalone, but the plugin is needed for the custom home scr
                       │
 ┌─────────────────────┴───────────────────────────┐
 │              Tentacle Dashboard                  │
+│  • Multi-user auth (per-user playlists & home)  │
 │  • VOD sync & NFO generation                    │
 │  • Live TV with HDHomeRun emulation             │
 │  • Smart playlists & tag engine                 │
 │  • Content discovery (TMDB)                     │
+│  • Activity tracking (Radarr/Sonarr queues)     │
 │  • Radarr & Sonarr webhook integration          │
 └──────┬──────────┬──────────┬───────────┬────────┘
        │          │          │           │
     IPTV       TMDB       Radarr      Sonarr
    Provider    API         API         API
+
+┌─────────────────────────────────────────────────┐
+│         Android TV App (optional)                │
+│  • Hero spotlight with auto-rotate              │
+│  • Tentacle home rows + Leanback integration    │
+│  • Discover tab with TMDB browsing              │
+│  • Activity tab with live download progress     │
+│  • Connects to Tentacle plugin endpoints        │
+└─────────────────────────────────────────────────┘
 ```
 
 ---
