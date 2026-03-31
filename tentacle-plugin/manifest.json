@@ -6,6 +6,7 @@
     "overview": "Custom home screen with hero spotlight, smart playlists, and a Discover tab \u2014 powered by the Tentacle dashboard.",
     "owner": "lucas-romanenko",
     "category": "General",
+    "imageUrl": "https://raw.githubusercontent.com/lucas-romanenko/jellyfin-tentacle/main/tentacle-plugin/logo.png",
     "versions": [
       {
         "version": "2.23.0.0",
