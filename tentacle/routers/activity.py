@@ -112,6 +112,7 @@ def _fetch_radarr_unreleased(url: str, api_key: str) -> list:
                     "source": "radarr",
                     "release_date": release.strftime("%Y-%m-%d"),
                     "status": "unreleased",
+                    "radarr_poster": _extract_poster(m),
                 })
         unreleased.sort(key=lambda x: x["release_date"])
         return unreleased
@@ -298,9 +299,9 @@ def _get_unreleased(db: Session) -> list:
         return []
 
     unreleased = _fetch_radarr_unreleased(radarr_url, radarr_key)
-    # Enrich with posters
+    # Enrich with posters (DB first, then Radarr fallback)
     for item in unreleased:
-        item["poster_path"] = _get_poster(db, item.get("tmdb_id"), "movie")
+        item["poster_path"] = _get_poster(db, item.get("tmdb_id"), "movie") or item.pop("radarr_poster", None)
 
     result = unreleased[:20]
     _unreleased_cache["data"] = result
