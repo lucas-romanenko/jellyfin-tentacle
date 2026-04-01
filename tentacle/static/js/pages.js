@@ -262,9 +262,200 @@ async function loadLibrary() {
   pages.lib.offset = 0;
   pages.lib.items = [];
   loadLibListPills();
+  loadLibStats();
+  loadLibDownloads();
+  loadLibSyncSummary();
+  checkStaleFiles();
   await fetchLibraryPage();
   // Update duplicates tab badge
   _updateDupBadges();
+}
+
+// ── Library Stats Bar ──
+async function loadLibStats() {
+  try {
+    const d = await api('/api/sync/dashboard');
+    const lib = d.library || {};
+    const el = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
+    el('lib-stat-movies', (lib.total_movies ?? 0).toLocaleString());
+    el('lib-stat-series', (lib.total_series ?? 0).toLocaleString());
+    el('lib-stat-downloaded', ((lib.radarr_movies || 0) + (lib.sonarr_series || 0)).toLocaleString());
+    el('lib-stat-vod', ((lib.vod_movies || 0) + (lib.vod_series || 0)).toLocaleString());
+    el('lib-stat-movies-sub', `${lib.radarr_movies || 0} downloaded, ${lib.vod_movies || 0} VOD`);
+    el('lib-stat-series-sub', `${lib.sonarr_series || 0} downloaded, ${lib.vod_series || 0} VOD`);
+    el('lib-stat-downloaded-sub', `${lib.radarr_movies || 0} movies, ${lib.sonarr_series || 0} series`);
+    el('lib-stat-vod-sub', `${lib.vod_movies || 0} movies, ${lib.vod_series || 0} series`);
+    // Duplicate badge
+    const dup = document.getElementById('dup-badge');
+    if (dup) {
+      const pending = lib.pending_duplicates || 0;
+      if (pending > 0) { dup.style.display = 'inline'; dup.textContent = pending; }
+      else { dup.style.display = 'none'; }
+    }
+    // Jellyfin connection banner
+    const cfg = d.config || {};
+    const jfBanner = document.getElementById('jellyfin-error-banner');
+    if (jfBanner) {
+      if (!cfg.jellyfin_url_configured) {
+        document.getElementById('jellyfin-banner-title').textContent = 'Jellyfin Not Configured';
+        document.getElementById('jellyfin-banner-msg').textContent = 'Set up your Jellyfin connection in Settings → Connections';
+        jfBanner.style.display = '';
+      } else if (cfg.jellyfin_connected === false) {
+        document.getElementById('jellyfin-banner-title').textContent = 'Jellyfin Connection Failed';
+        document.getElementById('jellyfin-banner-msg').textContent = 'Check your API key in Settings → Connections';
+        jfBanner.style.display = '';
+      } else {
+        jfBanner.style.display = 'none';
+      }
+    }
+    // Update sidebar last sync
+    const ts = d.status?.vod_sync?.timestamp;
+    if (ts) {
+      const sidebarSync = document.getElementById('sidebar-last-sync');
+      if (sidebarSync) sidebarSync.textContent = dashTimeAgo(ts) || '—';
+    }
+  } catch (e) { /* stats are non-critical */ }
+}
+
+// ── Library Downloads Section ──
+let _dlPollTimer = null;
+let _dlPollActive = false;
+
+async function loadLibDownloads() {
+  try {
+    const data = await api('/api/activity');
+    renderLibDownloads(data);
+    // Start polling only if there are active downloads
+    const hasActive = data.downloads && data.downloads.length > 0;
+    if (hasActive && !_dlPollTimer) {
+      _dlPollActive = true;
+      _dlPollTimer = setInterval(pollLibDownloads, 5000);
+    } else if (!hasActive) {
+      stopDownloadPolling();
+    }
+  } catch (e) {
+    // If endpoint not available, hide section silently
+    const el = document.getElementById('lib-downloads');
+    if (el) el.style.display = 'none';
+  }
+}
+
+async function pollLibDownloads() {
+  if (state.currentPage !== 'library') { stopDownloadPolling(); return; }
+  try {
+    const data = await api('/api/activity');
+    renderLibDownloads(data);
+    if (!data.downloads || data.downloads.length === 0) {
+      stopDownloadPolling();
+    }
+  } catch (e) { stopDownloadPolling(); }
+}
+
+function stopDownloadPolling() {
+  if (_dlPollTimer) { clearInterval(_dlPollTimer); _dlPollTimer = null; }
+  _dlPollActive = false;
+}
+
+function renderLibDownloads(data) {
+  const container = document.getElementById('lib-downloads');
+  const body = document.getElementById('lib-dl-body');
+  const countEl = document.getElementById('lib-dl-count');
+  const badge = document.getElementById('dl-badge');
+  if (!container || !body) return;
+
+  const dls = data.downloads || [];
+  if (badge) {
+    badge.style.display = dls.length > 0 ? '' : 'none';
+    badge.textContent = dls.length;
+  }
+  if (dls.length === 0) {
+    container.style.display = 'none';
+    return;
+  }
+  container.style.display = '';
+  countEl.textContent = `(${dls.length})`;
+  body.innerHTML = dls.map(d => {
+    const pct = d.progress != null ? Math.round(d.progress) : 0;
+    const status = (d.status || 'downloading').toLowerCase();
+    const statusClass = status.includes('import') ? 'importing' : status.includes('queue') ? 'queued' : 'downloading';
+    const eta = d.eta ? ` · ${d.eta}` : '';
+    const qual = d.quality ? ` · ${d.quality}` : '';
+    return `<div class="dl-item">
+      <div class="dl-item-title">${d.title || 'Unknown'}${d.episode ? ' — ' + d.episode : ''}</div>
+      <div class="dl-item-status ${statusClass}">${status}${qual}${eta}</div>
+      <div class="dl-item-bar"><div class="dl-item-bar-fill" style="width:${pct}%"></div></div>
+      <div class="dl-item-pct">${pct}%</div>
+    </div>`;
+  }).join('');
+}
+
+// ── Library Sync Summary ──
+async function loadLibSyncSummary() {
+  const container = document.getElementById('lib-sync-summary');
+  const body = document.getElementById('lib-sync-body');
+  const timeEl = document.getElementById('lib-sync-time');
+  if (!container || !body) return;
+  try {
+    const data = await api('/api/sync/summary');
+    if (!data || !data.completed_at) {
+      container.style.display = 'none';
+      return;
+    }
+    container.style.display = '';
+    timeEl.textContent = data.completed_at || '';
+    let html = '';
+    // VOD providers
+    if (data.providers && data.providers.length > 0) {
+      data.providers.forEach(p => {
+        let parts = [];
+        if (p.new_movies > 0 || p.new_series > 0) {
+          if (p.new_movies > 0) parts.push(`${p.new_movies} new movie${p.new_movies !== 1 ? 's' : ''}`);
+          if (p.new_series > 0) parts.push(`${p.new_series} new series`);
+        }
+        if (p.new_categories && p.new_categories.length > 0) {
+          parts.push(`<span style="color:var(--amber)">${p.new_categories.length} new categor${p.new_categories.length !== 1 ? 'ies' : 'y'}: ${p.new_categories.join(', ')}</span> <a href="#" onclick="showPage('vod');return false" style="color:var(--accent);font-size:11px">Enable →</a>`);
+        }
+        if (parts.length > 0) {
+          html += `<div style="margin-bottom:6px"><strong>${p.name}:</strong> ${parts.join(' · ')}</div>`;
+        }
+      });
+    }
+    // Radarr/Sonarr
+    if (data.radarr_new > 0 || data.sonarr_new > 0) {
+      let arrParts = [];
+      if (data.radarr_new > 0) arrParts.push(`${data.radarr_new} new Radarr movie${data.radarr_new !== 1 ? 's' : ''}`);
+      if (data.sonarr_new > 0) arrParts.push(`${data.sonarr_new} new Sonarr series`);
+      html += `<div style="margin-bottom:6px"><strong>Downloads:</strong> ${arrParts.join(', ')}</div>`;
+    }
+    // Lists
+    if (data.lists_updated && data.lists_updated.length > 0) {
+      html += `<div style="margin-bottom:6px"><strong>Lists:</strong> ${data.lists_updated.join(', ')} updated</div>`;
+    }
+    if (!html) {
+      html = '<div style="color:var(--text3)">No new content since last sync</div>';
+    } else {
+      html += `<div style="margin-top:8px"><a href="#" onclick="setLibSort('date_desc');document.getElementById('lib-sort').value='date_desc';fetchLibraryPage();return false" style="color:var(--accent);font-size:12px">View recently added →</a></div>`;
+    }
+    body.innerHTML = html;
+  } catch (e) {
+    container.style.display = 'none';
+  }
+}
+
+// ── Stale files check (moved from Dashboard) ──
+let _staleChecked = false;
+async function checkStaleFiles() {
+  if (_staleChecked) return;
+  _staleChecked = true;
+  if (!state.currentUser?.is_admin) return;
+  try {
+    const data = await api('/api/settings/stale-files');
+    if (data.show || data.has_stale) {
+      _staleData = data;
+      document.getElementById('stale-files-banner').style.display = '';
+      document.getElementById('stale-strm-count').textContent = data.strm_count || 0;
+    }
+  } catch (e) { /* ignore */ }
 }
 
 async function loadLibListPills() {
@@ -334,6 +525,7 @@ function _enterListMode() {
   pages.lib.type = 'all';
   pages.lib.src = 'all';
   pages.lib.sourceTag = null;
+  pages.lib.listStatus = 'in_library';  // Library is browse-only — no missing items
   document.querySelectorAll('[data-libtype]').forEach(b => b.classList.remove('active'));
   document.querySelectorAll('[data-libsrc]').forEach(b => b.classList.remove('active'));
   // Dim the type/source groups
@@ -341,12 +533,9 @@ function _enterListMode() {
   const srcGrp = document.getElementById('lib-src-group');
   if (typeGrp) typeGrp.style.opacity = '0.35';
   if (srcGrp) srcGrp.style.opacity = '0.35';
-  // Show list status sub-filter
+  // Hide list status sub-filter (Library is browse-only, no Missing filter)
   const statusEl = document.getElementById('lib-list-status');
-  if (statusEl) statusEl.classList.remove('hidden');
-  // Reset status buttons
-  document.querySelectorAll('[data-liststatus]').forEach(b => b.classList.remove('active'));
-  document.querySelector('[data-liststatus="all"]')?.classList.add('active');
+  if (statusEl) statusEl.classList.add('hidden');
 }
 
 function _exitListMode() {
@@ -434,28 +623,8 @@ async function fetchLibraryPage() {
 }
 
 function renderLibCard(item) {
-  // Missing item — dimmed card with hover "+" button
-  if (item.in_library === false) {
-    const poster = item.poster_path
-      ? `<img src="https://image.tmdb.org/t/p/w185${item.poster_path}" loading="lazy" style="opacity:0.45" onerror="this.parentElement.innerHTML='<div class=\\'lib-card-poster-placeholder\\' style=\\'opacity:0.4\\'>◫</div>'">`
-      : `<div class="lib-card-poster-placeholder" style="opacity:0.4">◫</div>`;
-    const tmdbId = item.tmdb_id || '';
-    const clickHandler = tmdbId ? `onclick="showCoverageDetail(${tmdbId},'${escapeAttr(item.media_type||'movie')}','${escapeJS(item.title)}','${escapeJS(item.year||'')}','${escapeJS(item.poster_path||'')}')"` : '';
-    return `
-    <div class="lib-card" data-tmdb-id="${tmdbId}" style="opacity:0.65" ${clickHandler}>
-      <div class="lib-card-poster">
-        ${poster}
-        <div class="lib-card-source">
-          <span class="badge" style="font-size:9px;padding:1px 5px;background:var(--bg3);color:var(--text3)">Missing</span>
-        </div>
-        ${tmdbId ? `<button onclick="event.stopPropagation();showAddToArrModal(${tmdbId},'${escapeJS(item.title)}','${escapeJS(item.year||'')}','${escapeJS(item.poster_path||'')}','${item.media_type || 'movie'}')" class="lib-card-add-btn" title="Add to ${item.media_type === 'series' ? 'Sonarr' : 'Radarr'}">+</button>` : ''}
-      </div>
-      <div class="lib-card-info">
-        <div class="lib-card-title" title="${escapeAttr(item.title)}">${item.title}</div>
-        <div class="lib-card-meta">${item.year || '—'}</div>
-      </div>
-    </div>`;
-  }
+  // Library is browse-only — skip missing items entirely
+  if (item.in_library === false) return '';
 
   // Normal in-library card
   const poster = item.poster_path
@@ -964,13 +1133,6 @@ async function loadJellyfinPage() {
     }
   } catch {}
 
-  // Load the discover_in_jellyfin toggle state
-  try {
-    const cfg = await api('/api/discover/config');
-    const cb = document.getElementById('discover_in_jellyfin');
-    if (cb) cb.checked = cfg.discover_in_jellyfin;
-  } catch {}
-
   // Load the currently active tab's content
   const activeTab = document.querySelector('[data-jftab].active');
   const tab = activeTab ? activeTab.getAttribute('data-jftab') : 'home';
@@ -981,7 +1143,14 @@ async function loadJellyfinPage() {
     loadAutoPlaylists();
     loadTagRules();
   }
-  if (tab === 'discover') loadDiscover();
+}
+
+async function loadDiscoverPage() {
+  // Load the active discover tab's content
+  const activeTab = document.querySelector('[data-discovertab].active');
+  const tab = activeTab ? activeTab.getAttribute('data-discovertab') : 'browse';
+  if (tab === 'browse') loadDiscover();
+  if (tab === 'lists') loadLists();
 }
 
 async function saveDiscoverInJellyfin() {
@@ -2705,7 +2874,7 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
 
 function setDiscoverType(type, btn) {
   _discoverType = type;
-  document.querySelectorAll('#jf-tab-discover .filter-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('#discover-tab-browse .filter-btn').forEach(b => b.classList.remove('active'));
   if (btn) btn.classList.add('active');
   if (_discoverSearchQuery) {
     doDiscoverSearch(_discoverSearchQuery);
@@ -3613,7 +3782,7 @@ async function vodPreviewSync() {
     // Activity
     loadActivity, startActivityPolling, stopActivityPolling,
     // Discover
-    loadDiscover, setDiscoverType, switchDiscoverSection, showDiscoverDetail,
+    loadDiscoverPage, loadDiscover, setDiscoverType, switchDiscoverSection, showDiscoverDetail,
     onDiscoverSearchInput, clearDiscoverSearch,
     // Live TV
     loadLiveTV, showLiveTab, onLiveTypeChange, saveLiveProvider, testLiveProvider,

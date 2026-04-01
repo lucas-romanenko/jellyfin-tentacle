@@ -1107,6 +1107,27 @@ td.primary { color: var(--text); font-weight: 500; }
 .activity-progress-label { font-size: 11px; color: var(--text3); white-space: nowrap; }
 .activity-countdown { font-size: 12px; font-weight: 500; color: rgb(117, 111, 226); }
 .activity-empty { text-align: center; padding: 40px; color: var(--text3); font-size: 13px; }
+
+/* ── Library downloads section ── */
+.dl-item {
+  display: flex; align-items: center; gap: 12px;
+  padding: 8px 16px; border-bottom: 1px solid var(--border);
+}
+.dl-item:last-child { border-bottom: none; }
+.dl-item-title {
+  font-size: 13px; font-weight: 500; flex: 1; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.dl-item-status {
+  font-size: 11px; font-weight: 500; padding: 2px 8px;
+  border-radius: 4px; white-space: nowrap;
+}
+.dl-item-status.downloading { background: var(--accent-dim); color: var(--accent); }
+.dl-item-status.importing { background: var(--green-dim); color: var(--green); }
+.dl-item-status.queued { background: var(--bg3); color: var(--text3); }
+.dl-item-bar { width: 120px; height: 4px; background: var(--bg3); border-radius: 2px; overflow: hidden; }
+.dl-item-bar-fill { height: 100%; border-radius: 2px; background: var(--accent); transition: width 0.5s ease; }
+.dl-item-pct { font-size: 11px; color: var(--text3); font-family: 'DM Mono', monospace; min-width: 36px; text-align: right; }
 </style>
 </head>
 <body>
@@ -1124,18 +1145,19 @@ td.primary { color: var(--text); font-weight: 500; }
 
     <nav class="sidebar-nav">
       <div class="nav-section">
-        <button class="nav-item active" data-page="dashboard" data-admin-only>
-          <span class="icon">⬡</span> Dashboard
-        </button>
-        <button class="nav-item" data-page="library">
+        <button class="nav-item active" data-page="library">
           <span class="icon">◫</span> Library
           <span class="nav-badge" id="dup-badge" style="display:none">0</span>
+          <span class="nav-badge" id="dl-badge" style="display:none;background:var(--accent)">0</span>
         </button>
         <button class="nav-item" data-page="vod" data-admin-only>
           <span class="icon">◉</span> VOD
         </button>
         <button class="nav-item" data-page="live-tv" data-admin-only>
           <span class="icon">▶</span> Live TV
+        </button>
+        <button class="nav-item" data-page="discover">
+          <span class="icon">✦</span> Discover
         </button>
         <button class="nav-item" data-page="jellyfin">
           <span class="icon">◈</span> Jellyfin
@@ -1163,127 +1185,14 @@ td.primary { color: var(--text); font-weight: 500; }
 
     <!-- Top bar -->
     <div class="topbar">
-      <div class="topbar-title" id="topbar-title">Dashboard</div>
+      <div class="topbar-title" id="topbar-title">Library</div>
       <div class="topbar-sub" id="topbar-sub"></div>
     </div>
 
     <!-- Pages -->
     <div class="page-content">
 
-      <!-- ── DASHBOARD ── -->
-      <div class="page active" id="page-dashboard">
-        <div class="page-header">
-          <div class="page-header-row">
-            <div>
-              <div class="page-title">Dashboard</div>
-              <div class="page-subtitle" id="dash-subtitle">—</div>
-            </div>
-            <div style="display:flex;gap:8px;align-items:center">
-              <button class="btn btn-primary" id="sync-now-btn" onclick="syncNow()">Sync Now</button>
-              <button class="btn btn-danger" id="sync-cancel-btn" onclick="cancelSync()" style="display:none">Cancel</button>
-            </div>
-          </div>
-        </div>
-
-        <!-- Jellyfin connection warning -->
-        <div class="card" id="jellyfin-error-banner" style="display:none;margin-bottom:16px;border-left:3px solid var(--red)">
-          <div style="padding:16px;font-size:13px;color:var(--text2);line-height:1.5">
-            <strong style="color:var(--red)" id="jellyfin-banner-title">Jellyfin Connection Failed</strong>
-            <p style="margin:4px 0 0" id="jellyfin-banner-msg">Check your API key in Settings → Connections</p>
-          </div>
-        </div>
-
-        <!-- Stale VOD files warning (first startup only) -->
-        <div class="card" id="stale-files-banner" style="display:none;margin-bottom:16px;border-left:3px solid var(--amber)">
-          <div class="card-header">
-            <div class="card-title" style="color:var(--amber)">Existing VOD Files Detected</div>
-          </div>
-          <div style="padding:0 16px 16px;font-size:13px;color:var(--text2);line-height:1.5">
-            <p style="margin:0 0 8px">Found <strong id="stale-strm-count">0</strong> existing .strm files in your VOD folders that weren't created by Tentacle.</p>
-            <p style="margin:0 0 12px">These files won't appear in your library. Delete them and let Tentacle recreate everything with proper metadata.</p>
-            <div style="display:flex;gap:8px">
-              <button class="btn btn-danger btn-sm" onclick="confirmDeleteStaleFiles()">Delete All &amp; Start Fresh</button>
-              <button class="btn btn-secondary btn-sm" onclick="dismissStaleFiles()">Keep &amp; Ignore</button>
-            </div>
-          </div>
-        </div>
-        <div class="modal-overlay" id="stale-confirm-modal" style="display:none">
-          <div class="modal" style="max-width:440px">
-            <div class="modal-header">
-              <div class="modal-title" style="color:var(--amber)">Confirm Deletion</div>
-              <button class="modal-close" onclick="document.getElementById('stale-confirm-modal').style.display='none'">&times;</button>
-            </div>
-            <div style="padding:16px;font-size:13px;color:var(--text2);line-height:1.5">
-              <p style="margin:0 0 12px">This will delete <strong id="stale-confirm-strm">0</strong> .strm files and <strong id="stale-confirm-nfo">0</strong> .nfo files from your VOD folders.</p>
-              <p style="margin:0 0 16px;color:var(--red)">This cannot be undone.</p>
-              <div style="display:flex;gap:8px;justify-content:flex-end">
-                <button class="btn btn-secondary btn-sm" onclick="document.getElementById('stale-confirm-modal').style.display='none'">Cancel</button>
-                <button class="btn btn-danger btn-sm" onclick="executeDeleteStaleFiles()">Delete All</button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Sync progress (hidden by default) -->
-        <div class="dash-progress" id="dash-progress" style="display:none">
-          <div class="dash-progress-header">
-            <div class="dot dot-amber"></div>
-            <span id="dash-progress-label">Syncing...</span>
-          </div>
-          <div class="dash-progress-bar-track">
-            <div class="dash-progress-bar-fill" id="dash-progress-fill"></div>
-          </div>
-          <div class="dash-progress-detail" id="dash-progress-detail"></div>
-        </div>
-
-        <!-- Library stats -->
-        <div class="stats-grid" style="margin-bottom:20px">
-          <div class="stat-card">
-            <div class="stat-accent" style="background:var(--accent)"></div>
-            <div class="stat-label">Movies</div>
-            <div class="stat-value" id="stat-movies">—</div>
-            <div class="stat-sub" id="stat-movies-sub"></div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-accent" style="background:var(--pink)"></div>
-            <div class="stat-label">Series</div>
-            <div class="stat-value" id="stat-series">—</div>
-            <div class="stat-sub" id="stat-series-sub"></div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-accent" style="background:var(--green)"></div>
-            <div class="stat-label">Downloaded</div>
-            <div class="stat-value" id="stat-downloaded">—</div>
-            <div class="stat-sub" id="stat-downloaded-sub"></div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-accent" style="background:var(--amber)"></div>
-            <div class="stat-label">VOD</div>
-            <div class="stat-value" id="stat-vod">—</div>
-            <div class="stat-sub" id="stat-vod-sub"></div>
-          </div>
-        </div>
-
-        <!-- Last sync summary -->
-        <div class="card" id="dash-last-sync" style="margin-bottom:16px;display:none">
-          <div class="card-header">
-            <div class="card-title">Last Sync</div>
-            <div id="dash-last-sync-time" style="font-size:11px;color:var(--text3);font-family:'DM Mono',monospace"></div>
-          </div>
-          <div id="dash-last-sync-body" style="padding:4px 16px 12px;font-size:13px;color:var(--text2)"></div>
-        </div>
-
-        <!-- Recent activity -->
-        <div class="card" style="margin-bottom:16px">
-          <div class="card-header">
-            <div class="card-title">Recent Activity</div>
-            <button class="btn btn-secondary btn-sm" id="activity-more-btn" onclick="loadMoreActivity()" style="display:none">Show More</button>
-          </div>
-          <div id="activity-feed" style="max-height:280px;overflow-y:auto">
-            <div class="loading-state"><div class="spinner"></div> Loading...</div>
-          </div>
-        </div>
-      </div>
+      <!-- Dashboard page removed — stats and banners moved to Library -->
 
       <!-- ── VOD ── -->
       <div class="page" id="page-vod">
@@ -1295,8 +1204,22 @@ td.primary { color: var(--text); font-weight: 500; }
             </div>
             <div style="display:flex;gap:8px;align-items:center">
               <span id="vod-sync-status" style="font-size:12px;color:var(--text3)"></span>
+              <button class="btn btn-danger" id="sync-cancel-btn" onclick="cancelSync()" style="display:none">Cancel</button>
+              <button class="btn btn-primary" id="sync-now-btn" onclick="syncNow()">Sync All</button>
             </div>
           </div>
+        </div>
+
+        <!-- Sync progress (hidden by default) -->
+        <div class="dash-progress" id="vod-sync-progress" style="display:none">
+          <div class="dash-progress-header">
+            <div class="dot dot-amber"></div>
+            <span id="vod-progress-label">Syncing...</span>
+          </div>
+          <div class="dash-progress-bar-track">
+            <div class="dash-progress-bar-fill" id="vod-progress-fill"></div>
+          </div>
+          <div class="dash-progress-detail" id="vod-progress-detail"></div>
         </div>
 
         <!-- Provider selector -->
@@ -1376,22 +1299,21 @@ td.primary { color: var(--text); font-weight: 500; }
       <div class="page" id="page-settings">
         <div class="page-header">
           <div class="page-title">Settings</div>
-          <div class="page-subtitle">Providers, connections & configuration</div>
+          <div class="page-subtitle">Connections, providers & configuration</div>
         </div>
 
         <div class="settings-grid">
           <div class="settings-nav">
-            <button class="settings-nav-item active" data-section="providers">Providers</button>
-            <button class="settings-nav-item" data-section="connections">Connections</button>
-            <button class="settings-nav-item" data-section="sync">Sync Settings</button>
-            <button class="settings-nav-item" data-section="paths">Library Paths</button>
+            <button class="settings-nav-item active" data-section="connections">Connections</button>
+            <button class="settings-nav-item" data-section="providers">Providers</button>
             <button class="settings-nav-item" data-section="integrations">Integrations</button>
+            <button class="settings-nav-item" data-section="paths">Library Paths</button>
             <button class="settings-nav-item" data-section="users">Users</button>
           </div>
 
           <div>
             <!-- Providers -->
-            <div class="settings-section active card" id="section-providers">
+            <div class="settings-section card" id="section-providers">
               <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
                 <div>
                   <h3>Providers</h3>
@@ -1408,7 +1330,7 @@ td.primary { color: var(--text); font-weight: 500; }
             </div>
 
             <!-- Connections -->
-            <div class="settings-section card" id="section-connections">
+            <div class="settings-section active card" id="section-connections">
               <h3>API Connections</h3>
               <p class="section-desc">Connect Tentacle to your services. All keys are stored locally.</p>
 
@@ -1474,11 +1396,47 @@ td.primary { color: var(--text); font-weight: 500; }
               </div>
             </div>
 
-            <!-- Sync -->
-            <div class="settings-section card" id="section-sync">
-              <h3>Sync Settings</h3>
-              <p class="section-desc">Configure how and when syncs run.</p>
+            <!-- Sync Settings removed — merged into Integrations -->
 
+            <!-- Library Paths -->
+            <div class="settings-section card" id="section-paths">
+              <h3>Library Paths</h3>
+              <p class="section-desc">Volume mounts detected inside the container. Add missing mounts to your <code>docker-compose.yml</code> and restart.</p>
+
+              <div id="paths-status" style="margin-bottom:16px">
+                <div class="loading-state"><div class="spinner"></div> Checking paths...</div>
+              </div>
+            </div>
+
+            <!-- Integrations -->
+            <div class="settings-section card" id="section-integrations">
+              <h3>Integrations</h3>
+              <p class="section-desc">External service connections, sync config & webhooks.</p>
+
+              <div class="form-group">
+                <div class="form-label">Jellyfin User</div>
+                <div id="jellyfin-login-status" style="padding:10px 12px;background:var(--green-dim);border:1px solid rgba(74,222,128,0.15);border-radius:var(--radius-sm)">
+                  <span style="color:var(--green);font-size:13px;font-weight:500" id="jellyfin-logged-in-label"></span>
+                  <div style="font-size:11px;color:var(--text3);margin-top:4px">Managed via login page. Sign out and sign in as a different user to change.</div>
+                </div>
+              </div>
+
+              <hr class="divider">
+
+              <div class="section-title">Discover</div>
+              <div class="form-group">
+                <div style="display:flex;align-items:center;justify-content:space-between">
+                  <div>
+                    <div class="form-label" style="margin-bottom:0">Show Discover in Jellyfin</div>
+                    <div class="form-hint" style="margin-top:2px">Add a "Discover" tab to the Jellyfin home page showing trending content</div>
+                  </div>
+                  <input type="checkbox" id="discover_in_jellyfin" onchange="saveDiscoverInJellyfin()" style="flex-shrink:0">
+                </div>
+              </div>
+
+              <hr class="divider">
+
+              <div class="section-title">Sync</div>
               <div class="form-group">
                 <div class="form-label">Sync Schedule (Cron)</div>
                 <input class="form-input mono" id="sync_schedule" placeholder="0 3 * * *">
@@ -1497,36 +1455,9 @@ td.primary { color: var(--text); font-weight: 500; }
                 <div class="form-hint">Minimum confidence for TMDB title match (0.1–1.0). Higher = stricter.</div>
               </div>
 
-              <div style="margin-top:20px">
-                <button class="btn btn-primary" onclick="saveSettings()">Save Sync Settings</button>
-              </div>
-            </div>
-
-            <!-- Library Paths -->
-            <div class="settings-section card" id="section-paths">
-              <h3>Library Paths</h3>
-              <p class="section-desc">Volume mounts detected inside the container. Add missing mounts to your <code>docker-compose.yml</code> and restart.</p>
-
-              <div id="paths-status" style="margin-bottom:16px">
-                <div class="loading-state"><div class="spinner"></div> Checking paths...</div>
-              </div>
-            </div>
-
-            <!-- Integrations -->
-            <div class="settings-section card" id="section-integrations">
-              <h3>Integrations</h3>
-              <p class="section-desc">External service connections and webhooks.</p>
-
-              <div class="form-group">
-                <div class="form-label">Jellyfin User</div>
-                <div id="jellyfin-login-status" style="padding:10px 12px;background:var(--green-dim);border:1px solid rgba(74,222,128,0.15);border-radius:var(--radius-sm)">
-                  <span style="color:var(--green);font-size:13px;font-weight:500" id="jellyfin-logged-in-label"></span>
-                  <div style="font-size:11px;color:var(--text3);margin-top:4px">Managed via login page. Sign out and sign in as a different user to change.</div>
-                </div>
-              </div>
-
               <hr class="divider">
 
+              <div class="section-title">API Keys</div>
               <div class="form-group">
                 <div class="form-label">Trakt Client ID</div>
                 <input class="form-input mono" id="trakt_client_id" type="password" placeholder="Enter Trakt API client ID">
@@ -1541,6 +1472,7 @@ td.primary { color: var(--text); font-weight: 500; }
 
               <hr class="divider">
 
+              <div class="section-title">Webhooks</div>
               <div class="form-group">
                 <div class="form-label">Radarr Webhook URL</div>
                 <div style="display:flex;gap:8px;align-items:center">
@@ -1581,13 +1513,105 @@ td.primary { color: var(--text); font-weight: 500; }
       </div>
 
       <!-- ── LIBRARY ── -->
-      <div class="page" id="page-library">
+      <div class="page active" id="page-library">
         <div class="page-header">
           <div class="page-header-row">
             <div>
               <div class="page-title">Library</div>
-              <div class="page-subtitle">Movies, series & duplicates</div>
+              <div class="page-subtitle">Browse your media collection</div>
             </div>
+          </div>
+        </div>
+
+        <!-- Jellyfin connection warning (moved from Dashboard) -->
+        <div class="card" id="jellyfin-error-banner" style="display:none;margin-bottom:16px;border-left:3px solid var(--red)">
+          <div style="padding:16px;font-size:13px;color:var(--text2);line-height:1.5">
+            <strong style="color:var(--red)" id="jellyfin-banner-title">Jellyfin Connection Failed</strong>
+            <p style="margin:4px 0 0" id="jellyfin-banner-msg">Check your API key in Settings → Connections</p>
+          </div>
+        </div>
+
+        <!-- Stale VOD files warning (moved from Dashboard) -->
+        <div class="card" id="stale-files-banner" style="display:none;margin-bottom:16px;border-left:3px solid var(--amber)">
+          <div class="card-header">
+            <div class="card-title" style="color:var(--amber)">Existing VOD Files Detected</div>
+          </div>
+          <div style="padding:0 16px 16px;font-size:13px;color:var(--text2);line-height:1.5">
+            <p style="margin:0 0 8px">Found <strong id="stale-strm-count">0</strong> existing .strm files in your VOD folders that weren't created by Tentacle.</p>
+            <p style="margin:0 0 12px">These files won't appear in your library. Delete them and let Tentacle recreate everything with proper metadata.</p>
+            <div style="display:flex;gap:8px">
+              <button class="btn btn-danger btn-sm" onclick="confirmDeleteStaleFiles()">Delete All &amp; Start Fresh</button>
+              <button class="btn btn-secondary btn-sm" onclick="dismissStaleFiles()">Keep &amp; Ignore</button>
+            </div>
+          </div>
+        </div>
+        <div class="modal-overlay" id="stale-confirm-modal" style="display:none">
+          <div class="modal" style="max-width:440px">
+            <div class="modal-header">
+              <div class="modal-title" style="color:var(--amber)">Confirm Deletion</div>
+              <button class="modal-close" onclick="document.getElementById('stale-confirm-modal').style.display='none'">&times;</button>
+            </div>
+            <div style="padding:16px;font-size:13px;color:var(--text2);line-height:1.5">
+              <p style="margin:0 0 12px">This will delete <strong id="stale-confirm-strm">0</strong> .strm files and <strong id="stale-confirm-nfo">0</strong> .nfo files from your VOD folders.</p>
+              <p style="margin:0 0 16px;color:var(--red)">This cannot be undone.</p>
+              <div style="display:flex;gap:8px;justify-content:flex-end">
+                <button class="btn btn-secondary btn-sm" onclick="document.getElementById('stale-confirm-modal').style.display='none'">Cancel</button>
+                <button class="btn btn-danger btn-sm" onclick="executeDeleteStaleFiles()">Delete All</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Active Downloads (collapsible, auto-hides when empty) -->
+        <div id="lib-downloads" style="display:none;margin-bottom:16px">
+          <div class="card" style="border-left:3px solid var(--accent)">
+            <div class="card-header" style="cursor:pointer" onclick="document.getElementById('lib-dl-body').style.display=document.getElementById('lib-dl-body').style.display==='none'?'':'none'">
+              <div class="card-title" style="display:flex;align-items:center;gap:8px">
+                <div class="dot dot-amber"></div>
+                Downloads <span id="lib-dl-count" style="font-weight:400;color:var(--text3)"></span>
+              </div>
+              <span style="font-size:11px;color:var(--text3)">click to collapse</span>
+            </div>
+            <div id="lib-dl-body"></div>
+          </div>
+        </div>
+
+        <!-- Stats bar -->
+        <div class="stats-grid" id="lib-stats-grid" style="margin-bottom:16px">
+          <div class="stat-card">
+            <div class="stat-accent" style="background:var(--accent)"></div>
+            <div class="stat-label">Movies</div>
+            <div class="stat-value" id="lib-stat-movies">—</div>
+            <div class="stat-sub" id="lib-stat-movies-sub"></div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-accent" style="background:var(--pink)"></div>
+            <div class="stat-label">Series</div>
+            <div class="stat-value" id="lib-stat-series">—</div>
+            <div class="stat-sub" id="lib-stat-series-sub"></div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-accent" style="background:var(--green)"></div>
+            <div class="stat-label">Downloaded</div>
+            <div class="stat-value" id="lib-stat-downloaded">—</div>
+            <div class="stat-sub" id="lib-stat-downloaded-sub"></div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-accent" style="background:var(--amber)"></div>
+            <div class="stat-label">VOD</div>
+            <div class="stat-value" id="lib-stat-vod">—</div>
+            <div class="stat-sub" id="lib-stat-vod-sub"></div>
+          </div>
+        </div>
+
+        <!-- Last Sync Summary (collapsible) -->
+        <div id="lib-sync-summary" style="display:none;margin-bottom:16px">
+          <div class="card">
+            <div class="card-header" style="cursor:pointer" onclick="document.getElementById('lib-sync-body').style.display=document.getElementById('lib-sync-body').style.display==='none'?'':'none'">
+              <div class="card-title">Last Sync</div>
+              <div id="lib-sync-time" style="font-size:11px;color:var(--text3);font-family:'DM Mono',monospace"></div>
+            </div>
+            <div id="lib-sync-body" style="padding:0 16px 16px;font-size:13px;color:var(--text2)"></div>
           </div>
         </div>
 
@@ -1686,7 +1710,7 @@ td.primary { color: var(--text); font-weight: 500; }
           <div class="page-header-row">
             <div>
               <div class="page-title">Jellyfin</div>
-              <div class="page-subtitle">Home screen, playlists & discover</div>
+              <div class="page-subtitle">Home screen & playlists</div>
             </div>
             <div id="jf-tab-actions" style="display:flex;gap:8px">
             </div>
@@ -1697,7 +1721,6 @@ td.primary { color: var(--text); font-weight: 500; }
         <div style="display:flex;gap:0;border-bottom:1px solid var(--border2);margin-bottom:16px">
           <button class="live-tab active" data-jftab="home" onclick="showJellyfinTab('home')">Home Screen</button>
           <button class="live-tab" data-jftab="playlists" onclick="showJellyfinTab('playlists')">Playlists</button>
-          <button class="live-tab" data-jftab="discover" onclick="showJellyfinTab('discover')">Discover</button>
         </div>
 
         <!-- ── HOME SCREEN TAB ── -->
@@ -1780,59 +1803,54 @@ td.primary { color: var(--text); font-weight: 500; }
           </div>
         </div>
 
-        <!-- ── DISCOVER TAB ── -->
-        <div id="jf-tab-discover" style="display:none">
-          <!-- Discover in Jellyfin toggle -->
-          <div class="card" style="margin-bottom:16px">
-            <div style="padding:16px;display:flex;align-items:center;justify-content:space-between">
-              <div>
-                <div style="font-size:13px;font-weight:600;color:var(--text)">Show in Jellyfin</div>
-                <div style="font-size:12px;color:var(--text3);margin-top:2px">Add a "Discover" tab to the Jellyfin home page showing trending content</div>
-              </div>
-              <input type="checkbox" id="discover_in_jellyfin" onchange="saveDiscoverInJellyfin()" style="flex-shrink:0">
-            </div>
-          </div>
-
-          <!-- Discover browse/lists/activity tabs -->
-          <div class="discover-tabs-bar">
-            <button class="live-tab active" data-discovertab="browse" onclick="showDiscoverTab('browse')">Browse</button>
-            <button class="live-tab" data-discovertab="lists" onclick="showDiscoverTab('lists')">My Lists</button>
-            <button class="live-tab activity-tab" data-discovertab="activity" onclick="showDiscoverTab('activity')">Activity <span id="activity-tab-badge" class="activity-badge">0</span></button>
-          </div>
-
-          <div id="discover-tab-browse">
-            <div style="display:flex;gap:8px;align-items:center;margin-bottom:16px">
-              <div style="position:relative;display:flex;align-items:center">
-                <input type="text" id="discover-search-input" placeholder="Search TMDB…" autocomplete="off" style="padding:6px 30px 6px 10px;border-radius:4px;border:1px solid var(--border2);background:var(--bg2);color:var(--text);font-size:13px;width:200px;outline:none;font-family:'DM Sans',sans-serif" oninput="onDiscoverSearchInput(this)">
-                <button id="discover-search-clear" onclick="clearDiscoverSearch()" style="display:none;position:absolute;right:4px;border:none;background:transparent;color:var(--text3);font-size:16px;cursor:pointer;padding:2px 4px">&times;</button>
-              </div>
-              <div class="filter-group">
-                <button class="filter-btn active" data-disctype="all" onclick="setDiscoverType('all',this)">All</button>
-                <button class="filter-btn" data-disctype="movies" onclick="setDiscoverType('movies',this)">Movies</button>
-                <button class="filter-btn" data-disctype="series" onclick="setDiscoverType('series',this)">Shows</button>
-              </div>
-            </div>
-            <div id="discover-section-tabs" style="display:flex;gap:0;border-bottom:1px solid var(--border2);margin-bottom:16px"></div>
-            <div id="discover-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px"></div>
-          </div>
-
-          <div id="discover-tab-lists" style="display:none">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-              <p style="color:var(--text3);font-size:13px;margin:0">IMDb, Trakt & Letterboxd list subscriptions</p>
-              <button class="btn btn-primary" onclick="showAddList()">+ Add List</button>
-            </div>
-            <div id="lists-active">
-              <div class="loading-state"><div class="spinner"></div></div>
-            </div>
-          </div>
-
-          <div id="discover-tab-activity" style="display:none">
-            <div id="activity-content"></div>
-          </div>
-        </div>
+        <!-- Discover tab removed — now a standalone page -->
       </div>
 
       <!-- Duplicates page removed — merged into Library tab -->
+
+      <!-- ── DISCOVER PAGE ── -->
+      <div class="page" id="page-discover">
+        <div class="page-header">
+          <div class="page-header-row">
+            <div>
+              <div class="page-title">Discover</div>
+              <div class="page-subtitle">Trending content & list subscriptions</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Discover tabs -->
+        <div class="discover-tabs-bar">
+          <button class="live-tab active" data-discovertab="browse" onclick="showDiscoverTab('browse')">Browse</button>
+          <button class="live-tab" data-discovertab="lists" onclick="showDiscoverTab('lists')">My Lists</button>
+        </div>
+
+        <div id="discover-tab-browse">
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:16px">
+            <div style="position:relative;display:flex;align-items:center">
+              <input type="text" id="discover-search-input" placeholder="Search TMDB…" autocomplete="off" style="padding:6px 30px 6px 10px;border-radius:4px;border:1px solid var(--border2);background:var(--bg2);color:var(--text);font-size:13px;width:200px;outline:none;font-family:'DM Sans',sans-serif" oninput="onDiscoverSearchInput(this)">
+              <button id="discover-search-clear" onclick="clearDiscoverSearch()" style="display:none;position:absolute;right:4px;border:none;background:transparent;color:var(--text3);font-size:16px;cursor:pointer;padding:2px 4px">&times;</button>
+            </div>
+            <div class="filter-group">
+              <button class="filter-btn active" data-disctype="all" onclick="setDiscoverType('all',this)">All</button>
+              <button class="filter-btn" data-disctype="movies" onclick="setDiscoverType('movies',this)">Movies</button>
+              <button class="filter-btn" data-disctype="series" onclick="setDiscoverType('series',this)">Shows</button>
+            </div>
+          </div>
+          <div id="discover-section-tabs" style="display:flex;gap:0;border-bottom:1px solid var(--border2);margin-bottom:16px"></div>
+          <div id="discover-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px"></div>
+        </div>
+
+        <div id="discover-tab-lists" style="display:none">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+            <p style="color:var(--text3);font-size:13px;margin:0">IMDb, Trakt & Letterboxd list subscriptions</p>
+            <button class="btn btn-primary" onclick="showAddList()">+ Add List</button>
+          </div>
+          <div id="lists-active">
+            <div class="loading-state"><div class="spinner"></div></div>
+          </div>
+        </div>
+      </div>
 
       <!-- ── LIVE TV PAGE ── -->
       <div class="page" id="page-live-tv">

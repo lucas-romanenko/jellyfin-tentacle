@@ -572,6 +572,70 @@ def get_activity(limit: int = 15, db: Session = Depends(get_db)):
     } for e in entries]
 
 
+@router.get("/summary")
+def get_sync_summary(db: Session = Depends(get_db)):
+    """Last nightly sync summary for the Library page card"""
+    # Most recent completed sync run
+    last_run = db.query(SyncRun).filter(
+        SyncRun.status.in_(["completed", "failed"])
+    ).order_by(SyncRun.completed_at.desc()).first()
+
+    if not last_run or not last_run.completed_at:
+        return {}
+
+    completed_at = last_run.completed_at.isoformat() if last_run.completed_at else None
+
+    # Build per-provider data from the run
+    providers_data = []
+    provider = last_run.provider
+    if provider:
+        new_cats = last_run.new_categories or []
+        prov_info = {
+            "name": provider.name or f"Provider {provider.id}",
+            "new_movies": last_run.movies_new or 0,
+            "new_series": last_run.series_new or 0,
+            "new_categories": new_cats,
+        }
+        if prov_info["new_movies"] or prov_info["new_series"] or new_cats:
+            providers_data.append(prov_info)
+
+    # Radarr/Sonarr counts from activity logs since last sync
+    radarr_new = 0
+    sonarr_new = 0
+    if last_run.started_at:
+        radarr_new = db.query(ActivityLog).filter(
+            ActivityLog.event == "radarr_add",
+            ActivityLog.created_at >= last_run.started_at,
+        ).count()
+        sonarr_new = db.query(ActivityLog).filter(
+            ActivityLog.event == "sonarr_add",
+            ActivityLog.created_at >= last_run.started_at,
+        ).count()
+
+    # List updates from activity logs since last sync
+    lists_updated = []
+    if last_run.started_at:
+        list_logs = db.query(ActivityLog).filter(
+            ActivityLog.event == "list_fetch",
+            ActivityLog.created_at >= last_run.started_at,
+        ).all()
+        for log in list_logs:
+            # Extract list name from message like "Refreshed IMDB TOP 250 (3 new)"
+            msg = log.message or ""
+            if msg.startswith("Refreshed "):
+                name = msg.split("Refreshed ", 1)[1].split(" (")[0]
+                if name and name not in lists_updated:
+                    lists_updated.append(name)
+
+    return {
+        "completed_at": completed_at,
+        "providers": providers_data,
+        "radarr_new": radarr_new,
+        "sonarr_new": sonarr_new,
+        "lists_updated": lists_updated,
+    }
+
+
 @router.post("/refresh-tags")
 def refresh_tags(db: Session = Depends(get_db)):
     """Manually trigger tag refresh (recently added window) and push to Jellyfin"""

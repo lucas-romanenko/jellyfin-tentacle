@@ -2,8 +2,8 @@
 
 // ── State ─────────────────────────────────────────────────────────────────
 const state = {
-  currentPage: 'dashboard',
-  currentSettingsSection: 'providers',
+  currentPage: 'library',
+  currentSettingsSection: 'connections',
   providers: [],
   categories: [],
   catFilter: 'all',
@@ -37,14 +37,11 @@ async function checkAuth() {
 async function postLoginInit() {
   if (state.currentUser && state.currentUser.is_admin) {
     await checkSetup();
-    loadDashboard();
     loadProviders();
     checkRunningSyncs();
-    setInterval(loadDashboard, 30000);
-  } else {
-    // Non-admin: go straight to Library
-    showPage('library');
   }
+  // Everyone lands on Library
+  showPage('library');
 }
 
 // ── Login ─────────────────────────────────────────────────────────────────
@@ -200,10 +197,7 @@ function showPage(name) {
   // Disconnect library SSE when leaving library page
   if (state.currentPage === 'library' && name !== 'library') {
     if (typeof disconnectLibraryStream === 'function') disconnectLibraryStream();
-  }
-  // Stop activity polling when leaving jellyfin page
-  if (state.currentPage === 'jellyfin' && name !== 'jellyfin') {
-    if (typeof stopActivityPolling === 'function') stopActivityPolling();
+    if (typeof stopDownloadPolling === 'function') stopDownloadPolling();
   }
 
   state.currentPage = name;
@@ -215,12 +209,13 @@ function showPage(name) {
   document.querySelector(`.nav-item[data-page="${name}"]`)?.classList.add('active');
 
   const titles = {
-    dashboard: ['Dashboard', 'Overview & activity'],
+    library: ['Library', 'Browse your media collection'],
     vod: ['VOD', 'Categories, sync & content'],
-    library: ['Library', 'Movies, series & duplicates'],
     'live-tv': ['Live TV', 'Channels, groups & EPG'],
-    jellyfin: ['Jellyfin', 'Home screen, playlists & discover'],
-    settings: ['Settings', 'Providers, connections & config'],
+    discover: ['Discover', 'Trending content & list subscriptions'],
+    jellyfin: ['Jellyfin', 'Home screen & playlists'],
+
+    settings: ['Settings', 'Connections, providers & config'],
   };
 
   const [title, sub] = titles[name] || [name, ''];
@@ -231,6 +226,7 @@ function showPage(name) {
   if (name === 'settings') { loadSettings(); loadProviders(); }
   if (name === 'vod') loadVodPage();
   if (name === 'library') loadLibrary();
+  if (name === 'discover') loadDiscoverPage();
   if (name === 'jellyfin') loadJellyfinPage();
   if (name === 'live-tv') loadLiveTV();
 }
@@ -250,14 +246,11 @@ function showJellyfinTab(tab) {
   document.querySelector(`[data-jftab="${tab}"]`)?.classList.add('active');
   document.getElementById('jf-tab-home').style.display = tab === 'home' ? '' : 'none';
   document.getElementById('jf-tab-playlists').style.display = tab === 'playlists' ? '' : 'none';
-  document.getElementById('jf-tab-discover').style.display = tab === 'discover' ? '' : 'none';
   // Show/hide action buttons (only relevant on playlists tab)
   const actions = document.getElementById('jf-tab-actions');
   if (actions) actions.style.display = tab === 'playlists' ? 'flex' : 'none';
   // Load tab content on switch
   if (tab === 'playlists') { loadAutoPlaylists(); loadTagRules(); }
-  if (tab === 'discover') { loadDiscover(); startActivityPolling(); }
-  else { stopActivityPolling(); }
   if (tab === 'home') loadHomeScreen();
 }
 
@@ -266,9 +259,8 @@ function showDiscoverTab(tab) {
   document.querySelector(`[data-discovertab="${tab}"]`)?.classList.add('active');
   document.getElementById('discover-tab-browse').style.display = tab === 'browse' ? '' : 'none';
   document.getElementById('discover-tab-lists').style.display = tab === 'lists' ? '' : 'none';
-  document.getElementById('discover-tab-activity').style.display = tab === 'activity' ? '' : 'none';
+  if (tab === 'browse') loadDiscover();
   if (tab === 'lists') loadLists();
-  if (tab === 'activity') loadActivity();
 }
 
 function showSettingsSection(name) {
@@ -602,145 +594,12 @@ function skipSetup() {
   api('/api/settings', { method: 'POST', body: { settings: { setup_complete: 'true' } } });
 }
 
-// ── Dashboard ─────────────────────────────────────────────────────────────
-async function loadDashboard() {
-  try {
-    const [dash, providers, activity] = await Promise.all([
-      api('/api/sync/dashboard'),
-      api('/api/providers'),
-      api('/api/sync/activity?limit=10'),
-    ]);
-    state.providers = providers;
-
-    // Subtitle: status line with health + schedule
-    const subtitle = document.getElementById('dash-subtitle');
-    if (subtitle) {
-      const isRunning = dash.running.vod_sync || dash.running.radarr_scan || dash.running.sonarr_scan;
-      if (isRunning) {
-        subtitle.innerHTML = '<span style="color:var(--amber)">Syncing now...</span>';
-      } else if (dash.status.vod_sync.status === 'failed') {
-        subtitle.innerHTML = `<span style="color:var(--red)">Last sync failed</span> &middot; ${dashNextSync(dash.sync_schedule)}`;
-      } else if (dash.status.vod_sync.timestamp) {
-        subtitle.textContent = `Last sync ${dashTimeAgo(dash.status.vod_sync.timestamp)} \u00B7 ${dashNextSync(dash.sync_schedule)}`;
-      } else {
-        subtitle.textContent = `No syncs yet \u00B7 ${dashNextSync(dash.sync_schedule)}`;
-      }
-    }
-
-    // Sidebar last sync
-    const sidebarSync = document.getElementById('sidebar-last-sync');
-    if (sidebarSync && dash.status.vod_sync.timestamp) {
-      sidebarSync.textContent = dashTimeAgo(dash.status.vod_sync.timestamp);
-    }
-
-    // Library stats
-    const lib = dash.library;
-    document.getElementById('stat-movies').textContent = lib.total_movies.toLocaleString();
-    document.getElementById('stat-movies-sub').textContent = `${lib.radarr_movies} downloaded, ${lib.vod_movies} VOD`;
-    document.getElementById('stat-series').textContent = lib.total_series.toLocaleString();
-    document.getElementById('stat-series-sub').textContent = `${lib.sonarr_series} downloaded, ${lib.vod_series} VOD`;
-    document.getElementById('stat-downloaded').textContent = (lib.radarr_movies + lib.sonarr_series).toLocaleString();
-    document.getElementById('stat-downloaded-sub').textContent = `${lib.radarr_movies} movies, ${lib.sonarr_series} series`;
-    document.getElementById('stat-vod').textContent = (lib.vod_movies + lib.vod_series).toLocaleString();
-    document.getElementById('stat-vod-sub').textContent = `${lib.vod_movies} movies, ${lib.vod_series} series`;
-
-    // Duplicate badge
-    const dup = document.getElementById('dup-badge');
-    if (dup) {
-      const pending = dash.library.pending_duplicates || 0;
-      if (pending > 0) { dup.style.display = 'inline'; dup.textContent = pending; }
-      else { dup.style.display = 'none'; }
-    }
-
-    // Last sync summary
-    renderLastSyncSummary(dash.last_sync_summary, dash.status.vod_sync.timestamp);
-
-    // Activity feed
-    renderActivityFeed(activity);
-
-    // Jellyfin connection banner
-    const jfBanner = document.getElementById('jellyfin-error-banner');
-    if (jfBanner) {
-      const cfg = dash.config;
-      if (!cfg.jellyfin_url_configured) {
-        document.getElementById('jellyfin-banner-title').textContent = 'Jellyfin Not Configured';
-        document.getElementById('jellyfin-banner-msg').textContent = 'Set up your Jellyfin connection in Settings \u2192 Connections';
-        jfBanner.style.display = '';
-      } else if (cfg.jellyfin_connected === false) {
-        document.getElementById('jellyfin-banner-title').textContent = 'Jellyfin Connection Failed';
-        document.getElementById('jellyfin-banner-msg').textContent = 'Check your API key in Settings \u2192 Connections';
-        jfBanner.style.display = '';
-      } else {
-        jfBanner.style.display = 'none';
-      }
-    }
-
-    // Stale VOD files check (first startup only)
-    checkStaleFiles();
-
-    // Sync running state
-    if (dash.running.vod_sync && !state._syncProviderId) {
-      const active = providers.filter(p => p.active);
-      if (active.length) {
-        state._syncProviderId = active[0].id;
-        setSyncRunning(true);
-        pollSyncProgress();
-      }
-    }
-  } catch (e) {
-    console.error('Dashboard load error:', e);
-  }
-}
-
-function renderLastSyncSummary(summary, timestamp) {
-  const card = document.getElementById('dash-last-sync');
-  const body = document.getElementById('dash-last-sync-body');
-  const time = document.getElementById('dash-last-sync-time');
-  if (!card || !body) return;
-
-  if (!summary) { card.style.display = 'none'; return; }
-
-  card.style.display = '';
-  if (time) time.textContent = timestamp ? dashTimeAgo(timestamp) : '';
-
-  const totalNew = summary.movies_new + summary.series_new;
-  const duration = summary.duration_seconds ? `${Math.round(summary.duration_seconds / 60)}m` : '';
-  let html = '';
-
-  if (summary.status === 'failed') {
-    html = '<div style="color:var(--red)">Sync failed</div>';
-  } else if (totalNew === 0) {
-    html = `<div style="color:var(--text3)">No new content${duration ? ` \u00B7 ${duration}` : ''}</div>`;
-  } else {
-    const parts = [];
-    if (summary.movies_new) parts.push(`${summary.movies_new} movie${summary.movies_new !== 1 ? 's' : ''}`);
-    if (summary.series_new) parts.push(`${summary.series_new} series`);
-    html = `<div style="margin-bottom:6px"><span style="color:var(--green)">+${totalNew} new</span> \u2014 ${parts.join(', ')}${duration ? ` \u00B7 ${duration}` : ''}</div>`;
-
-    if (summary.categories && summary.categories.length) {
-      html += '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px">';
-      for (const cat of summary.categories) {
-        html += `<span style="font-size:11px;font-family:'DM Mono',monospace;background:var(--accent-dim);color:var(--accent);border:1px solid rgba(108,99,255,0.3);border-radius:4px;padding:1px 7px">${cat.name} +${cat.new}</span>`;
-      }
-      html += '</div>';
-    }
-  }
-
-  body.innerHTML = html;
-}
+// ── Dashboard removed — stats moved to Library, sync to VOD ──────────────
 
 // ── Stale VOD Files ──────────────────────────────────────────────────────
 let _staleData = null;
 
-async function checkStaleFiles() {
-  try {
-    const data = await api('/api/settings/stale-files');
-    if (!data.show) return;
-    _staleData = data;
-    document.getElementById('stale-strm-count').textContent = data.strm_count;
-    document.getElementById('stale-files-banner').style.display = '';
-  } catch (e) { /* ignore */ }
-}
+// checkStaleFiles() is defined in pages.js (with one-time guard)
 
 function confirmDeleteStaleFiles() {
   if (!_staleData) return;
@@ -793,53 +652,6 @@ function dashNextSync(cron) {
     return `Next sync: ${h12}:${String(m).padStart(2, '0')} ${ampm}`;
   }
   return 'Next sync: 3:00 AM';
-}
-
-const _activityColors = {
-  vod_sync: 'var(--accent)', radarr_scan: 'var(--green)', sonarr_scan: 'var(--pink)',
-  radarr_add: 'var(--green)', sonarr_add: 'var(--pink)', radarr_remove: 'var(--red)',
-  sonarr_remove: 'var(--red)', jellyfin_push: 'var(--amber)', list_fetch: 'var(--accent)',
-  new_playlists: 'var(--purple)',
-};
-
-function renderActivityFeed(entries) {
-  const el = document.getElementById('activity-feed');
-  const btn = document.getElementById('activity-more-btn');
-  if (!entries || !entries.length) {
-    el.innerHTML = `<div style="padding:24px;text-align:center;color:var(--text3);font-size:13px">
-      No activity yet — run a sync to get started
-    </div>`;
-    if (btn) btn.style.display = 'none';
-    return;
-  }
-
-  el.innerHTML = entries.map(e => {
-    let msg = e.message;
-    if (e.event === 'new_playlists') {
-      msg += ` <a href="#" onclick="showPage('jellyfin');showJellyfinTab('playlists');return false" style="color:var(--accent);font-size:12px">View &rarr;</a>`;
-    }
-    return `
-    <div class="activity-item">
-      <div class="activity-icon" style="background:${_activityColors[e.event] || 'var(--text3)'}"></div>
-      <div class="activity-msg">${msg}</div>
-      <div class="activity-time">${dashTimeAgo(e.created_at) || ''}</div>
-    </div>`;
-  }).join('');
-
-  if (btn) btn.style.display = entries.length >= 15 ? '' : 'none';
-}
-
-async function loadMoreActivity() {
-  try {
-    const entries = await api('/api/sync/activity?limit=50');
-    const el = document.getElementById('activity-feed');
-    el.style.maxHeight = '500px';
-    renderActivityFeed(entries);
-    const btn = document.getElementById('activity-more-btn');
-    if (btn) btn.style.display = 'none';
-  } catch (e) {
-    toast(e.message, 'error');
-  }
 }
 
 // ── Providers ─────────────────────────────────────────────────────────────
@@ -1175,6 +987,12 @@ async function loadSettings() {
     }
     loadPathStatus();
     loadConnectionStatus();
+    // Load discover_in_jellyfin toggle
+    try {
+      const cfg = await api('/api/discover/config');
+      const cb = document.getElementById('discover_in_jellyfin');
+      if (cb) cb.checked = cfg.discover_in_jellyfin;
+    } catch {}
   } catch (e) {}
 }
 
@@ -1373,7 +1191,18 @@ document.addEventListener('keydown', e => {
 
 // ── Sync ──────────────────────────────────────────────────────────────────
 async function checkRunningSyncs() {
-  // Dashboard loadDashboard() handles detecting running syncs now
+  try {
+    const dash = await api('/api/sync/dashboard');
+    if (dash.running.vod_sync && !state._syncProviderId) {
+      const providers = await api('/api/providers');
+      const active = providers.filter(p => p.active);
+      if (active.length) {
+        state._syncProviderId = active[0].id;
+        setSyncRunning(true);
+        pollSyncProgress();
+      }
+    }
+  } catch (e) { /* ignore */ }
 }
 
 async function syncNow() {
@@ -1440,13 +1269,13 @@ async function cancelSync() {
 function setSyncRunning(running) {
   const syncBtn = document.getElementById('sync-now-btn');
   const cancelBtn = document.getElementById('sync-cancel-btn');
-  const progressEl = document.getElementById('dash-progress');
+  const progressEl = document.getElementById('vod-sync-progress');
   if (running) {
     if (syncBtn) { syncBtn.disabled = true; syncBtn.textContent = 'Syncing...'; }
     if (cancelBtn) { cancelBtn.style.display = ''; cancelBtn.disabled = false; cancelBtn.textContent = 'Cancel'; }
     if (progressEl) progressEl.style.display = '';
   } else {
-    if (syncBtn) { syncBtn.disabled = false; syncBtn.textContent = 'Sync Now'; }
+    if (syncBtn) { syncBtn.disabled = false; syncBtn.textContent = 'Sync All'; }
     if (cancelBtn) { cancelBtn.style.display = 'none'; }
     if (progressEl) progressEl.style.display = 'none';
     state._syncProviderId = null;
@@ -1461,8 +1290,8 @@ function pollSyncProgress() {
     if (!pid) { clearInterval(state._syncPollInterval); return; }
     try {
       const p = await api(`/api/sync/progress/${pid}/poll`);
-      const label = document.getElementById('dash-progress-label');
-      const detail = document.getElementById('dash-progress-detail');
+      const label = document.getElementById('vod-progress-label');
+      const detail = document.getElementById('vod-progress-detail');
 
       if (p.phase === 'movies' || p.phase === 'series') {
         if (label) label.textContent = `Syncing VOD ${p.phase}...`;
@@ -1485,18 +1314,14 @@ function pollSyncProgress() {
         const n = ((p.stats||{}).movies_new||0) + ((p.stats||{}).series_new||0);
         toast(n > 0 ? `Sync complete — ${n} new items` : 'Sync complete', 'success');
         setSyncRunning(false);
-        loadDashboard();
       } else if (p.phase === 'cancelled') {
         toast('Sync was cancelled', 'info');
         setSyncRunning(false);
-        loadDashboard();
       } else if (p.phase === 'error') {
         toast('Sync failed', 'error');
         setSyncRunning(false);
-        loadDashboard();
       } else if (!p.running) {
         setSyncRunning(false);
-        loadDashboard();
       }
     } catch (e) {
       // Don't kill polling on transient errors
@@ -1511,7 +1336,6 @@ async function refreshLists(btn) {
   try {
     const r = await api('/api/lists/refresh-all', { method: 'POST' });
     toast(`Refreshed ${r.refreshed} lists${r.errors.length ? ` (${r.errors.length} errors)` : ''}`, 'success');
-    loadDashboard();
   } catch (e) {
     toast(e.message, 'error');
   } finally {
@@ -1527,7 +1351,6 @@ async function dashRefreshTags(btn) {
   try {
     const r = await api('/api/sync/refresh-tags', { method: 'POST' });
     toast(`Tags pushed — ${r.jellyfin_tagged || 0} items updated in Jellyfin`, 'success');
-    loadDashboard();
   } catch (e) {
     toast(e.message, 'error');
   } finally {
