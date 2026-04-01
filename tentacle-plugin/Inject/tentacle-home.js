@@ -453,7 +453,7 @@
           var tile = document.createElement('div');
           tile.className = small ? 'mh-lib-tile mh-lib-tile-sm' : 'mh-lib-tile';
           tile.onclick = function () {
-            window.location.hash = '#/list.html?parentId=' + item.Id;
+            window.location.hash = '#/items.html?parentId=' + item.Id;
           };
 
           var posterTag = item.ImageTags && item.ImageTags.Primary ? item.ImageTags.Primary : '';
