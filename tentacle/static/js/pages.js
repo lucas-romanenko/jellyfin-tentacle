@@ -2340,12 +2340,12 @@ function initLogViewer() {
   const dot = document.getElementById('log-conn-dot');
 
   _logEventSource = new EventSource('/api/radarr/logs/stream');
-  _logEventSource.onopen = () => { dot.className = 'dot dot-green'; };
+  _logEventSource.onopen = () => { if (dot) dot.className = 'dot dot-green'; };
   _logEventSource.onmessage = (e) => {
     try { appendLogLine(JSON.parse(e.data)); } catch (_) {}
   };
   _logEventSource.onerror = () => {
-    dot.className = 'dot dot-red';
+    if (dot) dot.className = 'dot dot-red';
     setTimeout(initLogViewer, 3000);
   };
 }
