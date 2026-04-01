@@ -635,12 +635,12 @@ def get_home_config(db: Session, user_id: int = None) -> dict:
 
 
 
-def _notify_jellyfin_plugin(db: Session):
-    """POST to the Tentacle Jellyfin plugin refresh endpoint. Fail silently if not installed."""
+def _notify_jellyfin_plugin(db: Session) -> dict:
+    """POST to the Tentacle Jellyfin plugin refresh endpoint. Returns result dict."""
     jellyfin_url = get_setting(db, "jellyfin_url", "")
     jellyfin_key = get_setting(db, "jellyfin_api_key", "")
     if not jellyfin_url or not jellyfin_key:
-        return
+        return {"notified": False, "error": "Jellyfin not configured"}
     try:
         r = requests.post(
             f"{jellyfin_url.rstrip('/')}/Tentacle/Refresh",
@@ -649,10 +649,19 @@ def _notify_jellyfin_plugin(db: Session):
         )
         if r.ok:
             logger.info("Notified Tentacle Jellyfin plugin to refresh")
+            return {"notified": True}
+        elif r.status_code == 404:
+            return {"notified": False, "error": "Tentacle plugin not installed in Jellyfin"}
+        elif r.status_code == 401:
+            return {"notified": False, "error": "Jellyfin API key is invalid"}
         else:
-            logger.debug(f"Tentacle plugin refresh returned {r.status_code} (plugin may not be installed)")
+            return {"notified": False, "error": f"Jellyfin returned {r.status_code}"}
+    except requests.ConnectionError:
+        return {"notified": False, "error": f"Cannot reach Jellyfin at {jellyfin_url}"}
+    except requests.Timeout:
+        return {"notified": False, "error": "Jellyfin connection timed out"}
     except Exception:
-        logger.debug("Tentacle Jellyfin plugin not reachable (plugin may not be installed)")
+        return {"notified": False, "error": "Jellyfin plugin not reachable"}
 
 
 # ── Playlist Population (replaces C# SmartLists plugin) ─────────────────

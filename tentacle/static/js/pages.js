@@ -1079,7 +1079,11 @@ async function toggleAutoPlaylist(key) {
       method: 'POST',
       body: { key, enabled },
     });
-    toast(r.message || (enabled ? 'Playlist enabled' : 'Playlist disabled'));
+    if (r.jellyfin_error) {
+      toast(`Playlist ${enabled ? 'enabled' : 'disabled'} but Jellyfin sync failed \u2014 ${r.jellyfin_error}`, 'warning');
+    } else {
+      toast(r.message || (enabled ? 'Playlist enabled' : 'Playlist disabled'));
+    }
     // Reload to reflect updated state
     setTimeout(() => loadAutoPlaylists(), 500);
   } catch (e) {
@@ -1630,7 +1634,7 @@ async function updateHeroPick() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ playlist_id: heroSelect.value }),
     });
-    if (r.success) toast(heroSelect.value ? 'Hero spotlight updated' : 'Hero spotlight disabled');
+    if (r.success) pushHomeConfig();
     else toast(r.message || 'Failed to update hero', 'error');
   } catch (e) {
     toast('Failed to save hero: ' + e.message, 'error');
@@ -1647,7 +1651,7 @@ async function updateHeroSort() {
       method: 'POST',
       body: { sort_by: sortBy, sort_order: sortOrder, require_logo: requireLogo },
     });
-    if (r.success) toast('Hero settings updated');
+    if (r.success) pushHomeConfig();
     else toast(r.message || 'Failed', 'error');
   } catch (e) {
     toast('Failed: ' + e.message, 'error');
@@ -1655,13 +1659,12 @@ async function updateHeroSort() {
 }
 
 async function pushHomeConfig() {
-  toast('Notifying Jellyfin to reload...', 'info');
   try {
     const r = await api('/api/smartlists/notify', { method: 'POST' });
-    if (r.success) {
+    if (r.notified) {
       toast('Jellyfin notified — home screen will update shortly');
     } else {
-      toast('Failed to notify Jellyfin', 'error');
+      toast('Saved but Jellyfin plugin didn\'t respond — ' + (r.error || 'check plugin is installed'), 'warning');
     }
   } catch (e) {
     toast(e.message, 'error');

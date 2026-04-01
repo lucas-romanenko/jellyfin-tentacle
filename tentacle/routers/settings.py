@@ -254,6 +254,54 @@ def check_paths():
     return result
 
 
+@router.get("/connection-status")
+def connection_status(db: Session = Depends(get_db)):
+    """Test all configured service connections in parallel."""
+    import concurrent.futures
+
+    # Read all settings upfront (SQLite safety — don't share session across threads)
+    jf_url = get_setting(db, "jellyfin_url", "")
+    jf_key = get_setting(db, "jellyfin_api_key", "")
+    radarr_url = get_setting(db, "radarr_url", "")
+    radarr_key = get_setting(db, "radarr_api_key", "")
+    sonarr_url = get_setting(db, "sonarr_url", "")
+    sonarr_key = get_setting(db, "sonarr_api_key", "")
+
+    def _test(url, key, health_path, auth_header):
+        if not url or not key:
+            return {"ok": False, "error": "Not configured", "configured": False}
+        try:
+            r = requests.get(
+                f"{url.rstrip('/')}/{health_path}",
+                headers={auth_header: key},
+                timeout=5,
+            )
+            if r.status_code == 401:
+                return {"ok": False, "error": "API key is invalid", "configured": True}
+            r.raise_for_status()
+            return {"ok": True, "configured": True}
+        except requests.ConnectionError:
+            return {"ok": False, "error": f"Cannot reach {url}", "configured": True}
+        except requests.Timeout:
+            return {"ok": False, "error": "Connection timed out", "configured": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e), "configured": True}
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        futs = {
+            "jellyfin": executor.submit(_test, jf_url, jf_key, "System/Info", "X-Emby-Token"),
+            "radarr": executor.submit(_test, radarr_url, radarr_key, "api/v3/system/status", "X-Api-Key"),
+            "sonarr": executor.submit(_test, sonarr_url, sonarr_key, "api/v3/system/status", "X-Api-Key"),
+        }
+        results = {}
+        for name, fut in futs.items():
+            try:
+                results[name] = fut.result(timeout=10)
+            except Exception:
+                results[name] = {"ok": False, "error": "Test timed out", "configured": True}
+    return results
+
+
 @router.get("/stale-files")
 def check_stale_files(db: Session = Depends(get_db)):
     """Check for .strm files in VOD folders that Tentacle didn't create.

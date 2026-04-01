@@ -1180,6 +1180,14 @@ td.primary { color: var(--text); font-weight: 500; }
           </div>
         </div>
 
+        <!-- Jellyfin connection warning -->
+        <div class="card" id="jellyfin-error-banner" style="display:none;margin-bottom:16px;border-left:3px solid var(--red)">
+          <div style="padding:16px;font-size:13px;color:var(--text2);line-height:1.5">
+            <strong style="color:var(--red)" id="jellyfin-banner-title">Jellyfin Connection Failed</strong>
+            <p style="margin:4px 0 0" id="jellyfin-banner-msg">Check your API key in Settings → Connections</p>
+          </div>
+        </div>
+
         <!-- Stale VOD files warning (first startup only) -->
         <div class="card" id="stale-files-banner" style="display:none;margin-bottom:16px;border-left:3px solid var(--amber)">
           <div class="card-header">
@@ -1412,7 +1420,7 @@ td.primary { color: var(--text); font-weight: 500; }
 
               <div class="form-row">
                 <div class="form-group">
-                  <div class="form-label">Radarr URL</div>
+                  <div class="form-label">Radarr URL <span id="conn-status-radarr" style="display:none;font-size:11px;padding:2px 8px;border-radius:4px;margin-left:4px"></span></div>
                   <input class="form-input" id="radarr_url" placeholder="http://localhost:7878">
                 </div>
                 <div class="form-group">
@@ -1428,7 +1436,7 @@ td.primary { color: var(--text); font-weight: 500; }
 
               <div class="form-row">
                 <div class="form-group">
-                  <div class="form-label">Sonarr URL</div>
+                  <div class="form-label">Sonarr URL <span id="conn-status-sonarr" style="display:none;font-size:11px;padding:2px 8px;border-radius:4px;margin-left:4px"></span></div>
                   <input class="form-input" id="sonarr_url" placeholder="http://localhost:8989">
                 </div>
                 <div class="form-group">
@@ -1444,7 +1452,7 @@ td.primary { color: var(--text); font-weight: 500; }
 
               <div class="form-row">
                 <div class="form-group">
-                  <div class="form-label">Jellyfin URL</div>
+                  <div class="form-label">Jellyfin URL <span id="conn-status-jellyfin" style="display:none;font-size:11px;padding:2px 8px;border-radius:4px;margin-left:4px"></span></div>
                   <input class="form-input" id="jellyfin_url" placeholder="http://localhost:8096">
                 </div>
                 <div class="form-group">

@@ -166,8 +166,8 @@ def refresh_playlists(db: Session = Depends(get_db), user: TentacleUser = Depend
 @router.post("/notify")
 def notify(db: Session = Depends(get_db)):
     """Notify the Jellyfin plugin to reload. Does NOT touch the JSON."""
-    _notify_jellyfin_plugin(db)
-    return {"success": True}
+    result = _notify_jellyfin_plugin(db)
+    return {"success": True, **result}
 
 
 # ── Row identity helper ─────────────────────────────────────────────────────
@@ -550,8 +550,6 @@ class AutoPlaylistToggleRequest(BaseModel):
 @router.post("/auto-playlists/toggle")
 def toggle_auto_playlist(req: AutoPlaylistToggleRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Toggle a per-user auto playlist on/off. Triggers sync to Jellyfin."""
-    import threading
-
     # List playlists use ListSubscription.playlist_enabled
     if req.key.startswith("list:"):
         list_id = int(req.key.replace("list:", ""))
@@ -575,22 +573,21 @@ def toggle_auto_playlist(req: AutoPlaylistToggleRequest, db: Session = Depends(g
             db.add(AutoPlaylistToggle(key=req.key, enabled=req.enabled, user_id=user.id))
         db.commit()
 
-    # Background sync to Jellyfin (per-user)
-    target_user_id = user.id
-
-    def _sync_bg():
-        from models.database import SessionLocal
-        bg_db = SessionLocal()
-        try:
-            sync_smartlists(bg_db, user_id=target_user_id)
-            _notify_jellyfin_plugin(bg_db)
-        except Exception as e:
-            logger.error(f"Auto playlist sync failed: {e}")
-        finally:
-            bg_db.close()
-
-    thread = threading.Thread(target=_sync_bg, daemon=True)
-    thread.start()
+    # Synchronous sync to Jellyfin (per-user) — fast enough for inline
+    jellyfin_error = None
+    notify_result = {"notified": False}
+    try:
+        sync_smartlists(db, user_id=user.id)
+        notify_result = _notify_jellyfin_plugin(db)
+    except Exception as e:
+        logger.error(f"Auto playlist sync failed: {e}")
+        jellyfin_error = str(e)
 
     action = "enabled" if req.enabled else "disabled"
-    return {"success": True, "message": f"Playlist {action}", "enabled": req.enabled}
+    return {
+        "success": True,
+        "message": f"Playlist {action}",
+        "enabled": req.enabled,
+        "jellyfin_error": jellyfin_error,
+        "notified": notify_result.get("notified", False) if not jellyfin_error else False,
+    }

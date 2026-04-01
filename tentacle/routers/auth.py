@@ -267,6 +267,8 @@ def get_managed_users(admin: TentacleUser = Depends(require_admin), db: Session 
             headers={"X-Emby-Token": jf_key},
             timeout=10,
         )
+        if r.status_code == 401:
+            raise HTTPException(502, "Jellyfin API key is invalid — generate a new one in Jellyfin Dashboard → API Keys")
         r.raise_for_status()
         users = r.json()
         return [
@@ -282,6 +284,12 @@ def get_managed_users(admin: TentacleUser = Depends(require_admin), db: Session 
             }
             for u in users
         ]
+    except HTTPException:
+        raise
+    except requests.ConnectionError:
+        raise HTTPException(502, f"Cannot reach Jellyfin at {jf_url} — check the URL and ensure Jellyfin is running")
+    except requests.Timeout:
+        raise HTTPException(504, "Jellyfin connection timed out — the server may be under heavy load")
     except requests.RequestException as e:
         raise HTTPException(502, f"Could not reach Jellyfin: {e}")
 

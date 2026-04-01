@@ -653,6 +653,23 @@ async function loadDashboard() {
     // Activity feed
     renderActivityFeed(activity);
 
+    // Jellyfin connection banner
+    const jfBanner = document.getElementById('jellyfin-error-banner');
+    if (jfBanner) {
+      const cfg = dash.config;
+      if (!cfg.jellyfin_url_configured) {
+        document.getElementById('jellyfin-banner-title').textContent = 'Jellyfin Not Configured';
+        document.getElementById('jellyfin-banner-msg').textContent = 'Set up your Jellyfin connection in Settings \u2192 Connections';
+        jfBanner.style.display = '';
+      } else if (cfg.jellyfin_connected === false) {
+        document.getElementById('jellyfin-banner-title').textContent = 'Jellyfin Connection Failed';
+        document.getElementById('jellyfin-banner-msg').textContent = 'Check your API key in Settings \u2192 Connections';
+        jfBanner.style.display = '';
+      } else {
+        jfBanner.style.display = 'none';
+      }
+    }
+
     // Stale VOD files check (first startup only)
     checkStaleFiles();
 
@@ -1152,7 +1169,29 @@ async function loadSettings() {
       jfLabel.textContent = `Logged in as: ${state.currentUser.display_name}`;
     }
     loadPathStatus();
+    loadConnectionStatus();
   } catch (e) {}
+}
+
+async function loadConnectionStatus() {
+  try {
+    const status = await api('/api/settings/connection-status');
+    for (const [service, info] of Object.entries(status)) {
+      const badge = document.getElementById(`conn-status-${service}`);
+      if (!badge) continue;
+      if (!info.configured) { badge.style.display = 'none'; continue; }
+      badge.style.display = 'inline';
+      if (info.ok) {
+        badge.textContent = 'Connected';
+        badge.style.background = 'rgba(34,197,94,0.15)';
+        badge.style.color = 'var(--green)';
+      } else {
+        badge.textContent = info.error || 'Failed';
+        badge.style.background = 'rgba(239,68,68,0.15)';
+        badge.style.color = 'var(--red)';
+      }
+    }
+  } catch (e) { /* don't block settings page */ }
 }
 
 async function loadPathStatus() {

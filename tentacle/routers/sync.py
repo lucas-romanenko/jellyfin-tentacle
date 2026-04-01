@@ -20,6 +20,11 @@ from models.database import get_db, Provider, SyncRun, Movie, Series, Duplicate,
 from services.sync import sync_provider
 from services.tagger import refresh_recently_added_tags
 from routers.auth import require_admin
+import time
+import requests as _requests
+
+# Jellyfin health check cache (avoid hitting /System/Info on every 30s dashboard refresh)
+_jf_health_cache = {"ok": None, "checked_at": 0}
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/sync", tags=["sync"], dependencies=[Depends(require_admin)])
@@ -477,6 +482,28 @@ def get_dashboard(db: Session = Depends(get_db)):
     home_config = get_home_config(db)
     has_home_screen = bool(home_config and home_config.get("rows"))
 
+    # Jellyfin connection check (cached 60s)
+    jf_url = get_setting(db, "jellyfin_url", "")
+    jf_key = get_setting(db, "jellyfin_api_key", "")
+    jf_url_configured = bool(jf_url and jf_key)
+    jf_connected = False
+    if jf_url_configured:
+        now = time.time()
+        if _jf_health_cache["ok"] is not None and now - _jf_health_cache["checked_at"] < 60:
+            jf_connected = _jf_health_cache["ok"]
+        else:
+            try:
+                r = _requests.get(
+                    f"{jf_url.rstrip('/')}/System/Info",
+                    headers={"X-Emby-Token": jf_key},
+                    timeout=5,
+                )
+                jf_connected = r.ok
+            except Exception:
+                jf_connected = False
+            _jf_health_cache["ok"] = jf_connected
+            _jf_health_cache["checked_at"] = now
+
     # --- Last sync summary ---
     last_sync_summary = None
     if last_vod_run:
@@ -525,6 +552,8 @@ def get_dashboard(db: Session = Depends(get_db)):
             "has_providers": has_providers,
             "has_playlists": has_playlists,
             "has_home_screen": has_home_screen,
+            "jellyfin_url_configured": jf_url_configured,
+            "jellyfin_connected": jf_connected,
         },
     }
 
