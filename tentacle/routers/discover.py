@@ -45,62 +45,83 @@ def _dedup_and_mark(items: list, known_ids: set) -> list:
 
 @router.get("")
 def get_discover(
-    type: str = "all",
+    type: str = "movies",
     db: Session = Depends(get_db)
 ):
-    """Return discover sections: trending, popular, from your lists, coming soon."""
+    """Return discover sections based on media type.
+    Movies: Popular, Now Playing, Upcoming, From Your Lists
+    TV: Popular, On the Air, Top Rated, From Your Lists
+    """
     tmdb = _get_tmdb(db)
     if not tmdb:
         return {"sections": []}
 
     known_ids = _known_tmdb_ids(db)
-
     sections = []
 
-    # ── Trending ──
-    trending = []
-    if type in ("all", "movies"):
-        trending.extend(tmdb.get_trending("movie", page=1))
-    if type in ("all", "series"):
-        trending.extend(tmdb.get_trending("series", page=1))
-    if trending:
-        sections.append({
-            "id": "trending",
-            "title": "Trending This Week",
-            "items": _dedup_and_mark(trending, known_ids),
-        })
+    if type == "series":
+        # ── TV: Popular ──
+        popular = tmdb.get_popular("series", page=1)
+        if popular:
+            sections.append({
+                "id": "popular",
+                "title": "Popular",
+                "items": _dedup_and_mark(popular, known_ids),
+            })
 
-    # ── Popular ──
-    popular = []
-    if type in ("all", "movies"):
-        popular.extend(tmdb.get_popular("movie", page=1))
-    if type in ("all", "series"):
-        popular.extend(tmdb.get_popular("series", page=1))
-    if popular:
-        sections.append({
-            "id": "popular",
-            "title": "Popular",
-            "items": _dedup_and_mark(popular, known_ids),
-        })
+        # ── TV: On the Air ──
+        on_the_air = tmdb.get_on_the_air(page=1)
+        if on_the_air:
+            sections.append({
+                "id": "on_the_air",
+                "title": "On the Air",
+                "items": _dedup_and_mark(on_the_air, known_ids),
+            })
 
-    # ── From Your Lists (missing items) ──
-    missing = _get_missing_from_lists(db, known_ids, type)
-    if missing:
-        sections.append({
-            "id": "missing",
-            "title": "Missing from Your Lists",
-            "items": missing,
-        })
+        # ── TV: Top Rated ──
+        top_rated = tmdb.get_top_rated("series", page=1)
+        if top_rated:
+            sections.append({
+                "id": "top_rated",
+                "title": "Top Rated",
+                "items": _dedup_and_mark(top_rated, known_ids),
+            })
+    else:
+        # ── Movies: Popular ──
+        popular = tmdb.get_popular("movie", page=1)
+        if popular:
+            sections.append({
+                "id": "popular",
+                "title": "Popular",
+                "items": _dedup_and_mark(popular, known_ids),
+            })
 
-    # ── Coming Soon (digital/physical releases) ──
-    if type in ("all", "movies"):
+        # ── Movies: Now Playing ──
+        now_playing = tmdb.get_now_playing(page=1)
+        if now_playing:
+            sections.append({
+                "id": "now_playing",
+                "title": "Now Playing",
+                "items": _dedup_and_mark(now_playing, known_ids),
+            })
+
+        # ── Movies: Upcoming ──
         upcoming = tmdb.get_upcoming(page=1)
         if upcoming:
             sections.append({
                 "id": "upcoming",
-                "title": "Coming Soon",
+                "title": "Upcoming",
                 "items": _dedup_and_mark(upcoming, known_ids),
             })
+
+    # ── From Your Lists (both types) ──
+    missing = _get_missing_from_lists(db, known_ids, type)
+    if missing:
+        sections.append({
+            "id": "missing",
+            "title": "From My Lists",
+            "items": missing,
+        })
 
     return {"sections": sections}
 

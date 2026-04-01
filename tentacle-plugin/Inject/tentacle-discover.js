@@ -1,4 +1,4 @@
-// Tentacle Discover — Jellyfin tab for trending, popular, lists & upcoming
+// Tentacle Discover — Jellyfin tab for popular, now playing, upcoming, on the air, top rated, lists & activity
 // v4 — sections-based layout with category tabs
 (function () {
   'use strict';
@@ -8,8 +8,8 @@
     initialized: false,
     enabled: null,
     sections: null,
-    mediaFilter: 'all',    // all | movies | series
-    activeSection: null,    // trending | popular | missing | upcoming | activity
+    mediaFilter: 'movies',  // movies | series
+    activeSection: null,    // popular | now_playing | upcoming | on_the_air | top_rated | missing | activity
     active: false,
     loaded: false,
     searchQuery: '',
@@ -169,9 +169,8 @@
             '<button id="mdSearchClear" class="md-search-clear" style="display:none">&times;</button>' +
           '</div>' +
           '<div class="md-filter-group">' +
-            '<button class="md-filter-btn md-active" data-mdtype="all">All</button>' +
-            '<button class="md-filter-btn" data-mdtype="movies">Movies</button>' +
-            '<button class="md-filter-btn" data-mdtype="series">Shows</button>' +
+            '<button class="md-filter-btn md-active" data-mdtype="movies">Movies</button>' +
+            '<button class="md-filter-btn" data-mdtype="series">TV Shows</button>' +
           '</div>' +
         '</div>' +
       '</div>' +
@@ -186,6 +185,7 @@
         container.querySelectorAll('.md-filter-btn').forEach(function (x) { x.classList.remove('md-active'); });
         b.classList.add('md-active');
         MD.mediaFilter = b.getAttribute('data-mdtype');
+        MD.activeSection = null; // Reset — tabs change between Movies/TV
         if (MD.searchMode && MD.searchQuery) {
           doSearch(MD.searchQuery);
         } else {
@@ -235,7 +235,7 @@
     var content = document.getElementById('mdDiscoverContent');
     if (content) content.innerHTML = '<div class="md-loading"><div class="md-spinner"></div><br>Loading…</div>';
 
-    var typeParam = MD.mediaFilter === 'all' ? 'all' : MD.mediaFilter === 'movies' ? 'movies' : 'series';
+    var typeParam = MD.mediaFilter === 'series' ? 'series' : 'movies';
 
     // Fetch discover items and activity in parallel
     var itemsPromise = apiGet('TentacleDiscover/Items?type=' + typeParam);
@@ -278,7 +278,7 @@
     var content = document.getElementById('mdDiscoverContent');
     if (content) content.innerHTML = '<div class="md-loading"><div class="md-spinner"></div><br>Searching…</div>';
 
-    var typeParam = MD.mediaFilter === 'all' ? 'all' : MD.mediaFilter === 'movies' ? 'movies' : 'series';
+    var typeParam = MD.mediaFilter === 'series' ? 'series' : 'movies';
     apiGet('TentacleDiscover/Search?q=' + encodeURIComponent(query) + '&type=' + typeParam).then(function (data) {
       var items = data.items || [];
       MD.searchResults = items;
@@ -301,10 +301,12 @@
   // ── Section tabs ──────────────────────────────────────────────────
   var SECTION_LABELS = {
     activity: 'Activity',
-    trending: 'Trending',
     popular: 'Popular',
-    missing: 'From Your Lists',
+    now_playing: 'Now Playing',
     upcoming: 'Upcoming',
+    on_the_air: 'On the Air',
+    top_rated: 'Top Rated',
+    missing: 'From My Lists',
   };
 
   function renderSectionTabs() {

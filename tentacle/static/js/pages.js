@@ -2753,15 +2753,17 @@ function renderActivity(data) {
 }
 
 // ── DISCOVER PAGE ────────────────────────────────────────────────────────
-let _discoverType = 'all';
+let _discoverType = 'movies';
 let _discoverSections = [];
 let _discoverActiveSection = null;
 
 const DISCOVER_SECTION_LABELS = {
-  trending: 'Trending',
   popular: 'Popular',
-  missing: 'From Your Lists',
+  now_playing: 'Now Playing',
   upcoming: 'Upcoming',
+  on_the_air: 'On the Air',
+  top_rated: 'Top Rated',
+  missing: 'From My Lists',
 };
 
 async function loadDiscover() {
@@ -2874,6 +2876,7 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
 
 function setDiscoverType(type, btn) {
   _discoverType = type;
+  _discoverActiveSection = null; // Reset — tabs change between Movies/TV
   document.querySelectorAll('#discover-tab-browse .filter-btn').forEach(b => b.classList.remove('active'));
   if (btn) btn.classList.add('active');
   if (_discoverSearchQuery) {

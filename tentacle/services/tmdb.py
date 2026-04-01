@@ -10,7 +10,7 @@ import hashlib
 import logging
 import requests
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from typing import Optional, Tuple, Dict, Any
 from services.exceptions import TMDBConnectionError
@@ -380,13 +380,34 @@ class TMDBService:
             logger.info(f"TMDB popular {media_type} page {page}: {len(result)} items")
         return result
 
-    def get_upcoming(self, page: int = 1) -> list:
-        """Fetch upcoming movies not yet released. Cached for 6 hours.
-        Uses TMDB movie/upcoming endpoint for movies coming to theaters."""
+    def get_now_playing(self, page: int = 1) -> list:
+        """Fetch movies currently in theaters. Cached for 6 hours."""
         if not self.enabled:
             return []
 
-        cache_key = f"upcoming_v2:{page}"
+        cache_key = f"now_playing:{page}"
+        cached = self._cache_get(cache_key, ttl_seconds=21600)
+        if cached is not None:
+            return cached
+
+        data = self._request("movie/now_playing", {
+            "page": page,
+            "language": "en-US",
+            "region": "US",
+        })
+        result = self._parse_results(data, "movie")
+        if result:
+            self._cache_set(cache_key, result)
+            logger.info(f"TMDB now_playing page {page}: {len(result)} items")
+        return result
+
+    def get_upcoming(self, page: int = 1) -> list:
+        """Fetch upcoming movies not yet released. Cached for 6 hours.
+        Filters out movies with release dates more than 14 days in the past."""
+        if not self.enabled:
+            return []
+
+        cache_key = f"upcoming_v3:{page}"
         cached = self._cache_get(cache_key, ttl_seconds=21600)
         if cached is not None:
             return cached
@@ -397,9 +418,62 @@ class TMDBService:
             "region": "US",
         })
         result = self._parse_results(data, "movie")
+        # Filter out old movies — only keep items releasing within 14 days ago or in the future
+        if data and data.get("results"):
+            date_lookup = {
+                item["id"]: (item.get("release_date") or "")
+                for item in data["results"]
+            }
+            cutoff_date = (datetime.now() - timedelta(days=14)).strftime("%Y-%m-%d")
+            result = [
+                item for item in result
+                if date_lookup.get(item["tmdb_id"], "") >= cutoff_date
+                or not date_lookup.get(item["tmdb_id"], "")
+            ]
         if result:
             self._cache_set(cache_key, result)
             logger.info(f"TMDB upcoming page {page}: {len(result)} items")
+        return result
+
+    def get_on_the_air(self, page: int = 1) -> list:
+        """Fetch TV shows currently on the air. Cached for 6 hours."""
+        if not self.enabled:
+            return []
+
+        cache_key = f"on_the_air:{page}"
+        cached = self._cache_get(cache_key, ttl_seconds=21600)
+        if cached is not None:
+            return cached
+
+        data = self._request("tv/on_the_air", {
+            "page": page,
+            "language": "en-US",
+        })
+        result = self._parse_results(data, "series")
+        if result:
+            self._cache_set(cache_key, result)
+            logger.info(f"TMDB on_the_air page {page}: {len(result)} items")
+        return result
+
+    def get_top_rated(self, media_type: str = "series", page: int = 1) -> list:
+        """Fetch top rated TV shows. Cached for 6 hours."""
+        if not self.enabled:
+            return []
+
+        cache_key = f"top_rated:{media_type}:{page}"
+        cached = self._cache_get(cache_key, ttl_seconds=21600)
+        if cached is not None:
+            return cached
+
+        endpoint = f"{'tv' if media_type == 'series' else 'movie'}/top_rated"
+        data = self._request(endpoint, {
+            "page": page,
+            "language": "en-US",
+        })
+        result = self._parse_results(data, media_type)
+        if result:
+            self._cache_set(cache_key, result)
+            logger.info(f"TMDB top_rated {media_type} page {page}: {len(result)} items")
         return result
 
     def search_multi_results(self, query: str, media_type: str = "all") -> list:
