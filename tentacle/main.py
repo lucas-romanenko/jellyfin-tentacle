@@ -251,6 +251,11 @@ app.include_router(livetv_router.router)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    return FileResponse("static/favicon.ico")
+
+
 @app.middleware("http")
 async def no_cache_static(request: Request, call_next):
     response = await call_next(request)
