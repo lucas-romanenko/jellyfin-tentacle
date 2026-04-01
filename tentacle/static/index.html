@@ -1108,6 +1108,60 @@ td.primary { color: var(--text); font-weight: 500; }
 .activity-countdown { font-size: 12px; font-weight: 500; color: rgb(117, 111, 226); }
 .activity-empty { text-align: center; padding: 40px; color: var(--text3); font-size: 13px; }
 
+/* ── Hero config card ── */
+.hero-config-card {
+  background: var(--bg1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.hero-config-header {
+  display: flex; align-items: center; gap: 12px;
+  padding: 16px 20px;
+  background: linear-gradient(135deg, rgba(108,99,255,0.08) 0%, rgba(108,99,255,0.03) 100%);
+  border-bottom: 1px solid var(--border);
+}
+.hero-config-icon {
+  width: 36px; height: 36px; border-radius: 10px;
+  background: var(--accent-dim); color: var(--accent);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 16px; flex-shrink: 0;
+}
+.hero-config-title { font-size: 14px; font-weight: 600; color: var(--text); }
+.hero-config-subtitle { font-size: 12px; color: var(--text3); margin-top: 2px; }
+.hero-config-body { padding: 16px 20px; }
+.hero-config-row { display: flex; gap: 12px; align-items: flex-end; }
+.hero-config-field { flex: 1; }
+.hero-config-label {
+  display: block; font-size: 11px; font-weight: 500;
+  color: var(--text3); text-transform: uppercase; letter-spacing: 0.04em;
+  margin-bottom: 6px;
+}
+.hero-config-checkbox {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 13px; color: var(--text2); cursor: pointer;
+  margin-top: 12px; position: relative;
+}
+.hero-config-hint {
+  width: 16px; height: 16px; border-radius: 50%;
+  background: var(--bg3); color: var(--text3);
+  font-size: 10px; font-weight: 600;
+  display: inline-flex; align-items: center; justify-content: center;
+  cursor: help; position: relative;
+}
+.hero-config-hint:hover { background: var(--accent-dim); color: var(--accent); }
+.hero-config-checkbox:hover .hero-config-tooltip { opacity: 1; visibility: visible; transform: translateY(0); }
+.hero-config-tooltip {
+  position: absolute; bottom: calc(100% + 8px); left: 0;
+  background: var(--bg0); border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px 14px;
+  font-size: 12px; color: var(--text2); line-height: 1.5;
+  width: 280px; box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+  opacity: 0; visibility: hidden;
+  transform: translateY(4px); transition: all 0.15s ease;
+  pointer-events: none; z-index: 10;
+}
+
 /* ── Library downloads section ── */
 .dl-item {
   display: flex; align-items: center; gap: 12px;
@@ -1698,28 +1752,40 @@ td.primary { color: var(--text); font-weight: 500; }
         <!-- ── HOME SCREEN TAB ── -->
         <div id="jf-tab-home">
           <!-- Hero picker -->
-          <div class="card">
-            <div class="card-header">
-              <div class="card-title">Hero Spotlight</div>
-            </div>
-            <div style="padding:0 16px 16px">
-              <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-                <select id="home-hero-select" class="input" style="max-width:360px;flex:1" onchange="updateHeroPick()">
-                  <option value="">-- disabled --</option>
-                </select>
-                <select id="home-hero-sort" class="input" style="max-width:180px" onchange="updateHeroSort()">
-                  <option value="random_desc">Random</option>
-                  <option value="communityrating_desc">Top Rated</option>
-                  <option value="releasedate_desc">Newest First</option>
-                  <option value="releasedate_asc">Oldest First</option>
-                  <option value="name_asc">A &rarr; Z</option>
-                  <option value="datecreated_desc">Recently Added</option>
-                </select>
-                <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text2);cursor:pointer;white-space:nowrap">
-                  <input type="checkbox" id="home-hero-require-logo" onchange="updateHeroSort()" checked>
-                  Title image only
-                </label>
+          <div class="hero-config-card">
+            <div class="hero-config-header">
+              <div class="hero-config-icon">✦</div>
+              <div>
+                <div class="hero-config-title">Hero Spotlight</div>
+                <div class="hero-config-subtitle">Featured banner at the top of the home screen</div>
               </div>
+            </div>
+            <div class="hero-config-body">
+              <div class="hero-config-row">
+                <div class="hero-config-field">
+                  <label class="hero-config-label">Playlist</label>
+                  <select id="home-hero-select" class="input" onchange="updateHeroPick()">
+                    <option value="">-- disabled --</option>
+                  </select>
+                </div>
+                <div class="hero-config-field" style="max-width:180px">
+                  <label class="hero-config-label">Sort</label>
+                  <select id="home-hero-sort" class="input" onchange="updateHeroSort()">
+                    <option value="random_desc">Random</option>
+                    <option value="communityrating_desc">Top Rated</option>
+                    <option value="releasedate_desc">Newest First</option>
+                    <option value="releasedate_asc">Oldest First</option>
+                    <option value="name_asc">A &rarr; Z</option>
+                    <option value="datecreated_desc">Recently Added</option>
+                  </select>
+                </div>
+              </div>
+              <label class="hero-config-checkbox" title="Only show items that have a logo/title image — items without one will display a plain text title instead">
+                <input type="checkbox" id="home-hero-require-logo" onchange="updateHeroSort()" checked>
+                <span>Title image only</span>
+                <span class="hero-config-hint">?</span>
+                <span class="hero-config-tooltip">For the best look, only feature content that has a logo image. Items without one will show a plain text title instead.</span>
+              </label>
             </div>
           </div>
 
