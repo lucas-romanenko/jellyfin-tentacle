@@ -59,9 +59,14 @@ async function showLoginOverlay() {
   try {
     const resp = await fetch('/api/auth/users');
     if (!resp.ok) {
-      // Jellyfin not configured yet — go straight to setup wizard
-      overlay.style.display = 'none';
-      document.getElementById('setup-overlay').style.display = 'flex';
+      if (resp.status === 400) {
+        // Jellyfin URL not configured — go to setup wizard
+        overlay.style.display = 'none';
+        document.getElementById('setup-overlay').style.display = 'flex';
+      } else {
+        // Connection error (bad API key, unreachable, etc.)
+        grid.innerHTML = '<div style="color:var(--red)">Cannot connect to Jellyfin. Check Settings.</div>';
+      }
       return;
     }
     const users = await resp.json();
