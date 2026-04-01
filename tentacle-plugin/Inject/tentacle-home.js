@@ -458,12 +458,13 @@
                         ct === 'tvshows' ? 'tv' :
                         ct === 'music' ? 'music' :
                         ct === 'livetv' ? 'livetv' : null;
+            var sid = item.ServerId || MH.apiClient.serverId();
             if (ct === 'playlists') {
-              window.location.hash = '#/list?parentId=' + item.Id;
+              window.location.hash = '#/list?parentId=' + item.Id + '&serverId=' + sid;
             } else if (route) {
               window.location.hash = '#/' + route + '?topParentId=' + item.Id + '&collectionType=' + ct;
             } else {
-              window.location.hash = '#/list?parentId=' + item.Id;
+              window.location.hash = '#/list?parentId=' + item.Id + '&serverId=' + sid;
             }
           };
 
