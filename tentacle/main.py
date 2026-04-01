@@ -26,7 +26,7 @@ def run_scheduled_sync():
     from services.tagger import refresh_recently_added_tags
     from services.radarr import scan_radarr_library
     from services.tmdb import TMDBService
-    from models.database import get_setting
+    from models.database import get_setting, log_activity
     db = SessionLocal()
     try:
         from models.database import ListSubscription
@@ -76,30 +76,62 @@ def run_scheduled_sync():
                 _sync_progress.pop(provider.id, None)
 
         logger.info("Scheduled Radarr scan starting")
-        scan_radarr_library(db)
+        try:
+            radarr_stats = scan_radarr_library(db)
+            new_count = radarr_stats.get("new", 0) if radarr_stats else 0
+            if new_count:
+                log_activity(db, "radarr_scan", f"Radarr scan — {new_count} new movie(s) imported")
+            logger.info(f"Radarr scan complete: {radarr_stats}")
+        except Exception as e:
+            logger.error(f"Radarr scan failed: {e}")
+            log_activity(db, "radarr_scan", f"Radarr scan failed: {e}")
 
         logger.info("Scheduled Sonarr scan starting")
-        from services.sonarr import scan_sonarr_library
-        scan_sonarr_library(db)
+        try:
+            from services.sonarr import scan_sonarr_library
+            sonarr_stats = scan_sonarr_library(db)
+            new_count = sonarr_stats.get("new", 0) if sonarr_stats else 0
+            if new_count:
+                log_activity(db, "sonarr_scan", f"Sonarr scan — {new_count} new series imported")
+            logger.info(f"Sonarr scan complete: {sonarr_stats}")
+        except Exception as e:
+            logger.error(f"Sonarr scan failed: {e}")
+            log_activity(db, "sonarr_scan", f"Sonarr scan failed: {e}")
 
         logger.info("Refreshing recently added tags")
-        refresh_recently_added_tags(db)
+        try:
+            refresh_recently_added_tags(db)
+        except Exception as e:
+            logger.error(f"Tag refresh failed: {e}")
 
         # Run full Jellyfin pipeline: library scan → wait → push tags → refresh playlists → home config
         logger.info("Running Jellyfin pipeline (scan, tags, playlists)")
-        from services.jellyfin import run_full_jellyfin_pipeline
-        pipeline_stats = run_full_jellyfin_pipeline(db, log_prefix="Nightly sync")
-        logger.info(f"Jellyfin pipeline complete: {pipeline_stats}")
+        try:
+            from services.jellyfin import run_full_jellyfin_pipeline
+            pipeline_stats = run_full_jellyfin_pipeline(db, log_prefix="Nightly sync")
+            tags_pushed = pipeline_stats.get("tags_pushed", 0)
+            if tags_pushed:
+                log_activity(db, "jellyfin_push", f"Jellyfin pipeline — {tags_pushed} tag(s) pushed, playlists refreshed")
+            logger.info(f"Jellyfin pipeline complete: {pipeline_stats}")
+        except Exception as e:
+            logger.error(f"Jellyfin pipeline failed: {e}")
+            log_activity(db, "jellyfin_push", f"Jellyfin pipeline failed: {e}")
 
-        bearer = get_tmdb_token(db)
-        data_dir = get_setting(db, "data_dir", "/data")
-        if bearer:
-            tmdb = TMDBService(bearer, data_dir)
-            tmdb.cleanup_cache()
+        try:
+            bearer = get_tmdb_token(db)
+            data_dir = get_setting(db, "data_dir", "/data")
+            if bearer:
+                tmdb = TMDBService(bearer, data_dir)
+                tmdb.cleanup_cache()
+        except Exception as e:
+            logger.error(f"TMDB cache cleanup failed: {e}")
 
         logger.info("Syncing playlist artwork")
-        from routers.collections import sync_playlist_artwork
-        sync_playlist_artwork(db)
+        try:
+            from routers.collections import sync_playlist_artwork
+            sync_playlist_artwork(db)
+        except Exception as e:
+            logger.error(f"Artwork sync failed: {e}")
 
         logger.info("Scheduled sync complete")
     except Exception as e:
