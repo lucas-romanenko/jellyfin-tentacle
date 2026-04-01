@@ -149,12 +149,9 @@ def scan_sonarr_library(db: Session) -> dict:
 
     stats = {"scanned": len(downloaded), "new": 0, "updated": 0, "nfo_written": 0, "duplicates": 0, "enriched": 0}
 
-    # Pre-load existing sonarr series and VOD series for batch lookup
-    existing_sonarr = {
-        row.tmdb_id: row for row in db.query(Series).filter(Series.source == "sonarr").all()
-    }
-    existing_vod_by_tmdb = {
-        row.tmdb_id: row for row in db.query(Series).filter(Series.source.like("provider_%")).all()
+    # Pre-load ALL existing series by tmdb_id to handle VOD overlap (UNIQUE constraint)
+    all_series_by_tmdb = {
+        row.tmdb_id: row for row in db.query(Series).all()
     }
     existing_dup_tmdb_ids = {
         row.tmdb_id for row in db.query(Duplicate.tmdb_id).filter(
@@ -181,7 +178,7 @@ def scan_sonarr_library(db: Session) -> dict:
             logger.debug(f"Sonarr: skipping '{title}' — no TMDB ID")
             continue
 
-        existing = existing_sonarr.get(tmdb_id)
+        existing = all_series_by_tmdb.get(tmdb_id)
         details = None
 
         if existing:
@@ -189,6 +186,19 @@ def scan_sonarr_library(db: Session) -> dict:
             if series_path and existing.sonarr_path != series_path:
                 existing.sonarr_path = series_path
                 changed = True
+            # If this was a VOD-only row, create a duplicate record
+            if existing.source and existing.source.startswith("provider_") and tmdb_id not in existing_dup_tmdb_ids:
+                db.add(Duplicate(
+                    tmdb_id=tmdb_id,
+                    media_type="series",
+                    sources=[
+                        {"source": "sonarr", "path": series_path},
+                        {"source": existing.source, "path": existing.strm_path or ""},
+                    ],
+                    resolution="pending"
+                ))
+                existing_dup_tmdb_ids.add(tmdb_id)
+                stats["duplicates"] += 1
             # Backfill TMDB metadata if missing
             if tmdb and not existing.poster_path:
                 details = tmdb.get_series_details(tmdb_id)
@@ -243,7 +253,7 @@ def scan_sonarr_library(db: Session) -> dict:
                         new_series.source_tag = detected
                     stats["enriched"] += 1
             db.add(new_series)
-            existing_sonarr[tmdb_id] = new_series
+            all_series_by_tmdb[tmdb_id] = new_series
             stats["new"] += 1
 
             emit_library_event("series_added", {
@@ -257,21 +267,6 @@ def scan_sonarr_library(db: Session) -> dict:
                 "media_type": "series",
                 "in_library": True,
             })
-
-            # Check for duplicate with VOD
-            vod_copy = existing_vod_by_tmdb.get(tmdb_id)
-            if vod_copy and tmdb_id not in existing_dup_tmdb_ids:
-                db.add(Duplicate(
-                    tmdb_id=tmdb_id,
-                    media_type="series",
-                    sources=[
-                        {"source": "sonarr", "path": series_path},
-                        {"source": vod_copy.source, "path": vod_copy.strm_path or ""},
-                    ],
-                    resolution="pending"
-                ))
-                existing_dup_tmdb_ids.add(tmdb_id)
-                stats["duplicates"] += 1
 
             series_needing_nfo.append((tmdb_id, new_series))
 
@@ -392,7 +387,7 @@ def scan_sonarr_library(db: Session) -> dict:
             jf_lookup, jf_title_lookup = jf.get_tmdb_lookup_with_fallback("Series")
             tags_pushed = 0
             tags_failed = 0
-            for tmdb_id, db_series in existing_sonarr.items():
+            for tmdb_id, db_series in all_series_by_tmdb.items():
                 if not db_series.tags:
                     continue
                 jf_item = jf_lookup.get(tmdb_id)
@@ -421,7 +416,7 @@ def scan_sonarr_library(db: Session) -> dict:
             stats["jf_tags_failed"] = tags_failed
             logger.info(
                 f"Jellyfin tag sync (series): {tags_pushed} pushed, {tags_failed} failed, "
-                f"{len(existing_sonarr)} total series checked"
+                f"{len(all_series_by_tmdb)} total series checked"
             )
         except Exception as e:
             logger.warning(f"Jellyfin tag push failed (series): {e}")

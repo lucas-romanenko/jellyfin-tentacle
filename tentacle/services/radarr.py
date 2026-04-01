@@ -134,12 +134,9 @@ def scan_radarr_library(db: Session) -> dict:
 
     stats = {"scanned": len(downloaded), "new": 0, "updated": 0, "nfo_written": 0, "duplicates": 0, "enriched": 0}
 
-    # Pre-load existing radarr movies and VOD movies for batch lookup
-    existing_radarr = {
-        row.tmdb_id: row for row in db.query(Movie).filter(Movie.source == "radarr").all()
-    }
-    existing_vod_by_tmdb = {
-        row.tmdb_id: row for row in db.query(Movie).filter(Movie.source.like("provider_%")).all()
+    # Pre-load ALL existing movies by tmdb_id to handle VOD overlap (UNIQUE constraint)
+    all_movies_by_tmdb = {
+        row.tmdb_id: row for row in db.query(Movie).all()
     }
     existing_dup_tmdb_ids = {
         row.tmdb_id for row in db.query(Duplicate.tmdb_id).filter(
@@ -157,7 +154,7 @@ def scan_radarr_library(db: Session) -> dict:
         movie_file = movie.get("movieFile", {})
         file_path = movie_file.get("path", "") if movie_file else ""
 
-        existing = existing_radarr.get(tmdb_id)
+        existing = all_movies_by_tmdb.get(tmdb_id)
         details = None
 
         if existing:
@@ -165,6 +162,19 @@ def scan_radarr_library(db: Session) -> dict:
             if file_path and existing.radarr_path != file_path:
                 existing.radarr_path = file_path
                 changed = True
+            # If this was a VOD-only row, create a duplicate record
+            if existing.source and existing.source.startswith("provider_") and tmdb_id not in existing_dup_tmdb_ids:
+                db.add(Duplicate(
+                    tmdb_id=tmdb_id,
+                    media_type="movie",
+                    sources=[
+                        {"source": "radarr", "path": file_path},
+                        {"source": existing.source, "path": existing.strm_path or ""},
+                    ],
+                    resolution="pending"
+                ))
+                existing_dup_tmdb_ids.add(tmdb_id)
+                stats["duplicates"] += 1
             # Backfill TMDB metadata if missing
             if tmdb and not existing.poster_path:
                 details = tmdb.get_movie_details(tmdb_id)
@@ -219,7 +229,7 @@ def scan_radarr_library(db: Session) -> dict:
                         new_movie.source_tag = detected
                     stats["enriched"] += 1
             db.add(new_movie)
-            existing_radarr[tmdb_id] = new_movie
+            all_movies_by_tmdb[tmdb_id] = new_movie
             stats["new"] += 1
 
             emit_library_event("movie_added", {
@@ -233,21 +243,6 @@ def scan_radarr_library(db: Session) -> dict:
                 "media_type": "movie",
                 "in_library": True,
             })
-
-            # Check for duplicate with VOD (using pre-loaded lookup)
-            vod_copy = existing_vod_by_tmdb.get(tmdb_id)
-            if vod_copy and tmdb_id not in existing_dup_tmdb_ids:
-                db.add(Duplicate(
-                    tmdb_id=tmdb_id,
-                    media_type="movie",
-                    sources=[
-                        {"source": "radarr", "path": file_path},
-                        {"source": vod_copy.source, "path": vod_copy.strm_path or ""},
-                    ],
-                    resolution="pending"
-                ))
-                existing_dup_tmdb_ids.add(tmdb_id)
-                stats["duplicates"] += 1
 
             movies_needing_nfo.append((tmdb_id, new_movie))
 
@@ -370,7 +365,7 @@ def scan_radarr_library(db: Session) -> dict:
             jf_lookup, jf_title_lookup = jf.get_tmdb_lookup_with_fallback("Movie")
             tags_pushed = 0
             tags_failed = 0
-            for tmdb_id, db_movie in existing_radarr.items():
+            for tmdb_id, db_movie in all_movies_by_tmdb.items():
                 if not db_movie.tags:
                     continue
                 jf_item = jf_lookup.get(tmdb_id)
@@ -400,7 +395,7 @@ def scan_radarr_library(db: Session) -> dict:
             stats["jf_tags_failed"] = tags_failed
             logger.info(
                 f"Jellyfin tag sync: {tags_pushed} pushed, {tags_failed} failed, "
-                f"{len(existing_radarr)} total movies checked"
+                f"{len(all_movies_by_tmdb)} total movies checked"
             )
         except Exception as e:
             logger.warning(f"Jellyfin tag push failed: {e}")
