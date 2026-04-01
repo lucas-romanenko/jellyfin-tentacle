@@ -453,7 +453,17 @@
           var tile = document.createElement('div');
           tile.className = small ? 'mh-lib-tile mh-lib-tile-sm' : 'mh-lib-tile';
           tile.onclick = function () {
-            window.location.hash = '#/items.html?parentId=' + item.Id;
+            var ct = (item.CollectionType || '').toLowerCase();
+            var route = ct === 'movies' ? 'movies' :
+                        ct === 'tvshows' ? 'tv' :
+                        ct === 'music' ? 'music' :
+                        ct === 'livetv' ? 'livetv' :
+                        ct === 'playlists' ? 'list' : null;
+            if (route) {
+              window.location.hash = '#/' + route + '?topParentId=' + item.Id + '&collectionType=' + ct;
+            } else {
+              window.location.hash = '#/list?topParentId=' + item.Id;
+            }
           };
 
           var posterTag = item.ImageTags && item.ImageTags.Primary ? item.ImageTags.Primary : '';
