@@ -256,11 +256,13 @@ def add_row(req: AddRowRequest, db: Session = Depends(get_db), user: TentacleUse
             return {"success": False, "message": "Unknown built-in section"}
         if any(r.get("type") == "builtin" and r.get("section_id") == req.section_id for r in config["rows"]):
             return {"success": False, "message": "Already in home screen"}
-        config["rows"].append({
+        for r in config["rows"]:
+            r["order"] = r.get("order", 0) + 1
+        config["rows"].insert(0, {
             "type": "builtin",
             "section_id": req.section_id,
             "display_name": builtin["display_name"],
-            "order": len(config["rows"]) + 1,
+            "order": 1,
         })
     elif req.playlist_id:
         # Adding a Tentacle playlist (per-user)
@@ -271,11 +273,13 @@ def add_row(req: AddRowRequest, db: Session = Depends(get_db), user: TentacleUse
         if any(r.get("playlist_id") == req.playlist_id and r.get("type", "playlist") == "playlist" for r in config["rows"]):
             return {"success": False, "message": "Already in home screen"}
         home_row_limit = int(get_setting(db, "home_row_limit", "20") or "20")
-        config["rows"].append({
+        for r in config["rows"]:
+            r["order"] = r.get("order", 0) + 1
+        config["rows"].insert(0, {
             "type": "playlist",
             "playlist_id": req.playlist_id,
             "display_name": match["name"],
-            "order": len(config["rows"]) + 1,
+            "order": 1,
             "max_items": home_row_limit,
         })
     else:
