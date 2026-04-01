@@ -1630,7 +1630,8 @@ async function updateHeroPick() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ playlist_id: heroSelect.value }),
     });
-    if (!r.success) toast(r.message || 'Failed to update hero', 'error');
+    if (r.success) toast(heroSelect.value ? 'Hero spotlight updated' : 'Hero spotlight disabled');
+    else toast(r.message || 'Failed to update hero', 'error');
   } catch (e) {
     toast('Failed to save hero: ' + e.message, 'error');
   }
