@@ -457,12 +457,13 @@
             var route = ct === 'movies' ? 'movies' :
                         ct === 'tvshows' ? 'tv' :
                         ct === 'music' ? 'music' :
-                        ct === 'livetv' ? 'livetv' :
-                        ct === 'playlists' ? 'list' : null;
-            if (route) {
+                        ct === 'livetv' ? 'livetv' : null;
+            if (ct === 'playlists') {
+              window.location.hash = '#/list?parentId=' + item.Id;
+            } else if (route) {
               window.location.hash = '#/' + route + '?topParentId=' + item.Id + '&collectionType=' + ct;
             } else {
-              window.location.hash = '#/list?topParentId=' + item.Id;
+              window.location.hash = '#/list?parentId=' + item.Id;
             }
           };
 
