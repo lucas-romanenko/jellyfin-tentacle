@@ -58,7 +58,7 @@ def _fetch_radarr_queue(url: str, api_key: str) -> list:
         r.raise_for_status()
         return r.json().get("records", [])
     except Exception as e:
-        logger.debug(f"Radarr queue fetch failed: {e}")
+        logger.warning(f"Radarr queue fetch failed: {e}")
         return []
 
 
@@ -74,7 +74,7 @@ def _fetch_sonarr_queue(url: str, api_key: str) -> list:
         r.raise_for_status()
         return r.json().get("records", [])
     except Exception as e:
-        logger.debug(f"Sonarr queue fetch failed: {e}")
+        logger.warning(f"Sonarr queue fetch failed: {e}")
         return []
 
 
@@ -316,4 +316,6 @@ def get_activity(db: Session = Depends(get_db)):
     """Return current download queue (always fresh) and unreleased (5min cache)."""
     downloads = _build_downloads(db)
     unreleased = _get_unreleased(db)
+    if downloads:
+        logger.info(f"Activity: {len(downloads)} download(s) in queue")
     return {"downloads": downloads, "unreleased": unreleased}
