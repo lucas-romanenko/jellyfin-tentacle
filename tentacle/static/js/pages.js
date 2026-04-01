@@ -281,10 +281,6 @@ async function loadLibStats() {
     el('lib-stat-series', (lib.total_series ?? 0).toLocaleString());
     el('lib-stat-downloaded', ((lib.radarr_movies || 0) + (lib.sonarr_series || 0)).toLocaleString());
     el('lib-stat-vod', ((lib.vod_movies || 0) + (lib.vod_series || 0)).toLocaleString());
-    el('lib-stat-movies-sub', `${lib.radarr_movies || 0} downloaded, ${lib.vod_movies || 0} VOD`);
-    el('lib-stat-series-sub', `${lib.sonarr_series || 0} downloaded, ${lib.vod_series || 0} VOD`);
-    el('lib-stat-downloaded-sub', `${lib.radarr_movies || 0} movies, ${lib.sonarr_series || 0} series`);
-    el('lib-stat-vod-sub', `${lib.vod_movies || 0} movies, ${lib.vod_series || 0} series`);
     // Duplicate badge
     const dup = document.getElementById('dup-badge');
     if (dup) {
@@ -402,7 +398,7 @@ async function loadLibSyncSummary() {
       return;
     }
     container.style.display = '';
-    timeEl.textContent = data.completed_at || '';
+    timeEl.textContent = dashTimeAgo(data.completed_at) || data.completed_at || '';
     let html = '';
     // VOD providers
     if (data.providers && data.providers.length > 0) {

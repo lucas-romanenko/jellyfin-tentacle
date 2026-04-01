@@ -1514,16 +1514,7 @@ td.primary { color: var(--text); font-weight: 500; }
 
       <!-- ── LIBRARY ── -->
       <div class="page active" id="page-library">
-        <div class="page-header">
-          <div class="page-header-row">
-            <div>
-              <div class="page-title">Library</div>
-              <div class="page-subtitle">Browse your media collection</div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Jellyfin connection warning (moved from Dashboard) -->
+        <!-- Jellyfin connection warning -->
         <div class="card" id="jellyfin-error-banner" style="display:none;margin-bottom:16px;border-left:3px solid var(--red)">
           <div style="padding:16px;font-size:13px;color:var(--text2);line-height:1.5">
             <strong style="color:var(--red)" id="jellyfin-banner-title">Jellyfin Connection Failed</strong>
@@ -1562,8 +1553,28 @@ td.primary { color: var(--text); font-weight: 500; }
           </div>
         </div>
 
-        <!-- Active Downloads (collapsible, auto-hides when empty) -->
-        <div id="lib-downloads" style="display:none;margin-bottom:16px">
+        <!-- Compact stats bar -->
+        <div id="lib-stats-bar" style="display:flex;align-items:center;gap:16px;padding:8px 14px;margin-bottom:10px;background:var(--bg1);border:1px solid var(--border);border-radius:var(--radius);font-size:13px;font-family:'DM Mono',monospace;color:var(--text2)">
+          <span style="display:flex;align-items:center;gap:5px"><span style="width:6px;height:6px;border-radius:50%;background:var(--accent);flex-shrink:0"></span><span id="lib-stat-movies">—</span> Movies</span>
+          <span style="color:var(--border2)">·</span>
+          <span style="display:flex;align-items:center;gap:5px"><span style="width:6px;height:6px;border-radius:50%;background:var(--pink);flex-shrink:0"></span><span id="lib-stat-series">—</span> Series</span>
+          <span style="color:var(--border2)">·</span>
+          <span style="display:flex;align-items:center;gap:5px"><span style="width:6px;height:6px;border-radius:50%;background:var(--green);flex-shrink:0"></span><span id="lib-stat-downloaded">—</span> Downloaded</span>
+          <span style="color:var(--border2)">·</span>
+          <span style="display:flex;align-items:center;gap:5px"><span style="width:6px;height:6px;border-radius:50%;background:var(--amber);flex-shrink:0"></span><span id="lib-stat-vod">—</span> VOD</span>
+        </div>
+
+        <!-- Last Sync (collapsed single line, expandable) -->
+        <div id="lib-sync-summary" style="display:none;margin-bottom:10px">
+          <div style="display:flex;align-items:center;gap:8px;padding:6px 14px;background:var(--bg1);border:1px solid var(--border);border-radius:var(--radius);font-size:12px;color:var(--text3);cursor:pointer" onclick="var b=document.getElementById('lib-sync-body');b.style.display=b.style.display==='none'?'':'none';this.querySelector('.sync-chevron').textContent=b.style.display==='none'?'▸':'▾'">
+            <span>Last sync: <span id="lib-sync-time" style="color:var(--text2);font-family:'DM Mono',monospace"></span></span>
+            <span class="sync-chevron" style="font-size:10px">▸</span>
+          </div>
+          <div id="lib-sync-body" style="display:none;padding:10px 14px;font-size:13px;color:var(--text2);background:var(--bg1);border:1px solid var(--border);border-top:none;border-radius:0 0 var(--radius) var(--radius)"></div>
+        </div>
+
+        <!-- Active Downloads (auto-hides when empty) -->
+        <div id="lib-downloads" style="display:none;margin-bottom:10px">
           <div class="card" style="border-left:3px solid var(--accent)">
             <div class="card-header" style="cursor:pointer" onclick="document.getElementById('lib-dl-body').style.display=document.getElementById('lib-dl-body').style.display==='none'?'':'none'">
               <div class="card-title" style="display:flex;align-items:center;gap:8px">
@@ -1573,45 +1584,6 @@ td.primary { color: var(--text); font-weight: 500; }
               <span style="font-size:11px;color:var(--text3)">click to collapse</span>
             </div>
             <div id="lib-dl-body"></div>
-          </div>
-        </div>
-
-        <!-- Stats bar -->
-        <div class="stats-grid" id="lib-stats-grid" style="margin-bottom:16px">
-          <div class="stat-card">
-            <div class="stat-accent" style="background:var(--accent)"></div>
-            <div class="stat-label">Movies</div>
-            <div class="stat-value" id="lib-stat-movies">—</div>
-            <div class="stat-sub" id="lib-stat-movies-sub"></div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-accent" style="background:var(--pink)"></div>
-            <div class="stat-label">Series</div>
-            <div class="stat-value" id="lib-stat-series">—</div>
-            <div class="stat-sub" id="lib-stat-series-sub"></div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-accent" style="background:var(--green)"></div>
-            <div class="stat-label">Downloaded</div>
-            <div class="stat-value" id="lib-stat-downloaded">—</div>
-            <div class="stat-sub" id="lib-stat-downloaded-sub"></div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-accent" style="background:var(--amber)"></div>
-            <div class="stat-label">VOD</div>
-            <div class="stat-value" id="lib-stat-vod">—</div>
-            <div class="stat-sub" id="lib-stat-vod-sub"></div>
-          </div>
-        </div>
-
-        <!-- Last Sync Summary (collapsible) -->
-        <div id="lib-sync-summary" style="display:none;margin-bottom:16px">
-          <div class="card">
-            <div class="card-header" style="cursor:pointer" onclick="document.getElementById('lib-sync-body').style.display=document.getElementById('lib-sync-body').style.display==='none'?'':'none'">
-              <div class="card-title">Last Sync</div>
-              <div id="lib-sync-time" style="font-size:11px;color:var(--text3);font-family:'DM Mono',monospace"></div>
-            </div>
-            <div id="lib-sync-body" style="padding:0 16px 16px;font-size:13px;color:var(--text2)"></div>
           </div>
         </div>
 
