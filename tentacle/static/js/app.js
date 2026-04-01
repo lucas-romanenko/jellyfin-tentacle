@@ -212,7 +212,7 @@ function showPage(name) {
     library: ['Library', 'Browse your media collection'],
     vod: ['VOD', 'Categories, sync & content'],
     'live-tv': ['Live TV', 'Channels, groups & EPG'],
-    discover: ['Discover', 'Trending content & list subscriptions'],
+    discover: ['Discover', 'Browse, search & add new content'],
     jellyfin: ['Jellyfin', 'Home screen & playlists'],
 
     settings: ['Settings', 'Connections, providers & config'],
