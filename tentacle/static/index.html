@@ -1795,6 +1795,7 @@ td.primary { color: var(--text); font-weight: 500; }
         <div class="discover-tabs-bar">
           <button class="live-tab active" data-discovertab="browse" onclick="showDiscoverTab('browse')">Browse</button>
           <button class="live-tab" data-discovertab="lists" onclick="showDiscoverTab('lists')">My Lists</button>
+          <button class="live-tab activity-tab" data-discovertab="activity" onclick="showDiscoverTab('activity')">Activity <span class="activity-badge" id="activity-tab-badge">0</span></button>
         </div>
 
         <div id="discover-tab-browse">
@@ -1819,6 +1820,12 @@ td.primary { color: var(--text); font-weight: 500; }
           </div>
           <div id="lists-active">
             <div class="loading-state"><div class="spinner"></div></div>
+          </div>
+        </div>
+
+        <div id="discover-tab-activity" style="display:none">
+          <div id="activity-content">
+            <div class="activity-empty">Loading…</div>
           </div>
         </div>
       </div>

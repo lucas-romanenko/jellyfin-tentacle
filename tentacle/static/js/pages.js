@@ -1147,6 +1147,8 @@ async function loadDiscoverPage() {
   const tab = activeTab ? activeTab.getAttribute('data-discovertab') : 'browse';
   if (tab === 'browse') loadDiscover();
   if (tab === 'lists') loadLists();
+  if (tab === 'activity') { startActivityPolling(); renderActivity(); }
+  else { stopActivityPolling(); loadActivity(); } // Fetch badge count even when not on activity tab
 }
 
 async function saveDiscoverInJellyfin() {

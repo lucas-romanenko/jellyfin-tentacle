@@ -259,8 +259,11 @@ function showDiscoverTab(tab) {
   document.querySelector(`[data-discovertab="${tab}"]`)?.classList.add('active');
   document.getElementById('discover-tab-browse').style.display = tab === 'browse' ? '' : 'none';
   document.getElementById('discover-tab-lists').style.display = tab === 'lists' ? '' : 'none';
+  document.getElementById('discover-tab-activity').style.display = tab === 'activity' ? '' : 'none';
   if (tab === 'browse') loadDiscover();
   if (tab === 'lists') loadLists();
+  if (tab === 'activity') { startActivityPolling(); renderActivity(); }
+  else stopActivityPolling();
 }
 
 function showSettingsSection(name) {
