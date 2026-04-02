@@ -2543,21 +2543,21 @@ td.primary { color: var(--text); font-weight: 500; }
           <option value="none">None</option>
         </select>
       </div>
-      <div id="episode-picker" style="display:none">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-          <div class="form-label" style="margin:0">Episodes</div>
-          <div style="display:flex;gap:6px">
-            <button class="btn btn-sm" onclick="epPickerSelectAll()" style="font-size:11px;padding:2px 8px">All</button>
-            <button class="btn btn-sm" onclick="epPickerSelectNone()" style="font-size:11px;padding:2px 8px">None</button>
-          </div>
-        </div>
-        <div id="episode-picker-seasons" class="ep-picker-seasons"></div>
-        <div id="episode-picker-loading" style="text-align:center;padding:16px;color:var(--text3);display:none">Loading seasons...</div>
-      </div>
       <div class="form-group" style="display:flex;align-items:center;gap:8px">
         <input type="checkbox" id="add-sonarr-season-folder" checked>
         <label class="form-label" for="add-sonarr-season-folder" style="margin:0;cursor:pointer">Season Folder</label>
       </div>
+    </div>
+    <div id="episode-picker" style="display:none">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <div class="form-label" style="margin:0">Episodes</div>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-sm" onclick="epPickerSelectAll()" style="font-size:11px;padding:2px 8px">All</button>
+          <button class="btn btn-sm" onclick="epPickerSelectNone()" style="font-size:11px;padding:2px 8px">None</button>
+        </div>
+      </div>
+      <div id="episode-picker-seasons" class="ep-picker-seasons"></div>
+      <div id="episode-picker-loading" style="text-align:center;padding:16px;color:var(--text3);display:none">Loading seasons...</div>
     </div>
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="closeModal('modal-add-to-radarr')">Cancel</button>

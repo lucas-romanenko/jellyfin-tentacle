@@ -430,25 +430,21 @@
 
   // ── Detail Modal ──────────────────────────────────────────────────
   function showDetailModal(item) {
-    // If item is missing metadata (e.g. from lists), fetch details first
-    if (!item.overview && !item.backdrop_path) {
-      var mediaType = item.media_type === 'series' ? 'series' : 'movie';
-      apiGet('TentacleDiscover/Detail/' + mediaType + '/' + item.tmdb_id).then(function (details) {
-        if (details && !details.error) {
-          item.overview = details.overview || '';
-          item.rating = details.rating || item.rating;
-          item.backdrop_path = details.backdrop_path || null;
-          item.year = details.year || item.year;
-          if (details.library_source) item.library_source = details.library_source;
-          if (details.in_library !== undefined) item.in_library = details.in_library;
-        }
-        renderModal(item);
-      }).catch(function () {
-        renderModal(item);
-      });
-    } else {
+    // Always fetch detail to get library_source/in_library fields
+    var mediaType = item.media_type === 'series' ? 'series' : 'movie';
+    apiGet('TentacleDiscover/Detail/' + mediaType + '/' + item.tmdb_id).then(function (details) {
+      if (details && !details.error) {
+        item.overview = details.overview || item.overview || '';
+        item.rating = details.rating || item.rating;
+        item.backdrop_path = details.backdrop_path || item.backdrop_path || null;
+        item.year = details.year || item.year;
+        if (details.library_source) item.library_source = details.library_source;
+        if (details.in_library !== undefined) item.in_library = details.in_library;
+      }
       renderModal(item);
-    }
+    }).catch(function () {
+      renderModal(item);
+    });
   }
 
   function renderModal(item) {
