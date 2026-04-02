@@ -403,6 +403,57 @@ public class TentacleDiscoverController : ControllerBase
     }
 
     /// <summary>
+    /// Proxies Sonarr episode monitoring state for an existing series.
+    /// </summary>
+    [HttpGet("SonarrEpisodes/{tmdbId}")]
+    [Authorize]
+    public async Task<ActionResult> GetSonarrEpisodes(int tmdbId)
+    {
+        var baseUrl = GetTentacleUrl();
+        if (string.IsNullOrEmpty(baseUrl)) return NotFound();
+
+        try
+        {
+            var response = await HttpClient.GetStringAsync(
+                AppendUserId($"{baseUrl}/api/discover/sonarr-episodes/{tmdbId}"));
+            return Content(response, "application/json");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("[Tentacle Discover] Failed to fetch Sonarr episodes: {Error}", ex.Message);
+            return NotFound();
+        }
+    }
+
+    /// <summary>
+    /// Proxies episode monitoring changes to Tentacle.
+    /// </summary>
+    [HttpPost("ManageEpisodes")]
+    [Authorize]
+    public async Task<ActionResult> ManageEpisodes([FromBody] JsonElement body)
+    {
+        var baseUrl = GetTentacleUrl();
+        if (string.IsNullOrEmpty(baseUrl))
+        {
+            return BadRequest("Tentacle URL not configured");
+        }
+
+        try
+        {
+            var content = new StringContent(body.GetRawText(), System.Text.Encoding.UTF8, "application/json");
+            var response = await HttpClient.PostAsync(
+                AppendUserId($"{baseUrl}/api/discover/manage-episodes"), content);
+            var result = await response.Content.ReadAsStringAsync();
+            return new ContentResult { Content = result, ContentType = "application/json", StatusCode = (int)response.StatusCode };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("[Tentacle Discover] Failed to manage episodes: {Error}", ex.Message);
+            return StatusCode(500, new { detail = ex.Message });
+        }
+    }
+
+    /// <summary>
     /// Serves the Tentacle discover JavaScript.
     /// </summary>
     [HttpGet("/Tentacle/discover.js")]

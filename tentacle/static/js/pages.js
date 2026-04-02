@@ -655,6 +655,7 @@ async function showAddToRadarrModal(tmdbId, title, year, posterPath) {
 }
 
 async function showAddToArrModal(tmdbId, title, year, posterPath, mediaType) {
+  _resetManageMode(); // ensure modal is in add mode
   _addArrTmdbId = tmdbId;
   _addArrMediaType = mediaType || 'movie';
   const isSeries = _addArrMediaType === 'series';
@@ -861,6 +862,130 @@ function _getSelectedEpisodes() {
     selected.push({ season: parseInt(cb.dataset.season), episode: parseInt(cb.dataset.episode) });
   });
   return selected;
+}
+
+// ── Manage Episodes (existing Sonarr series) ────────
+let _manageTmdbId = null;
+
+async function showManageEpisodesModal(tmdbId, title, year, posterPath) {
+  _manageTmdbId = tmdbId;
+  _epPickerSeasons = [];
+  _epPickerLoaded = {};
+
+  const modalBox = document.getElementById('add-arr-modal-box');
+  modalBox.className = 'modal modal-arr ep-expanded';
+
+  document.getElementById('add-arr-modal-title').textContent = 'Manage Episodes';
+
+  const info = document.getElementById('add-radarr-movie-info');
+  const posterImg = posterPath
+    ? `<img src="https://image.tmdb.org/t/p/w185${posterPath}" style="border-radius:8px;width:80px;height:120px;object-fit:cover">`
+    : `<div style="width:80px;height:120px;background:var(--bg3);border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--text3)">&#9707;</div>`;
+  info.innerHTML = `${posterImg}<div style="display:flex;flex-direction:column;justify-content:center"><div style="font-weight:600;font-size:17px">${title || 'Unknown'}</div><div style="color:var(--text2);font-size:14px">${year || ''}</div></div>`;
+
+  // Hide add-specific fields
+  document.getElementById('add-radarr-quality').parentElement.style.display = 'none';
+  document.getElementById('sonarr-extra-fields').style.display = 'none';
+
+  // Show episode picker directly
+  const picker = document.getElementById('episode-picker');
+  picker.style.display = 'block';
+  const container = document.getElementById('episode-picker-seasons');
+  container.innerHTML = '';
+  const loading = document.getElementById('episode-picker-loading');
+  loading.style.display = 'block';
+
+  const btn = document.getElementById('add-radarr-confirm-btn');
+  btn.disabled = false;
+  btn.textContent = 'Save Changes';
+  btn.setAttribute('onclick', 'confirmManageEpisodes()');
+
+  showModal('modal-add-to-radarr');
+
+  // Load episodes from Sonarr
+  try {
+    const data = await api(`/api/discover/sonarr-episodes/${tmdbId}`);
+    if (!data.in_sonarr) {
+      container.innerHTML = '<div style="padding:12px;color:var(--text3)">Series not found in Sonarr</div>';
+      loading.style.display = 'none';
+      return;
+    }
+    // Group episodes by season
+    const seasonMap = {};
+    for (const ep of data.episodes) {
+      const sn = ep.seasonNumber;
+      if (sn === 0) continue; // skip specials
+      if (!seasonMap[sn]) seasonMap[sn] = [];
+      seasonMap[sn].push(ep);
+    }
+    const seasonNums = Object.keys(seasonMap).map(Number).sort((a, b) => a - b);
+
+    container.innerHTML = seasonNums.map(sn => {
+      const eps = seasonMap[sn];
+      const allMonitored = eps.every(e => e.monitored);
+      return `<div class="ep-picker-season" data-season="${sn}">
+        <div class="ep-picker-season-header" onclick="toggleSeasonAccordion(${sn})">
+          <span class="ep-arrow" id="ep-arrow-${sn}">▶</span>
+          <input type="checkbox" class="ep-picker-season-check" onclick="event.stopPropagation();toggleSeasonAll(${sn}, this.checked)" ${allMonitored ? 'checked' : ''}>
+          <span>Season ${sn}</span>
+          <span class="ep-count">${eps.length} ep</span>
+        </div>
+        <div class="ep-picker-episodes" id="ep-list-${sn}"></div>
+      </div>`;
+    }).join('');
+
+    // Pre-render episodes (we already have the data from Sonarr)
+    for (const sn of seasonNums) {
+      _epPickerLoaded[sn] = true; // mark as loaded so toggleSeasonAccordion doesn't re-fetch
+      const list = document.getElementById(`ep-list-${sn}`);
+      list.innerHTML = seasonMap[sn].map(ep => {
+        const epNum = `S${String(sn).padStart(2, '0')}E${String(ep.episodeNumber).padStart(2, '0')}`;
+        const dlBadge = ep.hasFile ? '<span class="ep-dl-badge">✓</span>' : '';
+        return `<label class="ep-picker-ep">
+          <input type="checkbox" ${ep.monitored ? 'checked' : ''} data-season="${sn}" data-episode="${ep.episodeNumber}" onchange="updateSeasonCheckbox(${sn})">
+          <span class="ep-num">${epNum}</span>
+          <span class="ep-title" title="${escapeAttr(ep.title || '')}">${ep.title || ''}</span>
+          ${dlBadge}
+        </label>`;
+      }).join('');
+    }
+  } catch (e) {
+    container.innerHTML = '<div style="padding:12px;color:var(--text3)">Failed to load episodes</div>';
+  }
+  loading.style.display = 'none';
+}
+
+async function confirmManageEpisodes() {
+  if (!_manageTmdbId) return;
+  const btn = document.getElementById('add-radarr-confirm-btn');
+  btn.disabled = true;
+  btn.textContent = 'Saving...';
+  const selected = _getSelectedEpisodes();
+  try {
+    const r = await api('/api/discover/manage-episodes', {
+      method: 'POST',
+      body: { tmdb_id: _manageTmdbId, selected_episodes: selected },
+    });
+    if (r.success) {
+      toast(`Updated — monitoring ${r.monitored} episode${r.monitored !== 1 ? 's' : ''}${r.searching ? `, searching ${r.searching} new` : ''}`);
+      closeModal('modal-add-to-radarr');
+    } else {
+      toast('Failed to update', 'error');
+      btn.disabled = false;
+      btn.textContent = 'Save Changes';
+    }
+  } catch (e) {
+    toast(e.message, 'error');
+    btn.disabled = false;
+    btn.textContent = 'Save Changes';
+  }
+}
+
+function _resetManageMode() {
+  // Restore add modal to normal state when closing
+  document.getElementById('add-radarr-quality').parentElement.style.display = '';
+  document.getElementById('add-radarr-confirm-btn').setAttribute('onclick', 'confirmAddToArr()');
+  _manageTmdbId = null;
 }
 
 function loadMoreLibrary() {
@@ -2984,9 +3109,17 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
     const data = await api(`/api/discover/detail/${mediaType}/${tmdbId}`);
     const isSeries = mediaType === 'series';
     const arrLabel = isSeries ? 'Sonarr' : 'Radarr';
-    const actionBtn = inLibrary
-      ? `<span class="badge badge-green" style="font-size:12px;padding:4px 10px">In Library</span>`
-      : `<button class="btn btn-primary btn-sm" onclick="closeModal('modal-media-detail');showAddToArrModal(${tmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}','${mediaType}')">Add to ${arrLabel}</button>`;
+    let actionBtn;
+    if (inLibrary && isSeries && data.library_source === 'sonarr') {
+      actionBtn = `<span class="badge badge-green" style="font-size:12px;padding:4px 10px">In Library</span> <button class="btn btn-secondary btn-sm" style="margin-left:6px" onclick="closeModal('modal-media-detail');showManageEpisodesModal(${tmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}')">Manage Episodes</button>`;
+    } else if (inLibrary && isSeries) {
+      // VOD-only series — allow adding to Sonarr too
+      actionBtn = `<span class="badge badge-green" style="font-size:12px;padding:4px 10px">In Library</span> <button class="btn btn-primary btn-sm" style="margin-left:6px" onclick="closeModal('modal-media-detail');showAddToArrModal(${tmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}','series')">Add to Sonarr</button>`;
+    } else if (inLibrary) {
+      actionBtn = `<span class="badge badge-green" style="font-size:12px;padding:4px 10px">In Library</span>`;
+    } else {
+      actionBtn = `<button class="btn btn-primary btn-sm" onclick="closeModal('modal-media-detail');showAddToArrModal(${tmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}','${mediaType}')">Add to ${arrLabel}</button>`;
+    }
     document.getElementById('detail-title').textContent = data.title || title || 'Unknown';
     document.getElementById('detail-body').innerHTML = `
       <div style="display:flex;gap:20px">
@@ -3912,6 +4045,7 @@ async function vodPreviewSync() {
     showMediaDetail, showCoverageDetail, filterByTag, searchLibrary, setLibType, setLibSrc,
     loadMoreLibrary, showAddToRadarrModal, showAddToArrModal, confirmAddToRadarr, confirmAddToArr,
     onMonitorPresetChange, toggleSeasonAccordion, toggleSeasonAll, updateSeasonCheckbox, epPickerSelectAll, epPickerSelectNone,
+    showManageEpisodesModal, confirmManageEpisodes,
     // Duplicates
     setDupFilter, resolveDup, resolveAllKeepRadarr,
     // Log viewer

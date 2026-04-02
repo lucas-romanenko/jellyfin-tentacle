@@ -439,6 +439,8 @@
           item.rating = details.rating || item.rating;
           item.backdrop_path = details.backdrop_path || null;
           item.year = details.year || item.year;
+          if (details.library_source) item.library_source = details.library_source;
+          if (details.in_library !== undefined) item.in_library = details.in_library;
         }
         renderModal(item);
       }).catch(function () {
@@ -470,10 +472,28 @@
           '<div class="md-downloading-badge">' + dlStatus + dlEta + dlSize + '</div>' +
         '</div>';
     } else if (item.in_library) {
+      var manageBtn = (item.media_type === 'series' && item.library_source === 'sonarr')
+        ? '<button id="mdManageEpisodes" class="md-view-library-btn" style="margin-left:8px">Manage Episodes</button>'
+        : '';
       downloadSection =
         '<div class="md-inlib-row">' +
           '<div class="md-inlib-badge">✓ Already in library</div>' +
           '<button id="mdViewInLibrary" class="md-view-library-btn">View in Library</button>' +
+          manageBtn +
+        '</div>' +
+        '<div id="mdManageSection" style="display:none">' +
+          '<div class="md-ep-picker">' +
+            '<div class="md-ep-picker-header">' +
+              '<span>Episodes</span>' +
+              '<span><button class="md-ep-btn" onclick="window._mdEpSelectAll()">All</button>' +
+              '<button class="md-ep-btn" onclick="window._mdEpSelectNone()">None</button></span>' +
+            '</div>' +
+            '<div id="mdEpSeasons" class="md-ep-seasons"></div>' +
+          '</div>' +
+          '<div style="margin-top:10px;display:flex;gap:8px;justify-content:flex-end">' +
+            '<button id="mdManageSaveBtn" class="md-download-btn" style="font-size:13px;padding:8px 20px">Save Changes</button>' +
+          '</div>' +
+          '<div id="mdDownloadStatus" class="md-download-status"></div>' +
         '</div>';
     } else {
       var isSeries = item.media_type === 'series';
@@ -546,6 +566,13 @@
               viewBtn.disabled = true;
             }
           });
+        });
+      }
+      // Manage Episodes button (Sonarr series)
+      var manageBtn = overlay.querySelector('#mdManageEpisodes');
+      if (manageBtn) {
+        manageBtn.addEventListener('click', function () {
+          _mdLoadManageEpisodes(item);
         });
       }
     } else {
@@ -660,6 +687,86 @@
       selected.push({ season: parseInt(cb.dataset.season, 10), episode: parseInt(cb.dataset.episode, 10) });
     });
     return selected;
+  }
+
+  function _mdLoadManageEpisodes(item) {
+    var section = document.getElementById('mdManageSection');
+    if (!section) return;
+    section.style.display = 'block';
+    var container = document.getElementById('mdEpSeasons');
+    container.innerHTML = '<div style="padding:12px;color:#999;font-size:13px">Loading episodes...</div>';
+
+    var uid = window.ApiClient.getCurrentUserId();
+    apiGet('TentacleDiscover/SonarrEpisodes/' + item.tmdb_id + '?userId=' + uid).then(function (data) {
+      if (!data.in_sonarr) {
+        container.innerHTML = '<div style="padding:12px;color:#999;font-size:13px">Series not found in Sonarr</div>';
+        return;
+      }
+      // Group by season
+      var seasonMap = {};
+      (data.episodes || []).forEach(function (ep) {
+        if (ep.seasonNumber === 0) return;
+        if (!seasonMap[ep.seasonNumber]) seasonMap[ep.seasonNumber] = [];
+        seasonMap[ep.seasonNumber].push(ep);
+      });
+      var seasonNums = Object.keys(seasonMap).map(Number).sort(function (a, b) { return a - b; });
+
+      container.innerHTML = seasonNums.map(function (sn) {
+        var eps = seasonMap[sn];
+        var allMonitored = eps.every(function (e) { return e.monitored; });
+        return '<div class="md-ep-season" data-season="' + sn + '">' +
+          '<div class="md-ep-season-hdr" onclick="window._mdToggleSeason(' + sn + ')">' +
+            '<span class="md-ep-arrow" id="mdEpArrow' + sn + '">&#9654;</span>' +
+            '<input type="checkbox" ' + (allMonitored ? 'checked' : '') + ' onclick="event.stopPropagation();window._mdToggleSeasonAll(' + sn + ',this.checked)">' +
+            '<span>Season ' + sn + '</span>' +
+            '<span class="md-ep-count">' + eps.length + ' ep</span>' +
+          '</div>' +
+          '<div class="md-ep-list" id="mdEpList' + sn + '"></div>' +
+        '</div>';
+      }).join('');
+
+      // Pre-render episodes with Sonarr state
+      MD._epLoaded = {};
+      seasonNums.forEach(function (sn) {
+        MD._epLoaded[sn] = true;
+        var list = document.getElementById('mdEpList' + sn);
+        list.innerHTML = seasonMap[sn].map(function (ep) {
+          var num = 'S' + String(sn).padStart(2, '0') + 'E' + String(ep.episodeNumber).padStart(2, '0');
+          var dlBadge = ep.hasFile ? '<span class="md-ep-dl">✓</span>' : '';
+          return '<label class="md-ep-row">' +
+            '<input type="checkbox" ' + (ep.monitored ? 'checked' : '') + ' data-season="' + sn + '" data-episode="' + ep.episodeNumber + '" onchange="window._mdUpdateSeasonCb(' + sn + ')">' +
+            '<span class="md-ep-num">' + num + '</span>' +
+            '<span class="md-ep-title">' + esc(ep.title || '') + '</span>' +
+            dlBadge +
+          '</label>';
+        }).join('');
+      });
+    }).catch(function () {
+      container.innerHTML = '<div style="padding:12px;color:#999;font-size:13px">Failed to load</div>';
+    });
+
+    // Save button handler
+    var saveBtn = document.getElementById('mdManageSaveBtn');
+    if (saveBtn) {
+      saveBtn.addEventListener('click', function () {
+        var selected = _mdGetSelectedEpisodes();
+        saveBtn.disabled = true;
+        saveBtn.textContent = 'Saving...';
+        var status = document.getElementById('mdDownloadStatus');
+        var uid2 = window.ApiClient.getCurrentUserId();
+        apiPost('TentacleDiscover/ManageEpisodes?userId=' + uid2, {
+          tmdb_id: item.tmdb_id,
+          selected_episodes: selected,
+        }).then(function (r) {
+          if (status) { status.style.color = '#4caf50'; status.textContent = '✓ Updated — monitoring ' + (r.monitored || 0) + ' episode(s)' + (r.searching ? ', searching ' + r.searching + ' new' : ''); }
+          saveBtn.textContent = 'Saved!';
+        }).catch(function (err) {
+          if (status) { status.style.color = '#f44336'; status.textContent = 'Error: ' + (err.message || 'Failed'); }
+          saveBtn.disabled = false;
+          saveBtn.textContent = 'Save Changes';
+        });
+      });
+    }
   }
 
   function findJellyfinItem(item) {

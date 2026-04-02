@@ -3,12 +3,17 @@ Tentacle - Discover Router
 Trending, popular, upcoming content from TMDB + missing from user lists
 """
 
+import logging
 import random
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing import Optional
 from models.database import get_db, get_setting, Movie, Series, ListSubscription, ListItem
+from routers.auth import get_user_from_request
 from services.tmdb import TMDBService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/discover", tags=["discover"])
 
@@ -194,6 +199,18 @@ def get_discover_detail(
     if not details:
         return {"error": "Not found"}
 
+    # Enrich with library source info
+    if media_type == "series":
+        series = db.query(Series).filter(Series.tmdb_id == tmdb_id).first()
+        if series:
+            details["in_library"] = True
+            details["library_source"] = series.source
+        else:
+            details["in_library"] = False
+    else:
+        movie = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
+        details["in_library"] = bool(movie)
+
     return details
 
 
@@ -266,3 +283,84 @@ def get_season_episodes(
         return {"error": "Not found"}
 
     return {"episodes": episodes}
+
+
+@router.get("/sonarr-episodes/{tmdb_id}")
+def get_sonarr_episodes(
+    tmdb_id: int,
+    db: Session = Depends(get_db)
+):
+    """Fetch current episode monitoring state from Sonarr for an existing series."""
+    sonarr_url = get_setting(db, "sonarr_url")
+    sonarr_key = get_setting(db, "sonarr_api_key")
+    if not sonarr_url or not sonarr_key:
+        return {"in_sonarr": False, "reason": "not_configured"}
+
+    from services.sonarr import SonarrService
+    sonarr = SonarrService(sonarr_url, sonarr_key)
+    series = sonarr.get_series_by_tmdb(tmdb_id)
+    if not series:
+        return {"in_sonarr": False}
+
+    episodes = sonarr.get_episodes(series["id"])
+    return {
+        "in_sonarr": True,
+        "sonarr_id": series["id"],
+        "episodes": episodes,
+    }
+
+
+class ManageEpisodesBody(BaseModel):
+    tmdb_id: int
+    selected_episodes: list  # [{season: int, episode: int}]
+
+
+@router.post("/manage-episodes")
+def manage_episodes(
+    body: ManageEpisodesBody,
+    db: Session = Depends(get_db),
+    user=Depends(get_user_from_request),
+):
+    """Apply episode monitoring changes to an existing Sonarr series."""
+    sonarr_url = get_setting(db, "sonarr_url")
+    sonarr_key = get_setting(db, "sonarr_api_key")
+    if not sonarr_url or not sonarr_key:
+        raise HTTPException(400, "Sonarr not configured")
+
+    from services.sonarr import SonarrService
+    sonarr = SonarrService(sonarr_url, sonarr_key)
+    series = sonarr.get_series_by_tmdb(body.tmdb_id)
+    if not series:
+        raise HTTPException(404, "Series not found in Sonarr")
+
+    episodes = sonarr.get_episodes(series["id"])
+    ep_lookup = {(ep["seasonNumber"], ep["episodeNumber"]): ep for ep in episodes}
+
+    # Map selected episodes to Sonarr episode IDs
+    selected_ids = []
+    for sel in body.selected_episodes:
+        ep = ep_lookup.get((sel["season"], sel["episode"]))
+        if ep:
+            selected_ids.append(ep["id"])
+
+    # Track which are newly monitored (for search)
+    currently_monitored = {ep["id"] for ep in episodes if ep.get("monitored")}
+
+    # Unmonitor all, then monitor selected
+    all_ids = [ep["id"] for ep in episodes]
+    if all_ids:
+        sonarr.set_episode_monitoring(all_ids, False)
+    if selected_ids:
+        sonarr.set_episode_monitoring(selected_ids, True)
+
+    # Search for newly monitored episodes that don't have files
+    need_search = []
+    for sel in body.selected_episodes:
+        ep = ep_lookup.get((sel["season"], sel["episode"]))
+        if ep and ep["id"] not in currently_monitored and not ep.get("hasFile"):
+            need_search.append(ep["id"])
+    if need_search:
+        sonarr.search_episodes(need_search)
+
+    logger.info(f"Managed episodes for tmdb:{body.tmdb_id} — monitoring {len(selected_ids)}, searching {len(need_search)}")
+    return {"success": True, "monitored": len(selected_ids), "searching": len(need_search)}

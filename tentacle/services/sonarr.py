@@ -57,6 +57,10 @@ class SonarrService:
         series = self.get_all_series()
         return next((s for s in series if s.get("tvdbId") == tvdb_id), None)
 
+    def get_series_by_tmdb(self, tmdb_id: int) -> Optional[dict]:
+        series = self.get_all_series()
+        return next((s for s in series if s.get("tmdbId") == tmdb_id), None)
+
     def get_quality_profiles(self) -> list:
         try:
             r = self.session.get(f"{self.url}/api/v3/qualityprofile", timeout=10)

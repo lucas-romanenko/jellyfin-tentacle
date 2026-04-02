@@ -626,7 +626,8 @@ def add_to_sonarr(body: AddMissingBody, db: Session = Depends(get_db), user: Ten
     season_folder = body.season_folder if body.season_folder is not None else True
 
     for tmdb_id in body.tmdb_ids:
-        if db.query(Series).filter(Series.tmdb_id == tmdb_id).first():
+        existing = db.query(Series).filter(Series.tmdb_id == tmdb_id).first()
+        if existing and existing.source == "sonarr":
             already_exists += 1
             continue
         result = sonarr.add_series(tmdb_id, quality_profile_id, root_folder, monitor=monitor, season_folder=season_folder, selected_episodes=body.selected_episodes)
