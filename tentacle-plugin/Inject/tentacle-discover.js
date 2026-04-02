@@ -582,14 +582,13 @@
       return '<div class="md-ep-season" data-season="' + s.season_number + '">' +
         '<div class="md-ep-season-hdr" onclick="window._mdToggleSeason(' + s.season_number + ')">' +
           '<span class="md-ep-arrow" id="mdEpArrow' + s.season_number + '">&#9654;</span>' +
-          '<input type="checkbox" checked onclick="event.stopPropagation();window._mdToggleSeasonAll(' + s.season_number + ',this.checked)">' +
+          '<input type="checkbox" onclick="event.stopPropagation();window._mdToggleSeasonAll(' + s.season_number + ',this.checked)">' +
           '<span>' + esc(s.name || 'Season ' + s.season_number) + airYear + '</span>' +
           '<span class="md-ep-count">' + (s.episode_count || 0) + ' ep</span>' +
         '</div>' +
         '<div class="md-ep-list" id="mdEpList' + s.season_number + '"></div>' +
       '</div>';
     }).join('');
-    if (MD._epSeasons.length > 0) window._mdToggleSeason(MD._epSeasons[0].season_number);
   }
 
   window._mdToggleSeason = function (sn) {
@@ -618,7 +617,7 @@
       var num = 'S' + String(sn).padStart(2, '0') + 'E' + String(ep.episode_number).padStart(2, '0');
       var airDate = ep.air_date ? ep.air_date.substring(0, 10) : '';
       return '<label class="md-ep-row">' +
-        '<input type="checkbox" checked data-season="' + sn + '" data-episode="' + ep.episode_number + '" onchange="window._mdUpdateSeasonCb(' + sn + ')">' +
+        '<input type="checkbox" data-season="' + sn + '" data-episode="' + ep.episode_number + '" onchange="window._mdUpdateSeasonCb(' + sn + ')">' +
         '<span class="md-ep-num">' + num + '</span>' +
         '<span class="md-ep-title">' + esc(ep.name || '') + '</span>' +
         '<span class="md-ep-date">' + airDate + '</span>' +
@@ -629,7 +628,13 @@
   window._mdToggleSeasonAll = function (sn, checked) {
     var list = document.getElementById('mdEpList' + sn);
     if (!list) return;
-    list.querySelectorAll('input[type="checkbox"]').forEach(function (cb) { cb.checked = checked; });
+    if (checked && !list.classList.contains('open')) {
+      window._mdToggleSeason(sn);
+    }
+    // Wait a tick for episodes to render if just loaded
+    setTimeout(function () {
+      list.querySelectorAll('input[type="checkbox"]').forEach(function (cb) { cb.checked = checked; });
+    }, 100);
   };
 
   window._mdUpdateSeasonCb = function (sn) {

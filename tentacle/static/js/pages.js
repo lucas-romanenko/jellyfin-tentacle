@@ -662,11 +662,14 @@ async function showAddToArrModal(tmdbId, title, year, posterPath, mediaType) {
 
   document.getElementById('add-arr-modal-title').textContent = `Add to ${arrName}`;
 
+  const modalBox = document.getElementById('add-arr-modal-box');
+  modalBox.className = 'modal modal-arr';
+
   const info = document.getElementById('add-radarr-movie-info');
   const posterImg = posterPath
-    ? `<img src="https://image.tmdb.org/t/p/w92${posterPath}" style="border-radius:6px;width:60px;height:90px;object-fit:cover">`
-    : `<div style="width:60px;height:90px;background:var(--bg3);border-radius:6px;display:flex;align-items:center;justify-content:center;color:var(--text3)">&#9707;</div>`;
-  info.innerHTML = `${posterImg}<div style="display:flex;flex-direction:column;justify-content:center"><div style="font-weight:500">${title || 'Unknown'}</div><div style="color:var(--text2);font-size:13px">${year || ''}</div></div>`;
+    ? `<img src="https://image.tmdb.org/t/p/w185${posterPath}" style="border-radius:8px;width:80px;height:120px;object-fit:cover">`
+    : `<div style="width:80px;height:120px;background:var(--bg3);border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--text3)">&#9707;</div>`;
+  info.innerHTML = `${posterImg}<div style="display:flex;flex-direction:column;justify-content:center"><div style="font-weight:600;font-size:17px">${title || 'Unknown'}</div><div style="color:var(--text2);font-size:14px">${year || ''}</div></div>`;
 
   const select = document.getElementById('add-radarr-quality');
   select.innerHTML = '<option value="">Loading...</option>';
@@ -752,11 +755,14 @@ function confirmAddToRadarr() { confirmAddToArr(); }
 // ── Episode Picker ──────────────────────────────────
 async function onMonitorPresetChange(val) {
   const picker = document.getElementById('episode-picker');
+  const modalBox = document.getElementById('add-arr-modal-box');
   if (val !== 'custom') {
     picker.style.display = 'none';
+    modalBox.classList.remove('ep-expanded');
     return;
   }
   picker.style.display = 'block';
+  modalBox.classList.add('ep-expanded');
   if (_epPickerSeasons.length > 0) return; // already loaded
   const loading = document.getElementById('episode-picker-loading');
   loading.style.display = 'block';
@@ -777,17 +783,13 @@ function _renderSeasons() {
     return `<div class="ep-picker-season" data-season="${s.season_number}">
       <div class="ep-picker-season-header" onclick="toggleSeasonAccordion(${s.season_number})">
         <span class="ep-arrow" id="ep-arrow-${s.season_number}">▶</span>
-        <input type="checkbox" class="ep-picker-season-check" onclick="event.stopPropagation();toggleSeasonAll(${s.season_number}, this.checked)" checked>
+        <input type="checkbox" class="ep-picker-season-check" onclick="event.stopPropagation();toggleSeasonAll(${s.season_number}, this.checked)">
         <span>${s.name || 'Season ' + s.season_number}${airYear}</span>
         <span class="ep-count">${s.episode_count} ep</span>
       </div>
       <div class="ep-picker-episodes" id="ep-list-${s.season_number}"></div>
     </div>`;
   }).join('');
-  // Auto-expand first season and load its episodes
-  if (_epPickerSeasons.length > 0) {
-    toggleSeasonAccordion(_epPickerSeasons[0].season_number);
-  }
 }
 
 async function toggleSeasonAccordion(seasonNum) {
@@ -821,7 +823,7 @@ function _renderEpisodes(seasonNum) {
     const epNum = `S${String(seasonNum).padStart(2, '0')}E${String(ep.episode_number).padStart(2, '0')}`;
     const title = ep.name || '';
     return `<label class="ep-picker-ep">
-      <input type="checkbox" checked data-season="${seasonNum}" data-episode="${ep.episode_number}" onchange="updateSeasonCheckbox(${seasonNum})">
+      <input type="checkbox" data-season="${seasonNum}" data-episode="${ep.episode_number}" onchange="updateSeasonCheckbox(${seasonNum})">
       <span class="ep-num">${epNum}</span>
       <span class="ep-title" title="${escapeAttr(title)}">${title}</span>
       <span class="ep-date">${airDate}</span>
@@ -829,8 +831,11 @@ function _renderEpisodes(seasonNum) {
   }).join('');
 }
 
-function toggleSeasonAll(seasonNum, checked) {
+async function toggleSeasonAll(seasonNum, checked) {
   const list = document.getElementById(`ep-list-${seasonNum}`);
+  if (checked && !list.classList.contains('open')) {
+    await toggleSeasonAccordion(seasonNum);
+  }
   list.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = checked);
 }
 

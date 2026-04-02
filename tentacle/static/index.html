@@ -686,6 +686,8 @@ td.primary { color: var(--text); font-weight: 500; }
 }
 
 .modal-wide { max-width: 720px; }
+.modal-arr { max-width: 520px; transition: max-width 0.2s ease; }
+.modal-arr.ep-expanded { max-width: 640px; }
 
 @keyframes modalIn { from{opacity:0;transform:scale(0.96)} to{opacity:1;transform:scale(1)} }
 
@@ -2518,7 +2520,7 @@ td.primary { color: var(--text); font-weight: 500; }
 
 <!-- Add to Radarr/Sonarr modal -->
 <div class="modal-overlay" id="modal-add-to-radarr" style="display:none">
-  <div class="modal">
+  <div class="modal" id="add-arr-modal-box">
     <div class="modal-header">
       <div class="modal-title" id="add-arr-modal-title">Add to Radarr</div>
       <button class="modal-close" onclick="closeModal('modal-add-to-radarr')">&#10005;</button>
