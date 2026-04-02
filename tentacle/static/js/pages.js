@@ -1035,43 +1035,6 @@ let _downloadMoreTmdbId = null;
 let _vodEpisodes = {};  // {season: [ep1, ep2, ...]} from VOD scan
 let _dlEpisodes = {};   // {season: [ep1, ep2, ...]} from Sonarr (hasFile=true)
 
-let _switchedFromDetail = false;
-function switchToDownloadMore(tmdbId, title, year, posterPath) {
-  _switchedFromDetail = true;
-  const detailOverlay = document.getElementById('modal-media-detail');
-  const detailBox = detailOverlay.querySelector('.modal');
-  const arrOverlay = document.getElementById('modal-add-to-radarr');
-  const arrBox = document.getElementById('add-arr-modal-box');
-
-  // Hide detail content, move arr box into the same overlay
-  detailBox.style.display = 'none';
-  arrBox.style.animation = 'none';
-  detailOverlay.appendChild(arrBox);
-
-  // Set up the download more content (this calls showModal on arrOverlay but we don't need it)
-  showDownloadMoreModal(tmdbId, title, year, posterPath);
-  // Hide the arr overlay since the box is now in the detail overlay
-  arrOverlay.style.display = 'none';
-
-  // Restore animation
-  requestAnimationFrame(() => { arrBox.style.animation = ''; });
-}
-
-function _restoreArrModal() {
-  if (!_switchedFromDetail) return;
-  _switchedFromDetail = false;
-  const detailOverlay = document.getElementById('modal-media-detail');
-  const detailBox = detailOverlay.querySelector('.modal-wide');
-  const arrOverlay = document.getElementById('modal-add-to-radarr');
-  const arrBox = document.getElementById('add-arr-modal-box');
-  // Move arr box back to its own overlay
-  arrOverlay.appendChild(arrBox);
-  // Restore detail box
-  if (detailBox) detailBox.style.display = '';
-  // Close detail overlay
-  detailOverlay.style.display = 'none';
-}
-
 async function showDownloadMoreModal(tmdbId, title, year, posterPath) {
   _downloadMoreTmdbId = tmdbId;
   _vodEpisodes = {};
@@ -1391,7 +1354,7 @@ async function _loadSeriesEpisodes(tmdbId, seriesData) {
 
     const isComplete = totalOwned >= totalAvailable && totalAvailable > 0;
     const countClass = isComplete ? 'ep-count-full' : (totalOwned > 0 ? 'ep-count-partial' : '');
-    const downloadMoreBtn = !isComplete ? `<button class="btn btn-primary btn-sm" onclick="switchToDownloadMore(${tmdbId},'${escapeJS(seriesData.title||'')}','${escapeJS(seriesData.year||'')}','${escapeJS(seriesData.poster_path||'')}')">Download More</button>` : '';
+    const downloadMoreBtn = !isComplete ? `<button class="btn btn-primary btn-sm" onclick="closeModal('modal-media-detail');showDownloadMoreModal(${tmdbId},'${escapeJS(seriesData.title||'')}','${escapeJS(seriesData.year||'')}','${escapeJS(seriesData.poster_path||'')}')">Download More</button>` : '';
 
     let html = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
       <div style="font-size:14px;font-weight:600;color:var(--text)">Episodes <span class="${countClass}" style="font-weight:400;font-size:13px">${totalOwned}/${totalAvailable}</span></div>
@@ -3511,7 +3474,7 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
     if (isInLibrary && isSeries && data.library_source === 'sonarr') {
       actionBtn = `<span class="badge badge-green" style="font-size:12px;padding:4px 10px">In Library</span> <button class="btn btn-secondary btn-sm" style="margin-left:6px" onclick="closeModal('modal-media-detail');showManageEpisodesModal(${tmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}')">Manage Episodes</button>`;
     } else if (isInLibrary && isSeries && data.library_source && data.library_source.startsWith('provider_')) {
-      actionBtn = `<span class="badge badge-green" style="font-size:12px;padding:4px 10px">In Library</span> <button class="btn btn-primary btn-sm" style="margin-left:6px" onclick="switchToDownloadMore(${tmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}')">Download More Episodes</button>`;
+      actionBtn = `<span class="badge badge-green" style="font-size:12px;padding:4px 10px">In Library</span> <button class="btn btn-primary btn-sm" style="margin-left:6px" onclick="closeModal('modal-media-detail');showDownloadMoreModal(${tmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}')">Download More Episodes</button>`;
     } else if (isInLibrary) {
       actionBtn = `<span class="badge badge-green" style="font-size:12px;padding:4px 10px">In Library</span>`;
     } else {
@@ -4443,7 +4406,7 @@ async function vodPreviewSync() {
     loadMoreLibrary, showAddToRadarrModal, showAddToArrModal, confirmAddToRadarr, confirmAddToArr,
     onMonitorPresetChange, toggleSeasonAccordion, toggleSeasonAll, updateSeasonCheckbox, epPickerSelectAll, epPickerSelectNone,
     showManageEpisodesModal, confirmManageEpisodes,
-    showDownloadMoreModal, confirmDownloadMore, detailToggleSeason, switchToDownloadMore, _restoreArrModal,
+    showDownloadMoreModal, confirmDownloadMore, detailToggleSeason,
     // Duplicates
     setDupFilter, resolveDup, resolveAllKeepRadarr,
     // Log viewer

@@ -1173,10 +1173,6 @@ function showModal(id) {
 }
 
 function closeModal(id) {
-  if (window._switchedFromDetail && (id === 'modal-add-to-radarr' || id === 'modal-media-detail')) {
-    window._restoreArrModal();
-    return;
-  }
   document.getElementById(id).style.display = 'none';
 }
 
@@ -1184,9 +1180,6 @@ function closeModal(id) {
 document.addEventListener('click', e => {
   if (e.target.classList.contains('modal-overlay')) {
     e.target.style.display = 'none';
-    if (window._switchedFromDetail) {
-      window._restoreArrModal();
-    }
   }
 });
 
