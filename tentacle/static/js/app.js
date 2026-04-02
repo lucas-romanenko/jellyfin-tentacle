@@ -1174,12 +1174,21 @@ function showModal(id) {
 
 function closeModal(id) {
   document.getElementById(id).style.display = 'none';
+  // If closing the add-to-radarr modal and we came from detail, close detail too
+  if (id === 'modal-add-to-radarr' && window._switchedFromDetail) {
+    document.getElementById('modal-media-detail').style.display = 'none';
+    window._switchedFromDetail = false;
+  }
 }
 
 // Close modal on overlay click
 document.addEventListener('click', e => {
   if (e.target.classList.contains('modal-overlay')) {
     e.target.style.display = 'none';
+    if (e.target.id === 'modal-add-to-radarr' && window._switchedFromDetail) {
+      document.getElementById('modal-media-detail').style.display = 'none';
+      window._switchedFromDetail = false;
+    }
   }
 });
 

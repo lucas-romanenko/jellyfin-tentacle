@@ -1035,16 +1035,10 @@ let _downloadMoreTmdbId = null;
 let _vodEpisodes = {};  // {season: [ep1, ep2, ...]} from VOD scan
 let _dlEpisodes = {};   // {season: [ep1, ep2, ...]} from Sonarr (hasFile=true)
 
+let _switchedFromDetail = false;
 function switchToDownloadMore(tmdbId, title, year, posterPath) {
-  // 1. Show persistent backdrop BEFORE touching any modal
-  const backdrop = document.getElementById('modal-switch-backdrop');
-  backdrop.style.display = 'block';
-  // 2. Close the detail modal
-  document.getElementById('modal-media-detail').style.display = 'none';
-  // 3. Open the Download More modal
+  _switchedFromDetail = true;
   showDownloadMoreModal(tmdbId, title, year, posterPath);
-  // 4. Remove backdrop once new modal is painted
-  requestAnimationFrame(() => { backdrop.style.display = 'none'; });
 }
 
 async function showDownloadMoreModal(tmdbId, title, year, posterPath) {
