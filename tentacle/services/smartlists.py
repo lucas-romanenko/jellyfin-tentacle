@@ -191,16 +191,19 @@ def get_desired_smartlists(db: Session, user_id: int = None) -> list:
             smartlists.append({"name": tag, "tag": tag, "media_type": ["Series"], "enabled": True, "source": "auto"})
             existing_tags.add(tag)
 
-    # Built-in playlists — (name, media_types, sort_by)
+    # Built-in playlists — (name, media_types, forced_sort or None)
     builtin_map = {
         "builtin:recently_added_movies": ("Recently Added Movies", ["Movie"], "DateCreated"),
         "builtin:recently_added_tv": ("Recently Added TV", ["Series"], "DateCreated"),
-        "builtin:downloaded_movies": ("Downloaded Movies", ["Movie"], "DateCreated"),
-        "builtin:downloaded_tv": ("Downloaded TV", ["Series"], "DateCreated"),
+        "builtin:downloaded_movies": ("Downloaded Movies", ["Movie"], None),
+        "builtin:downloaded_tv": ("Downloaded TV", ["Series"], None),
     }
     for bkey, (bname, bmedia, bsort) in builtin_map.items():
         if toggles.get(bkey) and bname not in existing_tags:
-            smartlists.append({"name": bname, "tag": bname, "media_type": bmedia, "enabled": True, "source": "auto", "sort_by": bsort})
+            sl = {"name": bname, "tag": bname, "media_type": bmedia, "enabled": True, "source": "auto"}
+            if bsort:
+                sl["sort_by"] = bsort
+            smartlists.append(sl)
             existing_tags.add(bname)
 
     # Per-user downloads playlist — dynamic tag based on user display name

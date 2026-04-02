@@ -1996,7 +1996,7 @@ const RULE_FIELDS = [
 
 const OP_LABELS = { contains: 'contains', equals: 'equals', greater_than: '>', less_than: '<' };
 
-const _LOCKED_SORT_PLAYLISTS = ['Recently Added Movies', 'Recently Added TV', 'Downloaded Movies', 'Downloaded TV'];
+const _LOCKED_SORT_PLAYLISTS = ['Recently Added Movies', 'Recently Added TV'];
 
 function _sortDropdown(name) {
   // Built-in playlists with forced sort show a locked label instead of a dropdown
