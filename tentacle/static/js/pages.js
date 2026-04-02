@@ -805,9 +805,10 @@ async function toggleSeasonAccordion(seasonNum) {
   list.classList.add('open');
   arrow.classList.add('open');
   if (!_epPickerLoaded[seasonNum]) {
+    const tmdbId = _downloadMoreTmdbId || _addArrTmdbId;
     list.innerHTML = '<div style="padding:8px 28px;color:var(--text3);font-size:12px">Loading...</div>';
     try {
-      const data = await api(`/api/discover/season/${_addArrTmdbId}/${seasonNum}`);
+      const data = await api(`/api/discover/season/${tmdbId}/${seasonNum}`);
       _epPickerLoaded[seasonNum] = data.episodes || [];
       _renderEpisodes(seasonNum);
     } catch (e) {
@@ -819,10 +820,20 @@ async function toggleSeasonAccordion(seasonNum) {
 function _renderEpisodes(seasonNum) {
   const eps = _epPickerLoaded[seasonNum] || [];
   const list = document.getElementById(`ep-list-${seasonNum}`);
+  const vodEps = _vodEpisodes[String(seasonNum)] || _vodEpisodes[seasonNum] || [];
   list.innerHTML = eps.map(ep => {
     const airDate = ep.air_date ? ep.air_date.substring(0, 10) : '';
     const epNum = `S${String(seasonNum).padStart(2, '0')}E${String(ep.episode_number).padStart(2, '0')}`;
     const title = ep.name || '';
+    const isVod = vodEps.includes(ep.episode_number);
+    if (isVod) {
+      return `<label class="ep-picker-ep ep-vod-have">
+        <input type="checkbox" checked disabled data-season="${seasonNum}" data-episode="${ep.episode_number}">
+        <span class="ep-num">${epNum}</span>
+        <span class="ep-title" title="${escapeAttr(title)}">${title}</span>
+        <span class="ep-dl-badge">VOD</span>
+      </label>`;
+    }
     return `<label class="ep-picker-ep">
       <input type="checkbox" data-season="${seasonNum}" data-episode="${ep.episode_number}" onchange="updateSeasonCheckbox(${seasonNum})">
       <span class="ep-num">${epNum}</span>
@@ -837,7 +848,7 @@ async function toggleSeasonAll(seasonNum, checked) {
   if (checked && !list.classList.contains('open')) {
     await toggleSeasonAccordion(seasonNum);
   }
-  list.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = checked);
+  list.querySelectorAll('input[type="checkbox"]:not(:disabled)').forEach(cb => cb.checked = checked);
 }
 
 function updateSeasonCheckbox(seasonNum) {
@@ -858,7 +869,7 @@ function epPickerSelectNone() {
 
 function _getSelectedEpisodes() {
   const selected = [];
-  document.querySelectorAll('#episode-picker-seasons .ep-picker-ep input[type="checkbox"]:checked').forEach(cb => {
+  document.querySelectorAll('#episode-picker-seasons .ep-picker-ep input[type="checkbox"]:checked:not(:disabled)').forEach(cb => {
     selected.push({ season: parseInt(cb.dataset.season), episode: parseInt(cb.dataset.episode) });
   });
   return selected;
@@ -981,11 +992,141 @@ async function confirmManageEpisodes() {
   }
 }
 
+// ── Download More Episodes (VOD series → Sonarr) ────────
+let _downloadMoreTmdbId = null;
+let _vodEpisodes = {};  // {season: [ep1, ep2, ...]} from VOD scan
+
+async function showDownloadMoreModal(tmdbId, title, year, posterPath) {
+  _downloadMoreTmdbId = tmdbId;
+  _vodEpisodes = {};
+  _epPickerSeasons = [];
+  _epPickerLoaded = {};
+
+  const modalBox = document.getElementById('add-arr-modal-box');
+  modalBox.className = 'modal modal-arr ep-expanded';
+
+  document.getElementById('add-arr-modal-title').textContent = 'Download More Episodes';
+
+  const info = document.getElementById('add-radarr-movie-info');
+  const posterImg = posterPath
+    ? `<img src="https://image.tmdb.org/t/p/w185${posterPath}" style="border-radius:8px;width:80px;height:120px;object-fit:cover">`
+    : `<div style="width:80px;height:120px;background:var(--bg3);border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--text3)">&#9707;</div>`;
+  info.innerHTML = `${posterImg}<div style="display:flex;flex-direction:column;justify-content:center"><div style="font-weight:600;font-size:17px">${title || 'Unknown'}</div><div style="color:var(--text2);font-size:14px">${year || ''}</div></div>`;
+
+  // Show quality profile selector (needed for Sonarr add)
+  document.getElementById('add-radarr-quality').parentElement.style.display = '';
+  document.getElementById('sonarr-extra-fields').style.display = 'none';
+
+  // Load Sonarr quality profiles
+  const select = document.getElementById('add-radarr-quality');
+  select.innerHTML = '<option value="">Loading...</option>';
+  try {
+    const profiles = await api('/api/lists/sonarr-profiles');
+    select.innerHTML = profiles.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
+  } catch (e) {
+    select.innerHTML = '<option value="">Failed to load profiles</option>';
+  }
+
+  // Show episode picker
+  const picker = document.getElementById('episode-picker');
+  picker.style.display = 'block';
+  const container = document.getElementById('episode-picker-seasons');
+  container.innerHTML = '';
+  const loading = document.getElementById('episode-picker-loading');
+  loading.style.display = 'block';
+
+  const btn = document.getElementById('add-radarr-confirm-btn');
+  btn.disabled = false;
+  btn.textContent = 'Add to Sonarr';
+  btn.setAttribute('onclick', 'confirmDownloadMore()');
+
+  showModal('modal-add-to-radarr');
+
+  // Fetch TMDB seasons + VOD episodes in parallel
+  try {
+    const [seasonsData, vodData] = await Promise.all([
+      api(`/api/discover/seasons/${tmdbId}`),
+      api(`/api/discover/vod-episodes/${tmdbId}`),
+    ]);
+
+    if (vodData.has_episodes) {
+      _vodEpisodes = vodData.episodes;
+    }
+
+    _epPickerSeasons = (seasonsData.seasons || []).filter(s => s.season_number > 0);
+    _renderSeasonsWithVod();
+  } catch (e) {
+    container.innerHTML = '<div style="padding:12px;color:var(--text3)">Failed to load seasons</div>';
+  }
+  loading.style.display = 'none';
+}
+
+function _renderSeasonsWithVod() {
+  const container = document.getElementById('episode-picker-seasons');
+  container.innerHTML = _epPickerSeasons.map(s => {
+    const airYear = s.air_date ? ` (${s.air_date.substring(0, 4)})` : '';
+    const vodEps = _vodEpisodes[String(s.season_number)] || _vodEpisodes[s.season_number] || [];
+    const vodLabel = vodEps.length > 0 ? ` · <span style="color:#4caf50">${vodEps.length} in VOD</span>` : '';
+    return `<div class="ep-picker-season" data-season="${s.season_number}">
+      <div class="ep-picker-season-header" onclick="toggleSeasonAccordion(${s.season_number})">
+        <span class="ep-arrow" id="ep-arrow-${s.season_number}">▶</span>
+        <input type="checkbox" class="ep-picker-season-check" onclick="event.stopPropagation();toggleSeasonAll(${s.season_number}, this.checked)">
+        <span>Season ${s.season_number}${airYear}</span>
+        <span class="ep-count">${s.episode_count} ep${vodLabel}</span>
+      </div>
+      <div class="ep-picker-episodes" id="ep-list-${s.season_number}"></div>
+    </div>`;
+  }).join('');
+}
+
+async function confirmDownloadMore() {
+  if (!_downloadMoreTmdbId) return;
+  const selected = _getSelectedEpisodes();
+  if (selected.length === 0) {
+    toast('Select at least one episode', 'error');
+    return;
+  }
+
+  const btn = document.getElementById('add-radarr-confirm-btn');
+  btn.disabled = true;
+  btn.textContent = 'Adding...';
+
+  const qualityId = document.getElementById('add-radarr-quality').value;
+  try {
+    const r = await api('/api/lists/add-to-sonarr', {
+      method: 'POST',
+      body: {
+        tmdb_ids: [_downloadMoreTmdbId],
+        quality_profile_id: qualityId ? parseInt(qualityId) : undefined,
+        selected_episodes: selected,
+      },
+    });
+    if (r.added > 0) {
+      toast(`Added to Sonarr — downloading ${selected.length} episode${selected.length !== 1 ? 's' : ''}`);
+      closeModal('modal-add-to-radarr');
+    } else if (r.already_exists > 0) {
+      toast('Already in Sonarr', 'error');
+      btn.disabled = false;
+      btn.textContent = 'Add to Sonarr';
+    } else {
+      toast(r.detail || 'Failed to add', 'error');
+      btn.disabled = false;
+      btn.textContent = 'Add to Sonarr';
+    }
+  } catch (e) {
+    toast(e.message, 'error');
+    btn.disabled = false;
+    btn.textContent = 'Add to Sonarr';
+  }
+}
+
 function _resetManageMode() {
   // Restore add modal to normal state when closing
   document.getElementById('add-radarr-quality').parentElement.style.display = '';
   document.getElementById('add-radarr-confirm-btn').setAttribute('onclick', 'confirmAddToArr()');
   _manageTmdbId = null;
+  _downloadMoreTmdbId = null;
+  _vodEpisodes = {};
 }
 
 function loadMoreLibrary() {
@@ -3114,6 +3255,8 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
     let actionBtn;
     if (isInLibrary && isSeries && data.library_source === 'sonarr') {
       actionBtn = `<span class="badge badge-green" style="font-size:12px;padding:4px 10px">In Library</span> <button class="btn btn-secondary btn-sm" style="margin-left:6px" onclick="closeModal('modal-media-detail');showManageEpisodesModal(${tmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}')">Manage Episodes</button>`;
+    } else if (isInLibrary && isSeries && data.library_source && data.library_source.startsWith('provider_')) {
+      actionBtn = `<span class="badge badge-green" style="font-size:12px;padding:4px 10px">In Library</span> <button class="btn btn-primary btn-sm" style="margin-left:6px" onclick="closeModal('modal-media-detail');showDownloadMoreModal(${tmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}')">Download More Episodes</button>`;
     } else if (isInLibrary) {
       actionBtn = `<span class="badge badge-green" style="font-size:12px;padding:4px 10px">In Library</span>`;
     } else {
@@ -4045,6 +4188,7 @@ async function vodPreviewSync() {
     loadMoreLibrary, showAddToRadarrModal, showAddToArrModal, confirmAddToRadarr, confirmAddToArr,
     onMonitorPresetChange, toggleSeasonAccordion, toggleSeasonAll, updateSeasonCheckbox, epPickerSelectAll, epPickerSelectNone,
     showManageEpisodesModal, confirmManageEpisodes,
+    showDownloadMoreModal, confirmDownloadMore,
     // Duplicates
     setDupFilter, resolveDup, resolveAllKeepRadarr,
     // Log viewer

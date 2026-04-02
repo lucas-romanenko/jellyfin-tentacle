@@ -426,6 +426,28 @@ public class TentacleDiscoverController : ControllerBase
     }
 
     /// <summary>
+    /// Proxies VOD episode scan for a series (what's already on disk as .strm).
+    /// </summary>
+    [HttpGet("VodEpisodes/{tmdbId}")]
+    [Authorize]
+    public async Task<ActionResult> GetVodEpisodes(int tmdbId)
+    {
+        var baseUrl = GetTentacleUrl();
+        if (string.IsNullOrEmpty(baseUrl)) return NotFound();
+
+        try
+        {
+            var response = await HttpClient.GetStringAsync($"{baseUrl}/api/discover/vod-episodes/{tmdbId}");
+            return Content(response, "application/json");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("[Tentacle Discover] Failed to fetch VOD episodes: {Error}", ex.Message);
+            return NotFound();
+        }
+    }
+
+    /// <summary>
     /// Proxies episode monitoring changes to Tentacle.
     /// </summary>
     [HttpPost("ManageEpisodes")]

@@ -647,3 +647,5 @@
 .md-ep-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .md-ep-date { color: #666; font-size: 11px; }
 .md-ep-dl { color: #4caf50; font-size: 11px; flex-shrink: 0; }
+.md-ep-row.md-ep-vod { opacity: 0.6; }
+.md-ep-row.md-ep-vod input[type="checkbox"] { accent-color: #4caf50; }

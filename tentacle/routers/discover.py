@@ -5,6 +5,8 @@ Trending, popular, upcoming content from TMDB + missing from user lists
 
 import logging
 import random
+import re
+from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -306,6 +308,47 @@ def get_sonarr_episodes(
     return {
         "in_sonarr": True,
         "sonarr_id": series["id"],
+        "episodes": episodes,
+    }
+
+
+@router.get("/vod-episodes/{tmdb_id}")
+def get_vod_episodes(
+    tmdb_id: int,
+    db: Session = Depends(get_db)
+):
+    """Scan VOD folder for existing .strm episodes of a series."""
+    series = db.query(Series).filter(Series.tmdb_id == tmdb_id).first()
+    if not series or not series.strm_path:
+        return {"has_episodes": False}
+
+    if not series.source.startswith("provider_"):
+        return {"has_episodes": False}
+
+    show_dir = Path(series.strm_path)
+    if not show_dir.exists() or not show_dir.is_dir():
+        return {"has_episodes": False}
+
+    episodes = {}
+    ep_pattern = re.compile(r'S(\d+)E(\d+)', re.IGNORECASE)
+
+    for item in sorted(show_dir.iterdir()):
+        if not item.is_dir() or not item.name.startswith("Season"):
+            continue
+        for strm_file in sorted(item.iterdir()):
+            if strm_file.suffix.lower() != ".strm":
+                continue
+            match = ep_pattern.search(strm_file.name)
+            if match:
+                season = int(match.group(1))
+                episode = int(match.group(2))
+                episodes.setdefault(season, []).append(episode)
+
+    for season in episodes:
+        episodes[season].sort()
+
+    return {
+        "has_episodes": bool(episodes),
         "episodes": episodes,
     }
 

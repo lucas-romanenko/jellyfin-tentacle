@@ -468,14 +468,18 @@
           '<div class="md-downloading-badge">' + dlStatus + dlEta + dlSize + '</div>' +
         '</div>';
     } else if (item.in_library) {
-      var manageBtn = (item.media_type === 'series' && item.library_source === 'sonarr')
+      var isSonarr = item.media_type === 'series' && item.library_source === 'sonarr';
+      var isVod = item.media_type === 'series' && item.library_source && item.library_source.indexOf('provider_') === 0;
+      var extraBtn = isSonarr
         ? '<button id="mdManageEpisodes" class="md-view-library-btn" style="margin-left:8px">Manage Episodes</button>'
+        : isVod
+        ? '<button id="mdDownloadMore" class="md-view-library-btn" style="margin-left:8px">Download More Episodes</button>'
         : '';
       downloadSection =
         '<div class="md-inlib-row">' +
           '<div class="md-inlib-badge">✓ Already in library</div>' +
           '<button id="mdViewInLibrary" class="md-view-library-btn">View in Library</button>' +
-          manageBtn +
+          extraBtn +
         '</div>' +
         '<div id="mdManageSection" style="display:none">' +
           '<div class="md-ep-picker">' +
@@ -485,6 +489,10 @@
               '<button class="md-ep-btn" onclick="window._mdEpSelectNone()">None</button></span>' +
             '</div>' +
             '<div id="mdEpSeasons" class="md-ep-seasons"></div>' +
+          '</div>' +
+          '<div id="mdDownloadMoreQuality" style="display:none;margin-top:8px">' +
+            '<label style="font-size:12px;color:rgba(255,255,255,.6)">Quality Profile</label>' +
+            '<select id="mdDownloadMoreProfile" class="md-select" style="margin-top:4px"></select>' +
           '</div>' +
           '<div style="margin-top:10px;display:flex;gap:8px;justify-content:flex-end">' +
             '<button id="mdManageSaveBtn" class="md-download-btn" style="font-size:13px;padding:8px 20px">Save Changes</button>' +
@@ -571,6 +579,13 @@
           _mdLoadManageEpisodes(item);
         });
       }
+      // Download More Episodes button (VOD series)
+      var dlMoreBtn = overlay.querySelector('#mdDownloadMore');
+      if (dlMoreBtn) {
+        dlMoreBtn.addEventListener('click', function () {
+          _mdLoadDownloadMore(item);
+        });
+      }
     } else {
       loadDownloadOptions(item);
       // Episode picker for series
@@ -636,9 +651,19 @@
     var eps = MD._epLoaded[sn] || [];
     var list = document.getElementById('mdEpList' + sn);
     if (!list) return;
+    var vodEps = (MD._vodEpisodes || {})[String(sn)] || (MD._vodEpisodes || {})[sn] || [];
     list.innerHTML = eps.map(function (ep) {
       var num = 'S' + String(sn).padStart(2, '0') + 'E' + String(ep.episode_number).padStart(2, '0');
       var airDate = ep.air_date ? ep.air_date.substring(0, 10) : '';
+      var isVod = vodEps.indexOf(ep.episode_number) !== -1;
+      if (isVod) {
+        return '<label class="md-ep-row md-ep-vod">' +
+          '<input type="checkbox" checked disabled data-season="' + sn + '" data-episode="' + ep.episode_number + '">' +
+          '<span class="md-ep-num">' + num + '</span>' +
+          '<span class="md-ep-title">' + esc(ep.name || '') + '</span>' +
+          '<span class="md-ep-dl">VOD</span>' +
+        '</label>';
+      }
       return '<label class="md-ep-row">' +
         '<input type="checkbox" data-season="' + sn + '" data-episode="' + ep.episode_number + '" onchange="window._mdUpdateSeasonCb(' + sn + ')">' +
         '<span class="md-ep-num">' + num + '</span>' +
@@ -656,30 +681,30 @@
     }
     // Wait a tick for episodes to render if just loaded
     setTimeout(function () {
-      list.querySelectorAll('input[type="checkbox"]').forEach(function (cb) { cb.checked = checked; });
+      list.querySelectorAll('input[type="checkbox"]:not(:disabled)').forEach(function (cb) { cb.checked = checked; });
     }, 100);
   };
 
   window._mdUpdateSeasonCb = function (sn) {
     var list = document.getElementById('mdEpList' + sn);
     if (!list) return;
-    var cbs = list.querySelectorAll('input[type="checkbox"]');
-    var allChecked = Array.from(cbs).every(function (cb) { return cb.checked; });
+    var cbs = list.querySelectorAll('input[type="checkbox"]:not(:disabled)');
+    var allChecked = Array.from(cbs).length > 0 && Array.from(cbs).every(function (cb) { return cb.checked; });
     var seasonCb = document.querySelector('.md-ep-season[data-season="' + sn + '"] .md-ep-season-hdr input[type="checkbox"]');
     if (seasonCb) seasonCb.checked = allChecked;
   };
 
   window._mdEpSelectAll = function () {
-    document.querySelectorAll('#mdEpSeasons input[type="checkbox"]').forEach(function (cb) { cb.checked = true; });
+    document.querySelectorAll('#mdEpSeasons input[type="checkbox"]:not(:disabled)').forEach(function (cb) { cb.checked = true; });
   };
 
   window._mdEpSelectNone = function () {
-    document.querySelectorAll('#mdEpSeasons input[type="checkbox"]').forEach(function (cb) { cb.checked = false; });
+    document.querySelectorAll('#mdEpSeasons input[type="checkbox"]:not(:disabled)').forEach(function (cb) { cb.checked = false; });
   };
 
   function _mdGetSelectedEpisodes() {
     var selected = [];
-    document.querySelectorAll('#mdEpSeasons .md-ep-row input[type="checkbox"]:checked').forEach(function (cb) {
+    document.querySelectorAll('#mdEpSeasons .md-ep-row input[type="checkbox"]:checked:not(:disabled)').forEach(function (cb) {
       selected.push({ season: parseInt(cb.dataset.season, 10), episode: parseInt(cb.dataset.episode, 10) });
     });
     return selected;
@@ -760,6 +785,109 @@
           if (status) { status.style.color = '#f44336'; status.textContent = 'Error: ' + (err.message || 'Failed'); }
           saveBtn.disabled = false;
           saveBtn.textContent = 'Save Changes';
+        });
+      });
+    }
+  }
+
+  function _mdLoadDownloadMore(item) {
+    var section = document.getElementById('mdManageSection');
+    if (!section) return;
+    section.style.display = 'block';
+    var container = document.getElementById('mdEpSeasons');
+    container.innerHTML = '<div style="padding:12px;color:#999;font-size:13px">Loading episodes...</div>';
+
+    // Show quality profile selector
+    var qualityDiv = document.getElementById('mdDownloadMoreQuality');
+    if (qualityDiv) qualityDiv.style.display = 'block';
+    var profileSelect = document.getElementById('mdDownloadMoreProfile');
+    if (profileSelect) {
+      profileSelect.innerHTML = '<option value="">Loading...</option>';
+      var uid = window.ApiClient.getCurrentUserId();
+      apiGet('TentacleDiscover/SonarrProfiles?userId=' + uid).then(function (profiles) {
+        profileSelect.innerHTML = (profiles || []).map(function (p) {
+          return '<option value="' + p.id + '">' + esc(p.name) + '</option>';
+        }).join('');
+      }).catch(function () {
+        profileSelect.innerHTML = '<option value="">Failed</option>';
+      });
+    }
+
+    // Fetch TMDB seasons + VOD episodes in parallel
+    MD._vodEpisodes = {};
+    MD._epSeasons = [];
+    MD._epLoaded = {};
+
+    Promise.all([
+      apiGet('TentacleDiscover/Seasons/' + item.tmdb_id),
+      apiGet('TentacleDiscover/VodEpisodes/' + item.tmdb_id),
+    ]).then(function (results) {
+      var seasonsData = results[0];
+      var vodData = results[1];
+
+      if (vodData && vodData.has_episodes) {
+        MD._vodEpisodes = vodData.episodes || {};
+      }
+
+      MD._epSeasons = (seasonsData.seasons || []).filter(function (s) { return s.season_number > 0; });
+
+      // Render seasons with VOD counts
+      container.innerHTML = MD._epSeasons.map(function (s) {
+        var vodEps = MD._vodEpisodes[String(s.season_number)] || MD._vodEpisodes[s.season_number] || [];
+        var vodLabel = vodEps.length > 0 ? ' · <span style="color:#4caf50">' + vodEps.length + ' in VOD</span>' : '';
+        return '<div class="md-ep-season" data-season="' + s.season_number + '">' +
+          '<div class="md-ep-season-hdr" onclick="window._mdToggleSeason(' + s.season_number + ')">' +
+            '<span class="md-ep-arrow" id="mdEpArrow' + s.season_number + '">&#9654;</span>' +
+            '<input type="checkbox" onclick="event.stopPropagation();window._mdToggleSeasonAll(' + s.season_number + ',this.checked)">' +
+            '<span>Season ' + s.season_number + '</span>' +
+            '<span class="md-ep-count">' + (s.episode_count || 0) + ' ep' + vodLabel + '</span>' +
+          '</div>' +
+          '<div class="md-ep-list" id="mdEpList' + s.season_number + '"></div>' +
+        '</div>';
+      }).join('');
+    }).catch(function () {
+      container.innerHTML = '<div style="padding:12px;color:#999;font-size:13px">Failed to load</div>';
+    });
+
+    // Save button → Add to Sonarr with selected episodes
+    var saveBtn = document.getElementById('mdManageSaveBtn');
+    if (saveBtn) {
+      saveBtn.textContent = 'Add to Sonarr';
+      saveBtn.addEventListener('click', function () {
+        var selected = _mdGetSelectedEpisodes();
+        if (selected.length === 0) {
+          var status = document.getElementById('mdDownloadStatus');
+          if (status) { status.style.color = '#f44336'; status.textContent = 'Select at least one episode'; }
+          return;
+        }
+        saveBtn.disabled = true;
+        saveBtn.textContent = 'Adding...';
+        var uid2 = window.ApiClient.getCurrentUserId();
+        var profileId = profileSelect ? profileSelect.value : '';
+        var body = {
+          tmdb_ids: [item.tmdb_id],
+          selected_episodes: selected,
+        };
+        if (profileId) body.quality_profile_id = parseInt(profileId, 10);
+        apiPost('TentacleDiscover/AddToSonarr?userId=' + uid2, body).then(function (r) {
+          var status2 = document.getElementById('mdDownloadStatus');
+          if (r.added > 0) {
+            if (status2) { status2.style.color = '#4caf50'; status2.textContent = '✓ Added — downloading ' + selected.length + ' episode(s)'; }
+            saveBtn.textContent = 'Done!';
+          } else if (r.already_exists > 0) {
+            if (status2) { status2.style.color = '#ff9800'; status2.textContent = 'Already in Sonarr'; }
+            saveBtn.disabled = false;
+            saveBtn.textContent = 'Add to Sonarr';
+          } else {
+            if (status2) { status2.style.color = '#f44336'; status2.textContent = r.detail || 'Failed to add'; }
+            saveBtn.disabled = false;
+            saveBtn.textContent = 'Add to Sonarr';
+          }
+        }).catch(function (err) {
+          var status3 = document.getElementById('mdDownloadStatus');
+          if (status3) { status3.style.color = '#f44336'; status3.textContent = 'Error: ' + (err.message || 'Failed'); }
+          saveBtn.disabled = false;
+          saveBtn.textContent = 'Add to Sonarr';
         });
       });
     }
