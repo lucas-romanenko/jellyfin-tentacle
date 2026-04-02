@@ -2602,6 +2602,9 @@ td.primary { color: var(--text); font-weight: 500; }
   </div>
 </div>
 
+<!-- Persistent backdrop for modal-to-modal transitions -->
+<div id="modal-switch-backdrop" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);z-index:199"></div>
+
 <!-- Toast container -->
 <div class="toast-container" id="toasts"></div>
 
