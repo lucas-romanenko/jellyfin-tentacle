@@ -90,7 +90,10 @@ class SonarrService:
         payload["qualityProfileId"] = quality_profile_id
         payload["rootFolderPath"] = root_folder
         payload["seasonFolder"] = season_folder
-        payload["monitored"] = True
+        # "all"/"future" want ongoing monitoring; everything else is a one-time grab
+        ongoing = monitor in ("all", "future")
+        payload["monitored"] = True  # Must be true for initial search to work
+        payload["monitorNewItems"] = "all" if ongoing else "none"
         payload["addOptions"] = {
             "monitor": monitor,
             "searchForMissingEpisodes": True,
