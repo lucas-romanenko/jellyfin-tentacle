@@ -577,11 +577,13 @@ def toggle_auto_playlist(req: AutoPlaylistToggleRequest, db: Session = Depends(g
             db.add(AutoPlaylistToggle(key=req.key, enabled=req.enabled, user_id=user.id))
         db.commit()
 
-    # Synchronous sync to Jellyfin (per-user) — fast enough for inline
+    # Synchronous sync to Jellyfin (per-user) — create/remove playlist + populate items
     jellyfin_error = None
     notify_result = {"notified": False}
     try:
         sync_smartlists(db, user_id=user.id)
+        refresh_smartlist_playlists(db, user_id=user.id)
+        write_home_config(db, user_id=user.id)
         notify_result = _notify_jellyfin_plugin(db)
     except Exception as e:
         logger.error(f"Auto playlist sync failed: {e}")

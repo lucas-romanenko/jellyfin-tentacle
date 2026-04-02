@@ -147,10 +147,12 @@ def _bg_sync_user(target_user_id: int):
     """Trigger a background per-user smartlist sync after tag rule changes."""
     def _run():
         from models.database import SessionLocal
-        from services.smartlists import sync_smartlists, _notify_jellyfin_plugin
+        from services.smartlists import sync_smartlists, refresh_smartlist_playlists, write_home_config, _notify_jellyfin_plugin
         bg_db = SessionLocal()
         try:
             sync_smartlists(bg_db, user_id=target_user_id)
+            refresh_smartlist_playlists(bg_db, user_id=target_user_id)
+            write_home_config(bg_db, user_id=target_user_id)
             _notify_jellyfin_plugin(bg_db)
         except Exception as e:
             logger.error(f"Background smartlist sync failed for user {target_user_id}: {e}")
