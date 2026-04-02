@@ -866,10 +866,12 @@
         MD._vodEpisodes = vodData.episodes || {};
       }
 
-      // Build downloaded episodes map from Sonarr
+      // Build downloaded episodes map from Sonarr (skip VOD — Sonarr sees .strm as hasFile)
       if (sonarrData && sonarrData.in_sonarr && sonarrData.episodes) {
         sonarrData.episodes.forEach(function (ep) {
           if (ep.hasFile && ep.seasonNumber > 0) {
+            var vodList = (MD._vodEpisodes || {})[String(ep.seasonNumber)] || (MD._vodEpisodes || {})[ep.seasonNumber] || [];
+            if (vodList.indexOf(ep.episodeNumber) !== -1) return;
             if (!MD._dlEpisodes[ep.seasonNumber]) MD._dlEpisodes[ep.seasonNumber] = [];
             MD._dlEpisodes[ep.seasonNumber].push(ep.episodeNumber);
           }

@@ -1094,10 +1094,12 @@ async function showDownloadMoreModal(tmdbId, title, year, posterPath) {
       _vodEpisodes = vodData.episodes;
     }
 
-    // Build downloaded episodes map from Sonarr
+    // Build downloaded episodes map from Sonarr (skip VOD — Sonarr sees .strm as hasFile)
     if (sonarrData.in_sonarr && sonarrData.episodes) {
       for (const ep of sonarrData.episodes) {
         if (ep.hasFile && ep.seasonNumber > 0) {
+          const vodList = _vodEpisodes[String(ep.seasonNumber)] || _vodEpisodes[ep.seasonNumber] || [];
+          if (vodList.includes(ep.episodeNumber)) continue;
           if (!_dlEpisodes[ep.seasonNumber]) _dlEpisodes[ep.seasonNumber] = [];
           _dlEpisodes[ep.seasonNumber].push(ep.episodeNumber);
         }
@@ -1326,6 +1328,9 @@ async function _loadSeriesEpisodes(tmdbId, seriesData) {
         if (ep.seasonNumber > 0) {
           sonarrEpMap[`${ep.seasonNumber}-${ep.episodeNumber}`] = ep;
           if (ep.hasFile) {
+            // Skip if this episode is also VOD — Sonarr sees .strm as hasFile
+            const vodList = vodEps[String(ep.seasonNumber)] || vodEps[ep.seasonNumber] || [];
+            if (vodList.includes(ep.episodeNumber)) continue;
             if (!dlEps[ep.seasonNumber]) dlEps[ep.seasonNumber] = [];
             dlEps[ep.seasonNumber].push(ep.episodeNumber);
           }
@@ -1433,7 +1438,7 @@ async function detailToggleSeason(sn) {
       if (isDl) badges.push('<span class="ep-dl-badge ep-badge-dl">DL</span>');
 
       rows += `<div class="detail-ep-row">
-        <span class="ep-num">S${String(sn).padStart(2,'0')}E${String(epNum).padStart(2,'0')}</span>
+        <span class="ep-num">${epNum}</span>
         <span class="detail-ep-name">${nameMap[epNum] || ''}</span>
         ${badges.join('')}
       </div>`;
