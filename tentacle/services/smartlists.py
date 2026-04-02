@@ -195,6 +195,8 @@ def get_desired_smartlists(db: Session, user_id: int = None) -> list:
     builtin_map = {
         "builtin:recently_added_movies": ("Recently Added Movies", ["Movie"]),
         "builtin:recently_added_tv": ("Recently Added TV", ["Series"]),
+        "builtin:downloaded_movies": ("Downloaded Movies", ["Movie"]),
+        "builtin:downloaded_tv": ("Downloaded TV", ["Series"]),
     }
     for bkey, (bname, bmedia) in builtin_map.items():
         if toggles.get(bkey) and bname not in existing_tags:

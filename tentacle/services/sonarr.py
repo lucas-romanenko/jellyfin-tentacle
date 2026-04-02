@@ -5,13 +5,16 @@ and writes NFO files with tags for Jellyfin.
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 import requests
 from sqlalchemy.orm import Session
 
 from models.database import Series, Duplicate, DownloadRequest, TentacleUser, get_setting
+
+DOWNLOADED_TV_TAG = "Downloaded TV"
+RECENTLY_ADDED_TV_TAG = "Recently Added TV"
 from services.tmdb import TMDBService
 from services.nfo import write_series_nfo
 from services.tagger import apply_tag_rules, get_list_tags_for_tmdb_id, detect_source_tag_from_studios
@@ -296,8 +299,15 @@ def scan_sonarr_library(db: Session) -> dict:
     # Compute tags and write NFO files for all downloaded series
     for tmdb_id, db_series in series_needing_nfo:
         try:
-            # Build tag list: source tag + rule tags + list tags + user attribution
-            tags = []
+            # Build tag list: built-in + source tag + rule tags + list tags + user attribution
+            tags = [DOWNLOADED_TV_TAG]
+
+            # Recently added (within rolling window)
+            recently_added_days = int(get_setting(db, "recently_added_days", "30") or "30")
+            cutoff = datetime.utcnow() - timedelta(days=recently_added_days)
+            if db_series.date_added and db_series.date_added >= cutoff:
+                tags.append(RECENTLY_ADDED_TV_TAG)
+
             if db_series.source_tag:
                 tags.append(db_series.source_tag)
 

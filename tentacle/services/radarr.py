@@ -11,6 +11,7 @@ from typing import Optional
 import requests
 from sqlalchemy.orm import Session
 
+from datetime import timedelta
 from models.database import Movie, Duplicate, DownloadRequest, TentacleUser, get_setting
 from services.tmdb import TMDBService
 from services.nfo import write_movie_nfo, make_folder_name
@@ -21,7 +22,7 @@ from services.logstream import emit_library_event
 logger = logging.getLogger(__name__)
 
 DOWNLOADED_MOVIES_TAG = "Downloaded Movies"
-DOWNLOADED_TV_TAG = "Downloaded TV"
+RECENTLY_ADDED_MOVIES_TAG = "Recently Added Movies"
 
 
 class RadarrService:
@@ -268,8 +269,15 @@ def scan_radarr_library(db: Session) -> dict:
     # Compute tags and write NFO files for all downloaded movies
     for tmdb_id, db_movie in movies_needing_nfo:
         try:
-            # Build tag list: source tag + rule tags + list tags + user attribution
-            tags = []
+            # Build tag list: built-in + source tag + rule tags + list tags + user attribution
+            tags = [DOWNLOADED_MOVIES_TAG]
+
+            # Recently added (within rolling window)
+            recently_added_days = int(get_setting(db, "recently_added_days", "30") or "30")
+            cutoff = datetime.utcnow() - timedelta(days=recently_added_days)
+            if db_movie.date_added and db_movie.date_added >= cutoff:
+                tags.append(RECENTLY_ADDED_MOVIES_TAG)
+
             if db_movie.source_tag:
                 tags.append(db_movie.source_tag)
 

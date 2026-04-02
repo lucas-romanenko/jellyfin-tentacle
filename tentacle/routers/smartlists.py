@@ -494,6 +494,8 @@ def _compute_auto_playlists(db: Session, user_id: int = None) -> list:
     cutoff = datetime.utcnow() - timedelta(days=recently_added_days)
     recent_movies = db.query(func.count(Movie.id)).filter(Movie.date_added >= cutoff).scalar() or 0
     recent_series = db.query(func.count(Series.id)).filter(Series.date_added >= cutoff).scalar() or 0
+    dl_movies = db.query(func.count(Movie.id)).filter(Movie.source == "radarr").scalar() or 0
+    dl_series = db.query(func.count(Series.id)).filter(Series.source == "sonarr").scalar() or 0
 
     builtins = [
         {"key": "builtin:recently_added_movies", "name": "Recently Added Movies",
@@ -502,6 +504,12 @@ def _compute_auto_playlists(db: Session, user_id: int = None) -> list:
         {"key": "builtin:recently_added_tv", "name": "Recently Added TV",
          "tag": "Recently Added TV", "origin": f"Last {recently_added_days} days",
          "media_type": ["Series"], "item_count": recent_series},
+        {"key": "builtin:downloaded_movies", "name": "Downloaded Movies",
+         "tag": "Downloaded Movies", "origin": "From Radarr",
+         "media_type": ["Movie"], "item_count": dl_movies},
+        {"key": "builtin:downloaded_tv", "name": "Downloaded TV",
+         "tag": "Downloaded TV", "origin": "From Sonarr",
+         "media_type": ["Series"], "item_count": dl_series},
     ]
     # Per-user downloads playlist — items this user requested via Tentacle UI
     if user_id is not None:
