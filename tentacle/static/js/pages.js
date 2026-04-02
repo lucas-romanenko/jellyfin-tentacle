@@ -841,6 +841,7 @@ function _renderEpisodes(seasonNum) {
       <span class="ep-date">${airDate}</span>
     </label>`;
   }).join('');
+  updateSeasonCheckbox(seasonNum);
 }
 
 async function toggleSeasonAll(seasonNum, checked) {

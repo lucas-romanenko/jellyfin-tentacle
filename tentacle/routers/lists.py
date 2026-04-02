@@ -634,6 +634,10 @@ def add_to_sonarr(body: AddMissingBody, db: Session = Depends(get_db), user: Ten
         if result:
             added += 1
             _record_download_request(db, tmdb_id, "series", user.id)
+            # Mark VOD series with sonarr_path so scan skips duplicate detection
+            if existing and existing.source.startswith("provider_") and result.get("path"):
+                existing.sonarr_path = result["path"]
+                db.commit()
         else:
             failed += 1
 

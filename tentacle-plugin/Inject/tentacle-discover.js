@@ -671,6 +671,7 @@
         '<span class="md-ep-date">' + airDate + '</span>' +
       '</label>';
     }).join('');
+    window._mdUpdateSeasonCb(sn);
   }
 
   window._mdToggleSeasonAll = function (sn, checked) {

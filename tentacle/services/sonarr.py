@@ -328,7 +328,8 @@ def scan_sonarr_library(db: Session) -> dict:
                 existing.sonarr_path = series_path
                 changed = True
             # If this was a VOD-only row, create a duplicate record
-            if existing.source and existing.source.startswith("provider_") and tmdb_id not in existing_dup_tmdb_ids:
+            # Skip if sonarr_path already set (intentional add via "Download More Episodes")
+            if existing.source and existing.source.startswith("provider_") and not existing.sonarr_path and tmdb_id not in existing_dup_tmdb_ids:
                 db.add(Duplicate(
                     tmdb_id=tmdb_id,
                     media_type="series",
