@@ -1276,6 +1276,7 @@ async function showMediaDetail(tmdbId, mediaType) {
   try {
     const data = await api(`/api/library/item/${mediaType}/${tmdbId}`);
     document.getElementById('detail-title').textContent = data.title;
+    const isSeries = mediaType === 'series';
     document.getElementById('detail-body').innerHTML = `
       <div style="display:flex;gap:20px">
         ${data.poster_path ? `<img src="https://image.tmdb.org/t/p/w185${data.poster_path}" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
@@ -1293,9 +1294,153 @@ async function showMediaDetail(tmdbId, mediaType) {
             ${data.strm_path ? `<br>Path: ${data.strm_path}` : ''}
           </div>
         </div>
-      </div>`;
+      </div>
+      ${isSeries ? '<div id="detail-episodes" style="margin-top:20px"><div class="loading-state" style="padding:16px 0"><div class="spinner"></div></div></div>' : ''}`;
+
+    // For series, load episode breakdown
+    if (isSeries) _loadSeriesEpisodes(tmdbId, data);
   } catch (e) {
     document.getElementById('detail-body').innerHTML = '<div class="empty-state"><p>Failed to load details</p></div>';
+  }
+}
+
+let _detailEpState = {}; // { vodEps, dlEps, tmdbId, loaded: {sn: true} }
+
+async function _loadSeriesEpisodes(tmdbId, seriesData) {
+  const container = document.getElementById('detail-episodes');
+  if (!container) return;
+
+  try {
+    const [seasonsData, vodData, sonarrData] = await Promise.all([
+      api(`/api/discover/seasons/${tmdbId}`),
+      api(`/api/discover/vod-episodes/${tmdbId}`),
+      api(`/api/discover/sonarr-episodes/${tmdbId}`).catch(() => ({ in_sonarr: false })),
+    ]);
+
+    const seasons = (seasonsData.seasons || []).filter(s => s.season_number > 0);
+    const vodEps = vodData.episodes || {};
+    const dlEps = {};
+    const sonarrEpMap = {};
+    if (sonarrData.in_sonarr && sonarrData.episodes) {
+      for (const ep of sonarrData.episodes) {
+        if (ep.seasonNumber > 0) {
+          sonarrEpMap[`${ep.seasonNumber}-${ep.episodeNumber}`] = ep;
+          if (ep.hasFile) {
+            if (!dlEps[ep.seasonNumber]) dlEps[ep.seasonNumber] = [];
+            dlEps[ep.seasonNumber].push(ep.episodeNumber);
+          }
+        }
+      }
+    }
+
+    _detailEpState = { vodEps, dlEps, sonarrEpMap, tmdbId, loaded: {} };
+
+    // Compute totals
+    let totalOwned = 0, totalAvailable = 0;
+    for (const s of seasons) {
+      const sn = s.season_number;
+      const total = s.episode_count || 0;
+      const vod = vodEps[String(sn)] || vodEps[sn] || [];
+      const dl = dlEps[String(sn)] || dlEps[sn] || [];
+      const have = new Set([...vod, ...dl]).size;
+      totalOwned += have;
+      totalAvailable += total;
+    }
+
+    const isComplete = totalOwned >= totalAvailable && totalAvailable > 0;
+    const countClass = isComplete ? 'ep-count-full' : (totalOwned > 0 ? 'ep-count-partial' : '');
+    const downloadMoreBtn = !isComplete ? `<button class="btn btn-primary btn-sm" onclick="closeModal('modal-media-detail');showDownloadMoreModal(${tmdbId},'${escapeJS(seriesData.title||'')}','${escapeJS(seriesData.year||'')}','${escapeJS(seriesData.poster_path||'')}')">Download More</button>` : '';
+
+    let html = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <div style="font-size:14px;font-weight:600;color:var(--text)">Episodes <span class="${countClass}" style="font-weight:400;font-size:13px">${totalOwned}/${totalAvailable}</span></div>
+      ${downloadMoreBtn}
+    </div>`;
+
+    html += '<div class="detail-ep-seasons">';
+    for (const s of seasons) {
+      const sn = s.season_number;
+      const total = s.episode_count || 0;
+      const vod = vodEps[String(sn)] || vodEps[sn] || [];
+      const dl = dlEps[String(sn)] || dlEps[sn] || [];
+      const haveSet = new Set([...vod, ...dl]);
+      const haveCount = haveSet.size;
+      if (haveCount === 0) continue; // Only show seasons we have episodes for
+
+      const seasonFull = haveCount >= total && total > 0;
+      const cClass = seasonFull ? 'ep-count-full' : 'ep-count-partial';
+      const airYear = s.air_date ? ` (${s.air_date.substring(0, 4)})` : '';
+
+      html += `<div class="detail-ep-season" data-season="${sn}">
+        <div class="detail-ep-season-hdr" onclick="detailToggleSeason(${sn})">
+          <span class="ep-arrow">▶</span>
+          <span>Season ${sn}${airYear}</span>
+          <span class="ep-count ${cClass}">${haveCount}/${total}</span>
+        </div>
+        <div class="detail-ep-list" id="detail-ep-list-${sn}"></div>
+      </div>`;
+    }
+    html += '</div>';
+
+    if (totalOwned === 0) {
+      html = `<div style="font-size:13px;color:var(--text3);padding:12px 0">No episodes in library yet. ${downloadMoreBtn}</div>`;
+    }
+
+    container.innerHTML = html;
+  } catch (e) {
+    container.innerHTML = '<div style="font-size:13px;color:var(--text3);padding:8px 0">Could not load episode data</div>';
+  }
+}
+
+async function detailToggleSeason(sn) {
+  const seasonEl = document.querySelector(`.detail-ep-season[data-season="${sn}"]`);
+  if (!seasonEl) return;
+  const isOpen = seasonEl.classList.contains('open');
+  if (isOpen) { seasonEl.classList.remove('open'); return; }
+  seasonEl.classList.add('open');
+
+  const list = document.getElementById(`detail-ep-list-${sn}`);
+  if (_detailEpState.loaded[sn]) return; // already loaded
+
+  list.innerHTML = '<div style="padding:8px 12px;color:var(--text3);font-size:12px">Loading...</div>';
+  try {
+    const data = await api(`/api/discover/season/${_detailEpState.tmdbId}/${sn}`);
+    _detailEpState.loaded[sn] = true;
+    const tmdbEps = data.episodes || [];
+    const vodEps = _detailEpState.vodEps;
+    const dlEps = _detailEpState.dlEps;
+    const vod = vodEps[String(sn)] || vodEps[sn] || [];
+    const dl = dlEps[String(sn)] || dlEps[sn] || [];
+    const haveSet = new Set([...vod, ...dl]);
+    const ownedNums = [...haveSet].sort((a, b) => a - b);
+
+    // Build name lookup from TMDB
+    const nameMap = {};
+    for (const ep of tmdbEps) nameMap[ep.episode_number] = ep.name || '';
+    // Fallback to Sonarr names
+    for (const epNum of ownedNums) {
+      if (!nameMap[epNum]) {
+        const key = `${sn}-${epNum}`;
+        if (_detailEpState.sonarrEpMap[key]) nameMap[epNum] = _detailEpState.sonarrEpMap[key].title || '';
+      }
+    }
+
+    let rows = '';
+    for (const epNum of ownedNums) {
+      const isVod = vod.includes(epNum);
+      const isDl = dl.includes(epNum);
+      const badges = [];
+      if (isVod) badges.push('<span class="ep-dl-badge ep-badge-vod">VOD</span>');
+      if (isDl) badges.push('<span class="ep-dl-badge ep-badge-dl">DL</span>');
+
+      rows += `<div class="detail-ep-row">
+        <span class="ep-num">S${String(sn).padStart(2,'0')}E${String(epNum).padStart(2,'0')}</span>
+        <span class="detail-ep-name">${nameMap[epNum] || ''}</span>
+        ${badges.join('')}
+      </div>`;
+    }
+    list.innerHTML = rows;
+  } catch {
+    list.innerHTML = '<div style="padding:8px 12px;color:var(--text3);font-size:12px">Failed to load</div>';
   }
 }
 
@@ -4256,7 +4401,7 @@ async function vodPreviewSync() {
     loadMoreLibrary, showAddToRadarrModal, showAddToArrModal, confirmAddToRadarr, confirmAddToArr,
     onMonitorPresetChange, toggleSeasonAccordion, toggleSeasonAll, updateSeasonCheckbox, epPickerSelectAll, epPickerSelectNone,
     showManageEpisodesModal, confirmManageEpisodes,
-    showDownloadMoreModal, confirmDownloadMore,
+    showDownloadMoreModal, confirmDownloadMore, detailToggleSeason,
     // Duplicates
     setDupFilter, resolveDup, resolveAllKeepRadarr,
     // Log viewer

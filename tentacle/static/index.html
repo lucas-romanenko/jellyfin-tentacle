@@ -730,6 +730,25 @@ td.primary { color: var(--text); font-weight: 500; }
 .ep-count-partial { color: #ff9800 !important; }
 .ep-picker-season-check { display: flex; align-items: center; }
 
+/* ── Library Detail Episodes ── */
+.detail-ep-seasons { max-height: 350px; overflow-y: auto; border: 1px solid var(--bg3); border-radius: 8px; }
+.detail-ep-season { border-bottom: 1px solid var(--bg3); }
+.detail-ep-season:last-child { border-bottom: none; }
+.detail-ep-season-hdr { display: flex; align-items: center; gap: 8px; padding: 10px 12px; cursor: pointer; font-size: 13px; font-weight: 500; user-select: none; }
+.detail-ep-season-hdr:hover { background: var(--bg3); }
+.detail-ep-season-hdr .ep-arrow { transition: transform 0.15s; font-size: 10px; color: var(--text3); }
+.detail-ep-season.open .ep-arrow { transform: rotate(90deg); }
+.detail-ep-season-hdr .ep-count { margin-left: auto; font-weight: 400; font-size: 12px; }
+.detail-ep-list { display: none; padding: 4px 0; }
+.detail-ep-season.open .detail-ep-list { display: block; }
+.detail-ep-row { display: flex; align-items: center; gap: 8px; padding: 5px 12px 5px 30px; font-size: 12px; }
+.detail-ep-row:hover { background: var(--bg2); }
+.detail-ep-row .ep-num { color: var(--text3); min-width: 55px; font-family: 'DM Mono', monospace; }
+.detail-ep-row .detail-ep-name { color: var(--text2); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.detail-ep-row .ep-dl-badge { font-size: 10px; font-weight: 600; flex-shrink: 0; padding: 1px 6px; border-radius: 4px; }
+.detail-ep-row .ep-badge-vod { color: #4caf50; background: rgba(76, 175, 80, 0.15); }
+.detail-ep-row .ep-badge-dl { color: #7c6ae8; background: rgba(124, 106, 232, 0.15); }
+
 /* ── Scrollbars ── */
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
