@@ -87,7 +87,8 @@ class SonarrService:
     def add_series(self, tmdb_id: int, quality_profile_id: int, root_folder: str,
                    monitor: str = "all", season_folder: bool = True,
                    selected_episodes: list = None,
-                   series_path: str = None) -> Optional[dict]:
+                   series_path: str = None,
+                   monitor_new: bool = False) -> Optional[dict]:
         lookup = self.lookup_by_tmdb(tmdb_id)
         if not lookup:
             logger.error(f"Sonarr: no lookup result for tmdb:{tmdb_id}")
@@ -103,7 +104,7 @@ class SonarrService:
         # Custom episode selection: add with nothing monitored, then toggle specific episodes
         if selected_episodes:
             payload["monitored"] = True
-            payload["monitorNewItems"] = "none"
+            payload["monitorNewItems"] = "all" if monitor_new else "none"
             payload["addOptions"] = {
                 "monitor": "none",
                 "searchForMissingEpisodes": False,
@@ -130,7 +131,8 @@ class SonarrService:
                 if selected_episodes:
                     # Custom episode selection: monitor + search specific episodes
                     self._monitor_selected_episodes(series_data["id"], selected_episodes)
-                    self._unmonitor_series(series_data["id"])
+                    if not monitor_new:
+                        self._unmonitor_series(series_data["id"])
                 elif monitor not in ("all", "future"):
                     # Preset partial monitor: unmonitor series after initial search
                     self._unmonitor_series(series_data["id"])

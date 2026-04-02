@@ -250,7 +250,7 @@ class TMDBService:
 
     def get_series_details(self, tmdb_id: int) -> Optional[dict]:
         cache_key = f"series_details:{tmdb_id}"
-        cached = self._cache_get(cache_key)
+        cached = self._cache_get(cache_key, ttl_seconds=7 * 86400)
         if cached is not None and "seasons" in cached:
             return cached
 
@@ -295,12 +295,12 @@ class TMDBService:
         return result
 
     def get_season_episodes(self, tmdb_id: int, season_number: int) -> Optional[list]:
-        """Fetch episodes for a specific season. Cached for 30 days."""
+        """Fetch episodes for a specific season. Cached for 7 days."""
         if not self.enabled:
             return None
 
         cache_key = f"season_episodes:{tmdb_id}:{season_number}"
-        cached = self._cache_get(cache_key)
+        cached = self._cache_get(cache_key, ttl_seconds=7 * 86400)
         if cached is not None:
             return cached
 

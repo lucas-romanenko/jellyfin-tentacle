@@ -102,6 +102,7 @@ class AddMissingBody(BaseModel):
     monitor: Optional[str] = None
     season_folder: Optional[bool] = None
     selected_episodes: Optional[list] = None  # [{season, episode}] for custom episode picker
+    monitor_new: Optional[bool] = None  # Auto-monitor future episodes in Sonarr
 
 
 def fetch_list_tmdb_ids(lst: ListSubscription, bearer_token: str = "", trakt_client_id: str = "") -> list:
@@ -645,7 +646,7 @@ def add_to_sonarr(body: AddMissingBody, db: Session = Depends(get_db), user: Ten
             folder_name = os.path.basename(existing.strm_path.rstrip("/"))
             series_path = f"{vod_root}/{folder_name}"
 
-        result = sonarr.add_series(tmdb_id, quality_profile_id, root_folder, monitor=monitor, season_folder=season_folder, selected_episodes=body.selected_episodes, series_path=series_path)
+        result = sonarr.add_series(tmdb_id, quality_profile_id, root_folder, monitor=monitor, season_folder=season_folder, selected_episodes=body.selected_episodes, series_path=series_path, monitor_new=body.monitor_new or False)
         if result:
             added += 1
             _record_download_request(db, tmdb_id, "series", user.id)

@@ -683,6 +683,8 @@ async function showAddToArrModal(tmdbId, title, year, posterPath, mediaType) {
   }
 
   document.getElementById('sonarr-extra-fields').style.display = isSeries ? 'block' : 'none';
+  const monitorWrap = document.getElementById('dl-more-monitor-wrap');
+  if (monitorWrap) monitorWrap.style.display = 'none';
 
   // Reset episode picker state
   _epPickerSeasons = [];
@@ -1067,6 +1069,19 @@ async function showDownloadMoreModal(tmdbId, title, year, posterPath) {
     select.innerHTML = '<option value="">Failed to load profiles</option>';
   }
 
+  // Show monitor new episodes toggle
+  let monitorToggle = document.getElementById('dl-more-monitor-new');
+  if (!monitorToggle) {
+    const wrap = document.createElement('div');
+    wrap.id = 'dl-more-monitor-wrap';
+    wrap.style.cssText = 'margin-bottom:16px;display:flex;align-items:center;gap:8px';
+    wrap.innerHTML = '<input type="checkbox" id="dl-more-monitor-new" checked><label for="dl-more-monitor-new" style="font-size:13px;color:var(--text2);cursor:pointer">Auto-download new episodes</label>';
+    document.getElementById('add-radarr-quality').parentElement.after(wrap);
+    monitorToggle = document.getElementById('dl-more-monitor-new');
+  }
+  document.getElementById('dl-more-monitor-wrap').style.display = 'flex';
+  monitorToggle.checked = true;
+
   // Show episode picker
   const picker = document.getElementById('episode-picker');
   picker.style.display = 'block';
@@ -1169,10 +1184,12 @@ async function confirmDownloadMore() {
         tmdb_ids: [_downloadMoreTmdbId],
         quality_profile_id: qualityId ? parseInt(qualityId) : undefined,
         selected_episodes: selected,
+        monitor_new: document.getElementById('dl-more-monitor-new')?.checked || false,
       },
     });
     if (r.added > 0) {
-      toast(`Added to Sonarr — downloading ${selected.length} episode${selected.length !== 1 ? 's' : ''}`);
+      const monitorMsg = document.getElementById('dl-more-monitor-new')?.checked ? ' + monitoring new episodes' : '';
+      toast(`Added to Sonarr — downloading ${selected.length} episode${selected.length !== 1 ? 's' : ''}${monitorMsg}`);
       closeModal('modal-add-to-radarr');
     } else if (r.already_exists > 0) {
       toast('Already in Sonarr', 'error');
