@@ -1036,12 +1036,14 @@ let _vodEpisodes = {};  // {season: [ep1, ep2, ...]} from VOD scan
 let _dlEpisodes = {};   // {season: [ep1, ep2, ...]} from Sonarr (hasFile=true)
 
 function switchToDownloadMore(tmdbId, title, year, posterPath) {
-  // Keep detail overlay as plain dark backdrop (no blur — would blur new modal)
-  const detail = document.getElementById('modal-media-detail');
-  detail.querySelector('.modal').style.display = 'none';
-  detail.style.backdropFilter = 'none';
-  detail.style.webkitBackdropFilter = 'none';
+  // Show new modal instantly (no entrance animation), then hide detail
+  const target = document.getElementById('modal-add-to-radarr');
+  const targetModal = target.querySelector('.modal');
+  targetModal.style.animation = 'none';
   showDownloadMoreModal(tmdbId, title, year, posterPath);
+  document.getElementById('modal-media-detail').style.display = 'none';
+  // Restore animation for future opens
+  requestAnimationFrame(() => { targetModal.style.animation = ''; });
 }
 
 async function showDownloadMoreModal(tmdbId, title, year, posterPath) {

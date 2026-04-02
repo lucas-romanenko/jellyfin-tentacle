@@ -1174,25 +1174,12 @@ function showModal(id) {
 
 function closeModal(id) {
   document.getElementById(id).style.display = 'none';
-  // Clean up any backdrop-only overlays left by modal-to-modal switches
-  document.querySelectorAll('.modal-overlay').forEach(el => {
-    const inner = el.querySelector('.modal');
-    if (inner && inner.style.display === 'none') {
-      el.style.display = 'none';
-      inner.style.display = '';
-      el.style.backdropFilter = '';
-      el.style.webkitBackdropFilter = '';
-    }
-  });
 }
 
 // Close modal on overlay click
 document.addEventListener('click', e => {
   if (e.target.classList.contains('modal-overlay')) {
     e.target.style.display = 'none';
-    // Also restore any hidden inner modals
-    const inner = e.target.querySelector('.modal');
-    if (inner && inner.style.display === 'none') inner.style.display = '';
   }
 });
 
