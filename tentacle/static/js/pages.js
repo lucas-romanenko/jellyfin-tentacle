@@ -1036,9 +1036,11 @@ let _vodEpisodes = {};  // {season: [ep1, ep2, ...]} from VOD scan
 let _dlEpisodes = {};   // {season: [ep1, ep2, ...]} from Sonarr (hasFile=true)
 
 function switchToDownloadMore(tmdbId, title, year, posterPath) {
-  // Show the download modal first, then hide detail modal — avoids flash
+  // Open download modal, hide detail after a frame so overlay doesn't flash
   showDownloadMoreModal(tmdbId, title, year, posterPath);
-  document.getElementById('modal-media-detail').style.display = 'none';
+  requestAnimationFrame(() => {
+    document.getElementById('modal-media-detail').style.display = 'none';
+  });
 }
 
 async function showDownloadMoreModal(tmdbId, title, year, posterPath) {
