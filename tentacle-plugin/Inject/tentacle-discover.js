@@ -616,15 +616,25 @@
     var container = document.getElementById('mdEpSeasons');
     if (!container) return;
     container.innerHTML = MD._epSeasons.map(function (s) {
+      var sn = s.season_number;
       var airYear = s.air_date ? ' (' + s.air_date.substring(0, 4) + ')' : '';
-      return '<div class="md-ep-season" data-season="' + s.season_number + '">' +
-        '<div class="md-ep-season-hdr" onclick="window._mdToggleSeason(' + s.season_number + ')">' +
-          '<span class="md-ep-arrow" id="mdEpArrow' + s.season_number + '">&#9654;</span>' +
-          '<input type="checkbox" onclick="event.stopPropagation();window._mdToggleSeasonAll(' + s.season_number + ',this.checked)">' +
-          '<span>' + esc(s.name || 'Season ' + s.season_number) + airYear + '</span>' +
-          '<span class="md-ep-count">' + (s.episode_count || 0) + ' ep</span>' +
+      var total = s.episode_count || 0;
+      var vodEps = (MD._vodEpisodes || {})[String(sn)] || (MD._vodEpisodes || {})[sn] || [];
+      var dlEps = (MD._dlEpisodes || {})[String(sn)] || (MD._dlEpisodes || {})[sn] || [];
+      var haveSet = {}; vodEps.forEach(function(e){haveSet[e]=1}); dlEps.forEach(function(e){haveSet[e]=1});
+      var haveCount = Object.keys(haveSet).length;
+      var countText, countClass, checked;
+      if (haveCount === 0) { countText = total + ' ep'; countClass = 'md-ep-count'; checked = false; }
+      else if (haveCount >= total) { countText = total + '/' + total; countClass = 'md-ep-count md-count-full'; checked = true; }
+      else { countText = haveCount + '/' + total; countClass = 'md-ep-count md-count-partial'; checked = false; }
+      return '<div class="md-ep-season" data-season="' + sn + '">' +
+        '<div class="md-ep-season-hdr" onclick="window._mdToggleSeason(' + sn + ')">' +
+          '<span class="md-ep-arrow" id="mdEpArrow' + sn + '">&#9654;</span>' +
+          '<input type="checkbox" ' + (checked ? 'checked' : '') + ' onclick="event.stopPropagation();window._mdToggleSeasonAll(' + sn + ',this.checked)">' +
+          '<span>' + esc(s.name || 'Season ' + sn) + airYear + '</span>' +
+          '<span class="' + countClass + '">' + countText + '</span>' +
         '</div>' +
-        '<div class="md-ep-list" id="mdEpList' + s.season_number + '"></div>' +
+        '<div class="md-ep-list" id="mdEpList' + sn + '"></div>' +
       '</div>';
     }).join('');
   }
@@ -652,16 +662,20 @@
     var list = document.getElementById('mdEpList' + sn);
     if (!list) return;
     var vodEps = (MD._vodEpisodes || {})[String(sn)] || (MD._vodEpisodes || {})[sn] || [];
+    var dlEps = (MD._dlEpisodes || {})[String(sn)] || (MD._dlEpisodes || {})[sn] || [];
     list.innerHTML = eps.map(function (ep) {
       var num = 'S' + String(sn).padStart(2, '0') + 'E' + String(ep.episode_number).padStart(2, '0');
       var airDate = ep.air_date ? ep.air_date.substring(0, 10) : '';
       var isVod = vodEps.indexOf(ep.episode_number) !== -1;
-      if (isVod) {
-        return '<label class="md-ep-row md-ep-vod">' +
+      var isDl = dlEps.indexOf(ep.episode_number) !== -1;
+      if (isVod || isDl) {
+        var badgeText = isVod ? 'VOD' : 'DL';
+        var badgeClass = isVod ? 'md-badge-vod' : 'md-badge-dl';
+        return '<label class="md-ep-row md-ep-have">' +
           '<input type="checkbox" checked disabled data-season="' + sn + '" data-episode="' + ep.episode_number + '">' +
           '<span class="md-ep-num">' + num + '</span>' +
           '<span class="md-ep-title">' + esc(ep.name || '') + '</span>' +
-          '<span class="md-ep-dl">VOD</span>' +
+          '<span class="md-ep-dl ' + badgeClass + '">' + badgeText + '</span>' +
         '</label>';
       }
       return '<label class="md-ep-row">' +
@@ -671,7 +685,25 @@
         '<span class="md-ep-date">' + airDate + '</span>' +
       '</label>';
     }).join('');
-    window._mdUpdateSeasonCb(sn);
+    _mdUpdateSeasonStatus(sn, eps.length);
+  }
+
+  function _mdUpdateSeasonStatus(sn, totalEps) {
+    var vodEps = (MD._vodEpisodes || {})[String(sn)] || (MD._vodEpisodes || {})[sn] || [];
+    var dlEps = (MD._dlEpisodes || {})[String(sn)] || (MD._dlEpisodes || {})[sn] || [];
+    var haveSet = {}; vodEps.forEach(function(e){haveSet[e]=1}); dlEps.forEach(function(e){haveSet[e]=1});
+    var haveCount = Object.keys(haveSet).length;
+    var seasonEl = document.querySelector('.md-ep-season[data-season="' + sn + '"]');
+    if (!seasonEl) return;
+    // Update season checkbox
+    var seasonCb = seasonEl.querySelector('.md-ep-season-hdr input[type="checkbox"]');
+    if (seasonCb) seasonCb.checked = (haveCount === totalEps && totalEps > 0);
+    // Update coverage indicator
+    var countEl = seasonEl.querySelector('.md-ep-count');
+    if (!countEl) return;
+    if (haveCount === 0) { countEl.textContent = totalEps + ' ep'; countEl.className = 'md-ep-count'; }
+    else if (haveCount >= totalEps) { countEl.textContent = totalEps + '/' + totalEps; countEl.className = 'md-ep-count md-count-full'; }
+    else { countEl.textContent = haveCount + '/' + totalEps; countEl.className = 'md-ep-count md-count-partial'; }
   }
 
   window._mdToggleSeasonAll = function (sn, checked) {
@@ -814,36 +846,38 @@
       });
     }
 
-    // Fetch TMDB seasons + VOD episodes in parallel
+    // Fetch TMDB seasons + VOD episodes + Sonarr episodes in parallel
     MD._vodEpisodes = {};
+    MD._dlEpisodes = {};
     MD._epSeasons = [];
     MD._epLoaded = {};
 
+    var uid = window.ApiClient.getCurrentUserId();
     Promise.all([
       apiGet('TentacleDiscover/Seasons/' + item.tmdb_id),
       apiGet('TentacleDiscover/VodEpisodes/' + item.tmdb_id),
+      apiGet('TentacleDiscover/SonarrEpisodes/' + item.tmdb_id + '?userId=' + uid).catch(function () { return { in_sonarr: false }; }),
     ]).then(function (results) {
       var seasonsData = results[0];
       var vodData = results[1];
+      var sonarrData = results[2];
 
       if (vodData && vodData.has_episodes) {
         MD._vodEpisodes = vodData.episodes || {};
       }
 
-      MD._epSeasons = (seasonsData.seasons || []).filter(function (s) { return s.season_number > 0; });
+      // Build downloaded episodes map from Sonarr
+      if (sonarrData && sonarrData.in_sonarr && sonarrData.episodes) {
+        sonarrData.episodes.forEach(function (ep) {
+          if (ep.hasFile && ep.seasonNumber > 0) {
+            if (!MD._dlEpisodes[ep.seasonNumber]) MD._dlEpisodes[ep.seasonNumber] = [];
+            MD._dlEpisodes[ep.seasonNumber].push(ep.episodeNumber);
+          }
+        });
+      }
 
-      // Render seasons
-      container.innerHTML = MD._epSeasons.map(function (s) {
-        return '<div class="md-ep-season" data-season="' + s.season_number + '">' +
-          '<div class="md-ep-season-hdr" onclick="window._mdToggleSeason(' + s.season_number + ')">' +
-            '<span class="md-ep-arrow" id="mdEpArrow' + s.season_number + '">&#9654;</span>' +
-            '<input type="checkbox" onclick="event.stopPropagation();window._mdToggleSeasonAll(' + s.season_number + ',this.checked)">' +
-            '<span>Season ' + s.season_number + '</span>' +
-            '<span class="md-ep-count">' + (s.episode_count || 0) + ' ep</span>' +
-          '</div>' +
-          '<div class="md-ep-list" id="mdEpList' + s.season_number + '"></div>' +
-        '</div>';
-      }).join('');
+      MD._epSeasons = (seasonsData.seasons || []).filter(function (s) { return s.season_number > 0; });
+      _mdRenderSeasons();
     }).catch(function () {
       container.innerHTML = '<div style="padding:12px;color:#999;font-size:13px">Failed to load</div>';
     });

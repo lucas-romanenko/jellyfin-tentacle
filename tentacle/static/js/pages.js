@@ -821,17 +821,21 @@ function _renderEpisodes(seasonNum) {
   const eps = _epPickerLoaded[seasonNum] || [];
   const list = document.getElementById(`ep-list-${seasonNum}`);
   const vodEps = _vodEpisodes[String(seasonNum)] || _vodEpisodes[seasonNum] || [];
+  const dlEps = _dlEpisodes[String(seasonNum)] || _dlEpisodes[seasonNum] || [];
   list.innerHTML = eps.map(ep => {
     const airDate = ep.air_date ? ep.air_date.substring(0, 10) : '';
     const epNum = `S${String(seasonNum).padStart(2, '0')}E${String(ep.episode_number).padStart(2, '0')}`;
     const title = ep.name || '';
     const isVod = vodEps.includes(ep.episode_number);
-    if (isVod) {
-      return `<label class="ep-picker-ep ep-vod-have">
+    const isDl = dlEps.includes(ep.episode_number);
+    if (isVod || isDl) {
+      const badgeText = isVod ? 'VOD' : 'DL';
+      const badgeClass = isVod ? 'ep-badge-vod' : 'ep-badge-dl';
+      return `<label class="ep-picker-ep ep-have">
         <input type="checkbox" checked disabled data-season="${seasonNum}" data-episode="${ep.episode_number}">
         <span class="ep-num">${epNum}</span>
         <span class="ep-title" title="${escapeAttr(title)}">${title}</span>
-        <span class="ep-dl-badge">VOD</span>
+        <span class="ep-dl-badge ${badgeClass}">${badgeText}</span>
       </label>`;
     }
     return `<label class="ep-picker-ep">
@@ -841,7 +845,7 @@ function _renderEpisodes(seasonNum) {
       <span class="ep-date">${airDate}</span>
     </label>`;
   }).join('');
-  updateSeasonCheckbox(seasonNum);
+  _updateSeasonStatus(seasonNum, eps.length);
 }
 
 async function toggleSeasonAll(seasonNum, checked) {
@@ -854,18 +858,47 @@ async function toggleSeasonAll(seasonNum, checked) {
 
 function updateSeasonCheckbox(seasonNum) {
   const list = document.getElementById(`ep-list-${seasonNum}`);
+  if (!list) return;
   const cbs = list.querySelectorAll('input[type="checkbox"]');
-  const allChecked = [...cbs].every(cb => cb.checked);
+  const allChecked = cbs.length > 0 && [...cbs].every(cb => cb.checked);
   const seasonCb = document.querySelector(`.ep-picker-season[data-season="${seasonNum}"] .ep-picker-season-check`);
   if (seasonCb) seasonCb.checked = allChecked;
 }
 
+function _updateSeasonStatus(seasonNum, totalEps) {
+  const vodEps = _vodEpisodes[String(seasonNum)] || _vodEpisodes[seasonNum] || [];
+  const dlEps = _dlEpisodes[String(seasonNum)] || _dlEpisodes[seasonNum] || [];
+  const haveCount = new Set([...vodEps, ...dlEps]).size;
+  const seasonEl = document.querySelector(`.ep-picker-season[data-season="${seasonNum}"]`);
+  if (!seasonEl) return;
+
+  // Update season checkbox
+  const seasonCb = seasonEl.querySelector('.ep-picker-season-check');
+  if (seasonCb) seasonCb.checked = (haveCount === totalEps && totalEps > 0);
+
+  // Update coverage indicator
+  const countEl = seasonEl.querySelector('.ep-count');
+  if (!countEl) return;
+  if (haveCount === 0) {
+    countEl.textContent = `${totalEps} ep`;
+    countEl.className = 'ep-count';
+  } else if (haveCount >= totalEps) {
+    countEl.textContent = `${totalEps}/${totalEps}`;
+    countEl.className = 'ep-count ep-count-full';
+  } else {
+    countEl.textContent = `${haveCount}/${totalEps}`;
+    countEl.className = 'ep-count ep-count-partial';
+  }
+}
+
 function epPickerSelectAll() {
-  document.querySelectorAll('#episode-picker-seasons input[type="checkbox"]').forEach(cb => cb.checked = true);
+  document.querySelectorAll('#episode-picker-seasons input[type="checkbox"]:not(:disabled)').forEach(cb => cb.checked = true);
+  document.querySelectorAll('#episode-picker-seasons .ep-picker-season-check').forEach(cb => cb.checked = true);
 }
 
 function epPickerSelectNone() {
-  document.querySelectorAll('#episode-picker-seasons input[type="checkbox"]').forEach(cb => cb.checked = false);
+  document.querySelectorAll('#episode-picker-seasons input[type="checkbox"]:not(:disabled)').forEach(cb => cb.checked = false);
+  document.querySelectorAll('#episode-picker-seasons .ep-picker-season-check').forEach(cb => cb.checked = false);
 }
 
 function _getSelectedEpisodes() {
@@ -996,10 +1029,12 @@ async function confirmManageEpisodes() {
 // ── Download More Episodes (VOD series → Sonarr) ────────
 let _downloadMoreTmdbId = null;
 let _vodEpisodes = {};  // {season: [ep1, ep2, ...]} from VOD scan
+let _dlEpisodes = {};   // {season: [ep1, ep2, ...]} from Sonarr (hasFile=true)
 
 async function showDownloadMoreModal(tmdbId, title, year, posterPath) {
   _downloadMoreTmdbId = tmdbId;
   _vodEpisodes = {};
+  _dlEpisodes = {};
   _epPickerSeasons = [];
   _epPickerLoaded = {};
 
@@ -1043,15 +1078,26 @@ async function showDownloadMoreModal(tmdbId, title, year, posterPath) {
 
   showModal('modal-add-to-radarr');
 
-  // Fetch TMDB seasons + VOD episodes in parallel
+  // Fetch TMDB seasons + VOD episodes + Sonarr episodes in parallel
   try {
-    const [seasonsData, vodData] = await Promise.all([
+    const [seasonsData, vodData, sonarrData] = await Promise.all([
       api(`/api/discover/seasons/${tmdbId}`),
       api(`/api/discover/vod-episodes/${tmdbId}`),
+      api(`/api/discover/sonarr-episodes/${tmdbId}`).catch(() => ({ in_sonarr: false })),
     ]);
 
     if (vodData.has_episodes) {
       _vodEpisodes = vodData.episodes;
+    }
+
+    // Build downloaded episodes map from Sonarr
+    if (sonarrData.in_sonarr && sonarrData.episodes) {
+      for (const ep of sonarrData.episodes) {
+        if (ep.hasFile && ep.seasonNumber > 0) {
+          if (!_dlEpisodes[ep.seasonNumber]) _dlEpisodes[ep.seasonNumber] = [];
+          _dlEpisodes[ep.seasonNumber].push(ep.episodeNumber);
+        }
+      }
     }
 
     _epPickerSeasons = (seasonsData.seasons || []).filter(s => s.season_number > 0);
@@ -1065,15 +1111,34 @@ async function showDownloadMoreModal(tmdbId, title, year, posterPath) {
 function _renderSeasonsWithVod() {
   const container = document.getElementById('episode-picker-seasons');
   container.innerHTML = _epPickerSeasons.map(s => {
+    const sn = s.season_number;
     const airYear = s.air_date ? ` (${s.air_date.substring(0, 4)})` : '';
-    return `<div class="ep-picker-season" data-season="${s.season_number}">
-      <div class="ep-picker-season-header" onclick="toggleSeasonAccordion(${s.season_number})">
-        <span class="ep-arrow" id="ep-arrow-${s.season_number}">▶</span>
-        <input type="checkbox" class="ep-picker-season-check" onclick="event.stopPropagation();toggleSeasonAll(${s.season_number}, this.checked)">
-        <span>Season ${s.season_number}${airYear}</span>
-        <span class="ep-count">${s.episode_count} ep</span>
+    const total = s.episode_count || 0;
+    const vodEps = _vodEpisodes[String(sn)] || _vodEpisodes[sn] || [];
+    const dlEps = _dlEpisodes[String(sn)] || _dlEpisodes[sn] || [];
+    const haveCount = new Set([...vodEps, ...dlEps]).size;
+    let countText, countClass, checked;
+    if (haveCount === 0) {
+      countText = `${total} ep`;
+      countClass = 'ep-count';
+      checked = false;
+    } else if (haveCount >= total) {
+      countText = `${total}/${total}`;
+      countClass = 'ep-count ep-count-full';
+      checked = true;
+    } else {
+      countText = `${haveCount}/${total}`;
+      countClass = 'ep-count ep-count-partial';
+      checked = false;
+    }
+    return `<div class="ep-picker-season" data-season="${sn}">
+      <div class="ep-picker-season-header" onclick="toggleSeasonAccordion(${sn})">
+        <span class="ep-arrow" id="ep-arrow-${sn}">▶</span>
+        <input type="checkbox" class="ep-picker-season-check" ${checked ? 'checked' : ''} onclick="event.stopPropagation();toggleSeasonAll(${sn}, this.checked)">
+        <span>Season ${sn}${airYear}</span>
+        <span class="${countClass}">${countText}</span>
       </div>
-      <div class="ep-picker-episodes" id="ep-list-${s.season_number}"></div>
+      <div class="ep-picker-episodes" id="ep-list-${sn}"></div>
     </div>`;
   }).join('');
 }
