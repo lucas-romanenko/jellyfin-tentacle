@@ -625,12 +625,27 @@ def add_to_sonarr(body: AddMissingBody, db: Session = Depends(get_db), user: Ten
     monitor = body.monitor or "all"
     season_folder = body.season_folder if body.season_folder is not None else True
 
+    # Find VOD root folder in Sonarr (for "Download More Episodes" on VOD series)
+    vod_root = None
+    for rf in root_folders:
+        if "vod" in rf["path"].lower():
+            vod_root = rf["path"].rstrip("/")
+            break
+
     for tmdb_id in body.tmdb_ids:
         existing = db.query(Series).filter(Series.tmdb_id == tmdb_id).first()
         if existing and existing.source == "sonarr":
             already_exists += 1
             continue
-        result = sonarr.add_series(tmdb_id, quality_profile_id, root_folder, monitor=monitor, season_folder=season_folder, selected_episodes=body.selected_episodes)
+
+        # For VOD series with strm_path, use the existing VOD folder in Sonarr
+        series_path = None
+        if existing and existing.strm_path and existing.source.startswith("provider_") and vod_root:
+            import os
+            folder_name = os.path.basename(existing.strm_path.rstrip("/"))
+            series_path = f"{vod_root}/{folder_name}"
+
+        result = sonarr.add_series(tmdb_id, quality_profile_id, root_folder, monitor=monitor, season_folder=season_folder, selected_episodes=body.selected_episodes, series_path=series_path)
         if result:
             added += 1
             _record_download_request(db, tmdb_id, "series", user.id)

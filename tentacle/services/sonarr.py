@@ -86,14 +86,18 @@ class SonarrService:
 
     def add_series(self, tmdb_id: int, quality_profile_id: int, root_folder: str,
                    monitor: str = "all", season_folder: bool = True,
-                   selected_episodes: list = None) -> Optional[dict]:
+                   selected_episodes: list = None,
+                   series_path: str = None) -> Optional[dict]:
         lookup = self.lookup_by_tmdb(tmdb_id)
         if not lookup:
             logger.error(f"Sonarr: no lookup result for tmdb:{tmdb_id}")
             return None
         payload = lookup
         payload["qualityProfileId"] = quality_profile_id
-        payload["rootFolderPath"] = root_folder
+        if series_path:
+            payload["path"] = series_path
+        else:
+            payload["rootFolderPath"] = root_folder
         payload["seasonFolder"] = season_folder
 
         # Custom episode selection: add with nothing monitored, then toggle specific episodes
