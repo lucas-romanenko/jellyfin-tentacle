@@ -872,9 +872,13 @@ function _updateSeasonStatus(seasonNum, totalEps) {
   const seasonEl = document.querySelector(`.ep-picker-season[data-season="${seasonNum}"]`);
   if (!seasonEl) return;
 
-  // Update season checkbox
+  // Update season checkbox — disable if full season already owned
   const seasonCb = seasonEl.querySelector('.ep-picker-season-check');
-  if (seasonCb) seasonCb.checked = (haveCount === totalEps && totalEps > 0);
+  if (seasonCb) {
+    const full = haveCount >= totalEps && totalEps > 0;
+    seasonCb.checked = full;
+    seasonCb.disabled = full;
+  }
 
   // Update coverage indicator
   const countEl = seasonEl.querySelector('.ep-count');
@@ -1134,7 +1138,7 @@ function _renderSeasonsWithVod() {
     return `<div class="ep-picker-season" data-season="${sn}">
       <div class="ep-picker-season-header" onclick="toggleSeasonAccordion(${sn})">
         <span class="ep-arrow" id="ep-arrow-${sn}">▶</span>
-        <input type="checkbox" class="ep-picker-season-check" ${checked ? 'checked' : ''} onclick="event.stopPropagation();toggleSeasonAll(${sn}, this.checked)">
+        <input type="checkbox" class="ep-picker-season-check" ${checked ? 'checked' : ''} ${haveCount >= total && total > 0 ? 'disabled' : ''} onclick="event.stopPropagation();toggleSeasonAll(${sn}, this.checked)">
         <span>Season ${sn}${airYear}</span>
         <span class="${countClass}">${countText}</span>
       </div>

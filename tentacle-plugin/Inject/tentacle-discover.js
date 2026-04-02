@@ -630,7 +630,7 @@
       return '<div class="md-ep-season" data-season="' + sn + '">' +
         '<div class="md-ep-season-hdr" onclick="window._mdToggleSeason(' + sn + ')">' +
           '<span class="md-ep-arrow" id="mdEpArrow' + sn + '">&#9654;</span>' +
-          '<input type="checkbox" ' + (checked ? 'checked' : '') + ' onclick="event.stopPropagation();window._mdToggleSeasonAll(' + sn + ',this.checked)">' +
+          '<input type="checkbox" ' + (checked ? 'checked' : '') + ' ' + (haveCount >= total && total > 0 ? 'disabled' : '') + ' onclick="event.stopPropagation();window._mdToggleSeasonAll(' + sn + ',this.checked)">' +
           '<span>' + esc(s.name || 'Season ' + sn) + airYear + '</span>' +
           '<span class="' + countClass + '">' + countText + '</span>' +
         '</div>' +
@@ -697,7 +697,7 @@
     if (!seasonEl) return;
     // Update season checkbox
     var seasonCb = seasonEl.querySelector('.md-ep-season-hdr input[type="checkbox"]');
-    if (seasonCb) seasonCb.checked = (haveCount === totalEps && totalEps > 0);
+    if (seasonCb) { var full = haveCount >= totalEps && totalEps > 0; seasonCb.checked = full; seasonCb.disabled = full; }
     // Update coverage indicator
     var countEl = seasonEl.querySelector('.md-ep-count');
     if (!countEl) return;
