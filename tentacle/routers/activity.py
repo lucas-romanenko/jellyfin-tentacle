@@ -179,15 +179,39 @@ def _extract_poster(arr_item: dict) -> Optional[str]:
     """Extract TMDB poster path from Radarr/Sonarr images array."""
     for img in arr_item.get("images", []):
         if img.get("coverType") == "poster":
+            # Try remoteUrl first (full TMDB URL like https://image.tmdb.org/t/p/original/abc.jpg)
             url = img.get("remoteUrl", "")
-            # Radarr returns full TMDB URL like https://image.tmdb.org/t/p/original/abc.jpg
-            # Extract "/abc.jpg" — the path after the size segment
             if "/t/p/" in url:
                 after = url.split("/t/p/")[1]  # "original/abc.jpg"
                 slash_idx = after.find("/")
                 if slash_idx >= 0:
                     return after[slash_idx:]  # "/abc.jpg"
+            # Some Sonarr responses only have local proxy URLs — try url field too
+            url = img.get("url", "")
+            if "/t/p/" in url:
+                after = url.split("/t/p/")[1]
+                slash_idx = after.find("/")
+                if slash_idx >= 0:
+                    return after[slash_idx:]
     return None
+
+
+def _fetch_tmdb_poster(tmdb_id: int, media_type: str, db: Session) -> Optional[str]:
+    """Last-resort poster fetch from TMDB API."""
+    try:
+        from services.tmdb import TMDBService, get_tmdb_token
+        bearer = get_tmdb_token(db)
+        if not bearer:
+            return None
+        data_dir = get_setting(db, "data_dir", "/data")
+        tmdb = TMDBService(bearer, data_dir)
+        if media_type == "series":
+            details = tmdb.get_series_details(tmdb_id)
+        else:
+            details = tmdb.get_movie_details(tmdb_id)
+        return details.get("poster_path") if details else None
+    except Exception:
+        return None
 
 
 def _build_downloads(db: Session) -> list:
@@ -228,7 +252,7 @@ def _build_downloads(db: Session) -> list:
                         elif dl_state == "downloading" and progress == 0:
                             status = "queued"
 
-                        poster = _get_poster(db, tmdb_id, "movie") or _extract_poster(movie)
+                        poster = _get_poster(db, tmdb_id, "movie") or _extract_poster(movie) or _fetch_tmdb_poster(tmdb_id, "movie", db)
                         downloads.append({
                             "tmdb_id": tmdb_id,
                             "title": movie.get("title", item.get("title", "")),
@@ -265,7 +289,7 @@ def _build_downloads(db: Session) -> list:
                         if episode:
                             ep_label = f"S{episode.get('seasonNumber', 0):02d}E{episode.get('episodeNumber', 0):02d}"
 
-                        poster = _get_poster(db, tmdb_id, "series") or _extract_poster(series)
+                        poster = _get_poster(db, tmdb_id, "series") or _extract_poster(series) or _fetch_tmdb_poster(tmdb_id, "series", db)
                         downloads.append({
                             "tmdb_id": tmdb_id,
                             "title": series.get("title", item.get("title", "")),
