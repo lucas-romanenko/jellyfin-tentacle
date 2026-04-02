@@ -831,16 +831,14 @@
 
       MD._epSeasons = (seasonsData.seasons || []).filter(function (s) { return s.season_number > 0; });
 
-      // Render seasons with VOD counts
+      // Render seasons
       container.innerHTML = MD._epSeasons.map(function (s) {
-        var vodEps = MD._vodEpisodes[String(s.season_number)] || MD._vodEpisodes[s.season_number] || [];
-        var vodLabel = vodEps.length > 0 ? ' · <span style="color:#4caf50">' + vodEps.length + ' in VOD</span>' : '';
         return '<div class="md-ep-season" data-season="' + s.season_number + '">' +
           '<div class="md-ep-season-hdr" onclick="window._mdToggleSeason(' + s.season_number + ')">' +
             '<span class="md-ep-arrow" id="mdEpArrow' + s.season_number + '">&#9654;</span>' +
             '<input type="checkbox" onclick="event.stopPropagation();window._mdToggleSeasonAll(' + s.season_number + ',this.checked)">' +
             '<span>Season ' + s.season_number + '</span>' +
-            '<span class="md-ep-count">' + (s.episode_count || 0) + ' ep' + vodLabel + '</span>' +
+            '<span class="md-ep-count">' + (s.episode_count || 0) + ' ep</span>' +
           '</div>' +
           '<div class="md-ep-list" id="mdEpList' + s.season_number + '"></div>' +
         '</div>';

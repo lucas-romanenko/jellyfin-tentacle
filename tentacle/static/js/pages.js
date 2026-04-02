@@ -1065,14 +1065,12 @@ function _renderSeasonsWithVod() {
   const container = document.getElementById('episode-picker-seasons');
   container.innerHTML = _epPickerSeasons.map(s => {
     const airYear = s.air_date ? ` (${s.air_date.substring(0, 4)})` : '';
-    const vodEps = _vodEpisodes[String(s.season_number)] || _vodEpisodes[s.season_number] || [];
-    const vodLabel = vodEps.length > 0 ? ` · <span style="color:#4caf50">${vodEps.length} in VOD</span>` : '';
     return `<div class="ep-picker-season" data-season="${s.season_number}">
       <div class="ep-picker-season-header" onclick="toggleSeasonAccordion(${s.season_number})">
         <span class="ep-arrow" id="ep-arrow-${s.season_number}">▶</span>
         <input type="checkbox" class="ep-picker-season-check" onclick="event.stopPropagation();toggleSeasonAll(${s.season_number}, this.checked)">
         <span>Season ${s.season_number}${airYear}</span>
-        <span class="ep-count">${s.episode_count} ep${vodLabel}</span>
+        <span class="ep-count">${s.episode_count} ep</span>
       </div>
       <div class="ep-picker-episodes" id="ep-list-${s.season_number}"></div>
     </div>`;
