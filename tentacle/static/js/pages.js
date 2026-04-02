@@ -3109,13 +3109,15 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
     const data = await api(`/api/discover/detail/${mediaType}/${tmdbId}`);
     const isSeries = mediaType === 'series';
     const arrLabel = isSeries ? 'Sonarr' : 'Radarr';
+    // Use detail response in_library (authoritative) over card-level flag
+    const isInLibrary = data.in_library !== undefined ? data.in_library : inLibrary;
     let actionBtn;
-    if (inLibrary && isSeries && data.library_source === 'sonarr') {
+    if (isInLibrary && isSeries && data.library_source === 'sonarr') {
       actionBtn = `<span class="badge badge-green" style="font-size:12px;padding:4px 10px">In Library</span> <button class="btn btn-secondary btn-sm" style="margin-left:6px" onclick="closeModal('modal-media-detail');showManageEpisodesModal(${tmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}')">Manage Episodes</button>`;
-    } else if (inLibrary && isSeries) {
+    } else if (isInLibrary && isSeries) {
       // VOD-only series — allow adding to Sonarr too
       actionBtn = `<span class="badge badge-green" style="font-size:12px;padding:4px 10px">In Library</span> <button class="btn btn-primary btn-sm" style="margin-left:6px" onclick="closeModal('modal-media-detail');showAddToArrModal(${tmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}','series')">Add to Sonarr</button>`;
-    } else if (inLibrary) {
+    } else if (isInLibrary) {
       actionBtn = `<span class="badge badge-green" style="font-size:12px;padding:4px 10px">In Library</span>`;
     } else {
       actionBtn = `<button class="btn btn-primary btn-sm" onclick="closeModal('modal-media-detail');showAddToArrModal(${tmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}','${mediaType}')">Add to ${arrLabel}</button>`;
