@@ -637,6 +637,18 @@ td.primary { color: var(--text); font-weight: 500; }
 .settings-section h3 { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
 .settings-section .section-desc { font-size: 13px; color: var(--text2); margin-bottom: 24px; }
 
+.guide-section { margin-bottom: 28px; }
+.guide-section:last-child { margin-bottom: 0; }
+.guide-heading { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
+.guide-text { font-size: 13px; color: var(--text2); margin-bottom: 14px; line-height: 1.5; }
+.guide-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.guide-item {
+  padding: 12px 14px; border-radius: var(--radius-sm);
+  background: var(--bg2); border: 1px solid var(--border);
+}
+.guide-item-name { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 4px; }
+.guide-item-desc { font-size: 12px; color: var(--text3); line-height: 1.5; }
+
 .connection-row {
   display: flex;
   align-items: center;
@@ -1335,6 +1347,7 @@ td.primary { color: var(--text); font-weight: 500; }
             <button class="settings-nav-item" data-section="integrations">Integrations</button>
             <button class="settings-nav-item" data-section="paths">Library Paths</button>
             <button class="settings-nav-item" data-section="users">Users</button>
+            <button class="settings-nav-item" data-section="playlists-info">Playlists Guide</button>
           </div>
 
           <div>
@@ -1532,6 +1545,83 @@ td.primary { color: var(--text); font-weight: 500; }
               <p class="section-desc">Manage Jellyfin user permissions. Admin users get full access to Tentacle. Non-admin users can only browse the library and customize their home screen.</p>
               <div id="users-list" style="margin-top:16px">
                 <div style="color:var(--text3);font-size:13px">Loading users...</div>
+              </div>
+            </div>
+
+            <div class="settings-section card" id="section-playlists-info">
+              <h3>Playlists Guide</h3>
+              <p class="section-desc">How auto playlists and custom playlists work in Tentacle.</p>
+
+              <div class="guide-section">
+                <h4 class="guide-heading">Auto Playlists</h4>
+                <p class="guide-text">Auto playlists are generated from your synced content. Toggle them on from <strong>Jellyfin &rarr; Playlists</strong> to create them in Jellyfin.</p>
+                <div class="guide-grid">
+                  <div class="guide-item">
+                    <div class="guide-item-name">Recently Added Movies</div>
+                    <div class="guide-item-desc">Movies added within the rolling window (default 30 days). Includes both VOD and downloaded content. Window is configurable in Connections.</div>
+                  </div>
+                  <div class="guide-item">
+                    <div class="guide-item-name">Recently Added TV</div>
+                    <div class="guide-item-desc">TV series added within the rolling window. Same timeframe as movies.</div>
+                  </div>
+                  <div class="guide-item">
+                    <div class="guide-item-name">Downloaded Movies</div>
+                    <div class="guide-item-desc">All movies downloaded through Radarr. Automatically tagged when Radarr finishes a download.</div>
+                  </div>
+                  <div class="guide-item">
+                    <div class="guide-item-name">Downloaded TV</div>
+                    <div class="guide-item-desc">All TV series downloaded through Sonarr. Automatically tagged when Sonarr finishes a download.</div>
+                  </div>
+                  <div class="guide-item">
+                    <div class="guide-item-name">Source Playlists</div>
+                    <div class="guide-item-desc">One playlist per IPTV provider source (e.g. "Netflix Movies", "HBO MAX Series"). Created automatically when you sync a provider with categorized content.</div>
+                  </div>
+                  <div class="guide-item">
+                    <div class="guide-item-name">List Playlists</div>
+                    <div class="guide-item-desc">One playlist per imported list (e.g. "IMDB TOP 250"). Enable from the list card on the Discover &rarr; My Lists tab. Only includes items that are in your library.</div>
+                  </div>
+                  <div class="guide-item">
+                    <div class="guide-item-name">User's Downloads</div>
+                    <div class="guide-item-desc">A personal playlist of everything you've added to Radarr or Sonarr through Tentacle. Each user gets their own.</div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="guide-section">
+                <h4 class="guide-heading">Custom Playlists</h4>
+                <p class="guide-text">Create your own playlists with filters. Built from <strong>Jellyfin &rarr; Playlists &rarr; + Create</strong>.</p>
+                <div class="guide-grid">
+                  <div class="guide-item">
+                    <div class="guide-item-name">Native Filters</div>
+                    <div class="guide-item-desc">Genre, rating, and year filters query Jellyfin directly. A "Comedy Movies" playlist finds <em>all</em> comedies in your library, not just Tentacle-tagged ones.</div>
+                  </div>
+                  <div class="guide-item">
+                    <div class="guide-item-name">Source Filters</div>
+                    <div class="guide-item-desc">Filter by IPTV provider or source tag (e.g. "From Netflix"). These use Tentacle's tag system since Jellyfin doesn't know about providers.</div>
+                  </div>
+                  <div class="guide-item">
+                    <div class="guide-item-name">Mixed Filters</div>
+                    <div class="guide-item-desc">Combine native and source filters (e.g. "Netflix comedies rated 7+"). When mixed, all conditions are evaluated through Tentacle's tagger.</div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="guide-section">
+                <h4 class="guide-heading">How It Works</h4>
+                <div class="guide-grid">
+                  <div class="guide-item">
+                    <div class="guide-item-name">Per-User</div>
+                    <div class="guide-item-desc">Each user has independent playlist toggles, custom playlists, and home screen layouts. Playlists are created as private Jellyfin playlists owned by your account.</div>
+                  </div>
+                  <div class="guide-item">
+                    <div class="guide-item-name">Auto Sync</div>
+                    <div class="guide-item-desc">Toggling a playlist or creating/editing one immediately syncs to Jellyfin. No manual sync needed. Content also refreshes on the nightly scheduled sync.</div>
+                  </div>
+                  <div class="guide-item">
+                    <div class="guide-item-name">Sort Order</div>
+                    <div class="guide-item-desc">Each playlist can have its own sort (release date, name, rating, recently added, random). Change it from the playlist's sort dropdown on the Playlists page.</div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
