@@ -251,7 +251,7 @@ class TMDBService:
     def get_series_details(self, tmdb_id: int) -> Optional[dict]:
         cache_key = f"series_details:{tmdb_id}"
         cached = self._cache_get(cache_key)
-        if cached is not None:
+        if cached is not None and "seasons" in cached:
             return cached
 
         data = self._request(f"tv/{tmdb_id}", {"append_to_response": "credits"})
