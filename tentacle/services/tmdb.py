@@ -279,10 +279,49 @@ class TMDBService:
             "creators": [c["name"] for c in data.get("created_by", [])[:3]],
             "studios": [s["name"] for s in data.get("production_companies", [])[:3]],
             "media_type": "series",
+            "seasons": [
+                {
+                    "season_number": s.get("season_number"),
+                    "name": s.get("name", ""),
+                    "episode_count": s.get("episode_count", 0),
+                    "air_date": s.get("air_date"),
+                    "poster_path": s.get("poster_path"),
+                }
+                for s in data.get("seasons", [])
+            ],
         }
 
         self._cache_set(cache_key, result)
         return result
+
+    def get_season_episodes(self, tmdb_id: int, season_number: int) -> Optional[list]:
+        """Fetch episodes for a specific season. Cached for 30 days."""
+        if not self.enabled:
+            return None
+
+        cache_key = f"season_episodes:{tmdb_id}:{season_number}"
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            return cached
+
+        data = self._request(f"tv/{tmdb_id}/season/{season_number}")
+        if not data:
+            return None
+
+        episodes = [
+            {
+                "episode_number": ep.get("episode_number"),
+                "name": ep.get("name", ""),
+                "overview": ep.get("overview", ""),
+                "air_date": ep.get("air_date"),
+                "runtime": ep.get("runtime"),
+                "still_path": ep.get("still_path"),
+            }
+            for ep in data.get("episodes", [])
+        ]
+
+        self._cache_set(cache_key, episodes)
+        return episodes
 
     def find_by_imdb_id(self, imdb_id: str) -> Optional[dict]:
         """Look up a movie or series by IMDb ID using TMDB's /find endpoint.

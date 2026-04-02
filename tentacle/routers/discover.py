@@ -228,3 +228,41 @@ def get_discover_config(db: Session = Depends(get_db)):
     """Return whether the Discover tab is enabled for Jellyfin."""
     enabled = get_setting(db, "discover_in_jellyfin", "false")
     return {"discover_in_jellyfin": enabled.lower() == "true"}
+
+
+@router.get("/seasons/{tmdb_id}")
+def get_seasons(
+    tmdb_id: int,
+    db: Session = Depends(get_db)
+):
+    """Fetch season list for a TV series from TMDB."""
+    tmdb = _get_tmdb(db)
+    if not tmdb:
+        return {"error": "TMDB not configured"}
+
+    details = tmdb.get_series_details(tmdb_id)
+    if not details:
+        return {"error": "Not found"}
+
+    return {
+        "title": details.get("title", ""),
+        "seasons": details.get("seasons", []),
+    }
+
+
+@router.get("/season/{tmdb_id}/{season_number}")
+def get_season_episodes(
+    tmdb_id: int,
+    season_number: int,
+    db: Session = Depends(get_db)
+):
+    """Fetch episode list for a specific season from TMDB."""
+    tmdb = _get_tmdb(db)
+    if not tmdb:
+        return {"error": "TMDB not configured"}
+
+    episodes = tmdb.get_season_episodes(tmdb_id, season_number)
+    if episodes is None:
+        return {"error": "Not found"}
+
+    return {"episodes": episodes}

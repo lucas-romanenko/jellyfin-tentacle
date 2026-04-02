@@ -81,7 +81,8 @@ class SonarrService:
             return None
 
     def add_series(self, tmdb_id: int, quality_profile_id: int, root_folder: str,
-                   monitor: str = "all", season_folder: bool = True) -> Optional[dict]:
+                   monitor: str = "all", season_folder: bool = True,
+                   selected_episodes: list = None) -> Optional[dict]:
         lookup = self.lookup_by_tmdb(tmdb_id)
         if not lookup:
             logger.error(f"Sonarr: no lookup result for tmdb:{tmdb_id}")
@@ -90,14 +91,25 @@ class SonarrService:
         payload["qualityProfileId"] = quality_profile_id
         payload["rootFolderPath"] = root_folder
         payload["seasonFolder"] = season_folder
-        # "all"/"future" want ongoing monitoring; everything else is a one-time grab
-        ongoing = monitor in ("all", "future")
-        payload["monitored"] = True  # Must be true for initial search to work
-        payload["monitorNewItems"] = "all" if ongoing else "none"
-        payload["addOptions"] = {
-            "monitor": monitor,
-            "searchForMissingEpisodes": True,
-        }
+
+        # Custom episode selection: add with nothing monitored, then toggle specific episodes
+        if selected_episodes:
+            payload["monitored"] = True
+            payload["monitorNewItems"] = "none"
+            payload["addOptions"] = {
+                "monitor": "none",
+                "searchForMissingEpisodes": False,
+            }
+        else:
+            # "all"/"future" want ongoing monitoring; everything else is a one-time grab
+            ongoing = monitor in ("all", "future")
+            payload["monitored"] = True  # Must be true for initial search to work
+            payload["monitorNewItems"] = "all" if ongoing else "none"
+            payload["addOptions"] = {
+                "monitor": monitor,
+                "searchForMissingEpisodes": True,
+            }
+
         try:
             r = self.session.post(
                 f"{self.url}/api/v3/series",
@@ -106,18 +118,109 @@ class SonarrService:
             )
             if r.status_code < 400:
                 series_data = r.json()
-                # For partial monitor options, unmonitor the series after the initial
-                # search so Sonarr doesn't keep grabbing future episodes.
-                # "all" and "future" want ongoing monitoring; everything else is a
-                # one-time grab (pilot, first/last season, none).
-                if monitor not in ("all", "future"):
+
+                if selected_episodes:
+                    # Custom episode selection: monitor + search specific episodes
+                    self._monitor_selected_episodes(series_data["id"], selected_episodes)
                     self._unmonitor_series(series_data["id"])
+                elif monitor not in ("all", "future"):
+                    # Preset partial monitor: unmonitor series after initial search
+                    self._unmonitor_series(series_data["id"])
+
                 return series_data
             logger.error(f"Sonarr rejected tmdb:{tmdb_id} — HTTP {r.status_code}: {r.text}")
             return None
         except Exception as e:
             logger.error(f"Failed to add tmdb:{tmdb_id} to Sonarr: {e}")
             return None
+
+    def _monitor_selected_episodes(self, series_id: int, selected_episodes: list):
+        """Monitor and search specific episodes after adding a series."""
+        import time
+        # Sonarr needs a moment to populate episodes after adding
+        time.sleep(1)
+
+        sonarr_episodes = self.get_episodes(series_id)
+        if not sonarr_episodes:
+            # Retry once after a longer delay
+            time.sleep(2)
+            sonarr_episodes = self.get_episodes(series_id)
+
+        if not sonarr_episodes:
+            logger.warning(f"Sonarr: no episodes found for series {series_id} — cannot set custom monitoring")
+            return
+
+        # Build lookup: (season, episode) → sonarr episode ID
+        ep_lookup = {}
+        for ep in sonarr_episodes:
+            key = (ep["seasonNumber"], ep["episodeNumber"])
+            ep_lookup[key] = ep["id"]
+
+        # Match selected episodes to Sonarr IDs
+        matched_ids = []
+        for sel in selected_episodes:
+            key = (sel.get("season"), sel.get("episode"))
+            sonarr_id = ep_lookup.get(key)
+            if sonarr_id:
+                matched_ids.append(sonarr_id)
+
+        if matched_ids:
+            self.set_episode_monitoring(matched_ids, True)
+            self.search_episodes(matched_ids)
+            logger.info(f"Sonarr: monitored and searching {len(matched_ids)} episodes for series {series_id}")
+        else:
+            logger.warning(f"Sonarr: no episodes matched for series {series_id}")
+
+    def get_episodes(self, series_id: int) -> list:
+        """Fetch all episodes for a series from Sonarr."""
+        try:
+            r = self.session.get(
+                f"{self.url}/api/v3/episode",
+                params={"seriesId": series_id},
+                timeout=10,
+            )
+            if r.status_code < 400:
+                return [
+                    {
+                        "id": ep["id"],
+                        "seasonNumber": ep.get("seasonNumber"),
+                        "episodeNumber": ep.get("episodeNumber"),
+                        "monitored": ep.get("monitored", False),
+                        "title": ep.get("title", ""),
+                        "hasFile": ep.get("hasFile", False),
+                    }
+                    for ep in r.json()
+                ]
+            return []
+        except Exception as e:
+            logger.warning(f"Sonarr: failed to fetch episodes for series {series_id}: {e}")
+            return []
+
+    def set_episode_monitoring(self, episode_ids: list, monitored: bool) -> bool:
+        """Bulk-set monitored state for specific episodes."""
+        try:
+            r = self.session.put(
+                f"{self.url}/api/v3/episode/monitor",
+                json={"episodeIds": episode_ids, "monitored": monitored},
+                timeout=10,
+            )
+            return r.status_code < 400
+        except Exception as e:
+            logger.warning(f"Sonarr: failed to set episode monitoring: {e}")
+            return False
+
+    def search_episodes(self, episode_ids: list) -> bool:
+        """Trigger search for specific episodes."""
+        try:
+            r = self.session.post(
+                f"{self.url}/api/v3/command",
+                json={"name": "EpisodeSearch", "episodeIds": episode_ids},
+                timeout=10,
+            )
+            return r.status_code < 400
+        except Exception as e:
+            logger.warning(f"Sonarr: failed to trigger episode search: {e}")
+            return False
 
     def _unmonitor_series(self, series_id: int):
         """Set series monitored=false so Sonarr stops watching for new episodes."""

@@ -647,6 +647,8 @@ function renderLibCard(item) {
 
 let _addArrTmdbId = null;
 let _addArrMediaType = 'movie';
+let _epPickerSeasons = [];  // cached season list for current series
+let _epPickerLoaded = {};   // season_number -> episodes array
 
 async function showAddToRadarrModal(tmdbId, title, year, posterPath) {
   showAddToArrModal(tmdbId, title, year, posterPath, 'movie');
@@ -678,6 +680,13 @@ async function showAddToArrModal(tmdbId, title, year, posterPath, mediaType) {
 
   document.getElementById('sonarr-extra-fields').style.display = isSeries ? 'block' : 'none';
 
+  // Reset episode picker state
+  _epPickerSeasons = [];
+  _epPickerLoaded = {};
+  document.getElementById('episode-picker').style.display = 'none';
+  document.getElementById('episode-picker-seasons').innerHTML = '';
+  document.getElementById('add-sonarr-monitor').value = 'all';
+
   const btn = document.getElementById('add-radarr-confirm-btn');
   btn.disabled = false;
   btn.textContent = `Add to ${arrName}`;
@@ -695,8 +704,21 @@ async function confirmAddToArr() {
   const body = { tmdb_ids: [_addArrTmdbId] };
   if (qualityId) body.quality_profile_id = parseInt(qualityId);
   if (isSeries) {
-    body.monitor = document.getElementById('add-sonarr-monitor').value;
+    const monitorVal = document.getElementById('add-sonarr-monitor').value;
     body.season_folder = document.getElementById('add-sonarr-season-folder').checked;
+    if (monitorVal === 'custom') {
+      const selected = _getSelectedEpisodes();
+      if (selected.length === 0) {
+        toast('Select at least one episode', 'error');
+        btn.disabled = false;
+        btn.textContent = `Add to ${arrName}`;
+        return;
+      }
+      body.monitor = 'none';
+      body.selected_episodes = selected;
+    } else {
+      body.monitor = monitorVal;
+    }
   }
   const endpoint = isSeries ? '/api/lists/add-to-sonarr' : '/api/lists/add-to-radarr';
   try {
@@ -726,6 +748,115 @@ async function confirmAddToArr() {
 }
 
 function confirmAddToRadarr() { confirmAddToArr(); }
+
+// ── Episode Picker ──────────────────────────────────
+async function onMonitorPresetChange(val) {
+  const picker = document.getElementById('episode-picker');
+  if (val !== 'custom') {
+    picker.style.display = 'none';
+    return;
+  }
+  picker.style.display = 'block';
+  if (_epPickerSeasons.length > 0) return; // already loaded
+  const loading = document.getElementById('episode-picker-loading');
+  loading.style.display = 'block';
+  try {
+    const data = await api(`/api/discover/seasons/${_addArrTmdbId}`);
+    _epPickerSeasons = (data.seasons || []).filter(s => s.season_number > 0);
+    _renderSeasons();
+  } catch (e) {
+    document.getElementById('episode-picker-seasons').innerHTML = '<div style="padding:12px;color:var(--text3)">Failed to load seasons</div>';
+  }
+  loading.style.display = 'none';
+}
+
+function _renderSeasons() {
+  const container = document.getElementById('episode-picker-seasons');
+  container.innerHTML = _epPickerSeasons.map(s => {
+    const airYear = s.air_date ? ` (${s.air_date.substring(0, 4)})` : '';
+    return `<div class="ep-picker-season" data-season="${s.season_number}">
+      <div class="ep-picker-season-header" onclick="toggleSeasonAccordion(${s.season_number})">
+        <span class="ep-arrow" id="ep-arrow-${s.season_number}">▶</span>
+        <input type="checkbox" class="ep-picker-season-check" onclick="event.stopPropagation();toggleSeasonAll(${s.season_number}, this.checked)" checked>
+        <span>${s.name || 'Season ' + s.season_number}${airYear}</span>
+        <span class="ep-count">${s.episode_count} ep</span>
+      </div>
+      <div class="ep-picker-episodes" id="ep-list-${s.season_number}"></div>
+    </div>`;
+  }).join('');
+  // Auto-expand first season and load its episodes
+  if (_epPickerSeasons.length > 0) {
+    toggleSeasonAccordion(_epPickerSeasons[0].season_number);
+  }
+}
+
+async function toggleSeasonAccordion(seasonNum) {
+  const arrow = document.getElementById(`ep-arrow-${seasonNum}`);
+  const list = document.getElementById(`ep-list-${seasonNum}`);
+  const isOpen = list.classList.contains('open');
+  if (isOpen) {
+    list.classList.remove('open');
+    arrow.classList.remove('open');
+    return;
+  }
+  list.classList.add('open');
+  arrow.classList.add('open');
+  if (!_epPickerLoaded[seasonNum]) {
+    list.innerHTML = '<div style="padding:8px 28px;color:var(--text3);font-size:12px">Loading...</div>';
+    try {
+      const data = await api(`/api/discover/season/${_addArrTmdbId}/${seasonNum}`);
+      _epPickerLoaded[seasonNum] = data.episodes || [];
+      _renderEpisodes(seasonNum);
+    } catch (e) {
+      list.innerHTML = '<div style="padding:8px 28px;color:var(--text3);font-size:12px">Failed to load</div>';
+    }
+  }
+}
+
+function _renderEpisodes(seasonNum) {
+  const eps = _epPickerLoaded[seasonNum] || [];
+  const list = document.getElementById(`ep-list-${seasonNum}`);
+  list.innerHTML = eps.map(ep => {
+    const airDate = ep.air_date ? ep.air_date.substring(0, 10) : '';
+    const epNum = `S${String(seasonNum).padStart(2, '0')}E${String(ep.episode_number).padStart(2, '0')}`;
+    const title = ep.name || '';
+    return `<label class="ep-picker-ep">
+      <input type="checkbox" checked data-season="${seasonNum}" data-episode="${ep.episode_number}" onchange="updateSeasonCheckbox(${seasonNum})">
+      <span class="ep-num">${epNum}</span>
+      <span class="ep-title" title="${escapeAttr(title)}">${title}</span>
+      <span class="ep-date">${airDate}</span>
+    </label>`;
+  }).join('');
+}
+
+function toggleSeasonAll(seasonNum, checked) {
+  const list = document.getElementById(`ep-list-${seasonNum}`);
+  list.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = checked);
+}
+
+function updateSeasonCheckbox(seasonNum) {
+  const list = document.getElementById(`ep-list-${seasonNum}`);
+  const cbs = list.querySelectorAll('input[type="checkbox"]');
+  const allChecked = [...cbs].every(cb => cb.checked);
+  const seasonCb = document.querySelector(`.ep-picker-season[data-season="${seasonNum}"] .ep-picker-season-check`);
+  if (seasonCb) seasonCb.checked = allChecked;
+}
+
+function epPickerSelectAll() {
+  document.querySelectorAll('#episode-picker-seasons input[type="checkbox"]').forEach(cb => cb.checked = true);
+}
+
+function epPickerSelectNone() {
+  document.querySelectorAll('#episode-picker-seasons input[type="checkbox"]').forEach(cb => cb.checked = false);
+}
+
+function _getSelectedEpisodes() {
+  const selected = [];
+  document.querySelectorAll('#episode-picker-seasons .ep-picker-ep input[type="checkbox"]:checked').forEach(cb => {
+    selected.push({ season: parseInt(cb.dataset.season), episode: parseInt(cb.dataset.episode) });
+  });
+  return selected;
+}
 
 function loadMoreLibrary() {
   pages.lib.offset += pages.lib.limit;
@@ -3775,6 +3906,7 @@ async function vodPreviewSync() {
     loadLibListPills, setLibList, setLibListStatus, setLibSort, scrollListPills,
     showMediaDetail, showCoverageDetail, filterByTag, searchLibrary, setLibType, setLibSrc,
     loadMoreLibrary, showAddToRadarrModal, showAddToArrModal, confirmAddToRadarr, confirmAddToArr,
+    onMonitorPresetChange, toggleSeasonAccordion, toggleSeasonAll, updateSeasonCheckbox, epPickerSelectAll, epPickerSelectNone,
     // Duplicates
     setDupFilter, resolveDup, resolveAllKeepRadarr,
     // Log viewer

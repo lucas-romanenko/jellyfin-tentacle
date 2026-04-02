@@ -452,6 +452,7 @@
   function renderModal(item) {
     var old = document.getElementById('mdDetailModal');
     if (old) old.remove();
+    MD._currentItem = item;
 
     var backdrop = item.backdrop_path
       ? '<img src="https://image.tmdb.org/t/p/w780' + item.backdrop_path + '">'
@@ -483,8 +484,19 @@
             '<option value="firstSeason">First Season</option>' +
             '<option value="lastSeason">Last Season</option>' +
             '<option value="pilot">Pilot Only</option>' +
+            '<option value="custom">Pick Episodes...</option>' +
             '<option value="none">None</option>' +
           '</select>'
+        : '';
+      var episodePicker = isSeries
+        ? '<div id="mdEpisodePicker" class="md-ep-picker" style="display:none">' +
+            '<div class="md-ep-picker-header">' +
+              '<span>Episodes</span>' +
+              '<span><button class="md-ep-btn" onclick="window._mdEpSelectAll()">All</button>' +
+              '<button class="md-ep-btn" onclick="window._mdEpSelectNone()">None</button></span>' +
+            '</div>' +
+            '<div id="mdEpSeasons" class="md-ep-seasons"></div>' +
+          '</div>'
         : '';
       downloadSection =
         '<div class="md-download-row">' +
@@ -492,6 +504,7 @@
           monitorSelect +
           '<button id="mdDownloadBtn" class="md-download-btn">Add to ' + arrLabel + '</button>' +
         '</div>' +
+        episodePicker +
         '<div id="mdDownloadStatus" class="md-download-status"></div>';
     }
 
@@ -537,7 +550,111 @@
       }
     } else {
       loadDownloadOptions(item);
+      // Episode picker for series
+      var monitorSel = overlay.querySelector('#mdMonitorSelect');
+      if (monitorSel) {
+        MD._epSeasons = [];
+        MD._epLoaded = {};
+        monitorSel.addEventListener('change', function () {
+          var picker = document.getElementById('mdEpisodePicker');
+          if (!picker) return;
+          if (monitorSel.value !== 'custom') { picker.style.display = 'none'; return; }
+          picker.style.display = 'block';
+          if (MD._epSeasons.length > 0) return;
+          var container = document.getElementById('mdEpSeasons');
+          container.innerHTML = '<div style="padding:12px;color:#999;font-size:13px">Loading seasons...</div>';
+          apiGet('TentacleDiscover/Seasons/' + item.tmdb_id).then(function (data) {
+            MD._epSeasons = (data.seasons || []).filter(function (s) { return s.season_number > 0; });
+            _mdRenderSeasons();
+          }).catch(function () {
+            container.innerHTML = '<div style="padding:12px;color:#999;font-size:13px">Failed to load</div>';
+          });
+        });
+      }
     }
+  }
+
+  function _mdRenderSeasons() {
+    var container = document.getElementById('mdEpSeasons');
+    if (!container) return;
+    container.innerHTML = MD._epSeasons.map(function (s) {
+      var airYear = s.air_date ? ' (' + s.air_date.substring(0, 4) + ')' : '';
+      return '<div class="md-ep-season" data-season="' + s.season_number + '">' +
+        '<div class="md-ep-season-hdr" onclick="window._mdToggleSeason(' + s.season_number + ')">' +
+          '<span class="md-ep-arrow" id="mdEpArrow' + s.season_number + '">&#9654;</span>' +
+          '<input type="checkbox" checked onclick="event.stopPropagation();window._mdToggleSeasonAll(' + s.season_number + ',this.checked)">' +
+          '<span>' + esc(s.name || 'Season ' + s.season_number) + airYear + '</span>' +
+          '<span class="md-ep-count">' + (s.episode_count || 0) + ' ep</span>' +
+        '</div>' +
+        '<div class="md-ep-list" id="mdEpList' + s.season_number + '"></div>' +
+      '</div>';
+    }).join('');
+    if (MD._epSeasons.length > 0) window._mdToggleSeason(MD._epSeasons[0].season_number);
+  }
+
+  window._mdToggleSeason = function (sn) {
+    var list = document.getElementById('mdEpList' + sn);
+    var arrow = document.getElementById('mdEpArrow' + sn);
+    if (!list) return;
+    var isOpen = list.classList.contains('open');
+    if (isOpen) { list.classList.remove('open'); if (arrow) arrow.classList.remove('open'); return; }
+    list.classList.add('open'); if (arrow) arrow.classList.add('open');
+    if (!MD._epLoaded[sn]) {
+      list.innerHTML = '<div style="padding:8px 12px;color:#999;font-size:12px">Loading...</div>';
+      apiGet('TentacleDiscover/Season/' + MD._currentItem.tmdb_id + '/' + sn).then(function (data) {
+        MD._epLoaded[sn] = data.episodes || [];
+        _mdRenderEpisodes(sn);
+      }).catch(function () {
+        list.innerHTML = '<div style="padding:8px 12px;color:#999;font-size:12px">Failed</div>';
+      });
+    }
+  };
+
+  function _mdRenderEpisodes(sn) {
+    var eps = MD._epLoaded[sn] || [];
+    var list = document.getElementById('mdEpList' + sn);
+    if (!list) return;
+    list.innerHTML = eps.map(function (ep) {
+      var num = 'S' + String(sn).padStart(2, '0') + 'E' + String(ep.episode_number).padStart(2, '0');
+      var airDate = ep.air_date ? ep.air_date.substring(0, 10) : '';
+      return '<label class="md-ep-row">' +
+        '<input type="checkbox" checked data-season="' + sn + '" data-episode="' + ep.episode_number + '" onchange="window._mdUpdateSeasonCb(' + sn + ')">' +
+        '<span class="md-ep-num">' + num + '</span>' +
+        '<span class="md-ep-title">' + esc(ep.name || '') + '</span>' +
+        '<span class="md-ep-date">' + airDate + '</span>' +
+      '</label>';
+    }).join('');
+  }
+
+  window._mdToggleSeasonAll = function (sn, checked) {
+    var list = document.getElementById('mdEpList' + sn);
+    if (!list) return;
+    list.querySelectorAll('input[type="checkbox"]').forEach(function (cb) { cb.checked = checked; });
+  };
+
+  window._mdUpdateSeasonCb = function (sn) {
+    var list = document.getElementById('mdEpList' + sn);
+    if (!list) return;
+    var cbs = list.querySelectorAll('input[type="checkbox"]');
+    var allChecked = Array.from(cbs).every(function (cb) { return cb.checked; });
+    var seasonCb = document.querySelector('.md-ep-season[data-season="' + sn + '"] .md-ep-season-hdr input[type="checkbox"]');
+    if (seasonCb) seasonCb.checked = allChecked;
+  };
+
+  window._mdEpSelectAll = function () {
+    document.querySelectorAll('#mdEpSeasons input[type="checkbox"]').forEach(function (cb) { cb.checked = true; });
+  };
+
+  window._mdEpSelectNone = function () {
+    document.querySelectorAll('#mdEpSeasons input[type="checkbox"]').forEach(function (cb) { cb.checked = false; });
+  };
+
+  function _mdGetSelectedEpisodes() {
+    var selected = [];
+    document.querySelectorAll('#mdEpSeasons .md-ep-row input[type="checkbox"]:checked').forEach(function (cb) {
+      selected.push({ season: parseInt(cb.dataset.season, 10), episode: parseInt(cb.dataset.episode, 10) });
+    });
+    return selected;
   }
 
   function findJellyfinItem(item) {
@@ -617,8 +734,22 @@
     };
     if (isSeries) {
       var monitorEl = document.getElementById('mdMonitorSelect');
-      body.monitor = monitorEl ? monitorEl.value : 'all';
+      var monitorVal = monitorEl ? monitorEl.value : 'all';
       body.season_folder = true;
+      if (monitorVal === 'custom') {
+        var selected = _mdGetSelectedEpisodes();
+        if (selected.length === 0) {
+          status.style.color = '#f44336';
+          status.textContent = 'Select at least one episode';
+          btn.disabled = false;
+          btn.textContent = 'Add to Sonarr';
+          return;
+        }
+        body.monitor = 'none';
+        body.selected_episodes = selected;
+      } else {
+        body.monitor = monitorVal;
+      }
     }
 
     apiPost(ep, body).then(function () {

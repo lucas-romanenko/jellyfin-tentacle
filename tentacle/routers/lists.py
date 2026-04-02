@@ -101,6 +101,7 @@ class AddMissingBody(BaseModel):
     quality_profile_id: Optional[int] = None
     monitor: Optional[str] = None
     season_folder: Optional[bool] = None
+    selected_episodes: Optional[list] = None  # [{season, episode}] for custom episode picker
 
 
 def fetch_list_tmdb_ids(lst: ListSubscription, bearer_token: str = "", trakt_client_id: str = "") -> list:
@@ -628,7 +629,7 @@ def add_to_sonarr(body: AddMissingBody, db: Session = Depends(get_db), user: Ten
         if db.query(Series).filter(Series.tmdb_id == tmdb_id).first():
             already_exists += 1
             continue
-        result = sonarr.add_series(tmdb_id, quality_profile_id, root_folder, monitor=monitor, season_folder=season_folder)
+        result = sonarr.add_series(tmdb_id, quality_profile_id, root_folder, monitor=monitor, season_folder=season_folder, selected_episodes=body.selected_episodes)
         if result:
             added += 1
             _record_download_request(db, tmdb_id, "series", user.id)

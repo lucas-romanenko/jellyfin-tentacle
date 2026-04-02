@@ -359,6 +359,50 @@ public class TentacleDiscoverController : ControllerBase
     }
 
     /// <summary>
+    /// Proxies season list for a TV series from Tentacle.
+    /// </summary>
+    [HttpGet("Seasons/{tmdbId}")]
+    [Authorize]
+    public async Task<ActionResult> GetSeasons(int tmdbId)
+    {
+        var baseUrl = GetTentacleUrl();
+        if (string.IsNullOrEmpty(baseUrl)) return NotFound();
+
+        try
+        {
+            var response = await HttpClient.GetStringAsync($"{baseUrl}/api/discover/seasons/{tmdbId}");
+            return Content(response, "application/json");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("[Tentacle Discover] Failed to fetch seasons: {Error}", ex.Message);
+            return NotFound();
+        }
+    }
+
+    /// <summary>
+    /// Proxies episode list for a specific season from Tentacle.
+    /// </summary>
+    [HttpGet("Season/{tmdbId}/{seasonNumber}")]
+    [Authorize]
+    public async Task<ActionResult> GetSeasonEpisodes(int tmdbId, int seasonNumber)
+    {
+        var baseUrl = GetTentacleUrl();
+        if (string.IsNullOrEmpty(baseUrl)) return NotFound();
+
+        try
+        {
+            var response = await HttpClient.GetStringAsync($"{baseUrl}/api/discover/season/{tmdbId}/{seasonNumber}");
+            return Content(response, "application/json");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("[Tentacle Discover] Failed to fetch episodes: {Error}", ex.Message);
+            return NotFound();
+        }
+    }
+
+    /// <summary>
     /// Serves the Tentacle discover JavaScript.
     /// </summary>
     [HttpGet("/Tentacle/discover.js")]

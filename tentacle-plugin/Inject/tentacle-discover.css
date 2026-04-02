@@ -608,3 +608,41 @@
   }
   .md-modal { width: 96%; }
 }
+
+/* ── Episode Picker ─────────────────────────────────────────────── */
+.md-ep-picker { margin-top: 12px; }
+.md-ep-picker-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 6px; font-size: 13px; font-weight: 500; color: #ccc;
+}
+.md-ep-btn {
+  background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.12);
+  color: #ccc; font-size: 11px; padding: 2px 8px; border-radius: 4px;
+  cursor: pointer; margin-left: 4px;
+}
+.md-ep-btn:hover { background: rgba(255,255,255,0.15); }
+.md-ep-seasons {
+  max-height: 260px; overflow-y: auto; border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 8px; background: rgba(0,0,0,0.2);
+}
+.md-ep-season { border-bottom: 1px solid rgba(255,255,255,0.06); }
+.md-ep-season:last-child { border-bottom: none; }
+.md-ep-season-hdr {
+  display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+  cursor: pointer; font-size: 13px; color: #ddd; user-select: none;
+}
+.md-ep-season-hdr:hover { background: rgba(255,255,255,0.05); }
+.md-ep-arrow { font-size: 10px; color: #888; transition: transform 0.15s; }
+.md-ep-arrow.open { transform: rotate(90deg); }
+.md-ep-count { margin-left: auto; color: #888; font-size: 12px; font-weight: 400; }
+.md-ep-list { display: none; padding: 2px 0; }
+.md-ep-list.open { display: block; }
+.md-ep-row {
+  display: flex; align-items: center; gap: 8px; padding: 4px 12px 4px 28px;
+  font-size: 12px; cursor: pointer; user-select: none; color: #ccc;
+}
+.md-ep-row:hover { background: rgba(255,255,255,0.04); }
+.md-ep-row input[type="checkbox"] { margin: 0; flex-shrink: 0; }
+.md-ep-num { color: #888; min-width: 48px; }
+.md-ep-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.md-ep-date { color: #666; font-size: 11px; }

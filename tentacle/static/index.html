@@ -696,6 +696,31 @@ td.primary { color: var(--text); font-weight: 500; }
 
 .modal-footer { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
 
+/* ── Episode Picker ── */
+.ep-picker-seasons { max-height: 300px; overflow-y: auto; border: 1px solid var(--bg3); border-radius: 8px; }
+.ep-picker-season { border-bottom: 1px solid var(--bg3); }
+.ep-picker-season:last-child { border-bottom: none; }
+.ep-picker-season-header {
+  display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer;
+  background: var(--bg2); user-select: none; font-size: 13px; font-weight: 500;
+}
+.ep-picker-season-header:hover { background: var(--bg3); }
+.ep-picker-season-header .ep-arrow { transition: transform 0.15s; font-size: 10px; color: var(--text3); }
+.ep-picker-season-header .ep-arrow.open { transform: rotate(90deg); }
+.ep-picker-season-header .ep-count { color: var(--text3); font-weight: 400; font-size: 12px; margin-left: auto; }
+.ep-picker-episodes { display: none; padding: 4px 0; }
+.ep-picker-episodes.open { display: block; }
+.ep-picker-ep {
+  display: flex; align-items: center; gap: 8px; padding: 5px 12px 5px 28px;
+  font-size: 12px; cursor: pointer; user-select: none;
+}
+.ep-picker-ep:hover { background: var(--bg2); }
+.ep-picker-ep input[type="checkbox"] { margin: 0; flex-shrink: 0; }
+.ep-picker-ep .ep-num { color: var(--text3); min-width: 42px; }
+.ep-picker-ep .ep-title { color: var(--text); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ep-picker-ep .ep-date { color: var(--text3); font-size: 11px; }
+.ep-picker-season-check { display: flex; align-items: center; }
+
 /* ── Scrollbars ── */
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -2506,13 +2531,25 @@ td.primary { color: var(--text); font-weight: 500; }
     <div id="sonarr-extra-fields" style="display:none">
       <div class="form-group">
         <div class="form-label">Monitor</div>
-        <select class="form-input" id="add-sonarr-monitor">
+        <select class="form-input" id="add-sonarr-monitor" onchange="onMonitorPresetChange(this.value)">
           <option value="all">All Episodes</option>
           <option value="firstSeason">First Season</option>
           <option value="lastSeason">Last Season</option>
           <option value="pilot">Pilot Only</option>
+          <option value="custom">Pick Episodes...</option>
           <option value="none">None</option>
         </select>
+      </div>
+      <div id="episode-picker" style="display:none">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+          <div class="form-label" style="margin:0">Episodes</div>
+          <div style="display:flex;gap:6px">
+            <button class="btn btn-sm" onclick="epPickerSelectAll()" style="font-size:11px;padding:2px 8px">All</button>
+            <button class="btn btn-sm" onclick="epPickerSelectNone()" style="font-size:11px;padding:2px 8px">None</button>
+          </div>
+        </div>
+        <div id="episode-picker-seasons" class="ep-picker-seasons"></div>
+        <div id="episode-picker-loading" style="text-align:center;padding:16px;color:var(--text3);display:none">Loading seasons...</div>
       </div>
       <div class="form-group" style="display:flex;align-items:center;gap:8px">
         <input type="checkbox" id="add-sonarr-season-folder" checked>
