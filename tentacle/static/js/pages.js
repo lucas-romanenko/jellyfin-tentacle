@@ -1996,7 +1996,14 @@ const RULE_FIELDS = [
 
 const OP_LABELS = { contains: 'contains', equals: 'equals', greater_than: '>', less_than: '<' };
 
+const _LOCKED_SORT_PLAYLISTS = ['Recently Added Movies', 'Recently Added TV', 'Downloaded Movies', 'Downloaded TV'];
+
 function _sortDropdown(name) {
+  // Built-in playlists with forced sort show a locked label instead of a dropdown
+  if (_LOCKED_SORT_PLAYLISTS.includes(name)) {
+    return `<span style="font-size:11px;padding:3px 8px;background:var(--bg2);color:var(--text3);border:1px solid var(--border);border-radius:4px;white-space:nowrap"
+      title="Sort is locked for this playlist">Recently Added</span>`;
+  }
   const info = _smartlistSortCache[name] || { sort_by: 'releasedate', sort_order: 'Descending' };
   const val = info.sort_by + '_' + (info.sort_order === 'Ascending' ? 'asc' : 'desc');
   const opts = [
