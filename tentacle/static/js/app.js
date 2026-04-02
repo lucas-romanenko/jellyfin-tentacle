@@ -1180,6 +1180,8 @@ function closeModal(id) {
     if (inner && inner.style.display === 'none') {
       el.style.display = 'none';
       inner.style.display = '';
+      el.style.backdropFilter = '';
+      el.style.webkitBackdropFilter = '';
     }
   });
 }

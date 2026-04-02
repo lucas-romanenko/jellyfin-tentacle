@@ -1036,11 +1036,11 @@ let _vodEpisodes = {};  // {season: [ep1, ep2, ...]} from VOD scan
 let _dlEpisodes = {};   // {season: [ep1, ep2, ...]} from Sonarr (hasFile=true)
 
 function switchToDownloadMore(tmdbId, title, year, posterPath) {
-  // Hide the detail modal box but keep its dark overlay backdrop visible
-  // so there's no flash when the Download More modal fades in on top
+  // Keep detail overlay as plain dark backdrop (no blur — would blur new modal)
   const detail = document.getElementById('modal-media-detail');
   detail.querySelector('.modal').style.display = 'none';
-  // Open Download More on top — its overlay stacks over the detail backdrop
+  detail.style.backdropFilter = 'none';
+  detail.style.webkitBackdropFilter = 'none';
   showDownloadMoreModal(tmdbId, title, year, posterPath);
 }
 
