@@ -87,7 +87,7 @@ def _get_jellyfin_user_id(db: Session, user_id: int) -> str:
 
 def _build_config(name: str, tag: str, media_types: list, folder_id: str,
                   enabled: bool = True, jellyfin_user_id: str = "",
-                  expressions: list = None) -> dict:
+                  expressions: list = None, sort_by: str = "ReleaseDate") -> dict:
     user_playlists = [{"UserId": jellyfin_user_id, "JellyfinPlaylistId": ""}] if jellyfin_user_id else []
 
     if expressions is None:
@@ -110,7 +110,7 @@ def _build_config(name: str, tag: str, media_types: list, folder_id: str,
         "Order": {
             "SortOptions": [
                 {
-                    "SortBy": "ReleaseDate",
+                    "SortBy": sort_by,
                     "SortOrder": "Descending",
                 }
             ]
@@ -191,16 +191,16 @@ def get_desired_smartlists(db: Session, user_id: int = None) -> list:
             smartlists.append({"name": tag, "tag": tag, "media_type": ["Series"], "enabled": True, "source": "auto"})
             existing_tags.add(tag)
 
-    # Built-in playlists
+    # Built-in playlists — (name, media_types, sort_by)
     builtin_map = {
-        "builtin:recently_added_movies": ("Recently Added Movies", ["Movie"]),
-        "builtin:recently_added_tv": ("Recently Added TV", ["Series"]),
-        "builtin:downloaded_movies": ("Downloaded Movies", ["Movie"]),
-        "builtin:downloaded_tv": ("Downloaded TV", ["Series"]),
+        "builtin:recently_added_movies": ("Recently Added Movies", ["Movie"], "DateCreated"),
+        "builtin:recently_added_tv": ("Recently Added TV", ["Series"], "DateCreated"),
+        "builtin:downloaded_movies": ("Downloaded Movies", ["Movie"], "DateCreated"),
+        "builtin:downloaded_tv": ("Downloaded TV", ["Series"], "DateCreated"),
     }
-    for bkey, (bname, bmedia) in builtin_map.items():
+    for bkey, (bname, bmedia, bsort) in builtin_map.items():
         if toggles.get(bkey) and bname not in existing_tags:
-            smartlists.append({"name": bname, "tag": bname, "media_type": bmedia, "enabled": True, "source": "auto"})
+            smartlists.append({"name": bname, "tag": bname, "media_type": bmedia, "enabled": True, "source": "auto", "sort_by": bsort})
             existing_tags.add(bname)
 
     # Per-user downloads playlist — dynamic tag based on user display name
@@ -396,17 +396,23 @@ def sync_smartlists(db: Session, user_id: int = None) -> dict:
         media_types = sl["media_type"]
         enabled = sl["enabled"]
         expressions = sl.get("expressions")  # None for tag-based, list for native
+        forced_sort = sl.get("sort_by")  # Built-in playlists can force a sort
 
         if name in existing:
             # Update existing
             folder, old_data = existing[name]
             folder_id = old_data.get("Id", str(uuid.uuid4()))
-            config = _build_config(name, tag, media_types, folder_id, enabled, jf_user_id, expressions=expressions)
+            config = _build_config(name, tag, media_types, folder_id, enabled, jf_user_id, expressions=expressions,
+                                   sort_by=forced_sort or "ReleaseDate")
 
             # Preserve user-managed fields from existing config
             for field in PRESERVED_FIELDS:
                 if field in old_data:
                     config[field] = old_data[field]
+
+            # Built-in playlists with forced sort always override
+            if forced_sort:
+                config["Order"] = {"SortOptions": [{"SortBy": forced_sort, "SortOrder": "Descending"}]}
 
             # Preserve UserPlaylists entries that have a linked JellyfinPlaylistId
             old_playlists = old_data.get("UserPlaylists", [])
@@ -430,7 +436,8 @@ def sync_smartlists(db: Session, user_id: int = None) -> dict:
             folder = smartlists_path / folder_id
             folder.mkdir(parents=True, exist_ok=True)
 
-            config = _build_config(name, tag, media_types, folder_id, enabled, jf_user_id, expressions=expressions)
+            config = _build_config(name, tag, media_types, folder_id, enabled, jf_user_id, expressions=expressions,
+                                   sort_by=forced_sort or "ReleaseDate")
 
             # Create private Jellyfin playlist for this user
             if jf_user_id and jellyfin_url and jellyfin_key:

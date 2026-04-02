@@ -1753,8 +1753,8 @@ function renderHomeRows() {
       <span style="color:var(--text3);font-size:11px;width:24px;text-align:center">${i + 1}</span>
       <span style="color:var(--text3);font-size:16px;cursor:grab">&#x2630;</span>
       <span style="flex:1;font-size:13px;color:var(--text)">${row.display_name}</span>
-      ${badge}
       ${maxItemsInput}
+      ${badge}
       <button onclick="event.stopPropagation();removeHomeRowByKey('${key}')"
         style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:14px;padding:4px 6px;border-radius:4px"
         onmouseover="this.style.color='var(--red)'" onmouseout="this.style.color='var(--text3)'"
