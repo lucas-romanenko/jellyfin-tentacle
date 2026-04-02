@@ -102,12 +102,40 @@ class SonarrService:
                 timeout=15,
             )
             if r.status_code < 400:
-                return r.json()
+                series_data = r.json()
+                # For partial monitor options, unmonitor the series after the initial
+                # search so Sonarr doesn't keep grabbing future episodes.
+                # "all" and "future" want ongoing monitoring; everything else is a
+                # one-time grab (pilot, first/last season, none).
+                if monitor not in ("all", "future"):
+                    self._unmonitor_series(series_data["id"])
+                return series_data
             logger.error(f"Sonarr rejected tmdb:{tmdb_id} — HTTP {r.status_code}: {r.text}")
             return None
         except Exception as e:
             logger.error(f"Failed to add tmdb:{tmdb_id} to Sonarr: {e}")
             return None
+
+    def _unmonitor_series(self, series_id: int):
+        """Set series monitored=false so Sonarr stops watching for new episodes."""
+        try:
+            r = self.session.get(f"{self.url}/api/v3/series/{series_id}", timeout=10)
+            if r.status_code >= 400:
+                logger.warning(f"Sonarr: failed to fetch series {series_id} for unmonitor")
+                return
+            series = r.json()
+            series["monitored"] = False
+            r = self.session.put(
+                f"{self.url}/api/v3/series/{series_id}",
+                json=series,
+                timeout=10,
+            )
+            if r.status_code < 400:
+                logger.info(f"Sonarr: unmonitored series {series_id} ({series.get('title', '?')})")
+            else:
+                logger.warning(f"Sonarr: failed to unmonitor series {series_id} — HTTP {r.status_code}")
+        except Exception as e:
+            logger.warning(f"Sonarr: failed to unmonitor series {series_id}: {e}")
 
     def get_root_folders(self) -> list:
         try:
