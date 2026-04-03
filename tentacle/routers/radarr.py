@@ -328,7 +328,9 @@ def radarr_webhook(payload: dict, db: Session = Depends(get_db)):
 
             # Refresh SmartList playlists so the movie appears immediately
             # in IMDB TOP 250, Downloaded Movies, etc.
+            # Delay lets Jellyfin index the newly-pushed tags before we query them
             try:
+                time.sleep(3)
                 from services.smartlists import refresh_smartlist_playlists
                 refresh_smartlist_playlists(db)
                 logger.info(f"[Radarr webhook] Refreshed SmartList playlists after processing '{title}'")

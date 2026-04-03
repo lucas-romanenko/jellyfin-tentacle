@@ -1973,6 +1973,16 @@ async function toggleAutoPlaylist(key) {
   const checkbox = el.querySelector(`input[onchange*="${CSS.escape(key)}"]`);
   const enabled = checkbox ? checkbox.checked : true;
 
+  // Optimistically update toggle visual
+  if (checkbox) {
+    const label = checkbox.closest('label');
+    if (label) {
+      const spans = label.querySelectorAll('span');
+      if (spans[0]) spans[0].style.background = enabled ? 'var(--accent)' : 'var(--bg3)';
+      if (spans[1]) spans[1].style.left = enabled ? '18px' : '2px';
+    }
+  }
+
   try {
     const r = await api('/api/smartlists/auto-playlists/toggle', {
       method: 'POST',

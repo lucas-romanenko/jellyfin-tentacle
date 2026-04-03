@@ -166,6 +166,7 @@ public class TentacleDiscoverController : ControllerBase
 
     /// <summary>
     /// Proxies item detail request to Tentacle (for modal metadata).
+    /// For series, enriches with following/sonarr state from library endpoint.
     /// </summary>
     [HttpGet("Detail/{mediaType}/{tmdbId}")]
     [Authorize]
@@ -179,13 +180,83 @@ public class TentacleDiscoverController : ControllerBase
 
         try
         {
-            var response = await HttpClient.GetStringAsync($"{baseUrl}/api/discover/detail/{mediaType}/{tmdbId}");
-            return Content(response, "application/json");
+            var detailTask = HttpClient.GetStringAsync($"{baseUrl}/api/discover/detail/{mediaType}/{tmdbId}");
+
+            // For series, also fetch library data to get following/sonarr state
+            Task<string>? libraryTask = null;
+            if (mediaType == "series")
+            {
+                libraryTask = HttpClient.GetStringAsync(
+                    AppendUserId($"{baseUrl}/api/library/item/series/{tmdbId}")).ContinueWith(t =>
+                    t.IsCompletedSuccessfully ? t.Result : "");
+            }
+
+            var detailJson = await detailTask;
+
+            if (libraryTask != null)
+            {
+                var libraryJson = await libraryTask;
+                if (!string.IsNullOrEmpty(libraryJson))
+                {
+                    try
+                    {
+                        using var detailDoc = JsonDocument.Parse(detailJson);
+                        using var libDoc = JsonDocument.Parse(libraryJson);
+                        var merged = new Dictionary<string, JsonElement>();
+
+                        foreach (var prop in detailDoc.RootElement.EnumerateObject())
+                            merged[prop.Name] = prop.Value.Clone();
+
+                        // Add following and status from library data
+                        if (libDoc.RootElement.TryGetProperty("following", out var following))
+                            merged["following"] = following.Clone();
+                        if (libDoc.RootElement.TryGetProperty("status", out var status))
+                            merged["series_status"] = status.Clone();
+
+                        var result = JsonSerializer.Serialize(merged);
+                        return Content(result, "application/json");
+                    }
+                    catch
+                    {
+                        // If merge fails, return detail as-is
+                    }
+                }
+            }
+
+            return Content(detailJson, "application/json");
         }
         catch (Exception ex)
         {
             _logger.LogWarning("[Tentacle Discover] Failed to fetch detail: {Error}", ex.Message);
             return NotFound();
+        }
+    }
+
+    /// <summary>
+    /// Proxies follow/unfollow toggle for a series to Tentacle.
+    /// </summary>
+    [HttpPost("Follow/{tmdbId}")]
+    [Authorize]
+    public async Task<ActionResult> ToggleFollow(int tmdbId, [FromBody] JsonElement body)
+    {
+        var baseUrl = GetTentacleUrl();
+        if (string.IsNullOrEmpty(baseUrl))
+        {
+            return BadRequest("Tentacle URL not configured");
+        }
+
+        try
+        {
+            var content = new StringContent(body.GetRawText(), System.Text.Encoding.UTF8, "application/json");
+            var response = await HttpClient.PostAsync(
+                AppendUserId($"{baseUrl}/api/library/follow/{tmdbId}"), content);
+            var result = await response.Content.ReadAsStringAsync();
+            return new ContentResult { Content = result, ContentType = "application/json", StatusCode = (int)response.StatusCode };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("[Tentacle Discover] Failed to toggle follow: {Error}", ex.Message);
+            return StatusCode(500, new { detail = ex.Message });
         }
     }
 

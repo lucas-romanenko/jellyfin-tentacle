@@ -296,8 +296,9 @@ def sonarr_webhook(payload: dict, db: Session = Depends(get_db)):
                         f"after {max_attempts} attempts — tags will be pushed on next scheduled scan"
                     )
 
-            # Refresh SmartList playlists
+            # Refresh SmartList playlists (delay lets Jellyfin index the new tags)
             try:
+                time.sleep(3)
                 from services.smartlists import refresh_smartlist_playlists
                 refresh_smartlist_playlists(db)
                 logger.info(f"[Sonarr webhook] Refreshed SmartList playlists after processing '{title}'")

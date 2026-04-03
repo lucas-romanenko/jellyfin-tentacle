@@ -8,6 +8,7 @@ import uuid
 import json
 import shutil
 import logging
+import threading
 import requests
 from pathlib import Path
 from sqlalchemy.orm import Session
@@ -15,6 +16,9 @@ from sqlalchemy.orm import Session
 from models.database import get_setting, TagRule, TentacleUser, DownloadRequest
 
 logger = logging.getLogger(__name__)
+
+# Prevent concurrent playlist refreshes (webhooks can fire simultaneously)
+_playlist_refresh_lock = threading.Lock()
 
 PRESERVED_FIELDS = ["LastRefreshed", "DateCreated", "ItemCount", "Order"]
 
@@ -779,13 +783,23 @@ def refresh_smartlist_playlists(db: Session, user_id: int = None) -> dict:
     If user_id is None, refreshes for all users.
     Returns {processed, created, updated, errors}.
     """
+    if not _playlist_refresh_lock.acquire(blocking=False):
+        logger.info("Playlist refresh already in progress, skipping")
+        return {"processed": 0, "created": 0, "updated": 0, "errors": 0}
+    try:
+        return _refresh_smartlist_playlists_inner(db, user_id)
+    finally:
+        _playlist_refresh_lock.release()
+
+
+def _refresh_smartlist_playlists_inner(db: Session, user_id: int = None) -> dict:
     if user_id is None:
         users = db.query(TentacleUser).all()
         if not users:
             return {"processed": 0, "created": 0, "updated": 0, "errors": 0}
         combined = {"processed": 0, "created": 0, "updated": 0, "errors": 0}
         for u in users:
-            result = refresh_smartlist_playlists(db, user_id=u.id)
+            result = _refresh_smartlist_playlists_inner(db, user_id=u.id)
             for key in ("processed", "created", "updated", "errors"):
                 combined[key] += result.get(key, 0)
         return combined
