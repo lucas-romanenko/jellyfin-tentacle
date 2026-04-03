@@ -282,6 +282,30 @@ public class TentacleHomeController : ControllerBase
     }
 
     /// <summary>
+    /// Serves the Tentacle logo image (embedded resource).
+    /// </summary>
+    [HttpGet("/Tentacle/logo.png")]
+    public ActionResult GetLogo()
+    {
+        var assembly = typeof(TentacleHomeController).Assembly;
+        var name = assembly.GetManifestResourceNames()
+            .FirstOrDefault(n => n.EndsWith("tentacle-logo.png"));
+
+        if (name == null)
+        {
+            return NotFound();
+        }
+
+        var stream = assembly.GetManifestResourceStream(name);
+        if (stream == null)
+        {
+            return NotFound();
+        }
+
+        return File(stream, "image/png");
+    }
+
+    /// <summary>
     /// Serves the Tentacle homepage CSS (injected into index.html).
     /// </summary>
     [HttpGet("/Tentacle/home.css")]

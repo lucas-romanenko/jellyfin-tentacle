@@ -2,6 +2,44 @@
 /* Injected into index.html via Harmony patch */
 /* Visual style adapted from jellyfin-plugin-media-bar + jellyfin-plugin-home-sections */
 
+/* ── Tentacle Logo Branding ────────────────────────────────────────── */
+
+/* Header home button — replace Jellyfin icon with Tentacle logo */
+.headerHomeButton {
+  background: url('/Tentacle/logo.png') no-repeat center / contain !important;
+  width: 8em !important;
+  height: 2.4em !important;
+  font-size: 0 !important;
+  color: transparent !important;
+}
+.headerHomeButton .material-icons,
+.headerHomeButton .md-icon {
+  display: none !important;
+}
+
+/* Admin sidebar logo */
+.adminDrawerLogo img {
+  content: url('/Tentacle/logo.png') !important;
+  max-height: 2.5em;
+}
+
+/* Splash/loading screen logo */
+.splashLogo {
+  background: url('/Tentacle/logo.png') no-repeat center / contain !important;
+  height: 8em !important;
+  width: 20em !important;
+  margin: 0 auto !important;
+}
+
+/* Page title logo on home page */
+.pageTitleWithDefaultLogo {
+  background-image: url('/Tentacle/logo.png') !important;
+  background-size: contain !important;
+  background-repeat: no-repeat !important;
+  width: 10em !important;
+  height: 2.4em !important;
+}
+
 /* ── Loading ────────────────────────────────────────────────────────── */
 .mh-loading {
   display: flex;
