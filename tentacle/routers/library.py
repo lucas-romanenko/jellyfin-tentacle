@@ -310,7 +310,10 @@ def get_tmdb_detail(media_type: str, tmdb_id: int, db: Session = Depends(get_db)
 @router.get("/following")
 def get_following_series(db: Session = Depends(get_db)):
     """Return all series being followed for new episodes."""
-    series = db.query(Series).filter(Series.sonarr_monitored == True).order_by(Series.title).all()
+    series = db.query(Series).filter(
+        Series.sonarr_monitored == True,
+        or_(Series.status == None, ~Series.status.in_(["Ended", "Canceled"])),
+    ).order_by(Series.title).all()
     return [
         {
             "tmdb_id": s.tmdb_id,

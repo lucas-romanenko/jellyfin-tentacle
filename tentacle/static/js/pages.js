@@ -1405,10 +1405,11 @@ async function _loadSeriesEpisodes(tmdbId, seriesData) {
     const countClass = isComplete ? 'ep-count-full' : (totalOwned > 0 ? 'ep-count-partial' : '');
     const downloadMoreBtn = !isComplete ? `<button class="btn btn-primary btn-sm" onclick="closeModal('modal-media-detail');showDownloadMoreModal(${tmdbId},'${escapeJS(seriesData.title||'')}','${escapeJS(seriesData.year||'')}','${escapeJS(seriesData.poster_path||'')}')">Download More</button>` : '';
 
-    // Following toggle — show if series is in Sonarr (has sonarr_path or sonarr source)
+    // Following toggle — only for ongoing series in Sonarr (not ended/canceled)
     const inSonarr = sonarrData.in_sonarr;
     const isFollowing = seriesData.following || false;
-    const followToggle = inSonarr ? `<label class="detail-follow-toggle" title="Auto-download new episodes">
+    const seriesEnded = ['Ended', 'Canceled'].includes(seriesData.status);
+    const followToggle = inSonarr && !seriesEnded ? `<label class="detail-follow-toggle" title="Auto-download new episodes">
       <input type="checkbox" ${isFollowing ? 'checked' : ''} onchange="toggleFollow(${tmdbId}, this.checked)">
       <span class="detail-follow-label">Following</span>
     </label>` : '';
