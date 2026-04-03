@@ -649,6 +649,20 @@ def write_home_config(db: Session, user_id: int = None) -> dict:
         logger.error(f"Failed to write home config: {e}")
         return {}
 
+    # If user has Tentacle home rows, disable Jellyfin's built-in home sections
+    # to prevent overlap between the two home screens
+    if rows:
+        try:
+            from services.jellyfin import JellyfinService
+            jellyfin_url = get_setting(db, "jellyfin_url", "")
+            jellyfin_key = get_setting(db, "jellyfin_api_key", "")
+            jf_user_id = _get_jellyfin_user_id(db, user_id)
+            if jellyfin_url and jellyfin_key and jf_user_id:
+                jf = JellyfinService(jellyfin_url, jellyfin_key, jf_user_id)
+                jf.disable_home_sections()
+        except Exception as e:
+            logger.debug(f"Could not disable Jellyfin home sections: {e}")
+
     return config
 
 

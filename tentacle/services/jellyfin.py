@@ -516,6 +516,53 @@ class JellyfinService:
         logger.warning(f"[Jellyfin] Library scan wait timed out after {max_wait}s")
         return False
 
+    def disable_home_sections(self) -> bool:
+        """Set all Jellyfin home sections to 'none' for the current user.
+
+        This prevents overlap between Tentacle's managed home screen
+        and Jellyfin's built-in home sections.
+        """
+        if not self.user_id:
+            return False
+
+        path = "/DisplayPreferences/usersettings"
+        params = {"userId": self.user_id, "client": "emby"}
+        data = self._get(path, params=params)
+        if not data:
+            return False
+
+        custom_prefs = data.get("CustomPrefs", {})
+
+        # Check if already all "none"
+        already_disabled = all(
+            custom_prefs.get(f"homesection{i}") in ("none", "")
+            for i in range(10)
+        )
+        if already_disabled:
+            return True
+
+        # Set all home sections to "none"
+        for i in range(10):
+            custom_prefs[f"homesection{i}"] = "none"
+        data["CustomPrefs"] = custom_prefs
+
+        try:
+            r = self.session.post(
+                f"{self.url}{path}",
+                params=params,
+                json=data,
+                timeout=15,
+            )
+            self._check_401(r, path)
+            if r.status_code < 400:
+                logger.info(f"[Jellyfin] Disabled built-in home sections for user {self.user_id}")
+                return True
+            logger.warning(f"[Jellyfin] Failed to disable home sections: {r.status_code}")
+            return False
+        except Exception as e:
+            logger.warning(f"[Jellyfin] Failed to disable home sections: {e}")
+            return False
+
 
 def push_tags_to_jellyfin(db, log_prefix: str = "Pipeline") -> int:
     """Push tags from Tentacle DB to Jellyfin for all movies and series.
