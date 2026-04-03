@@ -14,9 +14,9 @@
 
 ## What is Tentacle?
 
-Tentacle is a dashboard + Jellyfin plugin + Android TV app that adds IPTV live TV, VOD libraries from your IPTV provider, smart playlists, a Netflix-style home screen with hero spotlight, content discovery, and real-time download tracking — all from a single Docker container. No external databases, no message queues, no build steps.
+Tentacle is a unified media library manager for Jellyfin — a dashboard, Jellyfin plugin, and Android TV app that brings together IPTV live TV, VOD content from your IPTV provider, and your personal media library into one organized, tagged system. Content from every source is automatically tagged and matched to TMDB metadata, then surfaced through smart playlists and a Netflix-style home screen with a hero spotlight banner. One Docker container, no external databases, no build steps.
 
-Add your IPTV provider and your Jellyfin home screen fills with curated rows, a hero banner with Ken Burns crossfade, and a Discover tab showing what's trending. Connect Radarr and Sonarr, and downloads are automatically tagged, organized into playlists, and surfaced on the home screen. Multiple Jellyfin users get their own independent home screen layout, playlists, and content preferences.
+Add your IPTV provider and your Jellyfin home screen fills with curated rows, a hero banner with Ken Burns crossfade, and a Discover tab showing what's trending. Connect Radarr and Sonarr, and new content is automatically tagged, organized into playlists, and surfaced on the home screen. Follow series to track new episodes as they release. Multiple Jellyfin users get their own independent home screen layout, playlists, and content preferences.
 
 ---
 
@@ -30,30 +30,31 @@ Add your IPTV provider and your Jellyfin home screen fills with curated rows, a 
 - Stream proxy handles provider redirects and HLS-to-MPEG-TS conversion
 
 ### 🎬 VOD Library from IPTV
-- Your IPTV provider's movies and series appear in Jellyfin with posters, plots, and correct titles
-- Automatic TMDB matching — no manual metadata cleanup
-- `.strm` + `.nfo` files generated for each title
+- Your IPTV provider's movies and series appear in Jellyfin with full metadata — posters, plots, ratings, genres
+- Automatic TMDB matching and tagging — every title is identified, tagged by source, and ready for playlists
 - English-language filtering with smart country/prefix detection
 
 ### 🏷️ Smart Playlists
-- Auto playlists generated from synced content — toggle on the ones you want in Jellyfin
+- All content is tagged by source (Netflix, Amazon, HBO, etc.), type, and list membership — playlists are built from these tags
+- Auto playlists generated from your content — toggle on the ones you want in Jellyfin
 - Create custom playlists with filters: genre, rating, year, runtime, source
 - Native Jellyfin queries for genre/rating playlists — sees your entire library, not just IPTV content
 - Per-playlist sort order (release date, name, rating, recently added, random)
 - Auto-generated playlist artwork via Logo.dev
+- Playlists become rows on your Netflix-style home screen — drag to reorder, mix with native Jellyfin sections
 
 ### 🔍 Content Discovery
 - Trending, popular, and upcoming titles from TMDB
 - Subscribe to IMDb, Trakt, and Letterboxd lists — auto-generate playlists from them
 - See what's missing from your library and add to Radarr/Sonarr with quality profile selection
-- "In Library" and "Downloading X%" badges on discover cards
+- Live status badges — "In Library", progress percentage, or "Add" for missing content
 - Discover tab injected directly into Jellyfin via the companion plugin
 
-### 📊 Activity Tracking
-- Real-time download queue from Radarr and Sonarr with progress bars
-- Unreleased monitored movies with countdown badges
+### 📊 Activity & Tracking
+- Real-time progress tracking for content being added to your library
+- Unreleased titles you're following shown with countdown badges
 - Activity tab in both Jellyfin (web UI) and the Android TV app
-- Polls every 3 seconds for live progress updates
+- Polls every 3 seconds for live updates
 
 ### 🏠 Netflix-Style Home Screen
 - Drag-and-drop row ordering for the Jellyfin home page
@@ -69,15 +70,12 @@ Add your IPTV provider and your Jellyfin home screen fills with curated rows, a 
 - Owner protection — the first user can't have admin removed
 
 ### 📥 Radarr & Sonarr Integration
-- Automatic library scanning via webhooks — new downloads tagged and organized instantly
-- NFO files written for all downloaded content
-- Tags pushed to Jellyfin via API for `.mkv` files (Jellyfin ignores NFO tags for real video files)
-- Duplicate detection when Radarr downloads content that already exists as VOD
-- Quality profile selection when adding content from Discover
-- **Following** — track which series auto-download new episodes. Bidirectional sync with Sonarr's monitoring. Following tab in Library shows all tracked series.
-- **Download More Episodes** — add missing episodes from VOD series to Sonarr. Episode picker shows VOD and downloaded episodes side by side. Sonarr downloads into the same folder for a unified Jellyfin entry.
-- **Manage Episodes** — change which episodes are monitored for series already in Sonarr
-- Smart episode counts — unaired episodes excluded from totals, shown separately as "upcoming"
+- New content automatically tagged, organized into playlists, and surfaced on the home screen
+- Webhook-driven — library updates in real time as content arrives
+- Duplicate detection when content exists in both VOD and your personal library
+- **Unified series view** — VOD episodes and personal library episodes merge into one Jellyfin entry. Fill in missing episodes from a VOD series with per-episode selection.
+- **Following** — track series and automatically get new episodes as they release. Following tab in Library shows everything you're tracking.
+- **Episode management** — per-episode control over what's monitored, with smart counts that distinguish aired episodes from upcoming ones
 
 ### ⚡ Lightweight
 - Single Docker container — FastAPI + SQLite + APScheduler
@@ -99,8 +97,8 @@ tentacle:
     - 8888:8888
   volumes:
     - ./tentacle-data:/data                        # Required — database and config
-    - /your/movies:/media/movies                   # Radarr movie downloads
-    - /your/shows:/media/shows                     # Sonarr TV downloads
+    - /your/movies:/media/movies                   # Radarr movies library
+    - /your/shows:/media/shows                     # Sonarr TV library
     - /your/vod-movies:/media/vod/movies           # IPTV VOD movies
     - /your/vod-shows:/media/vod/shows             # IPTV VOD series
   restart: unless-stopped
@@ -171,7 +169,7 @@ The Android TV app is in a [separate repository](https://github.com/lucas-romane
 │  │  Tentacle Plugin                        │    │
 │  │  • Custom home screen rows & hero       │    │
 │  │  • Discover tab (trending/popular)      │    │
-│  │  • Activity tab (downloads/upcoming)    │    │
+│  │  • Activity tab (progress/upcoming)     │    │
 │  │  • Injects CSS/JS via Harmony patch     │    │
 │  └──────────────────┬──────────────────────┘    │
 │                     │ fetches config via API      │
@@ -187,8 +185,8 @@ The Android TV app is in a [separate repository](https://github.com/lucas-romane
 │  • Live TV with HDHomeRun emulation             │
 │  • Smart playlists & tag engine                 │
 │  • Content discovery (TMDB)                     │
-│  • Activity tracking (Radarr/Sonarr queues)     │
-│  • Following & episode management (Sonarr)      │
+│  • Activity tracking & progress monitoring       │
+│  • Series following & episode management        │
 │  • Radarr & Sonarr webhook integration          │
 └──────┬──────────┬──────────┬───────────┬────────┘
        │          │          │           │
@@ -200,7 +198,7 @@ The Android TV app is in a [separate repository](https://github.com/lucas-romane
 │  • Hero spotlight with auto-rotate              │
 │  • Tentacle home rows + Leanback integration    │
 │  • Discover tab with TMDB browsing              │
-│  • Activity tab with live download progress     │
+│  • Activity tab with live progress tracking     │
 │  • Connects to Tentacle plugin endpoints        │
 └─────────────────────────────────────────────────┘
 ```
