@@ -1829,7 +1829,7 @@ td.primary { color: var(--text); font-weight: 500; }
 
         <div id="lib-tab-following" style="display:none">
           <p style="font-size:13px;color:var(--text3);margin-bottom:16px">Shows that will automatically download new episodes when they air.</p>
-          <div id="following-grid" class="lib-grid"></div>
+          <div id="following-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px"></div>
           <div id="following-empty" class="empty-state" style="display:none"><p>No shows being followed yet. Add a show to Sonarr with "All Episodes (including future)" or enable following from the show detail modal.</p></div>
         </div><!-- /lib-tab-following -->
 
