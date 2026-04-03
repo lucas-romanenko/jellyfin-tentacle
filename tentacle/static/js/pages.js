@@ -897,14 +897,29 @@ function _updateSeasonStatus(seasonNum, totalEps) {
   }
 }
 
-function epPickerSelectAll() {
+async function epPickerSelectAll() {
+  // Expand all seasons so lazy-loaded episodes are rendered
+  const seasons = document.querySelectorAll('#episode-picker-seasons .ep-picker-season');
+  for (const s of seasons) {
+    const sn = parseInt(s.dataset.season);
+    const list = document.getElementById(`ep-list-${sn}`);
+    if (list && !list.classList.contains('open')) {
+      await toggleSeasonAccordion(sn);
+    }
+  }
   document.querySelectorAll('#episode-picker-seasons input[type="checkbox"]:not(:disabled)').forEach(cb => cb.checked = true);
-  document.querySelectorAll('#episode-picker-seasons .ep-picker-season-check').forEach(cb => cb.checked = true);
 }
 
-function epPickerSelectNone() {
+async function epPickerSelectNone() {
+  const seasons = document.querySelectorAll('#episode-picker-seasons .ep-picker-season');
+  for (const s of seasons) {
+    const sn = parseInt(s.dataset.season);
+    const list = document.getElementById(`ep-list-${sn}`);
+    if (list && !list.classList.contains('open')) {
+      await toggleSeasonAccordion(sn);
+    }
+  }
   document.querySelectorAll('#episode-picker-seasons input[type="checkbox"]:not(:disabled)').forEach(cb => cb.checked = false);
-  document.querySelectorAll('#episode-picker-seasons .ep-picker-season-check').forEach(cb => cb.checked = false);
 }
 
 function _getSelectedEpisodes() {

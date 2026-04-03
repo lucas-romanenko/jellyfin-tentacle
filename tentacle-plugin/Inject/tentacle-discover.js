@@ -505,6 +505,7 @@
       var monitorSelect = isSeries
         ? '<select id="mdMonitorSelect" class="md-select">' +
             '<option value="all">All Episodes</option>' +
+            '<option value="future">Future Episodes</option>' +
             '<option value="firstSeason">First Season</option>' +
             '<option value="lastSeason">Last Season</option>' +
             '<option value="pilot">Pilot Only</option>' +
