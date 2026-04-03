@@ -46,6 +46,7 @@ Add your IPTV provider and your Jellyfin home screen fills with curated rows, a 
 - Trending, popular, and upcoming titles from TMDB
 - Subscribe to IMDb, Trakt, and Letterboxd lists — auto-generate playlists from them
 - See what's missing from your library and add to Radarr/Sonarr with quality profile selection
+- "In Library" and "Downloading X%" badges on discover cards
 - Discover tab injected directly into Jellyfin via the companion plugin
 
 ### 📊 Activity Tracking
@@ -73,6 +74,10 @@ Add your IPTV provider and your Jellyfin home screen fills with curated rows, a 
 - Tags pushed to Jellyfin via API for `.mkv` files (Jellyfin ignores NFO tags for real video files)
 - Duplicate detection when Radarr downloads content that already exists as VOD
 - Quality profile selection when adding content from Discover
+- **Following** — track which series auto-download new episodes. Bidirectional sync with Sonarr's monitoring. Following tab in Library shows all tracked series.
+- **Download More Episodes** — add missing episodes from VOD series to Sonarr. Episode picker shows VOD and downloaded episodes side by side. Sonarr downloads into the same folder for a unified Jellyfin entry.
+- **Manage Episodes** — change which episodes are monitored for series already in Sonarr
+- Smart episode counts — unaired episodes excluded from totals, shown separately as "upcoming"
 
 ### ⚡ Lightweight
 - Single Docker container — FastAPI + SQLite + APScheduler
@@ -118,7 +123,7 @@ Open `http://localhost:8888` — the setup wizard will guide you through connect
 1. **Jellyfin** — URL + API key (Dashboard → API Keys → Create) — *required*
 2. **TMDB** — works automatically with built-in key, or override with your own from [themoviedb.org](https://www.themoviedb.org/settings/api)
 3. **IPTV Provider** — add via the VOD page (optional)
-4. **Radarr / Sonarr** — URL + API key in Settings → Connections (optional)
+4. **Radarr / Sonarr** — URL + API key in Settings → Connections (optional). Set up webhooks in Radarr/Sonarr pointing to `http://<tentacle-ip>:8888/api/radarr/webhook` and `/api/sonarr/webhook` for real-time updates.
 5. **Check paths** — Settings → Library Paths to verify your volume mounts are correct
 6. **Playlists** — go to Jellyfin → Playlists tab to enable auto playlists from your synced content
 7. **Home Screen** — go to Jellyfin → Home Screen tab to set up the hero spotlight and playlist rows
@@ -183,6 +188,7 @@ The Android TV app is in a [separate repository](https://github.com/lucas-romane
 │  • Smart playlists & tag engine                 │
 │  • Content discovery (TMDB)                     │
 │  • Activity tracking (Radarr/Sonarr queues)     │
+│  • Following & episode management (Sonarr)      │
 │  • Radarr & Sonarr webhook integration          │
 └──────┬──────────┬──────────┬───────────┬────────┘
        │          │          │           │
