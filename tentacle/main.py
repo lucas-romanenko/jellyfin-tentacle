@@ -126,6 +126,29 @@ def run_scheduled_sync():
         except Exception as e:
             logger.error(f"TMDB cache cleanup failed: {e}")
 
+        # Per-user: sync smartlist configs + write home configs
+        logger.info("Syncing per-user playlists and home configs")
+        try:
+            from models.database import TentacleUser
+            from services.smartlists import sync_smartlists, write_home_config, migrate_global_smartlists_to_user
+            users = db.query(TentacleUser).all()
+            for user in users:
+                try:
+                    migrate_global_smartlists_to_user(db, user.id)
+                    sync_smartlists(db, user_id=user.id)
+                    write_home_config(db, user_id=user.id)
+                except Exception as e:
+                    logger.error(f"Per-user sync failed for user {user.id}: {e}")
+            # Notify plugin to clear caches once at end
+            try:
+                from services.smartlists import _notify_jellyfin_plugin
+                _notify_jellyfin_plugin(db)
+            except Exception:
+                pass
+            logger.info(f"Per-user sync complete for {len(users)} user(s)")
+        except Exception as e:
+            logger.error(f"Per-user sync failed: {e}")
+
         logger.info("Syncing playlist artwork")
         try:
             from routers.collections import sync_playlist_artwork

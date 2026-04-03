@@ -569,8 +569,9 @@ def write_home_config(db: Session, user_id: int = None) -> dict:
 
     # Set of playlist_ids from the disk scan (current truth)
     current_ids = {sl["playlist_id"] for sl in smartlists}
-    # Lookup for display names
+    # Lookup for display names and reverse lookup by name
     name_by_id = {sl["playlist_id"]: sl["name"] for sl in smartlists}
+    id_by_name = {sl["name"]: sl["playlist_id"] for sl in smartlists}
 
     # Start with existing rows (in their saved order)
     rows = []
@@ -582,6 +583,13 @@ def write_home_config(db: Session, user_id: int = None) -> dict:
             # Keep playlist rows that still exist on disk, ensure type field
             r["type"] = "playlist"
             r["display_name"] = name_by_id.get(r["playlist_id"], r["display_name"])
+            rows.append(r)
+        elif r.get("display_name") and r["display_name"] in id_by_name:
+            # Playlist was recreated with a new ID — remap the reference
+            new_id = id_by_name[r["display_name"]]
+            logger.info(f"Home config: remapping '{r['display_name']}' from {r.get('playlist_id')} to {new_id}")
+            r["playlist_id"] = new_id
+            r["type"] = "playlist"
             rows.append(r)
 
     # Safety check: if we'd drop more than half the playlist rows, something is wrong
@@ -601,8 +609,14 @@ def write_home_config(db: Session, user_id: int = None) -> dict:
         if r.get("type", "playlist") == "playlist":
             r.setdefault("max_items", home_row_limit)
 
-    # Hero: preserve existing pick only if its playlist still exists, otherwise disabled
+    # Hero: preserve existing pick, remap if playlist was recreated, disable if gone
     if existing_hero and existing_hero.get("playlist_id") in current_ids:
+        hero = existing_hero
+    elif existing_hero and existing_hero.get("display_name") and existing_hero["display_name"] in id_by_name:
+        # Hero playlist was recreated with a new ID — remap
+        new_id = id_by_name[existing_hero["display_name"]]
+        logger.info(f"Home config: remapping hero '{existing_hero['display_name']}' from {existing_hero.get('playlist_id')} to {new_id}")
+        existing_hero["playlist_id"] = new_id
         hero = existing_hero
     else:
         hero = {"enabled": False, "playlist_id": "", "display_name": "", "sort_by": "random", "sort_order": "Descending", "require_logo": True}
