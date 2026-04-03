@@ -198,6 +198,7 @@ class SonarrService:
                         "monitored": ep.get("monitored", False),
                         "title": ep.get("title", ""),
                         "hasFile": ep.get("hasFile", False),
+                        "airDateUtc": ep.get("airDateUtc"),
                     }
                     for ep in r.json()
                 ]

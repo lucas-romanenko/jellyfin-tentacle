@@ -1053,11 +1053,13 @@ async function confirmManageEpisodes() {
 let _downloadMoreTmdbId = null;
 let _vodEpisodes = {};  // {season: [ep1, ep2, ...]} from VOD scan
 let _dlEpisodes = {};   // {season: [ep1, ep2, ...]} from Sonarr (hasFile=true)
+let _unairedPerSeason = {};  // {season: count} unaired episodes from Sonarr
 
 async function showDownloadMoreModal(tmdbId, title, year, posterPath) {
   _downloadMoreTmdbId = tmdbId;
   _vodEpisodes = {};
   _dlEpisodes = {};
+  _unairedPerSeason = {};
   _epPickerSeasons = [];
   _epPickerLoaded = {};
 
@@ -1126,14 +1128,23 @@ async function showDownloadMoreModal(tmdbId, title, year, posterPath) {
       _vodEpisodes = vodData.episodes;
     }
 
-    // Build downloaded episodes map from Sonarr (skip VOD — Sonarr sees .strm as hasFile)
+    // Build downloaded episodes map and unaired counts from Sonarr
+    const now = new Date();
+    _unairedPerSeason = {};
     if (sonarrData.in_sonarr && sonarrData.episodes) {
       for (const ep of sonarrData.episodes) {
-        if (ep.hasFile && ep.seasonNumber > 0) {
-          const vodList = _vodEpisodes[String(ep.seasonNumber)] || _vodEpisodes[ep.seasonNumber] || [];
-          if (vodList.includes(ep.episodeNumber)) continue;
-          if (!_dlEpisodes[ep.seasonNumber]) _dlEpisodes[ep.seasonNumber] = [];
-          _dlEpisodes[ep.seasonNumber].push(ep.episodeNumber);
+        if (ep.seasonNumber > 0) {
+          // Track unaired episodes
+          if (ep.airDateUtc && new Date(ep.airDateUtc) > now) {
+            _unairedPerSeason[ep.seasonNumber] = (_unairedPerSeason[ep.seasonNumber] || 0) + 1;
+          }
+          // Track downloaded episodes (skip VOD — Sonarr sees .strm as hasFile)
+          if (ep.hasFile) {
+            const vodList = _vodEpisodes[String(ep.seasonNumber)] || _vodEpisodes[ep.seasonNumber] || [];
+            if (vodList.includes(ep.episodeNumber)) continue;
+            if (!_dlEpisodes[ep.seasonNumber]) _dlEpisodes[ep.seasonNumber] = [];
+            _dlEpisodes[ep.seasonNumber].push(ep.episodeNumber);
+          }
         }
       }
     }
@@ -1152,29 +1163,32 @@ function _renderSeasonsWithVod() {
     const sn = s.season_number;
     const airYear = s.air_date ? ` (${s.air_date.substring(0, 4)})` : '';
     const total = s.episode_count || 0;
+    const unaired = _unairedPerSeason[sn] || 0;
+    const aired = Math.max(0, total - unaired);
     const vodEps = _vodEpisodes[String(sn)] || _vodEpisodes[sn] || [];
     const dlEps = _dlEpisodes[String(sn)] || _dlEpisodes[sn] || [];
     const haveCount = new Set([...vodEps, ...dlEps]).size;
     let countText, countClass, checked;
     if (haveCount === 0) {
-      countText = `${total} ep`;
+      countText = `${aired} ep`;
       countClass = 'ep-count';
       checked = false;
-    } else if (haveCount >= total) {
-      countText = `${total}/${total}`;
+    } else if (haveCount >= aired) {
+      countText = `${aired}/${aired}`;
       countClass = 'ep-count ep-count-full';
       checked = true;
     } else {
-      countText = `${haveCount}/${total}`;
+      countText = `${haveCount}/${aired}`;
       countClass = 'ep-count ep-count-partial';
       checked = false;
     }
+    const unairedLabel = unaired > 0 ? ` <span style="color:var(--text3);font-size:11px">+${unaired} upcoming</span>` : '';
     return `<div class="ep-picker-season" data-season="${sn}">
       <div class="ep-picker-season-header" onclick="toggleSeasonAccordion(${sn})">
         <span class="ep-arrow" id="ep-arrow-${sn}">▶</span>
-        <input type="checkbox" class="ep-picker-season-check" ${checked ? 'checked' : ''} ${haveCount >= total && total > 0 ? 'disabled' : ''} onclick="event.stopPropagation();toggleSeasonAll(${sn}, this.checked)">
+        <input type="checkbox" class="ep-picker-season-check" ${checked ? 'checked' : ''} ${haveCount >= aired && aired > 0 ? 'disabled' : ''} onclick="event.stopPropagation();toggleSeasonAll(${sn}, this.checked)">
         <span>Season ${sn}${airYear}</span>
-        <span class="${countClass}">${countText}</span>
+        <span class="${countClass}">${countText}</span>${unairedLabel}
       </div>
       <div class="ep-picker-episodes" id="ep-list-${sn}"></div>
     </div>`;
@@ -1387,18 +1401,34 @@ async function _loadSeriesEpisodes(tmdbId, seriesData) {
       }
     }
 
-    _detailEpState = { vodEps, dlEps, sonarrEpMap, tmdbId, loaded: {} };
+    // Build per-season unaired counts from Sonarr air dates
+    const unairedPerSeason = {};
+    if (sonarrData.in_sonarr && sonarrData.episodes) {
+      const now = new Date();
+      for (const ep of sonarrData.episodes) {
+        if (ep.seasonNumber > 0 && ep.airDateUtc) {
+          const airDate = new Date(ep.airDateUtc);
+          if (airDate > now) {
+            unairedPerSeason[ep.seasonNumber] = (unairedPerSeason[ep.seasonNumber] || 0) + 1;
+          }
+        }
+      }
+    }
 
-    // Compute totals
+    _detailEpState = { vodEps, dlEps, sonarrEpMap, tmdbId, loaded: {}, unairedPerSeason };
+
+    // Compute totals (exclude unaired episodes from the available count)
     let totalOwned = 0, totalAvailable = 0;
     for (const s of seasons) {
       const sn = s.season_number;
       const total = s.episode_count || 0;
+      const unaired = unairedPerSeason[sn] || 0;
+      const aired = Math.max(0, total - unaired);
       const vod = vodEps[String(sn)] || vodEps[sn] || [];
       const dl = dlEps[String(sn)] || dlEps[sn] || [];
       const have = new Set([...vod, ...dl]).size;
       totalOwned += have;
-      totalAvailable += total;
+      totalAvailable += aired;
     }
 
     const isComplete = totalOwned >= totalAvailable && totalAvailable > 0;
@@ -1423,21 +1453,24 @@ async function _loadSeriesEpisodes(tmdbId, seriesData) {
     for (const s of seasons) {
       const sn = s.season_number;
       const total = s.episode_count || 0;
+      const unaired = unairedPerSeason[sn] || 0;
+      const aired = Math.max(0, total - unaired);
       const vod = vodEps[String(sn)] || vodEps[sn] || [];
       const dl = dlEps[String(sn)] || dlEps[sn] || [];
       const haveSet = new Set([...vod, ...dl]);
       const haveCount = haveSet.size;
       if (haveCount === 0) continue; // Only show seasons we have episodes for
 
-      const seasonFull = haveCount >= total && total > 0;
+      const seasonFull = haveCount >= aired && aired > 0;
       const cClass = seasonFull ? 'ep-count-full' : 'ep-count-partial';
       const airYear = s.air_date ? ` (${s.air_date.substring(0, 4)})` : '';
+      const unairedLabel = unaired > 0 ? ` <span style="color:var(--text3);font-size:11px">+${unaired} upcoming</span>` : '';
 
       html += `<div class="detail-ep-season" data-season="${sn}">
         <div class="detail-ep-season-hdr" onclick="detailToggleSeason(${sn})">
           <span class="ep-arrow">▶</span>
           <span>Season ${sn}${airYear}</span>
-          <span class="ep-count ${cClass}">${haveCount}/${total}</span>
+          <span class="ep-count ${cClass}">${haveCount}/${aired}</span>${unairedLabel}
         </div>
         <div class="detail-ep-list" id="detail-ep-list-${sn}"></div>
       </div>`;
@@ -1487,6 +1520,13 @@ async function detailToggleSeason(sn) {
       }
     }
 
+    // Build air date lookup for unaired detection
+    const now = new Date();
+    const airDateMap = {};
+    for (const ep of tmdbEps) {
+      if (ep.air_date) airDateMap[ep.episode_number] = ep.air_date;
+    }
+
     let rows = '';
     for (const epNum of ownedNums) {
       const isVod = vod.includes(epNum);
@@ -1500,6 +1540,20 @@ async function detailToggleSeason(sn) {
         <span class="detail-ep-name">${nameMap[epNum] || ''}</span>
         ${badges.join('')}
       </div>`;
+    }
+
+    // Show unaired episodes at the end
+    for (const ep of tmdbEps) {
+      if (haveSet.has(ep.episode_number)) continue;
+      const airDate = ep.air_date ? new Date(ep.air_date + 'T00:00:00') : null;
+      if (!airDate || airDate > now) {
+        const dateLabel = ep.air_date ? new Date(ep.air_date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : 'TBA';
+        rows += `<div class="detail-ep-row" style="opacity:0.5">
+          <span class="ep-num">${ep.episode_number}</span>
+          <span class="detail-ep-name">${ep.name || ''}</span>
+          <span class="ep-dl-badge" style="background:var(--bg3);color:var(--text3)">${dateLabel}</span>
+        </div>`;
+      }
     }
     list.innerHTML = rows;
   } catch {
