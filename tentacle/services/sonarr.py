@@ -338,7 +338,10 @@ def scan_sonarr_library(db: Session) -> dict:
     for s in all_series:
         tid = s.get("tmdbId") or 0
         if tid:
-            sonarr_monitor_map[tid] = s.get("monitorNewItems", "none") == "all"
+            mni = s.get("monitorNewItems", "none")
+            sonarr_monitor_map[tid] = mni == "all"
+            if mni == "all":
+                logger.info(f"Sonarr: '{s.get('title')}' (tmdb:{tid}) has monitorNewItems=all")
 
     for show in downloaded:
         tmdb_id = show.get("tmdbId") or 0
@@ -478,11 +481,16 @@ def scan_sonarr_library(db: Session) -> dict:
     # Sync monitoring state for ALL series in DB (not just those processed above)
     # Covers: VOD series added to Sonarr, series with no downloads yet, etc.
     downloaded_tmdb_ids = {s.get("tmdbId") for s in downloaded if s.get("tmdbId")}
+    follow_updated = 0
     for series in db.query(Series).all():
         if series.tmdb_id not in downloaded_tmdb_ids:
             is_following = sonarr_monitor_map.get(series.tmdb_id, False)
             if series.sonarr_monitored != is_following:
+                logger.info(f"Sonarr follow sync: '{series.title}' (tmdb:{series.tmdb_id}) → following={is_following}")
                 series.sonarr_monitored = is_following
+                follow_updated += 1
+    if follow_updated:
+        logger.info(f"Sonarr follow sync: updated {follow_updated} series")
 
     # Single commit for all DB changes
     db.commit()
