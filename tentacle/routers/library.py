@@ -5,6 +5,7 @@ Unified view of movies and series
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 from typing import Optional
@@ -101,6 +102,7 @@ def get_library_items(
                 "tags": s.tags,
                 "media_type": "series",
                 "date_added": s.date_added,
+                "following": s.sonarr_monitored or False,
             })
 
     # Sort
@@ -283,6 +285,8 @@ def get_item_detail(media_type: str, tmdb_id: int, db: Session = Depends(get_db)
             "strm_path": item.strm_path,
             "date_added": item.date_added,
             "media_type": "series",
+            "following": item.sonarr_monitored or False,
+            "status": item.status,
         }
     raise HTTPException(400, "Invalid media type")
 
@@ -301,3 +305,54 @@ def get_tmdb_detail(media_type: str, tmdb_id: int, db: Session = Depends(get_db)
     if not details:
         raise HTTPException(404, "Not found on TMDB")
     return details
+
+
+@router.get("/following")
+def get_following_series(db: Session = Depends(get_db)):
+    """Return all series being followed for new episodes."""
+    series = db.query(Series).filter(Series.sonarr_monitored == True).order_by(Series.title).all()
+    return [
+        {
+            "tmdb_id": s.tmdb_id,
+            "title": s.title,
+            "year": s.year,
+            "poster_path": s.poster_path,
+            "genres": s.genres,
+            "source": s.source,
+            "source_tag": s.source_tag,
+            "tags": s.tags,
+            "media_type": "series",
+            "date_added": s.date_added,
+            "following": True,
+            "status": s.status,
+        }
+        for s in series
+    ]
+
+
+class FollowBody(BaseModel):
+    follow: bool
+
+
+@router.post("/follow/{tmdb_id}")
+def toggle_follow(tmdb_id: int, body: FollowBody, db: Session = Depends(get_db)):
+    """Enable or disable following for new episodes on a series."""
+    from services.sonarr import SonarrService
+
+    sonarr_url = get_setting(db, "sonarr_url")
+    sonarr_key = get_setting(db, "sonarr_api_key")
+    if not sonarr_url or not sonarr_key:
+        raise HTTPException(400, "Sonarr not configured")
+
+    sonarr = SonarrService(sonarr_url, sonarr_key)
+    success = sonarr.set_follow(tmdb_id, body.follow)
+    if not success:
+        raise HTTPException(400, "Series not found in Sonarr")
+
+    # Update local DB
+    series = db.query(Series).filter(Series.tmdb_id == tmdb_id).first()
+    if series:
+        series.sonarr_monitored = body.follow
+        db.commit()
+
+    return {"success": True, "following": body.follow}

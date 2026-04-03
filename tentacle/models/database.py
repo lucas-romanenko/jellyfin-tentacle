@@ -182,6 +182,7 @@ class Series(Base):
 
     source_tag = Column(String, nullable=True)
     tags = Column(JSON, default=list)
+    sonarr_monitored = Column(Boolean, default=False)  # True = following for new episodes
 
     date_added = Column(DateTime, default=datetime.utcnow)
     date_updated = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -478,6 +479,7 @@ def _migrate_columns():
         # Multi-user: add user_id columns
         ("list_subscriptions", "user_id", "INTEGER REFERENCES tentacle_users(id)"),
         ("tag_rules", "user_id", "INTEGER REFERENCES tentacle_users(id)"),
+        ("series", "sonarr_monitored", "BOOLEAN DEFAULT 0"),
     ]
     for table, column, col_type in migrations:
         try:

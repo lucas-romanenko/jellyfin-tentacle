@@ -269,6 +269,8 @@ async function loadLibrary() {
   await fetchLibraryPage();
   // Update duplicates tab badge
   _updateDupBadges();
+  // Update following tab badge
+  _updateFollowBadge();
 }
 
 // ── Library Stats Bar ──
@@ -1222,6 +1224,21 @@ async function confirmDownloadMore() {
   }
 }
 
+async function toggleFollow(tmdbId, follow) {
+  try {
+    await api(`/api/library/follow/${tmdbId}`, {
+      method: 'POST',
+      body: { follow },
+    });
+    toast(follow ? 'Following — new episodes will download automatically' : 'Unfollowed — no longer tracking new episodes');
+  } catch (e) {
+    toast(e.message || 'Failed to update', 'error');
+    // Revert checkbox
+    const cb = document.querySelector('.detail-follow-toggle input[type="checkbox"]');
+    if (cb) cb.checked = !follow;
+  }
+}
+
 function _resetManageMode() {
   // Restore add modal to normal state when closing
   document.getElementById('add-radarr-quality').parentElement.style.display = '';
@@ -1388,9 +1405,17 @@ async function _loadSeriesEpisodes(tmdbId, seriesData) {
     const countClass = isComplete ? 'ep-count-full' : (totalOwned > 0 ? 'ep-count-partial' : '');
     const downloadMoreBtn = !isComplete ? `<button class="btn btn-primary btn-sm" onclick="closeModal('modal-media-detail');showDownloadMoreModal(${tmdbId},'${escapeJS(seriesData.title||'')}','${escapeJS(seriesData.year||'')}','${escapeJS(seriesData.poster_path||'')}')">Download More</button>` : '';
 
+    // Following toggle — show if series is in Sonarr (has sonarr_path or sonarr source)
+    const inSonarr = sonarrData.in_sonarr;
+    const isFollowing = seriesData.following || false;
+    const followToggle = inSonarr ? `<label class="detail-follow-toggle" title="Auto-download new episodes">
+      <input type="checkbox" ${isFollowing ? 'checked' : ''} onchange="toggleFollow(${tmdbId}, this.checked)">
+      <span class="detail-follow-label">Following</span>
+    </label>` : '';
+
     let html = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
       <div style="font-size:14px;font-weight:600;color:var(--text)">Episodes <span class="${countClass}" style="font-weight:400;font-size:13px">${totalOwned}/${totalAvailable}</span></div>
-      ${downloadMoreBtn}
+      <div style="display:flex;align-items:center;gap:8px">${followToggle}${downloadMoreBtn}</div>
     </div>`;
 
     html += '<div class="detail-ep-seasons">';
@@ -2971,6 +2996,28 @@ async function deleteTagRule(id) {
   }
 }
 
+// ── FOLLOWING TAB ─────────────────────────────────────────────────────────
+async function loadFollowing() {
+  const grid = document.getElementById('following-grid');
+  const empty = document.getElementById('following-empty');
+  grid.innerHTML = '<div class="loading-state"><div class="spinner"></div></div>';
+  empty.style.display = 'none';
+  try {
+    const items = await api('/api/library/following');
+    if (!items.length) {
+      grid.innerHTML = '';
+      empty.style.display = '';
+      return;
+    }
+    grid.innerHTML = items.map(item => renderLibCard(item)).join('');
+    // Update badge
+    const badge = document.getElementById('lib-follow-badge');
+    if (badge) { badge.textContent = items.length; badge.style.display = ''; }
+  } catch (e) {
+    grid.innerHTML = '<div class="empty-state"><p>Failed to load following list</p></div>';
+  }
+}
+
 // ── DUPLICATES PAGE ───────────────────────────────────────────────────────
 async function loadDuplicates() {
   try {
@@ -3131,6 +3178,17 @@ async function _executeResolveAll() {
   } catch (e) {
     toast(e.message, 'error');
   }
+}
+
+async function _updateFollowBadge() {
+  try {
+    const items = await api('/api/library/following');
+    const badge = document.getElementById('lib-follow-badge');
+    if (badge) {
+      if (items.length > 0) { badge.style.display = 'inline'; badge.textContent = items.length; }
+      else badge.style.display = 'none';
+    }
+  } catch (e) { /* silent */ }
 }
 
 async function _updateDupBadges() {
@@ -4438,7 +4496,9 @@ async function vodPreviewSync() {
     loadMoreLibrary, showAddToRadarrModal, showAddToArrModal, confirmAddToRadarr, confirmAddToArr,
     onMonitorPresetChange, toggleSeasonAccordion, toggleSeasonAll, updateSeasonCheckbox, epPickerSelectAll, epPickerSelectNone,
     showManageEpisodesModal, confirmManageEpisodes,
-    showDownloadMoreModal, confirmDownloadMore, detailToggleSeason,
+    showDownloadMoreModal, confirmDownloadMore, detailToggleSeason, toggleFollow,
+    // Following
+    loadFollowing,
     // Duplicates
     setDupFilter, resolveDup, resolveAllKeepRadarr,
     // Log viewer

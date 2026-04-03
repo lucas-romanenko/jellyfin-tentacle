@@ -187,9 +187,14 @@ def sonarr_webhook(payload: dict, db: Session = Depends(get_db)):
         # (series may still have other episodes)
         logger.info(f"[Sonarr webhook] EpisodeFileDelete for '{title}' — will re-scan")
 
-    # SeriesDelete — remove from DB
+    # SeriesDelete — remove from DB or clear sonarr state
     if event_type == "SeriesDelete":
         if tmdb_id:
+            # Clear following state on any matching series (hybrid VOD+Sonarr)
+            hybrid = db.query(Series).filter(Series.tmdb_id == tmdb_id, Series.source != "sonarr").first()
+            if hybrid:
+                hybrid.sonarr_monitored = False
+                hybrid.sonarr_path = None
             deleted = db.query(Series).filter(Series.tmdb_id == tmdb_id, Series.source == "sonarr").delete()
             db.commit()
             if deleted:

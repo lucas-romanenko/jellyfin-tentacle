@@ -504,13 +504,11 @@
       var arrLabel = isSeries ? 'Sonarr' : 'Radarr';
       var monitorSelect = isSeries
         ? '<select id="mdMonitorSelect" class="md-select">' +
-            '<option value="all">All Episodes</option>' +
-            '<option value="future">Future Episodes</option>' +
+            '<option value="all">All Episodes (including future)</option>' +
             '<option value="firstSeason">First Season</option>' +
             '<option value="lastSeason">Last Season</option>' +
             '<option value="pilot">Pilot Only</option>' +
             '<option value="custom">Pick Episodes...</option>' +
-            '<option value="none">None</option>' +
           '</select>'
         : '';
       var episodePicker = isSeries

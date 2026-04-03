@@ -237,8 +237,10 @@ function showLibTab(tab) {
   document.querySelectorAll('[data-libtab]').forEach(t => t.classList.remove('active'));
   document.querySelector(`[data-libtab="${tab}"]`)?.classList.add('active');
   document.getElementById('lib-tab-browse').style.display = tab === 'browse' ? '' : 'none';
+  document.getElementById('lib-tab-following').style.display = tab === 'following' ? '' : 'none';
   document.getElementById('lib-tab-duplicates').style.display = tab === 'duplicates' ? '' : 'none';
   if (tab === 'duplicates') loadDuplicates();
+  if (tab === 'following') loadFollowing();
 }
 
 function showJellyfinTab(tab) {

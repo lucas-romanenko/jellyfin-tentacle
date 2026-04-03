@@ -748,6 +748,10 @@ td.primary { color: var(--text); font-weight: 500; }
 .detail-ep-row .ep-dl-badge { font-size: 10px; font-weight: 600; flex-shrink: 0; padding: 1px 6px; border-radius: 4px; }
 .detail-ep-row .ep-badge-vod { color: #4caf50; background: rgba(76, 175, 80, 0.15); }
 .detail-ep-row .ep-badge-dl { color: #7c6ae8; background: rgba(124, 106, 232, 0.15); }
+.detail-follow-toggle { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 12px; }
+.detail-follow-toggle input { accent-color: var(--accent); }
+.detail-follow-label { color: var(--text2); font-weight: 500; }
+.detail-follow-toggle input:checked + .detail-follow-label { color: var(--accent); }
 
 /* ── Scrollbars ── */
 ::-webkit-scrollbar { width: 5px; height: 5px; }
@@ -1759,6 +1763,7 @@ td.primary { color: var(--text); font-weight: 500; }
         <!-- Library tabs -->
         <div style="display:flex;gap:0;border-bottom:1px solid var(--border2);margin-bottom:16px">
           <button class="live-tab active" data-libtab="browse" onclick="showLibTab('browse')">Browse</button>
+          <button class="live-tab" data-libtab="following" onclick="showLibTab('following')">Following <span class="nav-badge" id="lib-follow-badge" style="display:none;margin-left:6px">0</span></button>
           <button class="live-tab" data-libtab="duplicates" onclick="showLibTab('duplicates')">Duplicates <span class="nav-badge" id="lib-dup-badge" style="display:none;margin-left:6px">0</span></button>
         </div>
 
@@ -1821,6 +1826,12 @@ td.primary { color: var(--text); font-weight: 500; }
           <button class="btn btn-secondary" onclick="loadMoreLibrary()">Load more</button>
         </div>
         </div><!-- /lib-tab-browse -->
+
+        <div id="lib-tab-following" style="display:none">
+          <p style="font-size:13px;color:var(--text3);margin-bottom:16px">Shows that will automatically download new episodes when they air.</p>
+          <div id="following-grid" class="lib-grid"></div>
+          <div id="following-empty" class="empty-state" style="display:none"><p>No shows being followed yet. Add a show to Sonarr with "All Episodes (including future)" or enable following from the show detail modal.</p></div>
+        </div><!-- /lib-tab-following -->
 
         <div id="lib-tab-duplicates" style="display:none">
           <div id="dup-stats" style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px"></div>
@@ -2558,15 +2569,13 @@ td.primary { color: var(--text); font-weight: 500; }
     </div>
     <div id="sonarr-extra-fields" style="display:none">
       <div class="form-group">
-        <div class="form-label">Monitor</div>
+        <div class="form-label">Episodes</div>
         <select class="form-input" id="add-sonarr-monitor" onchange="onMonitorPresetChange(this.value)">
-          <option value="all">All Episodes</option>
-          <option value="future">Future Episodes</option>
+          <option value="all">All Episodes (including future)</option>
           <option value="firstSeason">First Season</option>
           <option value="lastSeason">Last Season</option>
           <option value="pilot">Pilot Only</option>
           <option value="custom">Pick Episodes...</option>
-          <option value="none">None</option>
         </select>
       </div>
       <div class="form-group" style="display:flex;align-items:center;gap:8px">

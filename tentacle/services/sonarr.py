@@ -253,6 +253,30 @@ class SonarrService:
         except Exception as e:
             logger.warning(f"Sonarr: failed to unmonitor series {series_id}: {e}")
 
+    def set_follow(self, tmdb_id: int, follow: bool) -> bool:
+        """Enable or disable following for new episodes on a series in Sonarr."""
+        series = self.get_series_by_tmdb(tmdb_id)
+        if not series:
+            logger.warning(f"Sonarr: cannot set follow for tmdb:{tmdb_id} — not found")
+            return False
+        series_id = series["id"]
+        series["monitorNewItems"] = "all" if follow else "none"
+        series["monitored"] = True  # Must be monitored for new items to trigger
+        try:
+            r = self.session.put(
+                f"{self.url}/api/v3/series/{series_id}",
+                json=series,
+                timeout=10,
+            )
+            if r.status_code < 400:
+                logger.info(f"Sonarr: set follow={'on' if follow else 'off'} for tmdb:{tmdb_id} ({series.get('title', '?')})")
+                return True
+            logger.warning(f"Sonarr: failed to set follow for tmdb:{tmdb_id} — HTTP {r.status_code}")
+            return False
+        except Exception as e:
+            logger.warning(f"Sonarr: failed to set follow for tmdb:{tmdb_id}: {e}")
+            return False
+
     def get_root_folders(self) -> list:
         try:
             r = self.session.get(f"{self.url}/api/v3/rootfolder", timeout=10)
@@ -309,6 +333,13 @@ def scan_sonarr_library(db: Session) -> dict:
     # Collect series that need NFO writing
     series_needing_nfo = []
 
+    # Also track monitoring state for ALL series (not just downloaded)
+    sonarr_monitor_map = {}
+    for s in all_series:
+        tid = s.get("tmdbId") or 0
+        if tid:
+            sonarr_monitor_map[tid] = s.get("monitorNewItems", "none") == "all"
+
     for show in downloaded:
         tmdb_id = show.get("tmdbId") or 0
         title = show.get("title", "")
@@ -330,6 +361,11 @@ def scan_sonarr_library(db: Session) -> dict:
 
         if existing:
             changed = False
+            # Sync monitoring state from Sonarr
+            is_following = sonarr_monitor_map.get(tmdb_id, False)
+            if existing.sonarr_monitored != is_following:
+                existing.sonarr_monitored = is_following
+                changed = True
             if series_path and existing.sonarr_path != series_path:
                 existing.sonarr_path = series_path
                 changed = True
@@ -380,6 +416,7 @@ def scan_sonarr_library(db: Session) -> dict:
                 year=year,
                 source="sonarr",
                 sonarr_path=series_path,
+                sonarr_monitored=sonarr_monitor_map.get(tmdb_id, False),
                 tags=[],
                 date_added=datetime.utcnow(),
             )
