@@ -261,7 +261,7 @@ class SonarrService:
             return False
         series_id = series["id"]
         series["monitorNewItems"] = "all" if follow else "none"
-        series["monitored"] = True  # Must be monitored for new items to trigger
+        series["monitored"] = follow  # Unmonitor series when unfollowing
         try:
             r = self.session.put(
                 f"{self.url}/api/v3/series/{series_id}",
@@ -333,15 +333,17 @@ def scan_sonarr_library(db: Session) -> dict:
     # Collect series that need NFO writing
     series_needing_nfo = []
 
-    # Also track monitoring state for ALL series (not just downloaded)
+    # Track monitoring state for ALL series
+    # A series is "following" if it's monitored in Sonarr (will grab new episodes)
+    # monitorNewItems="all" is explicit, but monitored=true is the common setup
     sonarr_monitor_map = {}
     for s in all_series:
         tid = s.get("tmdbId") or 0
         if tid:
             mni = s.get("monitorNewItems", "none")
-            sonarr_monitor_map[tid] = mni == "all"
-            if mni == "all":
-                logger.info(f"Sonarr: '{s.get('title')}' (tmdb:{tid}) has monitorNewItems=all")
+            is_monitored = s.get("monitored", False)
+            # Following = explicitly set to grab new items, OR actively monitored
+            sonarr_monitor_map[tid] = mni == "all" or is_monitored
 
     for show in downloaded:
         tmdb_id = show.get("tmdbId") or 0
