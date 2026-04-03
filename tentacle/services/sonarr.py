@@ -475,6 +475,15 @@ def scan_sonarr_library(db: Session) -> dict:
         logger.info(f"Sonarr scan: removed {removed} series no longer in Sonarr")
     stats["removed"] = removed
 
+    # Sync monitoring state for series in DB but not in the downloaded loop
+    # (e.g. VOD series added to Sonarr with no downloads yet)
+    downloaded_tmdb_ids = {s.get("tmdbId") for s in downloaded if s.get("tmdbId")}
+    for series in db.query(Series).filter(Series.sonarr_path != None).all():
+        if series.tmdb_id not in downloaded_tmdb_ids:
+            is_following = sonarr_monitor_map.get(series.tmdb_id, False)
+            if series.sonarr_monitored != is_following:
+                series.sonarr_monitored = is_following
+
     # Single commit for all DB changes
     db.commit()
 
