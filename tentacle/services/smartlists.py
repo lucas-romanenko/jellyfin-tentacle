@@ -195,18 +195,20 @@ def get_desired_smartlists(db: Session, user_id: int = None) -> list:
             smartlists.append({"name": tag, "tag": tag, "media_type": ["Series"], "enabled": True, "source": "auto"})
             existing_tags.add(tag)
 
-    # Built-in playlists — (name, media_types, forced_sort or None)
+    # Built-in playlists — (name, media_types, forced_sort or None, max_items or None)
     builtin_map = {
-        "builtin:recently_added_movies": ("Recently Added Movies", ["Movie"], "DateCreated"),
-        "builtin:recently_added_tv": ("Recently Added TV", ["Series"], "DateCreated"),
-        "builtin:downloaded_movies": ("Downloaded Movies", ["Movie"], None),
-        "builtin:downloaded_tv": ("Downloaded TV", ["Series"], None),
+        "builtin:recently_added_movies": ("Recently Added Movies", ["Movie"], "DateCreated", 50),
+        "builtin:recently_added_tv": ("Recently Added TV", ["Series"], "DateCreated", 50),
+        "builtin:downloaded_movies": ("Downloaded Movies", ["Movie"], None, None),
+        "builtin:downloaded_tv": ("Downloaded TV", ["Series"], None, None),
     }
-    for bkey, (bname, bmedia, bsort) in builtin_map.items():
+    for bkey, (bname, bmedia, bsort, bmax) in builtin_map.items():
         if toggles.get(bkey) and bname not in existing_tags:
             sl = {"name": bname, "tag": bname, "media_type": bmedia, "enabled": True, "source": "auto"}
             if bsort:
                 sl["sort_by"] = bsort
+            if bmax:
+                sl["max_items"] = bmax
             smartlists.append(sl)
             existing_tags.add(bname)
 
@@ -404,6 +406,7 @@ def sync_smartlists(db: Session, user_id: int = None) -> dict:
         enabled = sl["enabled"]
         expressions = sl.get("expressions")  # None for tag-based, list for native
         forced_sort = sl.get("sort_by")  # Built-in playlists can force a sort
+        forced_max = sl.get("max_items")  # Built-in playlists can cap item count
 
         if name in existing:
             # Update existing
@@ -420,6 +423,10 @@ def sync_smartlists(db: Session, user_id: int = None) -> dict:
             # Built-in playlists with forced sort always override
             if forced_sort:
                 config["Order"] = {"SortOptions": [{"SortBy": forced_sort, "SortOrder": "Descending"}]}
+
+            # Built-in playlists with forced max items always override
+            if forced_max:
+                config["MaxItems"] = forced_max
 
             # Preserve UserPlaylists entries that have a linked JellyfinPlaylistId
             old_playlists = old_data.get("UserPlaylists", [])
@@ -445,6 +452,9 @@ def sync_smartlists(db: Session, user_id: int = None) -> dict:
 
             config = _build_config(name, tag, media_types, folder_id, enabled, jf_user_id, expressions=expressions,
                                    sort_by=forced_sort or "ReleaseDate")
+
+            if forced_max:
+                config["MaxItems"] = forced_max
 
             # Create private Jellyfin playlist for this user
             if jf_user_id and jellyfin_url and jellyfin_key:
@@ -877,27 +887,25 @@ def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats
             playlist_id = None
 
     if playlist_id:
-        # Update existing playlist — diff current items vs desired
+        # Update existing playlist — compare ordered lists to detect changes
         current_entries = jf.get_playlist_items(playlist_id)
-        current_ids = {entry["Id"] for entry in current_entries}
-        current_entry_map = {entry["Id"]: entry.get("PlaylistItemId", entry["Id"]) for entry in current_entries}
+        current_ordered_ids = [entry["Id"] for entry in current_entries]
 
-        desired_ids = set(item_ids)
+        if current_ordered_ids == item_ids:
+            # No changes needed — same items in same order
+            logger.debug(f"[SmartLists] '{name}': no changes needed ({len(item_ids)} items)")
+        else:
+            # Items or order changed — clear and re-add in correct order
+            if current_entries:
+                all_entry_ids = [entry.get("PlaylistItemId", entry["Id"]) for entry in current_entries]
+                jf.remove_from_playlist(playlist_id, all_entry_ids)
+            if item_ids:
+                jf.add_to_playlist(playlist_id, item_ids)
 
-        # Remove items no longer matching
-        to_remove_entry_ids = [
-            current_entry_map[cid] for cid in current_ids - desired_ids
-            if cid in current_entry_map
-        ]
-        if to_remove_entry_ids:
-            jf.remove_from_playlist(playlist_id, to_remove_entry_ids)
+            added = set(item_ids) - set(current_ordered_ids)
+            removed = set(current_ordered_ids) - set(item_ids)
+            logger.info(f"[SmartLists] Updated '{name}': +{len(added)} -{len(removed)} items (total {len(item_ids)})")
 
-        # Add new items
-        to_add = [iid for iid in item_ids if iid not in current_ids]
-        if to_add:
-            jf.add_to_playlist(playlist_id, to_add)
-
-        logger.info(f"[SmartLists] Updated '{name}': +{len(to_add)} -{len(to_remove_entry_ids)} items (total {len(item_ids)})")
         stats["updated"] += 1
     else:
         # Create new private playlist with items

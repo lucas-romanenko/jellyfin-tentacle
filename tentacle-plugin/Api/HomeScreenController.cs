@@ -159,12 +159,9 @@ public class TentacleHomeController : ControllerBase
             ImageTypeLimit = 1,
         };
 
-        var rawItems = playlist.GetManageableItems()
+        // Group episodes by series, taking only what we need
+        var grouped = playlist.GetManageableItems()
             .Where(i => i.Item2.IsVisible(user))
-            .ToArray();
-
-        // Group episodes by series
-        var grouped = rawItems
             .GroupBy(x => x.Item2 is Episode ep ? (BaseItem)ep.Series : x.Item2)
             .Take(limit)
             .Select(g => g.Key)
