@@ -21,6 +21,9 @@ tentacle-plugin/obj/
 tentacle/data/
 *.dll
 
+# MkDocs build output
+site/
+
 # IDE
 .vscode/
 .idea/
