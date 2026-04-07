@@ -101,8 +101,9 @@ body.moonfin-details-visible .moonfin-navbar {
     z-index: 10002;
 }
 
-body.moonfin-navbar-active .moonfin-details-back {
-    display: none;
+/* Hide navbar's subtle back button when details overlay has its own prominent one */
+body.moonfin-details-visible .moonfin-nav-back {
+    display: none !important;
 }
 
 .moonfin-details-content {
