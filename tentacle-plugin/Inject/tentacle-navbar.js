@@ -364,12 +364,23 @@
                 }
             }
 
-            // Track active view
+            // Track active view — multiple detection methods for Jellyfin SPA
             this._onViewShow = function () {
                 self.updateActiveState();
             };
             window.addEventListener('viewshow', this._onViewShow);
             window.addEventListener('hashchange', this._onViewShow);
+            window.addEventListener('popstate', this._onViewShow);
+
+            // Observe DOM changes as fallback — Jellyfin SPA doesn't always fire hashchange
+            this._lastHash = location.hash;
+            this._navObserver = new MutationObserver(function () {
+                if (location.hash !== self._lastHash) {
+                    self._lastHash = location.hash;
+                    self.updateActiveState();
+                }
+            });
+            this._navObserver.observe(document.body, { childList: true, subtree: true });
 
             // Listen for activity badge updates from discover module
             window.addEventListener('tentacle-activity-count', function (e) {
@@ -588,7 +599,12 @@
             if (this._onViewShow) {
                 window.removeEventListener('viewshow', this._onViewShow);
                 window.removeEventListener('hashchange', this._onViewShow);
+                window.removeEventListener('popstate', this._onViewShow);
                 this._onViewShow = null;
+            }
+            if (this._navObserver) {
+                this._navObserver.disconnect();
+                this._navObserver = null;
             }
             document.body.classList.remove('moonfin-navbar-active');
             this.librariesExpanded = false;
