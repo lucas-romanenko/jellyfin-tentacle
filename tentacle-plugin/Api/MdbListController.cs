@@ -88,9 +88,29 @@ public class TentacleMdbListController : ControllerBase
             }
 
             var json = await response.Content.ReadAsStringAsync();
-            var data = JsonSerializer.Deserialize<MdbListApiResponse>(json, JsonOpts);
 
-            var result = new { success = true, ratings = data?.Ratings ?? new List<MdbListRating>() };
+            // Parse with JsonDocument to handle non-standard types (e.g. url: false)
+            var ratings = new List<MdbListRating>();
+            using (var doc = JsonDocument.Parse(json))
+            {
+                if (doc.RootElement.TryGetProperty("ratings", out var ratingsArray) &&
+                    ratingsArray.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var r in ratingsArray.EnumerateArray())
+                    {
+                        ratings.Add(new MdbListRating
+                        {
+                            Source = r.TryGetProperty("source", out var s) && s.ValueKind == JsonValueKind.String ? s.GetString() : null,
+                            Value = r.TryGetProperty("value", out var v) && v.ValueKind == JsonValueKind.Number ? v.GetDouble() : null,
+                            Score = r.TryGetProperty("score", out var sc) && sc.ValueKind == JsonValueKind.Number ? sc.GetDouble() : null,
+                            Votes = r.TryGetProperty("votes", out var vo) && vo.ValueKind == JsonValueKind.Number ? vo.GetInt32() : null,
+                            Url = r.TryGetProperty("url", out var u) && u.ValueKind == JsonValueKind.String ? u.GetString() : null,
+                        });
+                    }
+                }
+            }
+
+            var result = new { success = true, ratings };
             var resultJson = JsonSerializer.Serialize(result, JsonOpts);
 
             MdbListCacheService.Set(cacheKey, resultJson);
