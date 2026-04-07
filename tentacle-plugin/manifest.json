@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/lucas-romanenko/jellyfin-tentacle/main/tentacle-plugin/logo.png",
     "versions": [
       {
+        "version": "2.50.0.0",
+        "changelog": "Release v2.50.0",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/lucas-romanenko/jellyfin-tentacle/releases/download/plugin-v2.50.0/tentacle-plugin-v2.50.0.zip",
+        "checksum": "2083adf8bf21ae2ee0731a36b74fb39b",
+        "timestamp": "2026-04-07T17:44:39Z"
+      },
+      {
         "version": "2.49.0.0",
         "changelog": "Release v2.49.0",
         "targetAbi": "10.11.0.0",
