@@ -34,6 +34,7 @@ body.moonfin-navbar-active .cardOverlayContainer {
     padding: 10px 32px;
     z-index: 9999;
     box-sizing: border-box;
+    transition: opacity 0.3s ease;
 }
 
 .moonfin-navbar-left {
@@ -46,6 +47,8 @@ body.moonfin-navbar-active .cardOverlayContainer {
 
 .moonfin-nav-back {
     background: rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
     border: none;
     padding: 0;
     cursor: pointer;
@@ -56,7 +59,7 @@ body.moonfin-navbar-active .cardOverlayContainer {
     align-items: center;
     justify-content: center;
     color: rgba(255, 255, 255, 0.85);
-    transition: background 0.2s, transform 0.2s;
+    transition: background 0.25s ease, transform 0.25s ease;
     outline: none;
 }
 
@@ -81,7 +84,7 @@ body.moonfin-navbar-active .cardOverlayContainer {
     padding: 0;
     cursor: pointer;
     border-radius: 50%;
-    transition: transform 0.2s ease;
+    transition: transform 0.25s ease;
     outline: none;
 }
 
@@ -130,12 +133,15 @@ body.moonfin-navbar-active .cardOverlayContainer {
     display: flex;
     align-items: center;
     border-radius: 36px;
-    padding: 8px;
+    padding: 6px;
     max-width: 1400px;
     overflow-x: auto;
     overflow-y: hidden;
     scroll-behavior: smooth;
     scrollbar-width: none;
+    backdrop-filter: blur(20px) saturate(1.2);
+    -webkit-backdrop-filter: blur(20px) saturate(1.2);
+    border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .moonfin-nav-pill::-webkit-scrollbar {
@@ -149,11 +155,11 @@ body.moonfin-navbar-active .cardOverlayContainer {
     padding: 10px 14px;
     background: transparent;
     border: none;
-    color: rgba(255, 255, 255, 0.6);
+    color: rgba(255, 255, 255, 0.55);
     font-size: 18px;
     font-weight: 500;
     cursor: pointer;
-    transition: all 0.15s ease-out;
+    transition: color 0.3s ease, background 0.3s ease, padding 0.3s ease, transform 0.15s ease;
     outline: none;
     position: relative;
     border-radius: 28px;
@@ -161,7 +167,7 @@ body.moonfin-navbar-active .cardOverlayContainer {
     min-width: 48px;
     white-space: nowrap;
     flex-shrink: 0;
-    margin-left: 4px;
+    margin-left: 2px;
 }
 
 .moonfin-nav-btn:first-child {
@@ -171,12 +177,16 @@ body.moonfin-navbar-active .cardOverlayContainer {
 .moonfin-nav-btn:hover,
 .moonfin-nav-btn:focus {
     color: #ffffff;
-    background: rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.1);
+}
+
+.moonfin-nav-btn:active {
+    transform: scale(0.95);
 }
 
 .moonfin-nav-btn.active {
     color: #ffffff;
-    background: rgba(255, 255, 255, 0.22);
+    background: rgba(255, 255, 255, 0.18);
 }
 
 .moonfin-nav-btn.hidden {
@@ -184,32 +194,47 @@ body.moonfin-navbar-active .cardOverlayContainer {
 }
 
 .moonfin-nav-icon {
-    width: 28px;
-    height: 28px;
+    width: 26px;
+    height: 26px;
     fill: currentColor;
     flex-shrink: 0;
+    transition: transform 0.25s ease;
 }
 
+.moonfin-nav-btn:hover .moonfin-nav-icon {
+    transform: scale(1.08);
+}
+
+/* Expandable buttons — smooth width transition instead of display toggle */
 .moonfin-expandable-btn {
     overflow: hidden;
 }
 
 .moonfin-expand-label {
-    display: none;
-    margin-left: 10px;
-    font-size: 16px;
+    display: block;
+    max-width: 0;
+    opacity: 0;
+    overflow: hidden;
+    margin-left: 0;
+    font-size: 15px;
     font-weight: 600;
     white-space: nowrap;
+    transition: max-width 0.35s cubic-bezier(0.4, 0, 0.2, 1),
+                opacity 0.25s ease,
+                margin-left 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.moonfin-expandable-btn:hover .moonfin-expand-label,
+.moonfin-expandable-btn:focus .moonfin-expand-label,
+.moonfin-expandable-btn.active .moonfin-expand-label {
+    max-width: 150px;
+    opacity: 1;
+    margin-left: 8px;
 }
 
 .moonfin-expandable-btn:hover,
 .moonfin-expandable-btn:focus {
     padding: 10px 18px;
-}
-
-.moonfin-expandable-btn:hover .moonfin-expand-label,
-.moonfin-expandable-btn:focus .moonfin-expand-label {
-    display: inline;
 }
 
 /* Activity badge */
@@ -228,6 +253,7 @@ body.moonfin-navbar-active .cardOverlayContainer {
     line-height: 18px;
     text-align: center;
     pointer-events: none;
+    transition: transform 0.3s ease;
 }
 
 .moonfin-activity-badge.hidden {
@@ -239,7 +265,7 @@ body.moonfin-navbar-active .cardOverlayContainer {
     display: flex;
     align-items: center;
     position: relative;
-    margin-left: 4px;
+    margin-left: 2px;
 }
 
 .moonfin-libraries-group.hidden {
@@ -257,7 +283,8 @@ body.moonfin-navbar-active .cardOverlayContainer {
     max-width: 0;
     overflow: hidden;
     opacity: 0;
-    transition: max-width 0.25s ease-out, opacity 0.2s ease-out;
+    transition: max-width 0.35s cubic-bezier(0.4, 0, 0.2, 1),
+                opacity 0.25s ease;
 }
 
 .moonfin-libraries-group.expanded .moonfin-libraries-list {
@@ -274,12 +301,16 @@ body.moonfin-navbar-active .cardOverlayContainer {
         max-height: 0;
         width: max-content;
         min-width: 180px;
-        backdrop-filter: blur(20px);
-        -webkit-backdrop-filter: blur(20px);
-        border-radius: 12px;
+        background: rgba(20, 20, 20, 0.85);
+        backdrop-filter: blur(24px) saturate(1.2);
+        -webkit-backdrop-filter: blur(24px) saturate(1.2);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 14px;
         padding: 0;
-        box-shadow: 0 8px 24px rgba(0,0,0,0.5);
-        transition: max-height 0.25s ease-out, opacity 0.2s ease-out, padding 0.25s ease-out;
+        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+        transition: max-height 0.35s cubic-bezier(0.4, 0, 0.2, 1),
+                    opacity 0.25s ease,
+                    padding 0.35s cubic-bezier(0.4, 0, 0.2, 1);
         pointer-events: none;
     }
 
@@ -302,7 +333,7 @@ body.moonfin-navbar-active .cardOverlayContainer {
 
     .moonfin-libraries-list .moonfin-library-btn:hover,
     .moonfin-libraries-list .moonfin-library-btn:focus {
-        background: rgba(255, 255, 255, 0.12);
+        background: rgba(255, 255, 255, 0.1);
     }
 }
 
