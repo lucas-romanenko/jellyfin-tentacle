@@ -30,8 +30,8 @@ body.moonfin-mediabar-active #mh-rows-container {
     background: #101010;
     border-radius: 20px 20px 0 0;
     padding-top: 20px;
-    padding-bottom: 40px;
-    min-height: 50dvh;
+    padding-bottom: 100dvh;
+    min-height: 100dvh;
 }
 
 /* Fallback for Jellyfin native sections (no Tentacle home) */
