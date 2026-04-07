@@ -244,6 +244,13 @@ var Details = {
             this._itemHistory.push({ id: this.currentItem.Id, type: this.currentItem.Type });
         }
 
+        // Clear old content BEFORE making visible to prevent flash of previous item
+        var panel = this.container.querySelector('.moonfin-details-panel');
+        panel.innerHTML = '<div class="moonfin-details-loading"><div class="moonfin-spinner"></div><span>Loading...</span></div>';
+        panel.scrollTop = 0;
+        var backdrop = this.container.querySelector('.moonfin-details-backdrop');
+        if (backdrop) backdrop.style.backgroundImage = '';
+
         this.container.classList.add('visible');
         this.isVisible = true;
         document.body.classList.add('moonfin-details-visible');
@@ -252,9 +259,6 @@ var Details = {
         if (!wasAlreadyVisible) {
             history.pushState({ moonfinDetails: true }, '');
         }
-
-        var panel = this.container.querySelector('.moonfin-details-panel');
-        panel.innerHTML = '<div class="moonfin-details-loading"><div class="moonfin-spinner"></div><span>Loading...</span></div>';
 
         this.fetchItem(api, itemId).then(function(item) {
             self.currentItem = item;
