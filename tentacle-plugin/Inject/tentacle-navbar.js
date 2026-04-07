@@ -202,13 +202,67 @@
                 console.warn('[Tentacle] Failed to load user data:', e);
             });
 
+            this.loadLibraries();
+        },
+
+        loadLibraries: function () {
+            var self = this;
+            var api = window.ApiClient;
+            if (!api) return;
+
             var userId = api.getCurrentUserId();
-            api.getUserViews(userId).then(function (result) {
-                self.libraries = (result && result.Items) || [];
-                console.log('[Tentacle] Navbar loaded ' + self.libraries.length + ' libraries:', self.libraries.map(function(l) { return l.Name; }));
+            if (!userId) {
+                console.warn('[Tentacle] No userId for loading libraries');
+                return;
+            }
+
+            // Try the ApiClient method first, fall back to direct REST call
+            var tryApiClient = function () {
+                if (typeof api.getUserViews === 'function') {
+                    return api.getUserViews(userId).then(function (result) {
+                        return (result && result.Items) || [];
+                    });
+                }
+                return Promise.reject(new Error('getUserViews not available'));
+            };
+
+            var tryDirectFetch = function () {
+                var serverUrl = '';
+                if (typeof api.serverAddress === 'function') serverUrl = api.serverAddress();
+                else if (api._serverAddress) serverUrl = api._serverAddress;
+                var token = '';
+                if (typeof api.accessToken === 'function') token = api.accessToken();
+                else if (api._accessToken) token = api._accessToken;
+
+                var headers = {};
+                if (token) headers['Authorization'] = 'MediaBrowser Token="' + token + '"';
+
+                return fetch(serverUrl + '/Users/' + userId + '/Views', {
+                    method: 'GET',
+                    headers: headers
+                }).then(function (resp) {
+                    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                    return resp.json();
+                }).then(function (data) {
+                    return (data && data.Items) || [];
+                });
+            };
+
+            tryApiClient().catch(function (e) {
+                console.warn('[Tentacle] getUserViews failed, trying direct fetch:', e.message);
+                return tryDirectFetch();
+            }).then(function (items) {
+                self.libraries = items || [];
+                console.log('[Tentacle] Loaded ' + self.libraries.length + ' libraries:', self.libraries.map(function (l) { return l.Name; }));
                 self.updateLibraries();
+
+                // Hide libraries button if no libraries found
+                var group = self.container ? self.container.querySelector('.moonfin-libraries-group') : null;
+                if (group) {
+                    group.classList.toggle('hidden', self.libraries.length === 0);
+                }
             }).catch(function (e) {
-                console.warn('[Tentacle] Failed to load libraries:', e);
+                console.error('[Tentacle] Failed to load libraries (all methods):', e);
             });
         },
 
@@ -272,6 +326,12 @@
             var rect = btn.getBoundingClientRect();
             list.style.top = (rect.bottom + 8) + 'px';
             list.style.left = rect.left + 'px';
+
+            // Copy pill background to dropdown (matches Moonfin behavior)
+            var pill = this.container.querySelector('.moonfin-nav-pill');
+            if (pill && pill.style.background) {
+                list.style.background = pill.style.background;
+            }
         },
 
         toggleLibraries: function () {

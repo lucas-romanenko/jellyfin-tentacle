@@ -312,6 +312,7 @@ body.moonfin-navbar-active .cardOverlayContainer {
                     opacity 0.2s ease-out,
                     padding 0.25s ease-out;
         pointer-events: none;
+        z-index: 10001;
     }
 
     /* Invisible bridge above the dropdown so mouse can travel from button to list */
