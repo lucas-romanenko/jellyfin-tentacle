@@ -378,9 +378,10 @@ def set_hero(req: HeroPickRequest, db: Session = Depends(get_db), user: Tentacle
             "sort_by": existing_hero.get("sort_by", "random"),
             "sort_order": existing_hero.get("sort_order", "Descending"),
             "require_logo": existing_hero.get("require_logo", True),
+            "require_trailer": existing_hero.get("require_trailer", False),
         }
     else:
-        config["hero"] = {"enabled": False, "playlist_id": "", "display_name": "", "sort_by": "random", "sort_order": "Descending", "require_logo": True}
+        config["hero"] = {"enabled": False, "playlist_id": "", "display_name": "", "sort_by": "random", "sort_order": "Descending", "require_logo": True, "require_trailer": False}
 
     _write_home_json(user, config)
     logger.info(f"Updated hero: {req.playlist_id or '(disabled)'}")
@@ -391,6 +392,7 @@ class HeroSortRequest(BaseModel):
     sort_by: str
     sort_order: str
     require_logo: Optional[bool] = None
+    require_trailer: Optional[bool] = None
 
 
 @router.post("/hero-sort")
@@ -405,6 +407,8 @@ def set_hero_sort(req: HeroSortRequest, db: Session = Depends(get_db), user: Ten
     hero["sort_order"] = req.sort_order
     if req.require_logo is not None:
         hero["require_logo"] = req.require_logo
+    if req.require_trailer is not None:
+        hero["require_trailer"] = req.require_trailer
     config["hero"] = hero
     _write_home_json(user, config)
     logger.info(f"Updated hero sort: {req.sort_by} {req.sort_order}")

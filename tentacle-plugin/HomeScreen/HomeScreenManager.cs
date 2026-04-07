@@ -167,6 +167,9 @@ public class HeroConfig
 
     [JsonPropertyName("require_logo")]
     public bool RequireLogo { get; set; } = true;
+
+    [JsonPropertyName("require_trailer")]
+    public bool RequireTrailer { get; set; } = false;
 }
 
 /// <summary>

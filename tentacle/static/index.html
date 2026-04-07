@@ -1901,6 +1901,12 @@ td.primary { color: var(--text); font-weight: 500; }
                   <span class="hero-config-hint">?</span>
                   <span class="hero-config-tooltip">For the best look, only feature content that has a logo image. Items without one will show a plain text title instead.</span>
                 </label>
+                <label class="hero-config-checkbox">
+                  <input type="checkbox" id="home-hero-require-trailer" onchange="updateHeroSort()">
+                  <span>Trailers only</span>
+                  <span class="hero-config-hint">?</span>
+                  <span class="hero-config-tooltip">Only feature content that has a trailer. This works best with the Android TV app which can auto-play trailers in the hero spotlight.</span>
+                </label>
               </div>
             </div>
           </div>

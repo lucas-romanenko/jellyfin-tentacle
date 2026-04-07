@@ -239,6 +239,12 @@ public class TentacleHomeController : ControllerBase
             ? grouped.Where(i => i.GetImages(ImageType.Backdrop).Any() && i.GetImages(ImageType.Logo).Any())
             : grouped.Where(i => i.GetImages(ImageType.Backdrop).Any());
 
+        // When require_trailer is true, only show items that have at least one trailer URL
+        if (hero.RequireTrailer)
+        {
+            filtered = filtered.Where(i => i.RemoteTrailers != null && i.RemoteTrailers.Length > 0);
+        }
+
         // Apply hero-specific sort from config
         var heroSort = hero.SortBy?.ToLowerInvariant() ?? "random";
         var descending = !string.Equals(hero.SortOrder, "Ascending", StringComparison.OrdinalIgnoreCase);
