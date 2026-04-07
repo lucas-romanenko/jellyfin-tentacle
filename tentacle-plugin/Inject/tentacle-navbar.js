@@ -365,6 +365,7 @@
                 self.updateActiveState();
             };
             window.addEventListener('viewshow', this._onViewShow);
+            window.addEventListener('hashchange', this._onViewShow);
 
             // Listen for activity badge updates from discover module
             window.addEventListener('tentacle-activity-count', function (e) {
@@ -460,8 +461,44 @@
             if (nativeSyncBtn) nativeSyncBtn.click();
         },
 
+        isAdminPage: function () {
+            var hash = (location.hash || '').replace('#', '').replace(/^\//, '');
+            var adminPrefixes = [
+                'dashboard', 'configurationpage', 'edituser', 'userprofiles',
+                'dlna', 'encodingsettings', 'log', 'notificationsettings',
+                'installedplugins', 'availableplugins', 'repositories',
+                'scheduledtasks', 'serveractivity', 'networking',
+                'apikeys', 'devices', 'livetv', 'playbackconfiguration',
+                'streamingsettings', 'transcodingsettings', 'metadataimages',
+                'metadatanfo', 'librarydisplay', 'wizardstart'
+            ];
+            var lowerHash = hash.toLowerCase();
+            for (var i = 0; i < adminPrefixes.length; i++) {
+                if (lowerHash === adminPrefixes[i] || lowerHash.indexOf(adminPrefixes[i] + '/') === 0 || lowerHash.indexOf(adminPrefixes[i] + '?') === 0) {
+                    return true;
+                }
+            }
+            // Also check for the admin drawer being visible
+            var adminDrawer = document.querySelector('.adminDrawerLogo, .mainDrawer-scrollContainer .navMenuOption[href*="dashboard"]');
+            if (adminDrawer && window.getComputedStyle(adminDrawer).display !== 'none') {
+                // Check if we're in admin context by looking at the page body class
+                var mainContent = document.querySelector('.mainAnimatedPage');
+                if (mainContent && mainContent.querySelector('.dashboardDocument, .adminPage')) return true;
+            }
+            return false;
+        },
+
+        updateVisibility: function () {
+            if (!this.container) return;
+            var isAdmin = this.isAdminPage();
+            this.container.style.display = isAdmin ? 'none' : '';
+            document.body.classList.toggle('moonfin-navbar-active', !isAdmin);
+        },
+
         updateActiveState: function () {
             if (!this.container) return;
+
+            this.updateVisibility();
 
             var hash = (location.hash || '').replace('#', '');
 
@@ -538,6 +575,7 @@
             }
             if (this._onViewShow) {
                 window.removeEventListener('viewshow', this._onViewShow);
+                window.removeEventListener('hashchange', this._onViewShow);
                 this._onViewShow = null;
             }
             document.body.classList.remove('moonfin-navbar-active');
