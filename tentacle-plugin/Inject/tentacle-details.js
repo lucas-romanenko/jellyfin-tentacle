@@ -1,811 +1,3077 @@
-/**
- * Tentacle Details Overlay
- * Full-screen modal for item details, inspired by Moonfin.
- * Intercepts card clicks on the Tentacle home and Jellyfin library pages.
- */
-(function () {
-    'use strict';
+var Details = {
+    container: null,
+    currentItem: null,
+    isVisible: false,
+    _itemHistory: [],
+    _navigatingBack: false,
+    _trailerOverlay: null,
+    _trailerEscHandler: null,
+    _trailerPreviousFocus: null,
+    _trailerPlayer: null,
+    _settingsChangedHandler: null,
+    FAVORITE_INDICATOR_SVG: '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="m480-120-58-52q-101-91-167-157T150-447.5Q111-500 95.5-544T80-634q0-94 63-157t157-63q52 0 99 22t81 62q34-40 81-62t99-22q94 0 157 63t63 157q0 46-15.5 90T810-447.5Q771-395 705-329T538-172l-58 52Z"/></svg>',
+    WATCHED_INDICATOR_SVG: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M21 7L9 19l-5.5-5.5 1.41-1.41L9 16.17 19.59 5.59 21 7z"/></svg>',
 
-    var TD = {
-        overlay: null,
-        apiClient: null,
-        userId: null,
-        history: [],
-        navigatingBack: false,
-        initialized: false
-    };
+    buildFavoriteIndicator: function() {
+        return '<div class="moonfin-favorite-indicator">' + this.FAVORITE_INDICATOR_SVG + '</div>';
+    },
 
-    // ── SVG Icons ──
-    var ICONS = {
-        back: '<svg viewBox="0 0 24 24" width="22" height="22"><path fill="#fff" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>',
-        play: '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>',
-        check: '<svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>',
-        heart: '<svg viewBox="0 0 24 24"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>',
-        heartOutline: '<svg viewBox="0 0 24 24"><path d="M16.5 3c-1.74 0-3.41.81-4.5 2.09C10.91 3.81 9.24 3 7.5 3 4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55l-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z"/></svg>',
-        person: '<svg viewBox="0 0 24 24"><path fill="rgba(255,255,255,0.15)" d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>'
-    };
+    buildWatchedIndicator: function() {
+        return '<div class="moonfin-watched-indicator">' + this.WATCHED_INDICATOR_SVG + '</div>';
+    },
 
-    // ── Bootstrap ──
-    function waitForReady() {
-        if (window.ApiClient && window.ApiClient.getCurrentUserId()) {
-            TD.apiClient = window.ApiClient;
-            TD.userId = window.ApiClient.getCurrentUserId();
-            init();
-        } else {
-            setTimeout(waitForReady, 300);
-        }
-    }
+    init: function() {
+        this.createContainer();
+        this.setupItemInterception();
+    },
 
-    function init() {
-        if (TD.initialized) return;
-        TD.initialized = true;
-        createOverlayDOM();
-        attachListeners();
-    }
+    createContainer: function() {
+        var existing = document.querySelector('.moonfin-details-overlay');
+        if (existing) existing.remove();
 
-    // ── Overlay DOM ──
-    function createOverlayDOM() {
-        var el = document.createElement('div');
-        el.className = 'td-overlay';
-        el.innerHTML =
-            '<div class="td-backdrop"></div>' +
-            '<div class="td-panel">' +
-            '  <button class="td-back" aria-label="Back">' + ICONS.back + '</button>' +
-            '  <div class="td-content"></div>' +
-            '</div>';
-        document.body.appendChild(el);
-        TD.overlay = el;
+        this.container = document.createElement('div');
+        this.container.className = 'moonfin-details-overlay';
+        this.container.innerHTML = '<div class="moonfin-details-backdrop"></div><div class="moonfin-details-panel"></div>';
+        document.body.appendChild(this.container);
+        this.applyBackdropSettings();
+    },
 
-        el.querySelector('.td-back').addEventListener('click', goBack);
-        el.querySelector('.td-panel').addEventListener('click', function (e) {
-            if (e.target === el.querySelector('.td-panel') || e.target === el.querySelector('.td-backdrop')) {
-                closeOverlay();
-            }
-        });
-    }
+    applyBackdropSettings: function() {
+        var backdrop = this.container ? this.container.querySelector('.moonfin-details-backdrop') : null;
+        if (!backdrop) return;
 
-    // ── Event Listeners ──
-    function attachListeners() {
-        document.addEventListener('click', onCardClick, true);
-        document.addEventListener('keydown', function (e) {
-            if (!isOpen()) return;
-            if (e.key === 'Escape' || e.keyCode === 27 || e.keyCode === 461 || e.keyCode === 10009) {
-                e.preventDefault();
-                e.stopPropagation();
-                goBack();
-            }
-        }, true);
-    }
+        var opacity = 90;
+        var blur = 0;
 
-    // ── Card Click Interception ──
-    var IGNORE_SELECTORS = [
-        '.videoOsdBottom', '.videoOsdTop', '.dialog', '.dialogContainer',
-        '.actionSheetContent', '.subtitleSync', '.osdFocusContainer',
-        '.focuscontainer-x', '.upNextContainer', '.videoOsd',
-        '.mh-hero', '.mh-hero-slide'
-    ];
+        var dim = (100 - opacity) / 100;
+        backdrop.style.setProperty('--moonfin-details-backdrop-dim', dim.toFixed(2));
+        backdrop.style.filter = blur > 0 ? 'blur(' + blur + 'px)' : 'none';
+    },
 
-    var IGNORE_BUTTON_SELECTORS = [
-        '.cardOverlayButton', '.btnPlayItem', '.btnMoreCommands',
-        '.paper-icon-button-light', '.mh-card-play-overlay',
-        '.td-btn', '.td-btn-circle', '.td-back'
-    ];
+    setupItemInterception: function() {
+        var self = this;
 
-    function onCardClick(e) {
-        // Don't intercept if inside ignored containers
-        for (var i = 0; i < IGNORE_SELECTORS.length; i++) {
-            if (e.target.closest(IGNORE_SELECTORS[i])) return;
-        }
+        
+        var ignoreSelectors = '.videoOsdBottom, .videoOsdTop, .osdHeader, .videoOsd, .subtitleAppearanceDialog, .subtitleSync, .trackSelections, .playerStats, .dialog, .dialogContainer, .focuscontainer-down, .actionSheetContent, .actionSheet, .actionSheetScroller, .videoPlayerContainer, .upNextContainer, .mediaSelectionMenu, .slideshowButtonContainer, .btnVideoOsd, .osdMediaInfo, .osdControls, .skipSegmentContainer, .itemContextMenu, .popupContainer, .toast, .guide, .recordingFields, .formDialogContent, .formDialog, .promptDialog, .confirmDialog, .withPopup, .multiSelectMenu, .moonfin-more-menu, .moonfin-settings-panel';
 
-        // Don't intercept button clicks
-        for (var j = 0; j < IGNORE_BUTTON_SELECTORS.length; j++) {
-            if (e.target.closest(IGNORE_BUTTON_SELECTORS[j])) return;
-        }
-
-        // Find the card element
-        var card = e.target.closest('.card, .listItem, .mh-card, .mh-card-wide');
-        if (!card) return;
-
-        // Must be in a valid section
-        var validParent = card.closest(
-            '.homeSection, .section, .itemsContainer, .libraryPage, ' +
-            '#tentacle-home, .mh-row, .td-section'
-        );
-        if (!validParent) return;
-
-        // Extract item ID
-        var itemId = extractItemId(card);
-        if (!itemId) return;
-
-        e.preventDefault();
-        e.stopPropagation();
-
-        showDetails(itemId);
-    }
-
-    function extractItemId(card) {
-        var id = card.getAttribute('data-id') || card.getAttribute('data-itemid');
-        if (id) return id;
-
-        var inner = card.querySelector('[data-id]');
-        if (inner) return inner.getAttribute('data-id');
-
-        inner = card.querySelector('[data-itemid]');
-        if (inner) return inner.getAttribute('data-itemid');
-
-        // Tentacle home cards store the ID in onclick handler or data attribute
-        var tdId = card.getAttribute('data-item-id');
-        if (tdId) return tdId;
-
-        // Try href
-        var link = card.querySelector('a[href]') || (card.tagName === 'A' ? card : null);
-        if (link) {
-            var href = link.getAttribute('href') || '';
-            var match = href.match(/id=([a-f0-9]+)/i) || href.match(/([a-f0-9]{32})/i);
-            if (match) return match[1];
-        }
-
-        return null;
-    }
-
-    // ── Show Details ──
-    function showDetails(itemId) {
-        if (!TD.overlay) return;
-
-        // Push current to history if we're already showing something
-        var currentId = TD.overlay.getAttribute('data-current-id');
-        if (currentId && !TD.navigatingBack) {
-            TD.history.push(currentId);
-        }
-        TD.navigatingBack = false;
-
-        TD.overlay.setAttribute('data-current-id', itemId);
-
-        // Show loading state
-        var content = TD.overlay.querySelector('.td-content');
-        content.innerHTML = '<div class="td-loading"><div class="mh-spinner"></div></div>';
-        TD.overlay.classList.add('active');
-        document.body.style.overflow = 'hidden';
-
-        // Fetch item data
-        fetchItem(itemId).then(function (item) {
-            if (!item) {
-                closeOverlay();
+        document.addEventListener('click', function(e) {
+            if (e.target.closest(ignoreSelectors)) {
                 return;
             }
 
-            // Set backdrop
-            var backdropUrl = getImageUrl(item, 'Backdrop', 1920);
-            var backdrop = TD.overlay.querySelector('.td-backdrop');
-            backdrop.style.backgroundImage = backdropUrl ? 'url(' + backdropUrl + ')' : 'none';
-
-            // Render content
-            renderDetails(item);
-
-            // Fetch additional data in parallel
-            fetchAdditionalData(item);
-        }).catch(function () {
-            closeOverlay();
-        });
-    }
-
-    // ── Fetch Item ──
-    function fetchItem(itemId) {
-        return TD.apiClient.getJSON(TD.apiClient.getUrl(
-            'Users/' + TD.userId + '/Items/' + itemId,
-            { Fields: 'Overview,Genres,People,Studios,ProviderIds,MediaSources,Chapters' }
-        ));
-    }
-
-    function fetchSimilar(itemId) {
-        return TD.apiClient.getJSON(TD.apiClient.getUrl(
-            'Items/' + itemId + '/SimilarItems',
-            { UserId: TD.userId, Limit: 12, Fields: 'PrimaryImageAspectRatio' }
-        )).then(function (r) { return r.Items || []; })
-          .catch(function () { return []; });
-    }
-
-    function fetchSeasons(seriesId) {
-        return TD.apiClient.getJSON(TD.apiClient.getUrl(
-            'Shows/' + seriesId + '/Seasons',
-            { UserId: TD.userId, Fields: 'PrimaryImageAspectRatio' }
-        )).then(function (r) { return r.Items || []; })
-          .catch(function () { return []; });
-    }
-
-    function fetchEpisodes(seriesId, seasonId) {
-        return TD.apiClient.getJSON(TD.apiClient.getUrl(
-            'Shows/' + seriesId + '/Episodes',
-            { UserId: TD.userId, SeasonId: seasonId, Fields: 'Overview,PrimaryImageAspectRatio', Limit: 50 }
-        )).then(function (r) { return r.Items || []; })
-          .catch(function () { return []; });
-    }
-
-    // ── Render Details ──
-    function renderDetails(item) {
-        var content = TD.overlay.querySelector('.td-content');
-        var html = '';
-
-        // Header (info + poster)
-        html += '<div class="td-header">';
-        html += '<div class="td-info">';
-
-        // Episode header
-        if (item.Type === 'Episode' && item.SeriesName) {
-            html += '<div class="td-episode-header">' + esc(item.SeriesName);
-            html += '<span class="td-episode-badge">S' + pad(item.ParentIndexNumber) + 'E' + pad(item.IndexNumber) + '</span>';
-            html += '</div>';
-        }
-
-        // Logo or title
-        var logoUrl = getImageUrl(item, 'Logo', 500);
-        if (logoUrl) {
-            html += '<img class="td-logo" src="' + attr(logoUrl) + '" alt="' + attr(item.Name) + '" />';
-        } else {
-            html += '<h1 class="td-title">' + esc(item.Name || '') + '</h1>';
-        }
-
-        // Meta line
-        html += buildMetaLine(item);
-
-        // Tagline
-        if (item.Taglines && item.Taglines.length > 0) {
-            html += '<div class="td-tagline">' + esc(item.Taglines[0]) + '</div>';
-        }
-
-        // Genres
-        if (item.Genres && item.Genres.length > 0) {
-            html += '<div class="td-genres">';
-            item.Genres.slice(0, 5).forEach(function (g) {
-                html += '<span class="td-genre">' + esc(g) + '</span>';
-            });
-            html += '</div>';
-        }
-
-        // Overview
-        if (item.Overview) {
-            html += '<div class="td-overview">' + esc(item.Overview) + '</div>';
-        }
-
-        html += '</div>'; // .td-info
-
-        // Poster
-        var posterUrl = item.Type === 'Episode'
-            ? getImageUrl(item, 'Primary', 400) || getImageUrl(item, 'Thumb', 400)
-            : getImageUrl(item, 'Primary', 400);
-        if (posterUrl) {
-            var posterClass = item.Type === 'Episode' ? 'td-poster td-poster-wide' : 'td-poster';
-            html += '<div class="td-poster-wrap"><img class="' + posterClass + '" src="' + attr(posterUrl) + '" loading="lazy" /></div>';
-        }
-
-        html += '</div>'; // .td-header
-
-        // Action buttons
-        html += buildActions(item);
-
-        // Sections placeholder
-        html += '<div class="td-sections"></div>';
-
-        content.innerHTML = html;
-
-        // Wire up button handlers
-        wireActions(item);
-    }
-
-    // ── Meta Line ──
-    function buildMetaLine(item) {
-        var parts = [];
-
-        if (item.ProductionYear) {
-            parts.push(esc(String(item.ProductionYear)));
-        }
-
-        if (item.CommunityRating) {
-            parts.push('<span class="td-meta-rating">&#9733; ' + item.CommunityRating.toFixed(1) + '</span>');
-        }
-
-        if (item.OfficialRating) {
-            parts.push('<span class="td-meta-age">' + esc(item.OfficialRating) + '</span>');
-        }
-
-        if (item.RunTimeTicks) {
-            var mins = Math.round(item.RunTimeTicks / 600000000);
-            if (mins >= 60) {
-                parts.push(Math.floor(mins / 60) + 'h ' + (mins % 60) + 'm');
-            } else {
-                parts.push(mins + 'm');
+            if (document.querySelector('.selectionCommandsPanel')) {
+                return;
             }
-        }
 
-        if (item.Type === 'Series' && item.Status) {
-            parts.push(esc(item.Status));
-        }
+            var card = e.target.closest('.card, .listItem');
+            if (!card) return;
 
-        if (parts.length === 0) return '';
-        return '<div class="td-meta">' + parts.join('<span class="td-meta-sep">&#9679;</span>') + '</div>';
-    }
-
-    // ── Action Buttons ──
-    function buildActions(item) {
-        var html = '<div class="td-actions">';
-        var hasResume = item.UserData && item.UserData.PlaybackPositionTicks > 0;
-
-        if (item.Type !== 'Person') {
-            if (hasResume) {
-                var pct = Math.round((item.UserData.PlaybackPositionTicks / item.RunTimeTicks) * 100);
-                html += '<button class="td-btn td-btn-resume" data-action="resume">' + ICONS.play + ' Resume (' + pct + '%)</button>';
-                html += '<button class="td-btn td-btn-play" data-action="play">' + ICONS.play + ' Restart</button>';
-            } else if (item.Type === 'Series') {
-                // No direct play for series — show play if there are episodes
-                html += '<button class="td-btn td-btn-play" data-action="play">' + ICONS.play + ' Play</button>';
-            } else {
-                html += '<button class="td-btn td-btn-play" data-action="play">' + ICONS.play + ' Play</button>';
+            if (e.target.closest('.cardOverlayButton, .listItemButton, .btnPlayItem, .btnMoreCommands, .btnUserItemRating, .btnItemAction, .paper-icon-button-light, .itemAction[data-action]:not([data-action="link"])')) {
+                return;
             }
-        }
 
-        // Watched toggle
-        if (item.UserData) {
-            var watchedClass = item.UserData.Played ? ' active' : '';
-            html += '<div class="td-btn-group">';
-            html += '<button class="td-btn-circle' + watchedClass + '" data-action="watched" title="Watched">' + ICONS.check + '</button>';
-            html += '<span class="td-btn-label">' + (item.UserData.Played ? 'Watched' : 'Unwatched') + '</span>';
-            html += '</div>';
-        }
+            if (!card.closest('.homeSection, .section, .itemsContainer, .cardContainer, .listTopPager, .vertical-list, .vertical-wrap, .prefContainer, .libraryPage, .pageTabContent, .sectionTitleContainer, .moonfin-details-panel, .moonfin-mediabar')) {
+                return;
+            }
 
-        // Favorite toggle
-        if (item.UserData) {
-            var favClass = item.UserData.IsFavorite ? ' active' : '';
-            var favIcon = item.UserData.IsFavorite ? ICONS.heart : ICONS.heartOutline;
-            html += '<div class="td-btn-group">';
-            html += '<button class="td-btn-circle' + favClass + '" data-action="favorite" title="Favorite">' + favIcon + '</button>';
-            html += '<span class="td-btn-label">' + (item.UserData.IsFavorite ? 'Favorited' : 'Favorite') + '</span>';
-            html += '</div>';
-        }
+            var itemId = self.getItemIdFromCard(card);
+            if (!itemId) return;
 
-        // Go to series (for episodes)
-        if (item.Type === 'Episode' && item.SeriesId) {
-            html += '<button class="td-btn td-btn-play" data-action="series" style="background:rgba(255,255,255,0.12);color:#fff;">' +
-                    'Go to Series</button>';
-        }
-
-        html += '</div>';
-        return html;
-    }
-
-    function wireActions(item) {
-        var content = TD.overlay.querySelector('.td-content');
-
-        content.querySelectorAll('[data-action]').forEach(function (btn) {
-            btn.addEventListener('click', function (e) {
+            var cardType = card.getAttribute('data-type') || 
+                          (card.querySelector('[data-type]') ? card.querySelector('[data-type]').getAttribute('data-type') : null) ||
+                          self.inferCardType(card);
+            
+            if (['Movie', 'Series', 'Episode', 'Season'].indexOf(cardType) !== -1) {
+                e.preventDefault();
                 e.stopPropagation();
-                var action = btn.getAttribute('data-action');
-
-                switch (action) {
-                    case 'play':
-                        playItem(item, 0);
-                        break;
-                    case 'resume':
-                        playItem(item, item.UserData ? item.UserData.PlaybackPositionTicks : 0);
-                        break;
-                    case 'watched':
-                        toggleWatched(item, btn);
-                        break;
-                    case 'favorite':
-                        toggleFavorite(item, btn);
-                        break;
-                    case 'series':
-                        if (item.SeriesId) showDetails(item.SeriesId);
-                        break;
-                }
-            });
-        });
-    }
-
-    // ── Play Item ──
-    function playItem(item, startTicks) {
-        closeOverlay();
-
-        // Navigate to Jellyfin's native player
-        var hash = '#/details?id=' + item.Id;
-        window.location.hash = hash;
-
-        // After a short delay, try to auto-click the play button
-        setTimeout(function () {
-            var playBtn = document.querySelector('.mainDetailButtons .btnPlay, .detailButton-play, [data-action="resume"], [data-action="play"]');
-            if (playBtn) {
-                playBtn.click();
+                e.stopImmediatePropagation();
+                self.showDetails(itemId, cardType);
+                return false;
             }
-        }, 800);
-    }
-
-    // ── Toggle Watched ──
-    function toggleWatched(item, btn) {
-        var isPlayed = btn.classList.contains('active');
-        var url = 'Users/' + TD.userId + '/PlayedItems/' + item.Id;
-        var label = btn.parentElement.querySelector('.td-btn-label');
-
-        if (isPlayed) {
-            TD.apiClient.ajax({ type: 'DELETE', url: TD.apiClient.getUrl(url) }).then(function () {
-                btn.classList.remove('active');
-                if (label) label.textContent = 'Unwatched';
-                item.UserData.Played = false;
-            });
-        } else {
-            TD.apiClient.ajax({ type: 'POST', url: TD.apiClient.getUrl(url) }).then(function () {
-                btn.classList.add('active');
-                if (label) label.textContent = 'Watched';
-                item.UserData.Played = true;
-            });
-        }
-    }
-
-    // ── Toggle Favorite ──
-    function toggleFavorite(item, btn) {
-        var isFav = btn.classList.contains('active');
-        var url = 'Users/' + TD.userId + '/FavoriteItems/' + item.Id;
-        var label = btn.parentElement.querySelector('.td-btn-label');
-
-        if (isFav) {
-            TD.apiClient.ajax({ type: 'DELETE', url: TD.apiClient.getUrl(url) }).then(function () {
-                btn.classList.remove('active');
-                btn.innerHTML = ICONS.heartOutline;
-                if (label) label.textContent = 'Favorite';
-                item.UserData.IsFavorite = false;
-            });
-        } else {
-            TD.apiClient.ajax({ type: 'POST', url: TD.apiClient.getUrl(url) }).then(function () {
-                btn.classList.add('active');
-                btn.innerHTML = ICONS.heart;
-                if (label) label.textContent = 'Favorited';
-                item.UserData.IsFavorite = true;
-            });
-        }
-    }
-
-    // ── Fetch Additional Data ──
-    function fetchAdditionalData(item) {
-        var sections = TD.overlay.querySelector('.td-sections');
-        if (!sections) return;
-
-        // Cast
-        if (item.People && item.People.length > 0) {
-            renderCast(sections, item.People);
-        }
-
-        // Series → Seasons
-        if (item.Type === 'Series') {
-            fetchSeasons(item.Id).then(function (seasons) {
-                if (seasons.length > 0) {
-                    renderSeasons(sections, seasons);
-                }
-            });
-        }
-
-        // Season or Episode → Episodes
-        if (item.Type === 'Season' && item.SeriesId) {
-            fetchEpisodes(item.SeriesId, item.Id).then(function (eps) {
-                if (eps.length > 0) {
-                    renderEpisodes(sections, eps);
-                }
-            });
-        }
-        if (item.Type === 'Episode' && item.SeriesId && item.SeasonId) {
-            fetchEpisodes(item.SeriesId, item.SeasonId).then(function (eps) {
-                if (eps.length > 0) {
-                    renderEpisodes(sections, eps, item.Id);
-                }
-            });
-        }
-
-        // Similar items (for movies and series)
-        if (item.Type === 'Movie' || item.Type === 'Series') {
-            fetchSimilar(item.Id).then(function (similar) {
-                if (similar.length > 0) {
-                    renderSimilar(sections, similar);
-                }
-            });
-        }
-    }
-
-    // ── Render Cast ──
-    function renderCast(container, people) {
-        var actors = people.filter(function (p) {
-            return p.Type === 'Actor';
-        }).slice(0, 15);
-        if (actors.length === 0) return;
-
-        var section = createSection('Cast');
-        var items = section.querySelector('.td-section-items');
-
-        actors.forEach(function (person) {
-            var card = document.createElement('div');
-            card.className = 'td-cast-card';
-
-            var imgHtml;
-            if (person.PrimaryImageTag) {
-                var imgUrl = TD.apiClient.getUrl('Items/' + person.Id + '/Images/Primary', {
-                    maxHeight: 200, quality: 80, tag: person.PrimaryImageTag
-                });
-                imgHtml = '<img class="td-cast-img" src="' + attr(imgUrl) + '" loading="lazy" />';
-            } else {
-                imgHtml = '<div class="td-cast-placeholder">' + ICONS.person + '</div>';
-            }
-
-            card.innerHTML = imgHtml +
-                '<div class="td-cast-name">' + esc(person.Name || '') + '</div>' +
-                '<div class="td-cast-role">' + esc(person.Role || person.Type || '') + '</div>';
-
-            items.appendChild(card);
-        });
-
-        container.appendChild(section);
-        setupScrollArrows(section);
-    }
-
-    // ── Render Seasons ──
-    function renderSeasons(container, seasons) {
-        var section = createSection('Seasons');
-        var items = section.querySelector('.td-section-items');
-
-        seasons.forEach(function (season) {
-            var card = document.createElement('div');
-            card.className = 'td-card';
-            card.style.position = 'relative';
-
-            var imgUrl = getImageUrl(season, 'Primary', 300);
-            var imgHtml = imgUrl
-                ? '<img class="td-card-poster" src="' + attr(imgUrl) + '" loading="lazy" />'
-                : '<div class="td-card-no-img">&#127909;</div>';
-
-            // Unplayed count
-            var badge = '';
-            if (season.UserData && season.UserData.UnplayedItemCount > 0) {
-                badge = '<div class="td-unplayed-count" style="position:absolute;top:6px;right:6px;">' +
-                        season.UserData.UnplayedItemCount + '</div>';
-            }
-
-            card.innerHTML = imgHtml + badge +
-                '<div class="td-card-title">' + esc(season.Name || '') + '</div>';
-
-            card.addEventListener('click', function (e) {
+            if (!cardType && card.classList.contains('card')) {
+                e.preventDefault();
                 e.stopPropagation();
-                showDetails(season.Id);
-            });
-            items.appendChild(card);
-        });
+                e.stopImmediatePropagation();
+                self.showDetails(itemId, null);
+                return false;
+            }
+        }, true);
 
-        container.appendChild(section);
-        setupScrollArrows(section);
-    }
-
-    // ── Render Episodes ──
-    function renderEpisodes(container, episodes, currentEpId) {
-        var section = createSection('Episodes');
-        var items = section.querySelector('.td-section-items');
-
-        episodes.forEach(function (ep) {
-            var card = document.createElement('div');
-            card.className = 'td-episode-card';
-
-            var thumbUrl = getImageUrl(ep, 'Primary', 400) || getImageUrl(ep, 'Thumb', 400);
-            var thumbHtml;
-            if (thumbUrl) {
-                thumbHtml = '<div style="position:relative;">' +
-                    '<img class="td-episode-thumb" src="' + attr(thumbUrl) + '" loading="lazy" />' +
-                    (ep.IndexNumber ? '<span class="td-episode-num">E' + ep.IndexNumber + '</span>' : '') +
-                    '</div>';
-            } else {
-                thumbHtml = '<div style="position:relative;">' +
-                    '<div class="td-episode-no-thumb">&#9654;</div>' +
-                    (ep.IndexNumber ? '<span class="td-episode-num">E' + ep.IndexNumber + '</span>' : '') +
-                    '</div>';
+        document.addEventListener('click', function(e) {
+            if (e.target.closest(ignoreSelectors)) {
+                return;
             }
 
-            var progressHtml = '';
-            if (ep.UserData && ep.UserData.PlayedPercentage > 0 && ep.UserData.PlayedPercentage < 100) {
-                progressHtml = '<div class="td-episode-progress"><div class="td-episode-progress-bar" style="width:' +
-                    Math.min(ep.UserData.PlayedPercentage, 100) + '%"></div></div>';
+            if (document.querySelector('.selectionCommandsPanel')) {
+                return;
             }
 
-            var metaText = '';
-            if (ep.Overview) {
-                metaText = esc(ep.Overview.length > 120 ? ep.Overview.substring(0, 120) + '...' : ep.Overview);
-            }
-
-            card.innerHTML = thumbHtml +
-                '<div class="td-episode-title">' + esc(ep.Name || '') + '</div>' +
-                '<div class="td-episode-meta">' + metaText + '</div>' +
-                progressHtml;
-
-            if (currentEpId && ep.Id === currentEpId) {
-                card.style.outline = '2px solid #00a4dc';
-                card.style.borderRadius = '8px';
-            }
-
-            card.addEventListener('click', function (e) {
+            var link = e.target.closest('a[href*="id="], a[href*="/details"]');
+            if (!link) return;
+            
+            var card = link.closest('.card, .listItem');
+            if (!card) return;
+            
+            var itemId = self.getItemIdFromCard(card) || self.getItemIdFromLink(link);
+            if (!itemId) return;
+            
+            var cardType = card.getAttribute('data-type') || self.inferCardType(card);
+            
+            if (!cardType || ['Movie', 'Series', 'Episode', 'Season'].indexOf(cardType) !== -1) {
+                e.preventDefault();
                 e.stopPropagation();
-                showDetails(ep.Id);
-            });
-            items.appendChild(card);
-        });
+                e.stopImmediatePropagation();
+                self.showDetails(itemId, cardType);
+                return false;
+            }
+        }, true);
 
-        container.appendChild(section);
-        setupScrollArrows(section);
-
-        // Scroll current episode into view
-        if (currentEpId) {
-            setTimeout(function () {
-                var current = items.querySelector('[style*="outline"]');
-                if (current) {
-                    current.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' || e.keyCode === 13) {
+                if (e.target.closest(ignoreSelectors)) {
+                    return;
                 }
-            }, 100);
-        }
-    }
 
-    // ── Render Similar ──
-    function renderSimilar(container, similar) {
-        var section = createSection('More Like This');
-        var items = section.querySelector('.td-section-items');
+                var focused = document.activeElement;
+                var card = (focused ? focused.closest('.card, .listItem') : null) || 
+                          (focused && focused.classList.contains('card') ? focused : null);
+                
+                if (card) {
+                    var itemId = self.getItemIdFromCard(card);
+                    var cardType = card.getAttribute('data-type') || self.inferCardType(card);
+                    
+                    if (itemId && (!cardType || ['Movie', 'Series', 'Episode', 'Season'].indexOf(cardType) !== -1)) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        e.stopImmediatePropagation();
+                        self.showDetails(itemId, cardType);
+                        return false;
+                    }
+                }
+            }
+        }, true);
 
-        similar.forEach(function (item) {
-            var card = document.createElement('div');
-            card.className = 'td-card';
-
-            var imgUrl = getImageUrl(item, 'Primary', 300);
-            var imgHtml = imgUrl
-                ? '<img class="td-card-poster" src="' + attr(imgUrl) + '" loading="lazy" />'
-                : '<div class="td-card-no-img">&#127909;</div>';
-
-            var meta = [];
-            if (item.ProductionYear) meta.push(item.ProductionYear);
-            if (item.CommunityRating) meta.push('&#9733; ' + item.CommunityRating.toFixed(1));
-
-            card.innerHTML = imgHtml +
-                '<div class="td-card-title">' + esc(item.Name || '') + '</div>' +
-                '<div class="td-card-meta">' + meta.join(' &middot; ') + '</div>';
-
-            card.addEventListener('click', function (e) {
+        // Close on back button — keyCodes 461 (LG) and 10009 (Samsung) are TV remote back buttons
+        document.addEventListener('keydown', function(e) {
+            if (self.isVisible && (e.key === 'Escape' || e.keyCode === 27 || e.keyCode === 461 || e.keyCode === 10009)) {
+                e.preventDefault();
                 e.stopPropagation();
-                showDetails(item.Id);
-            });
-            items.appendChild(card);
-        });
-
-        container.appendChild(section);
-        setupScrollArrows(section);
-    }
-
-    // ── Section Helper ──
-    function createSection(title) {
-        var section = document.createElement('div');
-        section.className = 'td-section';
-        section.innerHTML =
-            '<div class="td-section-title">' + esc(title) + '</div>' +
-            '<div class="td-section-scroll">' +
-            '  <div class="td-scroll-arrow td-scroll-arrow-left">&#10094;</div>' +
-            '  <div class="td-section-items"></div>' +
-            '  <div class="td-scroll-arrow td-scroll-arrow-right">&#10095;</div>' +
-            '</div>';
-        return section;
-    }
-
-    function setupScrollArrows(section) {
-        var items = section.querySelector('.td-section-items');
-        var left = section.querySelector('.td-scroll-arrow-left');
-        var right = section.querySelector('.td-scroll-arrow-right');
-
-        if (left) {
-            left.addEventListener('click', function () {
-                items.scrollBy({ left: -items.clientWidth * 0.8, behavior: 'smooth' });
-            });
-        }
-        if (right) {
-            right.addEventListener('click', function () {
-                items.scrollBy({ left: items.clientWidth * 0.8, behavior: 'smooth' });
-            });
-        }
-    }
-
-    // ── Image URL Helper ──
-    function getImageUrl(item, imageType, maxWidth) {
-        if (!item) return null;
-
-        // Check ImageTags
-        if (item.ImageTags && item.ImageTags[imageType]) {
-            return TD.apiClient.getUrl('Items/' + item.Id + '/Images/' + imageType, {
-                maxWidth: maxWidth, quality: 90, tag: item.ImageTags[imageType]
-            });
-        }
-
-        // Backdrop from BackdropImageTags
-        if (imageType === 'Backdrop' && item.BackdropImageTags && item.BackdropImageTags.length > 0) {
-            return TD.apiClient.getUrl('Items/' + item.Id + '/Images/Backdrop/0', {
-                maxWidth: maxWidth, quality: 90, tag: item.BackdropImageTags[0]
-            });
-        }
-
-        // For episodes, try parent images
-        if (item.Type === 'Episode') {
-            if (imageType === 'Backdrop' && item.ParentBackdropImageTags && item.ParentBackdropImageTags.length > 0) {
-                return TD.apiClient.getUrl('Items/' + item.ParentBackdropItemId + '/Images/Backdrop/0', {
-                    maxWidth: maxWidth, quality: 90, tag: item.ParentBackdropImageTags[0]
-                });
+                if (self.closeTrailerOverlay()) {
+                    return;
+                }
+                self.hide();
             }
-            if (imageType === 'Logo' && item.ParentLogoImageTag && item.ParentLogoItemId) {
-                return TD.apiClient.getUrl('Items/' + item.ParentLogoItemId + '/Images/Logo', {
-                    maxWidth: maxWidth, quality: 90, tag: item.ParentLogoImageTag
-                });
-            }
-        }
+        }, true);
+    },
 
-        // For seasons, try series images
-        if (item.Type === 'Season') {
-            if (imageType === 'Backdrop' && item.ParentBackdropImageTags && item.ParentBackdropImageTags.length > 0) {
-                return TD.apiClient.getUrl('Items/' + item.ParentBackdropItemId + '/Images/Backdrop/0', {
-                    maxWidth: maxWidth, quality: 90, tag: item.ParentBackdropImageTags[0]
-                });
-            }
-            if (imageType === 'Logo' && item.ParentLogoImageTag && item.ParentLogoItemId) {
-                return TD.apiClient.getUrl('Items/' + item.ParentLogoItemId + '/Images/Logo', {
-                    maxWidth: maxWidth, quality: 90, tag: item.ParentLogoImageTag
-                });
-            }
+    getItemIdFromCard: function(card) {
+        var idFromAttr = card.getAttribute('data-id') || card.getAttribute('data-itemid');
+        if (idFromAttr) return idFromAttr;
+        
+        var dataIdEl = card.querySelector('[data-id]');
+        if (dataIdEl) return dataIdEl.getAttribute('data-id');
+        
+        var link = card.querySelector('a');
+        if (link && link.href) {
+            var match = link.href.match(/id=([a-f0-9]+)/i) || link.href.match(/\/([a-f0-9]{32})/i);
+            if (match) return match[1];
         }
-
         return null;
-    }
+    },
 
-    // ── Navigation ──
-    function goBack() {
-        if (TD.history.length > 0) {
-            TD.navigatingBack = true;
-            var prevId = TD.history.pop();
-            showDetails(prevId);
+    getItemIdFromLink: function(link) {
+        if (!link || !link.href) return null;
+        var match = link.href.match(/id=([a-f0-9]+)/i) || 
+                   link.href.match(/\/details\?id=([a-f0-9]+)/i) ||
+                   link.href.match(/\/([a-f0-9]{32})/i);
+        return match ? match[1] : null;
+    },
+
+    inferCardType: function(card) {
+        var classList = card.className.toLowerCase();
+        if (classList.indexOf('movie') !== -1) return 'Movie';
+        if (classList.indexOf('series') !== -1) return 'Series';
+        if (classList.indexOf('episode') !== -1) return 'Episode';
+        if (classList.indexOf('season') !== -1) return 'Season';
+        
+        var section = card.closest('.homeSection, .section');
+        if (section) {
+            var sectionTitle = section.querySelector('.sectionTitle');
+            var title = sectionTitle ? sectionTitle.textContent.toLowerCase() : '';
+            if (title.indexOf('movie') !== -1) return 'Movie';
+            if (title.indexOf('series') !== -1 || title.indexOf('show') !== -1) return 'Series';
+            if (title.indexOf('episode') !== -1) return 'Episode';
+        }
+        
+        return null;
+    },
+
+    goBack: function() {
+        if (this._itemHistory.length > 0) {
+            var prev = this._itemHistory.pop();
+            this._navigatingBack = true;
+            this.showDetails(prev.id, prev.type);
+            this._navigatingBack = false;
         } else {
-            closeOverlay();
+            this.hide();
+        }
+    },
+
+    _updateBackButtons: function() {
+        var navbarBack = document.querySelector('.moonfin-details-nav-back');
+        var sidebarBack = document.querySelector('.moonfin-details-sidebar-back');
+        var show = this.isVisible;
+        if (navbarBack) navbarBack.style.display = show ? '' : 'none';
+        if (sidebarBack) sidebarBack.style.display = show ? '' : 'none';
+    },
+
+    showDetails: function(itemId, itemType) {
+        var self = this;
+        this.closeTrailerOverlay();
+
+        var api = window.ApiClient;
+        if (!api) return;
+
+        var wasAlreadyVisible = this.isVisible;
+
+        if (wasAlreadyVisible && this.currentItem && this.currentItem.Id && this.currentItem.Id !== itemId && !this._navigatingBack) {
+            this._itemHistory.push({ id: this.currentItem.Id, type: this.currentItem.Type });
+        }
+
+        this.container.classList.add('visible');
+        this.isVisible = true;
+        document.body.classList.add('moonfin-details-visible');
+        this._updateBackButtons();
+
+        if (!wasAlreadyVisible) {
+            history.pushState({ moonfinDetails: true }, '');
+        }
+
+        var panel = this.container.querySelector('.moonfin-details-panel');
+        panel.innerHTML = '<div class="moonfin-details-loading"><div class="moonfin-spinner"></div><span>Loading...</span></div>';
+
+        this.fetchItem(api, itemId).then(function(item) {
+            self.currentItem = item;
+
+            var supportedTypes = ['Movie', 'Series', 'Episode', 'Season', 'Person', 'BoxSet'];
+            if (supportedTypes.indexOf(item.Type) === -1) {
+                self.hide(true);
+                window.location.hash = '#/details?id=' + itemId;
+                return;
+            }
+
+            if (item.Type === 'Person') {
+                var personItemsPromise = self.fetchPersonItems(api, itemId).catch(function() { return []; });
+                return personItemsPromise.then(function(personItems) {
+                    self.renderPersonDetails(item, personItems);
+
+                    setTimeout(function() {
+                        var firstBtn = panel.querySelector('.moonfin-btn, .moonfin-btn-wrapper, .moonfin-focusable');
+                        if (firstBtn) firstBtn.focus();
+                    }, 100);
+                });
+            }
+
+            var similarPromise = self.fetchSimilar(api, itemId).catch(function() { return []; });
+            var castPromise = Promise.resolve(item.People || []);
+            var seasonsPromise = item.Type === 'Series' ? self.fetchSeasons(api, itemId).catch(function() { return []; }) : Promise.resolve([]);
+            var episodesPromise = (item.Type === 'Episode' && item.SeasonId) ? self.fetchEpisodes(api, item.SeriesId, item.SeasonId).catch(function() { return []; }) : ((item.Type === 'Season' && item.SeriesId) ? self.fetchEpisodes(api, item.SeriesId, item.Id).catch(function() { return []; }) : Promise.resolve([]));
+
+            return Promise.all([similarPromise, castPromise, seasonsPromise, episodesPromise]).then(function(results) {
+                var similar = results[0];
+                var cast = results[1];
+                var seasons = results[2];
+                var episodes = results[3];
+                
+                if (item.Type === 'Season') {
+                    self.renderSeasonDetails(item, episodes);
+                } else {
+                    self.renderDetails(item, similar, cast, seasons, episodes, [], { title: '', items: [] });
+                    Promise.all([
+                        self.fetchSpecialFeatures(api, item).catch(function() { return []; }),
+                        self.fetchCollectionItems(api, item).catch(function() { return { title: '', items: [] }; })
+                    ]).then(function(auxResults) {
+                        if (!self.currentItem || self.currentItem.Id !== item.Id) return;
+
+                        var features = auxResults[0] || [];
+                        var collections = auxResults[1] || { title: '', items: [] };
+                        var hasFeatures = features.length > 0;
+                        var hasCollectionItems = collections && collections.items && collections.items.length > 0;
+
+                        if (!hasFeatures && !hasCollectionItems) return;
+                        self.renderDetails(item, similar, cast, seasons, episodes, features, collections);
+                    });
+                }
+
+
+                setTimeout(function() {
+                    var firstBtn = panel.querySelector('.moonfin-btn');
+                    if (firstBtn) firstBtn.focus();
+                }, 100);
+            });
+        }).catch(function(err) {
+            console.error('[Moonfin] Details: Error loading item', err);
+            panel.innerHTML = '<div class="moonfin-details-error"><span>Failed to load details</span><button class="moonfin-btn moonfin-focusable" onclick="Details.hide()">Close</button></div>';
+        });
+    },
+
+    fetchItem: function(api, itemId) {
+        var userId = api.getCurrentUserId();
+        return api.getItem(userId, itemId);
+    },
+
+    fetchSimilar: function(api, itemId) {
+        var userId = api.getCurrentUserId();
+        return api.getSimilarItems(itemId, {
+            userId: userId,
+            limit: 12,
+            fields: 'PrimaryImageAspectRatio,UserData'
+        }).then(function(result) {
+            return result.Items || [];
+        });
+    },
+
+    fetchSeasons: function(api, seriesId) {
+        var userId = api.getCurrentUserId();
+        return api.getSeasons(seriesId, {
+            userId: userId,
+            fields: 'PrimaryImageAspectRatio,UserData'
+        }).then(function(result) {
+            return result.Items || [];
+        });
+    },
+
+    fetchEpisodes: function(api, seriesId, seasonId) {
+        var userId = api.getCurrentUserId();
+        var serverUrl = api.serverAddress();
+        var headers = this.getAuthHeaders();
+
+        return fetch(serverUrl + '/Shows/' + seriesId + '/Episodes?UserId=' + userId + '&SeasonId=' + seasonId + '&Fields=Overview,PrimaryImageAspectRatio', {
+            headers: headers
+        }).then(function(resp) {
+            return resp.json();
+        }).then(function(result) {
+            return result.Items || [];
+        });
+    },
+
+    fetchPersonItems: function(api, personId) {
+        var userId = api.getCurrentUserId();
+        var serverUrl = api.serverAddress();
+        var headers = this.getAuthHeaders();
+
+        return fetch(serverUrl + '/Users/' + userId + '/Items?PersonIds=' + personId + '&Recursive=true&IncludeItemTypes=Movie,Series&SortBy=PremiereDate,SortName&SortOrder=Descending&Fields=PrimaryImageAspectRatio,Overview&Limit=50', {
+            headers: headers
+        }).then(function(resp) {
+            return resp.json();
+        }).then(function(result) {
+            return result.Items || [];
+        });
+    },
+
+    fetchSpecialFeatures: function(api, item) {
+        if (!item || !item.Id) return Promise.resolve([]);
+        if (!item.SpecialFeatureCount) return Promise.resolve([]);
+
+        var userId = api.getCurrentUserId();
+        var serverUrl = api.serverAddress();
+        var headers = this.getAuthHeaders();
+
+        return fetch(serverUrl + '/Users/' + userId + '/Items/' + item.Id + '/SpecialFeatures?Fields=PrimaryImageAspectRatio,UserData', {
+            headers: headers
+        }).then(function(resp) {
+            if (!resp.ok) throw new Error('Failed to fetch special features');
+            return resp.json();
+        }).then(function(result) {
+            if (Array.isArray(result)) return result;
+            return result.Items || [];
+        });
+    },
+
+    fetchCollectionItems: function(api, item) {
+        if (!item || !item.Id) return Promise.resolve({ title: '', items: [] });
+
+        var type = item.Type;
+        var supportsCollections = ['Movie', 'Series', 'BoxSet'];
+        if (supportsCollections.indexOf(type) === -1) {
+            return Promise.resolve({ title: '', items: [] });
+        }
+
+        var userId = api.getCurrentUserId();
+        var serverUrl = api.serverAddress();
+        var headers = this.getAuthHeaders();
+        var self = this;
+
+        if (type === 'BoxSet') {
+            return fetch(serverUrl + '/Users/' + userId + '/Items?ParentId=' + item.Id + '&SortBy=SortName&SortOrder=Ascending&Fields=PrimaryImageAspectRatio,UserData', {
+                headers: headers
+            }).then(function(resp) {
+                if (!resp.ok) throw new Error('Failed to fetch boxset items');
+                return resp.json();
+            }).then(function(result) {
+                var items = result.Items || [];
+                return {
+                    title: item.Name || 'Collection',
+                    items: items
+                };
+            });
+        }
+
+        return self._findBoxSetForItem(serverUrl, userId, headers, item).then(function(boxSet) {
+            if (!boxSet || !boxSet.Id) {
+                return { title: '', items: [] };
+            }
+
+            return fetch(serverUrl + '/Users/' + userId + '/Items?ParentId=' + boxSet.Id + '&SortBy=PremiereDate,SortName&SortOrder=Ascending&Fields=PrimaryImageAspectRatio,UserData', {
+                headers: headers
+            }).then(function(itemsResp) {
+                if (!itemsResp.ok) throw new Error('Failed to fetch parent collection items');
+                return itemsResp.json();
+            }).then(function(result) {
+                return {
+                    title: boxSet.Name || 'Collection',
+                    items: result.Items || []
+                };
+            });
+        }).catch(function() {
+            return { title: '', items: [] };
+        });
+    },
+
+    _findBoxSetForItem: function(serverUrl, userId, headers, item) {
+        return fetch(serverUrl + '/Users/' + userId + '/Items?Ids=' + item.Id + '&IncludeItemTypes=Movie,Series,BoxSet&Recursive=true&CollapseBoxSetItems=true&Fields=BasicSyncInfo', {
+            headers: headers
+        }).then(function(resp) {
+            if (!resp.ok) return null;
+            return resp.json();
+        }).then(function(result) {
+            var items = (result && result.Items) || [];
+            for (var i = 0; i < items.length; i++) {
+                if (items[i] && items[i].Type === 'BoxSet' && items[i].Id) {
+                    return items[i];
+                }
+            }
+
+            return fetch(serverUrl + '/Users/' + userId + '/Items?IncludeItemTypes=BoxSet&Recursive=true&SortBy=SortName&Fields=BasicSyncInfo', {
+                headers: headers
+            }).then(function(resp) {
+                if (!resp.ok) return null;
+                return resp.json();
+            }).then(function(boxSetsResult) {
+                var boxSets = (boxSetsResult && boxSetsResult.Items) || [];
+                if (boxSets.length === 0) return null;
+
+                var checkBoxSet = function(index) {
+                    if (index >= boxSets.length) return Promise.resolve(null);
+                    var bs = boxSets[index];
+                    if (!bs || !bs.Id) return checkBoxSet(index + 1);
+
+                    return fetch(serverUrl + '/Users/' + userId + '/Items?ParentId=' + bs.Id + '&Fields=BasicSyncInfo', {
+                        headers: headers
+                    }).then(function(resp) {
+                        if (!resp.ok) return checkBoxSet(index + 1);
+                        return resp.json();
+                    }).then(function(childrenResult) {
+                        var children = (childrenResult && childrenResult.Items) || [];
+                        for (var j = 0; j < children.length; j++) {
+                            if (children[j] && children[j].Id === item.Id) {
+                                return bs;
+                            }
+                        }
+                        return checkBoxSet(index + 1);
+                    });
+                };
+
+                return checkBoxSet(0);
+            });
+        }).catch(function() {
+            return null;
+        });
+    },
+
+    renderDetails: function(item, similar, cast, seasons, episodes, features, collections) {
+        var self = this;
+        var panel = this.container.querySelector('.moonfin-details-panel');
+        var api = window.ApiClient;
+        var serverUrl = api.serverAddress();
+
+        var backdropId = (item.BackdropImageTags && item.BackdropImageTags.length > 0) ? item.Id : 
+                        (item.ParentBackdropItemId || item.Id);
+        var backdropUrl = serverUrl + '/Items/' + backdropId + '/Images/Backdrop?maxWidth=1920&quality=90';
+        
+        var posterId = item.Id;
+        var posterTag = item.ImageTags ? item.ImageTags.Primary : null;
+        var isEpisodeThumb = (item.Type === 'Episode');
+        var thumbTag = item.ImageTags ? item.ImageTags.Thumb : null;
+        var posterUrl;
+        if (isEpisodeThumb && thumbTag) {
+            posterUrl = serverUrl + '/Items/' + posterId + '/Images/Thumb?maxWidth=500&quality=90';
+        } else if (isEpisodeThumb && posterTag) {
+            // Episode without Thumb — use Primary but it'll display in landscape container
+            posterUrl = serverUrl + '/Items/' + posterId + '/Images/Primary?maxWidth=500&quality=90';
+        } else {
+            posterUrl = posterTag ? serverUrl + '/Items/' + posterId + '/Images/Primary?maxHeight=500&quality=90' : '';
+        }
+        
+        var logoTag = item.ImageTags ? item.ImageTags.Logo : null;
+        var logoUrl = logoTag ? serverUrl + '/Items/' + item.Id + '/Images/Logo?maxWidth=400&quality=90' : null;
+
+        var runtime = item.RunTimeTicks ? this.formatRuntime(item.RunTimeTicks) : '';
+        
+        var year = item.ProductionYear || (item.PremiereDate ? new Date(item.PremiereDate).getFullYear() : '');
+        
+        var rating = item.OfficialRating || '';
+        
+        var communityRating = item.CommunityRating ? item.CommunityRating.toFixed(1) : '';
+        
+        var criticRating = item.CriticRating;
+        
+        var genres = (item.Genres || []).join(', ');
+        
+        var directors = (item.People || []).filter(function(p) { return p.Type === 'Director'; })
+            .map(function(p) { return p.Name; }).join(', ');
+        
+        var writers = (item.People || []).filter(function(p) { return p.Type === 'Writer'; })
+            .map(function(p) { return p.Name; }).join(', ');
+        
+        var studios = (item.Studios || []).map(function(s) { return s.Name; }).join(', ');
+        
+        var tagline = (item.Taglines && item.Taglines.length > 0) ? item.Taglines[0] : '';
+        
+        var badges = this.getMediaBadges(item);
+        
+        var isFavorite = item.UserData ? item.UserData.IsFavorite : false;
+        var isPlayed = item.UserData ? item.UserData.Played : false;
+        var resumePosition = item.UserData ? (item.UserData.PlaybackPositionTicks || 0) : 0;
+        var hasResume = resumePosition > 0;
+        var isEpisode = item.Type === 'Episode';
+        var isSeries = item.Type === 'Series';
+        var seasonCount = item.ChildCount || seasons.length || 0;
+
+        var infoItems = [];
+        if (year) infoItems.push('<span class="moonfin-info-item">' + year + '</span>');
+        if (rating) infoItems.push('<span class="moonfin-info-pill">' + rating + '</span>');
+        if (runtime && item.Type !== 'Series') infoItems.push('<span class="moonfin-info-item">' + runtime + '</span>');
+        if (communityRating) infoItems.push('<span class="moonfin-info-item moonfin-star-rating"><svg viewBox="0 -960 960 960" fill="currentColor" width="16" height="16"><path d="m354-287 126-76 126 77-33-144 111-96-146-13-58-136-58 135-146 13 111 97-33 143ZM233-120l65-281L80-590l288-25 112-265 112 265 288 25-218 189 65 281-247-149-247 149Z"/></svg> ' + communityRating + '</span>');
+        if (isSeries && seasonCount > 0) {
+            infoItems.push('<span class="moonfin-info-item">' + seasonCount + ' Season' + (seasonCount !== 1 ? 's' : '') + '</span>');
+        }
+        badges.forEach(function(badge) { infoItems.push(badge); });
+        var infoRowHtml = infoItems.length > 0 ? '<div class="moonfin-info-row">' + infoItems.join('') + '</div>' : '';
+
+        var episodeHeader = '';
+        if (isEpisode) {
+            var epInfo = '';
+            if (item.ParentIndexNumber !== undefined && item.IndexNumber !== undefined) {
+                epInfo = 'S' + item.ParentIndexNumber + ' E' + item.IndexNumber;
+            }
+            episodeHeader = '<div class="moonfin-episode-header">' +
+                (item.SeriesName ? '<span class="moonfin-series-name">' + item.SeriesName + '</span>' : '') +
+                (epInfo ? '<span class="moonfin-episode-number">' + epInfo + '</span>' : '') +
+            '</div>';
+        }
+
+        var actionBtns = [];
+        
+        if (hasResume) {
+            actionBtns.push(
+                '<div class="moonfin-btn-wrapper moonfin-focusable" data-action="play" tabindex="0">' +
+                    '<div class="moonfin-btn-circle moonfin-btn-primary">' +
+                        '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>' +
+                    '</div>' +
+                    '<span class="moonfin-btn-label">Resume</span>' +
+                '</div>'
+            );
+        }
+        
+        actionBtns.push(
+            '<div class="moonfin-btn-wrapper moonfin-focusable" data-action="' + (hasResume ? 'restart' : 'play') + '" tabindex="0">' +
+                '<div class="moonfin-btn-circle">' +
+                    (hasResume ?
+                        '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="M480-80q-75 0-140.5-28.5t-114-77q-48.5-48.5-77-114T120-440h80q0 117 81.5 198.5T480-160q117 0 198.5-81.5T760-440q0-117-81.5-198.5T480-720h-6l62 62-56 58-160-160 160-160 56 58-62 62h6q75 0 140.5 28.5t114 77q48.5 48.5 77 114T840-440q0 75-28.5 140.5t-77 114q-48.5 48.5-114 77T480-80Z"/></svg>' :
+                        '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>') +
+                '</div>' +
+                '<span class="moonfin-btn-label">' + (hasResume ? 'Restart' : 'Play') + '</span>' +
+            '</div>'
+        );
+        
+        var hasTrailer = (item.RemoteTrailers && item.RemoteTrailers.length > 0) || (item.LocalTrailerCount > 0);
+        if (hasTrailer) {
+            actionBtns.push(
+                '<div class="moonfin-btn-wrapper moonfin-focusable" data-action="trailer" tabindex="0">' +
+                    '<div class="moonfin-btn-circle">' +
+                        '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="M160-120v-720h80v80h80v-80h320v80h80v-80h80v720h-80v-80h-80v80H320v-80h-80v80h-80Zm80-160h80v-80h-80v80Zm0-160h80v-80h-80v80Zm0-160h80v-80h-80v80Zm400 320h80v-80h-80v80Zm0-160h80v-80h-80v80Zm0-160h80v-80h-80v80ZM400-200h160v-560H400v560Zm0-560h160-160Z"/></svg>' +
+                    '</div>' +
+                    '<span class="moonfin-btn-label">Trailer</span>' +
+                '</div>'
+            );
+        }
+
+        if (isSeries) {
+            actionBtns.push(
+                '<div class="moonfin-btn-wrapper moonfin-focusable" data-action="shuffle" tabindex="0">' +
+                    '<div class="moonfin-btn-circle">' +
+                        '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="M560-160v-80h104L537-367l57-57 126 126v-102h80v240H560Zm-344 0-56-56 504-504H560v-80h240v240h-80v-104L216-160Zm151-377L160-744l56-56 207 207-56 56Z"/></svg>' +
+                    '</div>' +
+                    '<span class="moonfin-btn-label">Shuffle</span>' +
+                '</div>'
+            );
+        }
+        
+        actionBtns.push(
+            '<div class="moonfin-btn-wrapper moonfin-focusable ' + (isPlayed ? 'active' : '') + '" data-action="played" tabindex="0">' +
+                '<div class="moonfin-btn-circle">' +
+                    '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M21 7L9 19l-5.5-5.5 1.41-1.41L9 16.17 19.59 5.59 21 7z"/></svg>' +
+                '</div>' +
+                '<span class="moonfin-btn-label">' + (isPlayed ? 'Watched' : 'Unwatched') + '</span>' +
+            '</div>'
+        );
+        
+        actionBtns.push(
+            '<div class="moonfin-btn-wrapper moonfin-focusable ' + (isFavorite ? 'active' : '') + '" data-action="favorite" tabindex="0">' +
+                '<div class="moonfin-btn-circle">' +
+                    '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="' + (isFavorite ? 
+                        'm480-120-58-52q-101-91-167-157T150-447.5Q111-500 95.5-544T80-634q0-94 63-157t157-63q52 0 99 22t81 62q34-40 81-62t99-22q94 0 157 63t63 157q0 46-15.5 90T810-447.5Q771-395 705-329T538-172l-58 52Z' :
+                        'M480-120q-14 0-28.5-5T426-140q-43-38-97.5-82.5T232-308q-41.5-41.5-72-83T122-475q-8-32-11-60.5T108-596q0-86 57-147t147-61q52 0 99 22t69 62q22-40 69-62t99-22q90 0 147 61t57 147q0 32-3 60.5T837-475q-7 42-37.5 83.5T728-308q-42 42-96.5 86.5T534-140q-11 10-25.5 15t-28.5 5Zm0-80q41-37 88.5-75t83-68.5q35.5-30.5 61-58T746-456q9-27 11.5-49t2.5-43q0-53-34.5-91.5T636-678q-43 0-77.5 24T507-602h-54q-17-28-51.5-52T324-678q-55 0-89.5 38.5T200-548q0 21 2.5 43t11.5 49q9 27 34.5 54.5t61 58Q345-313 392.5-275T480-200Z') +
+                    '"/></svg>' +
+                '</div>' +
+                '<span class="moonfin-btn-label">' + (isFavorite ? 'Favorited' : 'Favorite') + '</span>' +
+            '</div>'
+        );
+        
+        if (item.MediaSources && item.MediaSources.length > 1) {
+            this._selectedMediaSourceId = item.MediaSources[0].Id;
+            actionBtns.push(
+                '<div class="moonfin-btn-wrapper moonfin-focusable" data-action="version" tabindex="0">' +
+                    '<div class="moonfin-btn-circle">' +
+                        '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="M320-280h320v-80H320v80Zm0-160h320v-80H320v80ZM240-80q-33 0-56.5-23.5T160-160v-640q0-33 23.5-56.5T240-880h320l240 240v480q0 33-23.5 56.5T720-80H240Zm280-560v-160H240v640h480v-480H520ZM240-800v160-160 640-640Z"/></svg>' +
+                    '</div>' +
+                    '<span class="moonfin-btn-label">' + (item.MediaSources[0].Name || 'Version') + '</span>' +
+                '</div>'
+            );
+        } else {
+            this._selectedMediaSourceId = (item.MediaSources && item.MediaSources[0]) ? item.MediaSources[0].Id : null;
+        }
+
+        var selectedMediaSource = this._getSelectedMediaSource(item);
+        var mediaStreams = this._getMediaStreams(item);
+
+        var audioTracks = mediaStreams.filter(function(s) { return s.Type === 'Audio'; });
+        if (audioTracks.length > 1) {
+            var defaultAudio = selectedMediaSource ? selectedMediaSource.DefaultAudioStreamIndex : null;
+            var selectedAudioTrack = null;
+            for (var ai = 0; ai < audioTracks.length; ai++) {
+                if (audioTracks[ai].Index === defaultAudio) { selectedAudioTrack = audioTracks[ai]; break; }
+            }
+            var audioLabel = selectedAudioTrack ? (selectedAudioTrack.DisplayTitle || 'Audio') : 'Audio';
+            actionBtns.push(
+                '<div class="moonfin-btn-wrapper moonfin-focusable" data-action="audio" tabindex="0">' +
+                    '<div class="moonfin-btn-circle">' +
+                        '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="M400-120q-66 0-113-47t-47-113q0-66 47-113t113-47q23 0 42.5 5.5T480-418v-422h240v160H560v400q0 66-47 113t-113 47Z"/></svg>' +
+                    '</div>' +
+                    '<span class="moonfin-btn-label">' + audioLabel + '</span>' +
+                '</div>'
+            );
+            this._selectedAudioIndex = defaultAudio;
+        } else {
+            this._selectedAudioIndex = null;
+        }
+
+        var subtitleTracks = mediaStreams.filter(function(s) { return s.Type === 'Subtitle'; });
+        if (subtitleTracks.length > 0) {
+            var defaultSub = selectedMediaSource ? selectedMediaSource.DefaultSubtitleStreamIndex : -1;
+            if (defaultSub == null) defaultSub = -1;
+            var selectedSubTrack = null;
+            for (var si = 0; si < subtitleTracks.length; si++) {
+                if (subtitleTracks[si].Index === defaultSub) { selectedSubTrack = subtitleTracks[si]; break; }
+            }
+            var subLabel = defaultSub === -1 ? 'Off' : (selectedSubTrack ? (selectedSubTrack.DisplayTitle || 'Subtitles') : 'Subtitles');
+            actionBtns.push(
+                '<div class="moonfin-btn-wrapper moonfin-focusable" data-action="subtitle" tabindex="0">' +
+                    '<div class="moonfin-btn-circle">' +
+                        '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="M200-160q-33 0-56.5-23.5T120-240v-480q0-33 23.5-56.5T200-800h560q33 0 56.5 23.5T840-720v480q0 33-23.5 56.5T760-160H200Zm0-80h560v-480H200v480Zm80-120h120q17 0 28.5-11.5T440-400v-40h-60v20h-80v-120h80v20h60v-40q0-17-11.5-28.5T400-600H280q-17 0-28.5 11.5T240-560v160q0 17 11.5 28.5T280-360Zm280 0h120q17 0 28.5-11.5T720-400v-40h-60v20h-80v-120h80v20h60v-40q0-17-11.5-28.5T680-600H560q-17 0-28.5 11.5T520-560v160q0 17 11.5 28.5T560-360ZM200-240v-480 480Z"/></svg>' +
+                    '</div>' +
+                    '<span class="moonfin-btn-label">' + subLabel + '</span>' +
+                '</div>'
+            );
+            this._selectedSubtitleIndex = defaultSub;
+        } else {
+            this._selectedSubtitleIndex = -1;
+        }
+
+        if (isEpisode && item.SeriesId) {
+            actionBtns.push(
+                '<div class="moonfin-btn-wrapper moonfin-focusable" data-action="series" tabindex="0">' +
+                    '<div class="moonfin-btn-circle">' +
+                        '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="M320-120v-80l40-40H160q-33 0-56.5-23.5T80-320v-440q0-33 23.5-56.5T160-840h640q33 0 56.5 23.5T880-760v440q0 33-23.5 56.5T800-240H680l40 40v80H320Z"/></svg>' +
+                    '</div>' +
+                    '<span class="moonfin-btn-label">Go to Series</span>' +
+                '</div>'
+            );
+        }
+        
+        actionBtns.push(
+            '<div class="moonfin-btn-wrapper moonfin-focusable" data-action="more" tabindex="0">' +
+                '<div class="moonfin-btn-circle">' +
+                    '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>' +
+                '</div>' +
+                '<span class="moonfin-btn-label">More</span>' +
+            '</div>'
+        );
+
+        var metadataRows = [];
+        if (genres) metadataRows.push('<div class="moonfin-metadata-cell"><span class="moonfin-metadata-label">Genres</span><span class="moonfin-metadata-value">' + genres + '</span></div>');
+        if (directors) metadataRows.push('<div class="moonfin-metadata-cell"><span class="moonfin-metadata-label">Director</span><span class="moonfin-metadata-value">' + directors + '</span></div>');
+        if (writers) metadataRows.push('<div class="moonfin-metadata-cell"><span class="moonfin-metadata-label">Writers</span><span class="moonfin-metadata-value">' + writers + '</span></div>');
+        if (studios) metadataRows.push('<div class="moonfin-metadata-cell"><span class="moonfin-metadata-label">Studio</span><span class="moonfin-metadata-value">' + studios + '</span></div>');
+        if (runtime) metadataRows.push('<div class="moonfin-metadata-cell"><span class="moonfin-metadata-label">Runtime</span><span class="moonfin-metadata-value">' + runtime + '</span></div>');
+        if (isSeries && seasonCount > 0) metadataRows.push('<div class="moonfin-metadata-cell"><span class="moonfin-metadata-label">Seasons</span><span class="moonfin-metadata-value">' + seasonCount + '</span></div>');
+        
+        var metadataHtml = metadataRows.length > 0 ? '<div class="moonfin-metadata-group">' + metadataRows.join('') + '</div>' : '';
+
+        var arrowsHtml = '<div class="moonfin-section-arrows">' +
+            '<button class="moonfin-section-arrow moonfin-arrow-left" aria-label="Scroll left">' +
+                '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>' +
+            '</button>' +
+            '<button class="moonfin-section-arrow moonfin-arrow-right" aria-label="Scroll right">' +
+                '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>' +
+            '</button>' +
+        '</div>';
+
+        var castHtml = cast.slice(0, 15).map(function(person) {
+            var personImg = person.PrimaryImageTag ? 
+                serverUrl + '/Items/' + person.Id + '/Images/Primary?maxHeight=280&quality=80' : '';
+            return '<div class="moonfin-cast-card moonfin-focusable" data-person-id="' + person.Id + '" tabindex="0">' +
+                '<div class="moonfin-cast-photo">' +
+                    (personImg ? '<img src="' + personImg + '" alt="" loading="lazy">' : '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 4a4 4 0 0 1 4 4 4 4 0 0 1-4 4 4 4 0 0 1-4-4 4 4 0 0 1 4-4m0 10c4.42 0 8 1.79 8 4v2H4v-2c0-2.21 3.58-4 8-4"/></svg>') +
+                '</div>' +
+                '<span class="moonfin-cast-name">' + person.Name + '</span>' +
+                '<span class="moonfin-cast-role">' + (person.Role || person.Type || '') + '</span>' +
+            '</div>';
+        }).join('');
+
+        var similarHtml = similar.slice(0, 12).map(function(sim) {
+            var simPosterTag = sim.ImageTags ? sim.ImageTags.Primary : null;
+            var simPosterUrl = simPosterTag ? serverUrl + '/Items/' + sim.Id + '/Images/Primary?maxHeight=400&quality=80' : '';
+            var simWatched = sim.UserData && sim.UserData.Played;
+            var simFavorite = sim.UserData && sim.UserData.IsFavorite;
+            return '<div class="moonfin-similar-card moonfin-focusable" data-item-id="' + sim.Id + '" data-type="' + sim.Type + '" tabindex="0">' +
+                '<div class="moonfin-similar-poster">' +
+                    (simPosterUrl ? '<img src="' + simPosterUrl + '" alt="" loading="lazy">' : '') +
+                    (simFavorite ? self.buildFavoriteIndicator() : '') +
+                    (simWatched ? self.buildWatchedIndicator() : '') +
+                '</div>' +
+                '<span class="moonfin-similar-title">' + sim.Name + '</span>' +
+            '</div>';
+        }).join('');
+
+        var seasonsHtml = seasons.length > 0 ? (
+            '<div class="moonfin-section">' +
+                '<div class="moonfin-section-header">' +
+                    '<h3 class="moonfin-section-title">Seasons</h3>' +
+                    arrowsHtml +
+                '</div>' +
+                '<div class="moonfin-section-scroll">' +
+                    seasons.map(function(season) {
+                        var seasonPosterTag = season.ImageTags ? season.ImageTags.Primary : null;
+                        var seasonPoster = seasonPosterTag
+                            ? serverUrl + '/Items/' + season.Id + '/Images/Primary?maxHeight=350&quality=80'
+                            : (item.ImageTags && item.ImageTags.Primary
+                                ? serverUrl + '/Items/' + item.Id + '/Images/Primary?maxHeight=350&quality=80'
+                                : '');
+                        var seasonWatched = season.UserData && season.UserData.Played;
+                        var seasonFavorite = season.UserData && season.UserData.IsFavorite;
+                        var seasonUnplayed = season.UserData ? season.UserData.UnplayedItemCount : null;
+                        return '<div class="moonfin-season-card moonfin-focusable" data-item-id="' + season.Id + '" data-type="Season" tabindex="0">' +
+                            '<div class="moonfin-season-poster">' +
+                                (seasonPoster ? '<img src="' + seasonPoster + '" alt="" loading="lazy">' : '<span>' + season.Name + '</span>') +
+                                (seasonFavorite ? self.buildFavoriteIndicator() : '') +
+                                (seasonWatched ? self.buildWatchedIndicator() :
+                                (seasonUnplayed > 0 ? '<div class="moonfin-unplayed-count">' + seasonUnplayed + '</div>' : '')) +
+                            '</div>' +
+                            '<span class="moonfin-season-name">' + season.Name + '</span>' +
+                        '</div>';
+                    }).join('') +
+                '</div>' +
+            '</div>'
+        ) : '';
+
+        var episodesArr = episodes || [];
+        var episodesHtml = '';
+        if (isEpisode && episodesArr.length > 0) {
+            var seasonLabel = item.ParentIndexNumber !== undefined ? 'Season ' + item.ParentIndexNumber + ' Episodes' : 'Episodes';
+            var epCards = episodesArr.map(function(ep) {
+                var epThumbTag = ep.ImageTags ? ep.ImageTags.Primary : null;
+                var epThumbUrl = epThumbTag ? serverUrl + '/Items/' + ep.Id + '/Images/Primary?maxWidth=400&quality=80' : '';
+                var isCurrentEp = ep.Id === item.Id;
+                var epRuntime = ep.RunTimeTicks ? self.formatRuntime(ep.RunTimeTicks) : '';
+                var epWatched = ep.UserData && ep.UserData.Played;
+                var epFavorite = ep.UserData && ep.UserData.IsFavorite;
+                return '<div class="moonfin-episode-card moonfin-focusable' + (isCurrentEp ? ' moonfin-episode-current' : '') + '" data-item-id="' + ep.Id + '" data-type="Episode" tabindex="0">' +
+                    '<div class="moonfin-episode-thumb">' +
+                        (epThumbUrl ? '<img src="' + epThumbUrl + '" alt="" loading="lazy">' : '<div class="moonfin-episode-thumb-placeholder"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M21 3H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H3V5h18v14zM9.5 7.5l7 4.5-7 4.5z"/></svg></div>') +
+                        (epFavorite ? self.buildFavoriteIndicator() : '') +
+                        (epWatched ? self.buildWatchedIndicator() : '') +
+                        (ep.UserData && ep.UserData.PlayedPercentage ? '<div class="moonfin-episode-progress"><div class="moonfin-episode-progress-bar" style="width:' + Math.min(ep.UserData.PlayedPercentage, 100) + '%"></div></div>' : '') +
+                    '</div>' +
+                    '<div class="moonfin-episode-info">' +
+                        '<span class="moonfin-episode-ep-number">E' + (ep.IndexNumber || '?') + '</span>' +
+                        '<span class="moonfin-episode-ep-title">' + ep.Name + '</span>' +
+                        (epRuntime ? '<span class="moonfin-episode-ep-runtime">' + epRuntime + '</span>' : '') +
+                    '</div>' +
+                '</div>';
+            }).join('');
+
+            episodesHtml = '<div class="moonfin-section">' +
+                '<div class="moonfin-section-header">' +
+                    '<h3 class="moonfin-section-title">' + seasonLabel + '</h3>' +
+                    arrowsHtml +
+                '</div>' +
+                '<div class="moonfin-section-scroll">' + epCards + '</div>' +
+            '</div>';
+        }
+
+        var chapters = item.Chapters || [];
+        var chaptersHtml = chapters.length > 0 ? (
+            '<div class="moonfin-section">' +
+                '<div class="moonfin-section-header">' +
+                    '<h3 class="moonfin-section-title">Chapters</h3>' +
+                    arrowsHtml +
+                '</div>' +
+                '<div class="moonfin-section-scroll">' +
+                    chapters.map(function(chapter, index) {
+                        var chapterName = (chapter.Name && chapter.Name.trim()) ? chapter.Name : ('Chapter ' + (index + 1));
+                        var startTicks = chapter.StartPositionTicks || 0;
+                        var chapterTag = chapter.ImageTag ? '&tag=' + encodeURIComponent(chapter.ImageTag) : '';
+                        var chapterImage = serverUrl + '/Items/' + item.Id + '/Images/Chapter/' + index + '?maxWidth=600&quality=80' + chapterTag;
+                        var chapterStart = self.formatTimePosition(startTicks);
+
+                        return '<div class="moonfin-chapter-card moonfin-focusable" data-start-ticks="' + startTicks + '" tabindex="0">' +
+                            '<div class="moonfin-chapter-thumb">' +
+                                '<img src="' + chapterImage + '" alt="" loading="lazy" onerror="this.style.display=\'none\';this.parentNode.classList.add(\'moonfin-chapter-thumb-empty\')">' +
+                            '</div>' +
+                            '<div class="moonfin-chapter-info">' +
+                                '<span class="moonfin-chapter-title">' + chapterName + '</span>' +
+                                '<span class="moonfin-chapter-time">' + chapterStart + '</span>' +
+                            '</div>' +
+                        '</div>';
+                    }).join('') +
+                '</div>' +
+            '</div>'
+        ) : '';
+
+        var featureItems = features || [];
+        var featuresHtml = featureItems.length > 0 ? (
+            '<div class="moonfin-section">' +
+                '<div class="moonfin-section-header">' +
+                    '<h3 class="moonfin-section-title">Features</h3>' +
+                    arrowsHtml +
+                '</div>' +
+                '<div class="moonfin-section-scroll">' +
+                    featureItems.slice(0, 20).map(function(feature) {
+                        var featurePosterTag = feature.ImageTags ? (feature.ImageTags.Primary || feature.ImageTags.Thumb) : null;
+                        var featurePosterUrl = featurePosterTag ? serverUrl + '/Items/' + feature.Id + '/Images/Primary?maxHeight=400&quality=80' : '';
+                        var featureWatched = feature.UserData && feature.UserData.Played;
+                        var featureFavorite = feature.UserData && feature.UserData.IsFavorite;
+                        return '<div class="moonfin-similar-card moonfin-focusable" data-item-id="' + feature.Id + '" data-type="' + (feature.Type || 'Video') + '" tabindex="0">' +
+                            '<div class="moonfin-similar-poster">' +
+                                (featurePosterUrl ? '<img src="' + featurePosterUrl + '" alt="" loading="lazy">' : '') +
+                                (featureFavorite ? self.buildFavoriteIndicator() : '') +
+                                (featureWatched ? self.buildWatchedIndicator() : '') +
+                            '</div>' +
+                            '<span class="moonfin-similar-title">' + (feature.Name || 'Feature') + '</span>' +
+                        '</div>';
+                    }).join('') +
+                '</div>' +
+            '</div>'
+        ) : '';
+
+        var collectionTitle = collections && collections.title ? collections.title : 'Collection';
+        var collectionItems = collections && collections.items ? collections.items : [];
+        var collectionsHtml = collectionItems.length > 0 ? (
+            '<div class="moonfin-section">' +
+                '<div class="moonfin-section-header">' +
+                    '<h3 class="moonfin-section-title">' + collectionTitle + '</h3>' +
+                    arrowsHtml +
+                '</div>' +
+                '<div class="moonfin-section-scroll">' +
+                    collectionItems.slice(0, 30).map(function(col) {
+                        var colPosterTag = col.ImageTags ? (col.ImageTags.Primary || col.ImageTags.Thumb) : null;
+                        var colPosterUrl = colPosterTag ? serverUrl + '/Items/' + col.Id + '/Images/Primary?maxHeight=400&quality=80' : '';
+                        var colWatched = col.UserData && col.UserData.Played;
+                        return '<div class="moonfin-similar-card moonfin-focusable" data-item-id="' + col.Id + '" data-type="' + (col.Type || '') + '" tabindex="0">' +
+                            '<div class="moonfin-similar-poster">' +
+                                (colPosterUrl ? '<img src="' + colPosterUrl + '" alt="" loading="lazy">' : '') +
+                                (colWatched ? '<div class="moonfin-watched-indicator"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M21 7L9 19l-5.5-5.5 1.41-1.41L9 16.17 19.59 5.59 21 7z"/></svg></div>' : '') +
+                            '</div>' +
+                            '<span class="moonfin-similar-title">' + (col.Name || '') + '</span>' +
+                        '</div>';
+                    }).join('') +
+                '</div>' +
+            '</div>'
+        ) : '';
+
+        var backdrop = this.container.querySelector('.moonfin-details-backdrop');
+        if (backdrop) {
+            backdrop.style.backgroundImage = 'url(\'' + backdropUrl + '\')';
+            backdrop.className = 'moonfin-details-backdrop';
+        }
+
+        panel.innerHTML = 
+            '<button class="moonfin-details-back moonfin-focusable" title="Back" tabindex="0">' +
+                '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>' +
+            '</button>' +
+            
+            '<div class="moonfin-details-content">' +
+                '<div class="moonfin-details-header">' +
+                    '<div class="moonfin-info-section">' +
+                        episodeHeader +
+                        '<div class="moonfin-title-section">' +
+                            (logoUrl ? '<img class="moonfin-logo" src="' + logoUrl + '" alt="' + item.Name + '">' : '<h1 class="moonfin-title">' + item.Name + '</h1>') +
+                        '</div>' +
+                        infoRowHtml +
+                        '<div class="moonfin-mdblist-ratings-row" id="moonfin-details-mdblist"></div>' +
+                        (tagline ? '<p class="moonfin-tagline">&ldquo;' + tagline + '&rdquo;</p>' : '') +
+                        (item.Overview ? '<p class="moonfin-overview">' + item.Overview + '</p>' : '') +
+                    '</div>' +
+                    
+                    '<div class="moonfin-poster-section' + (item.Type === 'Episode' ? ' moonfin-poster-landscape' : '') + '">' +
+                        '<div class="moonfin-poster">' +
+                            (posterUrl ? '<img src="' + posterUrl + '" alt="" loading="lazy">' : '') +
+                        '</div>' +
+                    '</div>' +
+                '</div>' +
+                
+                '<div class="moonfin-actions">' +
+                    actionBtns.join('') +
+                '</div>' +
+                
+                metadataHtml +
+                
+                '<div class="moonfin-sections">' +
+                    collectionsHtml +
+                    seasonsHtml +
+                    episodesHtml +
+                    chaptersHtml +
+                    featuresHtml +
+                    
+                    (cast.length > 0 ? 
+                        '<div class="moonfin-section">' +
+                            '<div class="moonfin-section-header">' +
+                                '<h3 class="moonfin-section-title">Cast & Crew</h3>' +
+                                arrowsHtml +
+                            '</div>' +
+                            '<div class="moonfin-section-scroll">' + castHtml + '</div>' +
+                        '</div>' : '') +
+                    
+                    (similar.length > 0 ? 
+                        '<div class="moonfin-section">' +
+                            '<div class="moonfin-section-header">' +
+                                '<h3 class="moonfin-section-title">More Like This</h3>' +
+                                arrowsHtml +
+                            '</div>' +
+                            '<div class="moonfin-section-scroll">' + similarHtml + '</div>' +
+                        '</div>' : '') +
+                '</div>' +
+            '</div>';
+
+        this.applyBackdropSettings();
+        this.setupPanelListeners(panel, item);
+    },
+
+    getMediaBadges: function(item) {
+        var badges = [];
+        
+        if (item.MediaStreams) {
+            var video = null;
+            var audio = null;
+            
+            for (var i = 0; i < item.MediaStreams.length; i++) {
+                if (item.MediaStreams[i].Type === 'Video' && !video) video = item.MediaStreams[i];
+                if (item.MediaStreams[i].Type === 'Audio' && !audio) audio = item.MediaStreams[i];
+            }
+            
+            if (video) {
+                if (video.Width >= 3800) badges.push('<span class="moonfin-badge moonfin-badge-4k">4K</span>');
+                else if (video.Width >= 1900) badges.push('<span class="moonfin-badge moonfin-badge-hd">HD</span>');
+                
+                var hdrRangeTypes = ['HDR10', 'HDR10Plus', 'HLG', 'DOVI', 'DOVIWithHDR10', 'DOVIWithHDR10Plus', 'DOVIWithHLG', 'DOVIWithSDR'];
+                if (video.VideoRange === 'HDR' || (video.VideoRangeType && hdrRangeTypes.indexOf(video.VideoRangeType) !== -1)) badges.push('<span class="moonfin-badge moonfin-badge-hdr">HDR</span>');
+                
+                if (video.VideoDoViTitle || (video.Title && video.Title.indexOf('Dolby Vision') !== -1)) {
+                    badges.push('<span class="moonfin-badge moonfin-badge-dv">DV</span>');
+                }
+
+                var videoCodecLabel = this.getCodecBadgeLabel(video.Codec, 'Video');
+                if (videoCodecLabel) {
+                    badges.push('<span class="moonfin-badge moonfin-badge-codec">' + videoCodecLabel + '</span>');
+                }
+            }
+            
+            if (audio) {
+                var audioCodecLabel = this.getCodecBadgeLabel(audio.Codec, 'Audio');
+                if (audioCodecLabel) {
+                    badges.push('<span class="moonfin-badge moonfin-badge-codec">' + audioCodecLabel + '</span>');
+                }
+
+                if ((audio.DisplayTitle && audio.DisplayTitle.indexOf('Atmos') !== -1) || (audio.Profile && audio.Profile.indexOf('Atmos') !== -1)) {
+                    badges.push('<span class="moonfin-badge moonfin-badge-atmos">ATMOS</span>');
+                } else if ((audio.DisplayTitle && audio.DisplayTitle.indexOf('DTS:X') !== -1) || (audio.Profile && audio.Profile.indexOf('DTS:X') !== -1)) {
+                    badges.push('<span class="moonfin-badge moonfin-badge-dtsx">DTS:X</span>');
+                } else if (audio.Channels >= 6) {
+                    badges.push('<span class="moonfin-badge moonfin-badge-surround">' + (audio.Channels >= 8 ? '7.1' : '5.1') + '</span>');
+                }
+            }
+        }
+        
+        return badges;
+    },
+
+    getCodecBadgeLabel: function(codec, streamType) {
+        if (!codec) return '';
+
+        var normalized = String(codec).toUpperCase();
+
+        if (streamType === 'Video') {
+            if (normalized === 'H264' || normalized === 'AVC') return 'H.264';
+            if (normalized === 'H265' || normalized === 'HEVC') return 'HEVC';
+        }
+
+        if (streamType === 'Audio') {
+            if (normalized === 'EAC3') return 'E-AC3';
+            if (normalized === 'TRUEHD') return 'TRUEHD';
+        }
+
+        return normalized;
+    },
+
+    formatRuntime: function(ticks) {
+        var minutes = Math.floor(ticks / 600000000);
+        if (minutes < 60) return minutes + 'm';
+        var hours = Math.floor(minutes / 60);
+        var mins = minutes % 60;
+        return mins > 0 ? hours + 'h ' + mins + 'm' : hours + 'h';
+    },
+
+    formatTimePosition: function(ticks) {
+        var totalSeconds = Math.floor((ticks || 0) / 10000000);
+        var hours = Math.floor(totalSeconds / 3600);
+        var minutes = Math.floor((totalSeconds % 3600) / 60);
+        var seconds = totalSeconds % 60;
+
+        var mm = minutes < 10 ? '0' + minutes : '' + minutes;
+        var ss = seconds < 10 ? '0' + seconds : '' + seconds;
+        if (hours > 0) {
+            var hh = hours < 10 ? '0' + hours : '' + hours;
+            return hh + ':' + mm + ':' + ss;
+        }
+        return mm + ':' + ss;
+    },
+
+    toggleFavorite: function(item) {
+        var self = this;
+        var api = window.ApiClient;
+        var userId = api.getCurrentUserId();
+        var serverUrl = this.getServerUrl();
+        var headers = this.getAuthHeaders();
+        var isFav = item.UserData ? item.UserData.IsFavorite : false;
+        fetch(serverUrl + '/Users/' + userId + '/FavoriteItems/' + item.Id, {
+            method: isFav ? 'DELETE' : 'POST',
+            headers: headers
+        }).then(function(resp) {
+            if (resp.ok) {
+                if (!item.UserData) item.UserData = {};
+                item.UserData.IsFavorite = !isFav;
+                var wrapper = self.container.querySelector('[data-action="favorite"]');
+                if (wrapper) {
+                    wrapper.classList.toggle('active');
+                    var label = wrapper.querySelector('.moonfin-btn-label');
+                    if (label) label.textContent = item.UserData.IsFavorite ? 'Favorited' : 'Favorite';
+                }
+                self.updateItemIndicators(item.Id);
+            }
+        }).catch(function(err) { console.error('[Moonfin] Details: Failed to toggle favorite', err); });
+    },
+
+    togglePlayed: function(item) {
+        var self = this;
+        var api = window.ApiClient;
+        var userId = api.getCurrentUserId();
+        var serverUrl = this.getServerUrl();
+        var headers = this.getAuthHeaders();
+        var isPlayed = item.UserData ? item.UserData.Played : false;
+        fetch(serverUrl + '/Users/' + userId + '/PlayedItems/' + item.Id, {
+            method: isPlayed ? 'DELETE' : 'POST',
+            headers: headers
+        }).then(function(resp) {
+            if (resp.ok) {
+                if (!item.UserData) item.UserData = {};
+                item.UserData.Played = !isPlayed;
+                var wrapper = self.container.querySelector('[data-action="played"]');
+                if (wrapper) {
+                    wrapper.classList.toggle('active');
+                    var label = wrapper.querySelector('.moonfin-btn-label');
+                    if (label) label.textContent = item.UserData.Played ? 'Watched' : 'Unwatched';
+                }
+                self.updateItemIndicators(item.Id);
+            }
+        }).catch(function(err) { console.error('[Moonfin] Details: Failed to toggle played', err); });
+    },
+
+    updateItemIndicators: function(itemId) {
+        if (!itemId || !this.currentItem || this.currentItem.Id !== itemId) return;
+        
+        var self = this;
+        var item = this.currentItem;
+        
+        var panel = this.container.querySelector('.moonfin-details-panel');
+        if (panel) {
+            panel.querySelectorAll('[data-item-id="' + itemId + '"]').forEach(function(card) {
+                var posterDiv = card.querySelector('.moonfin-similar-poster') || 
+                               card.querySelector('.moonfin-season-poster') || 
+                               card.querySelector('.moonfin-episode-thumb') || 
+                               card.querySelector('.moonfin-season-ep-thumb');
+                if (!posterDiv) return;
+                posterDiv.querySelectorAll('.moonfin-favorite-indicator, .moonfin-watched-indicator').forEach(function(el) { el.remove(); });
+                if (item.UserData && item.UserData.IsFavorite) {
+                    var fav = document.createElement('div');
+                    fav.className = 'moonfin-favorite-indicator';
+                    fav.innerHTML = self.FAVORITE_INDICATOR_SVG;
+                    posterDiv.appendChild(fav);
+                }
+                if (item.UserData && item.UserData.Played) {
+                    var watched = document.createElement('div');
+                    watched.className = 'moonfin-watched-indicator';
+                    watched.innerHTML = self.WATCHED_INDICATOR_SVG;
+                    posterDiv.appendChild(watched);
+                }
+            });
+        }
+        
+        var libraryOverlay = document.querySelector('.moonfin-library-overlay.visible');
+        if (libraryOverlay) {
+            libraryOverlay.querySelectorAll('[data-item-id="' + itemId + '"]').forEach(function(card) {
+                var posterDiv = card.querySelector('.moonfin-genre-item-poster');
+                if (!posterDiv) return;
+                posterDiv.querySelectorAll('.moonfin-library-favorite-indicator, .moonfin-library-watched-indicator').forEach(function(el) { el.remove(); });
+                if (item.UserData && item.UserData.IsFavorite) {
+                    var fav = document.createElement('div');
+                    fav.className = 'moonfin-library-favorite-indicator';
+                    fav.setAttribute('data-item-id', itemId);
+                    fav.innerHTML = self.FAVORITE_INDICATOR_SVG;
+                    posterDiv.appendChild(fav);
+                }
+                if (item.UserData && item.UserData.Played) {
+                    var watched = document.createElement('div');
+                    watched.className = 'moonfin-library-watched-indicator';
+                    watched.setAttribute('data-item-id', itemId);
+                    watched.innerHTML = self.WATCHED_INDICATOR_SVG;
+                    posterDiv.appendChild(watched);
+                }
+            });
+        }
+        
+        document.querySelectorAll('.card[data-id="' + itemId + '"], .listItem[data-id="' + itemId + '"]').forEach(function(card) {
+            var posterContainer = card.querySelector('.cardImageContainer') || card.querySelector('.listItemImageContainer');
+            if (!posterContainer) return;
+            posterContainer.querySelectorAll('.moonfin-library-favorite-indicator, .moonfin-library-watched-indicator').forEach(function(el) { el.remove(); });
+            if (item.UserData && item.UserData.IsFavorite) {
+                var fav = document.createElement('div');
+                fav.className = 'moonfin-library-favorite-indicator';
+                fav.innerHTML = self.FAVORITE_INDICATOR_SVG;
+                posterContainer.appendChild(fav);
+            }
+            if (item.UserData && item.UserData.Played) {
+                var watched = document.createElement('div');
+                watched.className = 'moonfin-library-watched-indicator';
+                watched.innerHTML = self.WATCHED_INDICATOR_SVG;
+                posterContainer.appendChild(watched);
+            }
+        });
+    },
+
+    setupScrollArrows: function(panel) {
+        var arrowBtns = panel.querySelectorAll('.moonfin-section-arrow');
+        for (var m = 0; m < arrowBtns.length; m++) {
+            (function(btn) {
+                btn.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    var section = btn.closest('.moonfin-section');
+                    if (!section) return;
+                    var scrollContainer = section.querySelector('.moonfin-section-scroll');
+                    if (!scrollContainer) return;
+                    var scrollAmount = scrollContainer.clientWidth * 0.7;
+                    var isLeft = btn.classList.contains('moonfin-arrow-left');
+                    scrollContainer.scrollBy({
+                        left: isLeft ? -scrollAmount : scrollAmount,
+                        behavior: 'smooth'
+                    });
+                });
+            })(arrowBtns[m]);
+        }
+    },
+
+    setupPanelListeners: function(panel, item) {
+        var self = this;
+        
+        var backBtn = panel.querySelector('.moonfin-details-back');
+        if (backBtn) backBtn.addEventListener('click', function() { self.hide(); });
+
+        var actionBtns = panel.querySelectorAll('[data-action]');
+        for (var i = 0; i < actionBtns.length; i++) {
+            (function(btn) {
+                btn.addEventListener('click', function(e) {
+                    self.handleAction(e.currentTarget.getAttribute('data-action'), item);
+                });
+            })(actionBtns[i]);
+        }
+
+        var similarCards = panel.querySelectorAll('.moonfin-similar-card');
+        for (var j = 0; j < similarCards.length; j++) {
+            (function(card) {
+                card.addEventListener('click', function() {
+                    self.showDetails(card.getAttribute('data-item-id'), card.getAttribute('data-type'));
+                });
+            })(similarCards[j]);
+        }
+
+        var seasonCards = panel.querySelectorAll('.moonfin-season-card');
+        for (var k = 0; k < seasonCards.length; k++) {
+            (function(card) {
+                card.addEventListener('click', function() {
+                    self.showDetails(card.getAttribute('data-item-id'), 'Season');
+                });
+            })(seasonCards[k]);
+        }
+
+        var episodeCards = panel.querySelectorAll('.moonfin-episode-card');
+        for (var n = 0; n < episodeCards.length; n++) {
+            (function(card) {
+                card.addEventListener('click', function() {
+                    var epId = card.getAttribute('data-item-id');
+                    self.showDetails(epId, 'Episode');
+                });
+            })(episodeCards[n]);
+        }
+
+        var chapterCards = panel.querySelectorAll('.moonfin-chapter-card');
+        for (var o = 0; o < chapterCards.length; o++) {
+            (function(card) {
+                card.addEventListener('click', function() {
+                    var startTicks = parseInt(card.getAttribute('data-start-ticks') || '0', 10);
+                    if (isNaN(startTicks)) startTicks = 0;
+                    self.hide(true);
+                    self.playItem(item.Id, startTicks, self._selectedAudioIndex, self._selectedSubtitleIndex, self._selectedMediaSourceId);
+                });
+            })(chapterCards[o]);
+        }
+
+        var personCards = panel.querySelectorAll('.moonfin-cast-card');
+        for (var l = 0; l < personCards.length; l++) {
+            (function(card) {
+                card.addEventListener('click', function() {
+                    self.showDetails(card.getAttribute('data-person-id'), 'Person');
+                });
+            })(personCards[l]);
+        }
+
+        this.setupScrollArrows(panel);
+    },
+
+    getAuthHeaders: function() {
+        var token = window.ApiClient.accessToken();
+        return {
+            'Authorization': 'MediaBrowser Token="' + token + '"',
+            'Content-Type': 'application/json'
+        };
+    },
+
+    getServerUrl: function() {
+        return window.ApiClient.serverAddress();
+    },
+
+    getSessionId: function() {
+        var api = window.ApiClient;
+        var serverUrl = this.getServerUrl();
+        var deviceId = api.deviceId();
+
+        return fetch(serverUrl + '/Sessions?DeviceId=' + encodeURIComponent(deviceId), {
+            headers: this.getAuthHeaders()
+        }).then(function(resp) {
+            return resp.json();
+        }).then(function(sessions) {
+            return (sessions && sessions.length > 0) ? sessions[0].Id : null;
+        });
+    },
+
+    playItem: function(itemId, startPositionTicks, audioStreamIndex, subtitleStreamIndex, mediaSourceId) {
+        var self = this;
+
+        var pm = (typeof playbackManager !== 'undefined') ? playbackManager : null;
+        if (pm) {
+            var opts = {
+                ids: [itemId],
+                startPositionTicks: startPositionTicks || 0,
+                serverId: window.ApiClient.serverId()
+            };
+            if (mediaSourceId) opts.mediaSourceId = mediaSourceId;
+            if (audioStreamIndex != null) opts.audioStreamIndex = audioStreamIndex;
+            if (subtitleStreamIndex != null && subtitleStreamIndex !== -1) {
+                opts.subtitleStreamIndex = subtitleStreamIndex;
+            }
+            try {
+                pm.play(opts).catch(function(e) {
+                    console.error('[Moonfin] Details: playback failed', e);
+                });
+            } catch(e) {
+                console.error('[Moonfin] Details: playbackManager.play() failed', e);
+                self._playViaSession(itemId, startPositionTicks, audioStreamIndex, subtitleStreamIndex, mediaSourceId);
+            }
+            return;
+        }
+
+        var api = window.ApiClient;
+        if (api && typeof api.sendPlayCommand === 'function') {
+            var deviceId = api.deviceId();
+            api.getSessions({ DeviceId: deviceId }).then(function(sessions) {
+                if (sessions && sessions.length > 0) {
+                    return api.sendPlayCommand(sessions[0].Id, {
+                        ItemIds: [itemId],
+                        PlayCommand: 'PlayNow',
+                        StartPositionTicks: startPositionTicks || 0,
+                        MediaSourceId: mediaSourceId || undefined,
+                        AudioStreamIndex: audioStreamIndex != null ? audioStreamIndex : undefined,
+                        SubtitleStreamIndex: (subtitleStreamIndex != null && subtitleStreamIndex !== -1) ? subtitleStreamIndex : undefined
+                    });
+                }
+                throw new Error('No session');
+            }).catch(function() {
+                self._playViaSession(itemId, startPositionTicks, audioStreamIndex, subtitleStreamIndex, mediaSourceId);
+            });
+            return;
+        }
+
+        self._playViaSession(itemId, startPositionTicks, audioStreamIndex, subtitleStreamIndex, mediaSourceId);
+    },
+
+    _playViaSession: function(itemId, startPositionTicks, audioStreamIndex, subtitleStreamIndex, mediaSourceId) {
+        var self = this;
+        var serverUrl = this.getServerUrl();
+        var headers = this.getAuthHeaders();
+
+        this.getSessionId().then(function(sessionId) {
+            if (!sessionId) {
+                throw new Error('No session found');
+            }
+
+            var params = 'PlayCommand=PlayNow&ItemIds=' + encodeURIComponent(itemId) +
+                '&StartPositionTicks=' + (startPositionTicks || 0);
+            if (mediaSourceId) params += '&MediaSourceId=' + encodeURIComponent(mediaSourceId);
+            if (audioStreamIndex != null) params += '&AudioStreamIndex=' + audioStreamIndex;
+            if (subtitleStreamIndex != null && subtitleStreamIndex !== -1) {
+                params += '&SubtitleStreamIndex=' + subtitleStreamIndex;
+            }
+
+            return fetch(serverUrl + '/Sessions/' + sessionId + '/Playing?' + params, {
+                method: 'POST',
+                headers: headers
+            }).then(function(resp) {
+                if (!resp.ok) throw new Error('Play command failed: ' + resp.status);
+            });
+        }).catch(function(err) {
+            console.error('[Moonfin] Details: Sessions API failed, using fallback', err);
+            self._playViaFallback(itemId);
+        });
+    },
+
+    // Fallback: navigate to native details page and auto-click play
+    _playViaFallback: function(itemId) {
+        window.location.hash = '#/details?id=' + itemId;
+        // Wait for the Jellyfin details page to load, then click its play button
+        var attempts = 0;
+        var tryClick = setInterval(function() {
+            attempts++;
+            var playBtn = document.querySelector('.btnPlay, .detailButton-primary, [data-action="resume"], [data-action="play"]');
+            if (playBtn) {
+                clearInterval(tryClick);
+                playBtn.click();
+            } else if (attempts > 20) {
+                clearInterval(tryClick);
+            }
+        }, 250);
+    },
+
+    shuffleItem: function(itemId) {
+        var self = this;
+        var api = window.ApiClient;
+        var serverUrl = this.getServerUrl();
+        var headers = this.getAuthHeaders();
+        var userId = api.getCurrentUserId();
+
+        fetch(serverUrl + '/Shows/' + itemId + '/Episodes?UserId=' + userId + '&Fields=MediaSources', {
+            headers: headers
+        }).then(function(resp) {
+            return resp.json();
+        }).then(function(result) {
+            var items = result.Items || [];
+            if (items.length === 0) return;
+
+            var ids = items.map(function(i) { return i.Id; });
+            for (var i = ids.length - 1; i > 0; i--) {
+                var j = Math.floor(Math.random() * (i + 1));
+                var temp = ids[i];
+                ids[i] = ids[j];
+                ids[j] = temp;
+            }
+
+            var pm = (typeof playbackManager !== 'undefined') ? playbackManager : null;
+            if (pm) {
+                try {
+                    pm.play({ ids: ids, startPositionTicks: 0, serverId: window.ApiClient.serverId() }).catch(function(e) {
+                        console.error('[Moonfin] Details: shuffle playback failed', e);
+                    });
+                    return;
+                } catch(e) {
+                    console.error('[Moonfin] Details: playbackManager.play() failed for shuffle', e);
+                }
+            }
+
+            if (typeof api.sendPlayCommand === 'function') {
+                var deviceId = api.deviceId();
+                return api.getSessions({ DeviceId: deviceId }).then(function(sessions) {
+                    if (sessions && sessions.length > 0) {
+                        return api.sendPlayCommand(sessions[0].Id, {
+                            ItemIds: ids,
+                            PlayCommand: 'PlayNow',
+                            StartPositionTicks: 0
+                        });
+                    }
+                    throw new Error('No session');
+                }).catch(function() {
+                    return self._shuffleViaSession(ids);
+                });
+            }
+
+            return self._shuffleViaSession(ids);
+        }).catch(function(err) {
+            console.error('[Moonfin] Details: Failed to shuffle', err);
+        });
+    },
+
+    _shuffleViaSession: function(ids) {
+        var serverUrl = this.getServerUrl();
+        var headers = this.getAuthHeaders();
+
+        return this.getSessionId().then(function(sessionId) {
+            if (!sessionId) return;
+
+            var params = 'PlayCommand=PlayNow&ItemIds=' + encodeURIComponent(ids.join(',')) +
+                '&StartPositionTicks=0';
+
+            return fetch(serverUrl + '/Sessions/' + sessionId + '/Playing?' + params, {
+                method: 'POST',
+                headers: headers
+            });
+        });
+    },
+
+    playTrailer: function(item) {
+        var self = this;
+        this.resolveTrailerSource(item).then(function(source) {
+            if (!source) {
+                self.playLocalTrailer(item);
+                return;
+            }
+            self.openTrailerOverlay(source, item.Name || 'Trailer');
+        }).catch(function(err) {
+            console.error('[Moonfin] Details: Failed to open trailer', err);
+            self.playLocalTrailer(item);
+        });
+    },
+
+    resolveTrailerSource: function(item) {
+        var self = this;
+        var existingUrl = this.getFirstTrailerUrl(item.RemoteTrailers);
+        if (existingUrl) return Promise.resolve(this.buildTrailerSource(existingUrl));
+
+        var serverUrl = this.getServerUrl();
+        var headers = this.getAuthHeaders();
+        return fetch(serverUrl + '/Users/' + window.ApiClient.getCurrentUserId() + '/Items/' + item.Id + '/LocalTrailers', { headers: headers }).then(function(r) { return r.json(); }).then(function(trailers) {
+            item.RemoteTrailers = trailers || [];
+            var url = self.getFirstTrailerUrl(item.RemoteTrailers);
+            return url ? self.buildTrailerSource(url) : null;
+        }).catch(function() {
+            return null;
+        });
+    },
+
+    buildTrailerSource: function(url) {
+        var videoId = this.extractYouTubeIdFromUrl(url);
+        if (videoId) {
+            return { type: 'youtube', videoId: videoId };
+        }
+        return { type: 'iframe', url: url };
+    },
+
+    getFirstTrailerUrl: function(trailers) {
+        if (!trailers || !trailers.length) return null;
+        for (var i = 0; i < trailers.length; i++) {
+            var trailer = trailers[i] || {};
+            var url = trailer.Url || trailer.url;
+            if (url) return url;
+        }
+        return null;
+    },
+
+    extractYouTubeIdFromUrl: function(url) {
+        if (!url) return null;
+        var match = url.match(/(?:youtube\.com\/(?:watch\?v=|embed\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+        return match ? match[1] : null;
+    },
+
+    openTrailerOverlay: function(source, title) {
+        var self = this;
+        this.closeTrailerOverlay();
+
+        var overlay = document.createElement('div');
+        overlay.className = 'moonfin-trailer-overlay';
+        overlay.innerHTML =
+            '<div class="moonfin-trailer-modal" role="dialog" aria-modal="true" aria-label="' + (title || 'Trailer') + '">' +
+                '<button class="moonfin-trailer-close moonfin-focusable" aria-label="Close trailer" tabindex="0">' +
+                    '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M18.3 5.71 12 12l6.3 6.29-1.41 1.42L10.59 13.4 4.29 19.71 2.88 18.3 9.17 12 2.88 5.71 4.29 4.29l6.3 6.3 6.29-6.3z"/></svg>' +
+                '</button>' +
+                '<div class="moonfin-trailer-player-host"></div>' +
+            '</div>';
+
+        overlay.addEventListener('click', function(e) {
+            if (e.target === overlay) {
+                self.closeTrailerOverlay();
+            }
+        });
+
+        var closeBtn = overlay.querySelector('.moonfin-trailer-close');
+        if (closeBtn) {
+            closeBtn.addEventListener('click', function() {
+                self.closeTrailerOverlay();
+            });
+        }
+
+        this._trailerEscHandler = function(e) {
+            if (e.key === 'Escape' || e.keyCode === 27 || e.keyCode === 461 || e.keyCode === 10009) {
+                e.preventDefault();
+                e.stopPropagation();
+                self.closeTrailerOverlay();
+            }
+        };
+
+        this._trailerPreviousFocus = document.activeElement;
+        this._trailerOverlay = overlay;
+        document.addEventListener('keydown', this._trailerEscHandler, true);
+        document.body.appendChild(overlay);
+
+        this.loadTrailerOverlayPlayer(source);
+
+        setTimeout(function() {
+            if (closeBtn) closeBtn.focus();
+        }, 0);
+    },
+
+    loadTrailerOverlayPlayer: function(source) {
+        if (!this._trailerOverlay) return;
+
+        var host = this._trailerOverlay.querySelector('.moonfin-trailer-player-host');
+        if (!host) return;
+
+        if (source.type === 'youtube' && source.videoId) {
+            this._loadTrailerYouTubePlayer(host, source.videoId);
+            return;
+        }
+
+        host.innerHTML =
+            '<iframe class="moonfin-trailer-iframe visible" src="' + source.url + '" allow="autoplay; fullscreen; encrypted-media; picture-in-picture" allowfullscreen loading="eager" referrerpolicy="origin"></iframe>';
+    },
+
+    _ensureYTApi: function(callback) {
+        if (window.YT && window.YT.Player) {
+            callback();
+            return;
+        }
+
+        if (!document.querySelector('script[src*="youtube.com/iframe_api"]')) {
+            var tag = document.createElement('script');
+            tag.src = 'https://www.youtube.com/iframe_api';
+            document.head.appendChild(tag);
+        }
+
+        var checkInterval = setInterval(function() {
+            if (window.YT && window.YT.Player) {
+                clearInterval(checkInterval);
+                callback();
+            }
+        }, 100);
+
+        setTimeout(function() { clearInterval(checkInterval); }, 10000);
+    },
+
+    _loadTrailerYouTubePlayer: function(host, videoId) {
+        var self = this;
+        host.innerHTML = '<div class="moonfin-trailer-loading"><div class="moonfin-spinner"></div><span>Loading trailer...</span></div>';
+
+        this._ensureYTApi(function() {
+            if (!self._trailerOverlay) return;
+
+            if (self._trailerPlayer) {
+                try { self._trailerPlayer.destroy(); } catch(e) {}
+                self._trailerPlayer = null;
+            }
+
+            var playerDiv = document.createElement('div');
+            playerDiv.id = 'moonfin-details-yt-player-' + Date.now();
+            playerDiv.className = 'moonfin-trailer-iframe';
+            host.innerHTML = '';
+            host.appendChild(playerDiv);
+
+            try {
+                self._trailerPlayer = new YT.Player(playerDiv.id, {
+                    videoId: videoId,
+                    playerVars: {
+                        autoplay: 1,
+                        controls: 1,
+                        rel: 0,
+                        modestbranding: 1,
+                        playsinline: 1,
+                        iv_load_policy: 3,
+                        fs: 1,
+                        origin: window.location.origin
+                    },
+                    events: {
+                        onReady: function(event) {
+                            event.target.playVideo();
+                            var iframe = host.querySelector('iframe');
+                            if (iframe) iframe.classList.add('visible');
+                        },
+                        onError: function(event) {
+                            console.warn('[Moonfin] Details: YouTube player error:', event.data);
+                            host.innerHTML = '<div class="moonfin-details-error"><span>Unable to load trailer</span></div>';
+                        }
+                    }
+                });
+            } catch(e) {
+                console.warn('[Moonfin] Details: Failed to create YouTube player:', e);
+                host.innerHTML = '<div class="moonfin-details-error"><span>Unable to load trailer</span></div>';
+            }
+        });
+    },
+
+    closeTrailerOverlay: function() {
+        if (!this._trailerOverlay) return false;
+
+        if (this._trailerEscHandler) {
+            document.removeEventListener('keydown', this._trailerEscHandler, true);
+            this._trailerEscHandler = null;
+        }
+
+        if (this._trailerPlayer) {
+            try { this._trailerPlayer.destroy(); } catch(e) {}
+            this._trailerPlayer = null;
+        }
+
+        var iframe = this._trailerOverlay.querySelector('.moonfin-trailer-iframe');
+        if (iframe && iframe.tagName === 'IFRAME') iframe.src = 'about:blank';
+
+        this._trailerOverlay.remove();
+        this._trailerOverlay = null;
+
+        if (this._trailerPreviousFocus && typeof this._trailerPreviousFocus.focus === 'function') {
+            this._trailerPreviousFocus.focus();
+        }
+        this._trailerPreviousFocus = null;
+        return true;
+    },
+
+    playLocalTrailer: function(item) {
+        var self = this;
+        if (!item.LocalTrailerCount || item.LocalTrailerCount <= 0) return;
+
+        var api = window.ApiClient;
+        var userId = api.getCurrentUserId();
+        var serverUrl = this.getServerUrl();
+        var headers = this.getAuthHeaders();
+
+        fetch(serverUrl + '/Users/' + userId + '/Items/' + item.Id + '/LocalTrailers', {
+            headers: headers
+        }).then(function(resp) {
+            return resp.json();
+        }).then(function(trailers) {
+            if (trailers && trailers.length > 0) {
+                self.hide(true);
+                self.playItem(trailers[0].Id, 0);
+            }
+        }).catch(function(err) {
+            console.error('[Moonfin] Details: Failed to load local trailers', err);
+        });
+    },
+
+    handleAction: function(action, item) {
+        switch (action) {
+            case 'play':
+                this.hide(true);
+                var resumeTicks = (item.UserData && item.UserData.PlaybackPositionTicks) ? item.UserData.PlaybackPositionTicks : 0;
+                this.playItem(item.Id, resumeTicks, this._selectedAudioIndex, this._selectedSubtitleIndex, this._selectedMediaSourceId);
+                break;
+
+            case 'restart':
+                this.hide(true);
+                this.playItem(item.Id, 0, this._selectedAudioIndex, this._selectedSubtitleIndex, this._selectedMediaSourceId);
+                break;
+
+            case 'version':
+                this.showVersionPicker(item);
+                break;
+
+            case 'audio':
+                this.showAudioPicker(item);
+                break;
+
+            case 'subtitle':
+                this.showSubtitlePicker(item);
+                break;
+
+            case 'trailer':
+                this.playTrailer(item);
+                break;
+
+            case 'shuffle':
+                this.hide(true);
+                this.shuffleItem(item.Id);
+                break;
+
+            case 'favorite':
+                this.toggleFavorite(item);
+                break;
+
+            case 'played':
+                this.togglePlayed(item);
+                break;
+
+            case 'series':
+                Details.showDetails(item.SeriesId, 'Series');
+                break;
+
+            case 'more':
+                this.showMoreMenu(item);
+                break;
+        }
+    },
+
+
+    showMoreMenu: function(item) {
+        var self = this;
+
+        this.closeMoreMenu();
+
+        window.ApiClient.getCurrentUser().then(function(user) {
+            self._buildMoreMenu(item, user);
+        }).catch(function() {
+            // Fallback: build with no user (only safe items shown)
+            self._buildMoreMenu(item, null);
+        });
+    },
+
+    _buildMoreMenu: function(item, user) {
+        var self = this;
+        var policy = (user && user.Policy) || {};
+        var isAdmin = policy.IsAdministrator || false;
+
+        var overlay = document.createElement('div');
+        overlay.className = 'moonfin-more-overlay';
+
+        var menuItems = [];
+
+        // Add to Playlist — available for media items (has MediaType or IsFolder)
+        if (item.MediaType || item.IsFolder) {
+            menuItems.push({ id: 'addtoplaylist', name: 'Add to Playlist', icon: '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="M480-120v-80h280v80H480Zm0-160v-80h280v80H480Zm0-160v-80h280v80H480ZM200-360v-240h80v240h-80Zm120-120v-120h80v120h-80Z"/></svg>' });
+        }
+
+        // Add to Collection — admin or user with EnableCollectionManagement, and item supports it
+        var collectionInvalidTypes = ['Genre', 'MusicGenre', 'Studio', 'UserView', 'CollectionFolder', 'Audio', 'Program', 'Timer', 'SeriesTimer'];
+        if ((isAdmin || policy.EnableCollectionManagement) && !item.CollectionType && collectionInvalidTypes.indexOf(item.Type) === -1) {
+            menuItems.push({ id: 'addtocollection', name: 'Add to Collection', icon: '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="M260-160q-91 0-155.5-63T40-377q0-78 47-139t121-71q17-91 90-147t163-56q100 0 172.5 69T707-554q71 5 122 57t51 127q0 75-52.5 127.5T700-190H260Zm0-80h440q42 0 71-29t29-71q0-42-29-71t-71-29h-60v-80q0-66-47-113t-113-47q-57 0-100 34t-56 89l-8 33h-42q-58 2-98 42.5T136-377q0 58 41 97.5t83 39.5Zm220-160Z"/></svg>' });
+        }
+
+        // Instant Mix — only for music-type items
+        if (item.MediaType === 'Audio' || item.Type === 'MusicAlbum' || item.Type === 'MusicArtist' || item.Type === 'MusicGenre') {
+            menuItems.push({ id: 'instantmix', name: 'Instant Mix', icon: '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="M400-120q-66 0-113-47t-47-113q0-66 47-113t113-47q23 0 42.5 5.5T480-418v-422h240v160H560v400q0 66-47 113t-113 47Z"/></svg>' });
+        }
+
+        // Media Info — only if MediaSources exist
+        if (item.MediaSources) {
+            menuItems.push({ id: 'mediainfo', name: 'Media Info', icon: '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="M440-280h80v-240h-80v240Zm40-320q17 0 28.5-11.5T520-640q0-17-11.5-28.5T480-680q-17 0-28.5 11.5T440-640q0 17 11.5 28.5T480-600Zm0 520q-83 0-156-31.5T197-197q-54-54-85.5-127T80-480q0-83 31.5-156T197-763q54-54 127-85.5T480-880q83 0 156 31.5T763-763q54 54 85.5 127T880-480q0 83-31.5 156T763-197q-54 54-127 85.5T480-80Z"/></svg>' });
+        }
+
+        // Download — requires EnableContentDownloading permission and CanDownload on item
+        if (policy.EnableContentDownloading && item.CanDownload) {
+            menuItems.push({ id: 'download', name: 'Download', icon: '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="M480-320 280-520l56-58 104 104v-326h80v326l104-104 56 58-200 200ZM240-160q-33 0-56.5-23.5T160-240v-120h80v120h480v-120h80v120q0 33-23.5 56.5T720-160H240Z"/></svg>' });
+        }
+
+        // Delete — only if server says CanDelete is true
+        if (item.CanDelete) {
+            menuItems.push({ id: 'delete', name: 'Delete', icon: '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="M280-120q-33 0-56.5-23.5T200-200v-520h-40v-80h200v-40h240v40h200v80h-40v520q0 33-23.5 56.5T680-120H280Zm400-600H280v520h400v-520ZM360-280h80v-360h-80v360Zm160 0h80v-360h-80v360ZM280-720v520-520Z"/></svg>', className: 'moonfin-more-item-danger' });
+        }
+
+        var hasAdminItems = false;
+
+        // Edit Metadata — admin only
+        if (isAdmin && item.Type !== 'Program' && item.Type !== 'Timer' && item.Type !== 'SeriesTimer') {
+            hasAdminItems = true;
+            menuItems.push({ id: 'editmetadata', name: 'Edit Metadata', icon: '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="M200-200h57l391-391-57-57-391 391v57Zm-80 80v-170l528-527q12-11 26.5-17t30.5-6q16 0 31 6t26 18l55 56q12 11 17.5 26t5.5 30q0 16-5.5 30.5T817-647L290-120H120Zm640-584-56-56 56 56Zm-141 85-28-29 57 57-29-28Z"/></svg>' });
+        }
+
+        // Edit Images — admin only
+        if (isAdmin && item.Type !== 'Timer' && item.Type !== 'SeriesTimer') {
+            hasAdminItems = true;
+            menuItems.push({ id: 'editimages', name: 'Edit Images', icon: '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="M200-120q-33 0-56.5-23.5T120-200v-560q0-33 23.5-56.5T200-840h560q33 0 56.5 23.5T840-760v560q0 33-23.5 56.5T760-120H200Zm0-80h560v-560H200v560Zm40-80h480L570-480 450-320l-90-120-120 160Zm-40 80v-560 560Z"/></svg>' });
+        }
+
+        // Edit Subtitles — admin or EnableSubtitleManagement, and Video media type
+        if ((isAdmin || policy.EnableSubtitleManagement) && item.MediaType === 'Video') {
+            hasAdminItems = true;
+            menuItems.push({ id: 'editsubtitles', name: 'Edit Subtitles', icon: '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="M200-160q-33 0-56.5-23.5T120-240v-480q0-33 23.5-56.5T200-800h560q33 0 56.5 23.5T840-720v480q0 33-23.5 56.5T760-160H200Zm0-80h560v-480H200v480Zm80-120h120v-80H280v80Zm200 0h200v-80H480v80ZM280-480h200v-80H280v80Zm280 0h120v-80H560v80Z"/></svg>' });
+        }
+
+        // Identify — admin only, specific item types
+        var identifyTypes = ['Movie', 'Trailer', 'Series', 'BoxSet', 'Person', 'Book', 'MusicAlbum', 'MusicArtist', 'MusicVideo'];
+        if (isAdmin && identifyTypes.indexOf(item.Type) !== -1) {
+            hasAdminItems = true;
+            menuItems.push({ id: 'identify', name: 'Identify', icon: '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="M784-120 532-372q-30 24-69 38t-83 14q-109 0-184.5-75.5T120-580q0-109 75.5-184.5T380-840q109 0 184.5 75.5T640-580q0 44-14 83t-38 69l252 252-56 56ZM380-400q75 0 127.5-52.5T560-580q0-75-52.5-127.5T380-760q-75 0-127.5 52.5T200-580q0 75 52.5 127.5T380-400Z"/></svg>' });
+        }
+
+        // Refresh Metadata — admin only
+        if (isAdmin) {
+            hasAdminItems = true;
+            menuItems.push({ id: 'refresh', name: 'Refresh Metadata', icon: '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="M480-160q-134 0-227-93t-93-227q0-134 93-227t227-93q69 0 132 28.5T720-690v-110h80v280H520v-80h168q-32-56-87.5-88T480-720q-100 0-170 70t-70 170q0 100 70 170t170 70q77 0 139-44t87-116h84q-28 106-114 173t-196 67Z"/></svg>' });
+        }
+
+        // Open in Jellyfin — always available
+        menuItems.push({ id: 'opennative', name: 'Open in Jellyfin', icon: '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="M200-120q-33 0-56.5-23.5T120-200v-560q0-33 23.5-56.5T200-840h280v80H200v560h560v-280h80v280q0 33-23.5 56.5T760-120H200Zm188-212-56-56 372-372H560v-80h280v280h-80v-144L388-332Z"/></svg>' });
+
+        var menuHtml = '<div class="moonfin-more-menu">' +
+            '<h3 class="moonfin-more-title">' + (item.Name || 'Options') + '</h3>' +
+            '<div class="moonfin-more-items">';
+
+        for (var i = 0; i < menuItems.length; i++) {
+            menuHtml += '<button class="moonfin-more-item moonfin-focusable' + (menuItems[i].className ? ' ' + menuItems[i].className : '') + '" data-more-action="' + menuItems[i].id + '" tabindex="0">' +
+                '<span class="moonfin-more-item-icon">' + menuItems[i].icon + '</span>' +
+                '<span class="moonfin-more-item-text">' + menuItems[i].name + '</span>' +
+            '</button>';
+        }
+
+        menuHtml += '</div></div>';
+        overlay.innerHTML = menuHtml;
+
+        overlay.addEventListener('click', function(e) {
+            if (e.target === overlay) self.closeMoreMenu();
+        });
+
+        overlay._escHandler = function(e) {
+            if (e.key === 'Escape' || e.keyCode === 27 || e.keyCode === 461 || e.keyCode === 10009) {
+                e.preventDefault();
+                e.stopPropagation();
+                self.closeMoreMenu();
+            }
+        };
+        document.addEventListener('keydown', overlay._escHandler, true);
+
+        var buttons = overlay.querySelectorAll('[data-more-action]');
+        for (var j = 0; j < buttons.length; j++) {
+            (function(btn) {
+                btn.addEventListener('click', function() {
+                    var actionId = btn.getAttribute('data-more-action');
+                    self.handleMoreAction(actionId, item);
+                });
+            })(buttons[j]);
+        }
+
+        document.body.appendChild(overlay);
+        setTimeout(function() {
+            var first = overlay.querySelector('.moonfin-more-item');
+            if (first) first.focus();
+        }, 50);
+    },
+
+    closeMoreMenu: function() {
+        var existing = document.querySelector('.moonfin-more-overlay');
+        if (existing) {
+            if (existing._escHandler) {
+                document.removeEventListener('keydown', existing._escHandler, true);
+            }
+            existing.remove();
+        }
+    },
+
+    handleMoreAction: function(actionId, item) {
+        var self = this;
+        var api = window.ApiClient;
+        var serverUrl = this.getServerUrl();
+        var headers = this.getAuthHeaders();
+
+        this.closeMoreMenu();
+
+        switch (actionId) {
+            case 'addtoplaylist':
+                this.showPlaylistPicker(item);
+                break;
+
+            case 'addtocollection':
+                this.showCollectionPicker(item);
+                break;
+
+            case 'mediainfo':
+                this.showMediaInfo(item);
+                break;
+
+            case 'refresh':
+                fetch(serverUrl + '/Items/' + item.Id + '/Refresh', {
+                    method: 'POST',
+                    headers: headers,
+                    body: JSON.stringify({
+                        Recursive: true,
+                        MetadataRefreshMode: 'Default',
+                        ImageRefreshMode: 'Default',
+                        ReplaceAllMetadata: false,
+                        ReplaceAllImages: false
+                    })
+                }).then(function() {
+                    console.log('[Moonfin] Details: Metadata refresh queued');
+                    self.showToast('Metadata refresh queued');
+                }).catch(function(err) {
+                    console.error('[Moonfin] Details: Failed to refresh metadata', err);
+                });
+                break;
+
+            case 'instantmix':
+                this.hide(true);
+                var instantMixUrl = serverUrl + '/Items/' + item.Id + '/InstantMix?UserId=' + api.getCurrentUserId() + '&Limit=50';
+                fetch(instantMixUrl, { headers: headers }).then(function(resp) {
+                    return resp.json();
+                }).then(function(result) {
+                    var mixIds = (result.Items || []).map(function(i) { return i.Id; });
+                    if (mixIds.length > 0) self.playItem(mixIds[0], 0);
+                }).catch(function(err) {
+                    console.error('[Moonfin] Details: Instant mix failed', err);
+                });
+                break;
+
+            case 'download':
+                var downloadUrl = serverUrl + '/Items/' + item.Id + '/Download?api_key=' + api.accessToken();
+                var a = document.createElement('a');
+                a.href = downloadUrl;
+                a.download = item.Name || 'download';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                break;
+
+            case 'editmetadata':
+                self.hide(true);
+                window.location.hash = '#/details?id=' + item.Id;
+                break;
+
+            case 'editimages':
+                self.hide(true);
+                window.location.hash = '#/details?id=' + item.Id;
+                break;
+
+            case 'editsubtitles':
+                self.hide(true);
+                window.location.hash = '#/details?id=' + item.Id;
+                break;
+
+            case 'identify':
+                self.hide(true);
+                window.location.hash = '#/details?id=' + item.Id;
+                break;
+
+            case 'opennative':
+                this.hide(true);
+                window.location.hash = '#/details?id=' + item.Id;
+                break;
+
+            case 'delete':
+                self.confirmDelete(item);
+                break;
+        }
+    },
+
+    confirmDelete: function(item) {
+        var self = this;
+        var serverUrl = this.getServerUrl();
+        var headers = this.getAuthHeaders();
+
+        var overlay = document.createElement('div');
+        overlay.className = 'moonfin-more-overlay';
+        overlay.innerHTML = '<div class="moonfin-more-menu">' +
+            '<h3 class="moonfin-more-title">Delete</h3>' +
+            '<p style="color:rgba(255,255,255,0.7);margin:0 0 20px;text-align:center">Are you sure you want to delete<br><strong>' + (item.Name || 'this item') + '</strong>?<br><span style="color:#ff6b6b;font-size:13px">This action cannot be undone.</span></p>' +
+            '<div style="display:flex;gap:12px;justify-content:center">' +
+                '<button class="moonfin-more-item moonfin-focusable moonfin-delete-cancel" tabindex="0"><span class="moonfin-more-item-text">Cancel</span></button>' +
+                '<button class="moonfin-more-item moonfin-focusable moonfin-more-item-danger moonfin-delete-confirm" tabindex="0"><span class="moonfin-more-item-text">Delete</span></button>' +
+            '</div>' +
+        '</div>';
+
+        var closeOverlay = function() {
+            if (overlay._escHandler) document.removeEventListener('keydown', overlay._escHandler, true);
+            overlay.remove();
+        };
+
+        overlay._escHandler = function(e) {
+            if (e.key === 'Escape' || e.keyCode === 27 || e.keyCode === 461 || e.keyCode === 10009) {
+                e.preventDefault();
+                e.stopPropagation();
+                closeOverlay();
+            }
+        };
+        document.addEventListener('keydown', overlay._escHandler, true);
+        overlay.addEventListener('click', function(e) { if (e.target === overlay) closeOverlay(); });
+
+        overlay.querySelector('.moonfin-delete-cancel').addEventListener('click', closeOverlay);
+        overlay.querySelector('.moonfin-delete-confirm').addEventListener('click', function() {
+            fetch(serverUrl + '/Items/' + item.Id, {
+                method: 'DELETE',
+                headers: headers
+            }).then(function(resp) {
+                if (resp.ok) {
+                    self.showToast('Deleted successfully');
+                    self.hide();
+                } else {
+                    self.showToast('Failed to delete - check permissions');
+                }
+                closeOverlay();
+            }).catch(function(err) {
+                console.error('[Moonfin] Details: Delete failed', err);
+                self.showToast('Delete failed');
+                closeOverlay();
+            });
+        });
+
+        document.body.appendChild(overlay);
+        setTimeout(function() { overlay.querySelector('.moonfin-delete-cancel').focus(); }, 50);
+    },
+
+    showToast: function(message) {
+        var toast = document.createElement('div');
+        toast.className = 'moonfin-toast';
+        toast.textContent = message;
+        document.body.appendChild(toast);
+        setTimeout(function() { toast.classList.add('visible'); }, 10);
+        setTimeout(function() {
+            toast.classList.remove('visible');
+            setTimeout(function() { toast.remove(); }, 300);
+        }, 2500);
+    },
+
+    _getSelectedMediaSource: function(item) {
+        if (!item.MediaSources || !this._selectedMediaSourceId) return item.MediaSources ? item.MediaSources[0] : null;
+        return item.MediaSources.find(function(s) { return s.Id === Details._selectedMediaSourceId; }) || item.MediaSources[0];
+    },
+
+    _getMediaStreams: function(item) {
+        var source = this._getSelectedMediaSource(item);
+        return source ? source.MediaStreams || item.MediaStreams || [] : item.MediaStreams || [];
+    },
+
+    showVersionPicker: function(item) {
+        var self = this;
+        if (!item.MediaSources || item.MediaSources.length < 2) return;
+
+        var overlay = document.createElement('div');
+        overlay.className = 'moonfin-more-overlay';
+
+        var menuHtml = '<div class="moonfin-more-menu">' +
+            '<h3 class="moonfin-more-title">Version</h3>' +
+            '<div class="moonfin-more-items">';
+
+        for (var i = 0; i < item.MediaSources.length; i++) {
+            var src = item.MediaSources[i];
+            var isSelected = src.Id === self._selectedMediaSourceId;
+            menuHtml += '<button class="moonfin-more-item moonfin-focusable' + (isSelected ? ' active' : '') + '" data-source-id="' + src.Id + '" tabindex="0">' +
+                '<span class="moonfin-more-item-icon"><svg viewBox="0 -960 960 960" fill="currentColor"><path d="M320-280h320v-80H320v80Zm0-160h320v-80H320v80ZM240-80q-33 0-56.5-23.5T160-160v-640q0-33 23.5-56.5T240-880h320l240 240v480q0 33-23.5 56.5T720-80H240Zm280-560v-160H240v640h480v-480H520ZM240-800v160-160 640-640Z"/></svg></span>' +
+                '<span class="moonfin-more-item-text">' + (src.Name || ('Version ' + (i + 1))) + '</span>' +
+            '</button>';
+        }
+
+        menuHtml += '</div></div>';
+        overlay.innerHTML = menuHtml;
+
+        var closeOverlay = function() {
+            if (overlay._escHandler) document.removeEventListener('keydown', overlay._escHandler, true);
+            overlay.remove();
+        };
+
+        overlay.addEventListener('click', function(e) { if (e.target === overlay) closeOverlay(); });
+        overlay._escHandler = function(e) {
+            if (e.key === 'Escape' || e.keyCode === 27 || e.keyCode === 461 || e.keyCode === 10009) {
+                e.preventDefault(); e.stopPropagation(); closeOverlay();
+            }
+        };
+        document.addEventListener('keydown', overlay._escHandler, true);
+
+        var btns = overlay.querySelectorAll('[data-source-id]');
+        for (var j = 0; j < btns.length; j++) {
+            (function(btn) {
+                btn.addEventListener('click', function() {
+                    var sourceId = btn.getAttribute('data-source-id');
+                    self._selectedMediaSourceId = sourceId;
+
+                    var versionBtn = self.container ? self.container.querySelector('[data-action="version"]') : null;
+                    if (versionBtn) {
+                        var label = versionBtn.querySelector('.moonfin-btn-label');
+                        if (label) label.textContent = btn.querySelector('.moonfin-more-item-text').textContent;
+                    }
+
+                    var newSource = item.MediaSources.find(function(s) { return s.Id === sourceId; });
+                    if (newSource) {
+                        var streams = newSource.MediaStreams || [];
+                        var audioTracks = streams.filter(function(s) { return s.Type === 'Audio'; });
+                        var subtitleTracks = streams.filter(function(s) { return s.Type === 'Subtitle'; });
+
+                        self._selectedAudioIndex = newSource.DefaultAudioStreamIndex != null ? newSource.DefaultAudioStreamIndex : null;
+                        var audioBtn = self.container ? self.container.querySelector('[data-action="audio"]') : null;
+                        if (audioBtn) {
+                            if (audioTracks.length > 1) {
+                                var audioTrack = audioTracks.find(function(t) { return t.Index === self._selectedAudioIndex; });
+                                audioBtn.querySelector('.moonfin-btn-label').textContent = audioTrack ? (audioTrack.DisplayTitle || 'Audio') : 'Audio';
+                                audioBtn.style.display = '';
+                            } else {
+                                audioBtn.style.display = 'none';
+                                self._selectedAudioIndex = null;
+                            }
+                        }
+
+                        self._selectedSubtitleIndex = newSource.DefaultSubtitleStreamIndex != null ? newSource.DefaultSubtitleStreamIndex : -1;
+                        var subBtn = self.container ? self.container.querySelector('[data-action="subtitle"]') : null;
+                        if (subBtn) {
+                            if (subtitleTracks.length > 0) {
+                                if (self._selectedSubtitleIndex === -1) {
+                                    subBtn.querySelector('.moonfin-btn-label').textContent = 'Off';
+                                } else {
+                                    var subTrack = subtitleTracks.find(function(t) { return t.Index === self._selectedSubtitleIndex; });
+                                    subBtn.querySelector('.moonfin-btn-label').textContent = subTrack ? (subTrack.DisplayTitle || 'Subtitles') : 'Subtitles';
+                                }
+                                subBtn.style.display = '';
+                            } else {
+                                subBtn.style.display = 'none';
+                                self._selectedSubtitleIndex = -1;
+                            }
+                        }
+                    }
+
+                    closeOverlay();
+                });
+            })(btns[j]);
+        }
+
+        document.body.appendChild(overlay);
+        setTimeout(function() {
+            var first = overlay.querySelector('.moonfin-more-item');
+            if (first) first.focus();
+        }, 50);
+    },
+
+    showAudioPicker: function(item) {
+        var self = this;
+        var audioTracks = this._getMediaStreams(item).filter(function(s) { return s.Type === 'Audio'; });
+        if (audioTracks.length < 2) return;
+
+        var overlay = document.createElement('div');
+        overlay.className = 'moonfin-more-overlay';
+
+        var menuHtml = '<div class="moonfin-more-menu">' +
+            '<h3 class="moonfin-more-title">Audio</h3>' +
+            '<div class="moonfin-more-items">';
+
+        for (var i = 0; i < audioTracks.length; i++) {
+            var isSelected = audioTracks[i].Index === self._selectedAudioIndex;
+            menuHtml += '<button class="moonfin-more-item moonfin-focusable' + (isSelected ? ' active' : '') + '" data-audio-index="' + audioTracks[i].Index + '" tabindex="0">' +
+                '<span class="moonfin-more-item-icon"><svg viewBox="0 -960 960 960" fill="currentColor"><path d="M400-120q-66 0-113-47t-47-113q0-66 47-113t113-47q23 0 42.5 5.5T480-418v-422h240v160H560v400q0 66-47 113t-113 47Z"/></svg></span>' +
+                '<span class="moonfin-more-item-text">' + (audioTracks[i].DisplayTitle || ('Audio ' + (i + 1))) + '</span>' +
+            '</button>';
+        }
+
+        menuHtml += '</div></div>';
+        overlay.innerHTML = menuHtml;
+
+        var closeOverlay = function() {
+            if (overlay._escHandler) document.removeEventListener('keydown', overlay._escHandler, true);
+            overlay.remove();
+        };
+
+        overlay.addEventListener('click', function(e) { if (e.target === overlay) closeOverlay(); });
+        overlay._escHandler = function(e) {
+            if (e.key === 'Escape' || e.keyCode === 27 || e.keyCode === 461 || e.keyCode === 10009) {
+                e.preventDefault(); e.stopPropagation(); closeOverlay();
+            }
+        };
+        document.addEventListener('keydown', overlay._escHandler, true);
+
+        var btns = overlay.querySelectorAll('[data-audio-index]');
+        for (var j = 0; j < btns.length; j++) {
+            (function(btn) {
+                btn.addEventListener('click', function() {
+                    self._selectedAudioIndex = parseInt(btn.getAttribute('data-audio-index'), 10);
+                    var audioBtn = self.container ? self.container.querySelector('[data-action="audio"]') : null;
+                    if (audioBtn) {
+                        var label = audioBtn.querySelector('.moonfin-btn-label');
+                        if (label) label.textContent = btn.querySelector('.moonfin-more-item-text').textContent;
+                    }
+                    closeOverlay();
+                });
+            })(btns[j]);
+        }
+
+        document.body.appendChild(overlay);
+        setTimeout(function() {
+            var first = overlay.querySelector('.moonfin-more-item');
+            if (first) first.focus();
+        }, 50);
+    },
+
+    showSubtitlePicker: function(item) {
+        var self = this;
+        var subtitleTracks = this._getMediaStreams(item).filter(function(s) { return s.Type === 'Subtitle'; });
+        if (subtitleTracks.length === 0) return;
+
+        var overlay = document.createElement('div');
+        overlay.className = 'moonfin-more-overlay';
+
+        var menuHtml = '<div class="moonfin-more-menu">' +
+            '<h3 class="moonfin-more-title">Subtitles</h3>' +
+            '<div class="moonfin-more-items">';
+
+        var offSelected = self._selectedSubtitleIndex === -1 || self._selectedSubtitleIndex == null;
+        menuHtml += '<button class="moonfin-more-item moonfin-focusable' + (offSelected ? ' active' : '') + '" data-sub-index="-1" tabindex="0">' +
+            '<span class="moonfin-more-item-text">Off</span>' +
+        '</button>';
+
+        for (var i = 0; i < subtitleTracks.length; i++) {
+            var isSelected = subtitleTracks[i].Index === self._selectedSubtitleIndex;
+            menuHtml += '<button class="moonfin-more-item moonfin-focusable' + (isSelected ? ' active' : '') + '" data-sub-index="' + subtitleTracks[i].Index + '" tabindex="0">' +
+                '<span class="moonfin-more-item-icon"><svg viewBox="0 -960 960 960" fill="currentColor"><path d="M200-160q-33 0-56.5-23.5T120-240v-480q0-33 23.5-56.5T200-800h560q33 0 56.5 23.5T840-720v480q0 33-23.5 56.5T760-160H200Zm0-80h560v-480H200v480Zm80-120h120q17 0 28.5-11.5T440-400v-40h-60v20h-80v-120h80v20h60v-40q0-17-11.5-28.5T400-600H280q-17 0-28.5 11.5T240-560v160q0 17 11.5 28.5T280-360Zm280 0h120q17 0 28.5-11.5T720-400v-40h-60v20h-80v-120h80v20h60v-40q0-17-11.5-28.5T680-600H560q-17 0-28.5 11.5T520-560v160q0 17 11.5 28.5T560-360ZM200-240v-480 480Z\"/></svg></span>' +
+                '<span class="moonfin-more-item-text">' + (subtitleTracks[i].DisplayTitle || ('Subtitle ' + (i + 1))) + '</span>' +
+            '</button>';
+        }
+
+        menuHtml += '</div></div>';
+        overlay.innerHTML = menuHtml;
+
+        var closeOverlay = function() {
+            if (overlay._escHandler) document.removeEventListener('keydown', overlay._escHandler, true);
+            overlay.remove();
+        };
+
+        overlay.addEventListener('click', function(e) { if (e.target === overlay) closeOverlay(); });
+        overlay._escHandler = function(e) {
+            if (e.key === 'Escape' || e.keyCode === 27 || e.keyCode === 461 || e.keyCode === 10009) {
+                e.preventDefault(); e.stopPropagation(); closeOverlay();
+            }
+        };
+        document.addEventListener('keydown', overlay._escHandler, true);
+
+        var btns = overlay.querySelectorAll('[data-sub-index]');
+        for (var j = 0; j < btns.length; j++) {
+            (function(btn) {
+                btn.addEventListener('click', function() {
+                    self._selectedSubtitleIndex = parseInt(btn.getAttribute('data-sub-index'), 10);
+                    var subBtn = self.container ? self.container.querySelector('[data-action="subtitle"]') : null;
+                    if (subBtn) {
+                        var label = subBtn.querySelector('.moonfin-btn-label');
+                        if (label) {
+                            var text = btn.querySelector('.moonfin-more-item-text').textContent;
+                            label.textContent = text;
+                        }
+                    }
+                    closeOverlay();
+                });
+            })(btns[j]);
+        }
+
+        document.body.appendChild(overlay);
+        setTimeout(function() {
+            var first = overlay.querySelector('.moonfin-more-item');
+            if (first) first.focus();
+        }, 50);
+    },
+
+    showPlaylistPicker: function(item) {
+        var self = this;
+        var api = window.ApiClient;
+        var userId = api.getCurrentUserId();
+        var serverUrl = this.getServerUrl();
+        var headers = this.getAuthHeaders();
+
+        fetch(serverUrl + '/Users/' + userId + '/Items?IncludeItemTypes=Playlist&Recursive=true&SortBy=SortName&SortOrder=Ascending', {
+            headers: headers
+        }).then(function(resp) {
+            return resp.json();
+        }).then(function(result) {
+            var playlists = result.Items || [];
+
+            var overlay = document.createElement('div');
+            overlay.className = 'moonfin-more-overlay';
+
+            var menuHtml = '<div class="moonfin-more-menu">' +
+                '<h3 class="moonfin-more-title">Add to Playlist</h3>' +
+                '<div class="moonfin-more-items">';
+
+            menuHtml += '<button class="moonfin-more-item moonfin-focusable moonfin-playlist-create" tabindex="0">' +
+                '<span class="moonfin-more-item-icon"><svg viewBox="0 -960 960 960" fill="currentColor"><path d="M440-440H200v-80h240v-240h80v240h240v80H520v240h-80v-240Z"/></svg></span>' +
+                '<span class="moonfin-more-item-text">New Playlist</span>' +
+            '</button>';
+
+            if (playlists.length > 0) {
+                menuHtml += '<div style="border-top:1px solid rgba(255,255,255,0.1);margin:4px 0"></div>';
+            }
+
+            for (var i = 0; i < playlists.length; i++) {
+                menuHtml += '<button class="moonfin-more-item moonfin-focusable" data-playlist-id="' + playlists[i].Id + '" tabindex="0">' +
+                    '<span class="moonfin-more-item-icon"><svg viewBox="0 -960 960 960" fill="currentColor"><path d="M500-360q42 0 71-29t29-71q0-42-29-71t-71-29q-42 0-71 29t-29 71q0 42 29 71t71 29ZM200-120v-640h560v361q-20-2-40 1t-40 12V-680H280v368l220-140 64 41q-13 17-20.5 37T536-334l-36 22-300-190v382Z"/></svg></span>' +
+                    '<span class="moonfin-more-item-text">' + playlists[i].Name + '</span>' +
+                '</button>';
+            }
+
+            menuHtml += '</div></div>';
+            overlay.innerHTML = menuHtml;
+
+            var closeOverlay = function() {
+                if (overlay._escHandler) document.removeEventListener('keydown', overlay._escHandler, true);
+                overlay.remove();
+            };
+
+            overlay.addEventListener('click', function(e) {
+                if (e.target === overlay) closeOverlay();
+            });
+
+            overlay._escHandler = function(e) {
+                if (e.key === 'Escape' || e.keyCode === 27 || e.keyCode === 461 || e.keyCode === 10009) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    closeOverlay();
+                }
+            };
+            document.addEventListener('keydown', overlay._escHandler, true);
+
+            var createBtn = overlay.querySelector('.moonfin-playlist-create');
+            if (createBtn) {
+                createBtn.addEventListener('click', function() {
+                    closeOverlay();
+                    self.showCreatePlaylistDialog(item);
+                });
+            }
+
+            var playlistBtns = overlay.querySelectorAll('[data-playlist-id]');
+            for (var j = 0; j < playlistBtns.length; j++) {
+                (function(btn) {
+                    btn.addEventListener('click', function() {
+                        var playlistId = btn.getAttribute('data-playlist-id');
+                        fetch(serverUrl + '/Playlists/' + playlistId + '/Items?Ids=' + item.Id + '&UserId=' + userId, {
+                            method: 'POST',
+                            headers: headers
+                        }).then(function() {
+                            self.showToast('Added to playlist');
+                        }).catch(function(err) {
+                            console.error('[Moonfin] Details: Failed to add to playlist', err);
+                            self.showToast('Failed to add to playlist');
+                        });
+                        if (overlay._escHandler) document.removeEventListener('keydown', overlay._escHandler, true);
+                        overlay.remove();
+                    });
+                })(playlistBtns[j]);
+            }
+
+            document.body.appendChild(overlay);
+            setTimeout(function() {
+                var first = overlay.querySelector('.moonfin-more-item');
+                if (first) first.focus();
+            }, 50);
+        }).catch(function(err) {
+            console.error('[Moonfin] Details: Failed to fetch playlists', err);
+            self.showToast('Failed to load playlists');
+        });
+    },
+
+    showCreatePlaylistDialog: function(item) {
+        var self = this;
+        var serverUrl = this.getServerUrl();
+        var headers = this.getAuthHeaders();
+        var api = window.ApiClient;
+        var userId = api.getCurrentUserId();
+
+        var overlay = document.createElement('div');
+        overlay.className = 'moonfin-more-overlay';
+        overlay.innerHTML = '<div class="moonfin-more-menu">' +
+            '<h3 class="moonfin-more-title">New Playlist</h3>' +
+            '<div style="padding:0 8px">' +
+                '<input type="text" class="moonfin-playlist-name-input" placeholder="Playlist name" style="' +
+                    'width:100%;box-sizing:border-box;padding:10px 14px;margin:8px 0 16px;' +
+                    'background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);border-radius:8px;' +
+                    'color:#fff;font-size:15px;outline:none;font-family:inherit' +
+                '" />' +
+                '<div style="display:flex;gap:12px;justify-content:flex-end">' +
+                    '<button class="moonfin-more-item moonfin-focusable moonfin-playlist-cancel" tabindex="0" style="flex:none;width:auto;padding:8px 20px">' +
+                        '<span class="moonfin-more-item-text">Cancel</span>' +
+                    '</button>' +
+                    '<button class="moonfin-more-item moonfin-focusable moonfin-playlist-confirm" tabindex="0" style="flex:none;width:auto;padding:8px 20px">' +
+                        '<span class="moonfin-more-item-text">Create</span>' +
+                    '</button>' +
+                '</div>' +
+            '</div>' +
+        '</div>';
+
+        var closeOverlay = function() {
+            if (overlay._escHandler) document.removeEventListener('keydown', overlay._escHandler, true);
+            overlay.remove();
+        };
+
+        overlay.addEventListener('click', function(e) {
+            if (e.target === overlay) closeOverlay();
+        });
+
+        overlay._escHandler = function(e) {
+            if (e.key === 'Escape' || e.keyCode === 27 || e.keyCode === 461 || e.keyCode === 10009) {
+                e.preventDefault();
+                e.stopPropagation();
+                closeOverlay();
+            }
+        };
+        document.addEventListener('keydown', overlay._escHandler, true);
+
+        overlay.querySelector('.moonfin-playlist-cancel').addEventListener('click', closeOverlay);
+
+        overlay.querySelector('.moonfin-playlist-confirm').addEventListener('click', function() {
+            var nameInput = overlay.querySelector('.moonfin-playlist-name-input');
+            var playlistName = (nameInput.value || '').trim();
+            if (!playlistName) {
+                nameInput.style.borderColor = '#ff6b6b';
+                nameInput.focus();
+                return;
+            }
+
+            var mediaType = item.MediaType || 'Video';
+            var createHeaders = Object.assign({}, headers, { 'Content-Type': 'application/json' });
+
+            fetch(serverUrl + '/Playlists', {
+                method: 'POST',
+                headers: createHeaders,
+                body: JSON.stringify({
+                    Name: playlistName,
+                    Ids: [item.Id],
+                    UserId: userId,
+                    MediaType: mediaType
+                })
+            }).then(function(resp) {
+                if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                return resp.json();
+            }).then(function() {
+                self.showToast('Created playlist & added item');
+                closeOverlay();
+            }).catch(function(err) {
+                console.error('[Moonfin] Details: Failed to create playlist', err);
+                self.showToast('Failed to create playlist');
+            });
+        });
+
+        var nameInput = overlay.querySelector('.moonfin-playlist-name-input');
+        nameInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                overlay.querySelector('.moonfin-playlist-confirm').click();
+            }
+        });
+
+        document.body.appendChild(overlay);
+        setTimeout(function() { nameInput.focus(); }, 50);
+    },
+
+    showCollectionPicker: function(item) {
+        var self = this;
+        var api = window.ApiClient;
+        var userId = api.getCurrentUserId();
+        var serverUrl = this.getServerUrl();
+        var headers = this.getAuthHeaders();
+
+        fetch(serverUrl + '/Users/' + userId + '/Items?IncludeItemTypes=BoxSet&Recursive=true&SortBy=SortName&SortOrder=Ascending', {
+            headers: headers
+        }).then(function(resp) {
+            return resp.json();
+        }).then(function(result) {
+            var collections = result.Items || [];
+            if (collections.length === 0) {
+                self.showToast('No collections found');
+                return;
+            }
+
+            var overlay = document.createElement('div');
+            overlay.className = 'moonfin-more-overlay';
+
+            var menuHtml = '<div class="moonfin-more-menu">' +
+                '<h3 class="moonfin-more-title">Add to Collection</h3>' +
+                '<div class="moonfin-more-items">';
+
+            for (var i = 0; i < collections.length; i++) {
+                menuHtml += '<button class="moonfin-more-item moonfin-focusable" data-collection-id="' + collections[i].Id + '" tabindex="0">' +
+                    '<span class="moonfin-more-item-icon"><svg viewBox="0 -960 960 960" fill="currentColor"><path d="M260-160q-91 0-155.5-63T40-377q0-78 47-139t121-71q17-91 90-147t163-56q100 0 172.5 69T707-554q71 5 122 57t51 127q0 75-52.5 127.5T700-190H260Z"/></svg></span>' +
+                    '<span class="moonfin-more-item-text">' + collections[i].Name + '</span>' +
+                '</button>';
+            }
+
+            menuHtml += '</div></div>';
+            overlay.innerHTML = menuHtml;
+
+            overlay.addEventListener('click', function(e) {
+                if (e.target === overlay) {
+                    if (overlay._escHandler) document.removeEventListener('keydown', overlay._escHandler, true);
+                    overlay.remove();
+                }
+            });
+
+            overlay._escHandler = function(e) {
+                if (e.key === 'Escape' || e.keyCode === 27 || e.keyCode === 461 || e.keyCode === 10009) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    document.removeEventListener('keydown', overlay._escHandler, true);
+                    overlay.remove();
+                }
+            };
+            document.addEventListener('keydown', overlay._escHandler, true);
+
+            var collBtns = overlay.querySelectorAll('[data-collection-id]');
+            for (var j = 0; j < collBtns.length; j++) {
+                (function(btn) {
+                    btn.addEventListener('click', function() {
+                        var collectionId = btn.getAttribute('data-collection-id');
+                        fetch(serverUrl + '/Collections/' + collectionId + '/Items?Ids=' + item.Id, {
+                            method: 'POST',
+                            headers: headers
+                        }).then(function() {
+                            self.showToast('Added to collection');
+                        }).catch(function(err) {
+                            console.error('[Moonfin] Details: Failed to add to collection', err);
+                            self.showToast('Failed to add to collection');
+                        });
+                        if (overlay._escHandler) document.removeEventListener('keydown', overlay._escHandler, true);
+                        overlay.remove();
+                    });
+                })(collBtns[j]);
+            }
+
+            document.body.appendChild(overlay);
+            setTimeout(function() {
+                var first = overlay.querySelector('.moonfin-more-item');
+                if (first) first.focus();
+            }, 50);
+        }).catch(function(err) {
+            console.error('[Moonfin] Details: Failed to fetch collections', err);
+            self.showToast('Failed to load collections');
+        });
+    },
+
+    showMediaInfo: function(item) {
+        var self = this;
+        var streams = item.MediaStreams || [];
+
+        var overlay = document.createElement('div');
+        overlay.className = 'moonfin-more-overlay';
+
+        var infoHtml = '<div class="moonfin-more-menu moonfin-media-info-menu">' +
+            '<h3 class="moonfin-more-title">Media Info</h3>' +
+            '<div class="moonfin-media-info-content">';
+
+        if (streams.length === 0) {
+            infoHtml += '<p class="moonfin-media-info-empty">No media info available</p>';
+        } else {
+            for (var i = 0; i < streams.length; i++) {
+                var s = streams[i];
+                infoHtml += '<div class="moonfin-media-info-stream">';
+                infoHtml += '<div class="moonfin-media-info-stream-header">' + s.Type + (s.Language ? ' (' + s.Language + ')' : '') + '</div>';
+
+                if (s.Type === 'Video') {
+                    if (s.DisplayTitle) infoHtml += '<div class="moonfin-media-info-row">' + s.DisplayTitle + '</div>';
+                    var details = [];
+                    if (s.Width && s.Height) details.push(s.Width + 'x' + s.Height);
+                    if (s.Codec) details.push(s.Codec.toUpperCase());
+                    if (s.BitRate) details.push(Math.round(s.BitRate / 1000000) + ' Mbps');
+                    if (s.VideoRange) details.push(s.VideoRange);
+                    if (details.length) infoHtml += '<div class="moonfin-media-info-row">' + details.join(' · ') + '</div>';
+                } else if (s.Type === 'Audio') {
+                    if (s.DisplayTitle) infoHtml += '<div class="moonfin-media-info-row">' + s.DisplayTitle + '</div>';
+                    var aDetails = [];
+                    if (s.Codec) aDetails.push(s.Codec.toUpperCase());
+                    if (s.Channels) aDetails.push(s.Channels + ' ch');
+                    if (s.SampleRate) aDetails.push(s.SampleRate + ' Hz');
+                    if (s.BitRate) aDetails.push(Math.round(s.BitRate / 1000) + ' kbps');
+                    if (aDetails.length) infoHtml += '<div class="moonfin-media-info-row">' + aDetails.join(' · ') + '</div>';
+                } else if (s.Type === 'Subtitle') {
+                    var subDetails = [];
+                    if (s.DisplayTitle) subDetails.push(s.DisplayTitle);
+                    else if (s.Title) subDetails.push(s.Title);
+                    if (s.Codec) subDetails.push(s.Codec.toUpperCase());
+                    if (subDetails.length) infoHtml += '<div class="moonfin-media-info-row">' + subDetails.join(' · ') + '</div>';
+                }
+
+                infoHtml += '</div>';
+            }
+
+            if (item.Container) {
+                infoHtml += '<div class="moonfin-media-info-stream">';
+                infoHtml += '<div class="moonfin-media-info-stream-header">Container</div>';
+                infoHtml += '<div class="moonfin-media-info-row">' + item.Container.toUpperCase() + '</div>';
+                infoHtml += '</div>';
+            }
+        }
+
+        infoHtml += '</div>' +
+            '<button class="moonfin-more-item moonfin-focusable moonfin-media-info-close" tabindex="0">' +
+                '<span class="moonfin-more-item-text">Close</span>' +
+            '</button>' +
+        '</div>';
+
+        overlay.innerHTML = infoHtml;
+
+        var closeMenu = function() {
+            if (overlay._escHandler) document.removeEventListener('keydown', overlay._escHandler, true);
+            overlay.remove();
+        };
+
+        overlay.addEventListener('click', function(e) {
+            if (e.target === overlay) closeMenu();
+        });
+
+        overlay._escHandler = function(e) {
+            if (e.key === 'Escape' || e.keyCode === 27 || e.keyCode === 461 || e.keyCode === 10009) {
+                e.preventDefault();
+                e.stopPropagation();
+                closeMenu();
+            }
+        };
+        document.addEventListener('keydown', overlay._escHandler, true);
+
+        var closeBtn = overlay.querySelector('.moonfin-media-info-close');
+        if (closeBtn) closeBtn.addEventListener('click', closeMenu);
+
+        document.body.appendChild(overlay);
+        setTimeout(function() {
+            if (closeBtn) closeBtn.focus();
+        }, 50);
+    },
+
+    renderSeasonDetails: function(item, episodes) {
+        var self = this;
+        var panel = this.container.querySelector('.moonfin-details-panel');
+        var api = window.ApiClient;
+        var serverUrl = api.serverAddress();
+
+        var backdropId = item.ParentBackdropItemId || item.Id;
+        var backdropUrl = serverUrl + '/Items/' + backdropId + '/Images/Backdrop?maxWidth=1920&quality=90';
+
+        var posterTag = item.ImageTags ? item.ImageTags.Primary : null;
+        var posterUrl = posterTag
+            ? serverUrl + '/Items/' + item.Id + '/Images/Primary?maxHeight=500&quality=90'
+            : (item.SeriesId && item.SeriesPrimaryImageTag
+                ? serverUrl + '/Items/' + item.SeriesId + '/Images/Primary?maxHeight=500&quality=90'
+                : '');
+
+        var isPlayed = item.UserData && item.UserData.Played;
+        var isFavorite = item.UserData && item.UserData.IsFavorite;
+
+        var firstUnwatched = null;
+        for (var e = 0; e < episodes.length; e++) {
+            if (!episodes[e].UserData || !episodes[e].UserData.Played) {
+                firstUnwatched = episodes[e];
+                break;
+            }
+        }
+
+        var seasonActions = '';
+        if (episodes.length > 0) {
+            seasonActions += '<div class="moonfin-btn-wrapper moonfin-focusable" data-action="play" tabindex="0">' +
+                '<div class="moonfin-btn-circle moonfin-btn-primary">' +
+                    '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>' +
+                '</div>' +
+                '<span class="moonfin-btn-label">Play</span>' +
+            '</div>';
+
+            seasonActions += '<div class="moonfin-btn-wrapper moonfin-focusable" data-action="shuffle" tabindex="0">' +
+                '<div class="moonfin-btn-circle">' +
+                    '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="M560-160v-80h104L537-367l57-57 126 126v-102h80v240H560Zm-344 0-56-56 504-504H560v-80h240v240h-80v-104L216-160Zm151-377L160-744l56-56 207 207-56 56Z"/></svg>' +
+                '</div>' +
+                '<span class="moonfin-btn-label">Shuffle</span>' +
+            '</div>';
+        }
+
+        seasonActions += '<div class="moonfin-btn-wrapper moonfin-focusable ' + (isPlayed ? 'active' : '') + '" data-action="played" tabindex="0">' +
+            '<div class="moonfin-btn-circle">' +
+                '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M21 7L9 19l-5.5-5.5 1.41-1.41L9 16.17 19.59 5.59 21 7z"/></svg>' +
+            '</div>' +
+            '<span class="moonfin-btn-label">' + (isPlayed ? 'Watched' : 'Unwatched') + '</span>' +
+        '</div>';
+
+        seasonActions += '<div class="moonfin-btn-wrapper moonfin-focusable ' + (isFavorite ? 'active' : '') + '" data-action="favorite" tabindex="0">' +
+            '<div class="moonfin-btn-circle">' +
+                '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="' + (isFavorite ?
+                    'm480-120-58-52q-101-91-167-157T150-447.5Q111-500 95.5-544T80-634q0-94 63-157t157-63q52 0 99 22t81 62q34-40 81-62t99-22q94 0 157 63t63 157q0 46-15.5 90T810-447.5Q771-395 705-329T538-172l-58 52Z' :
+                    'M480-120q-14 0-28.5-5T426-140q-43-38-97.5-82.5T232-308q-41.5-41.5-72-83T122-475q-8-32-11-60.5T108-596q0-86 57-147t147-61q52 0 99 22t69 62q22-40 69-62t99-22q90 0 147 61t57 147q0 32-3 60.5T837-475q-7 42-37.5 83.5T728-308q-42 42-96.5 86.5T534-140q-11 10-25.5 15t-28.5 5Zm0-80q41-37 88.5-75t83-68.5q35.5-30.5 61-58T746-456q9-27 11.5-49t2.5-43q0-53-34.5-91.5T636-678q-43 0-77.5 24T507-602h-54q-17-28-51.5-52T324-678q-55 0-89.5 38.5T200-548q0 21 2.5 43t11.5 49q9 27 34.5 54.5t61 58Q345-313 392.5-275T480-200Z') +
+                '"/></svg>' +
+            '</div>' +
+            '<span class="moonfin-btn-label">' + (isFavorite ? 'Favorited' : 'Favorite') + '</span>' +
+        '</div>';
+
+        seasonActions += '<div class="moonfin-btn-wrapper moonfin-focusable" data-action="more" tabindex="0">' +
+            '<div class="moonfin-btn-circle">' +
+                '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>' +
+            '</div>' +
+            '<span class="moonfin-btn-label">More</span>' +
+        '</div>';
+
+        var episodeListHtml = episodes.map(function(ep) {
+            var epThumbTag = ep.ImageTags ? ep.ImageTags.Primary : null;
+            var epThumbUrl = epThumbTag ? serverUrl + '/Items/' + ep.Id + '/Images/Primary?maxWidth=400&quality=80' : '';
+            var epRuntime = ep.RunTimeTicks ? self.formatRuntime(ep.RunTimeTicks) : '';
+            var epProgress = ep.UserData ? ep.UserData.PlayedPercentage : 0;
+            var isPlayed = ep.UserData && ep.UserData.Played;
+            var isFavorite = ep.UserData && ep.UserData.IsFavorite;
+
+            return '<div class="moonfin-season-ep moonfin-focusable" data-item-id="' + ep.Id + '" data-type="Episode" tabindex="0">' +
+                '<div class="moonfin-season-ep-thumb">' +
+                    (epThumbUrl ? '<img src="' + epThumbUrl + '" alt="" loading="lazy">' : '<div class="moonfin-season-ep-thumb-placeholder"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M21 3H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H3V5h18v14zM9.5 7.5l7 4.5-7 4.5z"/></svg></div>') +
+                    (isFavorite ? self.buildFavoriteIndicator() : '') +
+                    (isPlayed ? self.buildWatchedIndicator() : '') +
+                    (epProgress ? '<div class="moonfin-episode-progress"><div class="moonfin-episode-progress-bar" style="width:' + Math.min(epProgress, 100) + '%"></div></div>' : '') +
+                '</div>' +
+                '<div class="moonfin-season-ep-body">' +
+                    '<div class="moonfin-season-ep-top">' +
+                        '<span class="moonfin-season-ep-number">Episode ' + (ep.IndexNumber || '?') + '</span>' +
+                        '<span class="moonfin-season-ep-meta">' +
+                            (epRuntime ? '<span>' + epRuntime + '</span>' : '') +
+                            (isPlayed ? '<svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16" class="moonfin-season-ep-check"><path d="M21 7L9 19l-5.5-5.5 1.41-1.41L9 16.17 19.59 5.59 21 7z"/></svg>' : '') +
+                        '</span>' +
+                    '</div>' +
+                    '<span class="moonfin-season-ep-title">' + ep.Name + '</span>' +
+                    (ep.Overview ? '<p class="moonfin-season-ep-overview">' + ep.Overview + '</p>' : '') +
+                '</div>' +
+            '</div>';
+        }).join('');
+
+        var backdrop = this.container.querySelector('.moonfin-details-backdrop');
+        if (backdrop) {
+            backdrop.style.backgroundImage = 'url(\'' + backdropUrl + '\')';
+            backdrop.className = 'moonfin-details-backdrop';
+        }
+
+        panel.innerHTML =
+            '<button class="moonfin-details-back moonfin-focusable" title="Back" tabindex="0">' +
+                '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>' +
+            '</button>' +
+
+            '<div class="moonfin-details-content">' +
+                '<div class="moonfin-season-detail-header">' +
+                    '<div class="moonfin-season-detail-poster">' +
+                        (posterUrl ? '<img src="' + posterUrl + '" alt="">' : '') +
+                    '</div>' +
+                    '<div class="moonfin-season-detail-info">' +
+                        (item.SeriesName ? '<span class="moonfin-season-detail-series">' + item.SeriesName + '</span>' : '') +
+                        '<h1 class="moonfin-season-detail-title">' + item.Name + '</h1>' +
+                        '<span class="moonfin-season-detail-count">' + episodes.length + ' Episode' + (episodes.length !== 1 ? 's' : '') + '</span>' +
+                    '</div>' +
+                '</div>' +
+                '<div class="moonfin-actions">' + seasonActions + '</div>' +
+                '<div class="moonfin-season-episodes-list">' +
+                    episodeListHtml +
+                '</div>' +
+            '</div>';
+
+        this.applyBackdropSettings();
+        this.setupSeasonPanelListeners(panel, item, episodes);
+
+    },
+
+
+    setupSeasonPanelListeners: function(panel, item, episodes) {
+        var self = this;
+
+        var backBtn = panel.querySelector('.moonfin-details-back');
+        if (backBtn) {
+            backBtn.addEventListener('click', function() {
+                if (item.SeriesId) {
+                    self.showDetails(item.SeriesId, 'Series');
+                } else {
+                    self.hide();
+                }
+            });
+        }
+
+        var actionBtns = panel.querySelectorAll('[data-action]');
+        for (var j = 0; j < actionBtns.length; j++) {
+            (function(btn) {
+                btn.addEventListener('click', function() {
+                    var action = btn.getAttribute('data-action');
+                    self.handleSeasonAction(action, item, episodes);
+                });
+            })(actionBtns[j]);
+        }
+
+        var episodeCards = panel.querySelectorAll('.moonfin-season-ep');
+        for (var i = 0; i < episodeCards.length; i++) {
+            (function(card) {
+                card.addEventListener('click', function() {
+                    self.showDetails(card.getAttribute('data-item-id'), 'Episode');
+                });
+            })(episodeCards[i]);
+        }
+    },
+
+    handleSeasonAction: function(action, item, episodes) {
+        var self = this;
+        var api = window.ApiClient;
+
+        switch (action) {
+            case 'play':
+                if (episodes.length === 0) return;
+                var firstUnwatched = null;
+                for (var i = 0; i < episodes.length; i++) {
+                    if (!episodes[i].UserData || !episodes[i].UserData.Played) {
+                        firstUnwatched = episodes[i];
+                        break;
+                    }
+                }
+                var playTarget = firstUnwatched || episodes[0];
+                self.hide(true);
+                self.playItem(playTarget.Id, playTarget.UserData && playTarget.UserData.PlaybackPositionTicks ? playTarget.UserData.PlaybackPositionTicks : 0);
+                break;
+
+            case 'shuffle':
+                if (episodes.length === 0) return;
+                self.hide(true);
+                var ids = episodes.map(function(ep) { return ep.Id; });
+                for (var s = ids.length - 1; s > 0; s--) {
+                    var r = Math.floor(Math.random() * (s + 1));
+                    var temp = ids[s];
+                    ids[s] = ids[r];
+                    ids[r] = temp;
+                }
+                if (typeof api.sendPlayCommand === 'function') {
+                    var deviceId = api.deviceId();
+                    api.getSessions({ DeviceId: deviceId }).then(function(sessions) {
+                        if (sessions && sessions.length > 0) {
+                            return api.sendPlayCommand(sessions[0].Id, {
+                                ItemIds: ids,
+                                PlayCommand: 'PlayNow',
+                                StartPositionTicks: 0
+                            });
+                        }
+                        throw new Error('No session');
+                    }).catch(function() {
+                        self._shuffleViaSession(ids);
+                    });
+                } else {
+                    self._shuffleViaSession(ids);
+                }
+                break;
+
+            case 'favorite':
+                this.toggleFavorite(item);
+                break;
+
+            case 'played':
+                this.togglePlayed(item);
+                break;
+
+            case 'more':
+                self.showMoreMenu(item);
+                break;
+        }
+    },
+
+    renderPersonDetails: function(item, personItems) {
+        var self = this;
+        var panel = this.container.querySelector('.moonfin-details-panel');
+        var api = window.ApiClient;
+        var serverUrl = api.serverAddress();
+
+        var photoTag = item.ImageTags ? item.ImageTags.Primary : null;
+        var photoUrl = photoTag ? serverUrl + '/Items/' + item.Id + '/Images/Primary?maxHeight=500&quality=90' : '';
+
+        var birthDate = item.PremiereDate ? new Date(item.PremiereDate) : null;
+        var deathDate = item.EndDate ? new Date(item.EndDate) : null;
+        var birthPlace = item.ProductionLocations && item.ProductionLocations.length > 0 ? item.ProductionLocations[0] : '';
+
+        var infoItems = [];
+        if (birthDate) {
+            var birthStr = birthDate.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+            if (deathDate) {
+                var deathStr = deathDate.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+                infoItems.push('<span class="moonfin-info-item">' + birthStr + ' — ' + deathStr + '</span>');
+            } else {
+                var age = Math.floor((Date.now() - birthDate.getTime()) / 31557600000);
+                infoItems.push('<span class="moonfin-info-item">Born ' + birthStr + ' (age ' + age + ')</span>');
+            }
+        }
+        if (birthPlace) {
+            infoItems.push('<span class="moonfin-info-item">' + birthPlace + '</span>');
+        }
+        var infoRowHtml = infoItems.length > 0 ? '<div class="moonfin-info-row">' + infoItems.join('') + '</div>' : '';
+
+        var movies = [];
+        var series = [];
+        for (var i = 0; i < personItems.length; i++) {
+            if (personItems[i].Type === 'Movie') movies.push(personItems[i]);
+            else if (personItems[i].Type === 'Series') series.push(personItems[i]);
+        }
+
+        var buildFilmCards = function(items) {
+            return items.map(function(fi) {
+                var fiPosterTag = fi.ImageTags ? fi.ImageTags.Primary : null;
+                var fiPosterUrl = fiPosterTag ? serverUrl + '/Items/' + fi.Id + '/Images/Primary?maxHeight=400&quality=80' : '';
+                var fiYear = fi.ProductionYear || (fi.PremiereDate ? new Date(fi.PremiereDate).getFullYear() : '');
+                var fiWatched = fi.UserData && fi.UserData.Played;
+                var fiFavorite = fi.UserData && fi.UserData.IsFavorite;
+                return '<div class="moonfin-similar-card moonfin-focusable" data-item-id="' + fi.Id + '" data-type="' + fi.Type + '" tabindex="0">' +
+                    '<div class="moonfin-similar-poster">' +
+                        (fiPosterUrl ? '<img src="' + fiPosterUrl + '" alt="" loading="lazy">' : '<div class="moonfin-poster-placeholder"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M21 3H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H3V5h18v14z"/></svg></div>') +
+                        (fiFavorite ? self.buildFavoriteIndicator() : '') +
+                        (fiWatched ? self.buildWatchedIndicator() : '') +
+                    '</div>' +
+                    '<span class="moonfin-similar-title">' + fi.Name + '</span>' +
+                    (fiYear ? '<span class="moonfin-person-film-year">' + fiYear + '</span>' : '') +
+                '</div>';
+            }).join('');
+        };
+
+        var moviesHtml = movies.length > 0 ? (
+            '<div class="moonfin-section">' +
+                '<div class="moonfin-section-header">' +
+                    '<h3 class="moonfin-section-title">Movies (' + movies.length + ')</h3>' +
+                    '<div class="moonfin-section-arrows">' +
+                        '<button class="moonfin-section-arrow moonfin-arrow-left" aria-label="Scroll left"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg></button>' +
+                        '<button class="moonfin-section-arrow moonfin-arrow-right" aria-label="Scroll right"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg></button>' +
+                    '</div>' +
+                '</div>' +
+                '<div class="moonfin-section-scroll">' + buildFilmCards(movies) + '</div>' +
+            '</div>'
+        ) : '';
+
+        var seriesHtml = series.length > 0 ? (
+            '<div class="moonfin-section">' +
+                '<div class="moonfin-section-header">' +
+                    '<h3 class="moonfin-section-title">Series (' + series.length + ')</h3>' +
+                    '<div class="moonfin-section-arrows">' +
+                        '<button class="moonfin-section-arrow moonfin-arrow-left" aria-label="Scroll left"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg></button>' +
+                        '<button class="moonfin-section-arrow moonfin-arrow-right" aria-label="Scroll right"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg></button>' +
+                    '</div>' +
+                '</div>' +
+                '<div class="moonfin-section-scroll">' + buildFilmCards(series) + '</div>' +
+            '</div>'
+        ) : '';
+
+        var isFavorite = item.UserData ? item.UserData.IsFavorite : false;
+
+        var backdrop = this.container.querySelector('.moonfin-details-backdrop');
+        if (backdrop) {
+            backdrop.style.backgroundImage = '';
+            backdrop.className = 'moonfin-details-backdrop moonfin-person-backdrop';
+        }
+
+        panel.innerHTML =
+            '<button class="moonfin-details-back moonfin-focusable" title="Back" tabindex="0">' +
+                '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>' +
+            '</button>' +
+
+            '<div class="moonfin-details-content">' +
+                '<div class="moonfin-person-header">' +
+                    '<div class="moonfin-person-photo-wrapper">' +
+                        (photoUrl ? '<img class="moonfin-person-photo" src="' + photoUrl + '" alt="">' : '<div class="moonfin-person-photo moonfin-person-photo-placeholder"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 4a4 4 0 0 1 4 4 4 4 0 0 1-4 4 4 4 0 0 1-4-4 4 4 0 0 1 4-4m0 10c4.42 0 8 1.79 8 4v2H4v-2c0-2.21 3.58-4 8-4"/></svg></div>') +
+                    '</div>' +
+                    '<div class="moonfin-person-info">' +
+                        '<h1 class="moonfin-title">' + item.Name + '</h1>' +
+                        infoRowHtml +
+                        (item.Overview ? '<p class="moonfin-overview">' + item.Overview + '</p>' : '') +
+                        '<div class="moonfin-action-btns" style="margin-top:16px">' +
+                            '<div class="moonfin-btn-wrapper moonfin-focusable ' + (isFavorite ? 'active' : '') + '" data-action="favorite" tabindex="0">' +
+                                '<div class="moonfin-btn-circle">' +
+                                    '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="' + (isFavorite ?
+                                        'm480-120-58-52q-101-91-167-157T150-447.5Q111-500 95.5-544T80-634q0-94 63-157t157-63q52 0 99 22t81 62q34-40 81-62t99-22q94 0 157 63t63 157q0 46-15.5 90T810-447.5Q771-395 705-329T538-172l-58 52Z' :
+                                        'M480-120q-14 0-28.5-5T426-140q-43-38-97.5-82.5T232-308q-41.5-41.5-72-83T122-475q-8-32-11-60.5T108-596q0-86 57-147t147-61q52 0 99 22t69 62q22-40 69-62t99-22q90 0 147 61t57 147q0 32-3 60.5T837-475q-7 42-37.5 83.5T728-308q-42 42-96.5 86.5T534-140q-11 10-25.5 15t-28.5 5Zm0-80q41-37 88.5-75t83-68.5q35.5-30.5 61-58T746-456q9-27 11.5-49t2.5-43q0-53-34.5-91.5T636-678q-43 0-77.5 24T507-602h-54q-17-28-51.5-52T324-678q-55 0-89.5 38.5T200-548q0 21 2.5 43t11.5 49q9 27 34.5 54.5t61 58Q345-313 392.5-275T480-200Z') +
+                                    '"/></svg>' +
+                                '</div>' +
+                                '<span class="moonfin-btn-label">' + (isFavorite ? 'Favorited' : 'Favorite') + '</span>' +
+                            '</div>' +
+                        '</div>' +
+                    '</div>' +
+                '</div>' +
+
+                '<div class="moonfin-sections">' +
+                    moviesHtml +
+                    seriesHtml +
+                '</div>' +
+            '</div>';
+
+        this.applyBackdropSettings();
+        this.setupPersonPanelListeners(panel, item);
+    },
+
+    setupPersonPanelListeners: function(panel, item) {
+        var self = this;
+
+        var backBtn = panel.querySelector('.moonfin-details-back');
+        if (backBtn) backBtn.addEventListener('click', function() { self.hide(); });
+
+        var favBtn = panel.querySelector('[data-action="favorite"]');
+        if (favBtn) favBtn.addEventListener('click', function() { self.toggleFavorite(item); });
+
+        var filmCards = panel.querySelectorAll('.moonfin-similar-card');
+        for (var i = 0; i < filmCards.length; i++) {
+            (function(card) {
+                card.addEventListener('click', function() {
+                    self.showDetails(card.getAttribute('data-item-id'), card.getAttribute('data-type'));
+                });
+            })(filmCards[i]);
+        }
+
+        this.setupScrollArrows(panel);
+    },
+
+    hide: function(skipHistoryBack) {
+        if (!this.isVisible) return;
+        this.closeTrailerOverlay();
+        this.container.classList.remove('visible');
+        this.isVisible = false;
+        this.currentItem = null;
+        this._itemHistory = [];
+        document.body.classList.remove('moonfin-details-visible');
+        this._updateBackButtons();
+
+        if (!skipHistoryBack) {
+            try { history.back(); } catch(e) {}
         }
     }
+};
 
-    function closeOverlay() {
-        if (!TD.overlay) return;
-        TD.overlay.classList.remove('active');
-        TD.overlay.removeAttribute('data-current-id');
-        TD.history = [];
-        document.body.style.overflow = '';
+// Bootstrap: wait for ApiClient then init
+(function() {
+    function boot() {
+        if (window.ApiClient) {
+            console.log('[Tentacle] Details overlay initializing');
+            Details.init();
+            window.TentacleDetails = {
+                show: function(itemId, itemType) { Details.showDetails(itemId, itemType); },
+                hide: function() { Details.hide(); }
+            };
+        } else {
+            setTimeout(boot, 500);
+        }
     }
-
-    function isOpen() {
-        return TD.overlay && TD.overlay.classList.contains('active');
-    }
-
-    // ── Utility ──
-    function esc(str) {
-        if (!str) return '';
-        return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    }
-
-    function attr(str) {
-        if (!str) return '';
-        return String(str).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    }
-
-    function pad(n) {
-        if (n == null) return '0';
-        return n < 10 ? '0' + n : String(n);
-    }
-
-    // ── Expose for Tentacle Home ──
-    window.TentacleDetails = {
-        show: showDetails,
-        close: closeOverlay,
-        isOpen: isOpen
-    };
-
-    // ── Start ──
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', waitForReady);
+        document.addEventListener('DOMContentLoaded', boot);
     } else {
-        waitForReady();
+        boot();
     }
 })();
