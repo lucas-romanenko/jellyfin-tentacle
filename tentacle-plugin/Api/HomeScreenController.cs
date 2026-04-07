@@ -462,6 +462,36 @@ public class TentacleHomeController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// Serves the Tentacle details overlay JavaScript.
+    /// </summary>
+    [HttpGet("/Tentacle/details.js")]
+    public ActionResult GetDetailsJs()
+    {
+        var content = LoadEmbeddedResource("tentacle-details.js");
+        if (content == null)
+        {
+            return NotFound();
+        }
+
+        return Content(content, "application/javascript");
+    }
+
+    /// <summary>
+    /// Serves the Tentacle details overlay CSS.
+    /// </summary>
+    [HttpGet("/Tentacle/details.css")]
+    public ActionResult GetDetailsCss()
+    {
+        var content = LoadEmbeddedResource("tentacle-details.css");
+        if (content == null)
+        {
+            return NotFound();
+        }
+
+        return Content(content, "text/css");
+    }
+
     private static string? LoadEmbeddedResource(string resourceSuffix)
     {
         var assembly = typeof(TentacleHomeController).Assembly;

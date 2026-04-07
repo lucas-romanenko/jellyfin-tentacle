@@ -294,10 +294,10 @@
 
     // Buttons
     html += '<div class="mh-hero-buttons">';
-    html += '<button class="mh-hero-btn mh-hero-btn-play" onclick="window.location.hash=\'#/details?id=' + item.Id + '\'">';
-    html += '<span class="mh-btn-icon">▶</span> Play';
+    html += '<button class="mh-hero-btn mh-hero-btn-play" onclick="if(window.TentacleDetails){window.TentacleDetails.show(\'' + item.Id + '\')}else{window.location.hash=\'#/details?id=' + item.Id + '\'}">';
+    html += '<span class="mh-btn-icon">▶</span> More Info';
     html += '</button>';
-    html += '<button class="mh-hero-btn-info" onclick="window.location.hash=\'#/details?id=' + item.Id + '\'" title="More Info">';
+    html += '<button class="mh-hero-btn-info" onclick="if(window.TentacleDetails){window.TentacleDetails.show(\'' + item.Id + '\')}else{window.location.hash=\'#/details?id=' + item.Id + '\'}" title="More Info">';
     html += 'ℹ';
     html += '</button>';
     html += '</div>';
@@ -487,7 +487,9 @@
   function createWideCard(item) {
     var card = document.createElement('div');
     card.className = 'mh-card mh-card-wide';
+    card.setAttribute('data-item-id', item.Id);
     card.onclick = function () {
+      if (window.TentacleDetails) { window.TentacleDetails.show(item.Id); return; }
       window.location.hash = '#/details?id=' + item.Id;
     };
 
@@ -594,6 +596,7 @@
   function createChannelCard(item) {
     var card = document.createElement('div');
     card.className = 'mh-card';
+    card.setAttribute('data-item-id', item.Id);
     card.onclick = function () {
       window.location.hash = '#/details?id=' + item.Id;
     };
@@ -624,7 +627,9 @@
   function createCard(item) {
     var card = document.createElement('div');
     card.className = 'mh-card';
+    card.setAttribute('data-item-id', item.Id);
     card.onclick = function () {
+      if (window.TentacleDetails) { window.TentacleDetails.show(item.Id); return; }
       window.location.hash = '#/details?id=' + item.Id;
     };
 

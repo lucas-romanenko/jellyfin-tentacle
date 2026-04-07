@@ -27,6 +27,8 @@
     <EmbeddedResource Include="Inject/tentacle-discover.js" />
     <EmbeddedResource Include="Inject/tentacle-discover.css" />
     <EmbeddedResource Include="Inject/tentacle-logo.png" />
+    <EmbeddedResource Include="Inject/tentacle-details.js" />
+    <EmbeddedResource Include="Inject/tentacle-details.css" />
   </ItemGroup>
 
 </Project>
