@@ -91,7 +91,7 @@
                 '            ' + this.getFallbackUserIconSvg(),
                 '        </div>',
                 '    </button>',
-                '    <button class="moonfin-details-nav-back" title="Back" style="display:none">',
+                '    <button class="moonfin-nav-back" title="Back" style="display:none">',
                 '        <svg viewBox="0 0 24 24"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>',
                 '    </button>',
                 '</div>',
@@ -313,11 +313,15 @@
                 });
             }
 
-            // Back button for details overlay
-            var navBack = this.container.querySelector('.moonfin-details-nav-back');
+            // Back button — works for details overlay or general navigation
+            var navBack = this.container.querySelector('.moonfin-nav-back');
             if (navBack) {
                 navBack.addEventListener('click', function () {
-                    if (typeof Details !== 'undefined' && Details.isVisible) Details.goBack();
+                    if (typeof Details !== 'undefined' && Details.isVisible) {
+                        Details.goBack();
+                    } else {
+                        history.back();
+                    }
                 });
             }
 
@@ -506,12 +510,20 @@
                 btn.classList.remove('active');
             });
 
-            if (hash === '' || hash === '/' || hash === '/home.html' || hash === '/home') {
+            var isHome = (hash === '' || hash === '/' || hash === '/home.html' || hash === '/home');
+
+            if (isHome) {
                 var homeBtn = this.container.querySelector('.moonfin-nav-home');
                 if (homeBtn) homeBtn.classList.add('active');
             } else if (hash.indexOf('/search') !== -1) {
                 var searchBtn = this.container.querySelector('.moonfin-nav-search');
                 if (searchBtn) searchBtn.classList.add('active');
+            }
+
+            // Show back button on non-home pages
+            var backBtn = this.container.querySelector('.moonfin-nav-back');
+            if (backBtn) {
+                backBtn.style.display = isHome ? 'none' : '';
             }
 
             // Library active state
@@ -554,9 +566,9 @@
             this.clockInterval = setInterval(updateClock, 1000);
         },
 
-        // Called by details overlay to show/hide back button
+        // Called by details overlay to force back button visible
         showBackButton: function (show) {
-            var btn = this.container ? this.container.querySelector('.moonfin-details-nav-back') : null;
+            var btn = this.container ? this.container.querySelector('.moonfin-nav-back') : null;
             if (btn) btn.style.display = show ? '' : 'none';
         },
 

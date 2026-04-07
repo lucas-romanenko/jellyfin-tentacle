@@ -44,7 +44,7 @@ body.moonfin-navbar-active .cardOverlayContainer {
     gap: 8px;
 }
 
-.moonfin-details-nav-back {
+.moonfin-nav-back {
     background: rgba(255, 255, 255, 0.1);
     border: none;
     padding: 0;
@@ -60,17 +60,17 @@ body.moonfin-navbar-active .cardOverlayContainer {
     outline: none;
 }
 
-.moonfin-details-nav-back svg {
+.moonfin-nav-back svg {
     width: 20px;
     height: 20px;
 }
 
-.moonfin-details-nav-back:hover {
+.moonfin-nav-back:hover {
     background: rgba(255, 255, 255, 0.2);
     transform: scale(1.1);
 }
 
-.moonfin-details-nav-back:focus {
+.moonfin-nav-back:focus {
     outline: 2px solid #00a4dc;
     outline-offset: 2px;
 }
@@ -372,7 +372,7 @@ body.moonfin-navbar-active .cardOverlayContainer {
         height: 36px;
     }
 
-    .moonfin-details-nav-back {
+    .moonfin-nav-back {
         width: 36px;
         height: 36px;
     }
