@@ -266,11 +266,6 @@
             var rect = btn.getBoundingClientRect();
             list.style.top = (rect.bottom + 8) + 'px';
             list.style.left = rect.left + 'px';
-
-            var pill = this.container.querySelector('.moonfin-nav-pill');
-            if (pill) {
-                list.style.background = pill.style.background;
-            }
         },
 
         toggleLibraries: function () {
