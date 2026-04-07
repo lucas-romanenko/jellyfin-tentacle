@@ -535,11 +535,14 @@
         },
 
         activateActivity: function () {
-            if (window.TentacleDiscover && window.TentacleDiscover.showActivity) {
-                window.TentacleDiscover.showActivity();
+            if (window.TentacleActivity && window.TentacleActivity.show) {
+                window.TentacleActivity.show();
                 return;
             }
-            this.activateDiscover();
+            // Fallback: try legacy method
+            if (window.TentacleDiscover && window.TentacleDiscover.showActivity) {
+                window.TentacleDiscover.showActivity();
+            }
         },
 
         showCastMenu: function () {
@@ -560,6 +563,13 @@
                 if (this.librariesDropdown) this.librariesDropdown.style.display = 'none';
                 document.body.classList.remove('moonfin-navbar-active');
                 document.body.classList.remove('moonfin-mediabar-active');
+                // Also hide overlays during playback
+                if (window.TentacleDiscover && window.TentacleDiscover.isActive && window.TentacleDiscover.isActive()) {
+                    window.TentacleDiscover.hide();
+                }
+                if (window.TentacleActivity && window.TentacleActivity.isActive && window.TentacleActivity.isActive()) {
+                    window.TentacleActivity.hide();
+                }
                 return;
             }
             this.container.classList.remove('hidden');

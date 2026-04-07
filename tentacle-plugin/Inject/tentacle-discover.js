@@ -1,26 +1,32 @@
-// Tentacle Discover — Jellyfin tab for popular, now playing, upcoming, on the air, top rated, lists & activity
-// v4 — sections-based layout with category tabs
+// Tentacle Discover & Activity — standalone overlays for Jellyfin
+// v5 — Discover and Activity as independent full-screen pages
 (function () {
   'use strict';
-  console.log('[Tentacle Discover] v4 sections loaded');
+  console.log('[Tentacle] v5 — Discover + Activity standalone overlays');
 
+  // ── Shared state ────────────────────────────────────────────────────
   var MD = {
     initialized: false,
     enabled: null,
     sections: null,
-    mediaFilter: 'movies',  // movies | series
-    activeSection: null,    // popular | now_playing | upcoming | on_the_air | top_rated | missing | activity
+    mediaFilter: 'movies',
+    activeSection: null,
     active: false,
     loaded: false,
     searchQuery: '',
     searchTimeout: null,
     searchMode: false,
     searchResults: [],
-    activityData: null,
-    activityTimer: null,
+    activityData: null,   // shared — used for download badges on discover cards
   };
 
-  // ── Bootstrap ─────────────────────────────────────────────────────
+  var ACT = {
+    active: false,
+    loaded: false,
+    timer: null,
+  };
+
+  // ── Bootstrap ───────────────────────────────────────────────────────
   function waitForReady() {
     if (window.ApiClient && window.ApiClient.getCurrentUserId()) {
       init();
@@ -35,10 +41,12 @@
     tryInject();
     window.addEventListener('hashchange', function () {
       if (MD.active) hideDiscover();
+      if (ACT.active) hideActivity();
       setTimeout(tryInject, 200);
     });
     window.addEventListener('popstate', function () {
       if (MD.active) hideDiscover();
+      if (ACT.active) hideActivity();
       setTimeout(tryInject, 200);
     });
   }
@@ -53,7 +61,6 @@
     var slider = document.querySelector('.emby-tabs-slider');
     if (!slider) { setTimeout(tryInject, 300); return; }
 
-    // Always re-check config from server (plugin clears cache on refresh)
     apiGet('TentacleDiscover/Config').then(function (cfg) {
       MD.enabled = cfg && cfg.discover_in_jellyfin === true;
       var existingTab = slider.querySelector('#mdDiscoverTab');
@@ -66,9 +73,12 @@
     }).catch(function () {
       MD.enabled = false;
     });
+
+    // Always start background polling for navbar badge
+    startBadgePolling();
   }
 
-  // ── Tab button ────────────────────────────────────────────────────
+  // ── Tab button ──────────────────────────────────────────────────────
   function addTab(slider) {
     if (slider.querySelector('#mdDiscoverTab')) return;
 
@@ -99,50 +109,7 @@
     });
   }
 
-  // ── Overlay container ───────────────────────────────────────────
-  function getOrCreateOverlay() {
-    var el = document.getElementById('mdDiscoverOverlay');
-    if (el) return el;
-
-    el = document.createElement('div');
-    el.id = 'mdDiscoverOverlay';
-    el.className = 'md-discover-overlay';
-    el.style.display = 'none';
-    document.body.appendChild(el);
-    return el;
-  }
-
-  // ── Show / Hide ───────────────────────────────────────────────────
-  function showDiscover() {
-    MD.active = true;
-
-    document.querySelectorAll('.emby-tabs-slider .emby-tab-button').forEach(function (b) {
-      b.classList.remove('emby-tab-button-active');
-    });
-    var btn = document.getElementById('mdDiscoverTab');
-    if (btn) btn.classList.add('emby-tab-button-active');
-
-    var overlay = getOrCreateOverlay();
-    overlay.style.display = 'block';
-
-    if (!MD.loaded) {
-      MD.loaded = true;
-      renderPage(overlay);
-    }
-  }
-
-  function hideDiscover() {
-    MD.active = false;
-    stopActivityPolling();
-
-    var btn = document.getElementById('mdDiscoverTab');
-    if (btn) btn.classList.remove('emby-tab-button-active');
-
-    var overlay = document.getElementById('mdDiscoverOverlay');
-    if (overlay) overlay.style.display = 'none';
-  }
-
-  // ── API helpers ───────────────────────────────────────────────────
+  // ── API helpers ─────────────────────────────────────────────────────
   function apiGet(path) {
     return window.ApiClient.getJSON(window.ApiClient.getUrl(path));
   }
@@ -158,14 +125,68 @@
     });
   }
 
-  // ── Render page skeleton ──────────────────────────────────────────
-  function renderPage(container) {
+  function esc(str) {
+    if (!str) return '';
+    var d = document.createElement('div');
+    d.textContent = str;
+    return d.innerHTML;
+  }
+
+  // ════════════════════════════════════════════════════════════════════
+  //  DISCOVER MODULE
+  // ════════════════════════════════════════════════════════════════════
+
+  function getOrCreateDiscoverOverlay() {
+    var el = document.getElementById('mdDiscoverOverlay');
+    if (el) return el;
+    el = document.createElement('div');
+    el.id = 'mdDiscoverOverlay';
+    el.className = 'md-discover-overlay';
+    el.style.display = 'none';
+    document.body.appendChild(el);
+    return el;
+  }
+
+  function showDiscover() {
+    // Hide activity if open
+    if (ACT.active) hideActivity();
+
+    MD.active = true;
+
+    document.querySelectorAll('.emby-tabs-slider .emby-tab-button').forEach(function (b) {
+      b.classList.remove('emby-tab-button-active');
+    });
+    var btn = document.getElementById('mdDiscoverTab');
+    if (btn) btn.classList.add('emby-tab-button-active');
+
+    var overlay = getOrCreateDiscoverOverlay();
+    overlay.style.display = 'block';
+
+    if (!MD.loaded) {
+      MD.loaded = true;
+      renderDiscoverPage(overlay);
+    }
+  }
+
+  function hideDiscover() {
+    MD.active = false;
+
+    var btn = document.getElementById('mdDiscoverTab');
+    if (btn) btn.classList.remove('emby-tab-button-active');
+
+    var overlay = document.getElementById('mdDiscoverOverlay');
+    if (overlay) overlay.style.display = 'none';
+  }
+
+  // ── Render discover page skeleton ───────────────────────────────────
+  function renderDiscoverPage(container) {
     container.innerHTML =
       '<div class="md-discover-header">' +
         '<div class="md-discover-title">Discover</div>' +
         '<div style="display:flex;align-items:center;gap:12px">' +
           '<div class="md-search-box">' +
-            '<input type="text" id="mdSearchInput" class="md-search-input" placeholder="Search TMDB…" autocomplete="off">' +
+            '<svg class="md-search-icon" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>' +
+            '<input type="text" id="mdSearchInput" class="md-search-input" placeholder="Search TMDB..." autocomplete="off">' +
             '<button id="mdSearchClear" class="md-search-clear" style="display:none">&times;</button>' +
           '</div>' +
           '<div class="md-filter-group">' +
@@ -176,7 +197,7 @@
       '</div>' +
       '<div class="md-section-tabs" id="mdSectionTabs"></div>' +
       '<div id="mdDiscoverContent" class="md-discover-content">' +
-        '<div class="md-loading"><div class="md-spinner"></div><br>Loading…</div>' +
+        '<div class="md-loading"><div class="md-spinner"></div><br>Loading...</div>' +
       '</div>';
 
     // Media type filter
@@ -185,11 +206,11 @@
         container.querySelectorAll('.md-filter-btn').forEach(function (x) { x.classList.remove('md-active'); });
         b.classList.add('md-active');
         MD.mediaFilter = b.getAttribute('data-mdtype');
-        MD.activeSection = null; // Reset — tabs change between Movies/TV
+        MD.activeSection = null;
         if (MD.searchMode && MD.searchQuery) {
           doSearch(MD.searchQuery);
         } else {
-          fetchData();
+          fetchDiscoverData();
         }
       });
     });
@@ -202,10 +223,7 @@
         var q = searchInput.value.trim();
         searchClear.style.display = q ? 'flex' : 'none';
         if (MD.searchTimeout) clearTimeout(MD.searchTimeout);
-        if (!q) {
-          exitSearch();
-          return;
-        }
+        if (!q) { exitSearch(); return; }
         MD.searchTimeout = setTimeout(function () {
           MD.searchQuery = q;
           doSearch(q);
@@ -227,17 +245,17 @@
       });
     }
 
-    fetchData();
+    fetchDiscoverData();
   }
 
-  // ── Fetch sections from API ───────────────────────────────────────
-  function fetchData() {
+  // ── Fetch discover sections ─────────────────────────────────────────
+  function fetchDiscoverData() {
     var content = document.getElementById('mdDiscoverContent');
-    if (content) content.innerHTML = '<div class="md-loading"><div class="md-spinner"></div><br>Loading…</div>';
+    if (content) content.innerHTML = '<div class="md-loading"><div class="md-spinner"></div><br>Loading...</div>';
 
     var typeParam = MD.mediaFilter === 'series' ? 'series' : 'movies';
 
-    // Fetch discover items and activity in parallel
+    // Fetch discover items and activity data (for download badges) in parallel
     var itemsPromise = apiGet('TentacleDiscover/Items?type=' + typeParam);
     var activityPromise = apiGet('TentacleDiscover/Activity').catch(function () {
       return { downloads: [], unreleased: [] };
@@ -249,12 +267,11 @@
       MD.activityData = activity;
       MD.sections = data.sections || [];
 
-      // Always show activity tab
-      var activityCount = (activity.downloads || []).length + (activity.unreleased || []).length;
-      MD.sections.push({ id: 'activity', title: 'Activity', items: [], _activityCount: activityCount });
+      // Dispatch activity count for navbar badge
+      var actCount = (activity.downloads || []).length + (activity.unreleased || []).length;
+      window.dispatchEvent(new CustomEvent('tentacle-activity-count', { detail: actCount }));
 
       renderSectionTabs();
-      startActivityPolling();
       if (MD.sections.length > 0) {
         var targetId = MD.activeSection || MD.sections[0].id;
         var found = MD.sections.find(function (s) { return s.id === targetId; });
@@ -270,13 +287,13 @@
     });
   }
 
-  // ── Search ───────────────────────────────────────────────────────
+  // ── Search ──────────────────────────────────────────────────────────
   function doSearch(query) {
     MD.searchMode = true;
     var tabsEl = document.getElementById('mdSectionTabs');
     if (tabsEl) tabsEl.innerHTML = '';
     var content = document.getElementById('mdDiscoverContent');
-    if (content) content.innerHTML = '<div class="md-loading"><div class="md-spinner"></div><br>Searching…</div>';
+    if (content) content.innerHTML = '<div class="md-loading"><div class="md-spinner"></div><br>Searching...</div>';
 
     var typeParam = MD.mediaFilter === 'series' ? 'series' : 'movies';
     apiGet('TentacleDiscover/Search?q=' + encodeURIComponent(query) + '&type=' + typeParam).then(function (data) {
@@ -295,12 +312,11 @@
   function exitSearch() {
     MD.searchMode = false;
     MD.searchQuery = '';
-    fetchData();
+    fetchDiscoverData();
   }
 
-  // ── Section tabs ──────────────────────────────────────────────────
+  // ── Section tabs ────────────────────────────────────────────────────
   var SECTION_LABELS = {
-    activity: 'Activity',
     popular: 'Popular',
     now_playing: 'Now Playing',
     upcoming: 'Upcoming',
@@ -314,11 +330,10 @@
     if (!tabsEl || !MD.sections) return;
 
     tabsEl.innerHTML = MD.sections.map(function (sec) {
-      var count = sec.id === 'activity' ? (sec._activityCount || 0) : sec.items.length;
-      var hasActivity = sec.id === 'activity' && count > 0 ? ' has-activity' : '';
-      return '<button class="md-section-tab' + (sec.id === 'activity' ? ' md-activity-tab' : '') + '" data-section="' + sec.id + '">' +
+      var count = sec.items.length;
+      return '<button class="md-section-tab" data-section="' + sec.id + '">' +
         esc(SECTION_LABELS[sec.id] || sec.title) +
-        '<span class="md-section-count' + hasActivity + '">' + count + '</span>' +
+        '<span class="md-section-count">' + count + '</span>' +
       '</button>';
     }).join('');
 
@@ -336,18 +351,13 @@
       btn.classList.toggle('md-section-active', btn.getAttribute('data-section') === sectionId);
     });
 
-    if (sectionId === 'activity') {
-      renderActivity();
-      return;
-    }
-
     var section = MD.sections && MD.sections.find(function (s) { return s.id === sectionId; });
     if (!section) return;
 
     renderGrid(section);
   }
 
-  // ── Grid rendering ────────────────────────────────────────────────
+  // ── Grid rendering ──────────────────────────────────────────────────
   function renderGrid(section) {
     var content = document.getElementById('mdDiscoverContent');
     if (!content) return;
@@ -384,13 +394,13 @@
           '<div class="md-card-poster">' + poster + badge + addBtn + '</div>' +
           '<div class="md-card-info">' +
             '<div class="md-card-title">' + esc(item.title) + '</div>' +
-            '<div class="md-card-meta">' + (item.year || '—') + ' · ★ ' + (item.rating || '—') + '</div>' +
+            '<div class="md-card-meta">' + (item.year || '\u2014') + ' \u00b7 \u2605 ' + (item.rating || '\u2014') + '</div>' +
             listTag +
           '</div></div>';
       }).join('') +
     '</div>';
 
-    // Card click → detail modal
+    // Card click -> detail modal
     content.querySelectorAll('.md-card').forEach(function (card) {
       card.addEventListener('click', function (e) {
         if (e.target.closest('.md-card-add')) return;
@@ -400,7 +410,7 @@
       });
     });
 
-    // Add button click → detail modal
+    // Add button click -> detail modal
     content.querySelectorAll('.md-card-add').forEach(function (btn) {
       btn.addEventListener('click', function (e) {
         e.stopPropagation();
@@ -412,7 +422,6 @@
   }
 
   function findItem(tmdbId) {
-    // Check search results first
     if (MD.searchResults) {
       for (var k = 0; k < MD.searchResults.length; k++) {
         if (MD.searchResults[k].tmdb_id === tmdbId) return MD.searchResults[k];
@@ -428,9 +437,13 @@
     return null;
   }
 
-  // ── Detail Modal ──────────────────────────────────────────────────
+  function getDownloadInfo(tmdbId) {
+    if (!tmdbId || !MD.activityData || !MD.activityData.downloads) return null;
+    return MD.activityData.downloads.find(function (dl) { return dl.tmdb_id == tmdbId; }) || null;
+  }
+
+  // ── Detail Modal ────────────────────────────────────────────────────
   function showDetailModal(item) {
-    // Always fetch detail to get library_source/in_library fields
     var mediaType = item.media_type === 'series' ? 'series' : 'movie';
     apiGet('TentacleDiscover/Detail/' + mediaType + '/' + item.tmdb_id).then(function (details) {
       if (details && !details.error) {
@@ -460,9 +473,9 @@
     var modalDlInfo = getDownloadInfo(item.tmdb_id);
     if (modalDlInfo) {
       var dlPct = (modalDlInfo.progress || 0).toFixed(1);
-      var dlStatus = modalDlInfo.status === 'importing' ? 'Importing…' : modalDlInfo.status === 'queued' ? 'Queued' : 'Downloading ' + dlPct + '%';
-      var dlEta = modalDlInfo.eta ? ' · ETA ' + modalDlInfo.eta : '';
-      var dlSize = modalDlInfo.size_remaining ? ' · ' + modalDlInfo.size_remaining + ' left' : '';
+      var dlStatus = modalDlInfo.status === 'importing' ? 'Importing...' : modalDlInfo.status === 'queued' ? 'Queued' : 'Downloading ' + dlPct + '%';
+      var dlEta = modalDlInfo.eta ? ' \u00b7 ETA ' + modalDlInfo.eta : '';
+      var dlSize = modalDlInfo.size_remaining ? ' \u00b7 ' + modalDlInfo.size_remaining + ' left' : '';
       downloadSection =
         '<div class="md-inlib-row">' +
           '<div class="md-downloading-badge">' + dlStatus + dlEta + dlSize + '</div>' +
@@ -477,7 +490,7 @@
         : '';
       downloadSection =
         '<div class="md-inlib-row">' +
-          '<div class="md-inlib-badge">✓ Already in library</div>' +
+          '<div class="md-inlib-badge">\u2713 Already in library</div>' +
           '<button id="mdViewInLibrary" class="md-view-library-btn">View in Library</button>' +
           extraBtn +
         '</div>' +
@@ -540,7 +553,7 @@
         '<div class="md-modal-backdrop">' + backdrop + '<div class="md-modal-backdrop-gradient"></div></div>' +
         '<div class="md-modal-body">' +
           '<div class="md-modal-title">' + esc(item.title) + '</div>' +
-          '<div class="md-modal-subtitle">' + (item.year || '') + ' · ' + (item.media_type === 'movie' ? 'Movie' : 'TV Show') + ' · ★ ' + (item.rating || '—') + '</div>' +
+          '<div class="md-modal-subtitle">' + (item.year || '') + ' \u00b7 ' + (item.media_type === 'movie' ? 'Movie' : 'TV Show') + ' \u00b7 \u2605 ' + (item.rating || '\u2014') + '</div>' +
           (item.overview ? '<div class="md-modal-overview">' + esc(item.overview) + '</div>' : '') +
           downloadSection +
         '</div>' +
@@ -559,7 +572,7 @@
       if (viewBtn) {
         viewBtn.addEventListener('click', function () {
           viewBtn.disabled = true;
-          viewBtn.textContent = 'Finding…';
+          viewBtn.textContent = 'Finding\u2026';
           findJellyfinItem(item).then(function (itemId) {
             if (itemId) {
               closeModal();
@@ -571,14 +584,12 @@
           });
         });
       }
-      // Manage Episodes button (Sonarr series)
       var manageBtn = overlay.querySelector('#mdManageEpisodes');
       if (manageBtn) {
         manageBtn.addEventListener('click', function () {
           _mdLoadManageEpisodes(item);
         });
       }
-      // Download More Episodes button (VOD series)
       var dlMoreBtn = overlay.querySelector('#mdDownloadMore');
       if (dlMoreBtn) {
         dlMoreBtn.addEventListener('click', function () {
@@ -587,7 +598,6 @@
       }
     } else {
       loadDownloadOptions(item);
-      // Episode picker for series
       var monitorSel = overlay.querySelector('#mdMonitorSelect');
       if (monitorSel) {
         MD._epSeasons = [];
@@ -611,6 +621,7 @@
     }
   }
 
+  // ── Episode picker helpers (shared by Discover modal) ───────────────
   function _mdRenderSeasons() {
     var container = document.getElementById('mdEpSeasons');
     if (!container) return;
@@ -694,10 +705,8 @@
     var haveCount = Object.keys(haveSet).length;
     var seasonEl = document.querySelector('.md-ep-season[data-season="' + sn + '"]');
     if (!seasonEl) return;
-    // Update season checkbox
     var seasonCb = seasonEl.querySelector('.md-ep-season-hdr input[type="checkbox"]');
     if (seasonCb) { var full = haveCount >= totalEps && totalEps > 0; seasonCb.checked = full; seasonCb.disabled = full; }
-    // Update coverage indicator
     var countEl = seasonEl.querySelector('.md-ep-count');
     if (!countEl) return;
     if (haveCount === 0) { countEl.textContent = totalEps + ' ep'; countEl.className = 'md-ep-count'; }
@@ -711,7 +720,6 @@
     if (checked && !list.classList.contains('open')) {
       window._mdToggleSeason(sn);
     }
-    // Wait a tick for episodes to render if just loaded
     setTimeout(function () {
       list.querySelectorAll('input[type="checkbox"]:not(:disabled)').forEach(function (cb) { cb.checked = checked; });
     }, 100);
@@ -755,7 +763,6 @@
         container.innerHTML = '<div style="padding:12px;color:#999;font-size:13px">Series not found in Sonarr</div>';
         return;
       }
-      // Group by season
       var seasonMap = {};
       (data.episodes || []).forEach(function (ep) {
         if (ep.seasonNumber === 0) return;
@@ -778,14 +785,13 @@
         '</div>';
       }).join('');
 
-      // Pre-render episodes with Sonarr state
       MD._epLoaded = {};
       seasonNums.forEach(function (sn) {
         MD._epLoaded[sn] = true;
         var list = document.getElementById('mdEpList' + sn);
         list.innerHTML = seasonMap[sn].map(function (ep) {
           var num = 'S' + String(sn).padStart(2, '0') + 'E' + String(ep.episodeNumber).padStart(2, '0');
-          var dlBadge = ep.hasFile ? '<span class="md-ep-dl">✓</span>' : '';
+          var dlBadge = ep.hasFile ? '<span class="md-ep-dl">\u2713</span>' : '';
           return '<label class="md-ep-row">' +
             '<input type="checkbox" ' + (ep.monitored ? 'checked' : '') + ' data-season="' + sn + '" data-episode="' + ep.episodeNumber + '" onchange="window._mdUpdateSeasonCb(' + sn + ')">' +
             '<span class="md-ep-num">' + num + '</span>' +
@@ -798,7 +804,6 @@
       container.innerHTML = '<div style="padding:12px;color:#999;font-size:13px">Failed to load</div>';
     });
 
-    // Save button handler
     var saveBtn = document.getElementById('mdManageSaveBtn');
     if (saveBtn) {
       saveBtn.addEventListener('click', function () {
@@ -811,7 +816,7 @@
           tmdb_id: item.tmdb_id,
           selected_episodes: selected,
         }).then(function (r) {
-          if (status) { status.style.color = '#4caf50'; status.textContent = '✓ Updated — monitoring ' + (r.monitored || 0) + ' episode(s)' + (r.searching ? ', searching ' + r.searching + ' new' : ''); }
+          if (status) { status.style.color = '#4caf50'; status.textContent = '\u2713 Updated \u2014 monitoring ' + (r.monitored || 0) + ' episode(s)' + (r.searching ? ', searching ' + r.searching + ' new' : ''); }
           saveBtn.textContent = 'Saved!';
         }).catch(function (err) {
           if (status) { status.style.color = '#f44336'; status.textContent = 'Error: ' + (err.message || 'Failed'); }
@@ -829,7 +834,6 @@
     var container = document.getElementById('mdEpSeasons');
     container.innerHTML = '<div style="padding:12px;color:#999;font-size:13px">Loading episodes...</div>';
 
-    // Show quality profile selector
     var qualityDiv = document.getElementById('mdDownloadMoreQuality');
     if (qualityDiv) qualityDiv.style.display = 'block';
     var profileSelect = document.getElementById('mdDownloadMoreProfile');
@@ -845,7 +849,6 @@
       });
     }
 
-    // Fetch TMDB seasons + VOD episodes + Sonarr episodes in parallel
     MD._vodEpisodes = {};
     MD._dlEpisodes = {};
     MD._epSeasons = [];
@@ -865,7 +868,6 @@
         MD._vodEpisodes = vodData.episodes || {};
       }
 
-      // Build downloaded episodes map from Sonarr (skip VOD — Sonarr sees .strm as hasFile)
       if (sonarrData && sonarrData.in_sonarr && sonarrData.episodes) {
         sonarrData.episodes.forEach(function (ep) {
           if (ep.hasFile && ep.seasonNumber > 0) {
@@ -883,7 +885,6 @@
       container.innerHTML = '<div style="padding:12px;color:#999;font-size:13px">Failed to load</div>';
     });
 
-    // Save button → Add to Sonarr with selected episodes
     var saveBtn = document.getElementById('mdManageSaveBtn');
     if (saveBtn) {
       saveBtn.textContent = 'Add to Sonarr';
@@ -906,7 +907,7 @@
         apiPost('TentacleDiscover/AddToSonarr?userId=' + uid2, body).then(function (r) {
           var status2 = document.getElementById('mdDownloadStatus');
           if (r.added > 0) {
-            if (status2) { status2.style.color = '#4caf50'; status2.textContent = '✓ Added — downloading ' + selected.length + ' episode(s)'; }
+            if (status2) { status2.style.color = '#4caf50'; status2.textContent = '\u2713 Added \u2014 downloading ' + selected.length + ' episode(s)'; }
             saveBtn.textContent = 'Done!';
           } else if (r.already_exists > 0) {
             if (status2) { status2.style.color = '#ff9800'; status2.textContent = 'Already in Sonarr'; }
@@ -938,7 +939,6 @@
     });
     return window.ApiClient.getJSON(url).then(function (result) {
       var items = (result && result.Items) || [];
-      // Try exact title + year match
       var match = items.find(function (i) {
         var titleMatch = (i.Name || '').toLowerCase() === (item.title || '').toLowerCase();
         var yearMatch = !item.year || String(i.ProductionYear || '') === String(item.year);
@@ -1024,7 +1024,7 @@
 
     apiPost(ep, body).then(function () {
       status.style.color = '#4caf50';
-      status.textContent = '✓ Added to ' + (isSeries ? 'Sonarr' : 'Radarr');
+      status.textContent = '\u2713 Added to ' + (isSeries ? 'Sonarr' : 'Radarr');
       btn.textContent = 'Added!';
       item.in_library = true;
     }).catch(function (err) {
@@ -1035,42 +1035,132 @@
     });
   }
 
-  // ── Activity rendering ────────────────────────────────────────────
-  function renderActivity() {
-    var content = document.getElementById('mdDiscoverContent');
-    if (!content || !MD.activityData) return;
 
-    var downloads = MD.activityData.downloads || [];
-    var unreleased = MD.activityData.unreleased || [];
+  // ════════════════════════════════════════════════════════════════════
+  //  ACTIVITY MODULE (standalone overlay)
+  // ════════════════════════════════════════════════════════════════════
+
+  function getOrCreateActivityOverlay() {
+    var el = document.getElementById('mdActivityOverlay');
+    if (el) return el;
+    el = document.createElement('div');
+    el.id = 'mdActivityOverlay';
+    el.className = 'md-activity-overlay';
+    el.style.display = 'none';
+    document.body.appendChild(el);
+    return el;
+  }
+
+  function showActivity() {
+    // Hide discover if open
+    if (MD.active) hideDiscover();
+
+    ACT.active = true;
+    var overlay = getOrCreateActivityOverlay();
+    overlay.style.display = 'block';
+
+    if (!ACT.loaded) {
+      ACT.loaded = true;
+      renderActivityPage(overlay);
+    } else {
+      // Refresh data on re-open
+      fetchActivityData();
+    }
+
+    startActivityPolling();
+  }
+
+  function hideActivity() {
+    ACT.active = false;
+    stopActivityPolling();
+
+    var overlay = document.getElementById('mdActivityOverlay');
+    if (overlay) overlay.style.display = 'none';
+  }
+
+  function renderActivityPage(container) {
+    container.innerHTML =
+      '<div class="md-act-header">' +
+        '<div class="md-act-title-row">' +
+          '<div class="md-act-title">Activity</div>' +
+          '<div class="md-act-summary" id="mdActSummary"></div>' +
+        '</div>' +
+      '</div>' +
+      '<div id="mdActContent" class="md-act-content">' +
+        '<div class="md-loading"><div class="md-spinner"></div><br>Loading...</div>' +
+      '</div>';
+
+    fetchActivityData();
+  }
+
+  function fetchActivityData() {
+    apiGet('TentacleDiscover/Activity').then(function (data) {
+      MD.activityData = data;
+      renderActivityContent(data);
+
+      // Update navbar badge
+      var count = (data.downloads || []).length + (data.unreleased || []).length;
+      window.dispatchEvent(new CustomEvent('tentacle-activity-count', { detail: count }));
+    }).catch(function () {
+      var c = document.getElementById('mdActContent');
+      if (c) c.innerHTML = '<div class="md-loading">Failed to load activity data</div>';
+    });
+  }
+
+  function renderActivityContent(data) {
+    var content = document.getElementById('mdActContent');
+    if (!content) return;
+
+    var downloads = data.downloads || [];
+    var unreleased = data.unreleased || [];
+
+    // Update summary
+    var summary = document.getElementById('mdActSummary');
+    if (summary) {
+      var parts = [];
+      if (downloads.length > 0) parts.push(downloads.length + ' downloading');
+      if (unreleased.length > 0) parts.push(unreleased.length + ' upcoming');
+      summary.textContent = parts.length > 0 ? parts.join(' \u00b7 ') : 'All clear';
+    }
+
     var html = '';
 
     if (downloads.length > 0) {
-      html += '<div class="md-activity-section">' +
-        '<div class="md-activity-section-title">Downloading</div>' +
-        '<div class="md-activity-grid">' +
+      html += '<div class="md-act-section">' +
+        '<div class="md-act-section-header">' +
+          '<svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>' +
+          '<span>Downloads</span>' +
+          '<span class="md-act-section-count">' + downloads.length + '</span>' +
+        '</div>' +
+        '<div class="md-act-dl-grid">' +
         downloads.map(function (dl) {
           var poster = dl.poster_path
-            ? '<img src="https://image.tmdb.org/t/p/w185' + dl.poster_path + '" loading="lazy" onerror="this.style.display=\'none\'">'
-            : '<div class="md-card-poster-placeholder">&#9707;</div>';
-          var statusClass = 'md-dl-' + (dl.status || 'downloading');
+            ? '<img src="https://image.tmdb.org/t/p/w185' + dl.poster_path + '" loading="lazy" onerror="this.parentElement.innerHTML=\'<div class=md-act-poster-ph>&#9707;</div>\'">'
+            : '<div class="md-act-poster-ph">&#9707;</div>';
+          var statusClass = dl.status === 'importing' ? 'importing' :
+            dl.status === 'queued' ? 'queued' :
+            dl.status === 'warning' ? 'warning' : 'downloading';
           var statusLabel = dl.status === 'importing' ? 'Importing' :
             dl.status === 'queued' ? 'Queued' :
             dl.status === 'warning' ? 'Warning' : 'Downloading';
           var progressPct = Math.min(Math.max(dl.progress || 0, 0), 100);
-          var epLabel = dl.episode ? ' · ' + esc(dl.episode) : '';
-          var etaLabel = dl.eta ? ' · ' + esc(dl.eta) : '';
+          var epLabel = dl.episode ? ' \u00b7 ' + esc(dl.episode) : '';
+          var etaLabel = dl.eta ? esc(dl.eta) : '';
           var sizeLabel = dl.size_remaining ? esc(dl.size_remaining) + ' left' : '';
           var qualityLabel = dl.quality ? esc(dl.quality) : '';
-          var metaParts = [qualityLabel, sizeLabel].filter(Boolean).join(' · ');
 
-          return '<div class="md-activity-card">' +
-            '<div class="md-activity-poster">' + poster + '</div>' +
-            '<div class="md-activity-info">' +
-              '<div class="md-activity-title">' + esc(dl.title) + epLabel + '</div>' +
-              '<div class="md-activity-meta">' + (dl.year || '') + (metaParts ? ' · ' + metaParts : '') + '</div>' +
-              '<div class="md-activity-progress">' +
-                '<div class="md-progress-bar"><div class="md-progress-fill ' + statusClass + '" style="width:' + progressPct + '%"></div></div>' +
-                '<span class="md-progress-label">' + statusLabel + ' · ' + progressPct.toFixed(1) + '%' + etaLabel + '</span>' +
+          return '<div class="md-act-card md-act-status-' + statusClass + '">' +
+            '<div class="md-act-poster">' + poster + '</div>' +
+            '<div class="md-act-info">' +
+              '<div class="md-act-card-title">' + esc(dl.title) + epLabel + '</div>' +
+              '<div class="md-act-card-meta">' +
+                '<span class="md-act-status-badge md-act-badge-' + statusClass + '">' + statusLabel + '</span>' +
+                (qualityLabel ? '<span>' + qualityLabel + '</span>' : '') +
+                (sizeLabel ? '<span>' + sizeLabel + '</span>' : '') +
+              '</div>' +
+              '<div class="md-act-progress-row">' +
+                '<div class="md-act-progress-bar"><div class="md-act-progress-fill md-act-fill-' + statusClass + '" style="width:' + progressPct + '%"></div></div>' +
+                '<span class="md-act-progress-text">' + progressPct.toFixed(1) + '%' + (etaLabel ? ' \u00b7 ' + etaLabel : '') + '</span>' +
               '</div>' +
             '</div>' +
           '</div>';
@@ -1079,26 +1169,35 @@
     }
 
     if (unreleased.length > 0) {
-      html += '<div class="md-activity-section">' +
-        '<div class="md-activity-section-title">Upcoming Releases</div>' +
-        '<div class="md-activity-grid">' +
+      html += '<div class="md-act-section">' +
+        '<div class="md-act-section-header">' +
+          '<svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg>' +
+          '<span>Upcoming Releases</span>' +
+          '<span class="md-act-section-count">' + unreleased.length + '</span>' +
+        '</div>' +
+        '<div class="md-act-upcoming-grid">' +
         unreleased.map(function (item) {
           var poster = item.poster_path
-            ? '<img src="https://image.tmdb.org/t/p/w185' + item.poster_path + '" loading="lazy" onerror="this.style.display=\'none\'">'
-            : '<div class="md-card-poster-placeholder">&#9707;</div>';
-          var daysUntil = '';
+            ? '<img src="https://image.tmdb.org/t/p/w185' + item.poster_path + '" loading="lazy" onerror="this.parentElement.innerHTML=\'<div class=md-act-upcoming-ph>&#9707;</div>\'">'
+            : '<div class="md-act-upcoming-ph">&#9707;</div>';
+          var countdown = '';
+          var countdownClass = '';
           if (item.release_date) {
             var rd = new Date(item.release_date + 'T00:00:00');
             var now = new Date();
             var diff = Math.ceil((rd - now) / 86400000);
-            daysUntil = diff <= 0 ? 'Releasing soon' : diff === 1 ? 'Tomorrow' : diff + ' days';
+            if (diff <= 0) { countdown = 'Releasing soon'; countdownClass = 'md-act-cd-soon'; }
+            else if (diff === 1) { countdown = 'Tomorrow'; countdownClass = 'md-act-cd-soon'; }
+            else if (diff <= 7) { countdown = diff + ' days'; countdownClass = 'md-act-cd-week'; }
+            else { countdown = diff + ' days'; countdownClass = 'md-act-cd-later'; }
           }
-          return '<div class="md-activity-card">' +
-            '<div class="md-activity-poster">' + poster + '</div>' +
-            '<div class="md-activity-info">' +
-              '<div class="md-activity-title">' + esc(item.title) + '</div>' +
-              '<div class="md-activity-meta">' + (item.year || '') + ' · ' + esc(item.release_date || '') + '</div>' +
-              (daysUntil ? '<div class="md-activity-countdown">' + esc(daysUntil) + '</div>' : '') +
+          return '<div class="md-act-upcoming-card">' +
+            '<div class="md-act-upcoming-poster">' + poster +
+              (countdown ? '<div class="md-act-countdown-badge ' + countdownClass + '">' + countdown + '</div>' : '') +
+            '</div>' +
+            '<div class="md-act-upcoming-info">' +
+              '<div class="md-act-upcoming-title">' + esc(item.title) + '</div>' +
+              '<div class="md-act-upcoming-date">' + esc(item.release_date || '') + '</div>' +
             '</div>' +
           '</div>';
         }).join('') +
@@ -1106,64 +1205,71 @@
     }
 
     if (!html) {
-      html = '<div class="md-loading">No active downloads or upcoming releases</div>';
+      html =
+        '<div class="md-act-empty">' +
+          '<svg viewBox="0 0 24 24" width="48" height="48"><path fill="currentColor" opacity="0.3" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>' +
+          '<div>No active downloads or upcoming releases</div>' +
+        '</div>';
     }
 
     content.innerHTML = html;
   }
 
+  // ── Polling (shared) ────────────────────────────────────────────────
   function startActivityPolling() {
     stopActivityPolling();
-    MD.activityTimer = setInterval(function () {
-      if (!MD.active) {
+    ACT.timer = setInterval(function () {
+      if (!ACT.active && !MD.active) {
         stopActivityPolling();
         return;
       }
       apiGet('TentacleDiscover/Activity').then(function (data) {
         MD.activityData = data;
-        // Always update tab badge count
-        var activitySection = MD.sections && MD.sections.find(function (s) { return s.id === 'activity'; });
-        if (activitySection) {
-          activitySection._activityCount = (data.downloads || []).length + (data.unreleased || []).length;
-          var tabBtn = document.querySelector('.md-section-tab[data-section="activity"] .md-section-count');
-          if (tabBtn) {
-            tabBtn.textContent = activitySection._activityCount;
-            tabBtn.classList.toggle('has-activity', activitySection._activityCount > 0);
-          }
-          // Notify navbar of activity count
-          window.dispatchEvent(new CustomEvent('tentacle-activity-count', { detail: activitySection._activityCount }));
-        }
-        // Only re-render if user is viewing the activity tab
-        if (MD.activeSection === 'activity') {
-          renderActivity();
+        var count = (data.downloads || []).length + (data.unreleased || []).length;
+        window.dispatchEvent(new CustomEvent('tentacle-activity-count', { detail: count }));
+
+        // Re-render activity page if visible
+        if (ACT.active) {
+          renderActivityContent(data);
         }
       }).catch(function () {});
     }, 3000);
   }
 
   function stopActivityPolling() {
-    if (MD.activityTimer) {
-      clearInterval(MD.activityTimer);
-      MD.activityTimer = null;
+    if (ACT.timer) {
+      clearInterval(ACT.timer);
+      ACT.timer = null;
     }
   }
 
-  function getDownloadInfo(tmdbId) {
-    if (!tmdbId || !MD.activityData || !MD.activityData.downloads) return null;
-    return MD.activityData.downloads.find(function (dl) { return dl.tmdb_id == tmdbId; }) || null;
+  // Background badge polling — runs on home page even when overlays are closed
+  var _badgeTimer = null;
+  function startBadgePolling() {
+    if (_badgeTimer) return; // already running
+    _badgeTimer = setInterval(function () {
+      if (!isHomePage()) { stopBadgePolling(); return; }
+      // Don't poll if either overlay has its own polling
+      if (ACT.timer) return;
+      apiGet('TentacleDiscover/Activity').then(function (data) {
+        MD.activityData = data;
+        var count = (data.downloads || []).length + (data.unreleased || []).length;
+        window.dispatchEvent(new CustomEvent('tentacle-activity-count', { detail: count }));
+      }).catch(function () {});
+    }, 10000); // slower interval for background
   }
 
-  function esc(str) {
-    if (!str) return '';
-    var d = document.createElement('div');
-    d.textContent = str;
-    return d.innerHTML;
+  function stopBadgePolling() {
+    if (_badgeTimer) {
+      clearInterval(_badgeTimer);
+      _badgeTimer = null;
+    }
   }
 
-  // ── Public API for navbar integration ─────────────────────────────
+
+  // ── Public API ──────────────────────────────────────────────────────
   window.TentacleDiscover = {
     show: function () {
-      // Navigate to home if not there, then activate discover tab
       if (!isHomePage()) {
         try {
           if (window.Emby && window.Emby.Page && window.Emby.Page.show) {
@@ -1181,17 +1287,9 @@
         showDiscover();
       }
     },
+    // Backwards compat — now opens standalone Activity
     showActivity: function () {
-      window.TentacleDiscover.show();
-      // Wait for discover to render, then switch to activity
-      var trySwitch = function (attempts) {
-        if (MD.loaded && MD.active) {
-          switchSection('activity');
-        } else if (attempts < 20) {
-          setTimeout(function () { trySwitch(attempts + 1); }, 100);
-        }
-      };
-      setTimeout(function () { trySwitch(0); }, 200);
+      window.TentacleActivity.show();
     },
     hide: function () {
       hideDiscover();
@@ -1201,7 +1299,34 @@
     }
   };
 
-  // ── Start ─────────────────────────────────────────────────────────
+  window.TentacleActivity = {
+    show: function () {
+      if (!isHomePage()) {
+        try {
+          if (window.Emby && window.Emby.Page && window.Emby.Page.show) {
+            window.Emby.Page.show('/home');
+          } else if (window.appRouter && window.appRouter.show) {
+            window.appRouter.show('/home');
+          } else {
+            window.location.hash = '#/home';
+          }
+        } catch (e) {
+          window.location.hash = '#/home';
+        }
+        setTimeout(function () { showActivity(); }, 600);
+      } else {
+        showActivity();
+      }
+    },
+    hide: function () {
+      hideActivity();
+    },
+    isActive: function () {
+      return ACT.active;
+    }
+  };
+
+  // ── Start ───────────────────────────────────────────────────────────
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', waitForReady);
   } else {
@@ -1210,6 +1335,7 @@
 
   var navHandler = function () {
     if (MD.active && !isHomePage()) hideDiscover();
+    if (ACT.active && !isHomePage()) hideActivity();
     setTimeout(tryInject, 500);
   };
   window.addEventListener('popstate', navHandler);
