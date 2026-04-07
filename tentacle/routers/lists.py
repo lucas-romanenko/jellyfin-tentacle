@@ -451,41 +451,63 @@ def store_list_items(lst: ListSubscription, items: list, db: Session) -> dict:
 
 
 def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
-    """Match list items to library content and apply tag via NFO update"""
+    """Match list items to library content and apply tag via NFO update.
+
+    Respects media_type from list items to avoid cross-type TMDB ID collisions
+    (e.g. a TV series TMDB ID matching a movie with the same numeric ID).
+    """
     tagged = 0
 
     for item in items:
         tmdb_id = item.get("tmdb_id")
-        imdb_id = item.get("imdb_id")
+        media_type = item.get("media_type", "")
 
-        # Find in movies
-        movie = None
-        if tmdb_id:
-            movie = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
-
-        if movie:
-            tags = list(movie.tags or [])
-            if tag not in tags:
-                tags.append(tag)
-                movie.tags = tags
-                if movie.nfo_path:
-                    update_nfo_tags(Path(movie.nfo_path), tags)
-                tagged += 1
+        if not tmdb_id:
             continue
 
-        # Find in series
-        series = None
-        if tmdb_id:
+        # Use media_type to query the correct table
+        if media_type == "series":
             series = db.query(Series).filter(Series.tmdb_id == tmdb_id).first()
+            if series:
+                tags = list(series.tags or [])
+                if tag not in tags:
+                    tags.append(tag)
+                    series.tags = tags
+                    if series.nfo_path:
+                        update_nfo_tags(Path(series.nfo_path), tags)
+                    tagged += 1
+        elif media_type == "movie":
+            movie = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
+            if movie:
+                tags = list(movie.tags or [])
+                if tag not in tags:
+                    tags.append(tag)
+                    movie.tags = tags
+                    if movie.nfo_path:
+                        update_nfo_tags(Path(movie.nfo_path), tags)
+                    tagged += 1
+        else:
+            # Unknown media_type — try both (movies first, legacy behavior)
+            movie = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
+            if movie:
+                tags = list(movie.tags or [])
+                if tag not in tags:
+                    tags.append(tag)
+                    movie.tags = tags
+                    if movie.nfo_path:
+                        update_nfo_tags(Path(movie.nfo_path), tags)
+                    tagged += 1
+                continue
 
-        if series:
-            tags = list(series.tags or [])
-            if tag not in tags:
-                tags.append(tag)
-                series.tags = tags
-                if series.nfo_path:
-                    update_nfo_tags(Path(series.nfo_path), tags)
-                tagged += 1
+            series = db.query(Series).filter(Series.tmdb_id == tmdb_id).first()
+            if series:
+                tags = list(series.tags or [])
+                if tag not in tags:
+                    tags.append(tag)
+                    series.tags = tags
+                    if series.nfo_path:
+                        update_nfo_tags(Path(series.nfo_path), tags)
+                    tagged += 1
 
     db.commit()
     return tagged
