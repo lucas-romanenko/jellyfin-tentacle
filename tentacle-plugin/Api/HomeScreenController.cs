@@ -242,7 +242,7 @@ public class TentacleHomeController : ControllerBase
         // When require_trailer is true, only show items that have at least one trailer URL
         if (hero.RequireTrailer)
         {
-            filtered = filtered.Where(i => i.RemoteTrailers != null && i.RemoteTrailers.Length > 0);
+            filtered = filtered.Where(i => i.RemoteTrailers != null && i.RemoteTrailers.Count > 0);
         }
 
         // Apply hero-specific sort from config
