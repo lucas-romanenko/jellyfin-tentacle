@@ -110,6 +110,8 @@ def sync_playlist_artwork(db: Session) -> dict:
 
 
 @router.post("/sync-artwork")
-def sync_artwork(db: Session = Depends(get_db)):
+def sync_artwork(force: bool = False, db: Session = Depends(get_db)):
     """Generate and upload artwork for all Jellyfin playlists."""
+    if force:
+        _uploaded_artwork.clear()
     return sync_playlist_artwork(db)
