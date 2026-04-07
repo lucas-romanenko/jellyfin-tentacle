@@ -55,10 +55,13 @@ public class TentacleController : ControllerBase
             _logger.LogError(ex, "Playlist refresh failed");
         }
 
-        // Step 2: Clear home config + discover caches
+        // Step 2: Clear home config + discover + ratings caches
         _homeScreenManager.ClearCache();
         TentacleResultsHandler.ClearItemCache();
         TentacleDiscoverController.ClearCache();
+        TentacleMdbListController.ClearSettingsCache();
+        TentacleTmdbController.ClearCache();
+        TentacleConfigController.ClearCache();
 
         _logger.LogInformation("Tentacle refresh complete — {Playlists} playlists refreshed, caches cleared", playlistCount);
 

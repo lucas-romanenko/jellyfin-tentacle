@@ -29,6 +29,25 @@
     <EmbeddedResource Include="Inject/tentacle-logo.png" />
     <EmbeddedResource Include="Inject/tentacle-details.js" />
     <EmbeddedResource Include="Inject/tentacle-details.css" />
+    <EmbeddedResource Include="Inject/tentacle-mdblist.js" />
+    <EmbeddedResource Include="Inject/tentacle-tmdb.js" />
+    <EmbeddedResource Include="Inject/tentacle-mdblist.css" />
+    <EmbeddedResource Include="Assets/imdb.svg" />
+    <EmbeddedResource Include="Assets/tmdb.svg" />
+    <EmbeddedResource Include="Assets/trakt.svg" />
+    <EmbeddedResource Include="Assets/rt-fresh.svg" />
+    <EmbeddedResource Include="Assets/rt-certified.svg" />
+    <EmbeddedResource Include="Assets/rt-rotten.svg" />
+    <EmbeddedResource Include="Assets/rt-audience-up.svg" />
+    <EmbeddedResource Include="Assets/rt-audience-down.svg" />
+    <EmbeddedResource Include="Assets/rt-verified.svg" />
+    <EmbeddedResource Include="Assets/metacritic.svg" />
+    <EmbeddedResource Include="Assets/metacritic-score.svg" />
+    <EmbeddedResource Include="Assets/metacritic-user.svg" />
+    <EmbeddedResource Include="Assets/letterboxd.svg" />
+    <EmbeddedResource Include="Assets/rogerebert.svg" />
+    <EmbeddedResource Include="Assets/mal.svg" />
+    <EmbeddedResource Include="Assets/anilist.svg" />
   </ItemGroup>
 
 </Project>

@@ -81,10 +81,13 @@ public static class IndexHtmlPatch
             var discoverJsTag = $"<script src=\"/Tentacle/discover.js?v={cacheBust}\" defer></script>";
             var detailsCssTag = $"<link rel=\"stylesheet\" href=\"/Tentacle/details.css?v={cacheBust}\" />";
             var detailsJsTag = $"<script src=\"/Tentacle/details.js?v={cacheBust}\" defer></script>";
+            var mdblistCssTag = $"<link rel=\"stylesheet\" href=\"/Tentacle/mdblist.css?v={cacheBust}\" />";
+            var mdblistJsTag = $"<script src=\"/Tentacle/mdblist.js?v={cacheBust}\" defer></script>";
+            var tmdbJsTag = $"<script src=\"/Tentacle/tmdb.js?v={cacheBust}\" defer></script>";
 
             content = content
-                .Replace("</head>", $"{cssTag}{discoverCssTag}{detailsCssTag}</head>")
-                .Replace("</body>", $"{jsTag}{discoverJsTag}{detailsJsTag}</body>");
+                .Replace("</head>", $"{cssTag}{discoverCssTag}{detailsCssTag}{mdblistCssTag}</head>")
+                .Replace("</body>", $"{mdblistJsTag}{tmdbJsTag}{jsTag}{discoverJsTag}{detailsJsTag}</body>");
 
             var bytes = System.Text.Encoding.UTF8.GetBytes(content);
             __result = new TransformedFileInfo(__result, bytes);

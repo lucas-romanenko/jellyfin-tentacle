@@ -303,6 +303,26 @@ var Details = {
                     });
                 }
 
+                // MDBList ratings
+                if (typeof MdbList !== 'undefined' && MdbList.isEnabled()) {
+                    MdbList.fetchRatings(item).then(function(ratings) {
+                        if (ratings && ratings.length > 0 && self.currentItem && self.currentItem.Id === item.Id) {
+                            self.renderMdbListRatings(ratings);
+                        }
+                    });
+                }
+
+                // TMDB episode ratings
+                if (typeof Tmdb !== 'undefined' && Tmdb.isEnabled() && item.Type === 'Episode') {
+                    Tmdb.fetchRatingForEpisode(item).then(function(rating) {
+                        if (rating && self.currentItem && self.currentItem.Id === item.Id) {
+                            self.renderTmdbEpisodeRating(rating);
+                        }
+                    });
+                    if (item.SeriesId && episodes.length > 0) {
+                        self.fetchTmdbRatingsForEpisodeList(item, episodes);
+                    }
+                }
 
                 setTimeout(function() {
                     var firstBtn = panel.querySelector('.moonfin-btn');
@@ -1712,6 +1732,70 @@ var Details = {
         });
     },
 
+    renderMdbListRatings: function(ratings) {
+        var container = this.container.querySelector('#moonfin-details-mdblist');
+        if (!container) return;
+        if (typeof MdbList === 'undefined') return;
+
+        var html = MdbList.buildRatingsHtml(ratings, 'full');
+        if (html) {
+            container.innerHTML = html;
+            container.style.display = '';
+        }
+    },
+
+    renderTmdbEpisodeRating: function(rating) {
+        var container = this.container.querySelector('#moonfin-details-mdblist');
+        if (!container) return;
+        if (typeof Tmdb === 'undefined') return;
+
+        var html = Tmdb.buildRatingHtml(rating);
+        if (html) {
+            container.insertAdjacentHTML('beforeend', html);
+            container.style.display = '';
+        }
+    },
+
+    fetchTmdbRatingsForEpisodeList: function(item, episodes) {
+        var self = this;
+        if (!item.SeriesId || typeof Tmdb === 'undefined') return;
+
+        Tmdb.resolveSeriesTmdbId(item.SeriesId).then(function(tmdbId) {
+            if (!tmdbId) return;
+            var season = item.ParentIndexNumber;
+            if (season == null) return;
+
+            Tmdb.fetchSeasonRatings(tmdbId, season).then(function(tmdbEpisodes) {
+                if (!tmdbEpisodes || tmdbEpisodes.length === 0) return;
+                if (!self.currentItem || self.currentItem.Id !== item.Id) return;
+
+                var ratingMap = {};
+                for (var i = 0; i < tmdbEpisodes.length; i++) {
+                    if (tmdbEpisodes[i].episodeNumber != null) {
+                        ratingMap[tmdbEpisodes[i].episodeNumber] = tmdbEpisodes[i];
+                    }
+                }
+
+                var epCards = self.container.querySelectorAll('.moonfin-episode-card');
+                for (var j = 0; j < epCards.length; j++) {
+                    var epId = epCards[j].getAttribute('data-item-id');
+                    for (var k = 0; k < episodes.length; k++) {
+                        if (episodes[k].Id === epId && episodes[k].IndexNumber != null) {
+                            var tmdbRating = ratingMap[episodes[k].IndexNumber];
+                            if (tmdbRating) {
+                                var infoEl = epCards[j].querySelector('.moonfin-episode-info');
+                                if (infoEl) {
+                                    infoEl.insertAdjacentHTML('beforeend', Tmdb.buildCompactRatingHtml(tmdbRating));
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+            });
+        });
+    },
+
     handleAction: function(action, item) {
         switch (action) {
             case 'play':
@@ -2792,6 +2876,48 @@ var Details = {
         this.applyBackdropSettings();
         this.setupSeasonPanelListeners(panel, item, episodes);
 
+        if (typeof Tmdb !== 'undefined' && Tmdb.isEnabled() && item.SeriesId) {
+            this.fetchTmdbRatingsForSeasonView(item, episodes);
+        }
+    },
+
+    fetchTmdbRatingsForSeasonView: function(item, episodes) {
+        var self = this;
+        if (typeof Tmdb === 'undefined') return;
+        Tmdb.resolveSeriesTmdbId(item.SeriesId).then(function(tmdbId) {
+            if (!tmdbId) return;
+            var season = item.IndexNumber;
+            if (season == null) return;
+
+            Tmdb.fetchSeasonRatings(tmdbId, season).then(function(tmdbEpisodes) {
+                if (!tmdbEpisodes || tmdbEpisodes.length === 0) return;
+                if (!self.currentItem || self.currentItem.Id !== item.Id) return;
+
+                var ratingMap = {};
+                for (var i = 0; i < tmdbEpisodes.length; i++) {
+                    if (tmdbEpisodes[i].episodeNumber != null) {
+                        ratingMap[tmdbEpisodes[i].episodeNumber] = tmdbEpisodes[i];
+                    }
+                }
+
+                var epCards = self.container.querySelectorAll('.moonfin-season-ep');
+                for (var j = 0; j < epCards.length; j++) {
+                    var epId = epCards[j].getAttribute('data-item-id');
+                    for (var k = 0; k < episodes.length; k++) {
+                        if (episodes[k].Id === epId && episodes[k].IndexNumber != null) {
+                            var tmdbRating = ratingMap[episodes[k].IndexNumber];
+                            if (tmdbRating) {
+                                var metaEl = epCards[j].querySelector('.moonfin-season-ep-meta');
+                                if (metaEl) {
+                                    metaEl.insertAdjacentHTML('afterbegin', Tmdb.buildCompactRatingHtml(tmdbRating));
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+            });
+        });
     },
 
 
@@ -3055,11 +3181,26 @@ var Details = {
     }
 };
 
-// Bootstrap: wait for ApiClient then init
+// Bootstrap: wait for ApiClient, load config, then init
 (function() {
+    function loadConfig() {
+        var serverUrl = window.ApiClient.serverAddress();
+        var token = window.ApiClient.accessToken();
+        fetch(serverUrl + '/Tentacle/Config', {
+            headers: { 'Authorization': 'MediaBrowser Token="' + token + '"' }
+        }).then(function(r) { return r.json(); }).then(function(cfg) {
+            window.TentacleConfig = cfg;
+            console.log('[Tentacle] Config loaded:', cfg.mdblistEnabled ? 'MDBList ON' : 'MDBList OFF', cfg.tmdbEnabled ? 'TMDB ON' : 'TMDB OFF');
+        }).catch(function() {
+            window.TentacleConfig = { mdblistEnabled: false, tmdbEnabled: false };
+        });
+    }
+
     function boot() {
         if (window.ApiClient) {
             console.log('[Tentacle] Details overlay initializing');
+            loadConfig();
+            if (typeof MdbList !== 'undefined') MdbList.init();
             Details.init();
             window.TentacleDetails = {
                 show: function(itemId, itemType) { Details.showDetails(itemId, itemType); },

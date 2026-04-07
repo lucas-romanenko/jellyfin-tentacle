@@ -33,7 +33,7 @@ def get_settings(db: Session = Depends(get_db)):
     settings = db.query(Setting).all()
     result = {s.key: s.value for s in settings}
     # Mask sensitive values
-    for key in ["tmdb_bearer_token", "tmdb_api_key", "radarr_api_key", "sonarr_api_key", "jellyfin_api_key", "trakt_client_id"]:
+    for key in ["tmdb_bearer_token", "tmdb_api_key", "radarr_api_key", "sonarr_api_key", "jellyfin_api_key", "trakt_client_id", "mdblist_api_key"]:
         if result.get(key):
             result[key] = result[key][:8] + "..." + result[key][-4:]
     return result
@@ -48,7 +48,7 @@ def get_settings_raw(db: Session = Depends(get_db)):
 
 @router.post("")
 def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
-    sensitive_keys = {"tmdb_bearer_token", "tmdb_api_key", "radarr_api_key", "sonarr_api_key", "jellyfin_api_key", "trakt_client_id"}
+    sensitive_keys = {"tmdb_bearer_token", "tmdb_api_key", "radarr_api_key", "sonarr_api_key", "jellyfin_api_key", "trakt_client_id", "mdblist_api_key"}
     for key, value in body.settings.items():
         # Don't overwrite sensitive keys if they look masked
         if key in sensitive_keys and value and "..." in value:
@@ -163,6 +163,26 @@ def test_connection(body: ConnectionTest, db: Session = Depends(get_db)):
             return {"success": True, "message": "TMDB connection successful"}
         except Exception as e:
             raise HTTPException(400, f"TMDB connection failed: {str(e)}")
+
+    elif body.type == "mdblist":
+        key = body.api_key if (body.api_key and "..." not in body.api_key) else get_setting(db, "mdblist_api_key")
+        if not key:
+            raise HTTPException(400, "MDBList API key required")
+        try:
+            r = requests.get(
+                f"https://api.mdblist.com/user?apikey={key}",
+                timeout=10
+            )
+            if r.status_code == 401:
+                raise HTTPException(400, "Invalid MDBList API key")
+            r.raise_for_status()
+            data = r.json()
+            name = data.get("name", "Unknown")
+            return {"success": True, "message": f"MDBList connected — {name}"}
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(400, f"MDBList connection failed: {str(e)}")
 
     elif body.type == "radarr":
         url = body.url or get_setting(db, "radarr_url")

@@ -1439,6 +1439,15 @@ td.primary { color: var(--text); font-weight: 500; }
                 <div class="form-hint">Built-in key works out of the box. Override with your own from themoviedb.org/settings/api</div>
               </div>
 
+              <div class="form-group">
+                <div class="form-label">MDBList API Key <span style="color:var(--text3);font-size:12px">(optional)</span></div>
+                <div style="display:flex;gap:8px">
+                  <input class="form-input mono" id="mdblist_api_key" type="password" placeholder="Enter MDBList API key">
+                  <button class="btn btn-secondary" onclick="testConnection('mdblist')">Test</button>
+                </div>
+                <div class="form-hint">Enables MDBList ratings on item details in Jellyfin. Get a key from mdblist.com/preferences</div>
+              </div>
+
               <hr class="divider">
 
               <div class="form-row">

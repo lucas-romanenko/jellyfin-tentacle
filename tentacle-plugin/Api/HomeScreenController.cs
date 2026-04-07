@@ -492,6 +492,27 @@ public class TentacleHomeController : ControllerBase
         return Content(content, "text/css");
     }
 
+    [HttpGet("/Tentacle/mdblist.js")]
+    public ActionResult GetMdbListJs()
+    {
+        var content = LoadEmbeddedResource("tentacle-mdblist.js");
+        return content != null ? Content(content, "application/javascript") : NotFound();
+    }
+
+    [HttpGet("/Tentacle/tmdb.js")]
+    public ActionResult GetTmdbJs()
+    {
+        var content = LoadEmbeddedResource("tentacle-tmdb.js");
+        return content != null ? Content(content, "application/javascript") : NotFound();
+    }
+
+    [HttpGet("/Tentacle/mdblist.css")]
+    public ActionResult GetMdbListCss()
+    {
+        var content = LoadEmbeddedResource("tentacle-mdblist.css");
+        return content != null ? Content(content, "text/css") : NotFound();
+    }
+
     private static string? LoadEmbeddedResource(string resourceSuffix)
     {
         var assembly = typeof(TentacleHomeController).Assembly;

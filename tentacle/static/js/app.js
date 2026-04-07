@@ -975,7 +975,7 @@ async function loadSettings() {
   try {
     const settings = await api('/api/settings/raw');
     const fields = [
-      'tmdb_bearer_token', 'radarr_url', 'radarr_api_key',
+      'tmdb_bearer_token', 'mdblist_api_key', 'radarr_url', 'radarr_api_key',
       'sonarr_url', 'sonarr_api_key',
       'jellyfin_url', 'jellyfin_api_key',
       'sync_schedule', 'recently_added_days', 'tmdb_match_threshold',
@@ -1058,7 +1058,7 @@ async function loadPathStatus() {
 
 async function saveSettings() {
   const fields = [
-    'tmdb_bearer_token', 'radarr_url', 'radarr_api_key',
+    'tmdb_bearer_token', 'mdblist_api_key', 'radarr_url', 'radarr_api_key',
     'sonarr_url', 'sonarr_api_key',
     'jellyfin_url', 'jellyfin_api_key',
     'sync_schedule', 'recently_added_days', 'tmdb_match_threshold',
@@ -1083,6 +1083,7 @@ async function saveSettings() {
 async function testConnection(type) {
   const configs = {
     tmdb: { bearer_token: document.getElementById('tmdb_bearer_token')?.value.trim() },
+    mdblist: { api_key: document.getElementById('mdblist_api_key')?.value.trim() },
     radarr: {
       url: document.getElementById('radarr_url')?.value.trim(),
       api_key: document.getElementById('radarr_api_key')?.value.trim()
