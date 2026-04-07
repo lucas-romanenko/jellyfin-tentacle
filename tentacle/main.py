@@ -254,6 +254,7 @@ app.add_middleware(
 
 app.include_router(auth_router.router)
 app.include_router(settings.router)
+app.include_router(settings.plugin_router)
 app.include_router(providers.router)
 app.include_router(sync_router.router)
 app.include_router(library.router)

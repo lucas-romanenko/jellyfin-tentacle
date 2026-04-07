@@ -16,6 +16,25 @@ from routers.auth import require_admin
 
 router = APIRouter(prefix="/api/settings", tags=["settings"], dependencies=[Depends(require_admin)])
 
+# Separate router for plugin-facing endpoints (no auth required — internal network only)
+plugin_router = APIRouter(prefix="/api/settings", tags=["settings"])
+
+
+@plugin_router.get("/plugin-keys")
+def get_plugin_keys(db: Session = Depends(get_db)):
+    """Return API keys needed by the Jellyfin plugin (no auth).
+    Only exposes specific keys, not all settings."""
+    result = {}
+    for key in ["mdblist_api_key", "tmdb_bearer_token", "tmdb_api_key"]:
+        val = get_setting(db, key)
+        if val:
+            result[key] = val
+    # Inject built-in TMDB token if not explicitly set
+    if not result.get("tmdb_bearer_token") and not result.get("tmdb_api_key"):
+        from services.tmdb import TMDB_DEFAULT_TOKEN
+        result["tmdb_bearer_token"] = TMDB_DEFAULT_TOKEN
+    return result
+
 
 class SettingsUpdate(BaseModel):
     settings: Dict[str, str]
