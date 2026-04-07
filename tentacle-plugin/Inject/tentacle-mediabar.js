@@ -118,13 +118,8 @@
                     '<div class="moonfin-mediabar-dots"></div>' +
                 '</div>';
 
-            // Insert into the scrollable content area, before home sections
-            var homeView = document.querySelector('.homeSectionsContainer');
-            if (homeView && homeView.parentElement) {
-                homeView.parentElement.insertBefore(this.container, homeView);
-            } else {
-                document.body.appendChild(this.container);
-            }
+            // Fixed position hero — append to body, rows scroll over it
+            document.body.appendChild(this.container);
         },
 
         loadContent: function () {
@@ -601,10 +596,9 @@
 
         show: function () {
             if (this.container) {
-                // Re-insert into the scrollable area if it got orphaned (SPA navigation)
-                var homeView = document.querySelector('.homeSectionsContainer');
-                if (homeView && homeView.parentElement && this.container.parentElement !== homeView.parentElement) {
-                    homeView.parentElement.insertBefore(this.container, homeView);
+                // Re-attach to body if removed by SPA navigation
+                if (!this.container.parentElement) {
+                    document.body.appendChild(this.container);
                 }
                 this.container.classList.remove('disabled', 'hidden');
                 if (this.isHomePage() && this.items && this.items.length > 0) {
@@ -726,6 +720,25 @@
                 if (document.hidden) self.stopTrailer();
             });
 
+            // Scroll-linked hero fade — Netflix-style parallax
+            this._onScroll = function () {
+                if (!self.container || !self.isHomePage()) return;
+                var scrollY = window.scrollY || window.pageYOffset;
+                var heroH = window.innerHeight * 0.6;
+
+                // Fade out hero content as user scrolls
+                if (scrollY > heroH) {
+                    self.container.classList.add('scrolled-full');
+                    self.container.classList.remove('scrolled-partial');
+                } else if (scrollY > heroH * 0.3) {
+                    self.container.classList.add('scrolled-partial');
+                    self.container.classList.remove('scrolled-full');
+                } else {
+                    self.container.classList.remove('scrolled-partial', 'scrolled-full');
+                }
+            };
+            window.addEventListener('scroll', this._onScroll, { passive: true });
+
             // Page navigation → show/hide
             var onNavChange = function () {
                 if (self.isHomePage()) {
@@ -741,6 +754,10 @@
         destroy: function () {
             this.stopAutoAdvance();
             this.stopTrailer();
+            if (this._onScroll) {
+                window.removeEventListener('scroll', this._onScroll);
+                this._onScroll = null;
+            }
             if (this.container) {
                 this.container.remove();
                 this.container = null;

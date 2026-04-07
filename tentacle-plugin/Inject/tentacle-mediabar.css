@@ -1,13 +1,15 @@
 /**
  * Tentacle Media Bar Styles
- * Adapted from Moonfin — Android TV-inspired featured content slideshow
+ * Netflix-style fixed hero with scroll-over rows
  * Keeps moonfin- CSS prefix for compatibility
  */
 
 /* ==================== Container ==================== */
 
 .moonfin-mediabar {
-    position: relative;
+    position: fixed;
+    top: 0;
+    left: 0;
     width: 100%;
     height: 100dvh;
     overflow: hidden;
@@ -15,22 +17,46 @@
     z-index: 1;
 }
 
-body.moonfin-mediabar-active .homeSectionsContainer {
+/* The Tentacle home container — rows scroll OVER the fixed hero */
+body.moonfin-mediabar-active #tentacle-home {
     position: relative;
-    z-index: 6;
-    background: #101010;
-    margin-top: -10dvh;
-    padding-top: 10px;
-    border-radius: 16px 16px 0 0;
+    z-index: 5;
+    margin-top: 85dvh;
 }
 
-/* When both mediabar and navbar are active, account for navbar padding */
+/* Rows wrapper gets the solid background + rounded top */
+body.moonfin-mediabar-active #mh-rows-container {
+    position: relative;
+    background: #101010;
+    border-radius: 20px 20px 0 0;
+    padding-top: 20px;
+    padding-bottom: 40px;
+    min-height: 50dvh;
+}
+
+/* Fallback for Jellyfin native sections (no Tentacle home) */
+body.moonfin-mediabar-active .homeSectionsContainer {
+    position: relative;
+    z-index: 5;
+    margin-top: 85dvh;
+    background: #101010;
+    border-radius: 20px 20px 0 0;
+    padding-top: 20px;
+}
+
+/* When both mediabar and navbar are active, no extra padding */
 body.moonfin-mediabar-active.moonfin-navbar-active {
     padding-top: 0 !important;
 }
 
+/* Navbar floats above everything */
 body.moonfin-mediabar-active.moonfin-navbar-active .moonfin-navbar {
     z-index: 10000;
+}
+
+/* Smooth scrolling on the page */
+body.moonfin-mediabar-active {
+    scroll-behavior: smooth;
 }
 
 .moonfin-mediabar.hidden,
@@ -76,7 +102,7 @@ body.moonfin-mediabar-active.moonfin-navbar-active .moonfin-navbar {
     bottom: 0;
     background-size: cover;
     background-position: center center;
-    transition: opacity 0.5s ease;
+    transition: opacity 0.8s ease;
 }
 
 .moonfin-mediabar-backdrop-current {
@@ -139,7 +165,8 @@ body.moonfin-mediabar-active.moonfin-navbar-active .moonfin-navbar {
         ),
         linear-gradient(
             to top,
-            rgba(0, 0, 0, 0.85) 0%,
+            #101010 0%,
+            rgba(16, 16, 16, 0.7) 15%,
             rgba(0, 0, 0, 0.15) 45%,
             rgba(0, 0, 0, 0) 70%
         );
@@ -149,20 +176,33 @@ body.moonfin-mediabar-active.moonfin-navbar-active .moonfin-navbar {
 
 .moonfin-mediabar-content {
     position: absolute;
-    bottom: 60px;
+    bottom: 120px;
     left: 60px;
     right: 60px;
     z-index: 10;
     display: flex;
     flex-direction: column;
     align-items: flex-start;
+    transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+/* Fade out content as user scrolls down */
+.moonfin-mediabar.scrolled-partial .moonfin-mediabar-content {
+    opacity: 0.4;
+    transform: translateY(-20px);
+}
+
+.moonfin-mediabar.scrolled-full .moonfin-mediabar-content {
+    opacity: 0;
+    transform: translateY(-40px);
+    pointer-events: none;
 }
 
 /* Logo — positioned above the info box */
 .moonfin-mediabar-logo-container {
-    max-width: 250px;
-    max-height: 100px;
-    margin-bottom: 16px;
+    max-width: 300px;
+    max-height: 120px;
+    margin-bottom: 20px;
     display: flex;
     align-items: flex-end;
 }
@@ -173,17 +213,18 @@ body.moonfin-mediabar-active.moonfin-navbar-active .moonfin-navbar {
 
 .moonfin-mediabar-logo {
     max-width: 100%;
-    max-height: 100px;
+    max-height: 120px;
     object-fit: contain;
-    filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.6));
+    filter: drop-shadow(0 4px 16px rgba(0, 0, 0, 0.7));
 }
 
-/* Info overlay box — spans full width */
+/* Info overlay box — full width */
 .moonfin-mediabar-info {
     width: 100%;
-    padding: 16px 20px;
-    border-radius: 12px;
-    backdrop-filter: blur(12px);
+    max-width: 650px;
+    padding: 18px 24px;
+    border-radius: 14px;
+    backdrop-filter: blur(16px);
     display: flex;
     flex-direction: column;
     box-sizing: border-box;
@@ -196,12 +237,12 @@ body.moonfin-mediabar-active.moonfin-navbar-active .moonfin-navbar {
     align-items: center;
     flex-wrap: wrap;
     gap: 0;
-    margin-bottom: 6px;
+    margin-bottom: 8px;
 }
 
 .moonfin-mediabar-metadata span {
-    font-size: 13px;
-    color: rgba(255, 255, 255, 0.85);
+    font-size: 14px;
+    color: rgba(255, 255, 255, 0.9);
     font-weight: 500;
     white-space: nowrap;
 }
@@ -214,7 +255,7 @@ body.moonfin-mediabar-active.moonfin-navbar-active .moonfin-navbar {
 .moonfin-mediabar-metadata span:not(:empty):not(:last-child)::after {
     content: '\2022';
     margin: 0 10px;
-    color: rgba(255, 255, 255, 0.4);
+    color: rgba(255, 255, 255, 0.35);
 }
 
 /* Official rating badge — no border, just text */
@@ -227,7 +268,7 @@ body.moonfin-mediabar-active.moonfin-navbar-active .moonfin-navbar {
 .moonfin-mediabar-ratings {
     font-size: 13px;
     color: rgba(255, 255, 255, 0.8);
-    margin-bottom: 6px;
+    margin-bottom: 8px;
     font-weight: 500;
 }
 
@@ -238,11 +279,11 @@ body.moonfin-mediabar-active.moonfin-navbar-active .moonfin-navbar {
 /* ==================== Overview ==================== */
 
 .moonfin-mediabar-overview {
-    font-size: 14px;
-    line-height: 1.5;
-    color: rgba(255, 255, 255, 0.88);
+    font-size: 14.5px;
+    line-height: 1.55;
+    color: rgba(255, 255, 255, 0.9);
     margin: 0 0 10px 0;
-    text-shadow: 1px 1px 4px rgba(0, 0, 0, 0.7);
+    text-shadow: 1px 1px 6px rgba(0, 0, 0, 0.8);
     display: -webkit-box;
     -webkit-line-clamp: 3;
     -webkit-box-orient: vertical;
@@ -263,7 +304,7 @@ body.moonfin-mediabar-active.moonfin-navbar-active .moonfin-navbar {
     z-index: 11;
     display: flex;
     justify-content: space-between;
-    padding: 0 16px;
+    padding: 0 20px;
     transform: translateY(-50%);
     pointer-events: none;
     opacity: 0;
@@ -276,8 +317,8 @@ body.moonfin-mediabar-active.moonfin-navbar-active .moonfin-navbar {
 }
 
 .moonfin-mediabar-nav-btn {
-    width: 44px;
-    height: 44px;
+    width: 48px;
+    height: 48px;
     border-radius: 50%;
     border: none;
     cursor: pointer;
@@ -285,18 +326,18 @@ body.moonfin-mediabar-active.moonfin-navbar-active .moonfin-navbar {
     align-items: center;
     justify-content: center;
     pointer-events: auto;
-    backdrop-filter: blur(8px);
+    backdrop-filter: blur(10px);
     transition: transform 0.2s ease, opacity 0.2s ease;
 }
 
 .moonfin-mediabar-nav-btn svg {
-    width: 26px;
-    height: 26px;
+    width: 28px;
+    height: 28px;
     color: white;
 }
 
 .moonfin-mediabar-nav-btn:hover {
-    transform: scale(1.1);
+    transform: scale(1.15);
 }
 
 .moonfin-mediabar-nav-btn:focus-visible {
@@ -308,13 +349,21 @@ body.moonfin-mediabar-active.moonfin-navbar-active .moonfin-navbar {
 
 .moonfin-mediabar-dots-wrap {
     position: absolute;
-    bottom: 16px;
+    bottom: 20px;
     left: 50%;
     transform: translateX(-50%);
     z-index: 11;
     border-radius: 20px;
-    padding: 6px 12px;
-    backdrop-filter: blur(8px);
+    padding: 8px 14px;
+    backdrop-filter: blur(10px);
+    transition: opacity 0.3s ease;
+}
+
+/* Hide dots when scrolled past hero */
+.moonfin-mediabar.scrolled-full .moonfin-mediabar-dots-wrap,
+.moonfin-mediabar.scrolled-full .moonfin-mediabar-nav {
+    opacity: 0 !important;
+    pointer-events: none;
 }
 
 .moonfin-mediabar-dots {
@@ -344,21 +393,50 @@ body.moonfin-mediabar-active.moonfin-navbar-active .moonfin-navbar {
     transform: scale(1.15);
 }
 
+/* ==================== Row Section Styling ==================== */
+
+/* Smooth entrance animation for rows */
+body.moonfin-mediabar-active .mh-section {
+    animation: mh-row-fadein 0.5s ease both;
+}
+
+body.moonfin-mediabar-active .mh-section:nth-child(1) { animation-delay: 0s; }
+body.moonfin-mediabar-active .mh-section:nth-child(2) { animation-delay: 0.05s; }
+body.moonfin-mediabar-active .mh-section:nth-child(3) { animation-delay: 0.1s; }
+body.moonfin-mediabar-active .mh-section:nth-child(4) { animation-delay: 0.15s; }
+body.moonfin-mediabar-active .mh-section:nth-child(5) { animation-delay: 0.2s; }
+body.moonfin-mediabar-active .mh-section:nth-child(6) { animation-delay: 0.25s; }
+
+@keyframes mh-row-fadein {
+    from {
+        opacity: 0;
+        transform: translateY(20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
 /* ==================== Tablet ==================== */
 
 @media (max-width: 1024px) {
     .moonfin-mediabar {
-        height: 500px;
+        height: 70dvh;
+    }
+
+    body.moonfin-mediabar-active #tentacle-home {
+        margin-top: 60dvh;
     }
 
     body.moonfin-mediabar-active .homeSectionsContainer {
-        top: 425px;
+        margin-top: 60dvh;
     }
 
     .moonfin-mediabar-content {
         left: 40px;
         right: 40px;
-        bottom: 50px;
+        bottom: 80px;
     }
 
     .moonfin-mediabar-info {
@@ -388,23 +466,27 @@ body.moonfin-mediabar-active.moonfin-navbar-active .moonfin-navbar {
 
 @media (max-width: 768px) {
     .moonfin-mediabar {
-        height: 400px;
+        height: 60dvh;
+    }
+
+    body.moonfin-mediabar-active #tentacle-home {
+        margin-top: 50dvh;
     }
 
     body.moonfin-mediabar-active .homeSectionsContainer {
-        top: 325px;
+        margin-top: 50dvh;
     }
 
     .moonfin-mediabar-content {
-        left: 14px;
-        right: 14px;
-        bottom: 40px;
+        left: 16px;
+        right: 16px;
+        bottom: 60px;
     }
 
     .moonfin-mediabar-logo-container {
         max-width: 160px;
         max-height: 60px;
-        margin-bottom: 10px;
+        margin-bottom: 12px;
     }
 
     .moonfin-mediabar-logo {
