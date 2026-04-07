@@ -3177,9 +3177,21 @@ var Details = {
 
     _hideAfterPlayback: function() {
         var self = this;
-        // Delay hiding so the Jellyfin player UI has time to appear on top,
-        // preventing a flash of the home screen between overlay close and player open.
-        setTimeout(function() { self.hide(true); }, 500);
+        // Poll for the Jellyfin video player to actually appear in the DOM before
+        // hiding the overlay — prevents a flash of the home screen in between.
+        var attempts = 0;
+        var check = setInterval(function() {
+            attempts++;
+            var playerVisible = document.querySelector('.videoPlayerContainer, .htmlVideoPlayer, video, .videoOsd');
+            if (playerVisible) {
+                clearInterval(check);
+                self.hide(true);
+            } else if (attempts > 40) {
+                // Safety fallback after 2s
+                clearInterval(check);
+                self.hide(true);
+            }
+        }, 50);
     },
 
     hide: function(skipHistoryBack) {

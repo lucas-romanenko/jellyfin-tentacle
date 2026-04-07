@@ -407,6 +407,20 @@
             window.addEventListener('tentacle-activity-count', function (e) {
                 self.updateActivityBadge(e.detail);
             });
+
+            // Hide navbar during video playback
+            this._playbackObserver = new MutationObserver(function () {
+                var playing = !!document.querySelector('.videoPlayerContainer, .htmlVideoPlayer, video');
+                if (self._isPlaybackActive !== playing) {
+                    self._isPlaybackActive = playing;
+                    if (self.container) {
+                        self.container.style.opacity = playing ? '0' : '';
+                        self.container.style.pointerEvents = playing ? 'none' : '';
+                    }
+                }
+            });
+            this._isPlaybackActive = false;
+            this._playbackObserver.observe(document.body, { childList: true, subtree: true });
         },
 
         handleNavigation: function (action, btn) {
@@ -591,6 +605,10 @@
             if (this._navObserver) {
                 this._navObserver.disconnect();
                 this._navObserver = null;
+            }
+            if (this._playbackObserver) {
+                this._playbackObserver.disconnect();
+                this._playbackObserver = null;
             }
             document.body.classList.remove('moonfin-navbar-active');
             this.librariesExpanded = false;
