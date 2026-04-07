@@ -41,9 +41,14 @@ def get_settings(db: Session = Depends(get_db)):
 
 @router.get("/raw")
 def get_settings_raw(db: Session = Depends(get_db)):
-    """Get settings without masking - for internal use"""
+    """Get settings without masking - for internal use (plugin API key lookups)"""
     settings = db.query(Setting).all()
-    return {s.key: s.value for s in settings}
+    result = {s.key: s.value for s in settings}
+    # Inject effective TMDB token (built-in fallback) if not explicitly set
+    if not result.get("tmdb_bearer_token") and not result.get("tmdb_api_key"):
+        from services.tmdb import TMDB_DEFAULT_TOKEN
+        result["tmdb_bearer_token"] = TMDB_DEFAULT_TOKEN
+    return result
 
 
 @router.post("")
