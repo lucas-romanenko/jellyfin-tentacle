@@ -38,7 +38,12 @@
             return h === '' || h === 'home';
         },
 
+        isVideoPage: function () {
+            return (location.hash || '').indexOf('#/video') !== -1;
+        },
+
         isUserPage: function () {
+            if (this.isVideoPage()) return false;
             var hash = (location.hash || '').replace('#', '').replace(/^\//, '');
             if (hash === '' || hash === '/') return true; // empty = home
             var route = hash.toLowerCase().split('?')[0].split('.')[0];
@@ -265,7 +270,7 @@
             if (!btn || !list) return;
 
             var rect = btn.getBoundingClientRect();
-            list.style.top = (rect.bottom + 4) + 'px';
+            list.style.top = (rect.bottom + 8) + 'px';
             list.style.left = rect.left + 'px';
         },
 
@@ -299,7 +304,7 @@
                 self.librariesExpanded = false;
                 var group = self.container ? self.container.querySelector('.moonfin-libraries-group') : null;
                 if (group) group.classList.remove('expanded');
-            }, 250);
+            }, 150);
         },
 
         cancelCollapseLibraries: function () {
@@ -351,6 +356,7 @@
             if (librariesGroup) {
                 librariesGroup.addEventListener('mouseenter', function () {
                     if (!self.isMobile()) {
+                        console.log('[Tentacle] Libraries mouseenter, libraries count:', self.libraries.length);
                         self.cancelCollapseLibraries();
                         self.librariesExpanded = true;
                         librariesGroup.classList.add('expanded');
@@ -409,19 +415,6 @@
                 self.updateActivityBadge(e.detail);
             });
 
-            // Hide navbar during video playback
-            this._playbackObserver = new MutationObserver(function () {
-                var playing = !!document.querySelector('.videoPlayerContainer, .htmlVideoPlayer, video');
-                if (self._isPlaybackActive !== playing) {
-                    self._isPlaybackActive = playing;
-                    if (self.container) {
-                        self.container.style.opacity = playing ? '0' : '';
-                        self.container.style.pointerEvents = playing ? 'none' : '';
-                    }
-                }
-            });
-            this._isPlaybackActive = false;
-            this._playbackObserver.observe(document.body, { childList: true, subtree: true });
         },
 
         handleNavigation: function (action, btn) {
@@ -506,6 +499,14 @@
 
         updateVisibility: function () {
             if (!this.container) return;
+            // Hide completely during video playback (matches Moonfin behavior)
+            if (this.isVideoPage()) {
+                this.container.classList.add('hidden');
+                document.body.classList.remove('moonfin-navbar-active');
+                document.body.classList.remove('moonfin-mediabar-active');
+                return;
+            }
+            this.container.classList.remove('hidden');
             var isUser = this.isUserPage();
             this.container.style.display = isUser ? '' : 'none';
             document.body.classList.toggle('moonfin-navbar-active', isUser);
@@ -606,10 +607,6 @@
             if (this._navObserver) {
                 this._navObserver.disconnect();
                 this._navObserver = null;
-            }
-            if (this._playbackObserver) {
-                this._playbackObserver.disconnect();
-                this._playbackObserver = null;
             }
             document.body.classList.remove('moonfin-navbar-active');
             this.librariesExpanded = false;
