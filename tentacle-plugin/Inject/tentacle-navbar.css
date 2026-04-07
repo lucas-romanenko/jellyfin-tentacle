@@ -277,76 +277,61 @@ body.moonfin-navbar-active .cardOverlayContainer {
     margin-left: 0;
 }
 
+/* Libraries dropdown — rendered as direct child of body to avoid
+   backdrop-filter on .moonfin-nav-pill breaking position:fixed */
 .moonfin-libraries-list {
+    position: fixed;
     display: flex;
-    align-items: center;
-    max-width: 0;
+    flex-direction: column;
+    align-items: stretch;
+    max-height: 0;
     overflow: hidden;
     opacity: 0;
-    transition: max-width 0.35s cubic-bezier(0.4, 0, 0.2, 1),
-                opacity 0.25s ease;
+    width: max-content;
+    min-width: 180px;
+    background: rgba(20, 20, 20, 0.85);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border-radius: 12px;
+    padding: 0;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    transition: max-height 0.25s ease-out,
+                opacity 0.2s ease-out,
+                padding 0.25s ease-out;
+    pointer-events: none;
+    z-index: 10001;
 }
 
-.moonfin-libraries-group.expanded .moonfin-libraries-list {
-    max-width: 800px;
+/* Invisible bridge above the dropdown so mouse can travel from button to list */
+.moonfin-libraries-list::before {
+    content: '';
+    position: absolute;
+    top: -12px;
+    left: 0;
+    right: 0;
+    height: 12px;
+}
+
+.moonfin-libraries-list.expanded {
+    max-height: 500px;
+    overflow: visible;
+    padding: 6px 0;
     opacity: 1;
+    pointer-events: auto;
 }
 
-@media (min-width: 769px) {
-    .moonfin-libraries-list {
-        position: fixed;
-        flex-direction: column;
-        align-items: stretch;
-        max-width: none;
-        overflow: hidden;
-        max-height: 0;
-        width: max-content;
-        min-width: 180px;
-        background: rgba(20, 20, 20, 0.85);
-        backdrop-filter: blur(20px);
-        -webkit-backdrop-filter: blur(20px);
-        border-radius: 12px;
-        padding: 0;
-        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
-        transition: max-height 0.25s ease-out,
-                    opacity 0.2s ease-out,
-                    padding 0.25s ease-out;
-        pointer-events: none;
-        z-index: 10001;
-    }
+.moonfin-libraries-list .moonfin-library-btn {
+    margin-left: 0;
+    padding: 10px 20px;
+    border-radius: 0;
+    min-height: auto;
+    text-align: left;
+    justify-content: flex-start;
+}
 
-    /* Invisible bridge above the dropdown so mouse can travel from button to list */
-    .moonfin-libraries-list::before {
-        content: '';
-        position: absolute;
-        top: -12px;
-        left: 0;
-        right: 0;
-        height: 12px;
-    }
-
-    .moonfin-libraries-group.expanded .moonfin-libraries-list {
-        max-width: none;
-        max-height: 500px;
-        overflow: visible;
-        padding: 6px 0;
-        opacity: 1;
-        pointer-events: auto;
-    }
-
-    .moonfin-libraries-list .moonfin-library-btn {
-        margin-left: 0;
-        padding: 10px 20px;
-        border-radius: 0;
-        min-height: auto;
-        text-align: left;
-        justify-content: flex-start;
-    }
-
-    .moonfin-libraries-list .moonfin-library-btn:hover,
-    .moonfin-libraries-list .moonfin-library-btn:focus {
-        background: rgba(255, 255, 255, 0.12);
-    }
+.moonfin-libraries-list .moonfin-library-btn:hover,
+.moonfin-libraries-list .moonfin-library-btn:focus {
+    background: rgba(255, 255, 255, 0.12);
 }
 
 .moonfin-library-btn {

@@ -172,8 +172,6 @@
                 '                <svg class="moonfin-nav-icon" viewBox="0 0 24 24"><path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-8 12.5v-9l6 4.5-6 4.5z"/></svg>',
                 '                <span class="moonfin-expand-label">Libraries</span>',
                 '            </button>',
-                '            <div class="moonfin-libraries-list">',
-                '            </div>',
                 '        </div>',
                 '',
                 '    </div>',
@@ -188,6 +186,12 @@
 
             document.body.insertBefore(this.container, document.body.firstChild);
             document.body.classList.add('moonfin-navbar-active');
+
+            // Create libraries dropdown as a direct child of body to avoid
+            // backdrop-filter on .moonfin-nav-pill breaking position:fixed
+            this.librariesDropdown = document.createElement('div');
+            this.librariesDropdown.className = 'moonfin-libraries-list';
+            document.body.appendChild(this.librariesDropdown);
         },
 
         loadUserData: function () {
@@ -286,10 +290,9 @@
         },
 
         updateLibraries: function () {
-            var librariesList = this.container ? this.container.querySelector('.moonfin-libraries-list') : null;
-            if (!librariesList) return;
+            if (!this.librariesDropdown) return;
 
-            librariesList.innerHTML = this.libraries.map(function (lib) {
+            this.librariesDropdown.innerHTML = this.libraries.map(function (lib) {
                 var collectionType = lib.CollectionType || '';
                 return '<button class="moonfin-nav-btn moonfin-library-btn" data-action="library" data-library-id="' + lib.Id + '" data-collection-type="' + collectionType + '" title="' + lib.Name + '">' +
                     '<span class="moonfin-library-name">' + lib.Name + '</span>' +
@@ -320,37 +323,26 @@
         positionLibrariesDropdown: function () {
             if (this.isMobile()) return;
             var btn = this.container ? this.container.querySelector('.moonfin-libraries-btn') : null;
-            var list = this.container ? this.container.querySelector('.moonfin-libraries-list') : null;
-            if (!btn || !list) return;
+            if (!btn || !this.librariesDropdown) return;
 
             var rect = btn.getBoundingClientRect();
-            list.style.top = (rect.bottom + 8) + 'px';
-            list.style.left = rect.left + 'px';
-
-            // Copy pill background to dropdown (matches Moonfin behavior)
-            var pill = this.container.querySelector('.moonfin-nav-pill');
-            if (pill && pill.style.background) {
-                list.style.background = pill.style.background;
-            }
+            this.librariesDropdown.style.top = (rect.bottom + 8) + 'px';
+            this.librariesDropdown.style.left = rect.left + 'px';
         },
 
         toggleLibraries: function () {
-            var group = this.container ? this.container.querySelector('.moonfin-libraries-group') : null;
-            if (!group) return;
-
             this.librariesExpanded = !this.librariesExpanded;
-            group.classList.toggle('expanded', this.librariesExpanded);
+            this.applyLibrariesExpanded();
 
             if (this.librariesExpanded) {
                 this.positionLibrariesDropdown();
             }
+        },
 
-            if (this.isMobile() && this.librariesExpanded) {
-                var self = this;
-                setTimeout(function () {
-                    group.scrollIntoView({ behavior: 'smooth', inline: 'start', block: 'nearest' });
-                }, 50);
-            }
+        applyLibrariesExpanded: function () {
+            var group = this.container ? this.container.querySelector('.moonfin-libraries-group') : null;
+            if (group) group.classList.toggle('expanded', this.librariesExpanded);
+            if (this.librariesDropdown) this.librariesDropdown.classList.toggle('expanded', this.librariesExpanded);
         },
 
         collapseLibraries: function () {
@@ -362,8 +354,7 @@
             }
             this.librariesTimeout = setTimeout(function () {
                 self.librariesExpanded = false;
-                var group = self.container ? self.container.querySelector('.moonfin-libraries-group') : null;
-                if (group) group.classList.remove('expanded');
+                self.applyLibrariesExpanded();
             }, 150);
         },
 
@@ -416,10 +407,9 @@
             if (librariesGroup) {
                 librariesGroup.addEventListener('mouseenter', function () {
                     if (!self.isMobile()) {
-                        console.log('[Tentacle] Libraries mouseenter, libraries count:', self.libraries.length);
                         self.cancelCollapseLibraries();
                         self.librariesExpanded = true;
-                        librariesGroup.classList.add('expanded');
+                        self.applyLibrariesExpanded();
                         self.positionLibrariesDropdown();
                     }
                 });
@@ -430,7 +420,7 @@
                     if (!self.isMobile()) {
                         self.cancelCollapseLibraries();
                         self.librariesExpanded = true;
-                        librariesGroup.classList.add('expanded');
+                        self.applyLibrariesExpanded();
                         self.positionLibrariesDropdown();
                     }
                 });
@@ -439,16 +429,22 @@
                     if (e.relatedTarget && librariesGroup.contains(e.relatedTarget)) return;
                     self.collapseLibraries();
                 });
+            }
 
-                var librariesList = librariesGroup.querySelector('.moonfin-libraries-list');
-                if (librariesList) {
-                    librariesList.addEventListener('mouseenter', function () {
-                        if (!self.isMobile()) self.cancelCollapseLibraries();
-                    });
-                    librariesList.addEventListener('mouseleave', function () {
-                        if (!self.isMobile()) self.collapseLibraries();
-                    });
-                }
+            // Dropdown is a separate element on document.body — needs its own hover listeners
+            if (this.librariesDropdown) {
+                this.librariesDropdown.addEventListener('mouseenter', function () {
+                    if (!self.isMobile()) self.cancelCollapseLibraries();
+                });
+                this.librariesDropdown.addEventListener('mouseleave', function () {
+                    if (!self.isMobile()) self.collapseLibraries();
+                });
+                // Handle clicks on library buttons inside the dropdown
+                this.librariesDropdown.addEventListener('click', function (e) {
+                    var btn = e.target.closest('.moonfin-nav-btn');
+                    if (!btn) return;
+                    self.handleNavigation(btn.dataset.action, btn);
+                });
             }
 
             // Track active view — multiple detection methods for Jellyfin SPA
@@ -512,8 +508,7 @@
                         this.navigateTo(this.getLibraryUrl(libraryId, collectionType));
                     }
                     this.librariesExpanded = false;
-                    var group = this.container ? this.container.querySelector('.moonfin-libraries-group') : null;
-                    if (group) group.classList.remove('expanded');
+                    this.applyLibrariesExpanded();
                     break;
             }
         },
@@ -562,11 +557,13 @@
             // Hide completely during video playback (matches Moonfin behavior)
             if (this.isVideoPage()) {
                 this.container.classList.add('hidden');
+                if (this.librariesDropdown) this.librariesDropdown.style.display = 'none';
                 document.body.classList.remove('moonfin-navbar-active');
                 document.body.classList.remove('moonfin-mediabar-active');
                 return;
             }
             this.container.classList.remove('hidden');
+            if (this.librariesDropdown) this.librariesDropdown.style.display = '';
             var isUser = this.isUserPage();
             this.container.style.display = isUser ? '' : 'none';
             document.body.classList.toggle('moonfin-navbar-active', isUser);
@@ -653,6 +650,10 @@
             if (this.librariesTimeout) {
                 clearTimeout(this.librariesTimeout);
                 this.librariesTimeout = null;
+            }
+            if (this.librariesDropdown) {
+                this.librariesDropdown.remove();
+                this.librariesDropdown = null;
             }
             if (this.container) {
                 this.container.remove();
