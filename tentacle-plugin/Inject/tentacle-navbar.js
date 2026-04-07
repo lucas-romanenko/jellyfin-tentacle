@@ -200,6 +200,7 @@
             var userId = api.getCurrentUserId();
             api.getUserViews(userId).then(function (result) {
                 self.libraries = (result && result.Items) || [];
+                console.log('[Tentacle] Navbar loaded ' + self.libraries.length + ' libraries:', self.libraries.map(function(l) { return l.Name; }));
                 self.updateLibraries();
             }).catch(function (e) {
                 console.warn('[Tentacle] Failed to load libraries:', e);
@@ -264,7 +265,7 @@
             if (!btn || !list) return;
 
             var rect = btn.getBoundingClientRect();
-            list.style.top = (rect.bottom + 8) + 'px';
+            list.style.top = (rect.bottom + 4) + 'px';
             list.style.left = rect.left + 'px';
         },
 
@@ -298,7 +299,7 @@
                 self.librariesExpanded = false;
                 var group = self.container ? self.container.querySelector('.moonfin-libraries-group') : null;
                 if (group) group.classList.remove('expanded');
-            }, 150);
+            }, 250);
         },
 
         cancelCollapseLibraries: function () {

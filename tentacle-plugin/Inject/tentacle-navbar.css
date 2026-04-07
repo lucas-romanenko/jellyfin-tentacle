@@ -299,6 +299,7 @@ body.moonfin-navbar-active .cardOverlayContainer {
         align-items: stretch;
         max-width: none;
         max-height: 0;
+        overflow: hidden;
         width: max-content;
         min-width: 180px;
         background: rgba(20, 20, 20, 0.85);
@@ -314,9 +315,20 @@ body.moonfin-navbar-active .cardOverlayContainer {
         pointer-events: none;
     }
 
+    /* Invisible bridge above the dropdown so mouse can travel from button to list */
+    .moonfin-libraries-list::before {
+        content: '';
+        position: absolute;
+        top: -12px;
+        left: 0;
+        right: 0;
+        height: 12px;
+    }
+
     .moonfin-libraries-group.expanded .moonfin-libraries-list {
         max-width: none;
         max-height: 500px;
+        overflow: visible;
         padding: 6px 0;
         opacity: 1;
         pointer-events: auto;
