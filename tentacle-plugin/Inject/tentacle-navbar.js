@@ -4,6 +4,15 @@
 (function () {
     'use strict';
 
+    // Known user-facing routes — everything else is admin
+    var USER_ROUTES = [
+        'home', 'home.html', 'movies', 'tv', 'tvshows', 'music', 'livetv',
+        'details', 'search', 'favorites', 'list', 'homevideos', 'books',
+        'mypreferencesmenu', 'mypreferencesmenudisplay', 'mypreferencesmenusubtitles',
+        'mypreferencesmenuhome', 'mypreferencesmenuplayback', 'mypreferencesmenuquickconnect',
+        'mypreferencesmenucontrol', 'video', 'queue', 'nowplaying', 'playlists'
+    ];
+
     var Navbar = {
         container: null,
         clockInterval: null,
@@ -13,6 +22,8 @@
         librariesExpanded: false,
         librariesTimeout: null,
         _onViewShow: null,
+        _navObserver: null,
+        _lastHash: '',
 
         getFallbackUserIconSvg: function () {
             return '<svg class="moonfin-user-fallback-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="#FFFFFF"><path d="M372-523q-42-42-42-108t42-108q42-42 108-42t108 42q42 42 42 108t-42 108q-42 42-108 42t-108-42ZM160-160v-94q0-38 19-65t49-41q67-30 128.5-45T480-420q62 0 123 15.5T731-360q31 14 50 41t19 65v94H160Zm60-60h520v-34q0-16-9.5-30.5T707-306q-64-31-117-42.5T480-360q-57 0-111 11.5T252-306q-14 7-23 21.5t-9 30.5v34Zm324.5-346.5Q570-592 570-631t-25.5-64.5Q519-721 480-721t-64.5 25.5Q390-670 390-631t25.5 64.5Q441-541 480-541t64.5-25.5ZM480-631Zm0 411Z"/></svg>';
@@ -20,6 +31,21 @@
 
         isMobile: function () {
             return window.innerWidth <= 768;
+        },
+
+        isHomePage: function () {
+            var h = (location.hash || '').replace('#', '').replace(/^\//, '').split('?')[0].split('.')[0];
+            return h === '' || h === 'home';
+        },
+
+        isUserPage: function () {
+            var hash = (location.hash || '').replace('#', '').replace(/^\//, '');
+            if (hash === '' || hash === '/') return true; // empty = home
+            var route = hash.toLowerCase().split('?')[0].split('.')[0];
+            for (var i = 0; i < USER_ROUTES.length; i++) {
+                if (route === USER_ROUTES[i]) return true;
+            }
+            return false;
         },
 
         navigateTo: function (path) {
@@ -49,6 +75,7 @@
                 self.setupEventListeners();
                 self.startClock();
                 self.initialized = true;
+                self.updateActiveState(); // Initial state check
                 console.log('[Tentacle] Navbar initialized');
             }).catch(function (e) {
                 console.error('[Tentacle] Navbar: Failed to initialize -', e.message);
@@ -163,7 +190,6 @@
             var api = window.ApiClient;
             if (!api) return;
 
-            // Load current user for avatar
             api.getCurrentUser().then(function (user) {
                 self.currentUser = user;
                 self.updateUserAvatar();
@@ -171,7 +197,6 @@
                 console.warn('[Tentacle] Failed to load user data:', e);
             });
 
-            // Load libraries
             var userId = api.getCurrentUserId();
             api.getUserViews(userId).then(function (result) {
                 self.libraries = (result && result.Items) || [];
@@ -372,15 +397,16 @@
             window.addEventListener('hashchange', this._onViewShow);
             window.addEventListener('popstate', this._onViewShow);
 
-            // Observe DOM changes as fallback — Jellyfin SPA doesn't always fire hashchange
+            // Observe DOM changes as fallback — Jellyfin SPA doesn't always fire events
             this._lastHash = location.hash;
             this._navObserver = new MutationObserver(function () {
-                if (location.hash !== self._lastHash) {
-                    self._lastHash = location.hash;
+                var currentHash = location.hash;
+                if (currentHash !== self._lastHash) {
+                    self._lastHash = currentHash;
                     self.updateActiveState();
                 }
             });
-            this._navObserver.observe(document.body, { childList: true, subtree: true });
+            this._navObserver.observe(document.body, { childList: true, subtree: false });
 
             // Listen for activity badge updates from discover module
             window.addEventListener('tentacle-activity-count', function (e) {
@@ -393,8 +419,6 @@
             if (action !== 'cast' && action !== 'syncplay' && typeof Details !== 'undefined' && Details.isVisible) {
                 Details.hide(true);
             }
-
-            var self = this;
 
             switch (action) {
                 case 'home':
@@ -424,7 +448,6 @@
                     if (libraryId) {
                         this.navigateTo(this.getLibraryUrl(libraryId, collectionType));
                     }
-                    // Collapse dropdown after selection
                     this.librariesExpanded = false;
                     var group = this.container ? this.container.querySelector('.moonfin-libraries-group') : null;
                     if (group) group.classList.remove('expanded');
@@ -433,19 +456,16 @@
         },
 
         activateDiscover: function () {
-            // Use TentacleDiscover global if available
             if (window.TentacleDiscover && window.TentacleDiscover.show) {
                 window.TentacleDiscover.show();
                 return;
             }
-            // Fallback: navigate to home and click the discover tab
             var self = this;
             var tryClick = function () {
                 var tab = document.querySelector('#mdDiscoverTab');
                 if (tab) {
                     tab.click();
                 } else {
-                    // If not on home page, go there first
                     var h = location.hash || '';
                     if (h !== '' && h !== '#/' && h !== '#/home.html' && h !== '#/home') {
                         self.navigateTo('/home');
@@ -457,12 +477,10 @@
         },
 
         activateActivity: function () {
-            // Use TentacleDiscover global if available
             if (window.TentacleDiscover && window.TentacleDiscover.showActivity) {
                 window.TentacleDiscover.showActivity();
                 return;
             }
-            // Fallback: activate discover first, then switch to activity section
             this.activateDiscover();
         },
 
@@ -476,38 +494,11 @@
             if (nativeSyncBtn) nativeSyncBtn.click();
         },
 
-        isAdminPage: function () {
-            var hash = (location.hash || '').replace('#', '').replace(/^\//, '');
-            var adminPrefixes = [
-                'dashboard', 'configurationpage', 'edituser', 'userprofiles',
-                'dlna', 'encodingsettings', 'log', 'notificationsettings',
-                'installedplugins', 'availableplugins', 'repositories',
-                'scheduledtasks', 'serveractivity', 'networking',
-                'apikeys', 'devices', 'livetv', 'playbackconfiguration',
-                'streamingsettings', 'transcodingsettings', 'metadataimages',
-                'metadatanfo', 'librarydisplay', 'wizardstart'
-            ];
-            var lowerHash = hash.toLowerCase();
-            for (var i = 0; i < adminPrefixes.length; i++) {
-                if (lowerHash === adminPrefixes[i] || lowerHash.indexOf(adminPrefixes[i] + '/') === 0 || lowerHash.indexOf(adminPrefixes[i] + '?') === 0) {
-                    return true;
-                }
-            }
-            // Also check for the admin drawer being visible
-            var adminDrawer = document.querySelector('.adminDrawerLogo, .mainDrawer-scrollContainer .navMenuOption[href*="dashboard"]');
-            if (adminDrawer && window.getComputedStyle(adminDrawer).display !== 'none') {
-                // Check if we're in admin context by looking at the page body class
-                var mainContent = document.querySelector('.mainAnimatedPage');
-                if (mainContent && mainContent.querySelector('.dashboardDocument, .adminPage')) return true;
-            }
-            return false;
-        },
-
         updateVisibility: function () {
             if (!this.container) return;
-            var isAdmin = this.isAdminPage();
-            this.container.style.display = isAdmin ? 'none' : '';
-            document.body.classList.toggle('moonfin-navbar-active', !isAdmin);
+            var isUser = this.isUserPage();
+            this.container.style.display = isUser ? '' : 'none';
+            document.body.classList.toggle('moonfin-navbar-active', isUser);
         },
 
         updateActiveState: function () {
@@ -521,7 +512,7 @@
                 btn.classList.remove('active');
             });
 
-            var isHome = (hash === '' || hash === '/' || hash === '/home.html' || hash === '/home');
+            var isHome = this.isHomePage();
 
             if (isHome) {
                 var homeBtn = this.container.querySelector('.moonfin-nav-home');
@@ -566,7 +557,6 @@
                 var now = new Date();
                 var hours = now.getHours();
                 var minutes = now.getMinutes();
-                // 12-hour format
                 var suffix = hours >= 12 ? ' PM' : ' AM';
                 hours = hours % 12 || 12;
 

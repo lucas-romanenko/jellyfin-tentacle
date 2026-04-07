@@ -218,7 +218,7 @@ var Details = {
     },
 
     _updateBackButtons: function() {
-        var navbarBack = document.querySelector('.moonfin-details-nav-back');
+        var navbarBack = document.querySelector('.moonfin-nav-back');
         var sidebarBack = document.querySelector('.moonfin-details-sidebar-back');
         var show = this.isVisible;
         if (navbarBack) navbarBack.style.display = show ? '' : 'none';

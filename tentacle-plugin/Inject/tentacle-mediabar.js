@@ -706,11 +706,12 @@
                 }
             });
 
-            // Hover → show nav arrows
-            this.container.addEventListener('mouseenter', function () {
+            // Hover → show nav arrows (use content area since container has pointer-events: none)
+            var contentEl = this.container.querySelector('.moonfin-mediabar-content');
+            contentEl.addEventListener('mouseenter', function () {
                 self.container.classList.add('focused');
             });
-            this.container.addEventListener('mouseleave', function () {
+            contentEl.addEventListener('mouseleave', function () {
                 self.container.classList.remove('focused');
             });
 

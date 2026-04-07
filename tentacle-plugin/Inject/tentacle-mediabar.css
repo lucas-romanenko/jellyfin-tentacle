@@ -13,8 +13,16 @@
     width: 100%;
     height: 100dvh;
     overflow: hidden;
-    cursor: pointer;
     z-index: 1;
+    pointer-events: none; /* Let scroll pass through to page content */
+}
+
+/* Interactive children get pointer events back */
+.moonfin-mediabar-content,
+.moonfin-mediabar-nav-btn,
+.moonfin-mediabar-dots-wrap {
+    pointer-events: auto;
+    cursor: pointer;
 }
 
 /* The Tentacle home container — rows scroll OVER the fixed hero */
@@ -30,7 +38,7 @@ body.moonfin-mediabar-active #mh-rows-container {
     background: #101010;
     border-radius: 20px 20px 0 0;
     padding-top: 20px;
-    padding-bottom: 100dvh;
+    padding-bottom: 40px;
     min-height: 100dvh;
 }
 
@@ -311,7 +319,6 @@ body.moonfin-mediabar-active {
     transition: opacity 0.3s ease;
 }
 
-.moonfin-mediabar:hover .moonfin-mediabar-nav,
 .moonfin-mediabar.focused .moonfin-mediabar-nav {
     opacity: 1;
 }
