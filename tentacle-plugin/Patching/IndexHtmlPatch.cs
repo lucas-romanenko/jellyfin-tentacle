@@ -84,10 +84,14 @@ public static class IndexHtmlPatch
             var mdblistCssTag = $"<link rel=\"stylesheet\" href=\"/Tentacle/mdblist.css?v={cacheBust}\" />";
             var mdblistJsTag = $"<script src=\"/Tentacle/mdblist.js?v={cacheBust}\" defer></script>";
             var tmdbJsTag = $"<script src=\"/Tentacle/tmdb.js?v={cacheBust}\" defer></script>";
+            var navbarCssTag = $"<link rel=\"stylesheet\" href=\"/Tentacle/navbar.css?v={cacheBust}\" />";
+            var navbarJsTag = $"<script src=\"/Tentacle/navbar.js?v={cacheBust}\" defer></script>";
+            var mediabarCssTag = $"<link rel=\"stylesheet\" href=\"/Tentacle/mediabar.css?v={cacheBust}\" />";
+            var mediabarJsTag = $"<script src=\"/Tentacle/mediabar.js?v={cacheBust}\" defer></script>";
 
             content = content
-                .Replace("</head>", $"{cssTag}{discoverCssTag}{detailsCssTag}{mdblistCssTag}</head>")
-                .Replace("</body>", $"{mdblistJsTag}{tmdbJsTag}{jsTag}{discoverJsTag}{detailsJsTag}</body>");
+                .Replace("</head>", $"{cssTag}{discoverCssTag}{detailsCssTag}{mdblistCssTag}{navbarCssTag}{mediabarCssTag}</head>")
+                .Replace("</body>", $"{mdblistJsTag}{tmdbJsTag}{navbarJsTag}{mediabarJsTag}{jsTag}{discoverJsTag}{detailsJsTag}</body>");
 
             var bytes = System.Text.Encoding.UTF8.GetBytes(content);
             __result = new TransformedFileInfo(__result, bytes);

@@ -113,15 +113,16 @@
         var contentSections = data.sections.filter(function (s) { return s.type === 'row' || s.type === 'builtin'; });
         console.log('[Tentacle] Hero:', heroSection ? heroSection.displayText : 'none', '| Content sections:', contentSections.length, contentSections.map(function(s) { return s.type + ':' + (s.sectionId || s.playlistId); }));
 
-        var heroContainer = document.createElement('div');
-        heroContainer.id = 'mh-hero-container';
-        mhHome.appendChild(heroContainer);
-
         var rowsContainer = document.createElement('div');
         rowsContainer.id = 'mh-rows-container';
         mhHome.appendChild(rowsContainer);
 
-        if (heroSection) {
+        // Hero is handled by tentacle-mediabar.js (Moonfin-style full-screen media bar)
+        // If mediabar is not available, fall back to the built-in hero
+        if (heroSection && !window.TentacleMediaBar) {
+          var heroContainer = document.createElement('div');
+          heroContainer.id = 'mh-hero-container';
+          mhHome.insertBefore(heroContainer, rowsContainer);
           loadHero(heroContainer);
         }
 
@@ -399,11 +400,14 @@
         // Pick the right card type for this section
         var useWideCards = (sectionId === 'resumevideo' || sectionId === 'resumeaudio' || sectionId === 'resumebook');
         var isLiveTv = (sectionId === 'livetv' || sectionId === 'activerecordings');
+        var isNextUp = (sectionId === 'nextup');
         items.forEach(function (item) {
           if (useWideCards) {
             itemsEl.appendChild(createWideCard(item));
           } else if (isLiveTv) {
             itemsEl.appendChild(createChannelCard(item));
+          } else if (isNextUp) {
+            itemsEl.appendChild(createNextUpCard(item));
           } else {
             itemsEl.appendChild(createCard(item));
           }
@@ -417,17 +421,18 @@
 
   function getBuiltinApiPath(sectionId) {
     var base = 'Users/' + MH.userId;
+    var commonFields = 'PrimaryImageAspectRatio,MediaSourceCount,Overview,Genres,CommunityRating,OfficialRating,RunTimeTicks,ProductionYear,UserData,ProviderIds';
     switch (sectionId) {
       case 'resumevideo':
-        return base + '/Items/Resume?Limit=12&Recursive=true&Fields=PrimaryImageAspectRatio,MediaSourceCount&ImageTypeLimit=1&EnableImageTypes=Primary,Backdrop,Thumb&MediaTypes=Video';
+        return base + '/Items/Resume?Limit=12&Recursive=true&Fields=' + commonFields + '&ImageTypeLimit=1&EnableImageTypes=Primary,Backdrop,Thumb&MediaTypes=Video';
       case 'resumeaudio':
-        return base + '/Items/Resume?Limit=12&Recursive=true&Fields=PrimaryImageAspectRatio&ImageTypeLimit=1&EnableImageTypes=Primary&MediaTypes=Audio';
+        return base + '/Items/Resume?Limit=12&Recursive=true&Fields=' + commonFields + '&ImageTypeLimit=1&EnableImageTypes=Primary&MediaTypes=Audio';
       case 'resumebook':
-        return base + '/Items/Resume?Limit=12&Recursive=true&Fields=PrimaryImageAspectRatio&ImageTypeLimit=1&EnableImageTypes=Primary&MediaTypes=Book';
+        return base + '/Items/Resume?Limit=12&Recursive=true&Fields=' + commonFields + '&ImageTypeLimit=1&EnableImageTypes=Primary&MediaTypes=Book';
       case 'nextup':
-        return 'Shows/NextUp?UserId=' + MH.userId + '&Limit=24&Fields=PrimaryImageAspectRatio,MediaSourceCount&ImageTypeLimit=1&EnableImageTypes=Primary,Backdrop,Thumb';
+        return 'Shows/NextUp?UserId=' + MH.userId + '&Limit=24&Fields=' + commonFields + '&ImageTypeLimit=1&EnableImageTypes=Primary,Backdrop,Thumb';
       case 'latestmedia':
-        return base + '/Items/Latest?Limit=16&Fields=PrimaryImageAspectRatio&ImageTypeLimit=1&EnableImageTypes=Primary,Backdrop,Thumb';
+        return base + '/Items/Latest?Limit=16&Fields=' + commonFields + '&ImageTypeLimit=1&EnableImageTypes=Primary,Backdrop,Thumb';
       case 'livetv':
         return 'LiveTv/Channels?UserId=' + MH.userId + '&Limit=12&Fields=PrimaryImageAspectRatio&ImageTypeLimit=1&EnableImageTypes=Primary';
       case 'activerecordings':
@@ -511,15 +516,35 @@
     // Progress bar for resume items
     var progressHtml = '';
     if (item.UserData && item.UserData.PlayedPercentage) {
+      var pct = Math.round(item.UserData.PlayedPercentage);
       progressHtml =
         '<div class="mh-card-progress">' +
-          '<div class="mh-card-progress-bar" style="width:' + item.UserData.PlayedPercentage + '%"></div>' +
-        '</div>';
+          '<div class="mh-card-progress-bar" style="width:' + pct + '%"></div>' +
+        '</div>' +
+        '<div class="mh-card-progress-text">' + pct + '%</div>';
     }
 
-    var displayName = item.Name || '';
+    // Build display name with episode info
+    var titleLine = '';
+    var subtitleLine = '';
     if (item.SeriesName) {
-      displayName = item.SeriesName + ' - ' + displayName;
+      titleLine = item.SeriesName;
+      var epLabel = '';
+      if (item.ParentIndexNumber != null && item.IndexNumber != null) {
+        epLabel = 'S' + item.ParentIndexNumber + ':E' + item.IndexNumber + ' · ';
+      }
+      subtitleLine = epLabel + (item.Name || '');
+    } else {
+      titleLine = item.Name || '';
+    }
+
+    // Remaining time
+    var remainingHtml = '';
+    if (item.RunTimeTicks && item.UserData && item.UserData.PlaybackPositionTicks) {
+      var remainMins = Math.round((item.RunTimeTicks - item.UserData.PlaybackPositionTicks) / 600000000);
+      if (remainMins > 0) {
+        remainingHtml = '<span class="mh-card-remaining">' + remainMins + 'm left</span>';
+      }
     }
 
     card.innerHTML =
@@ -533,7 +558,59 @@
         '</div>' +
       '</div>' +
       '<div class="mh-card-info">' +
-        '<div class="mh-card-title" title="' + escapeAttr(displayName) + '">' + escapeHtml(displayName) + '</div>' +
+        '<div class="mh-card-title" title="' + escapeAttr(titleLine) + '">' + escapeHtml(titleLine) + '</div>' +
+        (subtitleLine
+          ? '<div class="mh-card-subtitle" title="' + escapeAttr(subtitleLine) + '">' + escapeHtml(subtitleLine) + '</div>'
+          : '') +
+        remainingHtml +
+      '</div>';
+
+    return card;
+  }
+
+  function createNextUpCard(item) {
+    var card = document.createElement('div');
+    card.className = 'mh-card mh-card-wide';
+    card.setAttribute('data-item-id', item.Id);
+    card.onclick = function () {
+      if (window.TentacleDetails) { window.TentacleDetails.show(item.Id); return; }
+      window.location.hash = '#/details?id=' + item.Id;
+    };
+
+    // Prefer backdrop/thumb for wide Next Up cards
+    var imgTag = '';
+    var imgType = 'Primary';
+    if (item.BackdropImageTags && item.BackdropImageTags.length) {
+      imgTag = item.BackdropImageTags[0];
+      imgType = 'Backdrop';
+    } else if (item.ImageTags && item.ImageTags.Thumb) {
+      imgTag = item.ImageTags.Thumb;
+      imgType = 'Thumb';
+    } else if (item.ImageTags && item.ImageTags.Primary) {
+      imgTag = item.ImageTags.Primary;
+      imgType = 'Primary';
+    }
+    var imgUrl = imgTag ? getImageUrl(item.Id, imgType, imgTag, 500) : '';
+
+    // Episode label badge
+    var epBadge = '';
+    if (item.ParentIndexNumber != null && item.IndexNumber != null) {
+      epBadge = '<div class="mh-card-ep-badge">S' + item.ParentIndexNumber + ':E' + item.IndexNumber + '</div>';
+    }
+
+    card.innerHTML =
+      '<div class="mh-card-poster mh-card-poster-wide">' +
+        (imgUrl
+          ? '<img src="' + imgUrl + '" alt="" loading="lazy">'
+          : '<div class="mh-card-no-poster">🎬</div>') +
+        epBadge +
+        '<div class="mh-card-play-overlay">' +
+          '<div class="mh-card-play-icon">▶</div>' +
+        '</div>' +
+      '</div>' +
+      '<div class="mh-card-info">' +
+        '<div class="mh-card-title" title="' + escapeAttr(item.SeriesName || item.Name) + '">' + escapeHtml(item.SeriesName || item.Name) + '</div>' +
+        '<div class="mh-card-subtitle" title="' + escapeAttr(item.Name) + '">' + escapeHtml(item.Name || '') + '</div>' +
       '</div>';
 
     return card;
@@ -636,23 +713,65 @@
     var posterTag = item.ImageTags && item.ImageTags.Primary ? item.ImageTags.Primary : '';
     var posterUrl = posterTag ? getImageUrl(item.Id, 'Primary', posterTag, 300) : '';
 
+    // Indicators (watched, favorite)
+    var indicatorsHtml = '';
+    if (item.UserData) {
+      if (item.UserData.IsFavorite) {
+        indicatorsHtml += '<div class="mh-card-badge mh-card-badge-fav" title="Favorite"><svg viewBox="0 -960 960 960" fill="currentColor"><path d="m480-120-58-52q-101-91-167-157T150-447.5Q111-500 95.5-544T80-634q0-94 63-157t157-63q52 0 99 22t81 62q34-40 81-62t99-22q94 0 157 63t63 157q0 46-15.5 90T810-447.5Q771-395 705-329T538-172l-58 52Z"/></svg></div>';
+      }
+      if (item.UserData.Played) {
+        indicatorsHtml += '<div class="mh-card-badge mh-card-badge-watched" title="Watched"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M21 7L9 19l-5.5-5.5 1.41-1.41L9 16.17 19.59 5.59 21 7z"/></svg></div>';
+      }
+    }
+
+    // Build display name — show series info for episodes (Next Up)
+    var displayName = item.Name || '';
+    var subtitleLine = '';
+    if (item.SeriesName) {
+      displayName = item.SeriesName;
+      var epLabel = '';
+      if (item.ParentIndexNumber != null && item.IndexNumber != null) {
+        epLabel = 'S' + item.ParentIndexNumber + ':E' + item.IndexNumber + ' · ';
+      }
+      subtitleLine = epLabel + (item.Name || '');
+    }
+
+    // Metadata line
     var year = item.ProductionYear || '';
-    var rating = item.CommunityRating ? '★ ' + item.CommunityRating.toFixed(1) : '';
-    var meta = [year, rating].filter(Boolean).join(' · ');
+    var rating = item.CommunityRating ? '<span class="mh-card-meta-rating">★ ' + item.CommunityRating.toFixed(1) + '</span>' : '';
+    var officialRating = item.OfficialRating ? '<span class="mh-card-meta-cert">' + escapeHtml(item.OfficialRating) + '</span>' : '';
+    var metaParts = [year ? escapeHtml(String(year)) : '', rating, officialRating].filter(Boolean);
+    var metaHtml = metaParts.join(' <span class="mh-card-meta-dot">·</span> ');
 
     card.innerHTML =
       '<div class="mh-card-poster">' +
         (posterUrl
           ? '<img src="' + posterUrl + '" alt="" loading="lazy">'
           : '<div class="mh-card-no-poster">🎬</div>') +
+        indicatorsHtml +
         '<div class="mh-card-play-overlay">' +
           '<div class="mh-card-play-icon">▶</div>' +
         '</div>' +
       '</div>' +
       '<div class="mh-card-info">' +
-        '<div class="mh-card-title" title="' + escapeAttr(item.Name) + '">' + escapeHtml(item.Name) + '</div>' +
-        '<div class="mh-card-meta">' + escapeHtml(meta) + '</div>' +
+        '<div class="mh-card-title" title="' + escapeAttr(displayName) + '">' + escapeHtml(displayName) + '</div>' +
+        (subtitleLine
+          ? '<div class="mh-card-subtitle" title="' + escapeAttr(subtitleLine) + '">' + escapeHtml(subtitleLine) + '</div>'
+          : '') +
+        '<div class="mh-card-meta">' + metaHtml + '</div>' +
       '</div>';
+
+    // Lazy-load MDBList ratings if available
+    if (typeof MdbList !== 'undefined' && MdbList.isEnabled && MdbList.isEnabled()) {
+      var ratingEl = document.createElement('div');
+      ratingEl.className = 'mh-card-mdblist';
+      card.querySelector('.mh-card-info').appendChild(ratingEl);
+      MdbList.fetchRatings(item).then(function (ratings) {
+        if (ratings && MdbList.buildRatingsHtml) {
+          ratingEl.innerHTML = MdbList.buildRatingsHtml(ratings, 'compact') || '';
+        }
+      }).catch(function () {});
+    }
 
     return card;
   }

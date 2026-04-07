@@ -1130,6 +1130,8 @@
             tabBtn.textContent = activitySection._activityCount;
             tabBtn.classList.toggle('has-activity', activitySection._activityCount > 0);
           }
+          // Notify navbar of activity count
+          window.dispatchEvent(new CustomEvent('tentacle-activity-count', { detail: activitySection._activityCount }));
         }
         // Only re-render if user is viewing the activity tab
         if (MD.activeSection === 'activity') {
@@ -1157,6 +1159,47 @@
     d.textContent = str;
     return d.innerHTML;
   }
+
+  // ── Public API for navbar integration ─────────────────────────────
+  window.TentacleDiscover = {
+    show: function () {
+      // Navigate to home if not there, then activate discover tab
+      if (!isHomePage()) {
+        try {
+          if (window.Emby && window.Emby.Page && window.Emby.Page.show) {
+            window.Emby.Page.show('/home');
+          } else if (window.appRouter && window.appRouter.show) {
+            window.appRouter.show('/home');
+          } else {
+            window.location.hash = '#/home';
+          }
+        } catch (e) {
+          window.location.hash = '#/home';
+        }
+        setTimeout(function () { showDiscover(); }, 600);
+      } else {
+        showDiscover();
+      }
+    },
+    showActivity: function () {
+      window.TentacleDiscover.show();
+      // Wait for discover to render, then switch to activity
+      var trySwitch = function (attempts) {
+        if (MD.loaded && MD.active) {
+          switchSection('activity');
+        } else if (attempts < 20) {
+          setTimeout(function () { trySwitch(attempts + 1); }, 100);
+        }
+      };
+      setTimeout(function () { trySwitch(0); }, 200);
+    },
+    hide: function () {
+      hideDiscover();
+    },
+    isActive: function () {
+      return MD.active;
+    }
+  };
 
   // ── Start ─────────────────────────────────────────────────────────
   if (document.readyState === 'loading') {

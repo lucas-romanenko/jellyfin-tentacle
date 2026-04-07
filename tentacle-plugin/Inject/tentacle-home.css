@@ -461,18 +461,18 @@
   flex-shrink: 0;
   width: 154px;
   cursor: pointer;
-  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: transform 0.25s ease, box-shadow 0.25s ease;
   position: relative;
 }
 .mh-card:hover {
-  transform: scale(1.08);
+  transform: scale(1.05);
   z-index: 2;
 }
 
 .mh-card-poster {
-  width: 154px;
-  height: 231px;
-  border-radius: 6px;
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  border-radius: 8px;
   overflow: hidden;
   background: rgba(255,255,255,0.05);
   position: relative;
@@ -481,7 +481,12 @@
   width: 100%;
   height: 100%;
   object-fit: cover;
-  transition: opacity 0.3s ease;
+  border: 2px solid transparent;
+  border-radius: 8px;
+  transition: border-color 0.2s ease, opacity 0.3s ease;
+}
+.mh-card:hover .mh-card-poster img {
+  border-color: rgba(255, 255, 255, 0.5);
 }
 .mh-card-no-poster {
   width: 100%;
@@ -492,6 +497,36 @@
   font-size: 2.5em;
   color: rgba(255,255,255,0.08);
   background: linear-gradient(135deg, rgba(255,255,255,0.03), rgba(255,255,255,0.06));
+  border-radius: 8px;
+}
+
+/* Watched / Favorite badges */
+.mh-card-badge {
+  position: absolute;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  z-index: 3;
+}
+.mh-card-badge svg {
+  width: 14px;
+  height: 14px;
+  fill: #fff;
+}
+.mh-card-badge-fav {
+  top: 6px;
+  left: 6px;
+  background: rgba(244, 67, 54, 0.9);
+}
+.mh-card-badge-watched {
+  top: 6px;
+  right: 6px;
+  background: rgba(0, 164, 220, 0.9);
 }
 
 /* Play button overlay on hover */
@@ -504,7 +539,7 @@
   background: rgba(0,0,0,0.4);
   opacity: 0;
   transition: opacity 0.2s;
-  border-radius: 6px;
+  border-radius: 8px;
 }
 .mh-card:hover .mh-card-play-overlay {
   opacity: 1;
@@ -532,11 +567,22 @@
 
 .mh-card-title {
   font-size: 0.82em;
-  font-weight: 500;
-  color: rgba(255,255,255,0.85);
+  font-weight: 600;
+  color: rgba(255,255,255,0.9);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  line-height: 1.3;
+}
+
+.mh-card-subtitle {
+  font-size: 0.72em;
+  font-weight: 400;
+  color: rgba(255,255,255,0.55);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 1px;
   line-height: 1.3;
 }
 
@@ -544,16 +590,65 @@
   font-size: 0.72em;
   color: rgba(255,255,255,0.45);
   margin-top: 2px;
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+.mh-card-meta-dot {
+  margin: 0 5px;
+  color: rgba(255,255,255,0.3);
+}
+.mh-card-meta-rating {
+  color: #f5c518;
+  font-weight: 600;
+}
+.mh-card-meta-cert {
+  border: 1px solid rgba(255,255,255,0.3);
+  border-radius: 3px;
+  padding: 0 3px;
+  font-size: 0.9em;
+  line-height: 16px;
 }
 
-/* ── Wide Cards (Continue Watching, Resume) ───────────────────────── */
+/* MDBList ratings on cards */
+.mh-card-mdblist {
+  margin-top: 4px;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.mh-card-mdblist:empty {
+  display: none;
+}
+
+/* ── Wide Cards (Continue Watching, Resume, Next Up) ──────────────── */
 .mh-card-wide {
-  width: 260px;
+  width: 280px;
 }
 .mh-card-poster-wide {
-  width: 260px;
-  height: 146px;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 8px;
 }
+
+/* Episode badge on Next Up */
+.mh-card-ep-badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  background: rgba(0, 0, 0, 0.7);
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 4px;
+  z-index: 3;
+  backdrop-filter: blur(4px);
+}
+
+/* Progress bar */
 .mh-card-progress {
   position: absolute;
   bottom: 0;
@@ -561,11 +656,34 @@
   right: 0;
   height: 4px;
   background: rgba(255,255,255,0.15);
+  z-index: 3;
 }
 .mh-card-progress-bar {
   height: 100%;
   background: #00a4dc;
   border-radius: 0 2px 2px 0;
+  transition: width 0.3s ease;
+}
+.mh-card-progress-text {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.9);
+  background: rgba(0, 0, 0, 0.65);
+  padding: 1px 6px;
+  border-radius: 4px;
+  z-index: 3;
+  backdrop-filter: blur(4px);
+}
+
+/* Remaining time */
+.mh-card-remaining {
+  font-size: 0.7em;
+  color: rgba(255, 255, 255, 0.4);
+  margin-top: 2px;
+  display: block;
 }
 
 /* ── Library Tiles ─────────────────────────────────────────────────── */
@@ -605,6 +723,13 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* ── Responsive — Tablet ───────────────────────────────────────────── */
+@media (max-width: 1024px) {
+  .mh-card { width: 140px; }
+  .mh-card-wide { width: 240px; }
+  .mh-row-items { gap: 10px; }
 }
 
 /* ── Responsive — Landscape Mobile ─────────────────────────────────── */
@@ -662,11 +787,13 @@
   .mh-hero-logo { max-width: 220px; max-height: 80px; }
   .mh-hero-arrow { display: none; }
   .mh-card { width: 120px; }
-  .mh-card-poster { width: 120px; height: 180px; }
   .mh-card-wide { width: 200px; }
-  .mh-card-poster-wide { width: 200px; height: 112px; }
+  .mh-card-play-icon { width: 36px; height: 36px; font-size: 1.1em; }
+  .mh-card-badge { width: 22px; height: 22px; }
+  .mh-card-badge svg { width: 12px; height: 12px; }
   .mh-lib-tile { width: 140px; }
   .mh-lib-tile-img { height: 80px; }
+  .mh-row-items { gap: 8px; }
   #mh-rows-container { padding: 0 3vw; margin-top: 0; }
 }
 
@@ -674,6 +801,8 @@
 @media (min-width: 2560px) {
   .mh-hero-buttons { top: calc(50% + 15vh); }
   .mh-hero-dots { bottom: 28px; }
-  .mh-card { width: 180px; }
-  .mh-card-poster { width: 180px; height: 270px; }
+  .mh-card { width: 190px; }
+  .mh-card-wide { width: 340px; }
+  .mh-row-items { gap: 16px; }
+  .mh-row-title { font-size: 1.6em; }
 }

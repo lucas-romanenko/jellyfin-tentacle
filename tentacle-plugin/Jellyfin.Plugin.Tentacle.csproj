@@ -27,6 +27,10 @@
     <EmbeddedResource Include="Inject/tentacle-discover.js" />
     <EmbeddedResource Include="Inject/tentacle-discover.css" />
     <EmbeddedResource Include="Inject/tentacle-logo.png" />
+    <EmbeddedResource Include="Inject/tentacle-navbar.js" />
+    <EmbeddedResource Include="Inject/tentacle-navbar.css" />
+    <EmbeddedResource Include="Inject/tentacle-mediabar.js" />
+    <EmbeddedResource Include="Inject/tentacle-mediabar.css" />
     <EmbeddedResource Include="Inject/tentacle-details.js" />
     <EmbeddedResource Include="Inject/tentacle-details.css" />
     <EmbeddedResource Include="Inject/tentacle-mdblist.js" />

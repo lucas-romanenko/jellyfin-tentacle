@@ -492,6 +492,46 @@ public class TentacleHomeController : ControllerBase
         return Content(content, "text/css");
     }
 
+    /// <summary>
+    /// Serves the Tentacle navbar JavaScript.
+    /// </summary>
+    [HttpGet("/Tentacle/navbar.js")]
+    public ActionResult GetNavbarJs()
+    {
+        var content = LoadEmbeddedResource("tentacle-navbar.js");
+        return content != null ? Content(content, "application/javascript") : NotFound();
+    }
+
+    /// <summary>
+    /// Serves the Tentacle navbar CSS.
+    /// </summary>
+    [HttpGet("/Tentacle/navbar.css")]
+    public ActionResult GetNavbarCss()
+    {
+        var content = LoadEmbeddedResource("tentacle-navbar.css");
+        return content != null ? Content(content, "text/css") : NotFound();
+    }
+
+    /// <summary>
+    /// Serves the Tentacle media bar JavaScript.
+    /// </summary>
+    [HttpGet("/Tentacle/mediabar.js")]
+    public ActionResult GetMediaBarJs()
+    {
+        var content = LoadEmbeddedResource("tentacle-mediabar.js");
+        return content != null ? Content(content, "application/javascript") : NotFound();
+    }
+
+    /// <summary>
+    /// Serves the Tentacle media bar CSS.
+    /// </summary>
+    [HttpGet("/Tentacle/mediabar.css")]
+    public ActionResult GetMediaBarCss()
+    {
+        var content = LoadEmbeddedResource("tentacle-mediabar.css");
+        return content != null ? Content(content, "text/css") : NotFound();
+    }
+
     [HttpGet("/Tentacle/mdblist.js")]
     public ActionResult GetMdbListJs()
     {
