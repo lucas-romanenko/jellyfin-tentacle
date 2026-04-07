@@ -18,6 +18,10 @@
 body.moonfin-mediabar-active .homeSectionsContainer {
     position: relative;
     z-index: 6;
+    background: #101010;
+    margin-top: -10dvh;
+    padding-top: 10px;
+    border-radius: 16px 16px 0 0;
 }
 
 /* When both mediabar and navbar are active, account for navbar padding */
