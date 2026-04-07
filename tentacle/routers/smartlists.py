@@ -595,6 +595,12 @@ def toggle_auto_playlist(req: AutoPlaylistToggleRequest, db: Session = Depends(g
     try:
         sync_smartlists(db, user_id=user.id)
         refresh_smartlist_playlists(db, user_id=user.id)
+        # Sync artwork so newly created playlists get images immediately
+        try:
+            from routers.collections import sync_playlist_artwork
+            sync_playlist_artwork(db)
+        except Exception as e:
+            logger.warning(f"Artwork sync after toggle failed: {e}")
         write_home_config(db, user_id=user.id)
         notify_result = _notify_jellyfin_plugin(db)
     except Exception as e:
