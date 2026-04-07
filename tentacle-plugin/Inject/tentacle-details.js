@@ -1290,8 +1290,8 @@ var Details = {
                 card.addEventListener('click', function() {
                     var startTicks = parseInt(card.getAttribute('data-start-ticks') || '0', 10);
                     if (isNaN(startTicks)) startTicks = 0;
-                    self.hide(true);
                     self.playItem(item.Id, startTicks, self._selectedAudioIndex, self._selectedSubtitleIndex, self._selectedMediaSourceId);
+                    self._hideAfterPlayback();
                 });
             })(chapterCards[o]);
         }
@@ -1809,14 +1809,14 @@ var Details = {
     handleAction: function(action, item) {
         switch (action) {
             case 'play':
-                this.hide(true);
                 var resumeTicks = (item.UserData && item.UserData.PlaybackPositionTicks) ? item.UserData.PlaybackPositionTicks : 0;
                 this.playItem(item.Id, resumeTicks, this._selectedAudioIndex, this._selectedSubtitleIndex, this._selectedMediaSourceId);
+                this._hideAfterPlayback();
                 break;
 
             case 'restart':
-                this.hide(true);
                 this.playItem(item.Id, 0, this._selectedAudioIndex, this._selectedSubtitleIndex, this._selectedMediaSourceId);
+                this._hideAfterPlayback();
                 break;
 
             case 'version':
@@ -1836,8 +1836,8 @@ var Details = {
                 break;
 
             case 'shuffle':
-                this.hide(true);
                 this.shuffleItem(item.Id);
+                this._hideAfterPlayback();
                 break;
 
             case 'favorite':
@@ -2044,7 +2044,7 @@ var Details = {
                 break;
 
             case 'instantmix':
-                this.hide(true);
+                this._hideAfterPlayback();
                 var instantMixUrl = serverUrl + '/Items/' + item.Id + '/InstantMix?UserId=' + api.getCurrentUserId() + '&Limit=50';
                 fetch(instantMixUrl, { headers: headers }).then(function(resp) {
                     return resp.json();
@@ -2980,13 +2980,12 @@ var Details = {
                     }
                 }
                 var playTarget = firstUnwatched || episodes[0];
-                self.hide(true);
                 self.playItem(playTarget.Id, playTarget.UserData && playTarget.UserData.PlaybackPositionTicks ? playTarget.UserData.PlaybackPositionTicks : 0);
+                self._hideAfterPlayback();
                 break;
 
             case 'shuffle':
                 if (episodes.length === 0) return;
-                self.hide(true);
                 var ids = episodes.map(function(ep) { return ep.Id; });
                 for (var s = ids.length - 1; s > 0; s--) {
                     var r = Math.floor(Math.random() * (s + 1));
@@ -3011,6 +3010,7 @@ var Details = {
                 } else {
                     self._shuffleViaSession(ids);
                 }
+                self._hideAfterPlayback();
                 break;
 
             case 'favorite':
@@ -3173,6 +3173,13 @@ var Details = {
         }
 
         this.setupScrollArrows(panel);
+    },
+
+    _hideAfterPlayback: function() {
+        var self = this;
+        // Delay hiding so the Jellyfin player UI has time to appear on top,
+        // preventing a flash of the home screen between overlay close and player open.
+        setTimeout(function() { self.hide(true); }, 500);
     },
 
     hide: function(skipHistoryBack) {
