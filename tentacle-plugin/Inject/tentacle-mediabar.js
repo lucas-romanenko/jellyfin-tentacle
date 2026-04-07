@@ -118,7 +118,13 @@
                     '<div class="moonfin-mediabar-dots"></div>' +
                 '</div>';
 
-            document.body.appendChild(this.container);
+            // Insert into the scrollable content area, before home sections
+            var homeView = document.querySelector('.homeSectionsContainer');
+            if (homeView && homeView.parentElement) {
+                homeView.parentElement.insertBefore(this.container, homeView);
+            } else {
+                document.body.appendChild(this.container);
+            }
         },
 
         loadContent: function () {
@@ -595,6 +601,11 @@
 
         show: function () {
             if (this.container) {
+                // Re-insert into the scrollable area if it got orphaned (SPA navigation)
+                var homeView = document.querySelector('.homeSectionsContainer');
+                if (homeView && homeView.parentElement && this.container.parentElement !== homeView.parentElement) {
+                    homeView.parentElement.insertBefore(this.container, homeView);
+                }
                 this.container.classList.remove('disabled', 'hidden');
                 if (this.isHomePage() && this.items && this.items.length > 0) {
                     document.body.classList.add('moonfin-mediabar-active');
