@@ -92,6 +92,11 @@
     outline: none;
 }
 
+/* Lock body scroll when details overlay is open — prevents scroll bleed-through */
+body.moonfin-details-visible {
+    overflow: hidden !important;
+}
+
 body.moonfin-details-visible .moonfin-navbar {
     z-index: 10002;
 }

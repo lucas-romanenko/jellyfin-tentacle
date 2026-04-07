@@ -62,9 +62,10 @@ body.moonfin-mediabar-active.moonfin-navbar-active .moonfin-navbar {
     z-index: 10000;
 }
 
-/* Smooth scrolling on the page */
+/* Smooth scrolling + background covers the fixed hero at page bottom */
 body.moonfin-mediabar-active {
     scroll-behavior: smooth;
+    background: #101010;
 }
 
 .moonfin-mediabar.hidden,

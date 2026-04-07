@@ -221,8 +221,14 @@ var Details = {
         var navbarBack = document.querySelector('.moonfin-nav-back');
         var sidebarBack = document.querySelector('.moonfin-details-sidebar-back');
         var show = this.isVisible;
+        console.log('[Tentacle] Details _updateBackButtons: show=' + show + ', navbarBack=' + !!navbarBack);
         if (navbarBack) navbarBack.style.display = show ? '' : 'none';
         if (sidebarBack) sidebarBack.style.display = show ? '' : 'none';
+
+        // Also tell navbar directly
+        if (window.TentacleNavbar && window.TentacleNavbar.showBackButton) {
+            window.TentacleNavbar.showBackButton(show);
+        }
     },
 
     showDetails: function(itemId, itemType) {

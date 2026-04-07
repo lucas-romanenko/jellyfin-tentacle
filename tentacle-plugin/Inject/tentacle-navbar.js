@@ -522,10 +522,11 @@
                 if (searchBtn) searchBtn.classList.add('active');
             }
 
-            // Show back button on non-home pages
+            // Show back button on non-home pages OR when details overlay is open
             var backBtn = this.container.querySelector('.moonfin-nav-back');
             if (backBtn) {
-                backBtn.style.display = isHome ? 'none' : '';
+                var detailsOpen = typeof Details !== 'undefined' && Details.isVisible;
+                backBtn.style.display = (isHome && !detailsOpen) ? 'none' : '';
             }
 
             // Library active state

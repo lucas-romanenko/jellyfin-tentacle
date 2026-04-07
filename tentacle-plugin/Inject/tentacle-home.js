@@ -675,6 +675,7 @@
     card.className = 'mh-card';
     card.setAttribute('data-item-id', item.Id);
     card.onclick = function () {
+      if (window.TentacleDetails) { window.TentacleDetails.show(item.Id); return; }
       window.location.hash = '#/details?id=' + item.Id;
     };
 
