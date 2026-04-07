@@ -149,6 +149,8 @@ public class TentacleHomeController : ControllerBase
             {
                 ItemFields.PrimaryImageAspectRatio,
                 ItemFields.MediaSourceCount,
+                ItemFields.Overview,
+                ItemFields.Genres,
             },
             ImageTypes = new[]
             {
