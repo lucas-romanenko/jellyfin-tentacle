@@ -24,9 +24,6 @@ public class TentacleDiscoverController : ControllerBase
     private static string? _cachedConfig;
     private static DateTime _configCacheExpiry = DateTime.MinValue;
 
-    // No cache for activity data — always fetch fresh for real-time progress
-    private static string? _cachedActivity;
-    private static DateTime _activityCacheExpiry = DateTime.MinValue;
 
     public TentacleDiscoverController(ILogger<TentacleDiscoverController> logger)
     {
@@ -42,8 +39,6 @@ public class TentacleDiscoverController : ControllerBase
         _cachedConfig = null;
         _configCacheExpiry = DateTime.MinValue;
         _itemsCache.Clear();
-        _cachedActivity = null;
-        _activityCacheExpiry = DateTime.MinValue;
     }
 
     private string GetTentacleUrl()
