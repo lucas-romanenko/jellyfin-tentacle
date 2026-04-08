@@ -26,6 +26,9 @@
     timer: null,
   };
 
+  // Flag to suppress hashchange hide when we navigate to /home ourselves
+  var _navigatingToHome = false;
+
   // ── Bootstrap ───────────────────────────────────────────────────────
   function waitForReady() {
     if (window.ApiClient && window.ApiClient.getCurrentUserId()) {
@@ -40,11 +43,13 @@
     MD.initialized = true;
     tryInject();
     window.addEventListener('hashchange', function () {
+      if (_navigatingToHome) { _navigatingToHome = false; setTimeout(tryInject, 200); return; }
       if (MD.active) hideDiscover();
       if (ACT.active) hideActivity();
       setTimeout(tryInject, 200);
     });
     window.addEventListener('popstate', function () {
+      if (_navigatingToHome) { _navigatingToHome = false; setTimeout(tryInject, 200); return; }
       if (MD.active) hideDiscover();
       if (ACT.active) hideActivity();
       setTimeout(tryInject, 200);
@@ -1270,7 +1275,11 @@
   // ── Public API ──────────────────────────────────────────────────────
   window.TentacleDiscover = {
     show: function () {
+      // Show overlay immediately — it's full-screen and doesn't need the home page DOM
+      showDiscover();
+      // Navigate to home silently in background so tab state is correct when overlay closes
       if (!isHomePage()) {
+        _navigatingToHome = true;
         try {
           if (window.Emby && window.Emby.Page && window.Emby.Page.show) {
             window.Emby.Page.show('/home');
@@ -1282,9 +1291,6 @@
         } catch (e) {
           window.location.hash = '#/home';
         }
-        setTimeout(function () { showDiscover(); }, 600);
-      } else {
-        showDiscover();
       }
     },
     // Backwards compat — now opens standalone Activity
@@ -1301,7 +1307,11 @@
 
   window.TentacleActivity = {
     show: function () {
+      // Show overlay immediately — no flash
+      showActivity();
+      // Navigate to home silently in background
       if (!isHomePage()) {
+        _navigatingToHome = true;
         try {
           if (window.Emby && window.Emby.Page && window.Emby.Page.show) {
             window.Emby.Page.show('/home');
@@ -1313,9 +1323,6 @@
         } catch (e) {
           window.location.hash = '#/home';
         }
-        setTimeout(function () { showActivity(); }, 600);
-      } else {
-        showActivity();
       }
     },
     hide: function () {
