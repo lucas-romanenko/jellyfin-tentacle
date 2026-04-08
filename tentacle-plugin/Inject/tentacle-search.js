@@ -239,7 +239,6 @@
         var isMovie = (item.media_type || 'movie') !== 'series';
         var typeBadge = '<div class="ts-card-badge ts-badge-type">' + (isMovie ? 'Movie' : 'TV') + '</div>';
         var statusBadge = '';
-        var addBtn = '';
 
         if (dlInfo) {
           var pct = (dlInfo.progress || 0).toFixed(1);
@@ -247,9 +246,6 @@
           statusBadge = '<div class="ts-card-badge ts-badge-status ts-badge-downloading">' + statusText + '</div>';
         } else if (item.in_library) {
           statusBadge = '<div class="ts-card-badge ts-badge-status ts-badge-inlib">In Library</div>';
-        } else {
-          // Always visible add button for non-library items
-          addBtn = '<button class="ts-card-add" data-tmdb="' + item.tmdb_id + '">+</button>';
         }
 
         var ratingHtml = item.rating
@@ -259,7 +255,7 @@
         var sep = item.rating ? ' \u00b7 ' : '';
 
         return '<div class="ts-card" data-tmdb="' + item.tmdb_id + '" data-type="' + (item.media_type || 'movie') + '">' +
-          '<div class="ts-card-poster">' + posterHtml + typeBadge + statusBadge + addBtn + '</div>' +
+          '<div class="ts-card-poster">' + posterHtml + typeBadge + statusBadge + '</div>' +
           '<div class="ts-card-info">' +
             '<div class="ts-card-title">' + esc(item.title) + '</div>' +
             '<div class="ts-card-meta">' + yearHtml + sep + ratingHtml + '</div>' +
@@ -267,11 +263,9 @@
       }).join('') +
     '</div>';
 
-    // Click handler on the entire card
+    // Click handler — whole card is clickable
     container.querySelectorAll('.ts-card').forEach(function (card) {
-      card.addEventListener('click', function (e) {
-        // If they clicked the + button, let that handler deal with it
-        if (e.target.closest('.ts-card-add')) return;
+      card.addEventListener('click', function () {
         var tmdb = parseInt(card.getAttribute('data-tmdb'), 10);
         var item = findItem(tmdb);
         if (!item) return;
@@ -281,16 +275,6 @@
         } else {
           openModal(item);
         }
-      });
-    });
-
-    // Click handler on the + button specifically
-    container.querySelectorAll('.ts-card-add').forEach(function (btn) {
-      btn.addEventListener('click', function (e) {
-        e.stopPropagation();
-        var tmdb = parseInt(btn.getAttribute('data-tmdb'), 10);
-        var item = findItem(tmdb);
-        if (item) openModal(item);
       });
     });
   }
