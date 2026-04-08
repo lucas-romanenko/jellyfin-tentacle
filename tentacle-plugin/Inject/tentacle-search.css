@@ -24,12 +24,11 @@
    Positioned fixed to fill the content area below the search bar. */
 .tentacle-search-section {
   position: fixed;
-  top: 0;
+  top: 140px; /* below navbar + search input — don't cover the search bar */
   left: 0;
   right: 0;
   bottom: 0;
   padding: 0 3.3%;
-  padding-top: 140px; /* below navbar + search input */
   overflow-y: auto;
   z-index: 100;
   pointer-events: auto;
