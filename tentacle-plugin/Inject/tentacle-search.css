@@ -1,23 +1,251 @@
 /* Tentacle Search — TMDB results section on Jellyfin /search page */
 
+/* Hide Jellyfin's native search results when Tentacle search is active */
+.searchResults.tentacle-search-active > *:not(#tentacleSearchResults) {
+  display: none !important;
+}
+
 .tentacle-search-section {
-  margin-top: 20px;
   padding: 0 3.3%;
+  margin-top: 10px;
 }
 
 .tentacle-search-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 20px 0 14px;
-  border-top: 1px solid rgba(139, 128, 255, 0.12);
+  padding: 18px 0 10px;
 }
 
 .tentacle-search-title {
-  font-size: 20px;
+  font-size: 1.4em;
   font-weight: 600;
-  color: #e8e6f0;
+  color: rgba(255, 255, 255, 0.87);
   letter-spacing: -0.01em;
 }
 
-/* Grid, cards, badges, modal — all reuse .md-* classes from tentacle-discover.css */
+.tentacle-search-filters {
+  display: flex;
+  gap: 6px;
+}
+
+.tentacle-search-filter-btn {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.5);
+  padding: 4px 14px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.tentacle-search-filter-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.tentacle-search-filter-btn.ts-active {
+  background: rgba(139, 128, 255, 0.2);
+  border-color: rgba(139, 128, 255, 0.4);
+  color: #b8b0ff;
+}
+
+/* Horizontal scroll row — matches home rows */
+.tentacle-search-row {
+  display: flex;
+  gap: 12px;
+  padding: 8px 4px 16px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+  scroll-behavior: smooth;
+}
+
+.tentacle-search-row::-webkit-scrollbar {
+  display: none;
+}
+
+/* Card — matches home row cards */
+.ts-card {
+  flex-shrink: 0;
+  width: 154px;
+  cursor: pointer;
+  transition: transform 0.25s ease, box-shadow 0.25s ease;
+  position: relative;
+}
+
+.ts-card:hover {
+  transform: scale(1.05);
+  z-index: 2;
+}
+
+.ts-card-poster {
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  border-radius: 8px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.05);
+  position: relative;
+}
+
+.ts-card-poster img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border: 2px solid transparent;
+  border-radius: 8px;
+  transition: border-color 0.2s ease, opacity 0.3s ease;
+  display: block;
+}
+
+.ts-card:hover .ts-card-poster img {
+  border-color: rgba(255, 255, 255, 0.5);
+}
+
+.ts-card-poster-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 2em;
+  color: rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 8px;
+}
+
+/* Badges */
+.ts-card-badge {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  backdrop-filter: blur(8px);
+  z-index: 2;
+}
+
+.ts-badge-inlib {
+  background: rgba(41, 154, 93, 0.85);
+  color: #fff;
+}
+
+.ts-badge-downloading {
+  background: rgba(109, 95, 230, 0.85);
+  color: #fff;
+}
+
+.ts-badge-type {
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.7);
+}
+
+/* Add button */
+.ts-card-add {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid rgba(139, 128, 255, 0.3);
+  background: rgba(109, 95, 230, 0.85);
+  color: #fff;
+  font-size: 18px;
+  font-weight: 700;
+  cursor: pointer;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  transition: all 150ms;
+  backdrop-filter: blur(8px);
+}
+
+.ts-card:hover .ts-card-add {
+  display: flex;
+}
+
+.ts-card-add:hover {
+  background: rgb(109, 95, 230);
+  transform: scale(1.1);
+  box-shadow: 0 0 12px rgba(109, 95, 230, 0.5);
+}
+
+/* Card info below poster */
+.ts-card-info {
+  padding: 8px 2px 0;
+}
+
+.ts-card-title {
+  font-size: 0.82em;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.9);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.3;
+}
+
+.ts-card-meta {
+  font-size: 0.72em;
+  color: rgba(255, 255, 255, 0.45);
+  margin-top: 2px;
+  display: flex;
+  align-items: center;
+  gap: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ts-card-meta-rating {
+  color: #f5c518;
+  font-weight: 600;
+}
+
+/* Loading state */
+.tentacle-search-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 24px 4px;
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 13px;
+}
+
+.tentacle-search-empty {
+  padding: 24px 4px;
+  color: rgba(255, 255, 255, 0.35);
+  font-size: 13px;
+}
+
+/* Responsive */
+@media (max-width: 1000px) {
+  .ts-card {
+    width: 140px;
+  }
+  .tentacle-search-row {
+    gap: 10px;
+  }
+}
+
+@media (max-width: 600px) {
+  .ts-card {
+    width: 120px;
+  }
+  .tentacle-search-row {
+    gap: 8px;
+  }
+  .tentacle-search-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+}

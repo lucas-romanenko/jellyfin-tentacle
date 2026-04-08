@@ -1,4 +1,5 @@
 // Tentacle Search — TMDB results injected into Jellyfin's native /search page
+// Hides native Jellyfin results and shows unified TMDB search with home-row-style cards
 (function () {
   'use strict';
 
@@ -9,6 +10,7 @@
     mediaFilter: 'all',
     results: [],
     inputObserver: null,
+    nativeInput: null,
   };
 
   // ── Helpers ──────────────────────────────────────────────────────────
@@ -48,13 +50,18 @@
       || document.querySelector('[data-type="search"] input[type="text"]');
   }
 
+  function findSearchResultsContainer() {
+    return document.querySelector('.searchResults')
+      || document.querySelector('.itemsContainer.searchResults')
+      || document.querySelector('.searchPage');
+  }
+
   function waitForSearchInput() {
     var input = findNativeSearchInput();
     if (input) {
       attachToInput(input);
       return;
     }
-    // Wait for SPA to render the search page
     if (SEARCH.inputObserver) SEARCH.inputObserver.disconnect();
     SEARCH.inputObserver = new MutationObserver(function () {
       var inp = findNativeSearchInput();
@@ -65,7 +72,6 @@
       }
     });
     SEARCH.inputObserver.observe(document.body, { childList: true, subtree: true });
-    // Safety: stop observing after 10s
     setTimeout(function () {
       if (SEARCH.inputObserver) {
         SEARCH.inputObserver.disconnect();
@@ -79,10 +85,10 @@
   function attachToInput(input) {
     if (SEARCH.active) return;
     SEARCH.active = true;
+    SEARCH.nativeInput = input;
 
     input.addEventListener('input', onInputChange);
 
-    // If input already has text (e.g. navigating back), trigger immediately
     var existing = input.value.trim();
     if (existing) {
       SEARCH.lastQuery = existing;
@@ -97,6 +103,7 @@
     if (!q) {
       SEARCH.lastQuery = '';
       clearTmdbResults();
+      showNativeResults();
       return;
     }
 
@@ -106,6 +113,22 @@
         doTmdbSearch(q);
       }
     }, 400);
+  }
+
+  // ── Hide/show native Jellyfin search results ────────────────────────
+
+  function hideNativeResults() {
+    var container = findSearchResultsContainer();
+    if (container) {
+      container.classList.add('tentacle-search-active');
+    }
+  }
+
+  function showNativeResults() {
+    var container = findSearchResultsContainer();
+    if (container) {
+      container.classList.remove('tentacle-search-active');
+    }
   }
 
   // ── Inject TMDB results container ────────────────────────────────────
@@ -119,33 +142,29 @@
     container.className = 'tentacle-search-section';
     container.innerHTML =
       '<div class="tentacle-search-header">' +
-        '<div class="tentacle-search-title">TMDB Results</div>' +
-        '<div class="md-filter-group">' +
-          '<button class="md-filter-btn md-active" data-tstype="all">All</button>' +
-          '<button class="md-filter-btn" data-tstype="movies">Movies</button>' +
-          '<button class="md-filter-btn" data-tstype="series">TV Shows</button>' +
+        '<div class="tentacle-search-title">Search Results</div>' +
+        '<div class="tentacle-search-filters">' +
+          '<button class="tentacle-search-filter-btn ts-active" data-tstype="all">All</button>' +
+          '<button class="tentacle-search-filter-btn" data-tstype="movies">Movies</button>' +
+          '<button class="tentacle-search-filter-btn" data-tstype="series">TV Shows</button>' +
         '</div>' +
       '</div>' +
       '<div id="tentacleSearchGrid"></div>';
 
-    // Wire up filter buttons
-    container.querySelectorAll('.md-filter-btn').forEach(function (btn) {
+    container.querySelectorAll('.tentacle-search-filter-btn').forEach(function (btn) {
       btn.addEventListener('click', function () {
-        container.querySelectorAll('.md-filter-btn').forEach(function (x) { x.classList.remove('md-active'); });
-        btn.classList.add('md-active');
+        container.querySelectorAll('.tentacle-search-filter-btn').forEach(function (x) { x.classList.remove('ts-active'); });
+        btn.classList.add('ts-active');
         SEARCH.mediaFilter = btn.getAttribute('data-tstype');
         if (SEARCH.lastQuery) doTmdbSearch(SEARCH.lastQuery);
       });
     });
 
-    // Insert after Jellyfin's search results
-    var searchPage = document.querySelector('.searchResults')
-      || document.querySelector('.searchPage')
-      || document.querySelector('[data-type="search"]');
-    if (searchPage) {
-      searchPage.parentNode.insertBefore(container, searchPage.nextSibling);
+    // Insert inside the search results container so hiding native children works
+    var searchContainer = findSearchResultsContainer();
+    if (searchContainer) {
+      searchContainer.appendChild(container);
     } else {
-      // Fallback: append to main content area
       var main = document.querySelector('.mainAnimatedPages') || document.querySelector('main') || document.body;
       main.appendChild(container);
     }
@@ -156,11 +175,12 @@
   // ── TMDB search ──────────────────────────────────────────────────────
 
   function doTmdbSearch(query) {
+    hideNativeResults();
     var container = getOrCreateContainer();
     var grid = document.getElementById('tentacleSearchGrid');
     if (!grid) return;
 
-    grid.innerHTML = '<div class="md-loading"><div class="md-spinner"></div><br>Searching TMDB...</div>';
+    grid.innerHTML = '<div class="tentacle-search-loading"><div class="md-spinner"></div>Searching...</div>';
 
     var typeParam = SEARCH.mediaFilter;
     apiGet('TentacleDiscover/Search?q=' + encodeURIComponent(query) + '&type=' + typeParam)
@@ -168,58 +188,66 @@
         var items = data.items || [];
         SEARCH.results = items;
         if (!items.length) {
-          grid.innerHTML = '<div class="md-loading" style="padding:20px;font-size:14px;">No TMDB results for \u201c' + esc(query) + '\u201d</div>';
+          grid.innerHTML = '<div class="tentacle-search-empty">No results for \u201c' + esc(query) + '\u201d</div>';
           return;
         }
         renderSearchGrid(items, grid);
       })
       .catch(function () {
-        grid.innerHTML = '<div class="md-loading" style="padding:20px;font-size:14px;">TMDB search failed</div>';
+        grid.innerHTML = '<div class="tentacle-search-empty">Search failed</div>';
       });
   }
 
-  // ── Render results grid ──────────────────────────────────────────────
+  // ── Render results as home-row-style horizontal scroll ──────────────
 
   function renderSearchGrid(items, container) {
-    // Check if discover module has download info available
     var getDownloadInfo = (window.TentacleDiscover && window.TentacleDiscover.getDownloadInfo)
       ? window.TentacleDiscover.getDownloadInfo
       : function () { return null; };
 
-    container.innerHTML = '<div class="md-discover-grid">' +
+    container.innerHTML = '<div class="tentacle-search-row">' +
       items.map(function (item) {
-        var poster = item.poster_path
-          ? '<img src="https://image.tmdb.org/t/p/w185' + item.poster_path + '" loading="lazy" onerror="this.style.display=\'none\'">'
-          : '<div class="md-card-poster-placeholder">&#9707;</div>';
+        var posterUrl = item.poster_path
+          ? 'https://image.tmdb.org/t/p/w342' + item.poster_path
+          : '';
+        var posterHtml = posterUrl
+          ? '<img src="' + posterUrl + '" loading="lazy" onerror="this.style.display=\'none\'">'
+          : '<div class="ts-card-poster-placeholder">&#9707;</div>';
 
         var dlInfo = getDownloadInfo(item.tmdb_id);
         var badge, addBtn;
         if (dlInfo) {
           var pct = (dlInfo.progress || 0).toFixed(1);
           var statusText = dlInfo.status === 'importing' ? 'Importing' : dlInfo.status === 'queued' ? 'Queued' : 'Downloading ' + pct + '%';
-          badge = '<div class="md-card-badge md-badge-downloading">' + statusText + '</div>';
+          badge = '<div class="ts-card-badge ts-badge-downloading">' + statusText + '</div>';
           addBtn = '';
         } else if (item.in_library) {
-          badge = '<div class="md-card-badge md-badge-inlib">In Library</div>';
+          badge = '<div class="ts-card-badge ts-badge-inlib">In Library</div>';
           addBtn = '';
         } else {
-          badge = '<div class="md-card-badge md-badge-type">' + (item.media_type === 'movie' ? 'Movie' : 'Show') + '</div>';
-          addBtn = '<button class="md-card-add" data-tmdb="' + item.tmdb_id + '">+</button>';
+          badge = '';
+          addBtn = '<button class="ts-card-add" data-tmdb="' + item.tmdb_id + '">+</button>';
         }
 
-        return '<div class="md-card" data-tmdb="' + item.tmdb_id + '" data-type="' + (item.media_type || 'movie') + '">' +
-          '<div class="md-card-poster">' + poster + badge + addBtn + '</div>' +
-          '<div class="md-card-info">' +
-            '<div class="md-card-title">' + esc(item.title) + '</div>' +
-            '<div class="md-card-meta">' + (item.year || '\u2014') + ' \u00b7 \u2605 ' + (item.rating || '\u2014') + '</div>' +
+        var ratingHtml = item.rating
+          ? '<span class="ts-card-meta-rating">\u2605 ' + item.rating + '</span>'
+          : '';
+        var yearHtml = item.year || '\u2014';
+        var sep = item.rating ? ' \u00b7 ' : '';
+
+        return '<div class="ts-card" data-tmdb="' + item.tmdb_id + '" data-type="' + (item.media_type || 'movie') + '">' +
+          '<div class="ts-card-poster">' + posterHtml + badge + addBtn + '</div>' +
+          '<div class="ts-card-info">' +
+            '<div class="ts-card-title">' + esc(item.title) + '</div>' +
+            '<div class="ts-card-meta">' + yearHtml + sep + ratingHtml + '</div>' +
           '</div></div>';
       }).join('') +
     '</div>';
 
     // Card click handlers
-    container.querySelectorAll('.md-card').forEach(function (card) {
+    container.querySelectorAll('.ts-card').forEach(function (card) {
       card.addEventListener('click', function (e) {
-        if (e.target.closest('.md-card-add')) return;
+        if (e.target.closest('.ts-card-add')) return;
         var tmdb = parseInt(card.getAttribute('data-tmdb'), 10);
         var item = findSearchItem(tmdb);
         if (!item) return;
@@ -232,7 +260,7 @@
       });
     });
 
-    container.querySelectorAll('.md-card-add').forEach(function (btn) {
+    container.querySelectorAll('.ts-card-add').forEach(function (btn) {
       btn.addEventListener('click', function (e) {
         e.stopPropagation();
         var tmdb = parseInt(btn.getAttribute('data-tmdb'), 10);
@@ -252,11 +280,10 @@
   }
 
   function openDetailModal(item) {
-    // Use the shared detail modal from tentacle-discover.js
     if (window.TentacleDiscover && window.TentacleDiscover.showDetailModal) {
       window.TentacleDiscover.showDetailModal(item);
     } else {
-      console.warn('[Tentacle Search] Detail modal not available — discover module not loaded');
+      console.warn('[Tentacle Search] Detail modal not available');
     }
   }
 
@@ -273,7 +300,6 @@
 
     apiGet(url.replace(window.ApiClient.getUrl(''), '')).then(function (result) {
       var items = (result && result.Items) || [];
-      // Try exact title match first
       var match = null;
       for (var i = 0; i < items.length; i++) {
         if ((items[i].Name || '').toLowerCase() === (item.title || '').toLowerCase()) {
@@ -286,9 +312,7 @@
       if (match) {
         window.location.hash = '#/details?id=' + match.Id;
       }
-    }).catch(function () {
-      // Silently fail — item may not be findable by search
-    });
+    }).catch(function () {});
   }
 
   // ── Cleanup ──────────────────────────────────────────────────────────
@@ -304,10 +328,12 @@
       SEARCH.inputObserver.disconnect();
       SEARCH.inputObserver = null;
     }
+    showNativeResults();
     SEARCH.active = false;
     SEARCH.lastQuery = '';
     SEARCH.results = [];
     SEARCH.mediaFilter = 'all';
+    SEARCH.nativeInput = null;
     var el = document.getElementById('tentacleSearchResults');
     if (el) el.remove();
   }
@@ -318,7 +344,6 @@
     window.addEventListener('hashchange', onRouteChange);
     window.addEventListener('popstate', onRouteChange);
     window.addEventListener('viewshow', onRouteChange);
-    // Check on load in case we're already on search page
     onRouteChange();
   }
 
