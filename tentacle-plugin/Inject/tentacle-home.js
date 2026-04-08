@@ -89,19 +89,27 @@
   }
 
   // ── Find the ACTIVE .homeSectionsContainer ─────────────────────────
-  // Jellyfin SPA keeps old views in the DOM. There can be multiple
-  // .homeSectionsContainer elements — we must find the one inside
-  // the active view (marked with is-active), not a stale cached one.
+  // Jellyfin SPA keeps old views in the DOM with stale is-active classes.
+  // There can be 2+ .homeSectionsContainer elements. CSS classes lie —
+  // the old view still has is-active but its ancestor view is hidden.
+  // We must check ACTUAL VISIBILITY: offsetParent !== null means the
+  // element is in the visible rendering tree (not inside display:none).
   function findActiveContainer() {
-    // Primary: container inside the active tab content
-    var c = document.querySelector('.pageTabContent.is-active .homeSectionsContainer');
-    if (c) return c;
-    // Fallback: container inside a visible library page (no .hide class)
-    c = document.querySelector('.libraryPage:not(.hide) .homeSectionsContainer');
-    if (c) return c;
-    // Last resort: last container in DOM (Jellyfin appends new views at the end)
     var all = document.querySelectorAll('.homeSectionsContainer');
-    return all.length ? all[all.length - 1] : null;
+    if (all.length === 0) return null;
+    if (all.length === 1) return all[0];
+
+    // Multiple containers — find the one actually in the visible DOM tree
+    // Check from last to first (Jellyfin appends new views at the end)
+    for (var i = all.length - 1; i >= 0; i--) {
+      if (all[i].offsetParent !== null) {
+        return all[i];
+      }
+    }
+
+    // None visible yet (view might still be transitioning) — return last one
+    // (newest view, most likely to become visible)
+    return all[all.length - 1];
   }
 
   // ── Home Page Entry ─────────────────────────────────────────────────
