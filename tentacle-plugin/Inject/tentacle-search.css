@@ -22,7 +22,8 @@
 /* ── Results container ────────────────────────────────────────────── */
 .tentacle-search-section {
   padding: 0 3.3%;
-  margin-top: 16px;
+  margin-top: 40px;
+  clear: both;
 }
 
 /* Header */
@@ -190,7 +191,6 @@
 
 .ts-card-add:hover {
   background: rgb(109, 95, 230);
-  transform: scale(1.1);
   box-shadow: 0 0 12px rgba(109, 95, 230, 0.5);
 }
 
