@@ -169,13 +169,33 @@
       '</div>' +
       '<div id="tentacleSearchGrid"></div>';
 
-    container.querySelectorAll('.tentacle-search-filter-btn').forEach(function (btn) {
-      btn.addEventListener('click', function () {
+    // Single delegated click handler for the entire container
+    container.addEventListener('click', function (e) {
+      // Filter button click
+      var filterBtn = e.target.closest('.tentacle-search-filter-btn');
+      if (filterBtn) {
         container.querySelectorAll('.tentacle-search-filter-btn').forEach(function (x) { x.classList.remove('ts-active'); });
-        btn.classList.add('ts-active');
-        SEARCH.mediaFilter = btn.getAttribute('data-tstype');
+        filterBtn.classList.add('ts-active');
+        SEARCH.mediaFilter = filterBtn.getAttribute('data-tstype');
         if (SEARCH.lastQuery) doSearch(SEARCH.lastQuery);
-      });
+        return;
+      }
+
+      // Card click
+      var card = e.target.closest('.ts-card');
+      if (card) {
+        e.preventDefault();
+        e.stopPropagation();
+        var tmdb = parseInt(card.getAttribute('data-tmdb'), 10);
+        var item = findItem(tmdb);
+        console.log('[TentacleSearch] Card clicked, tmdb=' + tmdb, 'item=', item);
+        if (!item) return;
+        if (item.in_library) {
+          goToLibraryItem(item);
+        } else {
+          openModal(item);
+        }
+      }
     });
 
     // Insert into the page
@@ -263,24 +283,6 @@
       }).join('') +
     '</div>';
 
-    // Click handler — whole card is clickable
-    container.querySelectorAll('.ts-card').forEach(function (card) {
-      card.style.cursor = 'pointer';
-      card.addEventListener('click', function (e) {
-        e.preventDefault();
-        e.stopPropagation();
-        var tmdb = parseInt(card.getAttribute('data-tmdb'), 10);
-        var item = findItem(tmdb);
-        console.log('[TentacleSearch] Card clicked, tmdb=' + tmdb, 'item=', item, 'in_library=', item && item.in_library);
-        if (!item) return;
-
-        if (item.in_library) {
-          goToLibraryItem(item);
-        } else {
-          openModal(item);
-        }
-      });
-    });
   }
 
   // ── Navigation ───────────────────────────────────────────────────────

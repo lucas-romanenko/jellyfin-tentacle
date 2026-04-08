@@ -24,6 +24,8 @@
   padding: 0 3.3%;
   margin-top: 60px;
   clear: both;
+  position: relative;
+  z-index: 100;
 }
 
 /* Header */
