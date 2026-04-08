@@ -474,6 +474,15 @@
         },
 
         handleNavigation: function (action, btn) {
+            // Close overlays when navigating away
+            if (action !== 'discover' && action !== 'activity' && action !== 'cast' && action !== 'syncplay') {
+                if (window.TentacleDiscover && window.TentacleDiscover.isActive && window.TentacleDiscover.isActive()) {
+                    window.TentacleDiscover.hide();
+                }
+                if (window.TentacleActivity && window.TentacleActivity.isActive && window.TentacleActivity.isActive()) {
+                    window.TentacleActivity.hide();
+                }
+            }
             // Close details overlay for navigation actions
             if (action !== 'cast' && action !== 'syncplay' && typeof Details !== 'undefined' && Details.isVisible) {
                 Details.hide(true);
@@ -516,6 +525,7 @@
         activateDiscover: function () {
             if (window.TentacleDiscover && window.TentacleDiscover.show) {
                 window.TentacleDiscover.show();
+                this.setOverlayActive('discover');
                 return;
             }
             var self = this;
@@ -523,6 +533,7 @@
                 var tab = document.querySelector('#mdDiscoverTab');
                 if (tab) {
                     tab.click();
+                    self.setOverlayActive('discover');
                 } else {
                     var h = location.hash || '';
                     if (h !== '' && h !== '#/' && h !== '#/home.html' && h !== '#/home') {
@@ -537,12 +548,24 @@
         activateActivity: function () {
             if (window.TentacleActivity && window.TentacleActivity.show) {
                 window.TentacleActivity.show();
+                this.setOverlayActive('activity');
                 return;
             }
             // Fallback: try legacy method
             if (window.TentacleDiscover && window.TentacleDiscover.showActivity) {
                 window.TentacleDiscover.showActivity();
+                this.setOverlayActive('activity');
             }
+        },
+
+        setOverlayActive: function (which) {
+            if (!this.container) return;
+            this.container.querySelectorAll('.moonfin-nav-btn').forEach(function (btn) {
+                btn.classList.remove('active');
+            });
+            var selector = which === 'discover' ? '.moonfin-nav-discover' : '.moonfin-nav-activity';
+            var btn = this.container.querySelector(selector);
+            if (btn) btn.classList.add('active');
         },
 
         showCastMenu: function () {
@@ -583,6 +606,11 @@
             if (!this.container) return;
 
             this.updateVisibility();
+
+            // Don't override active state if an overlay is open
+            var discoverOpen = window.TentacleDiscover && window.TentacleDiscover.isActive && window.TentacleDiscover.isActive();
+            var activityOpen = window.TentacleActivity && window.TentacleActivity.isActive && window.TentacleActivity.isActive();
+            if (discoverOpen || activityOpen) return;
 
             var hash = (location.hash || '').replace('#', '');
 
