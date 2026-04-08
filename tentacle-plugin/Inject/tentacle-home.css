@@ -2,11 +2,19 @@
 /* Injected into index.html via Harmony patch */
 /* Visual style adapted from jellyfin-plugin-media-bar + jellyfin-plugin-home-sections */
 
-/* ── Native home hiding (controlled by JS) ───────────────────────────
-   JS adds .tentacle-home-hidden when Tentacle is rendering.
-   Native content stays visible until JS is ready — no blank pages. */
-.homeSectionsContainer.tentacle-home-hidden {
+/* ── Native home hiding (controlled by JS via body class) ────────────
+   JS adds .tentacle-home-active to <body> when Tentacle is rendering.
+   This hides ALL .homeSectionsContainer elements in ALL views (stale
+   or fresh) — immune to Jellyfin's SPA view recycling. */
+body.tentacle-home-active .homeSectionsContainer {
   display: none !important;
+}
+
+/* Tentacle home container — positioned in mainAnimatedPages to scroll
+   naturally with the page, but not inside any Jellyfin view element
+   so it survives view transitions. */
+#tentacle-home {
+  position: relative;
 }
 
 /* ── Tentacle Logo Branding ────────────────────────────────────────── */

@@ -1,13 +1,13 @@
 // Tentacle Home — replaces Jellyfin's default homepage with Tentacle sections
 // Injected into index.html via Harmony patch on PhysicalFileProvider
 //
-// Architecture (based on Moonfin + Jellyfin-Enhanced patterns):
+// Architecture (Moonfin pattern — body-level overlay, immune to view transitions):
 //   - Primary nav detection: `viewshow` event (Jellyfin's own SPA event, most reliable)
 //   - Fallback nav detection: `hashchange` + `popstate`
-//   - NO MutationObserver for navigation — events are reliable enough
-//   - Lightweight waitForElement() poll to find .homeSectionsContainer after viewshow
+//   - Body class `tentacle-home-active` hides ALL native .homeSectionsContainer in ALL views
+//   - #tentacle-home mounted on .mainAnimatedPages (stable, outside Jellyfin's view elements)
 //   - Generation counter cancels stale renders on rapid navigation
-//   - Native content hidden via JS class (not CSS-first) — no blank pages on failure
+//   - On failure: cleanupHome() removes element + body class → native Jellyfin shows
 (function () {
   'use strict';
 
@@ -88,58 +88,37 @@
     return hash === '' || hash === '#/' || hash === '#/home.html' || hash === '#/home';
   }
 
-  // ── Find the ACTIVE .homeSectionsContainer ─────────────────────────
-  // Jellyfin SPA keeps old views in the DOM with stale is-active classes.
-  // There can be 2+ .homeSectionsContainer elements. CSS classes lie —
-  // the old view still has is-active but its ancestor view is hidden.
-  // We must check ACTUAL VISIBILITY: offsetParent !== null means the
-  // element is in the visible rendering tree (not inside display:none).
-  function findActiveContainer() {
-    var all = document.querySelectorAll('.homeSectionsContainer');
-    if (all.length === 0) return null;
-    if (all.length === 1) return all[0];
-
-    // Multiple containers — find the one actually in the visible DOM tree
-    // Check from last to first (Jellyfin appends new views at the end)
-    for (var i = all.length - 1; i >= 0; i--) {
-      if (all[i].offsetParent !== null) {
-        return all[i];
-      }
-    }
-
-    // None visible yet (view might still be transitioning) — return last one
-    // (newest view, most likely to become visible)
-    return all[all.length - 1];
-  }
-
   // ── Home Page Entry ─────────────────────────────────────────────────
+  // Moonfin pattern: body class hides ALL native containers (any view,
+  // stale or fresh). Tentacle renders into a stable mount point that
+  // Jellyfin's view transitions can never touch.
   function onHomePage() {
-    var exists = !!document.getElementById('tentacle-home');
-    console.log('[TH] onHomePage() — #tentacle-home exists=' + exists + ' gen=' + MH.generation + ' ts=' + Date.now());
-    if (exists) return;
+    if (document.getElementById('tentacle-home')) return;
 
     var gen = ++MH.generation;
-    console.log('[TH] onHomePage() — gen incremented to ' + gen + ', waiting for active .homeSectionsContainer');
+    console.log('[TH] onHomePage() — gen=' + gen + ' ts=' + Date.now());
 
-    waitForActiveContainer(3000, function (container) {
-      var stale = gen !== MH.generation;
-      var home = isHomePage();
-      var alreadyRendered = !!document.getElementById('tentacle-home');
-      console.log('[TH] waitForActiveContainer callback — stale=' + stale + ' isHome=' + home + ' alreadyRendered=' + alreadyRendered + ' gen=' + gen + '/' + MH.generation);
-      if (stale) return;
-      if (!home) return;
-      if (alreadyRendered) return;
+    // Hide ALL native home containers via body class (CSS handles the rest)
+    document.body.classList.add('tentacle-home-active');
 
-      console.log('[TH] → calling renderHomePage() gen=' + gen);
-      renderHomePage(container, gen);
-    });
+    // Find a stable mount point — mainAnimatedPages is the main content area
+    // that persists across view transitions. Our element lives here, outside
+    // any individual Jellyfin view element.
+    var mount = document.querySelector('.mainAnimatedPages, .skinBody, #skin-container') || document.body;
+
+    var mhHome = document.createElement('div');
+    mhHome.id = 'tentacle-home';
+    mhHome.innerHTML = '<div class="mh-loading"><div class="mh-spinner"></div></div>';
+    mount.prepend(mhHome);
+    console.log('[TH] onHomePage() — #tentacle-home prepended to ' + (mount.className || mount.tagName));
+
+    renderHomePage(mhHome, gen);
   }
 
   // ── Leaving Home ────────────────────────────────────────────────────
   function onLeavingHome() {
-    var oldGen = MH.generation;
     MH.generation++;
-    console.log('[TH] onLeavingHome() — gen ' + oldGen + ' → ' + MH.generation + ' ts=' + Date.now());
+    console.log('[TH] onLeavingHome() — gen=' + MH.generation + ' ts=' + Date.now());
     cleanupHome();
   }
 
@@ -149,41 +128,10 @@
       MH.heroInterval = null;
     }
     var old = document.getElementById('tentacle-home');
-    console.log('[TH] cleanupHome() — #tentacle-home exists=' + !!old);
     if (old) old.remove();
 
-    // Unhide ALL containers that might have the hidden class (cleanup stale ones too)
-    var containers = document.querySelectorAll('.homeSectionsContainer.tentacle-home-hidden');
-    console.log('[TH] cleanupHome() — unhiding ' + containers.length + ' containers');
-    for (var i = 0; i < containers.length; i++) {
-      containers[i].classList.remove('tentacle-home-hidden');
-    }
-  }
-
-  // ── Wait for Active Container (polls findActiveContainer) ──────────
-  function waitForActiveContainer(timeoutMs, callback) {
-    var el = findActiveContainer();
-    if (el) {
-      var all = document.querySelectorAll('.homeSectionsContainer');
-      console.log('[TH] waitForActiveContainer — found immediately (total containers: ' + all.length + ', active parent: ' + (el.closest('.is-active') ? 'is-active' : el.parentNode.className) + ')');
-      callback(el);
-      return;
-    }
-
-    console.log('[TH] waitForActiveContainer — polling...');
-    var start = Date.now();
-    var interval = setInterval(function () {
-      el = findActiveContainer();
-      if (el) {
-        var all = document.querySelectorAll('.homeSectionsContainer');
-        console.log('[TH] waitForActiveContainer — found after ' + (Date.now() - start) + 'ms (total containers: ' + all.length + ')');
-        clearInterval(interval);
-        callback(el);
-      } else if (Date.now() - start > timeoutMs) {
-        console.warn('[TH] waitForActiveContainer — TIMEOUT after ' + timeoutMs + 'ms');
-        clearInterval(interval);
-      }
-    }, 50);
+    // Remove body class — unhides ALL native containers in all views
+    document.body.classList.remove('tentacle-home-active');
   }
 
   // ── API Helpers ───────────────────────────────────────────────────────
@@ -201,23 +149,17 @@
   }
 
   // ── Render Home Page ──────────────────────────────────────────────────
-  function renderHomePage(container, gen) {
-    console.log('[TH] renderHomePage() — hiding native, creating #tentacle-home, gen=' + gen + ' ts=' + Date.now());
-    // Hide native content via JS class (CSS rule: .tentacle-home-hidden { display: none })
-    container.classList.add('tentacle-home-hidden');
-
-    var mhHome = document.createElement('div');
-    mhHome.id = 'tentacle-home';
-    mhHome.innerHTML = '<div class="mh-loading"><div class="mh-spinner"></div></div>';
-    container.parentNode.insertBefore(mhHome, container);
-    console.log('[TH] renderHomePage() — #tentacle-home inserted into DOM, parent=' + (container.parentNode ? container.parentNode.className || container.parentNode.tagName : 'null'));
+  // mhHome is already created and in the DOM (with loading spinner).
+  // Body class already hides all native containers. We just populate it.
+  function renderHomePage(mhHome, gen) {
+    console.log('[TH] renderHomePage() — gen=' + gen + ' ts=' + Date.now());
 
     apiGet('TentacleHome/Sections?userId=' + MH.userId)
       .then(function (data) {
         // Stale check — did user navigate away during the API call?
         if (gen !== MH.generation) {
           console.log('[TH] renderHomePage API callback — STALE gen=' + gen + '/' + MH.generation + ', removing');
-          mhHome.remove();
+          cleanupHome();
           return;
         }
 
@@ -225,9 +167,7 @@
 
         if (!data.enabled || !data.sections || !data.sections.length) {
           console.warn('[Tentacle] No sections returned or disabled');
-          mhHome.remove();
-          // Show native Jellyfin home
-          container.classList.remove('tentacle-home-hidden');
+          cleanupHome(); // falls back to native Jellyfin home
           return;
         }
 
@@ -260,9 +200,7 @@
       })
       .catch(function (err) {
         console.error('[Tentacle] Failed to load sections:', err);
-        mhHome.remove();
-        // Show native Jellyfin home as fallback
-        container.classList.remove('tentacle-home-hidden');
+        cleanupHome(); // falls back to native Jellyfin home
       });
   }
 
