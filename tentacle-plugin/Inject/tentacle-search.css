@@ -1,8 +1,28 @@
 /* Tentacle Search — Unified search results on Jellyfin /search page */
 
+/* ── Override native search input styling ─────────────────────────── */
+#tentacleSearchHideNative ~ .searchfields-txtSearch,
+.searchfields-txtSearch,
+.searchPage input[type="text"] {
+  background: rgba(26, 22, 50, 0.6) !important;
+  border: 1px solid rgba(139, 128, 255, 0.15) !important;
+  border-radius: 12px !important;
+  color: #e8e6f0 !important;
+  font-size: 16px !important;
+  padding: 12px 16px !important;
+  outline: none !important;
+  transition: border-color 0.2s !important;
+}
+.searchfields-txtSearch:focus,
+.searchPage input[type="text"]:focus {
+  border-color: rgba(139, 128, 255, 0.4) !important;
+  box-shadow: 0 0 0 3px rgba(139, 128, 255, 0.08) !important;
+}
+
+/* ── Results container ────────────────────────────────────────────── */
 .tentacle-search-section {
   padding: 0 3.3%;
-  margin-top: 4px;
+  margin-top: 16px;
 }
 
 /* Header */
@@ -10,14 +30,14 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 0 16px;
+  padding: 8px 0 16px;
 }
 
 .tentacle-search-title {
-  font-size: 1.5em;
-  font-weight: 700;
-  color: rgba(255, 255, 255, 0.92);
-  letter-spacing: -0.02em;
+  font-size: 1.4em;
+  font-weight: 600;
+  color: #e8e6f0;
+  letter-spacing: -0.01em;
 }
 
 /* Filter pills */
@@ -27,9 +47,9 @@
 }
 
 .tentacle-search-filter-btn {
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  color: rgba(255, 255, 255, 0.45);
+  background: rgba(26, 22, 50, 0.6);
+  border: 1px solid rgba(139, 128, 255, 0.1);
+  color: rgba(200, 195, 220, 0.5);
   padding: 6px 18px;
   border-radius: 24px;
   font-size: 13px;
@@ -39,8 +59,9 @@
 }
 
 .tentacle-search-filter-btn:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: rgba(255, 255, 255, 0.65);
+  background: rgba(139, 128, 255, 0.08);
+  color: rgba(200, 195, 220, 0.7);
+  border-color: rgba(139, 128, 255, 0.2);
 }
 
 .tentacle-search-filter-btn.ts-active {
@@ -49,39 +70,37 @@
   color: #c4bcff;
 }
 
-/* Responsive grid layout */
+/* ── Grid — matches discover grid ─────────────────────────────────── */
 .tentacle-search-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-  gap: 20px 16px;
+  grid-template-columns: repeat(auto-fill, minmax(155px, 1fr));
+  gap: 1.1em;
   padding-bottom: 24px;
 }
 
-/* Card */
+/* ── Card — matches md-card from discover ─────────────────────────── */
 .ts-card {
   cursor: pointer;
-  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  border-radius: 1em;
+  overflow: hidden;
+  transition: transform 200ms ease, box-shadow 200ms ease, border-color 200ms ease;
   position: relative;
+  border: 1px solid rgba(139, 128, 255, 0.08);
+  background: linear-gradient(180deg, rgba(26, 22, 50, 0.6) 0%, rgba(15, 13, 26, 0.8) 100%);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
 }
 
 .ts-card:hover {
-  transform: translateY(-6px) scale(1.02);
-  z-index: 2;
+  transform: translateY(-4px) scale(1.02);
+  border-color: rgba(139, 128, 255, 0.3);
+  box-shadow: 0 8px 24px rgba(139, 128, 255, 0.1), 0 4px 16px rgba(0, 0, 0, 0.4);
 }
 
 .ts-card-poster {
-  width: 100%;
-  aspect-ratio: 2 / 3;
-  border-radius: 10px;
-  overflow: hidden;
-  background: rgba(255, 255, 255, 0.04);
   position: relative;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
-  transition: box-shadow 0.2s ease;
-}
-
-.ts-card:hover .ts-card-poster {
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5), 0 0 0 2px rgba(255, 255, 255, 0.15);
+  aspect-ratio: 2/3;
+  background: #1a1632;
+  overflow: hidden;
 }
 
 .ts-card-poster img {
@@ -89,11 +108,11 @@
   height: 100%;
   object-fit: cover;
   display: block;
-  transition: transform 0.3s ease;
+  transition: transform 300ms ease;
 }
 
 .ts-card:hover .ts-card-poster img {
-  transform: scale(1.04);
+  transform: scale(1.05);
 }
 
 .ts-card-poster-placeholder {
@@ -102,40 +121,37 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 2.5em;
-  color: rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.02);
+  font-size: 32px;
+  color: rgba(200, 195, 220, 0.2);
 }
 
-/* Badges */
+/* ── Badges — matches discover badges ─────────────────────────────── */
 .ts-card-badge {
   position: absolute;
   font-size: 10px;
-  padding: 3px 8px;
-  border-radius: 6px;
+  padding: 2px 8px;
+  border-radius: 0.5em;
   font-weight: 600;
   letter-spacing: 0.3px;
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   z-index: 2;
   pointer-events: none;
 }
 
 /* Type badge — top-left */
 .ts-badge-type {
-  top: 8px;
-  left: 8px;
-  background: rgba(0, 0, 0, 0.55);
-  color: rgba(255, 255, 255, 0.8);
-  font-size: 9px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
+  top: 6px;
+  left: 6px;
+  background: rgba(15, 13, 26, 0.7);
+  color: rgba(200, 195, 220, 0.6);
+  border: 1px solid rgba(139, 128, 255, 0.12);
 }
 
 /* Status badge — top-right */
 .ts-badge-status {
-  top: 8px;
-  right: 8px;
+  top: 6px;
+  right: 6px;
   left: auto;
 }
 
@@ -149,58 +165,53 @@
   color: #fff;
 }
 
-/* Add button — bottom-right on hover */
+/* ── Add button — always visible for non-library items ────────────── */
 .ts-card-add {
   position: absolute;
-  bottom: 10px;
-  right: 10px;
-  width: 34px;
-  height: 34px;
+  bottom: 8px;
+  right: 8px;
+  width: 32px;
+  height: 32px;
   border-radius: 50%;
-  border: none;
-  background: rgba(109, 95, 230, 0.9);
+  border: 1px solid rgba(139, 128, 255, 0.3);
+  background: rgba(109, 95, 230, 0.85);
   color: #fff;
-  font-size: 20px;
+  font-size: 18px;
   font-weight: 700;
   cursor: pointer;
-  display: none;
+  display: flex;
   align-items: center;
   justify-content: center;
   line-height: 1;
   transition: all 150ms;
   backdrop-filter: blur(8px);
-  box-shadow: 0 2px 12px rgba(109, 95, 230, 0.4);
-}
-
-.ts-card:hover .ts-card-add {
-  display: flex;
+  z-index: 3;
 }
 
 .ts-card-add:hover {
   background: rgb(109, 95, 230);
-  transform: scale(1.15);
-  box-shadow: 0 0 16px rgba(109, 95, 230, 0.6);
+  transform: scale(1.1);
+  box-shadow: 0 0 12px rgba(109, 95, 230, 0.5);
 }
 
-/* Card info below poster */
+/* ── Card info below poster ───────────────────────────────────────── */
 .ts-card-info {
-  padding: 10px 2px 0;
+  padding: 8px 8px 6px;
 }
 
 .ts-card-title {
-  font-size: 0.85em;
-  font-weight: 600;
-  color: rgba(255, 255, 255, 0.88);
+  font-size: 13px;
+  font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  line-height: 1.35;
+  color: #e8e6f0;
 }
 
 .ts-card-meta {
-  font-size: 0.75em;
-  color: rgba(255, 255, 255, 0.4);
-  margin-top: 3px;
+  font-size: 11px;
+  color: rgba(200, 195, 220, 0.5);
+  margin-top: 2px;
   display: flex;
   align-items: center;
   gap: 0;
@@ -214,43 +225,36 @@
   font-weight: 600;
 }
 
-/* Loading state */
+/* ── Loading / empty states ───────────────────────────────────────── */
 .tentacle-search-loading {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 12px;
   padding: 48px 4px;
-  color: rgba(255, 255, 255, 0.35);
+  color: rgba(200, 195, 220, 0.35);
   font-size: 14px;
 }
 
 .tentacle-search-empty {
   text-align: center;
   padding: 48px 4px;
-  color: rgba(255, 255, 255, 0.3);
+  color: rgba(200, 195, 220, 0.3);
   font-size: 14px;
 }
 
-/* Responsive */
-@media (max-width: 1200px) {
-  .tentacle-search-grid {
-    grid-template-columns: repeat(auto-fill, minmax(145px, 1fr));
-    gap: 16px 14px;
-  }
-}
-
+/* ── Responsive ───────────────────────────────────────────────────── */
 @media (max-width: 800px) {
   .tentacle-search-grid {
     grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
-    gap: 14px 12px;
+    gap: 0.9em;
   }
 }
 
 @media (max-width: 600px) {
   .tentacle-search-grid {
     grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
-    gap: 12px 10px;
+    gap: 0.8em;
   }
   .tentacle-search-header {
     flex-direction: column;

@@ -79,7 +79,7 @@
     SEARCH.active = true;
     SEARCH.nativeInput = input;
 
-    // Immediately hide native results with CSS — this persists regardless of async rendering
+    // Immediately hide native results with CSS
     injectHideCSS();
 
     input.addEventListener('input', onInputChange);
@@ -110,33 +110,31 @@
   }
 
   // ── CSS injection to nuke ALL native search results ──────────────────
-  // This is bulletproof — no matter when Jellyfin renders its results,
-  // this CSS hides them. Only our #tentacleSearchResults is visible.
 
   function injectHideCSS() {
     if (SEARCH.hideStyle) return;
     var style = document.createElement('style');
     style.id = 'tentacleSearchHideNative';
-    // Strategy: hide specific Jellyfin native search elements only.
-    // Do NOT use broad selectors that might catch our own elements.
-    // Do NOT use `display: revert` — it's unreliable with !important chains.
     style.textContent = [
       // Native search result cards
       '.card.overflowPortraitCard { display: none !important; }',
       '.card.overflowBackdropCard { display: none !important; }',
       '.card.overflowSquareCard { display: none !important; }',
-      // Native section headers ("Movies", "Shows", "Episodes", etc.)
+      // Native section headers
       '.verticalSection > .sectionTitle { display: none !important; }',
-      // Native "no results" / "sorry" messages
+      // Native "no results" messages
       '.noItemsMessage { display: none !important; }',
       '.emby-scroller-alert { display: none !important; }',
-      // Catch-all for Jellyfin's "Sorry! No results found" text
+      // Catch-all for Jellyfin messages
       '.searchPage .padded-left, .searchPage .padded-right { display: none !important; }',
-      // Hide itemsContainers that hold native cards (but not ours)
+      // Hide native itemsContainers
       '.itemsContainer:not(#tentacleSearchGrid) { display: none !important; }',
       // Hide native vertical sections
       '.verticalSection { display: none !important; }',
-      // But our container is always visible
+      // Hide native search label/icon that may overlap
+      '.searchTabButton { display: none !important; }',
+      '.headerSearchButton { display: none !important; }',
+      // Our container always visible
       '#tentacleSearchResults { display: block !important; }',
       '#tentacleSearchResults * { /* no override */ }',
     ].join('\n');
@@ -180,7 +178,7 @@
       });
     });
 
-    // Insert into the page — find the best parent
+    // Insert into the page
     var parent = null;
     if (SEARCH.nativeInput) {
       parent = SEARCH.nativeInput.closest('.view')
@@ -250,6 +248,7 @@
         } else if (item.in_library) {
           statusBadge = '<div class="ts-card-badge ts-badge-status ts-badge-inlib">In Library</div>';
         } else {
+          // Always visible add button for non-library items
           addBtn = '<button class="ts-card-add" data-tmdb="' + item.tmdb_id + '">+</button>';
         }
 
@@ -268,8 +267,10 @@
       }).join('') +
     '</div>';
 
+    // Click handler on the entire card
     container.querySelectorAll('.ts-card').forEach(function (card) {
       card.addEventListener('click', function (e) {
+        // If they clicked the + button, let that handler deal with it
         if (e.target.closest('.ts-card-add')) return;
         var tmdb = parseInt(card.getAttribute('data-tmdb'), 10);
         var item = findItem(tmdb);
@@ -283,6 +284,7 @@
       });
     });
 
+    // Click handler on the + button specifically
     container.querySelectorAll('.ts-card-add').forEach(function (btn) {
       btn.addEventListener('click', function (e) {
         e.stopPropagation();
