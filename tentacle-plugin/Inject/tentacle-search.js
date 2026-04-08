@@ -91,6 +91,10 @@
   // ── Search Page Entry ─────────────────────────────────────────────
 
   function onSearchPage() {
+    // Dismiss all other Tentacle overlays — only one should be visible at a time
+    if (window.TentacleDiscover && window.TentacleDiscover.isActive && window.TentacleDiscover.isActive()) window.TentacleDiscover.hide();
+    if (window.TentacleActivity && window.TentacleActivity.isActive && window.TentacleActivity.isActive()) window.TentacleActivity.hide();
+
     // If already active with a live container, just make sure it's visible
     if (SEARCH.active && document.getElementById('tentacleSearchResults')) return;
 
@@ -472,6 +476,18 @@
       }, 200);
     }
   }
+
+  // ── Public API ──────────────────────────────────────────────────────
+  window.TentacleSearch = {
+    hide: function () {
+      if (SEARCH.active) {
+        onLeavingSearch();
+      }
+    },
+    isActive: function () {
+      return SEARCH.active;
+    }
+  };
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', waitForReady);

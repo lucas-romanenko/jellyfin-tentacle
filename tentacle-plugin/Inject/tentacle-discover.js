@@ -176,8 +176,9 @@
   }
 
   function showDiscover() {
-    // Hide activity if open
+    // Dismiss all other Tentacle overlays — only one should be visible at a time
     if (ACT.active) hideActivity();
+    if (window.TentacleSearch && window.TentacleSearch.isActive && window.TentacleSearch.isActive()) window.TentacleSearch.hide();
 
     MD.active = true;
     ++MD.generation;
@@ -1024,8 +1025,9 @@
   }
 
   function showActivity() {
-    // Hide discover if open
+    // Dismiss all other Tentacle overlays — only one should be visible at a time
     if (MD.active) hideDiscover();
+    if (window.TentacleSearch && window.TentacleSearch.isActive && window.TentacleSearch.isActive()) window.TentacleSearch.hide();
 
     ACT.active = true;
 
