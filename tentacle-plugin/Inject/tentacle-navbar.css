@@ -25,15 +25,15 @@ body.moonfin-navbar-active .skinHeader [data-tentacle-tab-ancestor] {
     display: block !important;
 }
 
-/* Page-specific tabs themselves (Live TV Guide, Channels, Recordings, etc.) */
-body.moonfin-navbar-active .skinHeader .sectionTabs,
-body.moonfin-navbar-active .skinHeader .emby-tabs-slider,
-body.moonfin-navbar-active .skinHeader [data-role="tabscontainer"] {
+/* Page-specific tabs — only visible when JS has marked ancestors (Live TV, Music, etc.) */
+body.moonfin-navbar-active .skinHeader [data-tentacle-tab-ancestor] .sectionTabs,
+body.moonfin-navbar-active .skinHeader [data-tentacle-tab-ancestor] .emby-tabs-slider,
+body.moonfin-navbar-active .skinHeader [data-tentacle-tab-ancestor] [data-role="tabscontainer"] {
     display: flex !important;
 }
 
-body.moonfin-navbar-active .skinHeader .sectionTabs .emby-tab-button,
-body.moonfin-navbar-active .skinHeader .emby-tabs-slider .emby-tab-button {
+body.moonfin-navbar-active .skinHeader [data-tentacle-tab-ancestor] .sectionTabs .emby-tab-button,
+body.moonfin-navbar-active .skinHeader [data-tentacle-tab-ancestor] .emby-tabs-slider .emby-tab-button {
     display: inline-flex !important;
 }
 
