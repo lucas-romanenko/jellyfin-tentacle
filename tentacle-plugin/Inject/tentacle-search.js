@@ -1,4 +1,4 @@
-// Tentacle Search — TMDB results replace Jellyfin's native /search results
+// Tentacle Search — Unified search replacing Jellyfin's native results with TMDB
 (function () {
   'use strict';
 
@@ -10,10 +10,8 @@
     results: [],
     inputObserver: null,
     nativeInput: null,
-    hiddenElements: [],
+    hideStyle: null,
   };
-
-  // ── Helpers ──────────────────────────────────────────────────────────
 
   function apiGet(path) {
     return window.ApiClient.getJSON(window.ApiClient.getUrl(path));
@@ -24,10 +22,6 @@
     var d = document.createElement('div');
     d.textContent = str;
     return d.innerHTML;
-  }
-
-  function log(msg) {
-    console.log('[Tentacle Search] ' + msg);
   }
 
   // ── Route detection ──────────────────────────────────────────────────
@@ -85,33 +79,15 @@
     SEARCH.active = true;
     SEARCH.nativeInput = input;
 
-    log('Attached to search input: ' + input.className);
-
-    // Log the search page DOM structure for debugging
-    var pageView = input.closest('[data-type="search"]') || input.closest('.searchPage') || input.closest('[is="emby-scroller"]');
-    if (pageView) {
-      log('Page container: <' + pageView.tagName + ' class="' + pageView.className + '">');
-      var children = pageView.children;
-      for (var i = 0; i < children.length; i++) {
-        log('  Child[' + i + ']: <' + children[i].tagName + ' class="' + children[i].className + '" id="' + (children[i].id || '') + '">');
-      }
-    }
-
-    // Also log up the tree from the input
-    var el = input;
-    var path = [];
-    while (el && el !== document.body) {
-      path.push('<' + el.tagName.toLowerCase() + (el.className ? '.' + el.className.split(' ').join('.') : '') + (el.id ? '#' + el.id : '') + '>');
-      el = el.parentElement;
-    }
-    log('Input DOM path: ' + path.join(' → '));
+    // Immediately hide native results with CSS — this persists regardless of async rendering
+    injectHideCSS();
 
     input.addEventListener('input', onInputChange);
 
     var existing = input.value.trim();
     if (existing) {
       SEARCH.lastQuery = existing;
-      doTmdbSearch(existing);
+      doSearch(existing);
     }
   }
 
@@ -121,90 +97,68 @@
 
     if (!q) {
       SEARCH.lastQuery = '';
-      clearTmdbResults();
-      showNativeResults();
+      clearResults();
       return;
     }
 
     SEARCH.debounceTimer = setTimeout(function () {
       if (q !== SEARCH.lastQuery) {
         SEARCH.lastQuery = q;
-        doTmdbSearch(q);
+        doSearch(q);
       }
     }, 400);
   }
 
-  // ── Hide/show native Jellyfin search results (JS-based) ─────────────
+  // ── CSS injection to nuke ALL native search results ──────────────────
+  // This is bulletproof — no matter when Jellyfin renders its results,
+  // this CSS hides them. Only our #tentacleSearchResults is visible.
 
-  function hideNativeResults() {
-    showNativeResults();
+  function injectHideCSS() {
+    if (SEARCH.hideStyle) return;
+    var style = document.createElement('style');
+    style.id = 'tentacleSearchHideNative';
+    style.textContent =
+      // Hide all native search result sections, cards, headers
+      '.searchResults > *:not(#tentacleSearchResults),' +
+      '.itemsContainer:not(#tentacleSearchResults):not(#tentacleSearchGrid),' +
+      // Hide Jellyfin's search result sections (vertical sections with cards)
+      'div.view:not(:has(#tentacleSearchResults)) > .verticalSection,' +
+      // Broad: hide any card/section in the search view that isn't ours
+      '.card.overflowPortraitCard,' +
+      '.card.overflowBackdropCard,' +
+      '.card.overflowSquareCard,' +
+      // Hide native section titles like "Movies", "Shows"
+      '.view .sectionTitle:not(.tentacle-search-title)' +
+      '{ display: none !important; }' +
+      // But keep the search input visible
+      '.searchfields-txtSearch,' +
+      'input.emby-input,' +
+      '.searchPage .searchFields,' +
+      '#tentacleSearchResults,' +
+      '#tentacleSearchResults *' +
+      '{ display: revert !important; }' +
+      // Fix: our container should be block
+      '#tentacleSearchResults { display: block !important; }' +
+      '#tentacleSearchResults .tentacle-search-header { display: flex !important; }' +
+      '#tentacleSearchResults .tentacle-search-row { display: flex !important; }' +
+      '#tentacleSearchResults .tentacle-search-filters { display: flex !important; }' +
+      '#tentacleSearchResults .ts-card { display: block !important; }' +
+      '#tentacleSearchResults .ts-card-poster { display: block !important; }' +
+      '#tentacleSearchResults .ts-card-info { display: block !important; }' +
+      '#tentacleSearchResults .ts-card-badge { display: block !important; }' +
+      '#tentacleSearchResults .ts-card-meta { display: flex !important; }';
+    document.head.appendChild(style);
+    SEARCH.hideStyle = style;
+  }
 
-    // Strategy: find ALL native Jellyfin card containers and their parent sections
-    // Jellyfin renders cards with .cardImageContainer / .itemAction inside
-    // .itemsContainer or .verticalSection containers
-    var nativeCards = document.querySelectorAll('.cardImageContainer.itemAction, .card.overflowPortraitCard, .itemsContainer');
-    var hidden = new Set();
-
-    nativeCards.forEach(function (card) {
-      // Walk up to find the section-level container to hide
-      var section = card.closest('.verticalSection')
-        || card.closest('.searchResultGroup')
-        || card.closest('.section')
-        || card.closest('.itemsContainer');
-
-      if (!section) {
-        // If no section wrapper, try the card's direct parent container
-        section = card.parentElement;
-      }
-
-      if (!section) return;
-      if (section.id === 'tentacleSearchResults') return;
-      if (section.contains(document.getElementById('tentacleSearchResults'))) return;
-      if (hidden.has(section)) return;
-
-      hidden.add(section);
-      SEARCH.hiddenElements.push({ el: section, prev: section.style.display });
-      section.style.display = 'none';
-      log('Hid native section: <' + section.tagName + ' class="' + section.className + '">');
-    });
-
-    // Also hide any h2/h3 headers that say "Movies", "Shows", etc. that might be siblings
-    var searchPage = SEARCH.nativeInput
-      ? (SEARCH.nativeInput.closest('.view') || SEARCH.nativeInput.closest('[data-type="search"]') || SEARCH.nativeInput.closest('.searchPage'))
-      : document.querySelector('.searchPage');
-
-    if (searchPage) {
-      searchPage.querySelectorAll('h2, h3, .sectionTitle').forEach(function (header) {
-        if (hidden.has(header)) return;
-        if (header.closest('#tentacleSearchResults')) return;
-        var text = (header.textContent || '').trim().toLowerCase();
-        if (text && !header.closest('.tentacle-search-section')) {
-          SEARCH.hiddenElements.push({ el: header, prev: header.style.display });
-          header.style.display = 'none';
-          log('Hid header: "' + text + '"');
-        }
-      });
-    }
-
-    if (SEARCH.hiddenElements.length === 0) {
-      log('WARNING: Found nothing to hide. DOM dump of search page:');
-      if (searchPage) {
-        var children = searchPage.children;
-        for (var i = 0; i < children.length; i++) {
-          log('  [' + i + '] <' + children[i].tagName + ' class="' + children[i].className + '" id="' + (children[i].id || '') + '">');
-        }
-      }
+  function removeHideCSS() {
+    if (SEARCH.hideStyle) {
+      SEARCH.hideStyle.remove();
+      SEARCH.hideStyle = null;
     }
   }
 
-  function showNativeResults() {
-    SEARCH.hiddenElements.forEach(function (item) {
-      item.el.style.display = item.prev;
-    });
-    SEARCH.hiddenElements = [];
-  }
-
-  // ── Inject TMDB results container ────────────────────────────────────
+  // ── Container ────────────────────────────────────────────────────────
 
   function getOrCreateContainer() {
     var existing = document.getElementById('tentacleSearchResults');
@@ -229,42 +183,37 @@
         container.querySelectorAll('.tentacle-search-filter-btn').forEach(function (x) { x.classList.remove('ts-active'); });
         btn.classList.add('ts-active');
         SEARCH.mediaFilter = btn.getAttribute('data-tstype');
-        if (SEARCH.lastQuery) doTmdbSearch(SEARCH.lastQuery);
+        if (SEARCH.lastQuery) doSearch(SEARCH.lastQuery);
       });
     });
 
-    // Find the best place to insert our container
-    var searchPage = null;
+    // Insert into the page — find the best parent
+    var parent = null;
     if (SEARCH.nativeInput) {
-      searchPage = SEARCH.nativeInput.closest('.searchPage')
-        || SEARCH.nativeInput.closest('[data-type="search"]')
-        || SEARCH.nativeInput.closest('.view');
+      parent = SEARCH.nativeInput.closest('.view')
+        || SEARCH.nativeInput.closest('.searchPage')
+        || SEARCH.nativeInput.closest('[data-type="search"]');
     }
-    if (!searchPage) {
-      searchPage = document.querySelector('.searchPage')
-        || document.querySelector('[data-type="search"]')
+    if (!parent) {
+      parent = document.querySelector('.view')
         || document.querySelector('.mainAnimatedPages')
         || document.body;
     }
-
-    searchPage.appendChild(container);
-    log('Inserted container into: <' + searchPage.tagName + ' class="' + searchPage.className + '">');
+    parent.appendChild(container);
 
     return container;
   }
 
-  // ── TMDB search ──────────────────────────────────────────────────────
+  // ── Search ───────────────────────────────────────────────────────────
 
-  function doTmdbSearch(query) {
+  function doSearch(query) {
     var container = getOrCreateContainer();
-    hideNativeResults();
     var grid = document.getElementById('tentacleSearchGrid');
     if (!grid) return;
 
     grid.innerHTML = '<div class="tentacle-search-loading"><div class="md-spinner"></div>Searching...</div>';
 
-    var typeParam = SEARCH.mediaFilter;
-    apiGet('TentacleDiscover/Search?q=' + encodeURIComponent(query) + '&type=' + typeParam)
+    apiGet('TentacleDiscover/Search?q=' + encodeURIComponent(query) + '&type=' + SEARCH.mediaFilter)
       .then(function (data) {
         var items = data.items || [];
         SEARCH.results = items;
@@ -272,16 +221,16 @@
           grid.innerHTML = '<div class="tentacle-search-empty">No results for \u201c' + esc(query) + '\u201d</div>';
           return;
         }
-        renderSearchGrid(items, grid);
+        renderResults(items, grid);
       })
       .catch(function () {
         grid.innerHTML = '<div class="tentacle-search-empty">Search failed</div>';
       });
   }
 
-  // ── Render results as home-row-style horizontal scroll ──────────────
+  // ── Render ───────────────────────────────────────────────────────────
 
-  function renderSearchGrid(items, container) {
+  function renderResults(items, container) {
     var getDownloadInfo = (window.TentacleDiscover && window.TentacleDiscover.getDownloadInfo)
       ? window.TentacleDiscover.getDownloadInfo
       : function () { return null; };
@@ -325,18 +274,17 @@
       }).join('') +
     '</div>';
 
-    // Card click handlers
     container.querySelectorAll('.ts-card').forEach(function (card) {
       card.addEventListener('click', function (e) {
         if (e.target.closest('.ts-card-add')) return;
         var tmdb = parseInt(card.getAttribute('data-tmdb'), 10);
-        var item = findSearchItem(tmdb);
+        var item = findItem(tmdb);
         if (!item) return;
 
         if (item.in_library) {
-          navigateToLibraryItem(item);
+          goToLibraryItem(item);
         } else {
-          openDetailModal(item);
+          openModal(item);
         }
       });
     });
@@ -345,60 +293,51 @@
       btn.addEventListener('click', function (e) {
         e.stopPropagation();
         var tmdb = parseInt(btn.getAttribute('data-tmdb'), 10);
-        var item = findSearchItem(tmdb);
-        if (item) openDetailModal(item);
+        var item = findItem(tmdb);
+        if (item) openModal(item);
       });
     });
   }
 
-  // ── Item lookup & navigation ─────────────────────────────────────────
+  // ── Navigation ───────────────────────────────────────────────────────
 
-  function findSearchItem(tmdbId) {
+  function findItem(tmdbId) {
     for (var i = 0; i < SEARCH.results.length; i++) {
       if (SEARCH.results[i].tmdb_id === tmdbId) return SEARCH.results[i];
     }
     return null;
   }
 
-  function openDetailModal(item) {
+  function openModal(item) {
     if (window.TentacleDiscover && window.TentacleDiscover.showDetailModal) {
       window.TentacleDiscover.showDetailModal(item);
-    } else {
-      console.warn('[Tentacle Search] Detail modal not available');
     }
   }
 
-  function navigateToLibraryItem(item) {
+  function goToLibraryItem(item) {
     var userId = window.ApiClient.getCurrentUserId();
     var itemType = item.media_type === 'series' ? 'Series' : 'Movie';
-    var url = window.ApiClient.getUrl('Users/' + userId + '/Items', {
-      searchTerm: item.title,
-      IncludeItemTypes: itemType,
-      Recursive: true,
-      Limit: 10,
-      Fields: 'ProviderIds',
-    });
-
-    apiGet(url.replace(window.ApiClient.getUrl(''), '')).then(function (result) {
-      var items = (result && result.Items) || [];
-      var match = null;
-      for (var i = 0; i < items.length; i++) {
-        if ((items[i].Name || '').toLowerCase() === (item.title || '').toLowerCase()) {
-          match = items[i];
-          break;
+    apiGet('Users/' + userId + '/Items?searchTerm=' + encodeURIComponent(item.title) +
+      '&IncludeItemTypes=' + itemType + '&Recursive=true&Limit=10&Fields=ProviderIds')
+      .then(function (result) {
+        var items = (result && result.Items) || [];
+        var match = null;
+        for (var i = 0; i < items.length; i++) {
+          if ((items[i].Name || '').toLowerCase() === (item.title || '').toLowerCase()) {
+            match = items[i];
+            break;
+          }
         }
-      }
-      if (!match && items.length) match = items[0];
-
-      if (match) {
-        window.location.hash = '#/details?id=' + match.Id;
-      }
-    }).catch(function () {});
+        if (!match && items.length) match = items[0];
+        if (match) {
+          window.location.hash = '#/details?id=' + match.Id;
+        }
+      }).catch(function () {});
   }
 
   // ── Cleanup ──────────────────────────────────────────────────────────
 
-  function clearTmdbResults() {
+  function clearResults() {
     var grid = document.getElementById('tentacleSearchGrid');
     if (grid) grid.innerHTML = '';
     SEARCH.results = [];
@@ -409,13 +348,12 @@
       SEARCH.inputObserver.disconnect();
       SEARCH.inputObserver = null;
     }
-    showNativeResults();
+    removeHideCSS();
     SEARCH.active = false;
     SEARCH.lastQuery = '';
     SEARCH.results = [];
     SEARCH.mediaFilter = 'all';
     SEARCH.nativeInput = null;
-    SEARCH.hiddenElements = [];
     var el = document.getElementById('tentacleSearchResults');
     if (el) el.remove();
   }
