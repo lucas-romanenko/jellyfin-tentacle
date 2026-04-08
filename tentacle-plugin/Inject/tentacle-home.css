@@ -2,15 +2,11 @@
 /* Injected into index.html via Harmony patch */
 /* Visual style adapted from jellyfin-plugin-media-bar + jellyfin-plugin-home-sections */
 
-/* ── Hide native home sections by default ────────────────────────────
-   This CSS loads in <head> before any page content renders, so Jellyfin's
-   native home sections are NEVER visible. The JS adds .tentacle-native-home
-   to restore visibility only when Tentacle home is disabled or fails. */
-.homeSectionsContainer {
+/* ── Native home hiding (controlled by JS) ───────────────────────────
+   JS adds .tentacle-home-hidden when Tentacle is rendering.
+   Native content stays visible until JS is ready — no blank pages. */
+.homeSectionsContainer.tentacle-home-hidden {
   display: none !important;
-}
-.homeSectionsContainer.tentacle-native-home {
-  display: block !important;
 }
 
 /* ── Tentacle Logo Branding ────────────────────────────────────────── */

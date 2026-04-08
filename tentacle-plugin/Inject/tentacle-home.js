@@ -1,6 +1,13 @@
 // Tentacle Home — replaces Jellyfin's default homepage with Tentacle sections
 // Injected into index.html via Harmony patch on PhysicalFileProvider
-// Visual style adapted from jellyfin-plugin-media-bar + jellyfin-plugin-home-sections
+//
+// Architecture (based on Moonfin + Jellyfin-Enhanced patterns):
+//   - Primary nav detection: `viewshow` event (Jellyfin's own SPA event, most reliable)
+//   - Fallback nav detection: `hashchange` + `popstate`
+//   - NO MutationObserver for navigation — events are reliable enough
+//   - Lightweight waitForElement() poll to find .homeSectionsContainer after viewshow
+//   - Generation counter cancels stale renders on rapid navigation
+//   - Native content hidden via JS class (not CSS-first) — no blank pages on failure
 (function () {
   'use strict';
 
@@ -11,9 +18,8 @@
     heroTotal: 0,
     apiClient: null,
     userId: null,
-    observer: null,
-    _renderTimer: null,
-    _rendering: false,
+    generation: 0,      // incremented on every navigation, stale renders check this
+    lastHash: null,      // dedup rapid event firing
   };
 
   // ── Bootstrap ─────────────────────────────────────────────────────────
@@ -31,17 +37,46 @@
     if (MH.initialized) return;
     MH.initialized = true;
 
-    observeHomePage();
-    checkAndRender();
+    // Primary: viewshow — Jellyfin's own SPA navigation event (most reliable)
+    // Fires on the view element, bubbles to document. e.detail.type = "home"
+    document.addEventListener('viewshow', onViewShow);
 
-    window.addEventListener('hashchange', checkAndRender);
-    window.addEventListener('popstate', function () {
-      setTimeout(checkAndRender, 100);
-    });
-    // viewshow fires after Jellyfin has rendered the page content
-    window.addEventListener('viewshow', function () {
-      setTimeout(checkAndRender, 50);
-    });
+    // Fallback: hashchange + popstate for edge cases (browser back/forward, direct hash set)
+    window.addEventListener('hashchange', onNavChange);
+    window.addEventListener('popstate', onNavChange);
+
+    // Handle initial page load (viewshow may have already fired before our script loaded)
+    if (isHomePage()) {
+      onHomePage();
+    }
+  }
+
+  // ── Navigation Handlers ─────────────────────────────────────────────
+  function onViewShow(e) {
+    // e.detail.type comes from the view's data-type attribute in Jellyfin
+    // Use it as primary check, fall back to hash for robustness
+    var type = e.detail && e.detail.type;
+    if (type === 'home' || (!type && isHomePage())) {
+      onHomePage();
+    } else if (isHomePage()) {
+      // type is set but not 'home' — still check hash in case type naming varies
+      onHomePage();
+    } else {
+      onLeavingHome();
+    }
+  }
+
+  function onNavChange() {
+    // Dedup: hashchange and popstate can both fire for the same navigation
+    var hash = location.hash || '';
+    if (hash === MH.lastHash) return;
+    MH.lastHash = hash;
+
+    if (isHomePage()) {
+      onHomePage();
+    } else {
+      onLeavingHome();
+    }
   }
 
   function isHomePage() {
@@ -49,50 +84,61 @@
     return hash === '' || hash === '#/' || hash === '#/home.html' || hash === '#/home';
   }
 
-  function observeHomePage() {
-    MH.observer = new MutationObserver(function () {
-      if (!isHomePage()) return;
-      if (MH._renderTimer) clearTimeout(MH._renderTimer);
-      MH._renderTimer = setTimeout(function () {
-        MH._renderTimer = null;
-        checkAndRender();
-      }, 200);
-    });
-    MH.observer.observe(document.body, { childList: true, subtree: true });
-  }
-
-  function checkAndRender() {
-    if (!isHomePage()) {
-      cleanupHome();
-      return;
-    }
-
-    var container = document.querySelector('.homeSectionsContainer');
-    if (!container) return;
-
+  // ── Home Page Entry ─────────────────────────────────────────────────
+  function onHomePage() {
+    // Already rendered and still in DOM? Nothing to do.
     if (document.getElementById('tentacle-home')) return;
 
-    // Native container is hidden by CSS in tentacle-home.css by default.
-    // No JS hide needed — it's never visible unless we explicitly add .tentacle-native-home.
+    // Increment generation — any in-flight render from a previous navigation is now stale
+    var gen = ++MH.generation;
 
-    if (MH._rendering) return;
-    MH._rendering = true;
+    // Wait for .homeSectionsContainer to appear (Jellyfin may not have rendered it yet)
+    waitForElement('.homeSectionsContainer', 3000, function (container) {
+      if (gen !== MH.generation) return; // stale — user navigated away
+      if (!isHomePage()) return;         // double-check
+      if (document.getElementById('tentacle-home')) return; // race: already rendered
 
-    renderHomePage(container);
+      renderHomePage(container, gen);
+    });
+  }
+
+  // ── Leaving Home ────────────────────────────────────────────────────
+  function onLeavingHome() {
+    MH.generation++; // cancel any in-flight render
+    cleanupHome();
   }
 
   function cleanupHome() {
-    if (MH._renderTimer) {
-      clearTimeout(MH._renderTimer);
-      MH._renderTimer = null;
-    }
-    MH._rendering = false;
     if (MH.heroInterval) {
       clearInterval(MH.heroInterval);
       MH.heroInterval = null;
     }
     var old = document.getElementById('tentacle-home');
     if (old) old.remove();
+
+    // Unhide native content
+    var container = document.querySelector('.homeSectionsContainer');
+    if (container) {
+      container.classList.remove('tentacle-home-hidden');
+    }
+  }
+
+  // ── Wait for Element (lightweight poll, no MutationObserver) ────────
+  function waitForElement(selector, timeoutMs, callback) {
+    var el = document.querySelector(selector);
+    if (el) { callback(el); return; }
+
+    var start = Date.now();
+    var interval = setInterval(function () {
+      el = document.querySelector(selector);
+      if (el) {
+        clearInterval(interval);
+        callback(el);
+      } else if (Date.now() - start > timeoutMs) {
+        clearInterval(interval);
+        // Timeout — container never appeared, nothing to do
+      }
+    }, 50); // check every 50ms, max 3s
   }
 
   // ── API Helpers ───────────────────────────────────────────────────────
@@ -110,9 +156,9 @@
   }
 
   // ── Render Home Page ──────────────────────────────────────────────────
-  function renderHomePage(container) {
-    // CSS hides .homeSectionsContainer by default; remove fallback class if it was added
-    container.classList.remove('tentacle-native-home');
+  function renderHomePage(container, gen) {
+    // Hide native content via JS class (CSS rule: .tentacle-home-hidden { display: none })
+    container.classList.add('tentacle-home-hidden');
 
     var mhHome = document.createElement('div');
     mhHome.id = 'tentacle-home';
@@ -121,14 +167,19 @@
 
     apiGet('TentacleHome/Sections?userId=' + MH.userId)
       .then(function (data) {
-        MH._rendering = false;
+        // Stale check — did user navigate away during the API call?
+        if (gen !== MH.generation) {
+          mhHome.remove();
+          return;
+        }
+
         console.log('[Tentacle] Sections API response:', JSON.stringify(data, null, 2));
 
         if (!data.enabled || !data.sections || !data.sections.length) {
           console.warn('[Tentacle] No sections returned or disabled');
           mhHome.remove();
-          // Show native Jellyfin home (CSS hides it by default)
-          container.classList.add('tentacle-native-home');
+          // Show native Jellyfin home
+          container.classList.remove('tentacle-home-hidden');
           return;
         }
 
@@ -160,11 +211,10 @@
         });
       })
       .catch(function (err) {
-        MH._rendering = false;
         console.error('[Tentacle] Failed to load sections:', err);
         mhHome.remove();
         // Show native Jellyfin home as fallback
-        container.classList.add('tentacle-native-home');
+        container.classList.remove('tentacle-home-hidden');
       });
   }
 
