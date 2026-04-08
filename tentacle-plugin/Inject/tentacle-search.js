@@ -137,58 +137,63 @@
   // ── Hide/show native Jellyfin search results (JS-based) ─────────────
 
   function hideNativeResults() {
-    // Restore any previously hidden elements first
     showNativeResults();
 
-    // Find the content area below the search input — hide everything that's not ours
-    // Strategy: find the scrollable content area that contains native results
-    var searchPage = null;
-    if (SEARCH.nativeInput) {
-      // Walk up from the input to find the page-level container
-      searchPage = SEARCH.nativeInput.closest('.searchPage')
-        || SEARCH.nativeInput.closest('[data-type="search"]')
-        || SEARCH.nativeInput.closest('.view');
-    }
-    if (!searchPage) {
-      searchPage = document.querySelector('.searchPage')
-        || document.querySelector('[data-type="search"]');
-    }
+    // Strategy: find ALL native Jellyfin card containers and their parent sections
+    // Jellyfin renders cards with .cardImageContainer / .itemAction inside
+    // .itemsContainer or .verticalSection containers
+    var nativeCards = document.querySelectorAll('.cardImageContainer.itemAction, .card.overflowPortraitCard, .itemsContainer');
+    var hidden = new Set();
 
-    if (!searchPage) {
-      log('Could not find search page container to hide native results');
-      return;
-    }
+    nativeCards.forEach(function (card) {
+      // Walk up to find the section-level container to hide
+      var section = card.closest('.verticalSection')
+        || card.closest('.searchResultGroup')
+        || card.closest('.section')
+        || card.closest('.itemsContainer');
 
-    log('Hiding native results in: <' + searchPage.tagName + ' class="' + searchPage.className + '">');
-
-    // Find all section-like elements that contain native results
-    // Jellyfin typically renders result groups as sections/divs with headers
-    var candidates = searchPage.querySelectorAll('.searchResultGroup, .section, .verticalSection, .itemsContainer, [class*="searchResult"]');
-
-    if (candidates.length === 0) {
-      // Fallback: hide all direct children except search field and our container
-      var children = searchPage.children;
-      for (var i = 0; i < children.length; i++) {
-        var child = children[i];
-        if (child.id === 'tentacleSearchResults') continue;
-        if (child.contains(SEARCH.nativeInput)) continue;
-        if (child.querySelector && child.querySelector('.searchfields-txtSearch, input[type="text"]')) continue;
-        if (child.style.display !== 'none') {
-          SEARCH.hiddenElements.push({ el: child, prev: child.style.display });
-          child.style.display = 'none';
-          log('Hid child: <' + child.tagName + ' class="' + child.className + '">');
-        }
+      if (!section) {
+        // If no section wrapper, try the card's direct parent container
+        section = card.parentElement;
       }
-    } else {
-      candidates.forEach(function (el) {
-        if (el.id === 'tentacleSearchResults') return;
-        if (el.contains(document.getElementById('tentacleSearchResults'))) return;
-        if (el.style.display !== 'none') {
-          SEARCH.hiddenElements.push({ el: el, prev: el.style.display });
-          el.style.display = 'none';
-          log('Hid result section: <' + el.tagName + ' class="' + el.className + '">');
+
+      if (!section) return;
+      if (section.id === 'tentacleSearchResults') return;
+      if (section.contains(document.getElementById('tentacleSearchResults'))) return;
+      if (hidden.has(section)) return;
+
+      hidden.add(section);
+      SEARCH.hiddenElements.push({ el: section, prev: section.style.display });
+      section.style.display = 'none';
+      log('Hid native section: <' + section.tagName + ' class="' + section.className + '">');
+    });
+
+    // Also hide any h2/h3 headers that say "Movies", "Shows", etc. that might be siblings
+    var searchPage = SEARCH.nativeInput
+      ? (SEARCH.nativeInput.closest('.view') || SEARCH.nativeInput.closest('[data-type="search"]') || SEARCH.nativeInput.closest('.searchPage'))
+      : document.querySelector('.searchPage');
+
+    if (searchPage) {
+      searchPage.querySelectorAll('h2, h3, .sectionTitle').forEach(function (header) {
+        if (hidden.has(header)) return;
+        if (header.closest('#tentacleSearchResults')) return;
+        var text = (header.textContent || '').trim().toLowerCase();
+        if (text && !header.closest('.tentacle-search-section')) {
+          SEARCH.hiddenElements.push({ el: header, prev: header.style.display });
+          header.style.display = 'none';
+          log('Hid header: "' + text + '"');
         }
       });
+    }
+
+    if (SEARCH.hiddenElements.length === 0) {
+      log('WARNING: Found nothing to hide. DOM dump of search page:');
+      if (searchPage) {
+        var children = searchPage.children;
+        for (var i = 0; i < children.length; i++) {
+          log('  [' + i + '] <' + children[i].tagName + ' class="' + children[i].className + '" id="' + (children[i].id || '') + '">');
+        }
+      }
     }
   }
 
