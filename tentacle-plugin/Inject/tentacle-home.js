@@ -88,6 +88,22 @@
     return hash === '' || hash === '#/' || hash === '#/home.html' || hash === '#/home';
   }
 
+  // ── Find the ACTIVE .homeSectionsContainer ─────────────────────────
+  // Jellyfin SPA keeps old views in the DOM. There can be multiple
+  // .homeSectionsContainer elements — we must find the one inside
+  // the active view (marked with is-active), not a stale cached one.
+  function findActiveContainer() {
+    // Primary: container inside the active tab content
+    var c = document.querySelector('.pageTabContent.is-active .homeSectionsContainer');
+    if (c) return c;
+    // Fallback: container inside a visible library page (no .hide class)
+    c = document.querySelector('.libraryPage:not(.hide) .homeSectionsContainer');
+    if (c) return c;
+    // Last resort: last container in DOM (Jellyfin appends new views at the end)
+    var all = document.querySelectorAll('.homeSectionsContainer');
+    return all.length ? all[all.length - 1] : null;
+  }
+
   // ── Home Page Entry ─────────────────────────────────────────────────
   function onHomePage() {
     var exists = !!document.getElementById('tentacle-home');
@@ -95,13 +111,13 @@
     if (exists) return;
 
     var gen = ++MH.generation;
-    console.log('[TH] onHomePage() — gen incremented to ' + gen + ', waiting for .homeSectionsContainer');
+    console.log('[TH] onHomePage() — gen incremented to ' + gen + ', waiting for active .homeSectionsContainer');
 
-    waitForElement('.homeSectionsContainer', 3000, function (container) {
+    waitForActiveContainer(3000, function (container) {
       var stale = gen !== MH.generation;
       var home = isHomePage();
       var alreadyRendered = !!document.getElementById('tentacle-home');
-      console.log('[TH] waitForElement callback — container found, stale=' + stale + ' isHome=' + home + ' alreadyRendered=' + alreadyRendered + ' gen=' + gen + '/' + MH.generation);
+      console.log('[TH] waitForActiveContainer callback — stale=' + stale + ' isHome=' + home + ' alreadyRendered=' + alreadyRendered + ' gen=' + gen + '/' + MH.generation);
       if (stale) return;
       if (!home) return;
       if (alreadyRendered) return;
@@ -128,35 +144,38 @@
     console.log('[TH] cleanupHome() — #tentacle-home exists=' + !!old);
     if (old) old.remove();
 
-    // Unhide native content
-    var container = document.querySelector('.homeSectionsContainer');
-    if (container) {
-      container.classList.remove('tentacle-home-hidden');
+    // Unhide ALL containers that might have the hidden class (cleanup stale ones too)
+    var containers = document.querySelectorAll('.homeSectionsContainer.tentacle-home-hidden');
+    console.log('[TH] cleanupHome() — unhiding ' + containers.length + ' containers');
+    for (var i = 0; i < containers.length; i++) {
+      containers[i].classList.remove('tentacle-home-hidden');
     }
   }
 
-  // ── Wait for Element (lightweight poll, no MutationObserver) ────────
-  function waitForElement(selector, timeoutMs, callback) {
-    var el = document.querySelector(selector);
+  // ── Wait for Active Container (polls findActiveContainer) ──────────
+  function waitForActiveContainer(timeoutMs, callback) {
+    var el = findActiveContainer();
     if (el) {
-      console.log('[TH] waitForElement(' + selector + ') — found immediately');
+      var all = document.querySelectorAll('.homeSectionsContainer');
+      console.log('[TH] waitForActiveContainer — found immediately (total containers: ' + all.length + ', active parent: ' + (el.closest('.is-active') ? 'is-active' : el.parentNode.className) + ')');
       callback(el);
       return;
     }
 
-    console.log('[TH] waitForElement(' + selector + ') — polling...');
+    console.log('[TH] waitForActiveContainer — polling...');
     var start = Date.now();
     var interval = setInterval(function () {
-      el = document.querySelector(selector);
+      el = findActiveContainer();
       if (el) {
-        console.log('[TH] waitForElement(' + selector + ') — found after ' + (Date.now() - start) + 'ms');
+        var all = document.querySelectorAll('.homeSectionsContainer');
+        console.log('[TH] waitForActiveContainer — found after ' + (Date.now() - start) + 'ms (total containers: ' + all.length + ')');
         clearInterval(interval);
         callback(el);
       } else if (Date.now() - start > timeoutMs) {
-        console.warn('[TH] waitForElement(' + selector + ') — TIMEOUT after ' + timeoutMs + 'ms');
+        console.warn('[TH] waitForActiveContainer — TIMEOUT after ' + timeoutMs + 'ms');
         clearInterval(interval);
       }
-    }, 50); // check every 50ms, max 3s
+    }, 50);
   }
 
   // ── API Helpers ───────────────────────────────────────────────────────
