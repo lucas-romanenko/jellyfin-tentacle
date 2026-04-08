@@ -88,10 +88,12 @@ public static class IndexHtmlPatch
             var navbarJsTag = $"<script src=\"/Tentacle/navbar.js?v={cacheBust}\" defer></script>";
             var mediabarCssTag = $"<link rel=\"stylesheet\" href=\"/Tentacle/mediabar.css?v={cacheBust}\" />";
             var mediabarJsTag = $"<script src=\"/Tentacle/mediabar.js?v={cacheBust}\" defer></script>";
+            var searchCssTag = $"<link rel=\"stylesheet\" href=\"/Tentacle/search.css?v={cacheBust}\" />";
+            var searchJsTag = $"<script src=\"/Tentacle/search.js?v={cacheBust}\" defer></script>";
 
             content = content
-                .Replace("</head>", $"{cssTag}{discoverCssTag}{detailsCssTag}{mdblistCssTag}{navbarCssTag}{mediabarCssTag}</head>")
-                .Replace("</body>", $"{mdblistJsTag}{tmdbJsTag}{navbarJsTag}{mediabarJsTag}{jsTag}{discoverJsTag}{detailsJsTag}</body>");
+                .Replace("</head>", $"{cssTag}{discoverCssTag}{detailsCssTag}{mdblistCssTag}{navbarCssTag}{mediabarCssTag}{searchCssTag}</head>")
+                .Replace("</body>", $"{mdblistJsTag}{tmdbJsTag}{navbarJsTag}{mediabarJsTag}{jsTag}{discoverJsTag}{searchJsTag}{detailsJsTag}</body>");
 
             var bytes = System.Text.Encoding.UTF8.GetBytes(content);
             __result = new TransformedFileInfo(__result, bytes);

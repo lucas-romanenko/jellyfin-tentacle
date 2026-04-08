@@ -1,0 +1,23 @@
+/* Tentacle Search — TMDB results section on Jellyfin /search page */
+
+.tentacle-search-section {
+  margin-top: 20px;
+  padding: 0 3.3%;
+}
+
+.tentacle-search-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 0 14px;
+  border-top: 1px solid rgba(139, 128, 255, 0.12);
+}
+
+.tentacle-search-title {
+  font-size: 20px;
+  font-weight: 600;
+  color: #e8e6f0;
+  letter-spacing: -0.01em;
+}
+
+/* Grid, cards, badges, modal — all reuse .md-* classes from tentacle-discover.css */

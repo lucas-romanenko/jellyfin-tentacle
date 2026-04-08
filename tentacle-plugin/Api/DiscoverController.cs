@@ -567,6 +567,32 @@ public class TentacleDiscoverController : ControllerBase
         return Content(content, "text/css");
     }
 
+    /// <summary>
+    /// Serves the Tentacle search JavaScript.
+    /// </summary>
+    [HttpGet("/Tentacle/search.js")]
+    [ResponseCache(NoStore = true)]
+    public ActionResult GetSearchJs()
+    {
+        var content = LoadEmbeddedResource("tentacle-search.js");
+        if (content == null) return NotFound();
+        Response.Headers["Cache-Control"] = "no-store, no-cache, must-revalidate";
+        return Content(content, "application/javascript");
+    }
+
+    /// <summary>
+    /// Serves the Tentacle search CSS.
+    /// </summary>
+    [HttpGet("/Tentacle/search.css")]
+    [ResponseCache(NoStore = true)]
+    public ActionResult GetSearchCss()
+    {
+        var content = LoadEmbeddedResource("tentacle-search.css");
+        if (content == null) return NotFound();
+        Response.Headers["Cache-Control"] = "no-store, no-cache, must-revalidate";
+        return Content(content, "text/css");
+    }
+
     private static string? LoadEmbeddedResource(string resourceSuffix)
     {
         var assembly = typeof(TentacleDiscoverController).Assembly;

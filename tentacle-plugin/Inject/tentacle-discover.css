@@ -57,57 +57,6 @@
   color: rgba(200, 195, 220, 0.9);
 }
 
-/* ── Search box ────────────────────────────────────────────────────── */
-.md-search-box {
-  position: relative;
-  display: flex;
-  align-items: center;
-}
-.md-search-icon {
-  position: absolute;
-  left: 10px;
-  color: rgba(200, 195, 220, 0.4);
-  pointer-events: none;
-}
-.md-search-input {
-  padding: 7px 32px 7px 32px;
-  border-radius: 0.75em;
-  border: 1px solid rgba(139, 128, 255, 0.15);
-  background: rgba(139, 128, 255, 0.06);
-  color: #e8e6f0;
-  font-size: 13px;
-  width: 220px;
-  outline: none;
-  transition: border-color 150ms, background 150ms;
-  font-family: inherit;
-}
-.md-search-input::placeholder {
-  color: rgba(200, 195, 220, 0.35);
-}
-.md-search-input:focus {
-  border-color: rgba(139, 128, 255, 0.5);
-  background: rgba(139, 128, 255, 0.1);
-}
-.md-search-clear {
-  position: absolute;
-  right: 4px;
-  width: 24px;
-  height: 24px;
-  border: none;
-  background: transparent;
-  color: rgba(200, 195, 220, 0.5);
-  font-size: 16px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-}
-.md-search-clear:hover {
-  color: #e8e6f0;
-  background: rgba(139, 128, 255, 0.15);
-}
-
 /* ── Section tabs (pill style) ────────────────────────────────────── */
 .md-section-tabs {
   display: flex;

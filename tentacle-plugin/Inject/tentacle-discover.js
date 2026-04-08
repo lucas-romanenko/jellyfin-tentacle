@@ -13,10 +13,6 @@
     activeSection: null,
     active: false,
     loaded: false,
-    searchQuery: '',
-    searchTimeout: null,
-    searchMode: false,
-    searchResults: [],
     activityData: null,   // shared — used for download badges on discover cards
   };
 
@@ -183,16 +179,9 @@
     container.innerHTML =
       '<div class="md-discover-header">' +
         '<div class="md-discover-title">Discover</div>' +
-        '<div style="display:flex;align-items:center;gap:12px">' +
-          '<div class="md-search-box">' +
-            '<svg class="md-search-icon" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>' +
-            '<input type="text" id="mdSearchInput" class="md-search-input" placeholder="Search TMDB..." autocomplete="off">' +
-            '<button id="mdSearchClear" class="md-search-clear" style="display:none">&times;</button>' +
-          '</div>' +
-          '<div class="md-filter-group">' +
-            '<button class="md-filter-btn md-active" data-mdtype="movies">Movies</button>' +
-            '<button class="md-filter-btn" data-mdtype="series">TV Shows</button>' +
-          '</div>' +
+        '<div class="md-filter-group">' +
+          '<button class="md-filter-btn md-active" data-mdtype="movies">Movies</button>' +
+          '<button class="md-filter-btn" data-mdtype="series">TV Shows</button>' +
         '</div>' +
       '</div>' +
       '<div class="md-section-tabs" id="mdSectionTabs"></div>' +
@@ -207,43 +196,9 @@
         b.classList.add('md-active');
         MD.mediaFilter = b.getAttribute('data-mdtype');
         MD.activeSection = null;
-        if (MD.searchMode && MD.searchQuery) {
-          doSearch(MD.searchQuery);
-        } else {
-          fetchDiscoverData();
-        }
+        fetchDiscoverData();
       });
     });
-
-    // Search input
-    var searchInput = document.getElementById('mdSearchInput');
-    var searchClear = document.getElementById('mdSearchClear');
-    if (searchInput) {
-      searchInput.addEventListener('input', function () {
-        var q = searchInput.value.trim();
-        searchClear.style.display = q ? 'flex' : 'none';
-        if (MD.searchTimeout) clearTimeout(MD.searchTimeout);
-        if (!q) { exitSearch(); return; }
-        MD.searchTimeout = setTimeout(function () {
-          MD.searchQuery = q;
-          doSearch(q);
-        }, 400);
-      });
-      searchInput.addEventListener('keydown', function (e) {
-        if (e.key === 'Escape') {
-          searchInput.value = '';
-          searchClear.style.display = 'none';
-          exitSearch();
-        }
-      });
-    }
-    if (searchClear) {
-      searchClear.addEventListener('click', function () {
-        searchInput.value = '';
-        searchClear.style.display = 'none';
-        exitSearch();
-      });
-    }
 
     fetchDiscoverData();
   }
@@ -285,34 +240,6 @@
       var c = document.getElementById('mdDiscoverContent');
       if (c) c.innerHTML = '<div class="md-loading">Failed to load discover content</div>';
     });
-  }
-
-  // ── Search ──────────────────────────────────────────────────────────
-  function doSearch(query) {
-    MD.searchMode = true;
-    var tabsEl = document.getElementById('mdSectionTabs');
-    if (tabsEl) tabsEl.innerHTML = '';
-    var content = document.getElementById('mdDiscoverContent');
-    if (content) content.innerHTML = '<div class="md-loading"><div class="md-spinner"></div><br>Searching...</div>';
-
-    var typeParam = MD.mediaFilter === 'series' ? 'series' : 'movies';
-    apiGet('TentacleDiscover/Search?q=' + encodeURIComponent(query) + '&type=' + typeParam).then(function (data) {
-      var items = data.items || [];
-      MD.searchResults = items;
-      if (!items.length) {
-        if (content) content.innerHTML = '<div class="md-loading">No results for "' + esc(query) + '"</div>';
-        return;
-      }
-      renderGrid({ id: 'search', title: 'Search Results', items: items });
-    }).catch(function () {
-      if (content) content.innerHTML = '<div class="md-loading">Search failed</div>';
-    });
-  }
-
-  function exitSearch() {
-    MD.searchMode = false;
-    MD.searchQuery = '';
-    fetchDiscoverData();
   }
 
   // ── Section tabs ────────────────────────────────────────────────────
@@ -422,11 +349,6 @@
   }
 
   function findItem(tmdbId) {
-    if (MD.searchResults) {
-      for (var k = 0; k < MD.searchResults.length; k++) {
-        if (MD.searchResults[k].tmdb_id === tmdbId) return MD.searchResults[k];
-      }
-    }
     if (!MD.sections) return null;
     for (var i = 0; i < MD.sections.length; i++) {
       var items = MD.sections[i].items;
@@ -1281,7 +1203,11 @@
     },
     isActive: function () {
       return MD.active;
-    }
+    },
+    // Shared functions for tentacle-search.js
+    showDetailModal: showDetailModal,
+    getDownloadInfo: getDownloadInfo,
+    esc: esc,
   };
 
   window.TentacleActivity = {

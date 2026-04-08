@@ -36,6 +36,8 @@
     <EmbeddedResource Include="Inject/tentacle-mdblist.js" />
     <EmbeddedResource Include="Inject/tentacle-tmdb.js" />
     <EmbeddedResource Include="Inject/tentacle-mdblist.css" />
+    <EmbeddedResource Include="Inject/tentacle-search.js" />
+    <EmbeddedResource Include="Inject/tentacle-search.css" />
     <EmbeddedResource Include="Assets/imdb.svg" />
     <EmbeddedResource Include="Assets/tmdb.svg" />
     <EmbeddedResource Include="Assets/trakt.svg" />
