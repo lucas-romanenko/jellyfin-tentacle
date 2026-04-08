@@ -115,8 +115,6 @@
 /* Badges */
 .ts-card-badge {
   position: absolute;
-  top: 6px;
-  left: 6px;
   font-size: 10px;
   padding: 2px 8px;
   border-radius: 6px;
@@ -124,6 +122,21 @@
   letter-spacing: 0.3px;
   backdrop-filter: blur(8px);
   z-index: 2;
+}
+
+/* Type badge — top-left (always shown) */
+.ts-badge-type {
+  top: 6px;
+  left: 6px;
+  background: rgba(0, 0, 0, 0.6);
+  color: rgba(255, 255, 255, 0.85);
+}
+
+/* Status badge — top-right (In Library, Downloading) */
+.ts-badge-status {
+  top: 6px;
+  right: 6px;
+  left: auto;
 }
 
 .ts-badge-inlib {
@@ -134,11 +147,6 @@
 .ts-badge-downloading {
   background: rgba(109, 95, 230, 0.85);
   color: #fff;
-}
-
-.ts-badge-type {
-  background: rgba(255, 255, 255, 0.12);
-  color: rgba(255, 255, 255, 0.7);
 }
 
 /* Add button */

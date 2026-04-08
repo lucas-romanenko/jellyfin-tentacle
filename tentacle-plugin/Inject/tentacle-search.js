@@ -238,17 +238,18 @@
           : '<div class="ts-card-poster-placeholder">&#9707;</div>';
 
         var dlInfo = getDownloadInfo(item.tmdb_id);
-        var badge, addBtn;
+        var isMovie = (item.media_type || 'movie') !== 'series';
+        var typeBadge = '<div class="ts-card-badge ts-badge-type">' + (isMovie ? 'Movie' : 'TV') + '</div>';
+        var statusBadge = '';
+        var addBtn = '';
+
         if (dlInfo) {
           var pct = (dlInfo.progress || 0).toFixed(1);
           var statusText = dlInfo.status === 'importing' ? 'Importing' : dlInfo.status === 'queued' ? 'Queued' : 'Downloading ' + pct + '%';
-          badge = '<div class="ts-card-badge ts-badge-downloading">' + statusText + '</div>';
-          addBtn = '';
+          statusBadge = '<div class="ts-card-badge ts-badge-status ts-badge-downloading">' + statusText + '</div>';
         } else if (item.in_library) {
-          badge = '<div class="ts-card-badge ts-badge-inlib">In Library</div>';
-          addBtn = '';
+          statusBadge = '<div class="ts-card-badge ts-badge-status ts-badge-inlib">In Library</div>';
         } else {
-          badge = '';
           addBtn = '<button class="ts-card-add" data-tmdb="' + item.tmdb_id + '">+</button>';
         }
 
@@ -259,7 +260,7 @@
         var sep = item.rating ? ' \u00b7 ' : '';
 
         return '<div class="ts-card" data-tmdb="' + item.tmdb_id + '" data-type="' + (item.media_type || 'movie') + '">' +
-          '<div class="ts-card-poster">' + posterHtml + badge + addBtn + '</div>' +
+          '<div class="ts-card-poster">' + posterHtml + typeBadge + statusBadge + addBtn + '</div>' +
           '<div class="ts-card-info">' +
             '<div class="ts-card-title">' + esc(item.title) + '</div>' +
             '<div class="ts-card-meta">' + yearHtml + sep + ratingHtml + '</div>' +
