@@ -9,8 +9,21 @@ body.moonfin-navbar-active {
     padding-top: 80px !important;
 }
 
+/* Hide Jellyfin's top nav bar but keep page-specific tabs (Live TV Guide, etc.) */
 body.moonfin-navbar-active .skinHeader {
+    background: transparent !important;
+    box-shadow: none !important;
+}
+
+body.moonfin-navbar-active .headerTop {
     display: none !important;
+}
+
+/* Page-specific tabs (Live TV Guide, etc.) — position below Tentacle navbar */
+body.moonfin-navbar-active .sectionTabs {
+    background: rgba(15, 13, 26, 0.85) !important;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
 }
 
 body.moonfin-navbar-active .cardOverlayContainer {
