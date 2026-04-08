@@ -38,7 +38,7 @@ body.moonfin-mediabar-active #mh-rows-container {
     background: #110f1e;
     border-radius: 20px 20px 0 0;
     padding-top: 20px;
-    padding-bottom: 100dvh;
+    padding-bottom: 40px;
     min-height: 100dvh;
 }
 
@@ -50,7 +50,6 @@ body.moonfin-mediabar-active .homeSectionsContainer {
     background: #110f1e;
     border-radius: 20px 20px 0 0;
     padding-top: 20px;
-    padding-bottom: 100dvh;
 }
 
 /* When both mediabar and navbar are active, no extra padding */
@@ -73,6 +72,11 @@ body.moonfin-mediabar-active {
 .moonfin-mediabar.disabled,
 .moonfin-mediabar.empty {
     display: none;
+}
+
+/* Fully hide when scrolled past — prevents hero/trailer showing at page bottom */
+.moonfin-mediabar.scrolled-full {
+    visibility: hidden;
 }
 
 /* Loading shimmer */
