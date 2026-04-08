@@ -20,12 +20,23 @@
 }
 
 /* ── Results container ────────────────────────────────────────────── */
+/* Mounted on document.body (outside Jellyfin views) for SPA resilience.
+   Positioned fixed to fill the content area below the search bar. */
 .tentacle-search-section {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
   padding: 0 3.3%;
-  margin-top: 60px;
-  clear: both;
-  position: relative;
+  padding-top: 140px; /* below navbar + search input */
+  overflow-y: auto;
   z-index: 100;
+  pointer-events: auto;
+  display: none; /* shown only when body.tentacle-search-active */
+}
+body.tentacle-search-active .tentacle-search-section {
+  display: block;
 }
 
 /* Header */

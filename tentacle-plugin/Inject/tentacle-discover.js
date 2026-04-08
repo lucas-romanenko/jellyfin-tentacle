@@ -1,8 +1,15 @@
 // Tentacle Discover & Activity — standalone overlays for Jellyfin
-// v5 — Discover and Activity as independent full-screen pages
+// v6 — Moonfin pattern: body-level overlays, scoped DOM queries, generation counters
+//
+// Architecture:
+//   - Discover and Activity overlays mount on document.body (stable, immune to view transitions)
+//   - tryInject() scopes .emby-tabs-slider query to the active view (avoids stale hidden views)
+//   - Generation counter on API calls cancels stale renders on rapid navigation
+//   - viewshow listener added for reliable SPA navigation detection
+//   - Badge polling stops reliably on non-home navigation
 (function () {
   'use strict';
-  console.log('[Tentacle] v5 — Discover + Activity standalone overlays');
+  console.log('[Tentacle] v6 — Discover + Activity standalone overlays (Moonfin pattern)');
 
   // ── Shared state ────────────────────────────────────────────────────
   var MD = {
@@ -15,6 +22,7 @@
     loaded: false,
     loadedAt: 0,          // timestamp of last render — stale after 5 min
     activityData: null,   // shared — used for download badges on discover cards
+    generation: 0,        // incremented on navigation, stale API responses check this
   };
 
   var ACT = {
@@ -48,10 +56,30 @@
 
   var _tryInjectTimer = null;
   var _tryInjectRetries = 0;
+
+  // Find the active (visible) view's tab slider — avoids stale hidden views
+  function findActiveSlider() {
+    var views = document.querySelectorAll('.view');
+    for (var i = views.length - 1; i >= 0; i--) {
+      var v = views[i];
+      if (v.offsetParent !== null || v.style.display !== 'none') {
+        var s = v.querySelector('.emby-tabs-slider');
+        if (s) return s;
+      }
+    }
+    // Fallback: last view in DOM (most recently added)
+    if (views.length) {
+      var s = views[views.length - 1].querySelector('.emby-tabs-slider');
+      if (s) return s;
+    }
+    // Final fallback: unscoped query (for non-standard layouts)
+    return document.querySelector('.emby-tabs-slider');
+  }
+
   function tryInject() {
     if (_tryInjectTimer) { clearTimeout(_tryInjectTimer); _tryInjectTimer = null; }
     if (!isHomePage()) { _tryInjectRetries = 0; return; }
-    var slider = document.querySelector('.emby-tabs-slider');
+    var slider = findActiveSlider();
     if (!slider) {
       if (_tryInjectRetries < 20) {
         _tryInjectRetries++;
@@ -152,10 +180,15 @@
     if (ACT.active) hideActivity();
 
     MD.active = true;
+    ++MD.generation;
 
-    document.querySelectorAll('.emby-tabs-slider .emby-tab-button').forEach(function (b) {
-      b.classList.remove('emby-tab-button-active');
-    });
+    // Scope tab button query to active view's slider
+    var activeSlider = findActiveSlider();
+    if (activeSlider) {
+      activeSlider.querySelectorAll('.emby-tab-button').forEach(function (b) {
+        b.classList.remove('emby-tab-button-active');
+      });
+    }
     var btn = document.getElementById('mdDiscoverTab');
     if (btn) btn.classList.add('emby-tab-button-active');
 
@@ -177,6 +210,7 @@
 
   function hideDiscover() {
     MD.active = false;
+    MD.generation++;
 
     var btn = document.getElementById('mdDiscoverTab');
     if (btn) btn.classList.remove('emby-tab-button-active');
@@ -216,6 +250,7 @@
 
   // ── Fetch discover sections ─────────────────────────────────────────
   function fetchDiscoverData() {
+    var gen = MD.generation;
     var content = document.getElementById('mdDiscoverContent');
     if (content) content.innerHTML = '<div class="md-loading"><div class="md-spinner"></div><br>Loading...</div>';
 
@@ -228,6 +263,9 @@
     });
 
     Promise.all([itemsPromise, activityPromise]).then(function (results) {
+      // Stale check — did user navigate away during the API call?
+      if (gen !== MD.generation) return;
+
       var data = results[0];
       var activity = results[1];
       MD.activityData = activity;
@@ -248,6 +286,7 @@
         if (c) c.innerHTML = '<div class="md-loading">No content found</div>';
       }
     }).catch(function () {
+      if (gen !== MD.generation) return;
       var c = document.getElementById('mdDiscoverContent');
       if (c) c.innerHTML = '<div class="md-loading">Failed to load discover content</div>';
     });
@@ -1248,13 +1287,19 @@
 
   var _navTimer = null;
   var navHandler = function () {
-    if (MD.active && !isHomePage()) hideDiscover();
-    if (ACT.active && !isHomePage()) hideActivity();
-    if (!isHomePage()) { stopBadgePolling(); }
+    if (!isHomePage()) {
+      // Navigated away from home — hide overlays, stop polling, cancel stale API calls
+      if (MD.active) hideDiscover();
+      if (ACT.active) hideActivity();
+      stopBadgePolling();
+    }
     // Debounce tryInject to avoid multiple concurrent calls from rapid nav events
     if (_navTimer) clearTimeout(_navTimer);
     _navTimer = setTimeout(function () { _navTimer = null; tryInject(); }, 300);
   };
+  // Primary: viewshow — Jellyfin's own SPA navigation event (most reliable)
+  document.addEventListener('viewshow', navHandler);
+  // Fallback: hashchange + popstate for edge cases (browser back/forward)
   window.addEventListener('hashchange', navHandler);
   window.addEventListener('popstate', navHandler);
   window.addEventListener('pageshow', navHandler);

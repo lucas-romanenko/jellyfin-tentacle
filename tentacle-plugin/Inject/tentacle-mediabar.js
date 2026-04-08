@@ -14,6 +14,7 @@
         isVisible: true,
         apiClient: null,
         userId: null,
+        generation: 0,     // incremented on navigation, stale API responses check this
 
         // Trailer state machine
         _trailerState: 'idle', // idle | resolving | playing | unavailable
@@ -124,8 +125,12 @@
 
         loadContent: function () {
             var self = this;
+            var gen = ++this.generation;
             var url = this.apiClient.getUrl('TentacleHome/Hero', { userId: this.userId });
             return this.apiClient.getJSON(url).then(function (data) {
+                // Stale check — did user navigate away during the API call?
+                if (gen !== self.generation) return;
+
                 self.items = (data && data.Items) || [];
                 self.currentIndex = 0;
 
@@ -596,8 +601,9 @@
 
         show: function () {
             if (this.container) {
+                var wasDetached = !this.container.parentElement;
                 // Re-attach to body if removed by SPA navigation
-                if (!this.container.parentElement) {
+                if (wasDetached) {
                     document.body.appendChild(this.container);
                 }
                 this.container.classList.remove('disabled', 'hidden', 'scrolled-partial', 'scrolled-full');
@@ -606,10 +612,21 @@
                     // Scroll to top so hero is fully visible
                     window.scrollTo(0, 0);
                 }
+                // If container was detached and re-attached, reload content
+                // to avoid showing stale or empty hero
+                if (wasDetached && this.apiClient) {
+                    var self = this;
+                    this.loadContent().then(function () {
+                        if (self.items.length > 0 && self._autoAdvance) {
+                            self.resetAutoAdvance();
+                        }
+                    }).catch(function () {});
+                }
             }
         },
 
         hide: function () {
+            this.generation++; // cancel any in-flight API calls
             if (this.container) {
                 this.container.classList.add('hidden');
                 document.body.classList.remove('moonfin-mediabar-active');
@@ -743,6 +760,20 @@
             window.addEventListener('scroll', this._onScroll, { passive: true });
 
             // Page navigation → show/hide
+            // Primary: viewshow — Jellyfin's own SPA navigation event (most reliable)
+            this._onViewShow = function (e) {
+                var type = e.detail && e.detail.type;
+                if (type === 'home' || (!type && self.isHomePage())) {
+                    self.show();
+                } else if (self.isHomePage()) {
+                    self.show();
+                } else {
+                    self.hide();
+                }
+            };
+            document.addEventListener('viewshow', this._onViewShow);
+
+            // Fallback: hashchange for edge cases (browser back/forward)
             this._onNavChange = function () {
                 if (self.isHomePage()) {
                     self.show();
@@ -751,19 +782,22 @@
                 }
             };
             window.addEventListener('hashchange', this._onNavChange);
-            window.addEventListener('viewshow', this._onNavChange);
         },
 
         destroy: function () {
             this.stopAutoAdvance();
             this.stopTrailer();
+            this.generation++;
             if (this._onScroll) {
                 window.removeEventListener('scroll', this._onScroll);
                 this._onScroll = null;
             }
+            if (this._onViewShow) {
+                document.removeEventListener('viewshow', this._onViewShow);
+                this._onViewShow = null;
+            }
             if (this._onNavChange) {
                 window.removeEventListener('hashchange', this._onNavChange);
-                window.removeEventListener('viewshow', this._onNavChange);
                 this._onNavChange = null;
             }
             if (this.container) {

@@ -233,6 +233,11 @@ var Details = {
         var api = window.ApiClient;
         if (!api) return;
 
+        // Re-create container if removed by SPA navigation (defensive check)
+        if (!this.container || !this.container.parentElement) {
+            this.createContainer();
+        }
+
         var wasAlreadyVisible = this.isVisible;
 
         if (wasAlreadyVisible && this.currentItem && this.currentItem.Id && this.currentItem.Id !== itemId && !this._navigatingBack) {
@@ -3173,7 +3178,7 @@ var Details = {
     hide: function(skipHistoryBack) {
         if (!this.isVisible) return;
         this.closeTrailerOverlay();
-        this.container.classList.remove('visible');
+        if (this.container) this.container.classList.remove('visible');
         this.isVisible = false;
         this.currentItem = null;
         this._itemHistory = [];

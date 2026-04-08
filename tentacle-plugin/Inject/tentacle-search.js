@@ -1,4 +1,12 @@
 // Tentacle Search — Unified search replacing Jellyfin's native results with TMDB
+//
+// Architecture (Moonfin pattern — body-level overlay, immune to view transitions):
+//   - #tentacleSearchResults mounted on document.body (stable, outside Jellyfin views)
+//   - Body class `tentacle-search-active` hides ALL native search results in ALL views
+//   - viewshow + hashchange + popstate for navigation detection
+//   - Generation counter cancels stale API responses on rapid navigation
+//   - Scoped input finding: only searches the active (visible) view for the native input
+//   - On navigation away: cleanup() removes element + body class + listeners
 (function () {
   'use strict';
 
@@ -11,6 +19,8 @@
     inputObserver: null,
     nativeInput: null,
     hideStyle: null,
+    generation: 0,       // incremented on every nav, stale searches check this
+    _onInputChange: null, // bound listener ref for cleanup
   };
 
   function apiGet(path) {
@@ -31,21 +41,68 @@
     return h === 'search' || h === 'search.html';
   }
 
-  function onRouteChange() {
-    if (isSearchPage()) {
-      waitForSearchInput();
+  // ── Find the ACTIVE view's search input (not stale views) ──────────
+  // Jellyfin SPA keeps old views in the DOM. We must only look in the
+  // currently visible view to avoid attaching to a stale hidden input.
+  function findActiveView() {
+    // Jellyfin marks the active view — try multiple strategies
+    var views = document.querySelectorAll('.view');
+    for (var i = views.length - 1; i >= 0; i--) {
+      var v = views[i];
+      // Active view is the last visible one, or has data-type="search"
+      if (v.offsetParent !== null || v.style.display !== 'none') {
+        return v;
+      }
+    }
+    // Fallback: last view in DOM (most recently added = active in Jellyfin SPA)
+    return views.length ? views[views.length - 1] : null;
+  }
+
+  function findNativeSearchInput() {
+    var view = findActiveView();
+    var scope = view || document;
+    return scope.querySelector('.searchfields-txtSearch')
+      || scope.querySelector('input.emby-input[type="text"][data-action="search"]')
+      || scope.querySelector('.searchPage input[type="text"]')
+      || scope.querySelector('[data-type="search"] input[type="text"]');
+  }
+
+  // ── Navigation Handlers ─────────────────────────────────────────────
+
+  function onViewShow(e) {
+    var type = e.detail && e.detail.type;
+    if (type === 'search' || (!type && isSearchPage())) {
+      onSearchPage();
+    } else if (isSearchPage()) {
+      onSearchPage();
     } else {
-      cleanup();
+      onLeavingSearch();
     }
   }
 
-  // ── Find Jellyfin's native search input ──────────────────────────────
+  function onNavChange() {
+    if (isSearchPage()) {
+      onSearchPage();
+    } else {
+      onLeavingSearch();
+    }
+  }
 
-  function findNativeSearchInput() {
-    return document.querySelector('.searchfields-txtSearch')
-      || document.querySelector('input.emby-input[type="text"][data-action="search"]')
-      || document.querySelector('.searchPage input[type="text"]')
-      || document.querySelector('[data-type="search"] input[type="text"]');
+  // ── Search Page Entry ─────────────────────────────────────────────
+
+  function onSearchPage() {
+    // If already active with a live container, just make sure it's visible
+    if (SEARCH.active && document.getElementById('tentacleSearchResults')) return;
+
+    // Clean any stale state first
+    cleanup();
+
+    waitForSearchInput();
+  }
+
+  function onLeavingSearch() {
+    SEARCH.generation++;
+    cleanup();
   }
 
   function waitForSearchInput() {
@@ -54,7 +111,12 @@
       attachToInput(input);
       return;
     }
+    // Wait for Jellyfin to render the search input — scope observer to active view
     if (SEARCH.inputObserver) SEARCH.inputObserver.disconnect();
+
+    var view = findActiveView();
+    var observeTarget = view || document.body;
+
     SEARCH.inputObserver = new MutationObserver(function () {
       var inp = findNativeSearchInput();
       if (inp) {
@@ -63,7 +125,9 @@
         attachToInput(inp);
       }
     });
-    SEARCH.inputObserver.observe(document.body, { childList: true, subtree: true });
+    SEARCH.inputObserver.observe(observeTarget, { childList: true, subtree: true });
+
+    // Safety timeout — don't observe forever
     setTimeout(function () {
       if (SEARCH.inputObserver) {
         SEARCH.inputObserver.disconnect();
@@ -79,19 +143,28 @@
     SEARCH.active = true;
     SEARCH.nativeInput = input;
 
-    // Immediately hide native results with CSS
+    var gen = ++SEARCH.generation;
+
+    // Hide ALL native search results via body class (CSS handles the rest)
     injectHideCSS();
 
-    input.addEventListener('input', onInputChange);
+    // Create our results container on document.body (stable, immune to view transitions)
+    getOrCreateContainer();
+
+    SEARCH._onInputChange = function (e) { onInputChange(e, gen); };
+    input.addEventListener('input', SEARCH._onInputChange);
 
     var existing = input.value.trim();
     if (existing) {
       SEARCH.lastQuery = existing;
-      doSearch(existing);
+      doSearch(existing, gen);
     }
   }
 
-  function onInputChange(e) {
+  function onInputChange(e, gen) {
+    // Stale check — did navigation happen since we attached?
+    if (gen !== SEARCH.generation) return;
+
     var q = e.target.value.trim();
     if (SEARCH.debounceTimer) clearTimeout(SEARCH.debounceTimer);
 
@@ -102,21 +175,22 @@
     }
 
     SEARCH.debounceTimer = setTimeout(function () {
+      if (gen !== SEARCH.generation) return;
       if (q !== SEARCH.lastQuery) {
         SEARCH.lastQuery = q;
-        doSearch(q);
+        doSearch(q, gen);
       }
     }, 400);
   }
 
   // ── CSS injection to nuke ALL native search results ──────────────────
+  // Uses body class so it hides native results in ALL views (stale or fresh)
 
   function injectHideCSS() {
     if (SEARCH.hideStyle) return;
     document.body.classList.add('tentacle-search-active');
     var style = document.createElement('style');
     style.id = 'tentacleSearchHideNative';
-    // All rules scoped under body.tentacle-search-active so they never leak to other pages
     style.textContent = [
       // Native search result cards
       'body.tentacle-search-active .card.overflowPortraitCard { display: none !important; }',
@@ -151,7 +225,7 @@
     }
   }
 
-  // ── Container ────────────────────────────────────────────────────────
+  // ── Container — mounted on document.body (stable parent) ──────────
 
   function getOrCreateContainer() {
     var existing = document.getElementById('tentacleSearchResults');
@@ -179,7 +253,7 @@
         container.querySelectorAll('.tentacle-search-filter-btn').forEach(function (x) { x.classList.remove('ts-active'); });
         filterBtn.classList.add('ts-active');
         SEARCH.mediaFilter = filterBtn.getAttribute('data-tstype');
-        if (SEARCH.lastQuery) doSearch(SEARCH.lastQuery);
+        if (SEARCH.lastQuery) doSearch(SEARCH.lastQuery, SEARCH.generation);
         return;
       }
 
@@ -200,27 +274,18 @@
       }
     });
 
-    // Insert into the page
-    var parent = null;
-    if (SEARCH.nativeInput) {
-      parent = SEARCH.nativeInput.closest('.view')
-        || SEARCH.nativeInput.closest('.searchPage')
-        || SEARCH.nativeInput.closest('[data-type="search"]');
-    }
-    if (!parent) {
-      parent = document.querySelector('.view')
-        || document.querySelector('.mainAnimatedPages')
-        || document.body;
-    }
-    parent.appendChild(container);
+    // Mount on document.body — outside any Jellyfin view element
+    // This is the key architectural fix: our container can never be trapped
+    // in a stale hidden view on SPA navigation
+    document.body.appendChild(container);
 
     return container;
   }
 
   // ── Search ───────────────────────────────────────────────────────────
 
-  function doSearch(query) {
-    var container = getOrCreateContainer();
+  function doSearch(query, gen) {
+    getOrCreateContainer();
     var grid = document.getElementById('tentacleSearchGrid');
     if (!grid) return;
 
@@ -228,6 +293,9 @@
 
     apiGet('TentacleDiscover/Search?q=' + encodeURIComponent(query) + '&type=' + SEARCH.mediaFilter)
       .then(function (data) {
+        // Stale check — did user navigate away during the API call?
+        if (gen !== SEARCH.generation) return;
+
         var items = data.items || [];
         SEARCH.results = items;
         if (!items.length) {
@@ -237,6 +305,7 @@
         renderResults(items, grid);
       })
       .catch(function () {
+        if (gen !== SEARCH.generation) return;
         grid.innerHTML = '<div class="tentacle-search-empty">Search failed</div>';
       });
   }
@@ -301,7 +370,6 @@
     if (window.TentacleDiscover && window.TentacleDiscover.showDetailModal) {
       window.TentacleDiscover.showDetailModal(item);
     } else if (window.TentacleDetails && window.TentacleDetails.show && item.jellyfin_id) {
-      // Fallback: open in Tentacle detail overlay if available
       window.TentacleDetails.show(item.jellyfin_id, item.media_type === 'series' ? 'Series' : 'Movie');
     } else {
       console.warn('[TentacleSearch] No detail handler available');
@@ -357,6 +425,11 @@
       SEARCH.inputObserver.disconnect();
       SEARCH.inputObserver = null;
     }
+    // Remove input listener from the native input
+    if (SEARCH.nativeInput && SEARCH._onInputChange) {
+      SEARCH.nativeInput.removeEventListener('input', SEARCH._onInputChange);
+      SEARCH._onInputChange = null;
+    }
     removeHideCSS();
     SEARCH.active = false;
     SEARCH.lastQuery = '';
@@ -370,10 +443,17 @@
   // ── Bootstrap ────────────────────────────────────────────────────────
 
   function init() {
-    window.addEventListener('hashchange', onRouteChange);
-    window.addEventListener('popstate', onRouteChange);
-    window.addEventListener('viewshow', onRouteChange);
-    onRouteChange();
+    // Primary: viewshow — Jellyfin's own SPA navigation event (most reliable)
+    document.addEventListener('viewshow', onViewShow);
+
+    // Fallback: hashchange + popstate for edge cases (browser back/forward)
+    window.addEventListener('hashchange', onNavChange);
+    window.addEventListener('popstate', onNavChange);
+
+    // Handle initial page load
+    if (isSearchPage()) {
+      onSearchPage();
+    }
   }
 
   function waitForReady() {
