@@ -117,36 +117,29 @@
     if (SEARCH.hideStyle) return;
     var style = document.createElement('style');
     style.id = 'tentacleSearchHideNative';
-    style.textContent =
-      // Hide all native search result sections, cards, headers
-      '.searchResults > *:not(#tentacleSearchResults),' +
-      '.itemsContainer:not(#tentacleSearchResults):not(#tentacleSearchGrid),' +
-      // Hide Jellyfin's search result sections (vertical sections with cards)
-      'div.view:not(:has(#tentacleSearchResults)) > .verticalSection,' +
-      // Broad: hide any card/section in the search view that isn't ours
-      '.card.overflowPortraitCard,' +
-      '.card.overflowBackdropCard,' +
-      '.card.overflowSquareCard,' +
-      // Hide native section titles like "Movies", "Shows"
-      '.view .sectionTitle:not(.tentacle-search-title)' +
-      '{ display: none !important; }' +
-      // But keep the search input visible
-      '.searchfields-txtSearch,' +
-      'input.emby-input,' +
-      '.searchPage .searchFields,' +
-      '#tentacleSearchResults,' +
-      '#tentacleSearchResults *' +
-      '{ display: revert !important; }' +
-      // Fix: our container should be block
-      '#tentacleSearchResults { display: block !important; }' +
-      '#tentacleSearchResults .tentacle-search-header { display: flex !important; }' +
-      '#tentacleSearchResults .tentacle-search-row { display: flex !important; }' +
-      '#tentacleSearchResults .tentacle-search-filters { display: flex !important; }' +
-      '#tentacleSearchResults .ts-card { display: block !important; }' +
-      '#tentacleSearchResults .ts-card-poster { display: block !important; }' +
-      '#tentacleSearchResults .ts-card-info { display: block !important; }' +
-      '#tentacleSearchResults .ts-card-badge { display: block !important; }' +
-      '#tentacleSearchResults .ts-card-meta { display: flex !important; }';
+    // Strategy: hide specific Jellyfin native search elements only.
+    // Do NOT use broad selectors that might catch our own elements.
+    // Do NOT use `display: revert` — it's unreliable with !important chains.
+    style.textContent = [
+      // Native search result cards
+      '.card.overflowPortraitCard { display: none !important; }',
+      '.card.overflowBackdropCard { display: none !important; }',
+      '.card.overflowSquareCard { display: none !important; }',
+      // Native section headers ("Movies", "Shows", "Episodes", etc.)
+      '.verticalSection > .sectionTitle { display: none !important; }',
+      // Native "no results" / "sorry" messages
+      '.noItemsMessage { display: none !important; }',
+      '.emby-scroller-alert { display: none !important; }',
+      // Catch-all for Jellyfin's "Sorry! No results found" text
+      '.searchPage .padded-left, .searchPage .padded-right { display: none !important; }',
+      // Hide itemsContainers that hold native cards (but not ours)
+      '.itemsContainer:not(#tentacleSearchGrid) { display: none !important; }',
+      // Hide native vertical sections
+      '.verticalSection { display: none !important; }',
+      // But our container is always visible
+      '#tentacleSearchResults { display: block !important; }',
+      '#tentacleSearchResults * { /* no override */ }',
+    ].join('\n');
     document.head.appendChild(style);
     SEARCH.hideStyle = style;
   }
