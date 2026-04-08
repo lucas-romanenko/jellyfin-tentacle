@@ -600,6 +600,41 @@
             var isUser = this.isUserPage();
             this.container.style.display = isUser ? '' : 'none';
             document.body.classList.toggle('moonfin-navbar-active', isUser);
+
+            // Ensure page-specific tabs (Live TV Guide/Channels/Recordings) are visible
+            // The CSS hides .skinHeader > *, but tabs may be nested deeper — force ancestors visible via JS
+            this.ensurePageTabsVisible();
+        },
+
+        ensurePageTabsVisible: function () {
+            var self = this;
+            this._showPageTabs();
+            // Tabs may render after the viewshow event — retry briefly
+            if (this._tabRetryTimer) clearTimeout(this._tabRetryTimer);
+            this._tabRetryTimer = setTimeout(function () { self._showPageTabs(); }, 300);
+        },
+
+        _showPageTabs: function () {
+            var skinHeader = document.querySelector('.skinHeader');
+            if (!skinHeader) return;
+
+            // Reset any previously forced ancestors
+            var prev = skinHeader.querySelectorAll('[data-tentacle-tab-ancestor]');
+            for (var i = 0; i < prev.length; i++) {
+                prev[i].style.display = '';
+                prev[i].removeAttribute('data-tentacle-tab-ancestor');
+            }
+
+            var tabs = skinHeader.querySelector('.sectionTabs, .emby-tabs-slider, [data-role="tabscontainer"]');
+            if (!tabs) return;
+
+            // Walk up from tabs to skinHeader, forcing all intermediate ancestors visible
+            var el = tabs;
+            while (el && el !== skinHeader) {
+                el.style.display = '';
+                el.setAttribute('data-tentacle-tab-ancestor', '');
+                el = el.parentElement;
+            }
         },
 
         updateActiveState: function () {
@@ -688,6 +723,10 @@
             if (this.librariesTimeout) {
                 clearTimeout(this.librariesTimeout);
                 this.librariesTimeout = null;
+            }
+            if (this._tabRetryTimer) {
+                clearTimeout(this._tabRetryTimer);
+                this._tabRetryTimer = null;
             }
             if (this.librariesDropdown) {
                 this.librariesDropdown.remove();

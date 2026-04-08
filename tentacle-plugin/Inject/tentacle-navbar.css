@@ -20,7 +20,12 @@ body.moonfin-navbar-active .skinHeader > * {
     display: none !important;
 }
 
-/* ...except page-specific tabs (Live TV Guide, Channels, Recordings, etc.) */
+/* ...except ancestors of page-specific tabs (marked by JS) */
+body.moonfin-navbar-active .skinHeader [data-tentacle-tab-ancestor] {
+    display: block !important;
+}
+
+/* Page-specific tabs themselves (Live TV Guide, Channels, Recordings, etc.) */
 body.moonfin-navbar-active .skinHeader .sectionTabs,
 body.moonfin-navbar-active .skinHeader .emby-tabs-slider,
 body.moonfin-navbar-active .skinHeader [data-role="tabscontainer"] {
