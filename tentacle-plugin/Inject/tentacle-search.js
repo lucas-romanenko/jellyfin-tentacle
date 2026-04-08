@@ -323,8 +323,12 @@
         }
         if (!match && items.length) match = items[0];
         if (match) {
-          console.log('[TentacleSearch] Navigating to details for:', match.Name, match.Id);
-          window.location.hash = '#/details?id=' + match.Id;
+          console.log('[TentacleSearch] Opening details for:', match.Name, match.Id);
+          if (window.TentacleDetails && window.TentacleDetails.show) {
+            window.TentacleDetails.show(match.Id, match.Type);
+          } else {
+            window.location.hash = '#/details?id=' + match.Id;
+          }
         } else {
           console.warn('[TentacleSearch] No library match found for:', item.title);
         }
