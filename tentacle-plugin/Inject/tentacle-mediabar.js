@@ -600,9 +600,11 @@
                 if (!this.container.parentElement) {
                     document.body.appendChild(this.container);
                 }
-                this.container.classList.remove('disabled', 'hidden');
+                this.container.classList.remove('disabled', 'hidden', 'scrolled-partial', 'scrolled-full');
                 if (this.isHomePage() && this.items && this.items.length > 0) {
                     document.body.classList.add('moonfin-mediabar-active');
+                    // Scroll to top so hero is fully visible
+                    window.scrollTo(0, 0);
                 }
             }
         },

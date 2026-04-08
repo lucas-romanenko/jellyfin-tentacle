@@ -71,6 +71,16 @@
       clearInterval(MH.heroInterval);
       MH.heroInterval = null;
     }
+    // Remove tentacle-home so it gets recreated fresh on next visit
+    // Without this, SPA navigation may keep the old element in a hidden page,
+    // causing checkAndRender() to skip re-rendering (stale #tentacle-home found)
+    var old = document.getElementById('tentacle-home');
+    if (old) {
+      // Restore the native container visibility before removing
+      var native = document.querySelector('.homeSectionsContainer');
+      if (native) native.style.display = '';
+      old.remove();
+    }
   }
 
   // ── API Helpers ───────────────────────────────────────────────────────
