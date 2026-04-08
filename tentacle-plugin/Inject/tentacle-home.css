@@ -40,6 +40,38 @@
   height: 2.4em !important;
 }
 
+/* ── Global Tentacle Background ──────────────────────────────────────── */
+
+/* Override Jellyfin's default black background across all pages */
+.backgroundContainer,
+.skinBody,
+html {
+  background-color: #0f0d1a !important;
+  background-image: none !important;
+}
+
+/* Main content area backgrounds */
+.mainDrawer-scrollContainer,
+.mainAnimatedPage,
+.libraryPage,
+.itemsContainer,
+.padded-left.padded-right,
+.page.type-interior {
+  background-color: transparent !important;
+}
+
+/* Search page */
+.searchResults,
+.searchFields {
+  background-color: transparent !important;
+}
+
+/* Admin/settings pages */
+.content-primary,
+.dashboardGeneralForm {
+  background-color: transparent !important;
+}
+
 /* ── Loading ────────────────────────────────────────────────────────── */
 .mh-loading {
   display: flex;
@@ -526,7 +558,7 @@
 .mh-card-badge-watched {
   top: 6px;
   right: 6px;
-  background: rgba(0, 164, 220, 0.9);
+  background: rgba(139, 128, 255, 0.9);
 }
 
 /* Play button overlay on hover */

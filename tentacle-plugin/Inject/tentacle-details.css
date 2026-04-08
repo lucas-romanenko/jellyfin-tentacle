@@ -367,8 +367,8 @@ body.moonfin-details-visible .moonfin-nav-back {
 }
 
 .moonfin-btn-wrapper.active .moonfin-btn-circle {
-    background: rgba(0, 164, 220, 0.25);
-    border-color: rgba(0, 164, 220, 0.6);
+    background: rgba(139, 128, 255, 0.25);
+    border-color: rgba(139, 128, 255, 0.6);
 }
 
 .moonfin-btn-wrapper.active .moonfin-btn-circle svg {
@@ -484,7 +484,7 @@ body.moonfin-details-visible .moonfin-nav-back {
 
 .moonfin-section-arrow:hover {
     background: rgba(255, 255, 255, 0.18);
-    border-color: rgba(0, 164, 220, 0.5);
+    border-color: rgba(139, 128, 255, 0.5);
     transform: scale(1.1);
 }
 
@@ -564,8 +564,8 @@ body.moonfin-details-visible .moonfin-nav-back {
 
 .moonfin-cast-card:hover .moonfin-cast-photo,
 .moonfin-cast-card:focus .moonfin-cast-photo {
-    border-color: rgba(0, 164, 220, 0.6);
-    box-shadow: 0 0 0 3px rgba(0, 164, 220, 0.2);
+    border-color: rgba(139, 128, 255, 0.6);
+    box-shadow: 0 0 0 3px rgba(139, 128, 255, 0.2);
 }
 
 .moonfin-cast-name {
@@ -622,7 +622,7 @@ body.moonfin-details-visible .moonfin-nav-back {
 
 .moonfin-similar-card:hover .moonfin-similar-poster,
 .moonfin-similar-card:focus .moonfin-similar-poster {
-    border-color: rgba(0, 164, 220, 0.6);
+    border-color: rgba(139, 128, 255, 0.6);
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
 }
 
@@ -641,7 +641,7 @@ body.moonfin-details-visible .moonfin-nav-back {
     right: 6px;
     width: 28px;
     height: 28px;
-    background: rgba(0, 164, 220, 0.9);
+    background: rgba(139, 128, 255, 0.9);
     border-radius: 50%;
     display: flex;
     align-items: center;
@@ -684,7 +684,7 @@ body.moonfin-details-visible .moonfin-nav-back {
     min-width: 22px;
     height: 22px;
     padding: 0 6px;
-    background: rgba(0, 164, 220, 0.9);
+    background: rgba(139, 128, 255, 0.9);
     border-radius: 11px;
     font-size: 12px;
     font-weight: 600;
@@ -735,7 +735,7 @@ body.moonfin-details-visible .moonfin-nav-back {
 
 .moonfin-season-card:hover .moonfin-season-poster,
 .moonfin-season-card:focus .moonfin-season-poster {
-    border-color: rgba(0, 164, 220, 0.6);
+    border-color: rgba(139, 128, 255, 0.6);
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
 }
 
@@ -764,13 +764,13 @@ body.moonfin-details-visible .moonfin-nav-back {
 .moonfin-episode-card:focus {
     transform: scale(1.03);
     outline: none;
-    border-color: rgba(0, 164, 220, 0.5);
+    border-color: rgba(139, 128, 255, 0.5);
     background: rgba(255, 255, 255, 0.08);
 }
 
 .moonfin-episode-card.moonfin-episode-current {
-    border-color: rgba(0, 164, 220, 0.6);
-    background: rgba(0, 164, 220, 0.1);
+    border-color: rgba(139, 128, 255, 0.6);
+    background: rgba(139, 128, 255, 0.1);
 }
 
 .moonfin-episode-thumb {
@@ -865,7 +865,7 @@ body.moonfin-details-visible .moonfin-nav-back {
 .moonfin-chapter-card:focus {
     transform: scale(1.02);
     outline: none;
-    border-color: rgba(0, 164, 220, 0.5);
+    border-color: rgba(139, 128, 255, 0.5);
     background: rgba(255, 255, 255, 0.08);
 }
 
@@ -1715,7 +1715,7 @@ body.moonfin-details-visible .moonfin-nav-back {
 .moonfin-trailer-close:hover,
 .moonfin-trailer-close:focus {
     background: rgba(0, 0, 0, 0.8);
-    border-color: rgba(0, 164, 220, 0.75);
+    border-color: rgba(139, 128, 255, 0.75);
     outline: none;
 }
 
@@ -1791,7 +1791,7 @@ body.moonfin-details-visible .moonfin-nav-back {
 .moonfin-more-item:hover,
 .moonfin-more-item:focus {
     background: rgba(255, 255, 255, 0.08);
-    border-color: rgba(0, 164, 220, 0.5);
+    border-color: rgba(139, 128, 255, 0.5);
     outline: none;
 }
 
@@ -1972,7 +1972,7 @@ body.moonfin-details-visible .moonfin-nav-back {
 .moonfin-season-ep:hover,
 .moonfin-season-ep:focus {
     background: rgba(255, 255, 255, 0.08);
-    border-color: rgba(0, 164, 220, 0.4);
+    border-color: rgba(139, 128, 255, 0.4);
     outline: none;
 }
 
