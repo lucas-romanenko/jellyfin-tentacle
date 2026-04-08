@@ -203,24 +203,21 @@
     var style = document.createElement('style');
     style.id = 'tentacleSearchHideNative';
     style.textContent = [
-      // Native search result cards
+      // Hide native search RESULTS but NOT the search input field.
+      // The search input lives inside .searchPage — we must preserve it.
+      // Only hide result containers, cards, and section headers below the input.
       'body.tentacle-search-active .card.overflowPortraitCard { display: none !important; }',
       'body.tentacle-search-active .card.overflowBackdropCard { display: none !important; }',
       'body.tentacle-search-active .card.overflowSquareCard { display: none !important; }',
-      // Native section headers
-      'body.tentacle-search-active .verticalSection > .sectionTitle { display: none !important; }',
-      // Native "no results" messages
+      'body.tentacle-search-active .itemsContainer:not(#tentacleSearchGrid) { display: none !important; }',
       'body.tentacle-search-active .noItemsMessage { display: none !important; }',
       'body.tentacle-search-active .emby-scroller-alert { display: none !important; }',
-      // Catch-all for Jellyfin messages
-      'body.tentacle-search-active .searchPage .padded-left, body.tentacle-search-active .searchPage .padded-right { display: none !important; }',
-      // Hide native itemsContainers
-      'body.tentacle-search-active .itemsContainer:not(#tentacleSearchGrid) { display: none !important; }',
-      // Hide native vertical sections
-      'body.tentacle-search-active .verticalSection { display: none !important; }',
-      // Hide native search label/icon that may overlap
+      // Hide section titles and scrollers that contain native results
+      'body.tentacle-search-active .searchResults .sectionTitle { display: none !important; }',
+      'body.tentacle-search-active .searchResults .emby-scroller { display: none !important; }',
+      'body.tentacle-search-active .searchResults .verticalSection { display: none !important; }',
+      // Hide native search tab button
       'body.tentacle-search-active .searchTabButton { display: none !important; }',
-      'body.tentacle-search-active .headerSearchButton { display: none !important; }',
       // Our container always visible
       '#tentacleSearchResults { display: block !important; }',
     ].join('\n');
