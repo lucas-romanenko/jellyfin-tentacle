@@ -5,7 +5,7 @@
     opacity: 0;
     visibility: hidden;
     transition: opacity 0.2s ease, visibility 0.2s ease;
-    background-color: #050505;
+    background-color: #0f0d1a;
 }
 
 .moonfin-details-overlay.visible {
@@ -40,7 +40,7 @@
     left: 0;
     right: 0;
     bottom: 0;
-    background-color: #050505;
+    background-color: #0f0d1a;
     background-size: cover;
     background-position: center top;
     background-repeat: no-repeat;
@@ -288,7 +288,7 @@ body.moonfin-details-visible .moonfin-nav-back {
 .moonfin-poster {
     width: 260px;
     height: 390px;
-    background-color: #1a1a1a;
+    background-color: #16132a;
     border-radius: 12px;
     overflow: hidden;
     box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
@@ -372,7 +372,7 @@ body.moonfin-details-visible .moonfin-nav-back {
 }
 
 .moonfin-btn-wrapper.active .moonfin-btn-circle svg {
-    color: #00a4dc;
+    color: #8b80ff;
 }
 
 .moonfin-btn-label {
@@ -392,7 +392,7 @@ body.moonfin-details-visible .moonfin-nav-back {
 }
 
 .moonfin-btn-wrapper.active .moonfin-btn-label {
-    color: #00a4dc;
+    color: #8b80ff;
 }
 
 .moonfin-metadata-group {
@@ -540,7 +540,7 @@ body.moonfin-details-visible .moonfin-nav-back {
     height: 120px;
     border-radius: 50%;
     margin: 0 auto 10px;
-    background-color: #1a1a1a;
+    background-color: #16132a;
     overflow: hidden;
     display: flex;
     align-items: center;
@@ -605,7 +605,7 @@ body.moonfin-details-visible .moonfin-nav-back {
     position: relative;
     width: 180px;
     height: 270px;
-    background-color: #1a1a1a;
+    background-color: #16132a;
     border-radius: 8px;
     overflow: hidden;
     margin-bottom: 10px;
@@ -713,7 +713,7 @@ body.moonfin-details-visible .moonfin-nav-back {
     position: relative;
     width: 160px;
     height: 240px;
-    background-color: #1a1a1a;
+    background-color: #16132a;
     border-radius: 8px;
     overflow: hidden;
     margin-bottom: 10px;
@@ -776,7 +776,7 @@ body.moonfin-details-visible .moonfin-nav-back {
 .moonfin-episode-thumb {
     width: 100%;
     height: 146px;
-    background-color: #1a1a1a;
+    background-color: #16132a;
     overflow: hidden;
     position: relative;
 }
@@ -794,7 +794,7 @@ body.moonfin-details-visible .moonfin-nav-back {
     display: flex;
     align-items: center;
     justify-content: center;
-    background: #1a1a1a;
+    background: #16132a;
 }
 
 .moonfin-episode-thumb-placeholder svg {
@@ -814,7 +814,7 @@ body.moonfin-details-visible .moonfin-nav-back {
 
 .moonfin-episode-progress-bar {
     height: 100%;
-    background: #00a4dc;
+    background: #8b80ff;
     border-radius: 0 2px 2px 0;
 }
 
@@ -873,7 +873,7 @@ body.moonfin-details-visible .moonfin-nav-back {
     position: relative;
     width: 100%;
     height: 168px;
-    background: #1a1a1a;
+    background: #16132a;
     overflow: hidden;
 }
 
@@ -928,7 +928,7 @@ body.moonfin-details-visible .moonfin-nav-back {
     width: 48px;
     height: 48px;
     border: 3px solid rgba(255, 255, 255, 0.08);
-    border-top-color: #00a4dc;
+    border-top-color: #8b80ff;
     border-radius: 50%;
     animation: moonfin-spin 0.8s linear infinite;
 }
@@ -1737,7 +1737,7 @@ body.moonfin-details-visible .moonfin-nav-back {
 }
 
 .moonfin-more-menu {
-    background: #1a1a1a;
+    background: #16132a;
     border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 16px;
     padding: 24px;
@@ -1812,7 +1812,7 @@ body.moonfin-details-visible .moonfin-nav-back {
 
 .moonfin-more-item:hover .moonfin-more-item-icon svg,
 .moonfin-more-item:focus .moonfin-more-item-icon svg {
-    color: #00a4dc;
+    color: #8b80ff;
 }
 
 .moonfin-more-item-text {
@@ -1889,7 +1889,7 @@ body.moonfin-details-visible .moonfin-nav-back {
 .moonfin-media-info-stream-header {
     font-size: 14px;
     font-weight: 600;
-    color: #00a4dc;
+    color: #8b80ff;
     margin-bottom: 6px;
     text-transform: uppercase;
     letter-spacing: 0.5px;
@@ -1981,7 +1981,7 @@ body.moonfin-details-visible .moonfin-nav-back {
     width: 280px;
     min-height: 160px;
     flex-shrink: 0;
-    background: #111;
+    background: #110f1e;
     overflow: hidden;
 }
 
@@ -1997,7 +1997,7 @@ body.moonfin-details-visible .moonfin-nav-back {
     display: flex;
     align-items: center;
     justify-content: center;
-    background: #1a1a1a;
+    background: #16132a;
 }
 
 .moonfin-season-ep-thumb-placeholder svg {
@@ -2040,7 +2040,7 @@ body.moonfin-details-visible .moonfin-nav-back {
 .moonfin-season-ep-check {
     width: 16px;
     height: 16px;
-    color: #00a4dc;
+    color: #8b80ff;
 }
 
 .moonfin-season-ep-title {
@@ -2160,7 +2160,7 @@ body.moonfin-details-visible .moonfin-nav-back {
 }
 
 .moonfin-person-backdrop {
-    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%) !important;
+    background: linear-gradient(135deg, #0f0d1a 0%, #141222 50%, #1a1632 100%) !important;
 }
 
 .moonfin-person-header {

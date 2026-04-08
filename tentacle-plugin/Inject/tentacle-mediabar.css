@@ -35,7 +35,7 @@ body.moonfin-mediabar-active #tentacle-home {
 /* Rows wrapper gets the solid background + rounded top */
 body.moonfin-mediabar-active #mh-rows-container {
     position: relative;
-    background: #101010;
+    background: #110f1e;
     border-radius: 20px 20px 0 0;
     padding-top: 20px;
     padding-bottom: 40px;
@@ -47,7 +47,7 @@ body.moonfin-mediabar-active .homeSectionsContainer {
     position: relative;
     z-index: 5;
     margin-top: 85dvh;
-    background: #101010;
+    background: #110f1e;
     border-radius: 20px 20px 0 0;
     padding-top: 20px;
 }
@@ -65,7 +65,7 @@ body.moonfin-mediabar-active.moonfin-navbar-active .moonfin-navbar {
 /* Smooth scrolling + background covers the fixed hero at page bottom */
 body.moonfin-mediabar-active {
     scroll-behavior: smooth;
-    background: #101010;
+    background: #110f1e;
 }
 
 .moonfin-mediabar.hidden,
@@ -76,7 +76,7 @@ body.moonfin-mediabar-active {
 
 /* Loading shimmer */
 .moonfin-mediabar.loading .moonfin-mediabar-backdrop {
-    background: linear-gradient(110deg, #1a1a1a 30%, #2a2a2a 50%, #1a1a1a 70%);
+    background: linear-gradient(110deg, #16132a 30%, #1e1a36 50%, #16132a 70%);
     background-size: 200% 100%;
     animation: moonfin-shimmer 1.5s ease-in-out infinite;
 }
@@ -174,8 +174,8 @@ body.moonfin-mediabar-active {
         ),
         linear-gradient(
             to top,
-            #101010 0%,
-            rgba(16, 16, 16, 0.7) 15%,
+            #110f1e 0%,
+            rgba(17, 15, 30, 0.7) 15%,
             rgba(0, 0, 0, 0.15) 45%,
             rgba(0, 0, 0, 0) 70%
         );

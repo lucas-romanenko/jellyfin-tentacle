@@ -109,7 +109,7 @@
 }
 
 .moonfin-sortable-item-active {
-    border-color: rgba(0, 164, 220, 0.25);
+    border-color: rgba(139, 128, 255, 0.25);
 }
 
 .moonfin-sortable-dragging {
@@ -118,8 +118,8 @@
 
 .moonfin-sortable-placeholder {
     height: 42px;
-    background: rgba(0, 164, 220, 0.08);
-    border: 2px dashed rgba(0, 164, 220, 0.3);
+    background: rgba(139, 128, 255, 0.08);
+    border: 2px dashed rgba(139, 128, 255, 0.3);
     border-radius: 8px;
     margin: 2px 0;
 }
@@ -174,7 +174,7 @@
 }
 
 .moonfin-sortable-item-active .moonfin-sortable-toggle {
-    color: #00a4dc;
+    color: #8b80ff;
 }
 
 .moonfin-sortable-item-active .moonfin-sortable-toggle:hover {
@@ -192,7 +192,7 @@
 .moonfin-sortable-checkbox input[type="checkbox"] {
     width: 16px;
     height: 16px;
-    accent-color: #00a4dc;
+    accent-color: #8b80ff;
     cursor: pointer;
     margin: 0;
 }
@@ -204,7 +204,7 @@
     opacity: 0.85;
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
     background: rgba(30, 30, 40, 0.95);
-    border-color: rgba(0, 164, 220, 0.4);
+    border-color: rgba(139, 128, 255, 0.4);
 }
 
 .moonfin-mdblist-config {

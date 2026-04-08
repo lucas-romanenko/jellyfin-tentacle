@@ -74,7 +74,7 @@ body.moonfin-navbar-active .cardOverlayContainer {
 }
 
 .moonfin-nav-back:focus {
-    outline: 2px solid #00a4dc;
+    outline: 2px solid #8b80ff;
     outline-offset: 2px;
 }
 
@@ -93,7 +93,7 @@ body.moonfin-navbar-active .cardOverlayContainer {
 }
 
 .moonfin-user-btn:focus {
-    outline: 2px solid #00a4dc;
+    outline: 2px solid #8b80ff;
     outline-offset: 2px;
 }
 
@@ -101,7 +101,7 @@ body.moonfin-navbar-active .cardOverlayContainer {
     width: 44px;
     height: 44px;
     border-radius: 50%;
-    background: linear-gradient(135deg, #00a4dc, #0077b6);
+    background: linear-gradient(135deg, #8b80ff, #6d5fe6);
     display: flex;
     align-items: center;
     justify-content: center;
