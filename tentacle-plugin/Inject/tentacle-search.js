@@ -1,4 +1,12 @@
 // Tentacle Search — Unified search replacing Jellyfin's native results with TMDB
+//
+// Architecture (Moonfin pattern — body-level overlay, immune to view transitions):
+//   - #tentacleSearchResults mounted on document.body (stable, outside Jellyfin views)
+//   - Body class `tentacle-search-active` hides ALL native search results in ALL views
+//   - viewshow + hashchange + popstate for navigation detection
+//   - Generation counter cancels stale API responses on rapid navigation
+//   - Scoped input finding: only searches the active (visible) view for the native input
+//   - On navigation away: cleanup() removes element + body class + listeners
 (function () {
   'use strict';
 
@@ -11,6 +19,8 @@
     inputObserver: null,
     nativeInput: null,
     hideStyle: null,
+    generation: 0,       // incremented on every nav, stale searches check this
+    _onInputChange: null, // bound listener ref for cleanup
   };
 
   function apiGet(path) {
@@ -31,24 +41,72 @@
     return h === 'search' || h === 'search.html';
   }
 
-  function onRouteChange() {
-    if (isSearchPage()) {
-      // Dismiss other Tentacle overlays — only one visible at a time
-      if (window.TentacleDiscover && window.TentacleDiscover.isActive && window.TentacleDiscover.isActive()) window.TentacleDiscover.hide();
-      if (window.TentacleActivity && window.TentacleActivity.isActive && window.TentacleActivity.isActive()) window.TentacleActivity.hide();
-      waitForSearchInput();
+  // ── Find the ACTIVE view's search input (not stale views) ──────────
+  // Jellyfin SPA keeps old views in the DOM. We must only look in the
+  // currently visible view to avoid attaching to a stale hidden input.
+  function findActiveView() {
+    // Jellyfin marks the active view — try multiple strategies
+    var views = document.querySelectorAll('.view');
+    for (var i = views.length - 1; i >= 0; i--) {
+      var v = views[i];
+      // Active view is the last visible one, or has data-type="search"
+      if (v.offsetParent !== null || v.style.display !== 'none') {
+        return v;
+      }
+    }
+    // Fallback: last view in DOM (most recently added = active in Jellyfin SPA)
+    return views.length ? views[views.length - 1] : null;
+  }
+
+  function findNativeSearchInput() {
+    var view = findActiveView();
+    var scope = view || document;
+    return scope.querySelector('.searchfields-txtSearch')
+      || scope.querySelector('input.emby-input[type="text"][data-action="search"]')
+      || scope.querySelector('.searchPage input[type="text"]')
+      || scope.querySelector('[data-type="search"] input[type="text"]');
+  }
+
+  // ── Navigation Handlers ─────────────────────────────────────────────
+
+  function onViewShow(e) {
+    var type = e.detail && e.detail.type;
+    if (type === 'search' || (!type && isSearchPage())) {
+      onSearchPage();
+    } else if (isSearchPage()) {
+      onSearchPage();
     } else {
-      cleanup();
+      onLeavingSearch();
     }
   }
 
-  // ── Find Jellyfin's native search input ──────────────────────────────
+  function onNavChange() {
+    if (isSearchPage()) {
+      onSearchPage();
+    } else {
+      onLeavingSearch();
+    }
+  }
 
-  function findNativeSearchInput() {
-    return document.querySelector('.searchfields-txtSearch')
-      || document.querySelector('input.emby-input[type="text"][data-action="search"]')
-      || document.querySelector('.searchPage input[type="text"]')
-      || document.querySelector('[data-type="search"] input[type="text"]');
+  // ── Search Page Entry ─────────────────────────────────────────────
+
+  function onSearchPage() {
+    // Dismiss other Tentacle overlays — only one visible at a time
+    if (window.TentacleDiscover && window.TentacleDiscover.isActive && window.TentacleDiscover.isActive()) window.TentacleDiscover.hide();
+    if (window.TentacleActivity && window.TentacleActivity.isActive && window.TentacleActivity.isActive()) window.TentacleActivity.hide();
+
+    // If already active with a live container, just make sure it's visible
+    if (SEARCH.active && document.getElementById('tentacleSearchResults')) return;
+
+    // Clean any stale state first
+    cleanup();
+
+    waitForSearchInput();
+  }
+
+  function onLeavingSearch() {
+    SEARCH.generation++;
+    cleanup();
   }
 
   function waitForSearchInput() {
@@ -57,7 +115,12 @@
       attachToInput(input);
       return;
     }
+    // Wait for Jellyfin to render the search input — scope observer to active view
     if (SEARCH.inputObserver) SEARCH.inputObserver.disconnect();
+
+    var view = findActiveView();
+    var observeTarget = view || document.body;
+
     SEARCH.inputObserver = new MutationObserver(function () {
       var inp = findNativeSearchInput();
       if (inp) {
@@ -66,7 +129,9 @@
         attachToInput(inp);
       }
     });
-    SEARCH.inputObserver.observe(document.body, { childList: true, subtree: true });
+    SEARCH.inputObserver.observe(observeTarget, { childList: true, subtree: true });
+
+    // Safety timeout — don't observe forever
     setTimeout(function () {
       if (SEARCH.inputObserver) {
         SEARCH.inputObserver.disconnect();
@@ -82,19 +147,28 @@
     SEARCH.active = true;
     SEARCH.nativeInput = input;
 
-    // Immediately hide native results with CSS
+    var gen = ++SEARCH.generation;
+
+    // Hide ALL native search results via body class (CSS handles the rest)
     injectHideCSS();
 
-    input.addEventListener('input', onInputChange);
+    // Create our results container on document.body (stable, immune to view transitions)
+    getOrCreateContainer();
+
+    SEARCH._onInputChange = function (e) { onInputChange(e, gen); };
+    input.addEventListener('input', SEARCH._onInputChange);
 
     var existing = input.value.trim();
     if (existing) {
       SEARCH.lastQuery = existing;
-      doSearch(existing);
+      doSearch(existing, gen);
     }
   }
 
-  function onInputChange(e) {
+  function onInputChange(e, gen) {
+    // Stale check — did navigation happen since we attached?
+    if (gen !== SEARCH.generation) return;
+
     var q = e.target.value.trim();
     if (SEARCH.debounceTimer) clearTimeout(SEARCH.debounceTimer);
 
@@ -105,54 +179,57 @@
     }
 
     SEARCH.debounceTimer = setTimeout(function () {
+      if (gen !== SEARCH.generation) return;
       if (q !== SEARCH.lastQuery) {
         SEARCH.lastQuery = q;
-        doSearch(q);
+        doSearch(q, gen);
       }
     }, 400);
   }
 
   // ── CSS injection to nuke ALL native search results ──────────────────
+  // Uses body class so it hides native results in ALL views (stale or fresh)
 
   function injectHideCSS() {
     if (SEARCH.hideStyle) return;
+    document.body.classList.add('tentacle-search-active');
     var style = document.createElement('style');
     style.id = 'tentacleSearchHideNative';
     style.textContent = [
       // Native search result cards
-      '.card.overflowPortraitCard { display: none !important; }',
-      '.card.overflowBackdropCard { display: none !important; }',
-      '.card.overflowSquareCard { display: none !important; }',
+      'body.tentacle-search-active .card.overflowPortraitCard { display: none !important; }',
+      'body.tentacle-search-active .card.overflowBackdropCard { display: none !important; }',
+      'body.tentacle-search-active .card.overflowSquareCard { display: none !important; }',
       // Native section headers
-      '.verticalSection > .sectionTitle { display: none !important; }',
+      'body.tentacle-search-active .verticalSection > .sectionTitle { display: none !important; }',
       // Native "no results" messages
-      '.noItemsMessage { display: none !important; }',
-      '.emby-scroller-alert { display: none !important; }',
+      'body.tentacle-search-active .noItemsMessage { display: none !important; }',
+      'body.tentacle-search-active .emby-scroller-alert { display: none !important; }',
       // Catch-all for Jellyfin messages
-      '.searchPage .padded-left, .searchPage .padded-right { display: none !important; }',
+      'body.tentacle-search-active .searchPage .padded-left, body.tentacle-search-active .searchPage .padded-right { display: none !important; }',
       // Hide native itemsContainers
-      '.itemsContainer:not(#tentacleSearchGrid) { display: none !important; }',
+      'body.tentacle-search-active .itemsContainer:not(#tentacleSearchGrid) { display: none !important; }',
       // Hide native vertical sections
-      '.verticalSection { display: none !important; }',
+      'body.tentacle-search-active .verticalSection { display: none !important; }',
       // Hide native search label/icon that may overlap
-      '.searchTabButton { display: none !important; }',
-      '.headerSearchButton { display: none !important; }',
+      'body.tentacle-search-active .searchTabButton { display: none !important; }',
+      'body.tentacle-search-active .headerSearchButton { display: none !important; }',
       // Our container always visible
       '#tentacleSearchResults { display: block !important; }',
-      '#tentacleSearchResults * { /* no override */ }',
     ].join('\n');
     document.head.appendChild(style);
     SEARCH.hideStyle = style;
   }
 
   function removeHideCSS() {
+    document.body.classList.remove('tentacle-search-active');
     if (SEARCH.hideStyle) {
       SEARCH.hideStyle.remove();
       SEARCH.hideStyle = null;
     }
   }
 
-  // ── Container ────────────────────────────────────────────────────────
+  // ── Container — mounted on document.body (stable parent) ──────────
 
   function getOrCreateContainer() {
     var existing = document.getElementById('tentacleSearchResults');
@@ -172,35 +249,46 @@
       '</div>' +
       '<div id="tentacleSearchGrid"></div>';
 
-    container.querySelectorAll('.tentacle-search-filter-btn').forEach(function (btn) {
-      btn.addEventListener('click', function () {
+    // Single delegated click handler for the entire container
+    container.addEventListener('click', function (e) {
+      // Filter button click
+      var filterBtn = e.target.closest('.tentacle-search-filter-btn');
+      if (filterBtn) {
         container.querySelectorAll('.tentacle-search-filter-btn').forEach(function (x) { x.classList.remove('ts-active'); });
-        btn.classList.add('ts-active');
-        SEARCH.mediaFilter = btn.getAttribute('data-tstype');
-        if (SEARCH.lastQuery) doSearch(SEARCH.lastQuery);
-      });
+        filterBtn.classList.add('ts-active');
+        SEARCH.mediaFilter = filterBtn.getAttribute('data-tstype');
+        if (SEARCH.lastQuery) doSearch(SEARCH.lastQuery, SEARCH.generation);
+        return;
+      }
+
+      // Card click
+      var card = e.target.closest('.ts-card');
+      if (card) {
+        e.preventDefault();
+        e.stopPropagation();
+        var tmdb = parseInt(card.getAttribute('data-tmdb'), 10);
+        var item = findItem(tmdb);
+        console.log('[TentacleSearch] Card clicked, tmdb=' + tmdb, 'item=', item);
+        if (!item) return;
+        if (item.in_library) {
+          goToLibraryItem(item);
+        } else {
+          openModal(item);
+        }
+      }
     });
 
-    // Insert into the page — mount inside the input's parent view
-    var parent = null;
-    if (SEARCH.nativeInput) {
-      parent = SEARCH.nativeInput.closest('.view')
-        || SEARCH.nativeInput.closest('.searchPage')
-        || SEARCH.nativeInput.closest('[data-type="search"]');
-    }
-    if (!parent) {
-      parent = document.querySelector('.view')
-        || document.querySelector('.mainAnimatedPages')
-        || document.body;
-    }
-    parent.appendChild(container);
+    // Mount on document.body — outside any Jellyfin view element
+    // This is the key architectural fix: our container can never be trapped
+    // in a stale hidden view on SPA navigation
+    document.body.appendChild(container);
 
     return container;
   }
 
   // ── Search ───────────────────────────────────────────────────────────
 
-  function doSearch(query) {
+  function doSearch(query, gen) {
     getOrCreateContainer();
     var grid = document.getElementById('tentacleSearchGrid');
     if (!grid) return;
@@ -209,6 +297,9 @@
 
     apiGet('TentacleDiscover/Search?q=' + encodeURIComponent(query) + '&type=' + SEARCH.mediaFilter)
       .then(function (data) {
+        // Stale check — did user navigate away during the API call?
+        if (gen !== SEARCH.generation) return;
+
         var items = data.items || [];
         SEARCH.results = items;
         if (!items.length) {
@@ -218,6 +309,7 @@
         renderResults(items, grid);
       })
       .catch(function () {
+        if (gen !== SEARCH.generation) return;
         grid.innerHTML = '<div class="tentacle-search-empty">Search failed</div>';
       });
   }
@@ -242,7 +334,6 @@
         var isMovie = (item.media_type || 'movie') !== 'series';
         var typeBadge = '<div class="ts-card-badge ts-badge-type">' + (isMovie ? 'Movie' : 'TV') + '</div>';
         var statusBadge = '';
-        var addBtn = '';
 
         if (dlInfo) {
           var pct = (dlInfo.progress || 0).toFixed(1);
@@ -250,8 +341,6 @@
           statusBadge = '<div class="ts-card-badge ts-badge-status ts-badge-downloading">' + statusText + '</div>';
         } else if (item.in_library) {
           statusBadge = '<div class="ts-card-badge ts-badge-status ts-badge-inlib">In Library</div>';
-        } else {
-          addBtn = '<button class="ts-card-add" data-tmdb="' + item.tmdb_id + '">+</button>';
         }
 
         var ratingHtml = item.rating
@@ -261,7 +350,7 @@
         var sep = item.rating ? ' \u00b7 ' : '';
 
         return '<div class="ts-card" data-tmdb="' + item.tmdb_id + '" data-type="' + (item.media_type || 'movie') + '">' +
-          '<div class="ts-card-poster">' + posterHtml + typeBadge + statusBadge + addBtn + '</div>' +
+          '<div class="ts-card-poster">' + posterHtml + typeBadge + statusBadge + '</div>' +
           '<div class="ts-card-info">' +
             '<div class="ts-card-title">' + esc(item.title) + '</div>' +
             '<div class="ts-card-meta">' + yearHtml + sep + ratingHtml + '</div>' +
@@ -269,31 +358,6 @@
       }).join('') +
     '</div>';
 
-    // Click handler on the entire card
-    container.querySelectorAll('.ts-card').forEach(function (card) {
-      card.addEventListener('click', function (e) {
-        if (e.target.closest('.ts-card-add')) return;
-        var tmdb = parseInt(card.getAttribute('data-tmdb'), 10);
-        var item = findItem(tmdb);
-        if (!item) return;
-
-        if (item.in_library) {
-          goToLibraryItem(item);
-        } else {
-          openModal(item);
-        }
-      });
-    });
-
-    // Click handler on the + button specifically
-    container.querySelectorAll('.ts-card-add').forEach(function (btn) {
-      btn.addEventListener('click', function (e) {
-        e.stopPropagation();
-        var tmdb = parseInt(btn.getAttribute('data-tmdb'), 10);
-        var item = findItem(tmdb);
-        if (item) openModal(item);
-      });
-    });
   }
 
   // ── Navigation ───────────────────────────────────────────────────────
@@ -306,20 +370,25 @@
   }
 
   function openModal(item) {
+    console.log('[TentacleSearch] openModal called, TentacleDiscover=', !!window.TentacleDiscover, 'showDetailModal=', !!(window.TentacleDiscover && window.TentacleDiscover.showDetailModal));
     if (window.TentacleDiscover && window.TentacleDiscover.showDetailModal) {
       window.TentacleDiscover.showDetailModal(item);
     } else if (window.TentacleDetails && window.TentacleDetails.show && item.jellyfin_id) {
       window.TentacleDetails.show(item.jellyfin_id, item.media_type === 'series' ? 'Series' : 'Movie');
+    } else {
+      console.warn('[TentacleSearch] No detail handler available');
     }
   }
 
   function goToLibraryItem(item) {
     var userId = window.ApiClient.getCurrentUserId();
     var itemType = item.media_type === 'series' ? 'Series' : 'Movie';
+    console.log('[TentacleSearch] goToLibraryItem called for:', item.title, 'type:', itemType);
     apiGet('Users/' + userId + '/Items?searchTerm=' + encodeURIComponent(item.title) +
       '&IncludeItemTypes=' + itemType + '&Recursive=true&Limit=10&Fields=ProviderIds')
       .then(function (result) {
         var items = (result && result.Items) || [];
+        console.log('[TentacleSearch] Library search returned', items.length, 'items');
         var match = null;
         for (var i = 0; i < items.length; i++) {
           if ((items[i].Name || '').toLowerCase() === (item.title || '').toLowerCase()) {
@@ -329,13 +398,18 @@
         }
         if (!match && items.length) match = items[0];
         if (match) {
+          console.log('[TentacleSearch] Opening details for:', match.Name, match.Id);
           if (window.TentacleDetails && window.TentacleDetails.show) {
             window.TentacleDetails.show(match.Id, match.Type);
           } else {
             window.location.hash = '#/details?id=' + match.Id;
           }
+        } else {
+          console.warn('[TentacleSearch] No library match found for:', item.title);
         }
-      }).catch(function () {});
+      }).catch(function (err) {
+        console.error('[TentacleSearch] goToLibraryItem error:', err);
+      });
   }
 
   // ── Cleanup ──────────────────────────────────────────────────────────
@@ -347,9 +421,18 @@
   }
 
   function cleanup() {
+    if (SEARCH.debounceTimer) {
+      clearTimeout(SEARCH.debounceTimer);
+      SEARCH.debounceTimer = null;
+    }
     if (SEARCH.inputObserver) {
       SEARCH.inputObserver.disconnect();
       SEARCH.inputObserver = null;
+    }
+    // Remove input listener from the native input
+    if (SEARCH.nativeInput && SEARCH._onInputChange) {
+      SEARCH.nativeInput.removeEventListener('input', SEARCH._onInputChange);
+      SEARCH._onInputChange = null;
     }
     removeHideCSS();
     SEARCH.active = false;
@@ -361,23 +444,20 @@
     if (el) el.remove();
   }
 
-  // ── Public API ──────────────────────────────────────────────────────
-  window.TentacleSearch = {
-    hide: function () {
-      if (SEARCH.active) cleanup();
-    },
-    isActive: function () {
-      return SEARCH.active;
-    }
-  };
-
   // ── Bootstrap ────────────────────────────────────────────────────────
 
   function init() {
-    window.addEventListener('hashchange', onRouteChange);
-    window.addEventListener('popstate', onRouteChange);
-    document.addEventListener('viewshow', onRouteChange);
-    onRouteChange();
+    // Primary: viewshow — Jellyfin's own SPA navigation event (most reliable)
+    document.addEventListener('viewshow', onViewShow);
+
+    // Fallback: hashchange + popstate for edge cases (browser back/forward)
+    window.addEventListener('hashchange', onNavChange);
+    window.addEventListener('popstate', onNavChange);
+
+    // Handle initial page load
+    if (isSearchPage()) {
+      onSearchPage();
+    }
   }
 
   function waitForReady() {
@@ -396,6 +476,12 @@
       }, 200);
     }
   }
+
+  // ── Public API ──────────────────────────────────────────────────────
+  window.TentacleSearch = {
+    hide: function () { if (SEARCH.active) { SEARCH.generation++; cleanup(); } },
+    isActive: function () { return SEARCH.active; }
+  };
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', waitForReady);
