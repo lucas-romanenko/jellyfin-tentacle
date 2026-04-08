@@ -20,23 +20,15 @@
 }
 
 /* ── Results container ────────────────────────────────────────────── */
-/* Mounted on document.body (outside Jellyfin views) for SPA resilience.
-   Positioned fixed to fill the content area below the search bar. */
+/* Mounted inside the search page view (not body-level). Unlike other
+   Tentacle overlays, the search container is destroyed on navigation away
+   and recreated fresh each time, so stale-view trapping is not a concern. */
 .tentacle-search-section {
-  position: fixed;
-  top: 140px; /* below navbar + search input — don't cover the search bar */
-  left: 0;
-  right: 0;
-  bottom: 0;
   padding: 0 3.3%;
-  overflow-y: auto;
+  margin-top: 20px;
+  clear: both;
+  position: relative;
   z-index: 100;
-  pointer-events: auto;
-  background: #0a0a1a; /* opaque background — prevents bleed-through from other overlays */
-  display: none; /* shown only when body.tentacle-search-active */
-}
-body.tentacle-search-active .tentacle-search-section {
-  display: block;
 }
 
 /* Header */

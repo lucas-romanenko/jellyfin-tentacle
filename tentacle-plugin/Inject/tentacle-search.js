@@ -282,10 +282,14 @@
       }
     });
 
-    // Mount on document.body — outside any Jellyfin view element
-    // This is the key architectural fix: our container can never be trapped
-    // in a stale hidden view on SPA navigation
-    document.body.appendChild(container);
+    // Mount inside the search page view — below the native search input.
+    // Unlike other Tentacle overlays, the search container is destroyed on
+    // navigation away (cleanup()) and recreated fresh, so stale-view
+    // trapping is not a concern.
+    var searchPage = document.querySelector('.searchPage')
+      || document.querySelector('[data-type="search"]');
+    var mountPoint = searchPage || document.body;
+    mountPoint.appendChild(container);
 
     return container;
   }
