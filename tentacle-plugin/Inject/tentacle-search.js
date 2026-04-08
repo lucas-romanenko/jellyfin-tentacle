@@ -59,12 +59,20 @@
   }
 
   function findNativeSearchInput() {
+    // Try active view first, then fall back to global search.
+    // The active view scoping can miss the input if the view transition
+    // hasn't settled yet, so we must not be overly strict here.
     var view = findActiveView();
-    var scope = view || document;
-    return scope.querySelector('.searchfields-txtSearch')
-      || scope.querySelector('input.emby-input[type="text"][data-action="search"]')
-      || scope.querySelector('.searchPage input[type="text"]')
-      || scope.querySelector('[data-type="search"] input[type="text"]');
+    var scopes = view ? [view, document] : [document];
+    for (var s = 0; s < scopes.length; s++) {
+      var scope = scopes[s];
+      var input = scope.querySelector('.searchfields-txtSearch')
+        || scope.querySelector('input.emby-input[type="text"][data-action="search"]')
+        || scope.querySelector('.searchPage input[type="text"]')
+        || scope.querySelector('[data-type="search"] input[type="text"]');
+      if (input) return input;
+    }
+    return null;
   }
 
   // ── Navigation Handlers ─────────────────────────────────────────────
@@ -115,11 +123,10 @@
       attachToInput(input);
       return;
     }
-    // Wait for Jellyfin to render the search input — scope observer to active view
+    // Wait for Jellyfin to render the search input
+    // Observe document.body (not scoped to active view) because the view
+    // element itself may not exist yet during SPA transitions
     if (SEARCH.inputObserver) SEARCH.inputObserver.disconnect();
-
-    var view = findActiveView();
-    var observeTarget = view || document.body;
 
     SEARCH.inputObserver = new MutationObserver(function () {
       var inp = findNativeSearchInput();
@@ -129,7 +136,7 @@
         attachToInput(inp);
       }
     });
-    SEARCH.inputObserver.observe(observeTarget, { childList: true, subtree: true });
+    SEARCH.inputObserver.observe(document.body, { childList: true, subtree: true });
 
     // Safety timeout — don't observe forever
     setTimeout(function () {

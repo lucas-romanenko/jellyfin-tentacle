@@ -33,6 +33,7 @@
   overflow-y: auto;
   z-index: 100;
   pointer-events: auto;
+  background: #0a0a1a; /* opaque background — prevents bleed-through from other overlays */
   display: none; /* shown only when body.tentacle-search-active */
 }
 body.tentacle-search-active .tentacle-search-section {
