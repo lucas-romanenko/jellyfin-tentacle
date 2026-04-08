@@ -12,6 +12,8 @@
     apiClient: null,
     userId: null,
     observer: null,
+    _renderTimer: null,
+    _rendering: false,
   };
 
   // ── Bootstrap ─────────────────────────────────────────────────────────
@@ -45,9 +47,12 @@
 
   function observeHomePage() {
     MH.observer = new MutationObserver(function () {
-      if (isHomePage()) {
-        setTimeout(checkAndRender, 200);
-      }
+      if (!isHomePage()) return;
+      if (MH._renderTimer) clearTimeout(MH._renderTimer);
+      MH._renderTimer = setTimeout(function () {
+        MH._renderTimer = null;
+        checkAndRender();
+      }, 200);
     });
     MH.observer.observe(document.body, { childList: true, subtree: true });
   }
@@ -58,15 +63,30 @@
       return;
     }
 
+    // Re-create observer if it was disconnected during cleanup
+    if (!MH.observer) observeHomePage();
+
     var container = document.querySelector('.homeSectionsContainer');
     if (!container) return;
 
     if (document.getElementById('tentacle-home')) return;
 
+    if (MH._rendering) return;
+    MH._rendering = true;
+
     renderHomePage(container);
   }
 
   function cleanup() {
+    if (MH.observer) {
+      MH.observer.disconnect();
+      MH.observer = null;
+    }
+    if (MH._renderTimer) {
+      clearTimeout(MH._renderTimer);
+      MH._renderTimer = null;
+    }
+    MH._rendering = false;
     if (MH.heroInterval) {
       clearInterval(MH.heroInterval);
       MH.heroInterval = null;
@@ -108,6 +128,7 @@
 
     apiGet('TentacleHome/Sections?userId=' + MH.userId)
       .then(function (data) {
+        MH._rendering = false;
         console.log('[Tentacle] Sections API response:', JSON.stringify(data, null, 2));
 
         if (!data.enabled || !data.sections || !data.sections.length) {
@@ -145,6 +166,7 @@
         });
       })
       .catch(function (err) {
+        MH._rendering = false;
         console.error('[Tentacle] Failed to load sections:', err);
         mhHome.innerHTML = '';
         container.style.display = '';

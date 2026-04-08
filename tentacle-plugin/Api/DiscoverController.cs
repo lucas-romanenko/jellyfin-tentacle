@@ -20,9 +20,10 @@ public class TentacleDiscoverController : ControllerBase
     private static readonly HttpClient HttpClient = new() { Timeout = TimeSpan.FromSeconds(15) };
 
     // In-memory cache for discover data (30 min), keyed by type param
-    private static readonly Dictionary<string, (string Data, DateTime Expiry)> _itemsCache = new();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (string Data, DateTime Expiry)> _itemsCache = new();
     private static string? _cachedConfig;
     private static DateTime _configCacheExpiry = DateTime.MinValue;
+    private static readonly object _configLock = new();
 
 
     public TentacleDiscoverController(ILogger<TentacleDiscoverController> logger)
@@ -36,8 +37,11 @@ public class TentacleDiscoverController : ControllerBase
     /// </summary>
     public static void ClearCache()
     {
-        _cachedConfig = null;
-        _configCacheExpiry = DateTime.MinValue;
+        lock (_configLock)
+        {
+            _cachedConfig = null;
+            _configCacheExpiry = DateTime.MinValue;
+        }
         _itemsCache.Clear();
     }
 
@@ -108,9 +112,12 @@ public class TentacleDiscoverController : ControllerBase
     [Authorize]
     public async Task<ActionResult> GetDiscoverConfig()
     {
-        if (_cachedConfig != null && DateTime.UtcNow < _configCacheExpiry)
+        lock (_configLock)
         {
-            return Content(_cachedConfig, "application/json");
+            if (_cachedConfig != null && DateTime.UtcNow < _configCacheExpiry)
+            {
+                return Content(_cachedConfig, "application/json");
+            }
         }
 
         var baseUrl = GetTentacleUrl();
@@ -122,8 +129,11 @@ public class TentacleDiscoverController : ControllerBase
         try
         {
             var response = await HttpClient.GetStringAsync($"{baseUrl}/api/discover/config");
-            _cachedConfig = response;
-            _configCacheExpiry = DateTime.UtcNow.AddMinutes(5);
+            lock (_configLock)
+            {
+                _cachedConfig = response;
+                _configCacheExpiry = DateTime.UtcNow.AddMinutes(5);
+            }
             return Content(response, "application/json");
         }
         catch (Exception ex)

@@ -87,6 +87,8 @@ public class HomeScreenManager
                 url += $"?userId={userId:N}";
             }
 
+            // Sync-over-async: GetHomeConfig is called from sync Jellyfin IHomeSection interface
+            // (TentacleHomeSection) which cannot be made async. Safe in Kestrel (no SynchronizationContext).
             var response = client.GetAsync(url).GetAwaiter().GetResult();
 
             if (!response.IsSuccessStatusCode)

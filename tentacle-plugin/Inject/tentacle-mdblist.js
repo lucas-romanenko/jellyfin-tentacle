@@ -215,3 +215,29 @@ var MdbList = {
         return html;
     }
 };
+
+// Load TentacleConfig early — mdblist.js is the first injected script.
+// Other scripts (tentacle-tmdb.js, tentacle-details.js) depend on window.TentacleConfig.
+(function() {
+    function loadTentacleConfig() {
+        if (!window.ApiClient) {
+            setTimeout(loadTentacleConfig, 500);
+            return;
+        }
+        var serverUrl = window.ApiClient.serverAddress();
+        var token = window.ApiClient.accessToken();
+        fetch(serverUrl + '/Tentacle/Config', {
+            headers: { 'Authorization': 'MediaBrowser Token="' + token + '"' }
+        }).then(function(r) { return r.json(); }).then(function(cfg) {
+            window.TentacleConfig = cfg;
+            console.log('[Tentacle] Config loaded early:', cfg.mdblistEnabled ? 'MDBList ON' : 'MDBList OFF', cfg.tmdbEnabled ? 'TMDB ON' : 'TMDB OFF');
+        }).catch(function() {
+            window.TentacleConfig = { mdblistEnabled: false, tmdbEnabled: false };
+        });
+    }
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', loadTentacleConfig);
+    } else {
+        loadTentacleConfig();
+    }
+})();

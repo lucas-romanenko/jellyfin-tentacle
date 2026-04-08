@@ -743,15 +743,15 @@
             window.addEventListener('scroll', this._onScroll, { passive: true });
 
             // Page navigation → show/hide
-            var onNavChange = function () {
+            this._onNavChange = function () {
                 if (self.isHomePage()) {
                     self.show();
                 } else {
                     self.hide();
                 }
             };
-            window.addEventListener('hashchange', onNavChange);
-            window.addEventListener('viewshow', onNavChange);
+            window.addEventListener('hashchange', this._onNavChange);
+            window.addEventListener('viewshow', this._onNavChange);
         },
 
         destroy: function () {
@@ -760,6 +760,11 @@
             if (this._onScroll) {
                 window.removeEventListener('scroll', this._onScroll);
                 this._onScroll = null;
+            }
+            if (this._onNavChange) {
+                window.removeEventListener('hashchange', this._onNavChange);
+                window.removeEventListener('viewshow', this._onNavChange);
+                this._onNavChange = null;
             }
             if (this.container) {
                 this.container.remove();

@@ -113,36 +113,38 @@
 
   function injectHideCSS() {
     if (SEARCH.hideStyle) return;
+    document.body.classList.add('tentacle-search-active');
     var style = document.createElement('style');
     style.id = 'tentacleSearchHideNative';
+    // All rules scoped under body.tentacle-search-active so they never leak to other pages
     style.textContent = [
       // Native search result cards
-      '.card.overflowPortraitCard { display: none !important; }',
-      '.card.overflowBackdropCard { display: none !important; }',
-      '.card.overflowSquareCard { display: none !important; }',
+      'body.tentacle-search-active .card.overflowPortraitCard { display: none !important; }',
+      'body.tentacle-search-active .card.overflowBackdropCard { display: none !important; }',
+      'body.tentacle-search-active .card.overflowSquareCard { display: none !important; }',
       // Native section headers
-      '.verticalSection > .sectionTitle { display: none !important; }',
+      'body.tentacle-search-active .verticalSection > .sectionTitle { display: none !important; }',
       // Native "no results" messages
-      '.noItemsMessage { display: none !important; }',
-      '.emby-scroller-alert { display: none !important; }',
+      'body.tentacle-search-active .noItemsMessage { display: none !important; }',
+      'body.tentacle-search-active .emby-scroller-alert { display: none !important; }',
       // Catch-all for Jellyfin messages
-      '.searchPage .padded-left, .searchPage .padded-right { display: none !important; }',
+      'body.tentacle-search-active .searchPage .padded-left, body.tentacle-search-active .searchPage .padded-right { display: none !important; }',
       // Hide native itemsContainers
-      '.itemsContainer:not(#tentacleSearchGrid) { display: none !important; }',
+      'body.tentacle-search-active .itemsContainer:not(#tentacleSearchGrid) { display: none !important; }',
       // Hide native vertical sections
-      '.verticalSection { display: none !important; }',
+      'body.tentacle-search-active .verticalSection { display: none !important; }',
       // Hide native search label/icon that may overlap
-      '.searchTabButton { display: none !important; }',
-      '.headerSearchButton { display: none !important; }',
+      'body.tentacle-search-active .searchTabButton { display: none !important; }',
+      'body.tentacle-search-active .headerSearchButton { display: none !important; }',
       // Our container always visible
       '#tentacleSearchResults { display: block !important; }',
-      '#tentacleSearchResults * { /* no override */ }',
     ].join('\n');
     document.head.appendChild(style);
     SEARCH.hideStyle = style;
   }
 
   function removeHideCSS() {
+    document.body.classList.remove('tentacle-search-active');
     if (SEARCH.hideStyle) {
       SEARCH.hideStyle.remove();
       SEARCH.hideStyle = null;
@@ -298,10 +300,11 @@
     console.log('[TentacleSearch] openModal called, TentacleDiscover=', !!window.TentacleDiscover, 'showDetailModal=', !!(window.TentacleDiscover && window.TentacleDiscover.showDetailModal));
     if (window.TentacleDiscover && window.TentacleDiscover.showDetailModal) {
       window.TentacleDiscover.showDetailModal(item);
+    } else if (window.TentacleDetails && window.TentacleDetails.show && item.jellyfin_id) {
+      // Fallback: open in Tentacle detail overlay if available
+      window.TentacleDetails.show(item.jellyfin_id, item.media_type === 'series' ? 'Series' : 'Movie');
     } else {
-      // Fallback: navigate to home and trigger discover with search
-      console.warn('[TentacleSearch] showDetailModal not available, using fallback');
-      alert('Detail modal not available. Please visit the home page first to initialize Discover, then try again.');
+      console.warn('[TentacleSearch] No detail handler available');
     }
   }
 
@@ -346,6 +349,10 @@
   }
 
   function cleanup() {
+    if (SEARCH.debounceTimer) {
+      clearTimeout(SEARCH.debounceTimer);
+      SEARCH.debounceTimer = null;
+    }
     if (SEARCH.inputObserver) {
       SEARCH.inputObserver.disconnect();
       SEARCH.inputObserver = null;

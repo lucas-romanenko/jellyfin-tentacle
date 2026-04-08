@@ -1,3 +1,4 @@
+using System.Net.Http;
 using System.Reflection;
 using Jellyfin.Plugin.Tentacle.HomeScreen;
 using MediaBrowser.Controller.Dto;
@@ -27,6 +28,7 @@ public class TentacleHomeController : ControllerBase
     private readonly IUserManager _userManager;
     private readonly IDtoService _dtoService;
     private readonly ILogger<TentacleHomeController> _logger;
+    private static readonly HttpClient ProxyClient = new() { Timeout = TimeSpan.FromSeconds(15) };
 
     public TentacleHomeController(
         HomeScreenManager homeScreenManager,
@@ -366,7 +368,7 @@ public class TentacleHomeController : ControllerBase
 
         try
         {
-            using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+            var httpClient = ProxyClient;
             var response = await httpClient.GetAsync($"{baseUrl}/api/smartlists/all-playlists");
             var result = await response.Content.ReadAsStringAsync();
             return Content(result, "application/json");
@@ -411,7 +413,7 @@ public class TentacleHomeController : ControllerBase
 
         try
         {
-            using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+            var httpClient = ProxyClient;
             var content = new StringContent(body.GetRawText(), System.Text.Encoding.UTF8, "application/json");
             var response = await httpClient.PostAsync($"{baseUrl}/api/smartlists/hero", content);
             var result = await response.Content.ReadAsStringAsync();
@@ -445,7 +447,7 @@ public class TentacleHomeController : ControllerBase
 
         try
         {
-            using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+            var httpClient = ProxyClient;
             var content = new StringContent(body.GetRawText(), System.Text.Encoding.UTF8, "application/json");
             var response = await httpClient.PostAsync($"{baseUrl}/api/smartlists/reorder", content);
             var result = await response.Content.ReadAsStringAsync();

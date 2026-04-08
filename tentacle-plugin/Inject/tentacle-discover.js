@@ -13,6 +13,7 @@
     activeSection: null,
     active: false,
     loaded: false,
+    loadedAt: 0,          // timestamp of last render — stale after 5 min
     activityData: null,   // shared — used for download badges on discover cards
   };
 
@@ -35,16 +36,9 @@
     if (MD.initialized) return;
     MD.initialized = true;
     tryInject();
-    window.addEventListener('hashchange', function () {
-      if (MD.active) hideDiscover();
-      if (ACT.active) hideActivity();
-      setTimeout(tryInject, 200);
-    });
-    window.addEventListener('popstate', function () {
-      if (MD.active) hideDiscover();
-      if (ACT.active) hideActivity();
-      setTimeout(tryInject, 200);
-    });
+    // Navigation listeners are registered once at the bottom of the IIFE (navHandler)
+    // to avoid duplicate firing. hashchange/popstate/pushState/replaceState all
+    // funnel through navHandler which handles hide + tryInject.
   }
 
   function isHomePage() {
@@ -52,10 +46,20 @@
     return h === '' || h === '#/' || h === '#/home.html' || h === '#/home';
   }
 
+  var _tryInjectTimer = null;
+  var _tryInjectRetries = 0;
   function tryInject() {
-    if (!isHomePage()) return;
+    if (_tryInjectTimer) { clearTimeout(_tryInjectTimer); _tryInjectTimer = null; }
+    if (!isHomePage()) { _tryInjectRetries = 0; return; }
     var slider = document.querySelector('.emby-tabs-slider');
-    if (!slider) { setTimeout(tryInject, 300); return; }
+    if (!slider) {
+      if (_tryInjectRetries < 20) {
+        _tryInjectRetries++;
+        _tryInjectTimer = setTimeout(tryInject, 300);
+      }
+      return;
+    }
+    _tryInjectRetries = 0;
 
     apiGet('TentacleDiscover/Config').then(function (cfg) {
       MD.enabled = cfg && cfg.discover_in_jellyfin === true;
@@ -155,11 +159,18 @@
     var btn = document.getElementById('mdDiscoverTab');
     if (btn) btn.classList.add('emby-tab-button-active');
 
+    // Reset loaded flag if overlay was removed from DOM (SPA cleanup)
+    if (MD.loaded && !document.getElementById('mdDiscoverOverlay')) {
+      MD.loaded = false;
+    }
+
     var overlay = getOrCreateDiscoverOverlay();
     overlay.style.display = 'block';
 
-    if (!MD.loaded) {
+    var stale = MD.loadedAt && (Date.now() - MD.loadedAt > 5 * 60 * 1000);
+    if (!MD.loaded || stale) {
       MD.loaded = true;
+      MD.loadedAt = Date.now();
       renderDiscoverPage(overlay);
     }
   }
@@ -978,6 +989,12 @@
     if (MD.active) hideDiscover();
 
     ACT.active = true;
+
+    // Reset loaded flag if overlay was removed from DOM (SPA cleanup)
+    if (ACT.loaded && !document.getElementById('mdActivityOverlay')) {
+      ACT.loaded = false;
+    }
+
     var overlay = getOrCreateActivityOverlay();
     overlay.style.display = 'block';
 
@@ -1229,23 +1246,17 @@
     waitForReady();
   }
 
+  var _navTimer = null;
   var navHandler = function () {
     if (MD.active && !isHomePage()) hideDiscover();
     if (ACT.active && !isHomePage()) hideActivity();
-    setTimeout(tryInject, 500);
+    if (!isHomePage()) { stopBadgePolling(); }
+    // Debounce tryInject to avoid multiple concurrent calls from rapid nav events
+    if (_navTimer) clearTimeout(_navTimer);
+    _navTimer = setTimeout(function () { _navTimer = null; tryInject(); }, 300);
   };
+  window.addEventListener('hashchange', navHandler);
   window.addEventListener('popstate', navHandler);
   window.addEventListener('pageshow', navHandler);
-
-  var origPush = history.pushState;
-  history.pushState = function () {
-    origPush.apply(history, arguments);
-    navHandler();
-  };
-  var origReplace = history.replaceState;
-  history.replaceState = function () {
-    origReplace.apply(history, arguments);
-    navHandler();
-  };
 
 })();

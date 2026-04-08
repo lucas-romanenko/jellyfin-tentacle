@@ -88,13 +88,8 @@ var Details = {
                 self.showDetails(itemId, cardType);
                 return false;
             }
-            if (!cardType && card.classList.contains('card')) {
-                e.preventDefault();
-                e.stopPropagation();
-                e.stopImmediatePropagation();
-                self.showDetails(itemId, null);
-                return false;
-            }
+            // Only intercept known types — unknown/null type cards (genre, person, playlist,
+            // channel, etc.) are left for Jellyfin's native handlers to avoid flash-then-hide.
         }, true);
 
         document.addEventListener('click', function(e) {
@@ -3191,31 +3186,26 @@ var Details = {
     }
 };
 
-// Bootstrap: wait for ApiClient, load config, then init
+// Bootstrap: wait for ApiClient, then init
+// Config loading moved to tentacle-mdblist.js (loads first) so window.TentacleConfig
+// is available to all scripts without race conditions.
 (function() {
-    function loadConfig() {
-        var serverUrl = window.ApiClient.serverAddress();
-        var token = window.ApiClient.accessToken();
-        fetch(serverUrl + '/Tentacle/Config', {
-            headers: { 'Authorization': 'MediaBrowser Token="' + token + '"' }
-        }).then(function(r) { return r.json(); }).then(function(cfg) {
-            window.TentacleConfig = cfg;
-            console.log('[Tentacle] Config loaded:', cfg.mdblistEnabled ? 'MDBList ON' : 'MDBList OFF', cfg.tmdbEnabled ? 'TMDB ON' : 'TMDB OFF');
-        }).catch(function() {
-            window.TentacleConfig = { mdblistEnabled: false, tmdbEnabled: false };
-        });
-    }
-
     function boot() {
         if (window.ApiClient) {
             console.log('[Tentacle] Details overlay initializing');
-            loadConfig();
             if (typeof MdbList !== 'undefined') MdbList.init();
             Details.init();
             window.TentacleDetails = {
                 show: function(itemId, itemType) { Details.showDetails(itemId, itemType); },
                 hide: function() { Details.hide(); }
             };
+
+            // Close overlay when user presses browser back button
+            window.addEventListener('popstate', function(e) {
+                if (Details.isVisible && !(e.state && e.state.moonfinDetails)) {
+                    Details.hide(true); // skipHistoryBack — browser already popped
+                }
+            });
         } else {
             setTimeout(boot, 500);
         }
