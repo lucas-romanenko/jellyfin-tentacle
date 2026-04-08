@@ -609,14 +609,46 @@
         ensurePageTabsVisible: function () {
             var self = this;
             this._showPageTabs();
-            // Tabs may render after the viewshow event — retry briefly
+            // Tabs may render after the viewshow event — retry at increasing intervals
             if (this._tabRetryTimer) clearTimeout(this._tabRetryTimer);
+            if (this._tabRetryTimer2) clearTimeout(this._tabRetryTimer2);
             this._tabRetryTimer = setTimeout(function () { self._showPageTabs(); }, 300);
+            this._tabRetryTimer2 = setTimeout(function () { self._showPageTabs(); }, 1000);
+
+            // Also watch for tabs being added dynamically to the header
+            this._watchForTabs();
+        },
+
+        _watchForTabs: function () {
+            var self = this;
+            // Disconnect any previous observer
+            if (this._tabObserver) {
+                this._tabObserver.disconnect();
+                this._tabObserver = null;
+            }
+            var skinHeader = document.querySelector('.skinHeader');
+            if (!skinHeader) return;
+
+            this._tabObserver = new MutationObserver(function () {
+                self._showPageTabs();
+            });
+            this._tabObserver.observe(skinHeader, { childList: true, subtree: true });
+
+            // Auto-disconnect after 5s to avoid permanent overhead
+            setTimeout(function () {
+                if (self._tabObserver) {
+                    self._tabObserver.disconnect();
+                    self._tabObserver = null;
+                }
+            }, 5000);
         },
 
         _showPageTabs: function () {
             var skinHeader = document.querySelector('.skinHeader');
-            if (!skinHeader) return;
+            if (!skinHeader) {
+                console.log('[Tentacle] _showPageTabs: no .skinHeader found');
+                return;
+            }
 
             // Reset any previously forced ancestors
             var prev = skinHeader.querySelectorAll('[data-tentacle-tab-ancestor]');
@@ -625,8 +657,28 @@
                 prev[i].removeAttribute('data-tentacle-tab-ancestor');
             }
 
-            var tabs = skinHeader.querySelector('.sectionTabs, .emby-tabs-slider, [data-role="tabscontainer"]');
-            if (!tabs) return;
+            // Try multiple selectors for page-specific tabs
+            var tabs = skinHeader.querySelector('.sectionTabs, .emby-tabs-slider, [data-role="tabscontainer"], .headerTabs');
+            if (!tabs) {
+                // Debug: log what IS inside skinHeader so we can find the right selector
+                var children = skinHeader.children;
+                var childInfo = [];
+                for (var c = 0; c < children.length; c++) {
+                    var ch = children[c];
+                    childInfo.push(ch.tagName + '.' + ch.className.replace(/\s+/g, '.') + (ch.id ? '#' + ch.id : ''));
+                }
+                console.log('[Tentacle] _showPageTabs: no tabs found inside .skinHeader. Direct children:', childInfo.join(' | '));
+                console.log('[Tentacle] _showPageTabs: skinHeader innerHTML preview:', skinHeader.innerHTML.substring(0, 500));
+
+                // Also check if tabs exist OUTSIDE skinHeader (some Jellyfin versions put them in the page view)
+                var tabsOutside = document.querySelector('.sectionTabs, [data-role="tabscontainer"], .headerTabs, .mainTabs');
+                if (tabsOutside) {
+                    console.log('[Tentacle] _showPageTabs: Found tabs OUTSIDE skinHeader:', tabsOutside.className, 'parent:', tabsOutside.parentElement ? tabsOutside.parentElement.className : 'none');
+                }
+                return;
+            }
+
+            console.log('[Tentacle] _showPageTabs: FOUND tabs:', tabs.className, 'walking up to skinHeader');
 
             // Walk up from tabs to skinHeader, forcing all intermediate ancestors visible
             var el = tabs;
@@ -727,6 +779,14 @@
             if (this._tabRetryTimer) {
                 clearTimeout(this._tabRetryTimer);
                 this._tabRetryTimer = null;
+            }
+            if (this._tabRetryTimer2) {
+                clearTimeout(this._tabRetryTimer2);
+                this._tabRetryTimer2 = null;
+            }
+            if (this._tabObserver) {
+                this._tabObserver.disconnect();
+                this._tabObserver = null;
             }
             if (this.librariesDropdown) {
                 this.librariesDropdown.remove();
