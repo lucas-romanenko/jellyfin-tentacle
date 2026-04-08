@@ -72,8 +72,8 @@
 
     if (document.getElementById('tentacle-home')) return;
 
-    // Hide native container immediately to prevent flash of default Jellyfin home
-    container.style.display = 'none';
+    // Native container is hidden by CSS in tentacle-home.css by default.
+    // No JS hide needed — it's never visible unless we explicitly add .tentacle-native-home.
 
     if (MH._rendering) return;
     MH._rendering = true;
@@ -91,13 +91,8 @@
       clearInterval(MH.heroInterval);
       MH.heroInterval = null;
     }
-    // Remove tentacle-home so it gets recreated fresh on next visit
     var old = document.getElementById('tentacle-home');
-    if (old) {
-      var native = document.querySelector('.homeSectionsContainer');
-      if (native) native.style.display = '';
-      old.remove();
-    }
+    if (old) old.remove();
   }
 
   // ── API Helpers ───────────────────────────────────────────────────────
@@ -116,7 +111,8 @@
 
   // ── Render Home Page ──────────────────────────────────────────────────
   function renderHomePage(container) {
-    container.style.display = 'none';
+    // CSS hides .homeSectionsContainer by default; remove fallback class if it was added
+    container.classList.remove('tentacle-native-home');
 
     var mhHome = document.createElement('div');
     mhHome.id = 'tentacle-home';
@@ -130,8 +126,9 @@
 
         if (!data.enabled || !data.sections || !data.sections.length) {
           console.warn('[Tentacle] No sections returned or disabled');
-          mhHome.innerHTML = '';
-          container.style.display = '';
+          mhHome.remove();
+          // Show native Jellyfin home (CSS hides it by default)
+          container.classList.add('tentacle-native-home');
           return;
         }
 
@@ -165,8 +162,9 @@
       .catch(function (err) {
         MH._rendering = false;
         console.error('[Tentacle] Failed to load sections:', err);
-        mhHome.innerHTML = '';
-        container.style.display = '';
+        mhHome.remove();
+        // Show native Jellyfin home as fallback
+        container.classList.add('tentacle-native-home');
       });
   }
 
