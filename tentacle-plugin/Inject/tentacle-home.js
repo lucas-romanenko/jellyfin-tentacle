@@ -38,6 +38,10 @@
     window.addEventListener('popstate', function () {
       setTimeout(checkAndRender, 100);
     });
+    // viewshow fires after Jellyfin has rendered the page content
+    window.addEventListener('viewshow', function () {
+      setTimeout(checkAndRender, 50);
+    });
   }
 
   function isHomePage() {
@@ -70,6 +74,9 @@
     if (!container) return;
 
     if (document.getElementById('tentacle-home')) return;
+
+    // Hide native container immediately to prevent flash of default Jellyfin home
+    container.style.display = 'none';
 
     if (MH._rendering) return;
     MH._rendering = true;
