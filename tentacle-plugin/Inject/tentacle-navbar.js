@@ -645,10 +645,7 @@
 
         _showPageTabs: function () {
             var skinHeader = document.querySelector('.skinHeader');
-            if (!skinHeader) {
-                console.log('[Tentacle] _showPageTabs: no .skinHeader found');
-                return;
-            }
+            if (!skinHeader) return;
 
             // Reset any previously forced ancestors
             var prev = skinHeader.querySelectorAll('[data-tentacle-tab-ancestor]');
@@ -657,28 +654,22 @@
                 prev[i].removeAttribute('data-tentacle-tab-ancestor');
             }
 
+            // Only show page tabs on pages that actually need them (Live TV, library views)
+            // Do NOT show on home page — those "Home/Favorites/Discover" tabs are replaced by Tentacle navbar
+            var hash = (location.hash || '').replace('#', '').replace(/^\//, '').split('?')[0].toLowerCase();
+            var pagesWithTabs = ['livetv', 'livetv.html', 'music', 'music.html'];
+            var needsTabs = false;
+            for (var p = 0; p < pagesWithTabs.length; p++) {
+                if (hash === pagesWithTabs[p] || hash.indexOf(pagesWithTabs[p]) === 0) {
+                    needsTabs = true;
+                    break;
+                }
+            }
+            if (!needsTabs) return;
+
             // Try multiple selectors for page-specific tabs
             var tabs = skinHeader.querySelector('.sectionTabs, .emby-tabs-slider, [data-role="tabscontainer"], .headerTabs');
-            if (!tabs) {
-                // Debug: log what IS inside skinHeader so we can find the right selector
-                var children = skinHeader.children;
-                var childInfo = [];
-                for (var c = 0; c < children.length; c++) {
-                    var ch = children[c];
-                    childInfo.push(ch.tagName + '.' + ch.className.replace(/\s+/g, '.') + (ch.id ? '#' + ch.id : ''));
-                }
-                console.log('[Tentacle] _showPageTabs: no tabs found inside .skinHeader. Direct children:', childInfo.join(' | '));
-                console.log('[Tentacle] _showPageTabs: skinHeader innerHTML preview:', skinHeader.innerHTML.substring(0, 500));
-
-                // Also check if tabs exist OUTSIDE skinHeader (some Jellyfin versions put them in the page view)
-                var tabsOutside = document.querySelector('.sectionTabs, [data-role="tabscontainer"], .headerTabs, .mainTabs');
-                if (tabsOutside) {
-                    console.log('[Tentacle] _showPageTabs: Found tabs OUTSIDE skinHeader:', tabsOutside.className, 'parent:', tabsOutside.parentElement ? tabsOutside.parentElement.className : 'none');
-                }
-                return;
-            }
-
-            console.log('[Tentacle] _showPageTabs: FOUND tabs:', tabs.className, 'walking up to skinHeader');
+            if (!tabs) return;
 
             // Walk up from tabs to skinHeader, forcing all intermediate ancestors visible
             var el = tabs;
