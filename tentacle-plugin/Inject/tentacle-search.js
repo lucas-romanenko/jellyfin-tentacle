@@ -265,9 +265,13 @@
 
     // Click handler — whole card is clickable
     container.querySelectorAll('.ts-card').forEach(function (card) {
-      card.addEventListener('click', function () {
+      card.style.cursor = 'pointer';
+      card.addEventListener('click', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
         var tmdb = parseInt(card.getAttribute('data-tmdb'), 10);
         var item = findItem(tmdb);
+        console.log('[TentacleSearch] Card clicked, tmdb=' + tmdb, 'item=', item, 'in_library=', item && item.in_library);
         if (!item) return;
 
         if (item.in_library) {
@@ -289,18 +293,25 @@
   }
 
   function openModal(item) {
+    console.log('[TentacleSearch] openModal called, TentacleDiscover=', !!window.TentacleDiscover, 'showDetailModal=', !!(window.TentacleDiscover && window.TentacleDiscover.showDetailModal));
     if (window.TentacleDiscover && window.TentacleDiscover.showDetailModal) {
       window.TentacleDiscover.showDetailModal(item);
+    } else {
+      // Fallback: navigate to home and trigger discover with search
+      console.warn('[TentacleSearch] showDetailModal not available, using fallback');
+      alert('Detail modal not available. Please visit the home page first to initialize Discover, then try again.');
     }
   }
 
   function goToLibraryItem(item) {
     var userId = window.ApiClient.getCurrentUserId();
     var itemType = item.media_type === 'series' ? 'Series' : 'Movie';
+    console.log('[TentacleSearch] goToLibraryItem called for:', item.title, 'type:', itemType);
     apiGet('Users/' + userId + '/Items?searchTerm=' + encodeURIComponent(item.title) +
       '&IncludeItemTypes=' + itemType + '&Recursive=true&Limit=10&Fields=ProviderIds')
       .then(function (result) {
         var items = (result && result.Items) || [];
+        console.log('[TentacleSearch] Library search returned', items.length, 'items');
         var match = null;
         for (var i = 0; i < items.length; i++) {
           if ((items[i].Name || '').toLowerCase() === (item.title || '').toLowerCase()) {
@@ -310,9 +321,14 @@
         }
         if (!match && items.length) match = items[0];
         if (match) {
+          console.log('[TentacleSearch] Navigating to details for:', match.Name, match.Id);
           window.location.hash = '#/details?id=' + match.Id;
+        } else {
+          console.warn('[TentacleSearch] No library match found for:', item.title);
         }
-      }).catch(function () {});
+      }).catch(function (err) {
+        console.error('[TentacleSearch] goToLibraryItem error:', err);
+      });
   }
 
   // ── Cleanup ──────────────────────────────────────────────────────────
