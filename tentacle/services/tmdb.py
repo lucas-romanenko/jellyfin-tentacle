@@ -398,6 +398,7 @@ class TMDBService:
                 "poster_path": item.get("poster_path"),
                 "backdrop_path": item.get("backdrop_path"),
                 "media_type": media_type,
+                "popularity": item.get("popularity", 0),
             })
         return result
 
@@ -517,7 +518,8 @@ class TMDBService:
 
     def search_multi_results(self, query: str, media_type: str = "all") -> list:
         """Search TMDB and return multiple results in standard item format.
-        media_type: 'all', 'movie', or 'series'."""
+        media_type: 'all', 'movie', or 'series'.
+        Results sorted by popularity descending so movies and series are interleaved."""
         if not self.enabled or not query or not query.strip():
             return []
 
@@ -529,6 +531,8 @@ class TMDBService:
             data = self._request("search/tv", {"query": query, "language": "en-US"})
             results.extend(self._parse_results(data, "series"))
 
+        # Sort by popularity descending so most relevant results appear first
+        results.sort(key=lambda x: x.get("popularity", 0), reverse=True)
         return results
 
     def poster_url(self, path: str, size: str = "w500") -> Optional[str]:

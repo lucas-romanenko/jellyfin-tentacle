@@ -228,7 +228,7 @@
       ? window.TentacleDiscover.getDownloadInfo
       : function () { return null; };
 
-    container.innerHTML = '<div class="tentacle-search-row">' +
+    container.innerHTML = '<div class="tentacle-search-grid">' +
       items.map(function (item) {
         var posterUrl = item.poster_path
           ? 'https://image.tmdb.org/t/p/w342' + item.poster_path
