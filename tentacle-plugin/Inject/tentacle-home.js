@@ -36,6 +36,7 @@
   function init() {
     if (MH.initialized) return;
     MH.initialized = true;
+    console.log('[TH] init() — attaching listeners');
 
     // Primary: viewshow — Jellyfin's own SPA navigation event (most reliable)
     // Fires on the view element, bubbles to document. e.detail.type = "home"
@@ -46,6 +47,7 @@
     window.addEventListener('popstate', onNavChange);
 
     // Handle initial page load (viewshow may have already fired before our script loaded)
+    console.log('[TH] init() — isHomePage()=' + isHomePage() + ' hash=' + JSON.stringify(location.hash));
     if (isHomePage()) {
       onHomePage();
     }
@@ -53,13 +55,12 @@
 
   // ── Navigation Handlers ─────────────────────────────────────────────
   function onViewShow(e) {
-    // e.detail.type comes from the view's data-type attribute in Jellyfin
-    // Use it as primary check, fall back to hash for robustness
     var type = e.detail && e.detail.type;
+    var hash = location.hash || '';
+    console.log('[TH] viewshow fired — type=' + JSON.stringify(type) + ' hash=' + JSON.stringify(hash) + ' ts=' + Date.now());
     if (type === 'home' || (!type && isHomePage())) {
       onHomePage();
     } else if (isHomePage()) {
-      // type is set but not 'home' — still check hash in case type naming varies
       onHomePage();
     } else {
       onLeavingHome();
@@ -67,9 +68,12 @@
   }
 
   function onNavChange() {
-    // Dedup: hashchange and popstate can both fire for the same navigation
     var hash = location.hash || '';
-    if (hash === MH.lastHash) return;
+    console.log('[TH] onNavChange — hash=' + JSON.stringify(hash) + ' lastHash=' + JSON.stringify(MH.lastHash) + ' ts=' + Date.now());
+    if (hash === MH.lastHash) {
+      console.log('[TH] onNavChange — DEDUP, skipping');
+      return;
+    }
     MH.lastHash = hash;
 
     if (isHomePage()) {
@@ -86,25 +90,32 @@
 
   // ── Home Page Entry ─────────────────────────────────────────────────
   function onHomePage() {
-    // Already rendered and still in DOM? Nothing to do.
-    if (document.getElementById('tentacle-home')) return;
+    var exists = !!document.getElementById('tentacle-home');
+    console.log('[TH] onHomePage() — #tentacle-home exists=' + exists + ' gen=' + MH.generation + ' ts=' + Date.now());
+    if (exists) return;
 
-    // Increment generation — any in-flight render from a previous navigation is now stale
     var gen = ++MH.generation;
+    console.log('[TH] onHomePage() — gen incremented to ' + gen + ', waiting for .homeSectionsContainer');
 
-    // Wait for .homeSectionsContainer to appear (Jellyfin may not have rendered it yet)
     waitForElement('.homeSectionsContainer', 3000, function (container) {
-      if (gen !== MH.generation) return; // stale — user navigated away
-      if (!isHomePage()) return;         // double-check
-      if (document.getElementById('tentacle-home')) return; // race: already rendered
+      var stale = gen !== MH.generation;
+      var home = isHomePage();
+      var alreadyRendered = !!document.getElementById('tentacle-home');
+      console.log('[TH] waitForElement callback — container found, stale=' + stale + ' isHome=' + home + ' alreadyRendered=' + alreadyRendered + ' gen=' + gen + '/' + MH.generation);
+      if (stale) return;
+      if (!home) return;
+      if (alreadyRendered) return;
 
+      console.log('[TH] → calling renderHomePage() gen=' + gen);
       renderHomePage(container, gen);
     });
   }
 
   // ── Leaving Home ────────────────────────────────────────────────────
   function onLeavingHome() {
-    MH.generation++; // cancel any in-flight render
+    var oldGen = MH.generation;
+    MH.generation++;
+    console.log('[TH] onLeavingHome() — gen ' + oldGen + ' → ' + MH.generation + ' ts=' + Date.now());
     cleanupHome();
   }
 
@@ -114,6 +125,7 @@
       MH.heroInterval = null;
     }
     var old = document.getElementById('tentacle-home');
+    console.log('[TH] cleanupHome() — #tentacle-home exists=' + !!old);
     if (old) old.remove();
 
     // Unhide native content
@@ -126,17 +138,23 @@
   // ── Wait for Element (lightweight poll, no MutationObserver) ────────
   function waitForElement(selector, timeoutMs, callback) {
     var el = document.querySelector(selector);
-    if (el) { callback(el); return; }
+    if (el) {
+      console.log('[TH] waitForElement(' + selector + ') — found immediately');
+      callback(el);
+      return;
+    }
 
+    console.log('[TH] waitForElement(' + selector + ') — polling...');
     var start = Date.now();
     var interval = setInterval(function () {
       el = document.querySelector(selector);
       if (el) {
+        console.log('[TH] waitForElement(' + selector + ') — found after ' + (Date.now() - start) + 'ms');
         clearInterval(interval);
         callback(el);
       } else if (Date.now() - start > timeoutMs) {
+        console.warn('[TH] waitForElement(' + selector + ') — TIMEOUT after ' + timeoutMs + 'ms');
         clearInterval(interval);
-        // Timeout — container never appeared, nothing to do
       }
     }, 50); // check every 50ms, max 3s
   }
@@ -157,6 +175,7 @@
 
   // ── Render Home Page ──────────────────────────────────────────────────
   function renderHomePage(container, gen) {
+    console.log('[TH] renderHomePage() — hiding native, creating #tentacle-home, gen=' + gen + ' ts=' + Date.now());
     // Hide native content via JS class (CSS rule: .tentacle-home-hidden { display: none })
     container.classList.add('tentacle-home-hidden');
 
@@ -164,11 +183,13 @@
     mhHome.id = 'tentacle-home';
     mhHome.innerHTML = '<div class="mh-loading"><div class="mh-spinner"></div></div>';
     container.parentNode.insertBefore(mhHome, container);
+    console.log('[TH] renderHomePage() — #tentacle-home inserted into DOM, parent=' + (container.parentNode ? container.parentNode.className || container.parentNode.tagName : 'null'));
 
     apiGet('TentacleHome/Sections?userId=' + MH.userId)
       .then(function (data) {
         // Stale check — did user navigate away during the API call?
         if (gen !== MH.generation) {
+          console.log('[TH] renderHomePage API callback — STALE gen=' + gen + '/' + MH.generation + ', removing');
           mhHome.remove();
           return;
         }
