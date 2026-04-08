@@ -20,15 +20,9 @@
 }
 
 /* ── Results container ────────────────────────────────────────────── */
-/* Mounted inside the search page view (not body-level). Unlike other
-   Tentacle overlays, the search container is destroyed on navigation away
-   and recreated fresh each time, so stale-view trapping is not a concern. */
 .tentacle-search-section {
   padding: 0 3.3%;
-  margin-top: 20px;
-  clear: both;
-  position: relative;
-  z-index: 100;
+  margin-top: 16px;
 }
 
 /* Header */
@@ -97,6 +91,7 @@
 }
 
 .ts-card:hover {
+  transform: translateY(-4px) scale(1.02);
   border-color: rgba(139, 128, 255, 0.3);
   box-shadow: 0 8px 24px rgba(139, 128, 255, 0.1), 0 4px 16px rgba(0, 0, 0, 0.4);
 }
@@ -117,7 +112,7 @@
 }
 
 .ts-card:hover .ts-card-poster img {
-  /* no transform — prevents cursor flicker */
+  transform: scale(1.05);
 }
 
 .ts-card-poster-placeholder {
@@ -195,6 +190,7 @@
 
 .ts-card-add:hover {
   background: rgb(109, 95, 230);
+  transform: scale(1.1);
   box-shadow: 0 0 12px rgba(109, 95, 230, 0.5);
 }
 
