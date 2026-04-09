@@ -3,15 +3,21 @@ Tentacle - Library Router
 Unified view of movies and series
 """
 
-from fastapi import APIRouter, Depends, HTTPException
+import threading
+import logging
+
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 from typing import Optional
 from models.database import get_db, get_setting, Movie, Series, ListItem
+from routers.auth import get_user_from_request
 from services.logstream import library_event_generator
 from services.tmdb import TMDBService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/library", tags=["library"])
 
@@ -292,23 +298,57 @@ def get_item_detail(media_type: str, tmdb_id: int, db: Session = Depends(get_db)
 
 
 @router.delete("/item/{media_type}/{tmdb_id}")
-def delete_library_item(media_type: str, tmdb_id: int, db: Session = Depends(get_db)):
-    """Remove an item from Tentacle's database (called when item is deleted from Jellyfin)."""
-    if media_type == "movie":
-        item = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
-        if item:
-            db.delete(item)
-            db.commit()
-            return {"success": True, "deleted": True}
+def delete_library_item(
+    media_type: str,
+    tmdb_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Remove an item from Tentacle's database and from Jellyfin playlists."""
+    if media_type not in ("movie", "series"):
+        raise HTTPException(400, "Invalid media type")
+
+    model = Movie if media_type == "movie" else Series
+    item = db.query(model).filter(model.tmdb_id == tmdb_id).first()
+    if not item:
         return {"success": True, "deleted": False}
-    elif media_type == "series":
-        item = db.query(Series).filter(Series.tmdb_id == tmdb_id).first()
-        if item:
-            db.delete(item)
-            db.commit()
-            return {"success": True, "deleted": True}
-        return {"success": True, "deleted": False}
-    raise HTTPException(400, "Invalid media type")
+
+    db.delete(item)
+    db.commit()
+
+    # Remove from Jellyfin playlists in background
+    try:
+        user = get_user_from_request(request, db)
+    except HTTPException:
+        user = None
+
+    if user:
+        def _cleanup():
+            from models.database import SessionLocal
+            from services.jellyfin import JellyfinService
+            from services.smartlists import remove_item_from_playlists
+            cleanup_db = SessionLocal()
+            try:
+                jf_url = get_setting(cleanup_db, "jellyfin_url", "")
+                jf_key = get_setting(cleanup_db, "jellyfin_api_key", "")
+                jf_uid = user.jellyfin_user_id
+                if jf_url and jf_key:
+                    jf = JellyfinService(jf_url, jf_key, jf_uid)
+                    jf_type = "Movie" if media_type == "movie" else "Series"
+                    jf_item = jf.search_by_tmdb_id(tmdb_id, media_type=jf_type)
+                    if jf_item:
+                        result = remove_item_from_playlists(cleanup_db, jf_item["Id"], user.id)
+                        logger.info(f"Playlist cleanup for tmdb:{tmdb_id}: removed from {result.get('removed_from', 0)} playlists")
+                    else:
+                        logger.debug(f"No Jellyfin item found for tmdb:{tmdb_id}, skipping playlist cleanup")
+            except Exception as e:
+                logger.warning(f"Playlist cleanup failed for tmdb:{tmdb_id}: {e}")
+            finally:
+                cleanup_db.close()
+
+        threading.Thread(target=_cleanup, daemon=True).start()
+
+    return {"success": True, "deleted": True}
 
 
 @router.get("/tmdb/{media_type}/{tmdb_id}")

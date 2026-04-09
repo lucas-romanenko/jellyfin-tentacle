@@ -1021,3 +1021,59 @@ def update_playlist_sort(name: str, sort_by: str, sort_order: str, db, user_id: 
             logger.warning(f"[SmartLists] Failed to re-populate '{name}' after sort change: {e}")
 
     return {"success": True, "sort_by": sort_by, "sort_order": sort_order}
+
+
+def remove_item_from_playlists(db: Session, jellyfin_item_id: str, user_id: int) -> dict:
+    """Remove a specific Jellyfin item from all of a user's playlists.
+
+    Much faster than a full refresh — only fetches items for each playlist
+    and removes the matching entry. Skips playlists that don't contain the item.
+    """
+    from services.jellyfin import JellyfinService
+
+    jellyfin_url = get_setting(db, "jellyfin_url", "")
+    jellyfin_key = get_setting(db, "jellyfin_api_key", "")
+    jf_user_id = _get_jellyfin_user_id(db, user_id)
+
+    if not jellyfin_url or not jellyfin_key or not jf_user_id:
+        return {"removed_from": 0, "error": "Jellyfin not configured"}
+
+    jf = JellyfinService(jellyfin_url, jellyfin_key, jf_user_id)
+
+    try:
+        smartlists_path = _user_smartlists_path(db, user_id)
+    except ValueError:
+        return {"removed_from": 0, "error": "User not found"}
+
+    existing = _scan_existing(smartlists_path)
+    if not existing:
+        return {"removed_from": 0}
+
+    removed_from = 0
+    for name, (folder, config) in existing.items():
+        if not config.get("Enabled", True) or config.get("Type") != "Playlist":
+            continue
+
+        # Find the Jellyfin playlist ID from config
+        playlist_id = None
+        for up in config.get("UserPlaylists", []):
+            if up.get("UserId") == jf_user_id:
+                playlist_id = up.get("JellyfinPlaylistId")
+                break
+        if not playlist_id:
+            continue
+
+        try:
+            items = jf.get_playlist_items(playlist_id)
+            entry_ids = [
+                item["PlaylistItemId"] for item in items
+                if item.get("Id") == jellyfin_item_id and "PlaylistItemId" in item
+            ]
+            if entry_ids:
+                jf.remove_from_playlist(playlist_id, entry_ids)
+                removed_from += 1
+                logger.info(f"[SmartLists] Removed item {jellyfin_item_id} from playlist '{name}'")
+        except Exception as e:
+            logger.warning(f"[SmartLists] Failed to check/remove from '{name}': {e}")
+
+    return {"removed_from": removed_from}
