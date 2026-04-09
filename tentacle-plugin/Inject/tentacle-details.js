@@ -1865,14 +1865,29 @@ var Details = {
         this.closeMoreMenu();
 
         window.ApiClient.getCurrentUser().then(function(user) {
-            self._buildMoreMenu(item, user);
+            // For Movie/Series: fetch Tentacle can_delete to control delete button visibility
+            var tmdbId = item.ProviderIds && item.ProviderIds.Tmdb;
+            if (tmdbId && (item.Type === 'Movie' || item.Type === 'Series')) {
+                var mediaType = item.Type === 'Series' ? 'series' : 'movie';
+                var serverUrl = self.getServerUrl();
+                var headers = self.getAuthHeaders();
+                fetch(serverUrl + '/TentacleDiscover/Detail/' + mediaType + '/' + tmdbId, { headers: headers })
+                    .then(function(r) { return r.ok ? r.json() : null; })
+                    .then(function(detail) {
+                        self._buildMoreMenu(item, user, detail && detail.can_delete);
+                    })
+                    .catch(function() {
+                        self._buildMoreMenu(item, user, false);
+                    });
+            } else {
+                self._buildMoreMenu(item, user, false);
+            }
         }).catch(function() {
-            // Fallback: build with no user (only safe items shown)
-            self._buildMoreMenu(item, null);
+            self._buildMoreMenu(item, null, false);
         });
     },
 
-    _buildMoreMenu: function(item, user) {
+    _buildMoreMenu: function(item, user, tentacleCanDelete) {
         var self = this;
         var policy = (user && user.Policy) || {};
         var isAdmin = policy.IsAdministrator || false;
@@ -1908,8 +1923,8 @@ var Details = {
             menuItems.push({ id: 'download', name: 'Download', icon: '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="M480-320 280-520l56-58 104 104v-326h80v326l104-104 56 58-200 200ZM240-160q-33 0-56.5-23.5T160-240v-120h80v120h480v-120h80v120q0 33-23.5 56.5T720-160H240Z"/></svg>' });
         }
 
-        // Delete — only if server says CanDelete is true
-        if (item.CanDelete) {
+        // Delete — only for downloaded content (Tentacle-controlled permission)
+        if (tentacleCanDelete) {
             menuItems.push({ id: 'delete', name: 'Delete', icon: '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="M280-120q-33 0-56.5-23.5T200-200v-520h-40v-80h200v-40h240v40h200v80h-40v520q0 33-23.5 56.5T680-120H280Zm400-600H280v520h400v-520ZM360-280h80v-360h-80v360Zm160 0h80v-360h-80v360ZM280-720v520-520Z"/></svg>', className: 'moonfin-more-item-danger' });
         }
 
