@@ -185,7 +185,8 @@ public class TentacleDiscoverController : ControllerBase
 
         try
         {
-            var detailTask = HttpClient.GetStringAsync($"{baseUrl}/api/discover/detail/{mediaType}/{tmdbId}");
+            var detailTask = HttpClient.GetStringAsync(
+                    AppendUserId($"{baseUrl}/api/discover/detail/{mediaType}/{tmdbId}"));
 
             // For series, also fetch library data to get following/sonarr state
             Task<string>? libraryTask = null;
