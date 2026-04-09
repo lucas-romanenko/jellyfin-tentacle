@@ -291,6 +291,26 @@ def get_item_detail(media_type: str, tmdb_id: int, db: Session = Depends(get_db)
     raise HTTPException(400, "Invalid media type")
 
 
+@router.delete("/item/{media_type}/{tmdb_id}")
+def delete_library_item(media_type: str, tmdb_id: int, db: Session = Depends(get_db)):
+    """Remove an item from Tentacle's database (called when item is deleted from Jellyfin)."""
+    if media_type == "movie":
+        item = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
+        if item:
+            db.delete(item)
+            db.commit()
+            return {"success": True, "deleted": True}
+        return {"success": True, "deleted": False}
+    elif media_type == "series":
+        item = db.query(Series).filter(Series.tmdb_id == tmdb_id).first()
+        if item:
+            db.delete(item)
+            db.commit()
+            return {"success": True, "deleted": True}
+        return {"success": True, "deleted": False}
+    raise HTTPException(400, "Invalid media type")
+
+
 @router.get("/tmdb/{media_type}/{tmdb_id}")
 def get_tmdb_detail(media_type: str, tmdb_id: int, db: Session = Depends(get_db)):
     """Fetch item details from TMDB (for items not in library)"""

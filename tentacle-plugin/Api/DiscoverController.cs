@@ -266,6 +266,33 @@ public class TentacleDiscoverController : ControllerBase
     }
 
     /// <summary>
+    /// Proxies library item deletion to Tentacle (removes from Tentacle DB after Jellyfin deletion).
+    /// </summary>
+    [HttpDelete("LibraryItem/{mediaType}/{tmdbId}")]
+    [Authorize]
+    public async Task<ActionResult> DeleteLibraryItem(string mediaType, int tmdbId)
+    {
+        var baseUrl = GetTentacleUrl();
+        if (string.IsNullOrEmpty(baseUrl))
+        {
+            return BadRequest("Tentacle URL not configured");
+        }
+
+        try
+        {
+            var response = await HttpClient.DeleteAsync(
+                AppendUserId($"{baseUrl}/api/library/item/{mediaType}/{tmdbId}"));
+            var result = await response.Content.ReadAsStringAsync();
+            return new ContentResult { Content = result, ContentType = "application/json", StatusCode = (int)response.StatusCode };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("[Tentacle Discover] Failed to delete library item: {Error}", ex.Message);
+            return StatusCode(500, new { detail = ex.Message });
+        }
+    }
+
+    /// <summary>
     /// Proxies TMDB search requests to Tentacle.
     /// </summary>
     [HttpGet("Search")]
