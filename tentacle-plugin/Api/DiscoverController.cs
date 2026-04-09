@@ -266,7 +266,9 @@ public class TentacleDiscoverController : ControllerBase
     }
 
     /// <summary>
-    /// Proxies library item deletion to Tentacle (removes from Tentacle DB after Jellyfin deletion).
+    /// Proxies downloaded content deletion to Tentacle.
+    /// Full cleanup: Radarr/Sonarr (disk), Jellyfin, Tentacle DB, playlists.
+    /// Permission check: admin or download requester.
     /// </summary>
     [HttpDelete("LibraryItem/{mediaType}/{tmdbId}")]
     [Authorize]
@@ -281,7 +283,7 @@ public class TentacleDiscoverController : ControllerBase
         try
         {
             var response = await HttpClient.DeleteAsync(
-                AppendUserId($"{baseUrl}/api/library/item/{mediaType}/{tmdbId}"));
+                AppendUserId($"{baseUrl}/api/library/delete-download/{tmdbId}?media_type={mediaType}"));
             var result = await response.Content.ReadAsStringAsync();
             return new ContentResult { Content = result, ContentType = "application/json", StatusCode = (int)response.StatusCode };
         }

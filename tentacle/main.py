@@ -126,6 +126,17 @@ def run_scheduled_sync():
         except Exception as e:
             logger.error(f"TMDB cache cleanup failed: {e}")
 
+        # Sweep orphaned downloads (radarr/sonarr records no longer in Jellyfin)
+        logger.info("Sweeping orphaned downloads")
+        try:
+            from services.jellyfin import sweep_orphaned_downloads
+            orphans = sweep_orphaned_downloads(db)
+            if orphans:
+                from models.database import log_activity
+                log_activity(db, "orphan_sweep", f"Removed {orphans} orphaned download(s) from DB")
+        except Exception as e:
+            logger.error(f"Orphan sweep failed: {e}")
+
         # Per-user: sync smartlist configs + write home configs
         logger.info("Syncing per-user playlists and home configs")
         try:

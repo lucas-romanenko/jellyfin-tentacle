@@ -2130,22 +2130,73 @@ var Details = {
 
         overlay.querySelector('.moonfin-delete-cancel').addEventListener('click', closeOverlay);
         overlay.querySelector('.moonfin-delete-confirm').addEventListener('click', function() {
-            fetch(serverUrl + '/Items/' + item.Id, {
-                method: 'DELETE',
-                headers: headers
-            }).then(function(resp) {
-                if (resp.ok) {
-                    self.showToast('Deleted successfully');
-                    self.hide();
-                } else {
-                    self.showToast('Failed to delete - check permissions');
-                }
-                closeOverlay();
-            }).catch(function(err) {
-                console.error('[Moonfin] Details: Delete failed', err);
-                self.showToast('Delete failed');
-                closeOverlay();
-            });
+            // Route delete through Tentacle for full cleanup (disk, DB, playlists)
+            var tmdbId = item.ProviderIds && item.ProviderIds.Tmdb;
+            var mediaType = item.Type === 'Series' ? 'series' : 'movie';
+
+            if (tmdbId) {
+                fetch(serverUrl + '/TentacleDiscover/LibraryItem/' + mediaType + '/' + tmdbId, {
+                    method: 'DELETE',
+                    headers: headers
+                }).then(function(resp) {
+                    if (resp.ok) {
+                        self.showToast('Deleted successfully');
+                        self.hide();
+                    } else if (resp.status === 403) {
+                        self.showToast('Permission denied — you can only delete content you downloaded');
+                    } else {
+                        // Fallback to direct Jellyfin delete (e.g. VOD or non-Tentacle content)
+                        fetch(serverUrl + '/Items/' + item.Id, {
+                            method: 'DELETE',
+                            headers: headers
+                        }).then(function(r2) {
+                            if (r2.ok) {
+                                self.showToast('Deleted successfully');
+                                self.hide();
+                            } else {
+                                self.showToast('Failed to delete - check permissions');
+                            }
+                        });
+                    }
+                    closeOverlay();
+                }).catch(function(err) {
+                    console.error('[Moonfin] Details: Tentacle delete failed, falling back', err);
+                    // Fallback to direct Jellyfin delete
+                    fetch(serverUrl + '/Items/' + item.Id, {
+                        method: 'DELETE',
+                        headers: headers
+                    }).then(function(resp) {
+                        if (resp.ok) {
+                            self.showToast('Deleted successfully');
+                            self.hide();
+                        } else {
+                            self.showToast('Failed to delete - check permissions');
+                        }
+                        closeOverlay();
+                    }).catch(function() {
+                        self.showToast('Delete failed');
+                        closeOverlay();
+                    });
+                });
+            } else {
+                // No TMDB ID — direct Jellyfin delete (non-Tentacle content)
+                fetch(serverUrl + '/Items/' + item.Id, {
+                    method: 'DELETE',
+                    headers: headers
+                }).then(function(resp) {
+                    if (resp.ok) {
+                        self.showToast('Deleted successfully');
+                        self.hide();
+                    } else {
+                        self.showToast('Failed to delete - check permissions');
+                    }
+                    closeOverlay();
+                }).catch(function(err) {
+                    console.error('[Moonfin] Details: Delete failed', err);
+                    self.showToast('Delete failed');
+                    closeOverlay();
+                });
+            }
         });
 
         document.body.appendChild(overlay);

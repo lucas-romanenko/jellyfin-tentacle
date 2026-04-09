@@ -11,7 +11,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing import Optional
-from models.database import get_db, get_setting, Movie, Series, ListSubscription, ListItem
+from fastapi import Request
+from models.database import get_db, get_setting, Movie, Series, ListSubscription, ListItem, DownloadRequest
 from routers.auth import get_user_from_request
 from services.tmdb import TMDBService
 
@@ -186,7 +187,8 @@ def _get_missing_from_lists(db: Session, known_ids: set, type_filter: str) -> li
 def get_discover_detail(
     media_type: str,
     tmdb_id: int,
-    db: Session = Depends(get_db)
+    request: Request,
+    db: Session = Depends(get_db),
 ):
     """Fetch full TMDB details for a single item (used by modal)."""
     tmdb = _get_tmdb(db)
@@ -201,17 +203,35 @@ def get_discover_detail(
     if not details:
         return {"error": "Not found"}
 
-    # Enrich with library source info
+    # Enrich with library source info + can_delete permission
+    db_item = None
     if media_type == "series":
-        series = db.query(Series).filter(Series.tmdb_id == tmdb_id).first()
-        if series:
+        db_item = db.query(Series).filter(Series.tmdb_id == tmdb_id).first()
+        if db_item:
             details["in_library"] = True
-            details["library_source"] = series.source
+            details["library_source"] = db_item.source
         else:
             details["in_library"] = False
     else:
-        movie = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
-        details["in_library"] = bool(movie)
+        db_item = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
+        details["in_library"] = bool(db_item)
+
+    # can_delete: True if downloaded content AND (admin OR user requested it)
+    details["can_delete"] = False
+    if db_item and hasattr(db_item, "source") and db_item.source in ("radarr", "sonarr"):
+        try:
+            user = get_user_from_request(request, db)
+            if user.is_admin:
+                details["can_delete"] = True
+            else:
+                has_request = db.query(DownloadRequest).filter(
+                    DownloadRequest.tmdb_id == tmdb_id,
+                    DownloadRequest.media_type == media_type,
+                    DownloadRequest.user_id == user.id,
+                ).first()
+                details["can_delete"] = bool(has_request)
+        except HTTPException:
+            pass
 
     return details
 

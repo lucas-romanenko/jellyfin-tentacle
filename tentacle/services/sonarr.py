@@ -61,6 +61,26 @@ class SonarrService:
         series = self.get_all_series()
         return next((s for s in series if s.get("tmdbId") == tmdb_id), None)
 
+    def delete_series(self, tmdb_id: int, delete_files: bool = True) -> bool:
+        """Delete a series from Sonarr by TMDB ID. Optionally deletes files on disk."""
+        series = self.get_series_by_tmdb(tmdb_id)
+        if not series:
+            logger.warning(f"Series tmdb:{tmdb_id} not found in Sonarr")
+            return False
+        sonarr_id = series.get("id")
+        try:
+            r = self.session.delete(
+                f"{self.url}/api/v3/series/{sonarr_id}",
+                params={"deleteFiles": str(delete_files).lower()},
+                timeout=15,
+            )
+            r.raise_for_status()
+            logger.info(f"Deleted series tmdb:{tmdb_id} (sonarr id:{sonarr_id}) from Sonarr (deleteFiles={delete_files})")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to delete series tmdb:{tmdb_id} from Sonarr: {e}")
+            return False
+
     def get_quality_profiles(self) -> list:
         try:
             r = self.session.get(f"{self.url}/api/v3/qualityprofile", timeout=10)

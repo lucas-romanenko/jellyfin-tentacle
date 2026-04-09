@@ -12,9 +12,9 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 from typing import Optional
-from models.database import get_db, get_setting, Movie, Series, ListItem
+from models.database import get_db, get_setting, Movie, Series, ListItem, DownloadRequest, TentacleUser
 from routers.auth import get_user_from_request
-from services.logstream import library_event_generator
+from services.logstream import library_event_generator, emit_library_event
 from services.tmdb import TMDBService
 
 logger = logging.getLogger(__name__)
@@ -251,12 +251,12 @@ def _get_list_items(list_id: int, search: Optional[str], sort: Optional[str],
 
 
 @router.get("/item/{media_type}/{tmdb_id}")
-def get_item_detail(media_type: str, tmdb_id: int, db: Session = Depends(get_db)):
+def get_item_detail(media_type: str, tmdb_id: int, request: Request, db: Session = Depends(get_db)):
     if media_type == "movie":
         item = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
         if not item:
             raise HTTPException(404, "Movie not found")
-        return {
+        result = {
             "tmdb_id": item.tmdb_id,
             "title": item.title,
             "year": item.year,
@@ -277,7 +277,7 @@ def get_item_detail(media_type: str, tmdb_id: int, db: Session = Depends(get_db)
         item = db.query(Series).filter(Series.tmdb_id == tmdb_id).first()
         if not item:
             raise HTTPException(404, "Series not found")
-        return {
+        result = {
             "tmdb_id": item.tmdb_id,
             "title": item.title,
             "year": item.year,
@@ -294,7 +294,70 @@ def get_item_detail(media_type: str, tmdb_id: int, db: Session = Depends(get_db)
             "following": item.sonarr_monitored or False,
             "status": item.status,
         }
-    raise HTTPException(400, "Invalid media type")
+    else:
+        raise HTTPException(400, "Invalid media type")
+
+    # can_delete: True if downloaded content AND (admin OR user requested it)
+    result["can_delete"] = False
+    if item.source in ("radarr", "sonarr"):
+        try:
+            user = get_user_from_request(request, db)
+            if user.is_admin:
+                result["can_delete"] = True
+            else:
+                has_request = db.query(DownloadRequest).filter(
+                    DownloadRequest.tmdb_id == tmdb_id,
+                    DownloadRequest.media_type == media_type,
+                    DownloadRequest.user_id == user.id,
+                ).first()
+                result["can_delete"] = bool(has_request)
+        except HTTPException:
+            pass
+
+    return result
+
+
+def _cleanup_playlists_all_users(tmdb_id: int, media_type: str, jellyfin_item_id: str = None):
+    """Background: remove an item from all users' playlists."""
+    from models.database import SessionLocal
+    from services.jellyfin import JellyfinService
+    from services.smartlists import remove_item_from_playlists
+    cleanup_db = SessionLocal()
+    try:
+        jf_url = get_setting(cleanup_db, "jellyfin_url", "")
+        jf_key = get_setting(cleanup_db, "jellyfin_api_key", "")
+        if not jf_url or not jf_key:
+            return
+
+        # Find the Jellyfin item ID if not provided
+        jf_item_id = jellyfin_item_id
+        if not jf_item_id:
+            users = cleanup_db.query(TentacleUser).all()
+            if not users:
+                return
+            jf = JellyfinService(jf_url, jf_key, users[0].jellyfin_user_id)
+            jf_type = "Movie" if media_type == "movie" else "Series"
+            jf_item = jf.search_by_tmdb_id(tmdb_id, media_type=jf_type)
+            jf_item_id = jf_item["Id"] if jf_item else None
+
+        if not jf_item_id:
+            logger.debug(f"No Jellyfin item found for tmdb:{tmdb_id}, skipping playlist cleanup")
+            return
+
+        users = cleanup_db.query(TentacleUser).all()
+        total_removed = 0
+        for user in users:
+            try:
+                result = remove_item_from_playlists(cleanup_db, jf_item_id, user.id)
+                total_removed += result.get("removed_from", 0)
+            except Exception as e:
+                logger.warning(f"Playlist cleanup for user {user.id} failed: {e}")
+        if total_removed:
+            logger.info(f"Playlist cleanup for tmdb:{tmdb_id}: removed from {total_removed} playlists across {len(users)} users")
+    except Exception as e:
+        logger.warning(f"Playlist cleanup failed for tmdb:{tmdb_id}: {e}")
+    finally:
+        cleanup_db.close()
 
 
 @router.delete("/item/{media_type}/{tmdb_id}")
@@ -304,51 +367,141 @@ def delete_library_item(
     request: Request,
     db: Session = Depends(get_db),
 ):
-    """Remove an item from Tentacle's database and from Jellyfin playlists."""
+    """Lightweight: remove from Tentacle DB + playlists only (Jellyfin item already gone).
+
+    Used by the C# plugin event handler when items are deleted through Jellyfin's native UI.
+    """
     if media_type not in ("movie", "series"):
         raise HTTPException(400, "Invalid media type")
 
     model = Movie if media_type == "movie" else Series
     item = db.query(model).filter(model.tmdb_id == tmdb_id).first()
-    if not item:
-        return {"success": True, "deleted": False}
+    deleted = False
+    if item:
+        title = item.title if hasattr(item, "title") else str(tmdb_id)
+        db.delete(item)
+        deleted = True
 
-    db.delete(item)
+    # Also clean up DownloadRequest
+    db.query(DownloadRequest).filter(
+        DownloadRequest.tmdb_id == tmdb_id,
+        DownloadRequest.media_type == media_type,
+    ).delete()
     db.commit()
 
-    # Remove from Jellyfin playlists in background
-    try:
-        user = get_user_from_request(request, db)
-    except HTTPException:
-        user = None
+    if deleted:
+        emit_library_event(f"{media_type}_removed", {"tmdb_id": tmdb_id, "media_type": media_type})
 
-    if user:
-        def _cleanup():
-            from models.database import SessionLocal
-            from services.jellyfin import JellyfinService
-            from services.smartlists import remove_item_from_playlists
-            cleanup_db = SessionLocal()
-            try:
-                jf_url = get_setting(cleanup_db, "jellyfin_url", "")
-                jf_key = get_setting(cleanup_db, "jellyfin_api_key", "")
-                jf_uid = user.jellyfin_user_id
-                if jf_url and jf_key:
-                    jf = JellyfinService(jf_url, jf_key, jf_uid)
-                    jf_type = "Movie" if media_type == "movie" else "Series"
-                    jf_item = jf.search_by_tmdb_id(tmdb_id, media_type=jf_type)
-                    if jf_item:
-                        result = remove_item_from_playlists(cleanup_db, jf_item["Id"], user.id)
-                        logger.info(f"Playlist cleanup for tmdb:{tmdb_id}: removed from {result.get('removed_from', 0)} playlists")
-                    else:
-                        logger.debug(f"No Jellyfin item found for tmdb:{tmdb_id}, skipping playlist cleanup")
-            except Exception as e:
-                logger.warning(f"Playlist cleanup failed for tmdb:{tmdb_id}: {e}")
-            finally:
-                cleanup_db.close()
+    # Remove from all users' playlists in background
+    threading.Thread(
+        target=_cleanup_playlists_all_users,
+        args=(tmdb_id, media_type),
+        daemon=True,
+    ).start()
 
-        threading.Thread(target=_cleanup, daemon=True).start()
+    return {"success": True, "deleted": deleted}
 
-    return {"success": True, "deleted": True}
+
+@router.delete("/delete-download/{tmdb_id}")
+def delete_download(
+    tmdb_id: int,
+    media_type: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Full delete: permission check, delete from Radarr/Sonarr + Jellyfin + Tentacle DB + playlists.
+
+    Non-admin users can only delete content they requested (via DownloadRequest table).
+    Admin users can delete any downloaded content.
+    """
+    if media_type not in ("movie", "series"):
+        raise HTTPException(400, "Invalid media type")
+
+    user = get_user_from_request(request, db)
+
+    # Permission check
+    if not user.is_admin:
+        has_request = db.query(DownloadRequest).filter(
+            DownloadRequest.tmdb_id == tmdb_id,
+            DownloadRequest.media_type == media_type,
+            DownloadRequest.user_id == user.id,
+        ).first()
+        if not has_request:
+            raise HTTPException(403, "You can only delete content you requested")
+
+    # Check item exists in Tentacle DB
+    model = Movie if media_type == "movie" else Series
+    item = db.query(model).filter(model.tmdb_id == tmdb_id).first()
+    if not item:
+        raise HTTPException(404, "Item not found in library")
+
+    # Check it's downloaded content (not VOD)
+    if hasattr(item, "source") and item.source not in ("radarr", "sonarr"):
+        raise HTTPException(400, "Only downloaded content can be deleted from here")
+
+    title = item.title if hasattr(item, "title") else str(tmdb_id)
+
+    # Find Jellyfin item ID before deleting
+    from services.jellyfin import JellyfinService
+    jf_url = get_setting(db, "jellyfin_url", "")
+    jf_key = get_setting(db, "jellyfin_api_key", "")
+    jf_item_id = None
+    if jf_url and jf_key:
+        jf = JellyfinService(jf_url, jf_key, user.jellyfin_user_id)
+        jf_type = "Movie" if media_type == "movie" else "Series"
+        jf_item = jf.search_by_tmdb_id(tmdb_id, media_type=jf_type)
+        jf_item_id = jf_item["Id"] if jf_item else None
+
+    # Delete from Radarr/Sonarr (removes files from disk)
+    radarr_deleted = False
+    sonarr_deleted = False
+    if media_type == "movie":
+        radarr_url = get_setting(db, "radarr_url", "")
+        radarr_key = get_setting(db, "radarr_api_key", "")
+        if radarr_url and radarr_key:
+            from services.radarr import RadarrService
+            radarr = RadarrService(radarr_url, radarr_key)
+            radarr_deleted = radarr.delete_movie(tmdb_id, delete_files=True)
+    else:
+        sonarr_url = get_setting(db, "sonarr_url", "")
+        sonarr_key = get_setting(db, "sonarr_api_key", "")
+        if sonarr_url and sonarr_key:
+            from services.sonarr import SonarrService
+            sonarr = SonarrService(sonarr_url, sonarr_key)
+            sonarr_deleted = sonarr.delete_series(tmdb_id, delete_files=True)
+
+    # Delete from Jellyfin
+    jf_deleted = False
+    if jf_item_id and jf_url and jf_key:
+        jf_deleted = jf.delete_item(jf_item_id)
+
+    # Delete from Tentacle DB
+    db.delete(item)
+    db.query(DownloadRequest).filter(
+        DownloadRequest.tmdb_id == tmdb_id,
+        DownloadRequest.media_type == media_type,
+    ).delete()
+    db.commit()
+
+    emit_library_event(f"{media_type}_removed", {
+        "tmdb_id": tmdb_id, "title": title, "media_type": media_type,
+    })
+
+    # Remove from all users' playlists in background
+    if jf_item_id:
+        threading.Thread(
+            target=_cleanup_playlists_all_users,
+            args=(tmdb_id, media_type, jf_item_id),
+            daemon=True,
+        ).start()
+
+    logger.info(
+        f"Delete-download tmdb:{tmdb_id} ({media_type}): "
+        f"radarr={radarr_deleted}, sonarr={sonarr_deleted}, "
+        f"jellyfin={jf_deleted}, user={user.display_name}"
+    )
+
+    return {"success": True, "deleted": True, "title": title}
 
 
 @router.get("/tmdb/{media_type}/{tmdb_id}")

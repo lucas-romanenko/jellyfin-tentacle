@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
 
-from models.database import get_db, Provider, Movie, ListItem, ListSubscription, get_setting, log_activity
+from models.database import get_db, Provider, Movie, ListItem, ListSubscription, DownloadRequest, get_setting, log_activity
 from services.radarr import scan_radarr_library, RadarrService
 from services.nfo import update_nfo_tags, write_movie_nfo, make_folder_name
 from services.migration import migrate_provider, preview_migration
@@ -213,21 +213,26 @@ def radarr_webhook(payload: dict, db: Session = Depends(get_db)):
             return {"status": "ignored", "reason": "upgrade"}
         # Non-upgrade file deletion — remove from DB
         deleted = db.query(Movie).filter(Movie.tmdb_id == tmdb_id, Movie.source == "radarr").delete()
+        db.query(DownloadRequest).filter(DownloadRequest.tmdb_id == tmdb_id, DownloadRequest.media_type == "movie").delete()
         db.commit()
         if deleted:
             emit_library_event("movie_removed", {"tmdb_id": tmdb_id, "title": title, "media_type": "movie"})
-        logger.info(f"[Radarr webhook] MovieFileDelete for '{title}' (tmdb:{tmdb_id}) — removed {deleted} from DB")
-        if deleted:
             log_activity(db, "radarr_remove", f"Removed '{title}' from Radarr library")
+            from routers.library import _cleanup_playlists_all_users
+            threading.Thread(target=_cleanup_playlists_all_users, args=(tmdb_id, "movie"), daemon=True).start()
+        logger.info(f"[Radarr webhook] MovieFileDelete for '{title}' (tmdb:{tmdb_id}) — removed {deleted} from DB")
         return {"status": "deleted", "tmdb_id": tmdb_id}
 
     # MovieDelete — remove from DB
     if event_type == "MovieDelete":
         deleted = db.query(Movie).filter(Movie.tmdb_id == tmdb_id, Movie.source == "radarr").delete()
+        db.query(DownloadRequest).filter(DownloadRequest.tmdb_id == tmdb_id, DownloadRequest.media_type == "movie").delete()
         db.commit()
         if deleted:
             emit_library_event("movie_removed", {"tmdb_id": tmdb_id, "title": title, "media_type": "movie"})
             log_activity(db, "radarr_remove", f"Removed '{title}' from Radarr library")
+            from routers.library import _cleanup_playlists_all_users
+            threading.Thread(target=_cleanup_playlists_all_users, args=(tmdb_id, "movie"), daemon=True).start()
         logger.info(f"[Radarr webhook] MovieDelete for '{title}' (tmdb:{tmdb_id}) — removed {deleted} from DB")
         return {"status": "deleted", "tmdb_id": tmdb_id}
 

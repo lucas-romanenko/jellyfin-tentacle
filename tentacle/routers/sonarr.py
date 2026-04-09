@@ -8,7 +8,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from models.database import get_db, Series, ListItem, ListSubscription, get_setting, log_activity
+from models.database import get_db, Series, ListItem, ListSubscription, DownloadRequest, get_setting, log_activity
 from services.sonarr import scan_sonarr_library, SonarrService
 from services.nfo import update_nfo_tags, write_series_nfo
 from services.logstream import emit_library_event
@@ -196,10 +196,13 @@ def sonarr_webhook(payload: dict, db: Session = Depends(get_db)):
                 hybrid.sonarr_monitored = False
                 hybrid.sonarr_path = None
             deleted = db.query(Series).filter(Series.tmdb_id == tmdb_id, Series.source == "sonarr").delete()
+            db.query(DownloadRequest).filter(DownloadRequest.tmdb_id == tmdb_id, DownloadRequest.media_type == "series").delete()
             db.commit()
             if deleted:
                 emit_library_event("series_removed", {"tmdb_id": tmdb_id, "title": title, "media_type": "series"})
                 log_activity(db, "sonarr_remove", f"Removed '{title}' from Sonarr library")
+                from routers.library import _cleanup_playlists_all_users
+                threading.Thread(target=_cleanup_playlists_all_users, args=(tmdb_id, "series"), daemon=True).start()
             logger.info(f"[Sonarr webhook] SeriesDelete for '{title}' (tmdb:{tmdb_id}) — removed {deleted} from DB")
         return {"status": "deleted", "tmdb_id": tmdb_id}
 

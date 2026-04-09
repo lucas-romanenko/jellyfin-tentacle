@@ -564,6 +564,78 @@ class JellyfinService:
             return False
 
 
+def sweep_orphaned_downloads(db) -> int:
+    """Remove Tentacle DB records for downloaded content no longer in Jellyfin.
+
+    Fetches all Jellyfin movie/series TMDB IDs, then deletes any Tentacle DB
+    records with source='radarr' or 'sonarr' whose tmdb_id is missing from
+    Jellyfin. Also cleans up associated DownloadRequest records.
+
+    Should run BEFORE the per-user playlist rebuild so rebuilt playlists
+    won't reference dead items.
+    """
+    from models.database import Movie, Series, DownloadRequest, get_setting
+
+    jf_url = get_setting(db, "jellyfin_url")
+    jf_key = get_setting(db, "jellyfin_api_key")
+    jf_uid = get_setting(db, "jellyfin_user_id", "")
+    if not jf_url or not jf_key:
+        return 0
+
+    jf = JellyfinService(jf_url, jf_key, jf_uid)
+
+    # Fetch all TMDB IDs currently in Jellyfin
+    jf_movie_ids = set()
+    for item in jf._fetch_all_items("Movie"):
+        tmdb_id = item.get("ProviderIds", {}).get("Tmdb")
+        if tmdb_id:
+            try:
+                jf_movie_ids.add(int(tmdb_id))
+            except (ValueError, TypeError):
+                pass
+
+    jf_series_ids = set()
+    for item in jf._fetch_all_items("Series"):
+        tmdb_id = item.get("ProviderIds", {}).get("Tmdb")
+        if tmdb_id:
+            try:
+                jf_series_ids.add(int(tmdb_id))
+            except (ValueError, TypeError):
+                pass
+
+    orphans_removed = 0
+
+    # Check radarr movies
+    radarr_movies = db.query(Movie).filter(Movie.source == "radarr").all()
+    for movie in radarr_movies:
+        if movie.tmdb_id not in jf_movie_ids:
+            logger.info(f"[Orphan sweep] Removing orphaned radarr movie: {movie.title} (tmdb:{movie.tmdb_id})")
+            db.query(DownloadRequest).filter(
+                DownloadRequest.tmdb_id == movie.tmdb_id,
+                DownloadRequest.media_type == "movie",
+            ).delete()
+            db.delete(movie)
+            orphans_removed += 1
+
+    # Check sonarr series
+    sonarr_series = db.query(Series).filter(Series.source == "sonarr").all()
+    for series in sonarr_series:
+        if series.tmdb_id not in jf_series_ids:
+            logger.info(f"[Orphan sweep] Removing orphaned sonarr series: {series.title} (tmdb:{series.tmdb_id})")
+            db.query(DownloadRequest).filter(
+                DownloadRequest.tmdb_id == series.tmdb_id,
+                DownloadRequest.media_type == "series",
+            ).delete()
+            db.delete(series)
+            orphans_removed += 1
+
+    if orphans_removed:
+        db.commit()
+        logger.info(f"[Orphan sweep] Removed {orphans_removed} orphaned download(s)")
+
+    return orphans_removed
+
+
 def push_tags_to_jellyfin(db, log_prefix: str = "Pipeline") -> int:
     """Push tags from Tentacle DB to Jellyfin for all movies and series.
 
