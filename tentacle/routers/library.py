@@ -407,12 +407,14 @@ def delete_download(
     tmdb_id: int,
     media_type: str,
     request: Request,
+    jellyfin_item_id: str = None,
     db: Session = Depends(get_db),
 ):
     """Full delete: permission check, delete from Radarr/Sonarr + Jellyfin + Tentacle DB + playlists.
 
     Non-admin users can only delete content they requested (via DownloadRequest table).
     Admin users can delete any downloaded content.
+    Pass jellyfin_item_id to skip the expensive library search.
     """
     if media_type not in ("movie", "series"):
         raise HTTPException(400, "Invalid media type")
@@ -441,16 +443,18 @@ def delete_download(
 
     title = item.title if hasattr(item, "title") else str(tmdb_id)
 
-    # Find Jellyfin item ID before deleting
+    # Use provided Jellyfin item ID or fall back to search
     from services.jellyfin import JellyfinService
     jf_url = get_setting(db, "jellyfin_url", "")
     jf_key = get_setting(db, "jellyfin_api_key", "")
-    jf_item_id = None
+    jf_item_id = jellyfin_item_id
+    jf = None
     if jf_url and jf_key:
         jf = JellyfinService(jf_url, jf_key, user.jellyfin_user_id)
-        jf_type = "Movie" if media_type == "movie" else "Series"
-        jf_item = jf.search_by_tmdb_id(tmdb_id, media_type=jf_type)
-        jf_item_id = jf_item["Id"] if jf_item else None
+        if not jf_item_id:
+            jf_type = "Movie" if media_type == "movie" else "Series"
+            jf_item = jf.search_by_tmdb_id(tmdb_id, media_type=jf_type)
+            jf_item_id = jf_item["Id"] if jf_item else None
 
     # Delete from Radarr/Sonarr (removes files from disk)
     radarr_deleted = False

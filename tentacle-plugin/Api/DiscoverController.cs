@@ -273,7 +273,7 @@ public class TentacleDiscoverController : ControllerBase
     /// </summary>
     [HttpDelete("LibraryItem/{mediaType}/{tmdbId}")]
     [Authorize]
-    public async Task<ActionResult> DeleteLibraryItem(string mediaType, int tmdbId)
+    public async Task<ActionResult> DeleteLibraryItem(string mediaType, int tmdbId, [FromQuery] string? jellyfinItemId = null)
     {
         var baseUrl = GetTentacleUrl();
         if (string.IsNullOrEmpty(baseUrl))
@@ -283,8 +283,10 @@ public class TentacleDiscoverController : ControllerBase
 
         try
         {
-            var response = await HttpClient.DeleteAsync(
-                AppendUserId($"{baseUrl}/api/library/delete-download/{tmdbId}?media_type={mediaType}"));
+            var url = $"{baseUrl}/api/library/delete-download/{tmdbId}?media_type={mediaType}";
+            if (!string.IsNullOrEmpty(jellyfinItemId))
+                url += $"&jellyfin_item_id={jellyfinItemId}";
+            var response = await HttpClient.DeleteAsync(AppendUserId(url));
             var result = await response.Content.ReadAsStringAsync();
             return new ContentResult { Content = result, ContentType = "application/json", StatusCode = (int)response.StatusCode };
         }

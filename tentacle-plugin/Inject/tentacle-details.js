@@ -2150,7 +2150,9 @@ var Details = {
             var mediaType = item.Type === 'Series' ? 'series' : 'movie';
 
             if (tmdbId) {
-                fetch(serverUrl + '/TentacleDiscover/LibraryItem/' + mediaType + '/' + tmdbId, {
+                var deleteUrl = serverUrl + '/TentacleDiscover/LibraryItem/' + mediaType + '/' + tmdbId;
+                if (item.Id) deleteUrl += '?jellyfinItemId=' + item.Id;
+                fetch(deleteUrl, {
                     method: 'DELETE',
                     headers: headers
                 }).then(function(resp) {
