@@ -2457,6 +2457,10 @@ async function loadHomeScreen() {
     if (trailerCheckbox && config.hero) {
       trailerCheckbox.checked = config.hero.require_trailer === true;
     }
+    const trailerAudioCheckbox = document.getElementById('home-hero-trailer-audio');
+    if (trailerAudioCheckbox && config.hero) {
+      trailerAudioCheckbox.checked = config.hero.trailer_audio !== false;
+    }
 
     if (!homeRows.length) {
       listEl.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text3);font-size:13px">No rows configured — the default Jellyfin home screen will be used.</div>';
@@ -2560,10 +2564,11 @@ async function updateHeroSort() {
   const sortOrder = dir === 'asc' ? 'Ascending' : 'Descending';
   const requireLogo = document.getElementById('home-hero-require-logo')?.checked ?? true;
   const requireTrailer = document.getElementById('home-hero-require-trailer')?.checked ?? false;
+  const trailerAudio = document.getElementById('home-hero-trailer-audio')?.checked ?? true;
   try {
     const r = await api('/api/smartlists/hero-sort', {
       method: 'POST',
-      body: { sort_by: sortBy, sort_order: sortOrder, require_logo: requireLogo, require_trailer: requireTrailer },
+      body: { sort_by: sortBy, sort_order: sortOrder, require_logo: requireLogo, require_trailer: requireTrailer, trailer_audio: trailerAudio },
     });
     if (r.success) pushHomeConfig();
     else toast(r.message || 'Failed', 'error');

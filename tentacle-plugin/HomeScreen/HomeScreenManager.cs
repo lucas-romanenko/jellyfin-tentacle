@@ -172,6 +172,9 @@ public class HeroConfig
 
     [JsonPropertyName("require_trailer")]
     public bool RequireTrailer { get; set; } = false;
+
+    [JsonPropertyName("trailer_audio")]
+    public bool TrailerAudio { get; set; } = true;
 }
 
 /// <summary>

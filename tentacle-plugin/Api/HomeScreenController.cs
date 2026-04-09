@@ -390,10 +390,10 @@ public class TentacleHomeController : ControllerBase
         var homeConfig = _homeScreenManager.GetHomeConfig(userId);
         if (homeConfig?.Hero is { Enabled: true } hero && !string.IsNullOrEmpty(hero.PlaylistId))
         {
-            return Ok(new { enabled = true, playlistId = hero.PlaylistId, displayName = hero.DisplayName });
+            return Ok(new { enabled = true, playlistId = hero.PlaylistId, displayName = hero.DisplayName, trailerAudio = hero.TrailerAudio });
         }
 
-        return Ok(new { enabled = false, playlistId = "", displayName = "" });
+        return Ok(new { enabled = false, playlistId = "", displayName = "", trailerAudio = true });
     }
 
     /// <summary>

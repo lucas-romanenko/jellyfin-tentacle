@@ -393,6 +393,7 @@ class HeroSortRequest(BaseModel):
     sort_order: str
     require_logo: Optional[bool] = None
     require_trailer: Optional[bool] = None
+    trailer_audio: Optional[bool] = None
 
 
 @router.post("/hero-sort")
@@ -409,6 +410,8 @@ def set_hero_sort(req: HeroSortRequest, db: Session = Depends(get_db), user: Ten
         hero["require_logo"] = req.require_logo
     if req.require_trailer is not None:
         hero["require_trailer"] = req.require_trailer
+    if req.trailer_audio is not None:
+        hero["trailer_audio"] = req.trailer_audio
     config["hero"] = hero
     _write_home_json(user, config)
     logger.info(f"Updated hero sort: {req.sort_by} {req.sort_order}")
