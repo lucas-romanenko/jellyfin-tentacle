@@ -335,11 +335,53 @@ def _get_unreleased(db: Session) -> list:
     return result
 
 
+def _get_recently_downloaded(db: Session) -> list:
+    """Return items downloaded in the last 24 hours, oldest first (expiring soonest)."""
+    from datetime import timedelta
+    cutoff = datetime.utcnow() - timedelta(hours=24)
+
+    result = []
+
+    movies = db.query(Movie).filter(
+        Movie.source == "radarr",
+        Movie.date_added >= cutoff,
+    ).order_by(Movie.date_added.asc()).all()
+
+    for m in movies:
+        result.append({
+            "tmdb_id": m.tmdb_id,
+            "title": m.title,
+            "year": m.year or "",
+            "poster_path": m.poster_path,
+            "media_type": "movie",
+            "date_added": m.date_added.isoformat() if m.date_added else "",
+        })
+
+    series = db.query(Series).filter(
+        Series.source == "sonarr",
+        Series.date_added >= cutoff,
+    ).order_by(Series.date_added.asc()).all()
+
+    for s in series:
+        result.append({
+            "tmdb_id": s.tmdb_id,
+            "title": s.title,
+            "year": s.year or "",
+            "poster_path": s.poster_path,
+            "media_type": "series",
+            "date_added": s.date_added.isoformat() if s.date_added else "",
+        })
+
+    result.sort(key=lambda x: x["date_added"])
+    return result
+
+
 @router.get("")
 def get_activity(db: Session = Depends(get_db)):
     """Return current download queue (always fresh) and unreleased (5min cache)."""
     downloads = _build_downloads(db)
     unreleased = _get_unreleased(db)
+    recently_downloaded = _get_recently_downloaded(db)
     if downloads:
         logger.info(f"Activity: {len(downloads)} download(s) in queue")
-    return {"downloads": downloads, "unreleased": unreleased}
+    return {"downloads": downloads, "unreleased": unreleased, "recently_downloaded": recently_downloaded}
