@@ -335,6 +335,17 @@ def _get_unreleased(db: Session) -> list:
     return result
 
 
+def _hours_remaining(date_added) -> int:
+    """Compute hours until 24h window expires, calculated in UTC."""
+    from datetime import timedelta
+    import math
+    if not date_added:
+        return 24
+    expires_at = date_added + timedelta(hours=24)
+    remaining = (expires_at - datetime.utcnow()).total_seconds()
+    return max(0, math.ceil(remaining / 3600))
+
+
 def _get_recently_downloaded(db: Session) -> list:
     """Return items downloaded in the last 24 hours, oldest first (expiring soonest)."""
     from datetime import timedelta
@@ -354,7 +365,8 @@ def _get_recently_downloaded(db: Session) -> list:
             "year": m.year or "",
             "poster_path": m.poster_path,
             "media_type": "movie",
-            "date_added": m.date_added.isoformat() if m.date_added else "",
+            "hours_remaining": _hours_remaining(m.date_added),
+            "jellyfin_item_id": m.jellyfin_item_id or "",
         })
 
     series = db.query(Series).filter(
@@ -369,10 +381,12 @@ def _get_recently_downloaded(db: Session) -> list:
             "year": s.year or "",
             "poster_path": s.poster_path,
             "media_type": "series",
-            "date_added": s.date_added.isoformat() if s.date_added else "",
+            "episode": s.last_downloaded_episode or "",
+            "hours_remaining": _hours_remaining(s.date_added),
+            "jellyfin_item_id": s.jellyfin_item_id or "",
         })
 
-    result.sort(key=lambda x: x["date_added"])
+    result.sort(key=lambda x: x["hours_remaining"])
     return result
 
 

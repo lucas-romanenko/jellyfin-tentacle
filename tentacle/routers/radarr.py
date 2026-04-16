@@ -319,6 +319,11 @@ def radarr_webhook(payload: dict, db: Session = Depends(get_db)):
                                 pass
 
                 if jf_item:
+                    # Cache Jellyfin item ID for click-to-play
+                    if jf_item.get("Id") and db_movie.jellyfin_item_id != jf_item["Id"]:
+                        db_movie.jellyfin_item_id = jf_item["Id"]
+                        db.commit()
+
                     # Merge with existing Jellyfin tags rather than replacing
                     existing_jf_tags = set(jf_item.get("Tags", []))
                     desired_tags = set(db_movie.tags)

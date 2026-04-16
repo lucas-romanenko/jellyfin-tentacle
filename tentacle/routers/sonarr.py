@@ -176,6 +176,8 @@ def sonarr_webhook(payload: dict, db: Session = Depends(get_db)):
     series_data = payload.get("series", {})
     tmdb_id = series_data.get("tmdbId") or 0
     title = series_data.get("title", "Unknown")
+    episodes = payload.get("episodes", [])
+    first_episode = episodes[0] if episodes else None
     logger.info(f"[Sonarr webhook] {event_type} for '{title}' (tmdb:{tmdb_id})")
 
     # EpisodeFileDelete with upgrade reason — file is being replaced, ignore
@@ -208,7 +210,7 @@ def sonarr_webhook(payload: dict, db: Session = Depends(get_db)):
         return {"status": "deleted", "tmdb_id": tmdb_id}
 
     # Download / SeriesAdd / EpisodeFileDelete — scan and tag
-    def _webhook_background(tmdb_id, title, event_type):
+    def _webhook_background(tmdb_id, title, event_type, first_episode=None):
         import time
         from models.database import SessionLocal, get_setting
         from services.jellyfin import JellyfinService
@@ -225,9 +227,17 @@ def sonarr_webhook(payload: dict, db: Session = Depends(get_db)):
                 logger.warning(f"[Sonarr webhook] Series tmdb:{tmdb_id} not found after scan")
                 return
 
-            # Stamp date_added on Download so recently_downloaded query picks it up
+            # Stamp date_added and episode info on Download
             if event_type == "Download":
                 db_series.date_added = datetime.utcnow()
+                if first_episode:
+                    s = first_episode.get("seasonNumber", 0)
+                    e = first_episode.get("episodeNumber", 0)
+                    ep_title = first_episode.get("title", "")
+                    label = f"S{s:02d}E{e:02d}"
+                    if ep_title:
+                        label += f" \u00b7 {ep_title}"
+                    db_series.last_downloaded_episode = label
                 db.commit()
 
             list_items = db.query(ListItem).filter(ListItem.tmdb_id == tmdb_id).all()
@@ -289,6 +299,11 @@ def sonarr_webhook(payload: dict, db: Session = Depends(get_db)):
                                 pass
 
                 if jf_item:
+                    # Cache Jellyfin item ID for click-to-play
+                    if jf_item.get("Id") and db_series.jellyfin_item_id != jf_item["Id"]:
+                        db_series.jellyfin_item_id = jf_item["Id"]
+                        db.commit()
+
                     existing_jf_tags = set(jf_item.get("Tags", []))
                     desired_tags = set(db_series.tags)
                     merged = list(existing_jf_tags | desired_tags)
@@ -334,7 +349,7 @@ def sonarr_webhook(payload: dict, db: Session = Depends(get_db)):
         finally:
             db.close()
 
-    thread = threading.Thread(target=_webhook_background, args=(tmdb_id, title, event_type), daemon=True)
+    thread = threading.Thread(target=_webhook_background, args=(tmdb_id, title, event_type, first_episode), daemon=True)
     thread.start()
 
     return {"status": "processing", "event": event_type, "tmdb_id": tmdb_id}

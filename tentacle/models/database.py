@@ -154,6 +154,9 @@ class Movie(Base):
     source_tag = Column(String, nullable=True)  # Netflix, Amazon etc
     tags = Column(JSON, default=list)  # All tags applied
 
+    # Jellyfin
+    jellyfin_item_id = Column(String, nullable=True)
+
     # Dates
     date_added = Column(DateTime, default=datetime.utcnow)
     date_updated = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -183,6 +186,10 @@ class Series(Base):
     source_tag = Column(String, nullable=True)
     tags = Column(JSON, default=list)
     sonarr_monitored = Column(Boolean, default=False)  # True = following for new episodes
+
+    # Jellyfin
+    jellyfin_item_id = Column(String, nullable=True)
+    last_downloaded_episode = Column(String, nullable=True)  # e.g. "S02E05 · Episode Title"
 
     date_added = Column(DateTime, default=datetime.utcnow)
     date_updated = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -480,6 +487,9 @@ def _migrate_columns():
         ("list_subscriptions", "user_id", "INTEGER REFERENCES tentacle_users(id)"),
         ("tag_rules", "user_id", "INTEGER REFERENCES tentacle_users(id)"),
         ("series", "sonarr_monitored", "BOOLEAN DEFAULT 0"),
+        ("movies", "jellyfin_item_id", "TEXT"),
+        ("series", "jellyfin_item_id", "TEXT"),
+        ("series", "last_downloaded_episode", "TEXT"),
     ]
     for table, column, col_type in migrations:
         try:
