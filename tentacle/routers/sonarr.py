@@ -5,6 +5,7 @@ Sonarr library scanning, webhooks, and NFO management
 
 import threading
 import logging
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -207,7 +208,7 @@ def sonarr_webhook(payload: dict, db: Session = Depends(get_db)):
         return {"status": "deleted", "tmdb_id": tmdb_id}
 
     # Download / SeriesAdd / EpisodeFileDelete — scan and tag
-    def _webhook_background(tmdb_id, title):
+    def _webhook_background(tmdb_id, title, event_type):
         import time
         from models.database import SessionLocal, get_setting
         from services.jellyfin import JellyfinService
@@ -223,6 +224,11 @@ def sonarr_webhook(payload: dict, db: Session = Depends(get_db)):
             if not db_series:
                 logger.warning(f"[Sonarr webhook] Series tmdb:{tmdb_id} not found after scan")
                 return
+
+            # Stamp date_added on Download so recently_downloaded query picks it up
+            if event_type == "Download":
+                db_series.date_added = datetime.utcnow()
+                db.commit()
 
             list_items = db.query(ListItem).filter(ListItem.tmdb_id == tmdb_id).all()
             if not list_items:
@@ -328,7 +334,7 @@ def sonarr_webhook(payload: dict, db: Session = Depends(get_db)):
         finally:
             db.close()
 
-    thread = threading.Thread(target=_webhook_background, args=(tmdb_id, title), daemon=True)
+    thread = threading.Thread(target=_webhook_background, args=(tmdb_id, title, event_type), daemon=True)
     thread.start()
 
     return {"status": "processing", "event": event_type, "tmdb_id": tmdb_id}

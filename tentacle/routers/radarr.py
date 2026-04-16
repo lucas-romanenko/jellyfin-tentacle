@@ -237,8 +237,9 @@ def radarr_webhook(payload: dict, db: Session = Depends(get_db)):
         return {"status": "deleted", "tmdb_id": tmdb_id}
 
     # Download / MovieAdded — scan and tag
-    def _webhook_background(tmdb_id, title):
+    def _webhook_background(tmdb_id, title, event_type):
         import time
+        from datetime import datetime
         from models.database import SessionLocal, get_setting
         from pathlib import Path
         from services.jellyfin import JellyfinService
@@ -250,6 +251,11 @@ def radarr_webhook(payload: dict, db: Session = Depends(get_db)):
             if not db_movie:
                 logger.warning(f"[Radarr webhook] Movie tmdb:{tmdb_id} not found after scan")
                 return
+
+            # Stamp date_added on Download so recently_downloaded query picks it up
+            if event_type == "Download":
+                db_movie.date_added = datetime.utcnow()
+                db.commit()
 
             list_items = db.query(ListItem).filter(ListItem.tmdb_id == tmdb_id).all()
             if not list_items:
@@ -363,7 +369,7 @@ def radarr_webhook(payload: dict, db: Session = Depends(get_db)):
         finally:
             db.close()
 
-    thread = threading.Thread(target=_webhook_background, args=(tmdb_id, title), daemon=True)
+    thread = threading.Thread(target=_webhook_background, args=(tmdb_id, title, event_type), daemon=True)
     thread.start()
 
     return {"status": "processing", "event": event_type, "tmdb_id": tmdb_id}
