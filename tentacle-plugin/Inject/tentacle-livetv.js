@@ -69,6 +69,7 @@
     var el = document.createElement('div');
     el.id = 'tentacleLiveTvContainer';
     document.body.appendChild(el);
+    el.addEventListener('click', onContainerClick);
     LIVETV.container = el;
   }
 
@@ -108,9 +109,6 @@
     }
 
     LIVETV.container.innerHTML = html;
-
-    // Attach click handlers via delegation
-    LIVETV.container.addEventListener('click', onContainerClick);
   }
 
   function renderHeader() {
@@ -188,6 +186,7 @@
   }
 
   function playChannel(channelId) {
+    // Try playbackManager first (global in Jellyfin web)
     var pm = (typeof playbackManager !== 'undefined') ? playbackManager : null;
     if (pm) {
       try {
@@ -195,14 +194,45 @@
           ids: [channelId],
           serverId: window.ApiClient.serverId()
         }).catch(function (err) {
-          console.error('[Tentacle LiveTV] Playback failed', err);
+          console.error('[Tentacle LiveTV] playbackManager.play() failed, trying sendPlayCommand', err);
+          playViaSession(channelId);
         });
+        return;
       } catch (err) {
         console.error('[Tentacle LiveTV] playbackManager.play() threw', err);
       }
-    } else {
-      console.warn('[Tentacle LiveTV] playbackManager not available');
     }
+
+    // Fallback: send play command via session API
+    playViaSession(channelId);
+  }
+
+  function playViaSession(channelId) {
+    var api = window.ApiClient;
+    if (!api) return;
+
+    if (typeof api.sendPlayCommand === 'function') {
+      var deviceId = api.deviceId();
+      api.getSessions({ DeviceId: deviceId }).then(function (sessions) {
+        if (sessions && sessions.length > 0) {
+          return api.sendPlayCommand(sessions[0].Id, {
+            ItemIds: [channelId],
+            PlayCommand: 'PlayNow'
+          });
+        }
+        throw new Error('No session');
+      }).catch(function (err) {
+        console.error('[Tentacle LiveTV] sendPlayCommand failed, trying URL navigation', err);
+        navigateToPlay(channelId);
+      });
+    } else {
+      navigateToPlay(channelId);
+    }
+  }
+
+  function navigateToPlay(channelId) {
+    // Last resort: navigate to the item which triggers Jellyfin's native playback
+    location.hash = '#/details?id=' + channelId;
   }
 
   // ── Navigation listeners ───────────────────────────────────────────
