@@ -90,10 +90,12 @@ public static class IndexHtmlPatch
             var mediabarJsTag = $"<script src=\"/Tentacle/mediabar.js?v={cacheBust}\" defer></script>";
             var searchCssTag = $"<link rel=\"stylesheet\" href=\"/Tentacle/search.css?v={cacheBust}\" />";
             var searchJsTag = $"<script src=\"/Tentacle/search.js?v={cacheBust}\" defer></script>";
+            var livetvCssTag = $"<link rel=\"stylesheet\" href=\"/Tentacle/livetv.css?v={cacheBust}\" />";
+            var livetvJsTag = $"<script src=\"/Tentacle/livetv.js?v={cacheBust}\" defer></script>";
 
             content = content
-                .Replace("</head>", $"{cssTag}{discoverCssTag}{detailsCssTag}{mdblistCssTag}{navbarCssTag}{mediabarCssTag}{searchCssTag}</head>")
-                .Replace("</body>", $"{mdblistJsTag}{tmdbJsTag}{navbarJsTag}{mediabarJsTag}{jsTag}{discoverJsTag}{searchJsTag}{detailsJsTag}</body>");
+                .Replace("</head>", $"{cssTag}{discoverCssTag}{detailsCssTag}{mdblistCssTag}{navbarCssTag}{mediabarCssTag}{searchCssTag}{livetvCssTag}</head>")
+                .Replace("</body>", $"{mdblistJsTag}{tmdbJsTag}{navbarJsTag}{mediabarJsTag}{jsTag}{discoverJsTag}{searchJsTag}{livetvJsTag}{detailsJsTag}</body>");
 
             var bytes = System.Text.Encoding.UTF8.GetBytes(content);
             __result = new TransformedFileInfo(__result, bytes);

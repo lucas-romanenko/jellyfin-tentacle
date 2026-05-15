@@ -635,6 +635,32 @@ public class TentacleDiscoverController : ControllerBase
         return Content(content, "text/css");
     }
 
+    /// <summary>
+    /// Serves the Tentacle Live TV JavaScript.
+    /// </summary>
+    [HttpGet("/Tentacle/livetv.js")]
+    [ResponseCache(NoStore = true)]
+    public ActionResult GetLiveTvJs()
+    {
+        var content = LoadEmbeddedResource("tentacle-livetv.js");
+        if (content == null) return NotFound();
+        Response.Headers["Cache-Control"] = "no-store, no-cache, must-revalidate";
+        return Content(content, "application/javascript");
+    }
+
+    /// <summary>
+    /// Serves the Tentacle Live TV CSS.
+    /// </summary>
+    [HttpGet("/Tentacle/livetv.css")]
+    [ResponseCache(NoStore = true)]
+    public ActionResult GetLiveTvCss()
+    {
+        var content = LoadEmbeddedResource("tentacle-livetv.css");
+        if (content == null) return NotFound();
+        Response.Headers["Cache-Control"] = "no-store, no-cache, must-revalidate";
+        return Content(content, "text/css");
+    }
+
     private static string? LoadEmbeddedResource(string resourceSuffix)
     {
         var assembly = typeof(TentacleDiscoverController).Assembly;
