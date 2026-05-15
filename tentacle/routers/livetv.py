@@ -819,6 +819,81 @@ def sync_epg(provider_id: int, db: Session = Depends(get_db)):
     return {"success": True, "message": f"EPG sync started for {len(all_channels)} channels ({enabled_count} enabled)"}
 
 
+def _normalize_channel_name(name: str) -> str:
+    """Normalize a channel name for fuzzy matching.
+    Strips country prefixes (CA EN:), quality tags (HD, 4K, SD), and special chars."""
+    import re
+    n = name.strip()
+    # Strip provider/country prefixes like "CA EN:", "US:", "8K:", "UK:"
+    n = re.sub(r'^[A-Z]{1,4}\s*(?:EN|FR)?:\s*', '', n, flags=re.IGNORECASE)
+    # Strip quality/format suffixes
+    n = re.sub(r'\b(?:HD|SD|4K|FHD|UHD|LQ|HQ|HEVC|RAW|BACKUP)\b', '', n, flags=re.IGNORECASE)
+    # Strip unicode superscript tags like ᴴᴰ, ᴿᴬᵂ, ᵁᴴᴰ, ◉, ⱽᴵᴾ
+    n = re.sub(r'[ᴴᴰᴿᴬᵂᵁᴸᵀᵃᵇᵈᵉᶠᶜʰᵉᵛ◉⚽ⱽᴵᴾ]+', '', n)
+    # Strip (R), (CA), trailing parens
+    n = re.sub(r'\([^)]*\)', '', n)
+    # Collapse whitespace and strip
+    n = re.sub(r'\s+', ' ', n).strip().upper()
+    return n
+
+
+def _auto_match_epg_ids(db, provider_id: int, epg_url: str):
+    """Auto-assign epg_channel_id for channels missing one by matching against XMLTV channel names."""
+    # Find channels without EPG IDs
+    unmatched = db.query(LiveChannel).filter(
+        LiveChannel.provider_id == provider_id,
+        (LiveChannel.epg_channel_id.is_(None)) | (LiveChannel.epg_channel_id == ""),
+    ).all()
+
+    if not unmatched:
+        return
+
+    # Extract channel names from cached XMLTV
+    from services.xmltv import extract_xmltv_channels, _get_cache_path
+    cache_path = _get_cache_path(epg_url)
+    xmltv_channels = extract_xmltv_channels(cache_path)
+    if not xmltv_channels:
+        logger.info("[LiveTV] No XMLTV channel data available for auto-match")
+        return
+
+    # Build normalized name → list of (xmltv_id, xmltv_name) for matching
+    xmltv_by_norm = {}
+    for xid, xname in xmltv_channels.items():
+        norm = _normalize_channel_name(xname)
+        if norm:
+            xmltv_by_norm.setdefault(norm, []).append((xid, xname))
+
+    matched_count = 0
+    for ch in unmatched:
+        norm_name = _normalize_channel_name(ch.name)
+        if not norm_name:
+            continue
+
+        candidates = xmltv_by_norm.get(norm_name, [])
+        if not candidates:
+            continue
+
+        # Prefer .ca TLD, then .us, then first match
+        best = None
+        for xid, xname in candidates:
+            if xid.endswith('.ca'):
+                best = xid
+                break
+            elif xid.endswith('.us') and best is None:
+                best = xid
+            elif best is None:
+                best = xid
+
+        if best:
+            logger.info(f"[LiveTV] Auto-matched '{ch.name}' → EPG ID '{best}'")
+            ch.epg_channel_id = best
+            matched_count += 1
+
+    if matched_count:
+        db.commit()
+        logger.info(f"[LiveTV] Auto-matched {matched_count} channels to EPG IDs")
+
+
 def _run_epg_sync_background(provider_data: dict):
     """Background EPG sync — stream-parses full XMLTV, keeps programs for ALL provider channels."""
     pid = provider_data["id"]
@@ -878,6 +953,18 @@ def _run_epg_sync_background(provider_data: dict):
                 _set_sync_status(pid, {"phase": "epg", "status": "running", "progress": pct, "message": msg})
 
             _set_sync_status(pid, {"phase": "epg", "status": "running", "progress": 5, "message": "Downloading XMLTV guide..."})
+
+            # Auto-match: try to assign EPG IDs for channels that don't have one
+            _auto_match_epg_ids(db, pid, epg_url)
+            # Refresh epg_ids after auto-match may have added new ones
+            epg_ids = {
+                ch.epg_channel_id
+                for ch in db.query(LiveChannel).filter(
+                    LiveChannel.provider_id == pid,
+                    LiveChannel.epg_channel_id.isnot(None),
+                    LiveChannel.epg_channel_id != "",
+                ).all()
+            }
 
             # Stream-parse: downloads full XMLTV but only keeps programs for our channels
             from services.xmltv import stream_parse_xmltv
