@@ -190,7 +190,7 @@ body.moonfin-mediabar-active {
 
 .moonfin-mediabar-content {
     position: absolute;
-    bottom: 120px;
+    bottom: calc(15dvh + 40px);
     left: 60px;
     right: 60px;
     z-index: 10;
@@ -449,7 +449,7 @@ body.moonfin-mediabar-active .mh-section:nth-child(6) { animation-delay: 0.25s; 
     .moonfin-mediabar-content {
         left: 40px;
         right: 40px;
-        bottom: 80px;
+        bottom: calc(40dvh + 30px);
     }
 
     .moonfin-mediabar-info {
@@ -493,7 +493,7 @@ body.moonfin-mediabar-active .mh-section:nth-child(6) { animation-delay: 0.25s; 
     .moonfin-mediabar-content {
         left: 16px;
         right: 16px;
-        bottom: 60px;
+        bottom: calc(50dvh + 20px);
     }
 
     .moonfin-mediabar-logo-container {
