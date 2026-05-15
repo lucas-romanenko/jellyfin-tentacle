@@ -49,8 +49,9 @@
     var views = document.querySelectorAll('.view');
     for (var i = views.length - 1; i >= 0; i--) {
       var v = views[i];
-      // Active view is the last visible one, or has data-type="search"
-      if (v.offsetParent !== null || v.style.display !== 'none') {
+      // Active view is the last visible one — use getComputedStyle to catch
+      // both inline styles AND CSS class-based hiding (not just inline style)
+      if (v.offsetParent !== null || getComputedStyle(v).display !== 'none') {
         return v;
       }
     }
@@ -121,15 +122,40 @@
     var view = findActiveView();
     var observeTarget = view || document.body;
 
+    var found = false;
+
     SEARCH.inputObserver = new MutationObserver(function () {
+      if (found) return;
       var inp = findNativeSearchInput();
       if (inp) {
+        found = true;
         SEARCH.inputObserver.disconnect();
         SEARCH.inputObserver = null;
         attachToInput(inp);
       }
     });
     SEARCH.inputObserver.observe(observeTarget, { childList: true, subtree: true });
+
+    // Polling fallback — MutationObserver misses cached/reused views where no
+    // DOM changes occur. Poll every 200ms for up to 3 seconds.
+    var pollAttempts = 0;
+    var pollTimer = setInterval(function () {
+      pollAttempts++;
+      if (found || pollAttempts > 15) {
+        clearInterval(pollTimer);
+        return;
+      }
+      var inp = findNativeSearchInput();
+      if (inp) {
+        found = true;
+        clearInterval(pollTimer);
+        if (SEARCH.inputObserver) {
+          SEARCH.inputObserver.disconnect();
+          SEARCH.inputObserver = null;
+        }
+        attachToInput(inp);
+      }
+    }, 200);
 
     // Safety timeout — don't observe forever
     setTimeout(function () {

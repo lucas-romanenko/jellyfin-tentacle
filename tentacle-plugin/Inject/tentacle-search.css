@@ -1,6 +1,13 @@
 /* Tentacle Search — Unified search results on Jellyfin /search page */
 
 /* ── Override native search input styling ─────────────────────────── */
+/* z-index must be above the search results overlay (z-index: 100)
+   so the input remains clickable/focusable when results are shown */
+body.tentacle-search-active .searchfields-txtSearch,
+body.tentacle-search-active .searchPage input[type="text"] {
+  position: relative !important;
+  z-index: 101 !important;
+}
 #tentacleSearchHideNative ~ .searchfields-txtSearch,
 .searchfields-txtSearch,
 .searchPage input[type="text"] {
