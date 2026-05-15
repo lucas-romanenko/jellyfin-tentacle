@@ -837,6 +837,30 @@ def _normalize_channel_name(name: str) -> str:
     return n
 
 
+def _strip_filler_words(name: str) -> str:
+    """Strip common filler words for fuzzy fallback matching."""
+    import re
+    n = name
+    n = re.sub(r'\b(CANADA|CANADIAN|US|USA|EAST|WEST)\b', '', n)
+    n = re.sub(r'\b(CHANNEL|NETWORK|TV|TELEVISION)\b', '', n)
+    n = re.sub(r'\s+', ' ', n).strip()
+    return n
+
+
+def _pick_best_candidate(candidates: list[tuple[str, str]]) -> str | None:
+    """Pick best XMLTV ID from candidates, preferring .ca TLD, then .us, then first."""
+    best = None
+    for xid, xname in candidates:
+        if xid.endswith('.ca'):
+            best = xid
+            break
+        elif xid.endswith('.us') and best is None:
+            best = xid
+        elif best is None:
+            best = xid
+    return best
+
+
 def _auto_match_epg_ids(db, provider_id: int, epg_url: str):
     """Auto-assign epg_channel_id for channels missing one by matching against XMLTV channel names."""
     # Find channels without EPG IDs
@@ -856,42 +880,64 @@ def _auto_match_epg_ids(db, provider_id: int, epg_url: str):
         logger.info("[LiveTV] No XMLTV channel data available for auto-match")
         return
 
+    logger.info(f"[EPG Auto-match] {len(unmatched)} channels without EPG IDs, {len(xmltv_channels)} XMLTV channels available")
+
     # Build normalized name → list of (xmltv_id, xmltv_name) for matching
-    xmltv_by_norm = {}
+    xmltv_by_norm: dict[str, list[tuple[str, str]]] = {}
+    # Also build stripped version for fuzzy fallback
+    xmltv_by_stripped: dict[str, list[tuple[str, str]]] = {}
     for xid, xname in xmltv_channels.items():
         norm = _normalize_channel_name(xname)
         if norm:
             xmltv_by_norm.setdefault(norm, []).append((xid, xname))
+            stripped = _strip_filler_words(norm)
+            if stripped and stripped != norm:
+                xmltv_by_stripped.setdefault(stripped, []).append((xid, xname))
 
     matched_count = 0
+    still_unmatched = []
     for ch in unmatched:
         norm_name = _normalize_channel_name(ch.name)
         if not norm_name:
             continue
 
+        # Pass 1: exact normalized match
         candidates = xmltv_by_norm.get(norm_name, [])
+
+        # Pass 2: try with filler words stripped from both sides
         if not candidates:
+            stripped_name = _strip_filler_words(norm_name)
+            if stripped_name and stripped_name != norm_name:
+                candidates = xmltv_by_norm.get(stripped_name, [])
+            # Also check stripped XMLTV names against original provider name
+            if not candidates:
+                candidates = xmltv_by_stripped.get(norm_name, [])
+            # Both sides stripped
+            if not candidates and stripped_name:
+                candidates = xmltv_by_stripped.get(stripped_name, [])
+
+        # Pass 3: substring match — if provider name is contained in an XMLTV name or vice versa
+        if not candidates and len(norm_name) >= 3:
+            for norm_xmltv, cands in xmltv_by_norm.items():
+                if norm_name in norm_xmltv or norm_xmltv in norm_name:
+                    candidates = cands
+                    break
+
+        if not candidates:
+            still_unmatched.append(ch.name)
             continue
 
-        # Prefer .ca TLD, then .us, then first match
-        best = None
-        for xid, xname in candidates:
-            if xid.endswith('.ca'):
-                best = xid
-                break
-            elif xid.endswith('.us') and best is None:
-                best = xid
-            elif best is None:
-                best = xid
-
+        best = _pick_best_candidate(candidates)
         if best:
-            logger.info(f"[LiveTV] Auto-matched '{ch.name}' → EPG ID '{best}'")
+            logger.info(f"[EPG Auto-match] '{ch.name}' → '{best}'")
             ch.epg_channel_id = best
             matched_count += 1
 
     if matched_count:
         db.commit()
-        logger.info(f"[LiveTV] Auto-matched {matched_count} channels to EPG IDs")
+        logger.info(f"[EPG Auto-match] Matched {matched_count} channels")
+    if still_unmatched:
+        logger.info(f"[EPG Auto-match] Still unmatched ({len(still_unmatched)}): {', '.join(still_unmatched[:20])}")
 
 
 def _run_epg_sync_background(provider_data: dict):
