@@ -23,6 +23,7 @@
     loadedAt: 0,          // timestamp of last render — stale after 5 min
     activityData: null,   // shared — used for download badges on discover cards
     generation: 0,        // incremented on navigation, stale API responses check this
+    _pendingAction: null, // 'manage' or 'downloadMore' — auto-trigger after modal render
   };
 
   var ACT = {
@@ -592,6 +593,16 @@
         });
       }
     }
+
+    // Auto-trigger manage/download-more if called via exposed API
+    if (MD._pendingAction && item.in_library) {
+      if (MD._pendingAction === 'manage' && overlay.querySelector('#mdManageEpisodes')) {
+        _mdLoadManageEpisodes(item);
+      } else if (MD._pendingAction === 'downloadMore' && overlay.querySelector('#mdDownloadMore')) {
+        _mdLoadDownloadMore(item);
+      }
+    }
+    MD._pendingAction = null;
   }
 
   // ── Episode picker helpers (shared by Discover modal) ───────────────
@@ -1262,10 +1273,19 @@
     isActive: function () {
       return MD.active;
     },
-    // Shared functions for tentacle-search.js
+    // Shared functions for tentacle-search.js and tentacle-details.js
     showDetailModal: showDetailModal,
     getDownloadInfo: getDownloadInfo,
     esc: esc,
+    // Open modal with episode management auto-triggered
+    showManageEpisodes: function (item) {
+      MD._pendingAction = 'manage';
+      showDetailModal(item);
+    },
+    showDownloadMore: function (item) {
+      MD._pendingAction = 'downloadMore';
+      showDetailModal(item);
+    },
   };
 
   window.TentacleActivity = {

@@ -1007,6 +1007,74 @@ var Details = {
 
         this.applyBackdropSettings();
         this.setupPanelListeners(panel, item);
+
+        // For Series, fetch Tentacle detail to show Manage/Download More button
+        if (isSeries) {
+            this.fetchEpisodeManagementButton(panel, item);
+        }
+    },
+
+    fetchEpisodeManagementButton: function(panel, item) {
+        var self = this;
+        var tmdbId = item.ProviderIds && item.ProviderIds.Tmdb;
+        if (!tmdbId) return;
+
+        var serverUrl = this.getServerUrl();
+        var headers = this.getAuthHeaders();
+        fetch(serverUrl + '/TentacleDiscover/Detail/series/' + tmdbId, { headers: headers })
+            .then(function(r) { return r.ok ? r.json() : null; })
+            .then(function(detail) {
+                if (!detail || !self.currentItem || self.currentItem.Id !== item.Id) return;
+
+                var actionsBar = panel.querySelector('.moonfin-actions');
+                if (!actionsBar) return;
+
+                var isSonarr = detail.library_source === 'sonarr';
+                var isVod = detail.library_source && detail.library_source.indexOf('provider_') === 0;
+                if (!isSonarr && !isVod) return;
+
+                var label = isSonarr ? 'Manage Episodes' : 'Download More';
+                var moreBtn = actionsBar.querySelector('[data-action="more"]');
+
+                var wrapper = document.createElement('div');
+                wrapper.className = 'moonfin-btn-wrapper moonfin-focusable';
+                wrapper.setAttribute('tabindex', '0');
+                wrapper.innerHTML =
+                    '<div class="moonfin-btn-circle">' +
+                        '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="M320-280h320v-80H320v80Zm0-160h320v-80H320v80ZM240-80q-33 0-56.5-23.5T160-160v-640q0-33 23.5-56.5T240-880h320l240 240v480q0 33-23.5 56.5T720-80H240Zm280-560v-160H240v640h480v-480H520ZM240-800v160-160 640-640Z"/></svg>' +
+                    '</div>' +
+                    '<span class="moonfin-btn-label">' + label + '</span>';
+
+                if (moreBtn) {
+                    actionsBar.insertBefore(wrapper, moreBtn);
+                } else {
+                    actionsBar.appendChild(wrapper);
+                }
+
+                wrapper.addEventListener('click', function() {
+                    self.hide(true);
+                    var discoverItem = {
+                        tmdb_id: parseInt(tmdbId, 10),
+                        title: item.Name || '',
+                        year: item.ProductionYear ? String(item.ProductionYear) : '',
+                        media_type: 'series',
+                        poster_path: null,
+                        backdrop_path: detail.backdrop_path || null,
+                        overview: item.Overview || detail.overview || '',
+                        rating: detail.rating || null,
+                        in_library: true,
+                        library_source: detail.library_source,
+                    };
+                    if (window.TentacleDiscover) {
+                        if (isSonarr) {
+                            window.TentacleDiscover.showManageEpisodes(discoverItem);
+                        } else {
+                            window.TentacleDiscover.showDownloadMore(discoverItem);
+                        }
+                    }
+                });
+            })
+            .catch(function() { /* silently skip if Tentacle unavailable */ });
     },
 
     getMediaBadges: function(item) {
