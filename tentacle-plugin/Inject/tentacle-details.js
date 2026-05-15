@@ -1052,7 +1052,6 @@ var Details = {
                 }
 
                 wrapper.addEventListener('click', function() {
-                    self.hide(true);
                     var discoverItem = {
                         tmdb_id: parseInt(tmdbId, 10),
                         title: item.Name || '',
@@ -1071,6 +1070,11 @@ var Details = {
                         } else {
                             window.TentacleDiscover.showDownloadMore(discoverItem);
                         }
+                        // Bump modal above the details overlay (z-index 10000)
+                        setTimeout(function() {
+                            var modal = document.getElementById('mdDetailModal');
+                            if (modal) modal.style.zIndex = '10001';
+                        }, 50);
                     }
                 });
             })
