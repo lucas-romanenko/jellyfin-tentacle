@@ -846,21 +846,26 @@ html {
 
 /* ── Item Detail Page Polish ───────────────────────────────────────── */
 
-/* Replace black background with Tentacle purple/navy */
-.itemDetailPage {
+/* Replace black/dark background with Tentacle purple/navy on all detail/playlist pages */
+.itemDetailPage,
+.noBackdropTransparency,
+#itemDetailPage {
   background: #0F0D1A !important;
+  background-color: #0F0D1A !important;
 }
 
-.itemDetailPage .detailPageWrapperContainer {
+.detailPageWrapperContainer {
   background: transparent !important;
+  background-color: transparent !important;
 }
 
-.itemDetailPage #itemBackdrop {
+#itemBackdrop {
   background: transparent !important;
+  background-color: transparent !important;
 }
 
-/* Remove the noBackdropTransparency solid black override */
-.noBackdropTransparency {
+/* Global page background — ensures no black anywhere */
+.skinBody {
   background-color: #0F0D1A !important;
 }
 
