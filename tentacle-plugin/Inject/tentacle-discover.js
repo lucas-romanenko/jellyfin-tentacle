@@ -489,16 +489,11 @@
     } else if (item.in_library) {
       var isSonarr = item.media_type === 'series' && item.library_source === 'sonarr';
       var isVod = item.media_type === 'series' && item.library_source && item.library_source.indexOf('provider_') === 0;
-      var extraBtn = isSonarr
-        ? '<button id="mdManageEpisodes" class="md-view-library-btn" style="margin-left:8px">Manage Episodes</button>'
-        : isVod
-        ? '<button id="mdDownloadMore" class="md-view-library-btn" style="margin-left:8px">Download More Episodes</button>'
-        : '';
+      var isSeries = isSonarr || isVod;
       downloadSection =
         '<div class="md-inlib-row">' +
           '<div class="md-inlib-badge">\u2713 Already in library</div>' +
-          '<button id="mdViewInLibrary" class="md-view-library-btn">View in Library</button>' +
-          extraBtn +
+          (isSeries ? '' : '<button id="mdViewInLibrary" class="md-view-library-btn">View in Library</button>') +
         '</div>' +
         '<div id="mdManageSection" style="display:none">' +
           '<div class="md-ep-picker">' +
@@ -590,17 +585,13 @@
           });
         });
       }
-      var manageBtn = overlay.querySelector('#mdManageEpisodes');
-      if (manageBtn) {
-        manageBtn.addEventListener('click', function () {
-          _mdLoadManageEpisodes(item);
-        });
-      }
-      var dlMoreBtn = overlay.querySelector('#mdDownloadMore');
-      if (dlMoreBtn) {
-        dlMoreBtn.addEventListener('click', function () {
-          _mdLoadDownloadMore(item);
-        });
+      // Auto-expand episode picker for in-library series
+      var isSonarrSeries = item.media_type === 'series' && item.library_source === 'sonarr';
+      var isVodSeries = item.media_type === 'series' && item.library_source && item.library_source.indexOf('provider_') === 0;
+      if (isSonarrSeries) {
+        _mdLoadManageEpisodes(item);
+      } else if (isVodSeries) {
+        _mdLoadDownloadMore(item);
       }
     } else {
       loadDownloadOptions(item);
@@ -626,14 +617,6 @@
       }
     }
 
-    // Auto-trigger manage/download-more if called via exposed API
-    if (MD._pendingAction && item.in_library) {
-      if (MD._pendingAction === 'manage' && overlay.querySelector('#mdManageEpisodes')) {
-        _mdLoadManageEpisodes(item);
-      } else if (MD._pendingAction === 'downloadMore' && overlay.querySelector('#mdDownloadMore')) {
-        _mdLoadDownloadMore(item);
-      }
-    }
     MD._pendingAction = null;
   }
 
