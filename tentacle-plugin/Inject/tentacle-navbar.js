@@ -482,6 +482,12 @@
                 if (window.TentacleActivity && window.TentacleActivity.isActive && window.TentacleActivity.isActive()) {
                     window.TentacleActivity.hide();
                 }
+                // Clear overlay button active state immediately
+                var self = this;
+                ['moonfin-nav-discover', 'moonfin-nav-activity'].forEach(function (cls) {
+                    var b = self.container && self.container.querySelector('.' + cls);
+                    if (b) b.classList.remove('active');
+                });
             }
             // Close details overlay for navigation actions
             if (action !== 'cast' && action !== 'syncplay' && typeof Details !== 'undefined' && Details.isVisible) {
