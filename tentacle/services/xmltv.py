@@ -234,35 +234,6 @@ def stream_parse_xmltv(
     return programs
 
 
-def extract_xmltv_channels(cache_path: str) -> dict[str, str]:
-    """
-    Extract channel ID → display name mapping from a cached XMLTV file.
-    Uses iterparse to avoid loading the full XML into memory.
-    Returns {channel_id: display_name}.
-    """
-    import os
-    if not os.path.exists(cache_path):
-        return {}
-
-    channels = {}
-    for event, elem in ET.iterparse(cache_path, events=("end",)):
-        if elem.tag == "channel":
-            ch_id = elem.get("id", "")
-            name_el = elem.find("display-name")
-            if ch_id and name_el is not None and name_el.text:
-                # Keep first occurrence (some XMLTVs have duplicate channel entries)
-                if ch_id not in channels:
-                    channels[ch_id] = name_el.text
-            elem.clear()
-        elif elem.tag == "programme":
-            # Stop once we hit programmes — all channels come first in XMLTV
-            elem.clear()
-            break
-
-    logger.info(f"[XMLTV] Extracted {len(channels)} channel entries from cache")
-    return channels
-
-
 def download_xmltv(
     url: str,
     user_agent: str = "TiviMate/4.7.0 (Linux; Android 12)",
