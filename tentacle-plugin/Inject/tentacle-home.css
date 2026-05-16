@@ -844,88 +844,20 @@ html {
   #mh-rows-container { padding: 0 3vw; margin-top: 0; }
 }
 
-/* ── Item Detail Page Redesign ─────────────────────────────────────── */
+/* ── Item Detail Page Polish ───────────────────────────────────────── */
 
-/* Remove the dark backdrop overlay */
-.itemDetailPage .itemBackdrop {
-  opacity: 0 !important;
-}
-
-/* Center the primary container (poster + info) */
-.itemDetailPage .detailPageWrapperContainer {
-  max-width: 1100px !important;
-  margin: 0 auto !important;
-  padding: 1em 2em !important;
-}
-
-/* Poster + info row: center aligned, nice gap */
-.itemDetailPage .detailPagePrimaryContainer {
-  display: flex !important;
-  align-items: flex-start !important;
-  gap: 2.5em !important;
-  justify-content: center !important;
-}
-
-/* Poster — clean rounded card with subtle shadow */
-.itemDetailPage .detailImageContainer {
-  flex-shrink: 0 !important;
-  width: 240px !important;
-  min-width: 240px !important;
-  max-width: 240px !important;
-}
-
+/* Rounded poster with shadow */
 .itemDetailPage .detailImageContainer .cardBox {
   border-radius: 12px !important;
   overflow: hidden !important;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5) !important;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4) !important;
 }
 
 .itemDetailPage .detailImageContainer img {
   border-radius: 12px !important;
 }
 
-/* Info section — let it grow naturally */
-.itemDetailPage .infoWrapper {
-  flex: 1 !important;
-  min-width: 0 !important;
-}
-
-/* Title styling */
-.itemDetailPage .nameContainer h3 {
-  font-size: 2em !important;
-  font-weight: 700 !important;
-  margin-bottom: 0.2em !important;
-}
-
-/* Metadata (tracks, runtime, rating badge) */
-.itemDetailPage .itemMiscInfo {
-  opacity: 0.7 !important;
-  font-size: 0.95em !important;
-}
-
-/* Genre tags */
-.itemDetailPage .itemGenres {
-  margin-top: 0.5em !important;
-}
-
-/* Action buttons — consistent pill style */
-.itemDetailPage .mainDetailButtons {
-  margin-top: 1em !important;
-  gap: 0.5em !important;
-}
-
-.itemDetailPage .detailButton {
-  border-radius: 8px !important;
-}
-
-/* Content sections (track list, More Like This) */
-.itemDetailPage .detailSection {
-  max-width: 1100px !important;
-  margin: 0 auto !important;
-  padding: 0 2em !important;
-}
-
-/* Track list items — subtle hover effect */
+/* Track list items — rounded with hover */
 .itemDetailPage .listItem {
   border-radius: 8px !important;
   transition: background 0.15s ease !important;
@@ -935,18 +867,9 @@ html {
   background: rgba(255, 255, 255, 0.05) !important;
 }
 
-/* Section titles (More Like This, etc.) */
-.itemDetailPage .sectionTitle {
-  font-size: 1.3em !important;
-  font-weight: 600 !important;
-  margin-top: 1.5em !important;
-}
-
-/* Similar items row — constrain to match */
-.itemDetailPage .similarContent {
-  max-width: 1100px !important;
-  margin: 0 auto !important;
-  padding: 0 2em !important;
+/* Rounded action buttons */
+.itemDetailPage .detailButton {
+  border-radius: 8px !important;
 }
 
 /* ── Responsive — 4K/Ultra-wide ────────────────────────────────────── */
