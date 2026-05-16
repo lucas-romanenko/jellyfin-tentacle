@@ -302,6 +302,7 @@
 
         getLibraryUrl: function (libraryId, collectionType) {
             var type = (collectionType || '').toLowerCase();
+            var sid = window.ApiClient && window.ApiClient.serverId ? '&serverId=' + window.ApiClient.serverId() : '';
             switch (type) {
                 case 'movies':
                     return '/movies?topParentId=' + libraryId + '&collectionType=' + collectionType;
@@ -314,9 +315,9 @@
                 case 'homevideos':
                     return '/homevideos?topParentId=' + libraryId;
                 case 'books':
-                    return '/list?parentId=' + libraryId;
+                    return '/list?parentId=' + libraryId + sid;
                 default:
-                    return '/list?parentId=' + libraryId;
+                    return '/list?parentId=' + libraryId + sid;
             }
         },
 
