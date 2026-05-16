@@ -353,6 +353,7 @@
           ? '<img src="https://image.tmdb.org/t/p/w185' + item.poster_path + '" loading="lazy" onerror="this.style.display=\'none\'">'
           : '<div class="md-card-poster-placeholder">&#9707;</div>';
         var dlInfo = getDownloadInfo(item.tmdb_id);
+        var ulInfo = !dlInfo ? getUnreleasedInfo(item.tmdb_id) : null;
         var badge, addBtn;
         if (dlInfo) {
           var pct = (dlInfo.progress || 0).toFixed(1);
@@ -361,6 +362,9 @@
           addBtn = '';
         } else if (item.in_library) {
           badge = '<div class="md-card-badge md-badge-inlib">In Library</div>';
+          addBtn = '';
+        } else if (ulInfo) {
+          badge = '<div class="md-card-badge md-badge-unreleased">Awaiting Release</div>';
           addBtn = '';
         } else {
           badge = '<div class="md-card-badge md-badge-type">' + (item.media_type === 'movie' ? 'Movie' : 'Show') + '</div>';
@@ -416,6 +420,11 @@
     return MD.activityData.downloads.find(function (dl) { return dl.tmdb_id == tmdbId; }) || null;
   }
 
+  function getUnreleasedInfo(tmdbId) {
+    if (!tmdbId || !MD.activityData || !MD.activityData.unreleased) return null;
+    return MD.activityData.unreleased.find(function (u) { return u.tmdb_id == tmdbId; }) || null;
+  }
+
   // ── Detail Modal ────────────────────────────────────────────────────
   function showDetailModal(item) {
     var mediaType = item.media_type === 'series' ? 'series' : 'movie';
@@ -468,6 +477,14 @@
       downloadSection =
         '<div class="md-inlib-row">' +
           '<div class="md-downloading-badge">' + dlStatus + dlEta + dlSize + '</div>' +
+        '</div>';
+    } else if (getUnreleasedInfo(item.tmdb_id)) {
+      var ulItem = getUnreleasedInfo(item.tmdb_id);
+      var ulLabel = ulItem.release_type ? ulItem.release_type + ' release: ' + ulItem.release_date : ulItem.release_date;
+      downloadSection =
+        '<div class="md-inlib-row">' +
+          '<div class="md-unreleased-badge">\u23F3 Awaiting Release</div>' +
+          '<div class="md-unreleased-date">' + esc(ulLabel) + '</div>' +
         '</div>';
     } else if (item.in_library) {
       var isSonarr = item.media_type === 'series' && item.library_source === 'sonarr';

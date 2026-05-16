@@ -175,6 +175,10 @@
   background: rgba(109, 95, 230, .85);
   color: #fff;
 }
+.md-badge-unreleased {
+  background: rgba(168, 130, 255, .75);
+  color: #fff;
+}
 .md-badge-type {
   background: rgba(15, 13, 26, .7);
   color: rgba(200, 195, 220, 0.6);
@@ -400,6 +404,21 @@
   border: 1px solid rgba(139, 128, 255, .2);
   font-size: 14px;
   font-weight: 500;
+}
+.md-unreleased-badge {
+  display: inline-block;
+  padding: 6px 16px;
+  border-radius: 0.75em;
+  background: rgba(168, 130, 255, .12);
+  color: rgba(168, 130, 255, 0.9);
+  border: 1px solid rgba(168, 130, 255, .2);
+  font-size: 14px;
+  font-weight: 500;
+}
+.md-unreleased-date {
+  font-size: 13px;
+  color: rgba(200, 195, 220, 0.5);
+  margin-left: 8px;
 }
 .md-view-library-btn {
   padding: 8px 20px;
