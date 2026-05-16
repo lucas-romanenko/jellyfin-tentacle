@@ -846,25 +846,23 @@ html {
 
 /* ── Item Detail Page Polish ───────────────────────────────────────── */
 
-/* Override Jellyfin dark theme — nuclear approach, target everything */
-html, html[data-theme="dark"],
-body,
-#reactRoot,
-.mainAnimatedPages,
-.skinBody,
-.page,
-.mainAnimatedPage,
-.libraryPage,
-.itemDetailPage,
-.noBackdropTransparency,
-#itemDetailPage,
-#indexPage {
+/* Override Jellyfin dark theme backgrounds
+   High compound specificity beats theme.css even when it loads after us */
+html[data-theme="dark"] .page.noBackdropTransparency,
+html[data-theme="dark"] .page.mainAnimatedPage,
+html[data-theme="dark"] .page.libraryPage,
+html[data-theme="dark"] .page.itemDetailPage,
+html[data-theme="dark"] .mainAnimatedPages.skinBody,
+html[data-theme="dark"] #itemDetailPage,
+html .mainAnimatedPages,
+html .skinBody,
+html body {
   background: #0F0D1A !important;
   background-color: #0F0D1A !important;
 }
 
-.detailPageWrapperContainer,
-#itemBackdrop {
+html[data-theme="dark"] .detailPageWrapperContainer,
+html[data-theme="dark"] #itemBackdrop {
   background: transparent !important;
   background-color: transparent !important;
 }
