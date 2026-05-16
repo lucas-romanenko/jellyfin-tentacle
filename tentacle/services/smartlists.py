@@ -131,8 +131,36 @@ def _build_config(name: str, tag: str, media_types: list, folder_id: str,
     }
 
 
+def _find_jellyfin_playlist(name: str, user_id: str, jellyfin_url: str, jellyfin_key: str) -> str:
+    """Find an existing Jellyfin playlist by exact name for a user. Returns playlist ID or empty string."""
+    try:
+        r = requests.get(
+            f"{jellyfin_url.rstrip('/')}/Users/{user_id}/Items",
+            headers={"X-Emby-Token": jellyfin_key},
+            params={
+                "IncludeItemTypes": "Playlist",
+                "Recursive": "true",
+                "SearchTerm": name,
+            },
+            timeout=10,
+        )
+        r.raise_for_status()
+        for item in r.json().get("Items", []):
+            if item.get("Name") == name:
+                logger.info(f"[SmartLists] Found existing Jellyfin playlist '{name}' (ID: {item['Id']})")
+                return item["Id"]
+    except Exception as e:
+        logger.debug(f"Could not search for playlist '{name}': {e}")
+    return ""
+
+
 def _create_jellyfin_playlist(name: str, user_id: str, jellyfin_url: str, jellyfin_key: str) -> str:
-    """Create a private Jellyfin playlist owned by user_id."""
+    """Find or create a private Jellyfin playlist owned by user_id."""
+    # First check if a playlist with this name already exists — avoids duplicates
+    existing_id = _find_jellyfin_playlist(name, user_id, jellyfin_url, jellyfin_key)
+    if existing_id:
+        return existing_id
+
     try:
         r = requests.post(
             f"{jellyfin_url.rstrip('/')}/Playlists",
