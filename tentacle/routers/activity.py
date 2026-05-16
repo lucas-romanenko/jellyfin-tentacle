@@ -90,29 +90,49 @@ def _fetch_radarr_unreleased(url: str, api_key: str) -> list:
         movies = r.json()
         now = datetime.utcnow()
         unreleased = []
+        release_labels = {
+            "digitalRelease": "Digital",
+            "physicalRelease": "Physical",
+            "inCinemas": "Theatrical",
+        }
         for m in movies:
             if not m.get("monitored") or m.get("hasFile"):
                 continue
             release = None
+            release_type = None
+            all_dates = {}
             for field in ("digitalRelease", "physicalRelease", "inCinemas"):
                 val = m.get(field)
                 if val:
                     try:
                         dt = datetime.fromisoformat(val.replace("Z", "+00:00")).replace(tzinfo=None)
+                        all_dates[release_labels[field]] = dt.strftime("%Y-%m-%d")
                         if dt > now and (release is None or dt < release):
                             release = dt
+                            release_type = release_labels[field]
                     except (ValueError, TypeError):
                         pass
             if release:
+                # Extract YouTube trailer from Radarr metadata
+                trailer_url = None
+                for yt in (m.get("youTubeTrailerId"),):
+                    if yt:
+                        trailer_url = f"https://www.youtube.com/watch?v={yt}"
+                        break
+
                 unreleased.append({
                     "tmdb_id": m.get("tmdbId"),
                     "title": m.get("title", ""),
                     "year": str(m.get("year", "")),
+                    "overview": m.get("overview", ""),
                     "media_type": "movie",
                     "source": "radarr",
                     "release_date": release.strftime("%Y-%m-%d"),
+                    "release_type": release_type,
+                    "all_dates": all_dates,
                     "status": "unreleased",
                     "radarr_poster": _extract_poster(m),
+                    "trailer_url": trailer_url,
                 })
         unreleased.sort(key=lambda x: x["release_date"])
         return unreleased

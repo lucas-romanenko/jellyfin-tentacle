@@ -1119,6 +1119,7 @@
 
     var downloads = data.downloads || [];
     var unreleased = data.unreleased || [];
+    MD._unreleased = unreleased;
 
     // Update summary
     var summary = document.getElementById('mdActSummary');
@@ -1182,7 +1183,7 @@
           '<span class="md-act-section-count">' + unreleased.length + '</span>' +
         '</div>' +
         '<div class="md-act-upcoming-grid">' +
-        unreleased.map(function (item) {
+        unreleased.map(function (item, idx) {
           var poster = item.poster_path
             ? '<img src="https://image.tmdb.org/t/p/w185' + item.poster_path + '" loading="lazy" onerror="this.parentElement.innerHTML=\'<div class=md-act-upcoming-ph>&#9707;</div>\'">'
             : '<div class="md-act-upcoming-ph">&#9707;</div>';
@@ -1197,12 +1198,14 @@
             else if (diff <= 7) { countdown = diff + ' days'; countdownClass = 'md-act-cd-week'; }
             else { countdown = diff + ' days'; countdownClass = 'md-act-cd-later'; }
           }
-          return '<div class="md-act-upcoming-card">' +
+          var releaseLabel = item.release_type ? '<div class="md-act-upcoming-type">' + esc(item.release_type) + '</div>' : '';
+          return '<div class="md-act-upcoming-card" data-upcoming-idx="' + idx + '" style="cursor:pointer">' +
             '<div class="md-act-upcoming-poster">' + poster +
               (countdown ? '<div class="md-act-countdown-badge ' + countdownClass + '">' + countdown + '</div>' : '') +
             '</div>' +
             '<div class="md-act-upcoming-info">' +
               '<div class="md-act-upcoming-title">' + esc(item.title) + '</div>' +
+              releaseLabel +
               '<div class="md-act-upcoming-date">' + esc(item.release_date || '') + '</div>' +
             '</div>' +
           '</div>';
@@ -1219,6 +1222,105 @@
     }
 
     content.innerHTML = html;
+
+    // Click handler for upcoming cards
+    content.querySelectorAll('.md-act-upcoming-card[data-upcoming-idx]').forEach(function (card) {
+      card.addEventListener('click', function () {
+        var idx = parseInt(card.dataset.upcomingIdx, 10);
+        var item = MD._unreleased && MD._unreleased[idx];
+        if (item) showUpcomingModal(item);
+      });
+    });
+  }
+
+  // ── Upcoming Release Modal ──────────────────────────────────────────
+  function showUpcomingModal(item) {
+    var old = document.getElementById('mdUpcomingModal');
+    if (old) old.remove();
+
+    var backdrop = item.poster_path
+      ? 'https://image.tmdb.org/t/p/w780' + item.poster_path
+      : '';
+    var poster = item.poster_path
+      ? '<img src="https://image.tmdb.org/t/p/w342' + item.poster_path + '">'
+      : '';
+
+    // Build release dates list
+    var datesHtml = '';
+    var allDates = item.all_dates || {};
+    var dateEntries = Object.keys(allDates);
+    if (dateEntries.length > 0) {
+      datesHtml = '<div class="md-up-dates">' +
+        '<div class="md-up-dates-title">Release Dates</div>' +
+        dateEntries.map(function (label) {
+          var d = allDates[label];
+          var isCurrent = (d === item.release_date && label === item.release_type);
+          var now = new Date();
+          var rd = new Date(d + 'T00:00:00');
+          var isPast = rd <= now;
+          var cls = isCurrent ? ' md-up-date-active' : (isPast ? ' md-up-date-past' : '');
+          var suffix = isCurrent ? ' <span class="md-up-date-countdown">(countdown)</span>' : (isPast ? ' <span class="md-up-date-past-label">(released)</span>' : '');
+          return '<div class="md-up-date-row' + cls + '">' +
+            '<span class="md-up-date-label">' + esc(label) + '</span>' +
+            '<span class="md-up-date-value">' + esc(d) + suffix + '</span>' +
+          '</div>';
+        }).join('') +
+      '</div>';
+    }
+
+    // Countdown
+    var countdownHtml = '';
+    if (item.release_date && item.release_type) {
+      var rd = new Date(item.release_date + 'T00:00:00');
+      var diff = Math.ceil((rd - new Date()) / 86400000);
+      var countdownText = diff <= 0 ? 'Releasing soon' : diff === 1 ? 'Tomorrow' : diff + ' days';
+      countdownHtml = '<div class="md-up-countdown">' +
+        '<span class="md-up-countdown-num">' + countdownText + '</span>' +
+        '<span class="md-up-countdown-label">until ' + esc(item.release_type) + ' release</span>' +
+      '</div>';
+    }
+
+    // Trailer button
+    var trailerBtn = item.trailer_url
+      ? '<a href="' + esc(item.trailer_url) + '" target="_blank" class="md-up-trailer-btn">' +
+          '<svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>' +
+          'Watch Trailer' +
+        '</a>'
+      : '';
+
+    var overlay = document.createElement('div');
+    overlay.id = 'mdUpcomingModal';
+    overlay.className = 'md-up-overlay';
+    overlay.innerHTML =
+      '<div class="md-up-modal">' +
+        (backdrop ? '<div class="md-up-backdrop" style="background-image:url(' + backdrop + ')"></div>' : '') +
+        '<button class="md-up-close">&times;</button>' +
+        '<div class="md-up-body">' +
+          '<div class="md-up-poster">' + poster + '</div>' +
+          '<div class="md-up-info">' +
+            '<div class="md-up-title">' + esc(item.title) + '</div>' +
+            '<div class="md-up-meta">' + esc(item.year || '') + ' \u00b7 Movie</div>' +
+            (item.overview ? '<div class="md-up-overview">' + esc(item.overview) + '</div>' : '') +
+            countdownHtml +
+            datesHtml +
+            '<div class="md-up-actions">' + trailerBtn + '</div>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+
+    document.body.appendChild(overlay);
+    requestAnimationFrame(function () { overlay.classList.add('md-visible'); });
+
+    overlay.querySelector('.md-up-close').addEventListener('click', function () {
+      overlay.classList.remove('md-visible');
+      setTimeout(function () { overlay.remove(); }, 200);
+    });
+    overlay.addEventListener('click', function (e) {
+      if (e.target === overlay) {
+        overlay.classList.remove('md-visible');
+        setTimeout(function () { overlay.remove(); }, 200);
+      }
+    });
   }
 
   // ── Polling (shared) ────────────────────────────────────────────────
