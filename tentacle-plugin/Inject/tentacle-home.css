@@ -846,23 +846,37 @@ html {
 
 /* ── Item Detail Page Polish ───────────────────────────────────────── */
 
-/* Override Jellyfin dark theme backgrounds
-   High compound specificity beats theme.css even when it loads after us */
-html[data-theme="dark"] .page.noBackdropTransparency,
-html[data-theme="dark"] .page.mainAnimatedPage,
-html[data-theme="dark"] .page.libraryPage,
-html[data-theme="dark"] .page.itemDetailPage,
-html[data-theme="dark"] .mainAnimatedPages.skinBody,
-html[data-theme="dark"] #itemDetailPage,
-html .mainAnimatedPages,
-html .skinBody,
-html body {
+/* Override ALL Jellyfin dark backgrounds to Tentacle purple/navy */
+html, body,
+#reactRoot,
+.backdropContainer,
+.backgroundContainer,
+.mainAnimatedPages,
+.skinBody,
+.page,
+.mainAnimatedPage,
+.libraryPage,
+.itemDetailPage,
+.noBackdropTransparency,
+#itemDetailPage,
+#indexPage {
   background: #0F0D1A !important;
   background-color: #0F0D1A !important;
 }
 
-html[data-theme="dark"] .detailPageWrapperContainer,
-html[data-theme="dark"] #itemBackdrop {
+/* High specificity duplicates to beat dynamically-loaded theme.css */
+html[data-theme="dark"] .page.noBackdropTransparency,
+html[data-theme="dark"] .page.mainAnimatedPage,
+html[data-theme="dark"] .mainAnimatedPages.skinBody,
+html[data-theme="dark"] .backdropContainer,
+html[data-theme="dark"] .backgroundContainer,
+html[data-theme="dark"] #itemDetailPage {
+  background: #0F0D1A !important;
+  background-color: #0F0D1A !important;
+}
+
+.detailPageWrapperContainer,
+#itemBackdrop {
   background: transparent !important;
   background-color: transparent !important;
 }
