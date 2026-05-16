@@ -426,7 +426,22 @@
         item.backdrop_path = details.backdrop_path || item.backdrop_path || null;
         item.year = details.year || item.year;
         if (details.library_source) item.library_source = details.library_source;
-        if (details.in_library !== undefined) item.in_library = details.in_library;
+        if (details.in_library !== undefined) {
+          item.in_library = details.in_library;
+          // Update the grid card badge if in_library changed
+          if (details.in_library) {
+            var card = document.querySelector('.md-card[data-tmdb="' + item.tmdb_id + '"]');
+            if (card) {
+              var oldBadge = card.querySelector('.md-card-badge');
+              if (oldBadge && !oldBadge.classList.contains('md-badge-inlib')) {
+                oldBadge.className = 'md-card-badge md-badge-inlib';
+                oldBadge.textContent = 'In Library';
+              }
+              var addBtn = card.querySelector('.md-card-add');
+              if (addBtn) addBtn.remove();
+            }
+          }
+        }
       }
       renderModal(item);
     }).catch(function () {
