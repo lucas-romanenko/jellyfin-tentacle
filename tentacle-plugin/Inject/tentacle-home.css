@@ -846,6 +846,19 @@ html {
 
 /* ── Item Detail Page Polish ───────────────────────────────────────── */
 
+/* Center the whole detail page content */
+.itemDetailPage .detailPagePrimaryContainer {
+  max-width: 1200px !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+}
+
+/* Shrink the desktop poster (direct child of primaryContainer) */
+.itemDetailPage .detailPagePrimaryContainer > .detailImageContainer {
+  max-width: 200px !important;
+  flex-shrink: 0 !important;
+}
+
 /* Rounded poster with shadow */
 .itemDetailPage .detailImageContainer .cardBox {
   border-radius: 12px !important;
@@ -855,6 +868,25 @@ html {
 
 .itemDetailPage .detailImageContainer img {
   border-radius: 12px !important;
+}
+
+/* Center the ribbon (title + buttons area) */
+.itemDetailPage .detailRibbon {
+  flex: 1 !important;
+  min-width: 0 !important;
+}
+
+/* Center content sections (track list, genres, more like this) */
+.itemDetailPage .detailPagePrimaryContent {
+  max-width: 1200px !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+}
+
+.itemDetailPage .detailPageSecondaryContainer {
+  max-width: 1200px !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
 }
 
 /* Track list items — rounded with hover */
