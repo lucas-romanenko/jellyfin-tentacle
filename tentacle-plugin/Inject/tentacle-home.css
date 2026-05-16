@@ -846,6 +846,24 @@ html {
 
 /* ── Item Detail Page Polish ───────────────────────────────────────── */
 
+/* Replace black background with Tentacle purple/navy */
+.itemDetailPage {
+  background: #0F0D1A !important;
+}
+
+.itemDetailPage .detailPageWrapperContainer {
+  background: transparent !important;
+}
+
+.itemDetailPage #itemBackdrop {
+  background: transparent !important;
+}
+
+/* Remove the noBackdropTransparency solid black override */
+.noBackdropTransparency {
+  background-color: #0F0D1A !important;
+}
+
 /* Center the whole detail page content */
 .itemDetailPage .detailPagePrimaryContainer {
   max-width: 1200px !important;
