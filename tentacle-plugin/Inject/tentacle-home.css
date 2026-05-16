@@ -881,11 +881,18 @@ html[data-theme="dark"] #itemDetailPage {
   background-color: transparent !important;
 }
 
+/* Reduce space above poster (between navbar/mediabar and content) */
+.itemDetailPage .detailPageWrapperContainer {
+  padding-top: 1em !important;
+  margin-top: 0 !important;
+}
+
 /* Center the whole detail page content */
 .itemDetailPage .detailPagePrimaryContainer {
   max-width: 1200px !important;
   margin-left: auto !important;
   margin-right: auto !important;
+  gap: 1.5em !important;
 }
 
 /* Shrink the desktop poster (direct child of primaryContainer) */
@@ -911,7 +918,16 @@ html[data-theme="dark"] #itemDetailPage {
   min-width: 0 !important;
 }
 
-/* Center content sections (track list, genres, more like this) */
+/* Hide genres section on playlist/detail pages */
+.itemDetailPage .itemGenres,
+.itemDetailPage .genres,
+.itemDetailPage .detailSection-genres,
+.itemDetailPage .detailsGroupItem:has(.itemGenres),
+.itemDetailPage .detailPageContent > .verticalSection:first-child {
+  display: none !important;
+}
+
+/* Center content sections (track list, more like this) */
 .itemDetailPage .detailPagePrimaryContent {
   max-width: 1200px !important;
   margin-left: auto !important;
@@ -922,6 +938,7 @@ html[data-theme="dark"] #itemDetailPage {
   max-width: 1200px !important;
   margin-left: auto !important;
   margin-right: auto !important;
+  padding-top: 0 !important;
 }
 
 /* Track list items — rounded with hover */
