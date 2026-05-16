@@ -157,16 +157,6 @@
                 '            <span class="moonfin-expand-label">Favorites</span>',
                 '        </button>',
                 '',
-                '        <button class="moonfin-nav-btn moonfin-expandable-btn moonfin-nav-cast" data-action="cast" title="Cast">',
-                '            <svg class="moonfin-nav-icon" viewBox="0 0 24 24"><path d="M1 18v3h3c0-1.66-1.34-3-3-3m0-4v2c2.76 0 5 2.24 5 5h2c0-3.87-3.13-7-7-7m0-4v2a9 9 0 0 1 9 9h2c0-6.08-4.93-11-11-11m20-7H3c-1.1 0-2 .9-2 2v3h2V5h18v14h-7v2h7c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2"/></svg>',
-                '            <span class="moonfin-expand-label">Cast</span>',
-                '        </button>',
-                '',
-                '        <button class="moonfin-nav-btn moonfin-expandable-btn moonfin-nav-syncplay" data-action="syncplay" title="SyncPlay">',
-                '            <svg class="moonfin-nav-icon" viewBox="0 -960 960 960"><path d="M0-240v-63q0-43 44-70t116-27q13 0 25 .5t23 2.5q-14 21-21 44t-7 48v65H0Zm240 0v-65q0-32 17.5-58.5T307-410q32-20 76.5-30t96.5-10q53 0 97.5 10t76.5 30q32 20 49 46.5t17 58.5v65H240Zm540 0v-65q0-26-6.5-49T754-397q11-2 22.5-2.5t23.5-.5q72 0 116 26.5t44 70.5v63H780Zm-455-80h311q-10-20-55.5-35T480-370q-55 0-100.5 15T325-320ZM160-440q-33 0-56.5-23.5T80-520q0-34 23.5-57t56.5-23q34 0 57 23t23 57q0 33-23 56.5T160-440Zm640 0q-33 0-56.5-23.5T720-520q0-34 23.5-57t56.5-23q34 0 57 23t23 57q0 33-23 56.5T800-440Zm-320-40q-50 0-85-35t-35-85q0-51 35-85.5t85-34.5q51 0 85.5 34.5T600-600q0 50-34.5 85T480-480Zm0-80q17 0 28.5-11.5T520-600q0-17-11.5-28.5T480-640q-17 0-28.5 11.5T440-600q0 17 11.5 28.5T480-560Zm1 240Zm-1-280Z"/></svg>',
-                '            <span class="moonfin-expand-label">SyncPlay</span>',
-                '        </button>',
-                '',
                 '        <div class="moonfin-libraries-group">',
                 '            <button class="moonfin-nav-btn moonfin-expandable-btn moonfin-libraries-btn" data-action="libraries-toggle" title="Libraries">',
                 '                <svg class="moonfin-nav-icon" viewBox="0 0 24 24"><path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-8 12.5v-9l6 4.5-6 4.5z"/></svg>',
@@ -476,7 +466,7 @@
 
         handleNavigation: function (action, btn) {
             // Close overlays when navigating away
-            if (action !== 'discover' && action !== 'activity' && action !== 'cast' && action !== 'syncplay') {
+            if (action !== 'discover' && action !== 'activity') {
                 if (window.TentacleDiscover && window.TentacleDiscover.isActive && window.TentacleDiscover.isActive()) {
                     window.TentacleDiscover.hide();
                 }
@@ -491,7 +481,7 @@
                 });
             }
             // Close details overlay for navigation actions
-            if (action !== 'cast' && action !== 'syncplay' && typeof Details !== 'undefined' && Details.isVisible) {
+            if (typeof Details !== 'undefined' && Details.isVisible) {
                 Details.hide(true);
             }
 
@@ -510,12 +500,6 @@
                     break;
                 case 'favorites':
                     this.navigateTo('/home?tab=1');
-                    break;
-                case 'cast':
-                    this.showCastMenu();
-                    break;
-                case 'syncplay':
-                    this.showSyncPlayMenu();
                     break;
                 case 'library':
                     var libraryId = btn.dataset.libraryId;
@@ -573,16 +557,6 @@
             var selector = which === 'discover' ? '.moonfin-nav-discover' : '.moonfin-nav-activity';
             var btn = this.container.querySelector(selector);
             if (btn) btn.classList.add('active');
-        },
-
-        showCastMenu: function () {
-            var nativeCastBtn = document.querySelector('.headerCastButton, .castButton');
-            if (nativeCastBtn) nativeCastBtn.click();
-        },
-
-        showSyncPlayMenu: function () {
-            var nativeSyncBtn = document.querySelector('.headerSyncButton, .syncButton');
-            if (nativeSyncBtn) nativeSyncBtn.click();
         },
 
         updateVisibility: function () {
