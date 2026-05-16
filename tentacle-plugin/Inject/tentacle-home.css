@@ -844,6 +844,25 @@ html {
   #mh-rows-container { padding: 0 3vw; margin-top: 0; }
 }
 
+/* ── Playlist / Collection Detail Page ─────────────────────────────── */
+/* Center the layout and constrain width for a cleaner look */
+.itemDetailPage .detailPagePrimaryContainer {
+  max-width: 1200px !important;
+  margin: 0 auto !important;
+  padding: 0 2em !important;
+}
+
+.itemDetailPage .detailImageContainer {
+  max-width: 280px !important;
+  flex-shrink: 0 !important;
+}
+
+.itemDetailPage .detailSection {
+  max-width: 1200px !important;
+  margin: 0 auto !important;
+  padding: 0 2em !important;
+}
+
 /* ── Responsive — 4K/Ultra-wide ────────────────────────────────────── */
 @media (min-width: 2560px) {
   .mh-hero-buttons { top: calc(50% + 15vh); }
