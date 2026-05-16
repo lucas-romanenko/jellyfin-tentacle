@@ -112,7 +112,8 @@ def _fetch_radarr_unreleased(url: str, api_key: str) -> list:
                             release_type = release_labels[field]
                     except (ValueError, TypeError):
                         pass
-            if release:
+            # Include if any future date exists OR no dates at all (TBA)
+            if release or not all_dates:
                 # Extract YouTube trailer from Radarr metadata
                 trailer_url = None
                 for yt in (m.get("youTubeTrailerId"),):
@@ -127,14 +128,14 @@ def _fetch_radarr_unreleased(url: str, api_key: str) -> list:
                     "overview": m.get("overview", ""),
                     "media_type": "movie",
                     "source": "radarr",
-                    "release_date": release.strftime("%Y-%m-%d"),
-                    "release_type": release_type,
+                    "release_date": release.strftime("%Y-%m-%d") if release else "TBA",
+                    "release_type": release_type or "TBA",
                     "all_dates": all_dates,
                     "status": "unreleased",
                     "radarr_poster": _extract_poster(m),
                     "trailer_url": trailer_url,
                 })
-        unreleased.sort(key=lambda x: x["release_date"])
+        unreleased.sort(key=lambda x: x["release_date"] if x["release_date"] != "TBA" else "9999-99-99")
         return unreleased
     except Exception as e:
         logger.debug(f"Radarr unreleased fetch failed: {e}")
