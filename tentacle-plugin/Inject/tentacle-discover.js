@@ -1426,6 +1426,7 @@
 
   var _navTimer = null;
   var navHandler = function () {
+    closeModal();
     if (!isHomePage()) {
       // Navigated away from home — hide overlays, stop polling, cancel stale API calls
       if (MD.active) hideDiscover();
