@@ -846,7 +846,15 @@ html {
 
 /* ── Item Detail Page Polish ───────────────────────────────────────── */
 
-/* Replace black/dark background with Tentacle purple/navy on all detail/playlist pages */
+/* Override Jellyfin dark theme background variables to Tentacle purple/navy */
+:root, :root [data-theme="dark"] {
+  --jf-palette-background-default: #0F0D1A !important;
+  --jf-palette-background-paper: #161326 !important;
+}
+
+/* Direct background overrides for detail/playlist pages */
+.mainAnimatedPages,
+.skinBody,
 .itemDetailPage,
 .noBackdropTransparency,
 #itemDetailPage {
@@ -862,11 +870,6 @@ html {
 #itemBackdrop {
   background: transparent !important;
   background-color: transparent !important;
-}
-
-/* Global page background — ensures no black anywhere */
-.skinBody {
-  background-color: #0F0D1A !important;
 }
 
 /* Center the whole detail page content */
