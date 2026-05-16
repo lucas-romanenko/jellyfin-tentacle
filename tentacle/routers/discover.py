@@ -69,7 +69,7 @@ def get_discover(
 
     if type == "series":
         # ── TV: Popular ──
-        popular = tmdb.get_popular("series", page=1)
+        popular = tmdb.get_popular("series")
         if popular:
             sections.append({
                 "id": "popular",
@@ -78,7 +78,7 @@ def get_discover(
             })
 
         # ── TV: On the Air ──
-        on_the_air = tmdb.get_on_the_air(page=1)
+        on_the_air = tmdb.get_on_the_air()
         if on_the_air:
             sections.append({
                 "id": "on_the_air",
@@ -87,7 +87,7 @@ def get_discover(
             })
 
         # ── TV: Top Rated ──
-        top_rated = tmdb.get_top_rated("series", page=1)
+        top_rated = tmdb.get_top_rated("series")
         if top_rated:
             sections.append({
                 "id": "top_rated",
@@ -96,7 +96,7 @@ def get_discover(
             })
     else:
         # ── Movies: Popular ──
-        popular = tmdb.get_popular("movie", page=1)
+        popular = tmdb.get_popular("movie")
         if popular:
             sections.append({
                 "id": "popular",
@@ -105,7 +105,7 @@ def get_discover(
             })
 
         # ── Movies: Now Playing ──
-        now_playing = tmdb.get_now_playing(page=1)
+        now_playing = tmdb.get_now_playing()
         if now_playing:
             sections.append({
                 "id": "now_playing",
@@ -114,7 +114,7 @@ def get_discover(
             })
 
         # ── Movies: Upcoming ──
-        upcoming = tmdb.get_upcoming(page=1)
+        upcoming = tmdb.get_upcoming()
         if upcoming:
             sections.append({
                 "id": "upcoming",
