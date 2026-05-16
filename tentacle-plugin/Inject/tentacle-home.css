@@ -846,27 +846,24 @@ html {
 
 /* ── Item Detail Page Polish ───────────────────────────────────────── */
 
-/* Override Jellyfin dark theme background variables to Tentacle purple/navy */
-:root, :root [data-theme="dark"] {
-  --jf-palette-background-default: #0F0D1A !important;
-  --jf-palette-background-paper: #161326 !important;
-}
-
-/* Direct background overrides for detail/playlist pages */
+/* Override Jellyfin dark theme — nuclear approach, target everything */
+html, html[data-theme="dark"],
+body,
+#reactRoot,
 .mainAnimatedPages,
 .skinBody,
+.page,
+.mainAnimatedPage,
+.libraryPage,
 .itemDetailPage,
 .noBackdropTransparency,
-#itemDetailPage {
+#itemDetailPage,
+#indexPage {
   background: #0F0D1A !important;
   background-color: #0F0D1A !important;
 }
 
-.detailPageWrapperContainer {
-  background: transparent !important;
-  background-color: transparent !important;
-}
-
+.detailPageWrapperContainer,
 #itemBackdrop {
   background: transparent !important;
   background-color: transparent !important;
