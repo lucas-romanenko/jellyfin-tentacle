@@ -897,26 +897,26 @@ html[data-theme="dark"] #itemDetailPage {
   margin-top: 0 !important;
 }
 
-/* Center poster + text as a group — high specificity to beat Jellyfin */
-html[data-theme="dark"] .page.itemDetailPage .detailPageWrapperContainer .detailPagePrimaryContainer {
+/* Constrain poster+text area so they stay close together */
+.detailPagePrimaryContainer {
   max-width: 800px !important;
   margin-left: auto !important;
   margin-right: auto !important;
   gap: 1.5em !important;
 }
 
-/* Shrink the desktop poster */
-html[data-theme="dark"] .itemDetailPage .detailPagePrimaryContainer > .detailImageContainer {
+/* Fix poster size */
+.detailImageContainer.hide-mobile {
   max-width: 200px !important;
   width: 200px !important;
   flex: 0 0 200px !important;
 }
 
-/* Prevent ribbon from stretching — size to content */
-html[data-theme="dark"] .itemDetailPage .detailPagePrimaryContainer > .detailRibbon {
-  flex: 1 1 0 !important;
-  min-width: 0 !important;
+/* Remove padding between poster and text */
+.detailRibbon.padded-left {
   padding-left: 0 !important;
+}
+.detailRibbon.padded-right {
   padding-right: 0 !important;
 }
 
