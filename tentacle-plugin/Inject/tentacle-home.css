@@ -926,8 +926,9 @@ html[data-theme="dark"] #itemDetailPage {
   padding-right: 0 !important;
 }
 
-/* Rounded poster with shadow */
+/* DEBUG: bright border to confirm CSS is loading — remove after */
 .itemDetailPage .detailImageContainer .cardBox {
+  border: 3px solid red !important;
   border-radius: 12px !important;
   overflow: hidden !important;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4) !important;
