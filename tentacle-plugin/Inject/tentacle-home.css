@@ -881,9 +881,11 @@ html[data-theme="dark"] #itemDetailPage {
   background-color: transparent !important;
 }
 
-/* Reduce space above poster — collapse backdrop, small top padding */
+/* Reduce space above poster — small fixed backdrop height instead of default large one */
 .itemDetailPage #itemBackdrop {
-  display: none !important;
+  height: 100px !important;
+  min-height: 100px !important;
+  max-height: 100px !important;
 }
 
 .itemDetailPage .detailLogo {
