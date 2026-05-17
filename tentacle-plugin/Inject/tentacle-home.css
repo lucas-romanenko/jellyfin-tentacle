@@ -915,6 +915,15 @@ html[data-theme="dark"] #itemDetailPage {
 /* Prevent ribbon from stretching full width — let it size to content */
 .itemDetailPage .detailRibbon {
   flex: 0 1 auto !important;
+  min-width: 0 !important;
+}
+
+/* Remove Jellyfin's padded-left/padded-right spacing between poster and text */
+.itemDetailPage .detailRibbon.padded-left {
+  padding-left: 0 !important;
+}
+.itemDetailPage .detailRibbon.padded-right {
+  padding-right: 0 !important;
 }
 
 /* Rounded poster with shadow */
