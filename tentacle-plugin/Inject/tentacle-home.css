@@ -881,14 +881,18 @@ html[data-theme="dark"] #itemDetailPage {
   background-color: transparent !important;
 }
 
-/* Reduce space above poster — keep some room for navbar */
-.itemDetailPage .detailPageWrapperContainer {
-  padding-top: 5em !important;
-  margin-top: 0 !important;
+/* Reduce space above poster — collapse backdrop, small top padding */
+.itemDetailPage #itemBackdrop {
+  display: none !important;
 }
 
 .itemDetailPage .detailLogo {
   display: none !important;
+}
+
+.itemDetailPage .detailPageWrapperContainer {
+  padding-top: 2em !important;
+  margin-top: 0 !important;
 }
 
 /* Center the whole detail page content */
