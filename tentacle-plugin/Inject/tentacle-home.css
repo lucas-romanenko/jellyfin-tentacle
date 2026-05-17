@@ -897,32 +897,26 @@ html[data-theme="dark"] #itemDetailPage {
   margin-top: 0 !important;
 }
 
-/* Center poster + text as a group */
-.itemDetailPage .detailPagePrimaryContainer {
-  max-width: 1200px !important;
+/* Center poster + text as a group — high specificity to beat Jellyfin */
+html[data-theme="dark"] .page.itemDetailPage .detailPageWrapperContainer .detailPagePrimaryContainer {
+  max-width: 800px !important;
   margin-left: auto !important;
   margin-right: auto !important;
-  justify-content: center !important;
-  gap: 2em !important;
+  gap: 1.5em !important;
 }
 
 /* Shrink the desktop poster */
-.itemDetailPage .detailPagePrimaryContainer > .detailImageContainer {
+html[data-theme="dark"] .itemDetailPage .detailPagePrimaryContainer > .detailImageContainer {
   max-width: 200px !important;
-  flex-shrink: 0 !important;
+  width: 200px !important;
+  flex: 0 0 200px !important;
 }
 
-/* Prevent ribbon from stretching full width — let it size to content */
-.itemDetailPage .detailRibbon {
-  flex: 0 1 auto !important;
+/* Prevent ribbon from stretching — size to content */
+html[data-theme="dark"] .itemDetailPage .detailPagePrimaryContainer > .detailRibbon {
+  flex: 1 1 0 !important;
   min-width: 0 !important;
-}
-
-/* Remove Jellyfin's padded-left/padded-right spacing between poster and text */
-.itemDetailPage .detailRibbon.padded-left {
   padding-left: 0 !important;
-}
-.itemDetailPage .detailRibbon.padded-right {
   padding-right: 0 !important;
 }
 
