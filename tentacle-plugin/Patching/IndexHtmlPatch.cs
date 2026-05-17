@@ -95,25 +95,25 @@ public static class IndexHtmlPatch
 
             var noCache = "<meta http-equiv=\"Cache-Control\" content=\"no-cache, no-store, must-revalidate\" /><meta http-equiv=\"Pragma\" content=\"no-cache\" /><meta http-equiv=\"Expires\" content=\"0\" />";
 
-            // Critical overrides injected as inline <style> at end of body — always wins cascade
-            var inlineOverrides = @"<style id=""tentacle-overrides"">
-.detailPagePrimaryContainer{max-width:800px!important;margin-left:auto!important;margin-right:auto!important;gap:1.5em!important}
-.detailImageContainer.hide-mobile{max-width:200px!important;width:200px!important;flex:0 0 200px!important}
-.detailRibbon.padded-left{padding-left:0!important}
-.detailRibbon.padded-right{padding-right:0!important}
-.itemDetailPage #itemBackdrop{height:100px!important;min-height:100px!important;max-height:100px!important}
-.itemDetailPage .detailLogo{display:none!important}
-.itemDetailPage .detailPageWrapperContainer{padding-top:2em!important;margin-top:0!important}
-.detailPagePrimaryContent{max-width:800px!important;margin-left:auto!important;margin-right:auto!important}
-.detailPageSecondaryContainer{max-width:800px!important;margin-left:auto!important;margin-right:auto!important}
-.itemDetailPage .detailImageContainer .cardBox{border-radius:12px!important;overflow:hidden!important;box-shadow:0 8px 32px rgba(0,0,0,0.4)!important}
-.itemDetailPage .detailImageContainer img{border-radius:12px!important}
-.itemDetailPage .listItem{border-radius:8px!important}
-.itemDetailPage .listItem:hover{background:rgba(255,255,255,0.05)!important}
-.itemDetailPage .detailButton{border-radius:8px!important}
-html,body,#reactRoot,.backdropContainer,.backgroundContainer,.mainAnimatedPages,.skinBody,.page,.mainAnimatedPage,.libraryPage,.itemDetailPage,.noBackdropTransparency,#itemDetailPage,#indexPage{background:#0F0D1A!important;background-color:#0F0D1A!important}
-.detailPageWrapperContainer,#itemBackdrop{background:transparent!important;background-color:transparent!important}
-</style>";
+            // JS-based layout enforcement — applies inline styles directly to DOM elements
+            // Inline styles on elements beat ALL stylesheets unconditionally
+            var inlineOverrides = @"<script id=""tentacle-layout-enforcer"">(function(){
+function applyDetailPageStyles(){
+var p=document.querySelector('.detailPagePrimaryContainer');
+if(p){p.style.setProperty('max-width','800px','important');p.style.setProperty('margin-left','auto','important');p.style.setProperty('margin-right','auto','important');p.style.setProperty('gap','1.5em','important')}
+var img=document.querySelector('.detailImageContainer.hide-mobile');
+if(img){img.style.setProperty('max-width','200px','important');img.style.setProperty('width','200px','important');img.style.setProperty('flex','0 0 200px','important')}
+var rib=document.querySelector('.detailRibbon');
+if(rib){rib.style.setProperty('padding-left','0','important');rib.style.setProperty('padding-right','0','important')}
+var pc=document.querySelector('.detailPagePrimaryContent');
+if(pc){pc.style.setProperty('max-width','800px','important');pc.style.setProperty('margin-left','auto','important');pc.style.setProperty('margin-right','auto','important')}
+var sc=document.querySelector('.detailPageSecondaryContainer');
+if(sc){sc.style.setProperty('max-width','800px','important');sc.style.setProperty('margin-left','auto','important');sc.style.setProperty('margin-right','auto','important')}
+}
+var obs=new MutationObserver(function(){applyDetailPageStyles()});
+obs.observe(document.body,{childList:true,subtree:true});
+applyDetailPageStyles();
+})()</script>";
 
             content = content
                 .Replace("</head>", $"{noCache}{cssTag}{discoverCssTag}{detailsCssTag}{mdblistCssTag}{navbarCssTag}{mediabarCssTag}{searchCssTag}{livetvCssTag}</head>")
