@@ -95,9 +95,29 @@ public static class IndexHtmlPatch
 
             var noCache = "<meta http-equiv=\"Cache-Control\" content=\"no-cache, no-store, must-revalidate\" /><meta http-equiv=\"Pragma\" content=\"no-cache\" /><meta http-equiv=\"Expires\" content=\"0\" />";
 
+            // Critical overrides injected as inline <style> at end of body — always wins cascade
+            var inlineOverrides = @"<style id=""tentacle-overrides"">
+.detailPagePrimaryContainer{max-width:800px!important;margin-left:auto!important;margin-right:auto!important;gap:1.5em!important}
+.detailImageContainer.hide-mobile{max-width:200px!important;width:200px!important;flex:0 0 200px!important}
+.detailRibbon.padded-left{padding-left:0!important}
+.detailRibbon.padded-right{padding-right:0!important}
+.itemDetailPage #itemBackdrop{height:100px!important;min-height:100px!important;max-height:100px!important}
+.itemDetailPage .detailLogo{display:none!important}
+.itemDetailPage .detailPageWrapperContainer{padding-top:2em!important;margin-top:0!important}
+.detailPagePrimaryContent{max-width:800px!important;margin-left:auto!important;margin-right:auto!important}
+.detailPageSecondaryContainer{max-width:800px!important;margin-left:auto!important;margin-right:auto!important}
+.itemDetailPage .detailImageContainer .cardBox{border-radius:12px!important;overflow:hidden!important;box-shadow:0 8px 32px rgba(0,0,0,0.4)!important}
+.itemDetailPage .detailImageContainer img{border-radius:12px!important}
+.itemDetailPage .listItem{border-radius:8px!important}
+.itemDetailPage .listItem:hover{background:rgba(255,255,255,0.05)!important}
+.itemDetailPage .detailButton{border-radius:8px!important}
+html,body,#reactRoot,.backdropContainer,.backgroundContainer,.mainAnimatedPages,.skinBody,.page,.mainAnimatedPage,.libraryPage,.itemDetailPage,.noBackdropTransparency,#itemDetailPage,#indexPage{background:#0F0D1A!important;background-color:#0F0D1A!important}
+.detailPageWrapperContainer,#itemBackdrop{background:transparent!important;background-color:transparent!important}
+</style>";
+
             content = content
                 .Replace("</head>", $"{noCache}{cssTag}{discoverCssTag}{detailsCssTag}{mdblistCssTag}{navbarCssTag}{mediabarCssTag}{searchCssTag}{livetvCssTag}</head>")
-                .Replace("</body>", $"{mdblistJsTag}{tmdbJsTag}{navbarJsTag}{mediabarJsTag}{jsTag}{discoverJsTag}{searchJsTag}{livetvJsTag}{detailsJsTag}</body>");
+                .Replace("</body>", $"{inlineOverrides}{mdblistJsTag}{tmdbJsTag}{navbarJsTag}{mediabarJsTag}{jsTag}{discoverJsTag}{searchJsTag}{livetvJsTag}{detailsJsTag}</body>");
 
             var bytes = System.Text.Encoding.UTF8.GetBytes(content);
             __result = new TransformedFileInfo(__result, bytes);
