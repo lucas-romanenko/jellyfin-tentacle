@@ -93,31 +93,9 @@ public static class IndexHtmlPatch
             var livetvCssTag = $"<link rel=\"stylesheet\" href=\"/Tentacle/livetv.css?v={cacheBust}\" />";
             var livetvJsTag = $"<script src=\"/Tentacle/livetv.js?v={cacheBust}\" defer></script>";
 
-            var noCache = "<meta http-equiv=\"Cache-Control\" content=\"no-cache, no-store, must-revalidate\" /><meta http-equiv=\"Pragma\" content=\"no-cache\" /><meta http-equiv=\"Expires\" content=\"0\" />";
-
-            // JS-based layout enforcement — applies inline styles directly to DOM elements
-            // Inline styles on elements beat ALL stylesheets unconditionally
-            var inlineOverrides = @"<script id=""tentacle-layout-enforcer"">(function(){
-function applyDetailPageStyles(){
-var p=document.querySelector('.detailPagePrimaryContainer');
-if(p){p.style.setProperty('max-width','800px','important');p.style.setProperty('margin-left','auto','important');p.style.setProperty('margin-right','auto','important');p.style.setProperty('gap','1.5em','important')}
-var img=document.querySelector('.detailImageContainer.hide-mobile');
-if(img){img.style.setProperty('max-width','200px','important');img.style.setProperty('width','200px','important');img.style.setProperty('flex','0 0 200px','important')}
-var rib=document.querySelector('.detailRibbon');
-if(rib){rib.style.setProperty('padding-left','0','important');rib.style.setProperty('padding-right','0','important')}
-var pc=document.querySelector('.detailPagePrimaryContent');
-if(pc){pc.style.setProperty('max-width','800px','important');pc.style.setProperty('margin-left','auto','important');pc.style.setProperty('margin-right','auto','important')}
-var sc=document.querySelector('.detailPageSecondaryContainer');
-if(sc){sc.style.setProperty('max-width','800px','important');sc.style.setProperty('margin-left','auto','important');sc.style.setProperty('margin-right','auto','important')}
-}
-var obs=new MutationObserver(function(){applyDetailPageStyles()});
-obs.observe(document.body,{childList:true,subtree:true});
-applyDetailPageStyles();
-})()</script>";
-
             content = content
-                .Replace("</head>", $"{noCache}{cssTag}{discoverCssTag}{detailsCssTag}{mdblistCssTag}{navbarCssTag}{mediabarCssTag}{searchCssTag}{livetvCssTag}</head>")
-                .Replace("</body>", $"{inlineOverrides}{mdblistJsTag}{tmdbJsTag}{navbarJsTag}{mediabarJsTag}{jsTag}{discoverJsTag}{searchJsTag}{livetvJsTag}{detailsJsTag}</body>");
+                .Replace("</head>", $"{cssTag}{discoverCssTag}{detailsCssTag}{mdblistCssTag}{navbarCssTag}{mediabarCssTag}{searchCssTag}{livetvCssTag}</head>")
+                .Replace("</body>", $"{mdblistJsTag}{tmdbJsTag}{navbarJsTag}{mediabarJsTag}{jsTag}{discoverJsTag}{searchJsTag}{livetvJsTag}{detailsJsTag}</body>");
 
             var bytes = System.Text.Encoding.UTF8.GetBytes(content);
             __result = new TransformedFileInfo(__result, bytes);

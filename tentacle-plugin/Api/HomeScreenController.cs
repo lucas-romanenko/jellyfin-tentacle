@@ -280,7 +280,16 @@ public class TentacleHomeController : ControllerBase
     /// Serves the Tentacle homepage JavaScript (injected into index.html).
     /// </summary>
     [HttpGet("/Tentacle/home.js")]
-    public ActionResult GetHomeJs() => ServeAsset("tentacle-home.js", "application/javascript");
+    public ActionResult GetHomeJs()
+    {
+        var content = LoadEmbeddedResource("tentacle-home.js");
+        if (content == null)
+        {
+            return NotFound();
+        }
+
+        return Content(content, "application/javascript");
+    }
 
     /// <summary>
     /// Serves the Tentacle logo image (embedded resource).
@@ -310,7 +319,16 @@ public class TentacleHomeController : ControllerBase
     /// Serves the Tentacle homepage CSS (injected into index.html).
     /// </summary>
     [HttpGet("/Tentacle/home.css")]
-    public ActionResult GetHomeCss() => ServeAsset("tentacle-home.css", "text/css");
+    public ActionResult GetHomeCss()
+    {
+        var content = LoadEmbeddedResource("tentacle-home.css");
+        if (content == null)
+        {
+            return NotFound();
+        }
+
+        return Content(content, "text/css");
+    }
 
     /// <summary>
     /// Returns user-specific section visibility settings.
@@ -450,50 +468,91 @@ public class TentacleHomeController : ControllerBase
     /// Serves the Tentacle details overlay JavaScript.
     /// </summary>
     [HttpGet("/Tentacle/details.js")]
-    public ActionResult GetDetailsJs() => ServeAsset("tentacle-details.js", "application/javascript");
-
-    /// <summary>
-    /// Serves the Tentacle details overlay CSS.
-    /// </summary>
-    [HttpGet("/Tentacle/details.css")]
-    public ActionResult GetDetailsCss() => ServeAsset("tentacle-details.css", "text/css");
-
-    /// <summary>
-    /// Serves the Tentacle navbar JavaScript.
-    /// </summary>
-    [HttpGet("/Tentacle/navbar.js")]
-    public ActionResult GetNavbarJs() => ServeAsset("tentacle-navbar.js", "application/javascript");
-
-    [HttpGet("/Tentacle/navbar.css")]
-    public ActionResult GetNavbarCss() => ServeAsset("tentacle-navbar.css", "text/css");
-
-    [HttpGet("/Tentacle/mediabar.js")]
-    public ActionResult GetMediaBarJs() => ServeAsset("tentacle-mediabar.js", "application/javascript");
-
-    [HttpGet("/Tentacle/mediabar.css")]
-    public ActionResult GetMediaBarCss() => ServeAsset("tentacle-mediabar.css", "text/css");
-
-    [HttpGet("/Tentacle/mdblist.js")]
-    public ActionResult GetMdbListJs() => ServeAsset("tentacle-mdblist.js", "application/javascript");
-
-    [HttpGet("/Tentacle/tmdb.js")]
-    public ActionResult GetTmdbJs() => ServeAsset("tentacle-tmdb.js", "application/javascript");
-
-    [HttpGet("/Tentacle/mdblist.css")]
-    public ActionResult GetMdbListCss() => ServeAsset("tentacle-mdblist.css", "text/css");
-
-    private ActionResult ServeAsset(string resourceSuffix, string contentType)
+    public ActionResult GetDetailsJs()
     {
-        var content = LoadEmbeddedResource(resourceSuffix);
+        var content = LoadEmbeddedResource("tentacle-details.js");
         if (content == null)
         {
             return NotFound();
         }
 
-        Response.Headers["Cache-Control"] = "no-cache, no-store, must-revalidate";
-        Response.Headers["Pragma"] = "no-cache";
-        Response.Headers["Expires"] = "0";
-        return Content(content, contentType);
+        return Content(content, "application/javascript");
+    }
+
+    /// <summary>
+    /// Serves the Tentacle details overlay CSS.
+    /// </summary>
+    [HttpGet("/Tentacle/details.css")]
+    public ActionResult GetDetailsCss()
+    {
+        var content = LoadEmbeddedResource("tentacle-details.css");
+        if (content == null)
+        {
+            return NotFound();
+        }
+
+        return Content(content, "text/css");
+    }
+
+    /// <summary>
+    /// Serves the Tentacle navbar JavaScript.
+    /// </summary>
+    [HttpGet("/Tentacle/navbar.js")]
+    public ActionResult GetNavbarJs()
+    {
+        var content = LoadEmbeddedResource("tentacle-navbar.js");
+        return content != null ? Content(content, "application/javascript") : NotFound();
+    }
+
+    /// <summary>
+    /// Serves the Tentacle navbar CSS.
+    /// </summary>
+    [HttpGet("/Tentacle/navbar.css")]
+    public ActionResult GetNavbarCss()
+    {
+        var content = LoadEmbeddedResource("tentacle-navbar.css");
+        return content != null ? Content(content, "text/css") : NotFound();
+    }
+
+    /// <summary>
+    /// Serves the Tentacle media bar JavaScript.
+    /// </summary>
+    [HttpGet("/Tentacle/mediabar.js")]
+    public ActionResult GetMediaBarJs()
+    {
+        var content = LoadEmbeddedResource("tentacle-mediabar.js");
+        return content != null ? Content(content, "application/javascript") : NotFound();
+    }
+
+    /// <summary>
+    /// Serves the Tentacle media bar CSS.
+    /// </summary>
+    [HttpGet("/Tentacle/mediabar.css")]
+    public ActionResult GetMediaBarCss()
+    {
+        var content = LoadEmbeddedResource("tentacle-mediabar.css");
+        return content != null ? Content(content, "text/css") : NotFound();
+    }
+
+    [HttpGet("/Tentacle/mdblist.js")]
+    public ActionResult GetMdbListJs()
+    {
+        var content = LoadEmbeddedResource("tentacle-mdblist.js");
+        return content != null ? Content(content, "application/javascript") : NotFound();
+    }
+
+    [HttpGet("/Tentacle/tmdb.js")]
+    public ActionResult GetTmdbJs()
+    {
+        var content = LoadEmbeddedResource("tentacle-tmdb.js");
+        return content != null ? Content(content, "application/javascript") : NotFound();
+    }
+
+    [HttpGet("/Tentacle/mdblist.css")]
+    public ActionResult GetMdbListCss()
+    {
+        var content = LoadEmbeddedResource("tentacle-mdblist.css");
+        return content != null ? Content(content, "text/css") : NotFound();
     }
 
     private static string? LoadEmbeddedResource(string resourceSuffix)
