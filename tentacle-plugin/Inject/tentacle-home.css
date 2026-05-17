@@ -881,16 +881,10 @@ html[data-theme="dark"] #itemDetailPage {
   background-color: transparent !important;
 }
 
-/* Reduce space above poster (between navbar and content) */
+/* Reduce space above poster — keep some room for navbar */
 .itemDetailPage .detailPageWrapperContainer {
-  padding-top: 0 !important;
+  padding-top: 5em !important;
   margin-top: 0 !important;
-}
-
-/* Collapse the backdrop area that creates dead space above */
-.itemDetailPage #itemBackdrop {
-  height: 0 !important;
-  min-height: 0 !important;
 }
 
 .itemDetailPage .detailLogo {
@@ -902,20 +896,17 @@ html[data-theme="dark"] #itemDetailPage {
   max-width: 1200px !important;
   margin-left: auto !important;
   margin-right: auto !important;
-  gap: 0.75em !important;
 }
 
 /* Shrink the desktop poster and pull it closer to text */
 .itemDetailPage .detailPagePrimaryContainer > .detailImageContainer {
   max-width: 200px !important;
   flex-shrink: 0 !important;
-  margin-right: 0 !important;
-  padding-right: 0 !important;
 }
 
-/* Remove extra padding on the ribbon side */
-.itemDetailPage .detailRibbon.padded-left {
-  padding-left: 0 !important;
+/* Close the gap between poster and title/info */
+.itemDetailPage .detailPagePrimaryContainer > .detailImageContainer.hide-mobile {
+  margin-right: -2em !important;
 }
 
 /* Rounded poster with shadow */
