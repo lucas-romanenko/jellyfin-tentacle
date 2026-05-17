@@ -881,10 +881,20 @@ html[data-theme="dark"] #itemDetailPage {
   background-color: transparent !important;
 }
 
-/* Reduce space above poster (between navbar/mediabar and content) */
+/* Reduce space above poster (between navbar and content) */
 .itemDetailPage .detailPageWrapperContainer {
-  padding-top: 1em !important;
+  padding-top: 0 !important;
   margin-top: 0 !important;
+}
+
+/* Collapse the backdrop area that creates dead space above */
+.itemDetailPage #itemBackdrop {
+  height: 0 !important;
+  min-height: 0 !important;
+}
+
+.itemDetailPage .detailLogo {
+  display: none !important;
 }
 
 /* Center the whole detail page content */
@@ -892,13 +902,20 @@ html[data-theme="dark"] #itemDetailPage {
   max-width: 1200px !important;
   margin-left: auto !important;
   margin-right: auto !important;
-  gap: 1.5em !important;
+  gap: 0.75em !important;
 }
 
-/* Shrink the desktop poster (direct child of primaryContainer) */
+/* Shrink the desktop poster and pull it closer to text */
 .itemDetailPage .detailPagePrimaryContainer > .detailImageContainer {
   max-width: 200px !important;
   flex-shrink: 0 !important;
+  margin-right: 0 !important;
+  padding-right: 0 !important;
+}
+
+/* Remove extra padding on the ribbon side */
+.itemDetailPage .detailRibbon.padded-left {
+  padding-left: 0 !important;
 }
 
 /* Rounded poster with shadow */
