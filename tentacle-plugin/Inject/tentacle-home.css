@@ -897,22 +897,24 @@ html[data-theme="dark"] #itemDetailPage {
   margin-top: 0 !important;
 }
 
-/* Center the whole detail page content */
+/* Center poster + text as a group */
 .itemDetailPage .detailPagePrimaryContainer {
   max-width: 1200px !important;
   margin-left: auto !important;
   margin-right: auto !important;
+  justify-content: center !important;
+  gap: 2em !important;
 }
 
-/* Shrink the desktop poster and pull it closer to text */
+/* Shrink the desktop poster */
 .itemDetailPage .detailPagePrimaryContainer > .detailImageContainer {
   max-width: 200px !important;
   flex-shrink: 0 !important;
 }
 
-/* Close the gap between poster and title/info */
-.itemDetailPage .detailPagePrimaryContainer > .detailImageContainer.hide-mobile {
-  margin-right: -2em !important;
+/* Prevent ribbon from stretching full width — let it size to content */
+.itemDetailPage .detailRibbon {
+  flex: 0 1 auto !important;
 }
 
 /* Rounded poster with shadow */
@@ -924,12 +926,6 @@ html[data-theme="dark"] #itemDetailPage {
 
 .itemDetailPage .detailImageContainer img {
   border-radius: 12px !important;
-}
-
-/* Center the ribbon (title + buttons area) */
-.itemDetailPage .detailRibbon {
-  flex: 1 !important;
-  min-width: 0 !important;
 }
 
 /* Hide genres section on playlist/detail pages */
