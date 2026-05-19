@@ -897,22 +897,23 @@ html[data-theme="dark"] #itemDetailPage {
   margin-top: 0 !important;
 }
 
-/* Center the whole detail page content */
+/* Center the whole detail page content and force vertical stacking */
 .itemDetailPage .detailPagePrimaryContainer {
   max-width: 1200px !important;
   margin-left: auto !important;
   margin-right: auto !important;
+  flex-direction: column !important;
 }
 
-/* Shrink the desktop poster and pull it closer to text */
-.itemDetailPage .detailPagePrimaryContainer > .detailImageContainer {
-  max-width: 200px !important;
-  flex-shrink: 0 !important;
-}
-
-/* Close the gap between poster and title/info */
+/* Hide the desktop side poster — force mobile-style centered layout */
 .itemDetailPage .detailPagePrimaryContainer > .detailImageContainer.hide-mobile {
-  margin-right: -2em !important;
+  display: none !important;
+}
+
+/* Show the mobile centered poster on all layouts */
+.itemDetailPage .detailImageContainer.hide-desktop,
+.itemDetailPage .detailImageContainer.hide-desktop.hide-tv {
+  display: block !important;
 }
 
 /* Rounded poster with shadow */
