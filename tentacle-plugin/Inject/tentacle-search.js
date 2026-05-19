@@ -16,6 +16,7 @@
     lastQuery: '',
     mediaFilter: 'all',
     results: [],
+    channels: [],
     inputObserver: null,
     nativeInput: null,
     hideStyle: null,
@@ -271,6 +272,7 @@
           '<button class="tentacle-search-filter-btn ts-active" data-tstype="all">All</button>' +
           '<button class="tentacle-search-filter-btn" data-tstype="movies">Movies</button>' +
           '<button class="tentacle-search-filter-btn" data-tstype="series">TV Shows</button>' +
+          '<button class="tentacle-search-filter-btn" data-tstype="channels">Live TV</button>' +
         '</div>' +
       '</div>' +
       '<div id="tentacleSearchGrid"></div>';
@@ -284,6 +286,17 @@
         filterBtn.classList.add('ts-active');
         SEARCH.mediaFilter = filterBtn.getAttribute('data-tstype');
         if (SEARCH.lastQuery) doSearch(SEARCH.lastQuery, SEARCH.generation);
+        return;
+      }
+
+      // Channel card click — navigate to Jellyfin Live TV
+      var channelCard = e.target.closest('.ts-channel-card');
+      if (channelCard) {
+        e.preventDefault();
+        e.stopPropagation();
+        var chId = channelCard.getAttribute('data-channel-id');
+        console.log('[TentacleSearch] Channel clicked, id=' + chId);
+        window.location.hash = '#/livetv';
         return;
       }
 
@@ -327,12 +340,14 @@
         if (gen !== SEARCH.generation) return;
 
         var items = data.items || [];
+        var channels = data.channels || [];
         SEARCH.results = items;
-        if (!items.length) {
+        SEARCH.channels = channels;
+        if (!items.length && !channels.length) {
           grid.innerHTML = '<div class="tentacle-search-empty">No results for \u201c' + esc(query) + '\u201d</div>';
           return;
         }
-        renderResults(items, grid);
+        renderResults(items, channels, grid);
       })
       .catch(function () {
         if (gen !== SEARCH.generation) return;
@@ -342,48 +357,78 @@
 
   // ── Render ───────────────────────────────────────────────────────────
 
-  function renderResults(items, container) {
+  function renderResults(items, channels, container) {
     var getDownloadInfo = (window.TentacleDiscover && window.TentacleDiscover.getDownloadInfo)
       ? window.TentacleDiscover.getDownloadInfo
       : function () { return null; };
 
-    container.innerHTML = '<div class="tentacle-search-grid">' +
-      items.map(function (item) {
-        var posterUrl = item.poster_path
-          ? 'https://image.tmdb.org/t/p/w342' + item.poster_path
-          : '';
-        var posterHtml = posterUrl
-          ? '<img src="' + posterUrl + '" loading="lazy" onerror="this.style.display=\'none\'">'
-          : '<div class="ts-card-poster-placeholder">&#9707;</div>';
+    var html = '';
 
-        var dlInfo = getDownloadInfo(item.tmdb_id);
-        var isMovie = (item.media_type || 'movie') !== 'series';
-        var typeBadge = '<div class="ts-card-badge ts-badge-type">' + (isMovie ? 'Movie' : 'TV') + '</div>';
-        var statusBadge = '';
+    // Channel cards (shown first when present)
+    if (channels.length) {
+      html += '<div class="tentacle-search-grid ts-channel-grid">' +
+        channels.map(function (ch) {
+          var logoHtml = ch.logo_url
+            ? '<img src="' + esc(ch.logo_url) + '" loading="lazy" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'flex\'">' +
+              '<div class="ts-channel-logo-placeholder" style="display:none">&#9654;</div>'
+            : '<div class="ts-channel-logo-placeholder">&#9654;</div>';
+          var groupHtml = ch.group_title ? esc(ch.group_title) : 'Live TV';
+          return '<div class="ts-card ts-channel-card" data-channel-id="' + ch.channel_id + '">' +
+            '<div class="ts-channel-logo">' + logoHtml +
+              '<div class="ts-card-badge ts-badge-type ts-badge-livetv">Live TV</div>' +
+            '</div>' +
+            '<div class="ts-card-info">' +
+              '<div class="ts-card-title">' + esc(ch.title) + '</div>' +
+              '<div class="ts-card-meta">' + groupHtml + '</div>' +
+            '</div></div>';
+        }).join('') +
+      '</div>';
+    }
 
-        if (dlInfo) {
-          var pct = (dlInfo.progress || 0).toFixed(1);
-          var statusText = dlInfo.status === 'importing' ? 'Importing' : dlInfo.status === 'queued' ? 'Queued' : 'Downloading ' + pct + '%';
-          statusBadge = '<div class="ts-card-badge ts-badge-status ts-badge-downloading">' + statusText + '</div>';
-        } else if (item.in_library) {
-          statusBadge = '<div class="ts-card-badge ts-badge-status ts-badge-inlib">In Library</div>';
-        }
+    // TMDB cards
+    if (items.length) {
+      if (channels.length) {
+        html += '<div class="tentacle-search-divider"></div>';
+      }
+      html += '<div class="tentacle-search-grid">' +
+        items.map(function (item) {
+          var posterUrl = item.poster_path
+            ? 'https://image.tmdb.org/t/p/w342' + item.poster_path
+            : '';
+          var posterHtml = posterUrl
+            ? '<img src="' + posterUrl + '" loading="lazy" onerror="this.style.display=\'none\'">'
+            : '<div class="ts-card-poster-placeholder">&#9707;</div>';
 
-        var ratingHtml = item.rating
-          ? '<span class="ts-card-meta-rating">\u2605 ' + item.rating + '</span>'
-          : '';
-        var yearHtml = item.year || '\u2014';
-        var sep = item.rating ? ' \u00b7 ' : '';
+          var dlInfo = getDownloadInfo(item.tmdb_id);
+          var isMovie = (item.media_type || 'movie') !== 'series';
+          var typeBadge = '<div class="ts-card-badge ts-badge-type">' + (isMovie ? 'Movie' : 'TV') + '</div>';
+          var statusBadge = '';
 
-        return '<div class="ts-card" data-tmdb="' + item.tmdb_id + '" data-type="' + (item.media_type || 'movie') + '">' +
-          '<div class="ts-card-poster">' + posterHtml + typeBadge + statusBadge + '</div>' +
-          '<div class="ts-card-info">' +
-            '<div class="ts-card-title">' + esc(item.title) + '</div>' +
-            '<div class="ts-card-meta">' + yearHtml + sep + ratingHtml + '</div>' +
-          '</div></div>';
-      }).join('') +
-    '</div>';
+          if (dlInfo) {
+            var pct = (dlInfo.progress || 0).toFixed(1);
+            var statusText = dlInfo.status === 'importing' ? 'Importing' : dlInfo.status === 'queued' ? 'Queued' : 'Downloading ' + pct + '%';
+            statusBadge = '<div class="ts-card-badge ts-badge-status ts-badge-downloading">' + statusText + '</div>';
+          } else if (item.in_library) {
+            statusBadge = '<div class="ts-card-badge ts-badge-status ts-badge-inlib">In Library</div>';
+          }
 
+          var ratingHtml = item.rating
+            ? '<span class="ts-card-meta-rating">\u2605 ' + item.rating + '</span>'
+            : '';
+          var yearHtml = item.year || '\u2014';
+          var sep = item.rating ? ' \u00b7 ' : '';
+
+          return '<div class="ts-card" data-tmdb="' + item.tmdb_id + '" data-type="' + (item.media_type || 'movie') + '">' +
+            '<div class="ts-card-poster">' + posterHtml + typeBadge + statusBadge + '</div>' +
+            '<div class="ts-card-info">' +
+              '<div class="ts-card-title">' + esc(item.title) + '</div>' +
+              '<div class="ts-card-meta">' + yearHtml + sep + ratingHtml + '</div>' +
+            '</div></div>';
+        }).join('') +
+      '</div>';
+    }
+
+    container.innerHTML = html;
   }
 
   // ── Navigation ───────────────────────────────────────────────────────
@@ -444,6 +489,7 @@
     var grid = document.getElementById('tentacleSearchGrid');
     if (grid) grid.innerHTML = '';
     SEARCH.results = [];
+    SEARCH.channels = [];
   }
 
   function cleanup() {
@@ -464,6 +510,7 @@
     SEARCH.active = false;
     SEARCH.lastQuery = '';
     SEARCH.results = [];
+    SEARCH.channels = [];
     SEARCH.mediaFilter = 'all';
     SEARCH.nativeInput = null;
     var el = document.getElementById('tentacleSearchResults');

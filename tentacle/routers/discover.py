@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing import Optional
 from fastapi import Request
-from models.database import get_db, get_setting, Movie, Series, ListSubscription, ListItem, DownloadRequest
+from models.database import get_db, get_setting, Movie, Series, ListSubscription, ListItem, DownloadRequest, LiveChannel
 from routers.auth import get_user_from_request
 from services.tmdb import TMDBService
 
@@ -256,10 +256,31 @@ def search_discover(
     elif type == "series":
         media_type = "series"
 
-    results = tmdb.search_multi_results(q, media_type)
-    known_ids = _known_tmdb_ids(db)
-    items = _dedup_and_mark(results, known_ids)
-    return {"items": items}
+    # Search TMDB for movies/series (skip if channels-only)
+    items = []
+    if type != "channels":
+        results = tmdb.search_multi_results(q, media_type)
+        known_ids = _known_tmdb_ids(db)
+        items = _dedup_and_mark(results, known_ids)
+
+    # Search Live TV channels
+    channels = []
+    if type in ("all", "channels"):
+        channel_rows = db.query(LiveChannel).filter(
+            LiveChannel.enabled == True,
+            LiveChannel.name.ilike(f"%{q.strip()}%"),
+        ).order_by(LiveChannel.sort_order).limit(20).all()
+        for ch in channel_rows:
+            channels.append({
+                "media_type": "channel",
+                "title": ch.name,
+                "channel_id": ch.id,
+                "stream_id": ch.stream_id,
+                "logo_url": ch.logo_url,
+                "group_title": ch.group_title,
+            })
+
+    return {"items": items, "channels": channels}
 
 
 @router.get("/config")
