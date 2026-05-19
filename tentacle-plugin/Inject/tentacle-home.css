@@ -876,8 +876,9 @@ html[data-theme="dark"] #itemDetailPage {
 }
 
 /* Video OSD page — must be transparent so the <video> element is visible.
-   Without this, .page/.mainAnimatedPage background paints over the player. */
-.page[data-type="video-osd"] {
+   Without this, .page/.mainAnimatedPage background paints over the player.
+   ID selector needed to beat html[data-theme="dark"] .page.mainAnimatedPage specificity. */
+#videoOsdPage {
   background: transparent !important;
   background-color: transparent !important;
 }
