@@ -876,6 +876,19 @@ html[data-theme="dark"] #itemDetailPage {
   background-color: #0F0D1A !important;
 }
 
+/* During video playback, the entire ancestor chain between the <video> element
+   and #videoOsdPage must be transparent. The video lives in .videoPlayerContainer
+   (a body child), while the OSD is inside #reactRoot > .mainAnimatedPages >
+   #videoOsdPage. Without this, #reactRoot and .mainAnimatedPages paint their
+   dark backgrounds over the video. JS toggles body.tentacle-video-active. */
+body.tentacle-video-active #reactRoot,
+body.tentacle-video-active .mainAnimatedPages,
+body.tentacle-video-active .backdropContainer,
+body.tentacle-video-active .backgroundContainer {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
 .detailPageWrapperContainer,
 #itemBackdrop {
   background: transparent !important;
