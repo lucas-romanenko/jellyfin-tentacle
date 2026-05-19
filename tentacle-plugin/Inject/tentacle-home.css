@@ -846,18 +846,19 @@ html {
 
 /* ── Item Detail Page Polish ───────────────────────────────────────── */
 
-/* Override ALL Jellyfin dark backgrounds to Tentacle purple/navy */
+/* Override ALL Jellyfin dark backgrounds to Tentacle purple/navy.
+   #videoOsdPage excluded — it must stay transparent so the <video> is visible. */
 html, body,
 #reactRoot,
 .backdropContainer,
 .backgroundContainer,
 .mainAnimatedPages,
 .skinBody,
-.page,
-.mainAnimatedPage,
-.libraryPage,
+.page:not(#videoOsdPage),
+.mainAnimatedPage:not(#videoOsdPage),
+.libraryPage:not(#videoOsdPage),
 .itemDetailPage,
-.noBackdropTransparency,
+.noBackdropTransparency:not(#videoOsdPage),
 #itemDetailPage,
 #indexPage {
   background: #0F0D1A !important;
@@ -865,22 +866,14 @@ html, body,
 }
 
 /* High specificity duplicates to beat dynamically-loaded theme.css */
-html[data-theme="dark"] .page.noBackdropTransparency,
-html[data-theme="dark"] .page.mainAnimatedPage,
+html[data-theme="dark"] .page.noBackdropTransparency:not(#videoOsdPage),
+html[data-theme="dark"] .page.mainAnimatedPage:not(#videoOsdPage),
 html[data-theme="dark"] .mainAnimatedPages.skinBody,
 html[data-theme="dark"] .backdropContainer,
 html[data-theme="dark"] .backgroundContainer,
 html[data-theme="dark"] #itemDetailPage {
   background: #0F0D1A !important;
   background-color: #0F0D1A !important;
-}
-
-/* Video OSD page — must be transparent so the <video> element is visible.
-   Without this, .page/.mainAnimatedPage background paints over the player.
-   ID selector needed to beat html[data-theme="dark"] .page.mainAnimatedPage specificity. */
-#videoOsdPage {
-  background: transparent !important;
-  background-color: transparent !important;
 }
 
 .detailPageWrapperContainer,
