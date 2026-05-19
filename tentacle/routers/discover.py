@@ -263,24 +263,22 @@ def search_discover(
         known_ids = _known_tmdb_ids(db)
         items = _dedup_and_mark(results, known_ids)
 
-    # Search Live TV channels
-    channels = []
+    # Search Live TV channels — prepend to items list
     if type in ("all", "channels"):
         channel_rows = db.query(LiveChannel).filter(
             LiveChannel.enabled == True,
             LiveChannel.name.ilike(f"%{q.strip()}%"),
         ).order_by(LiveChannel.sort_order).limit(20).all()
-        for ch in channel_rows:
-            channels.append({
-                "media_type": "channel",
-                "title": ch.name,
-                "channel_id": ch.id,
-                "stream_id": ch.stream_id,
-                "logo_url": ch.logo_url,
-                "group_title": ch.group_title,
-            })
+        channel_items = [{
+            "media_type": "channel",
+            "title": ch.name,
+            "channel_id": ch.id,
+            "logo_url": ch.logo_url,
+            "group_title": ch.group_title,
+        } for ch in channel_rows]
+        items = channel_items + items
 
-    return {"items": items, "channels": channels}
+    return {"items": items}
 
 
 @router.get("/config")

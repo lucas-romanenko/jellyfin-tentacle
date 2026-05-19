@@ -262,52 +262,20 @@ body.tentacle-search-active .tentacle-search-section {
   font-size: 14px;
 }
 
-/* ── Channel cards — landscape layout for TV channel logos ─────────── */
-.ts-channel-grid {
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-}
-
-.ts-channel-card {
-  flex-direction: row;
-}
-
-.ts-channel-logo {
-  position: relative;
-  aspect-ratio: 16/9;
+/* ── Live TV channel cards ─────────────────────────────────────────── */
+.ts-channel-card .ts-card-poster {
   background: #1a1632;
-  overflow: hidden;
-  display: flex;
-  align-items: center;
-  justify-content: center;
 }
 
-.ts-channel-logo img {
-  width: 100%;
-  height: 100%;
+.ts-channel-card .ts-card-poster img {
   object-fit: contain;
-  padding: 12px;
-}
-
-.ts-channel-logo-placeholder {
-  width: 100%;
-  height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 28px;
-  color: rgba(200, 195, 220, 0.2);
+  padding: 16px;
 }
 
 .ts-badge-livetv {
   background: rgba(220, 50, 50, 0.8);
   color: #fff;
   border: none;
-}
-
-.tentacle-search-divider {
-  height: 1px;
-  background: rgba(139, 128, 255, 0.1);
-  margin: 12px 0 20px;
 }
 
 /* ── Responsive ───────────────────────────────────────────────────── */
