@@ -889,8 +889,18 @@ body.tentacle-video-active .backgroundContainer {
   background-color: transparent !important;
 }
 
+/* Make all detail page inner containers transparent so only the
+   global #0F0D1A purple shows through — no black layers. */
 .detailPageWrapperContainer,
-#itemBackdrop {
+#itemBackdrop,
+.detailPageContent,
+.detailPagePrimaryContent,
+.detailPageSecondaryContainer,
+.mainDetailInfo,
+.detailRibbon,
+.detailPagePrimaryContainer,
+.detailSection,
+.verticalSection {
   background: transparent !important;
   background-color: transparent !important;
 }
