@@ -913,6 +913,7 @@ body.tentacle-video-active .backgroundContainer {
 
 /* Center the whole detail page content and force vertical stacking */
 .itemDetailPage .detailPagePrimaryContainer {
+  display: flex !important;
   max-width: 1200px !important;
   margin-left: auto !important;
   margin-right: auto !important;
