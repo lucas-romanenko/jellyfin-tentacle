@@ -307,16 +307,15 @@
                 }
               }
               if (match) {
-                // Play the channel stream directly
-                window.ApiClient.ajax({
-                  url: window.ApiClient.getUrl('Sessions/Playing'),
-                  type: 'POST',
-                  contentType: 'application/json',
-                  data: JSON.stringify({ ItemIds: [match.Id], PlayCommand: 'PlayNow' })
-                }).catch(function () {
-                  // Fallback: navigate to detail page
-                  window.location.hash = '#/details?id=' + match.Id;
+                // Navigate to channel page and auto-click play
+                cleanup();
+                window.location.hash = '#/details?id=' + match.Id;
+                var obs = new MutationObserver(function (_, o) {
+                  var btn = document.querySelector('.btnPlay, [data-action="play"]');
+                  if (btn) { o.disconnect(); btn.click(); }
                 });
+                obs.observe(document.body, { childList: true, subtree: true });
+                setTimeout(function () { obs.disconnect(); }, 5000);
               } else {
                 window.location.hash = '#/livetv';
               }
