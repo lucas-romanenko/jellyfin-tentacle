@@ -895,45 +895,7 @@ body.tentacle-video-active .backgroundContainer {
   background-color: transparent !important;
 }
 
-/* Detail page overrides — use #itemDetailPage (ID selector, specificity 1-x-0)
-   to always beat Jellyfin's dynamically-loaded CSS chunks which use class selectors.
-   Without this, late-loading chunks race with our CSS and sometimes win. */
-
-/* Reduce space above poster — small fixed backdrop height instead of default large one */
-#itemDetailPage #itemBackdrop {
-  height: 100px !important;
-  min-height: 100px !important;
-  max-height: 100px !important;
-}
-
-#itemDetailPage .detailLogo {
-  display: none !important;
-}
-
-#itemDetailPage .detailPageWrapperContainer {
-  padding-top: 2em !important;
-  margin-top: 0 !important;
-}
-
-/* Center the whole detail page content and force vertical stacking */
-#itemDetailPage .detailPagePrimaryContainer {
-  display: flex !important;
-  max-width: 1200px !important;
-  margin-left: auto !important;
-  margin-right: auto !important;
-  flex-direction: column !important;
-}
-
-/* Hide the desktop side poster — force mobile-style centered layout */
-#itemDetailPage .detailPagePrimaryContainer > .detailImageContainer.hide-mobile {
-  display: none !important;
-}
-
-/* Show the mobile centered poster on all layouts */
-#itemDetailPage .detailImageContainer.hide-desktop,
-#itemDetailPage .detailImageContainer.hide-desktop.hide-tv {
-  display: block !important;
-}
+/* Minor detail page polish — keeps default Jellyfin layout intact */
 
 /* Rounded poster with shadow */
 #itemDetailPage .detailImageContainer .cardBox {
@@ -944,35 +906,6 @@ body.tentacle-video-active .backgroundContainer {
 
 #itemDetailPage .detailImageContainer img {
   border-radius: 12px !important;
-}
-
-/* Center the ribbon (title + buttons area) */
-#itemDetailPage .detailRibbon {
-  flex: 1 !important;
-  min-width: 0 !important;
-}
-
-/* Hide genres section on playlist/detail pages */
-#itemDetailPage .itemGenres,
-#itemDetailPage .genres,
-#itemDetailPage .detailSection-genres,
-#itemDetailPage .detailsGroupItem:has(.itemGenres),
-#itemDetailPage .detailPageContent > .verticalSection:first-child {
-  display: none !important;
-}
-
-/* Center content sections (track list, more like this) */
-#itemDetailPage .detailPagePrimaryContent {
-  max-width: 1200px !important;
-  margin-left: auto !important;
-  margin-right: auto !important;
-}
-
-#itemDetailPage .detailPageSecondaryContainer {
-  max-width: 1200px !important;
-  margin-left: auto !important;
-  margin-right: auto !important;
-  padding-top: 0 !important;
 }
 
 /* Track list items — rounded with hover */
