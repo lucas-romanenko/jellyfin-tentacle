@@ -567,6 +567,7 @@
                 if (this.librariesDropdown) this.librariesDropdown.style.display = 'none';
                 document.body.classList.remove('moonfin-navbar-active');
                 document.body.classList.remove('moonfin-mediabar-active');
+                document.body.classList.add('tentacle-video-active');
                 // Also hide overlays during playback
                 if (window.TentacleDiscover && window.TentacleDiscover.isActive && window.TentacleDiscover.isActive()) {
                     window.TentacleDiscover.hide();
@@ -577,6 +578,7 @@
                 return;
             }
             this.container.classList.remove('hidden');
+            document.body.classList.remove('tentacle-video-active');
             if (this.librariesDropdown) this.librariesDropdown.style.display = '';
             var isUser = this.isUserPage();
             this.container.style.display = isUser ? '' : 'none';

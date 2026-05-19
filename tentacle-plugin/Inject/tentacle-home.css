@@ -875,6 +875,14 @@ html[data-theme="dark"] #itemDetailPage {
   background-color: #0F0D1A !important;
 }
 
+/* During video playback, let backdrop/background containers be transparent
+   so the <video> element is visible (JS toggles body.tentacle-video-active) */
+body.tentacle-video-active .backdropContainer,
+body.tentacle-video-active .backgroundContainer {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
 .detailPageWrapperContainer,
 #itemBackdrop {
   background: transparent !important;
