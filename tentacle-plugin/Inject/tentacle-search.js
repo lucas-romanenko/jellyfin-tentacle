@@ -288,14 +288,32 @@
         return;
       }
 
-      // Channel card click — navigate to Jellyfin Live TV
+      // Channel card click — find Jellyfin channel and play it
       var channelCard = e.target.closest('.ts-channel-card');
       if (channelCard) {
         e.preventDefault();
         e.stopPropagation();
-        var chId = channelCard.getAttribute('data-channel-id');
-        console.log('[TentacleSearch] Channel clicked, id=' + chId);
-        window.location.hash = '#/livetv';
+        var chName = channelCard.querySelector('.ts-card-title');
+        var name = chName ? chName.textContent : '';
+        console.log('[TentacleSearch] Channel clicked:', name);
+        if (name) {
+          apiGet('LiveTv/Channels?SearchTerm=' + encodeURIComponent(name) + '&Limit=10&UserId=' + window.ApiClient.getCurrentUserId())
+            .then(function (data) {
+              var items = (data && data.Items) || [];
+              var match = null;
+              for (var i = 0; i < items.length; i++) {
+                if ((items[i].Name || '').toLowerCase() === name.toLowerCase()) {
+                  match = items[i]; break;
+                }
+              }
+              if (match) {
+                window.location.hash = '#/details?id=' + match.Id;
+              } else {
+                window.location.hash = '#/livetv';
+              }
+            })
+            .catch(function () { window.location.hash = '#/livetv'; });
+        }
         return;
       }
 
