@@ -860,14 +860,15 @@
   // Brute force: poll every 500ms. On non-detail pages this is just one
   // getElementById call (negligible). On detail pages it applies inline
   // !important styles that no CSS or late-loading chunk can override.
-  // Every other approach (CSS specificity, viewshow events, MutationObserver,
-  // deferred init) failed due to Jellyfin's unpredictable load ordering.
-  setInterval(function () {
+  // No guard conditions — always applies ALL properties unconditionally.
+  // Jellyfin's SPA view recycling can preserve some inline styles while
+  // resetting others, so checking one property to gate all is unsafe.
+  function enforceDetailStyles() {
     var page = document.getElementById('itemDetailPage');
     if (!page) return;
 
     var primary = page.querySelector('.detailPagePrimaryContainer');
-    if (primary && primary.style.flexDirection !== 'column') {
+    if (primary) {
       primary.style.setProperty('display', 'flex', 'important');
       primary.style.setProperty('flex-direction', 'column', 'important');
       primary.style.setProperty('max-width', '1200px', 'important');
@@ -876,28 +877,39 @@
     }
 
     var hideMobile = page.querySelector('.detailImageContainer.hide-mobile');
-    if (hideMobile && hideMobile.style.display !== 'none') {
+    if (hideMobile) {
       hideMobile.style.setProperty('display', 'none', 'important');
     }
 
     var hideDesktop = page.querySelector('.detailImageContainer.hide-desktop');
-    if (hideDesktop && hideDesktop.style.display !== 'block') {
+    if (hideDesktop) {
       hideDesktop.style.setProperty('display', 'block', 'important');
     }
 
     var wrapper = page.querySelector('.detailPageWrapperContainer');
-    if (wrapper && wrapper.style.paddingTop !== '2em') {
+    if (wrapper) {
       wrapper.style.setProperty('padding-top', '2em', 'important');
       wrapper.style.setProperty('margin-top', '0', 'important');
     }
 
     var backdrop = page.querySelector('#itemBackdrop');
-    if (backdrop && backdrop.style.height !== '100px') {
+    if (backdrop) {
       backdrop.style.setProperty('height', '100px', 'important');
       backdrop.style.setProperty('min-height', '100px', 'important');
       backdrop.style.setProperty('max-height', '100px', 'important');
     }
-  }, 500);
+  }
+
+  setInterval(enforceDetailStyles, 500);
+
+  // Also run immediately on viewshow for instant application (don't wait for poll cycle)
+  document.addEventListener('viewshow', function () {
+    // Run immediately + after short delays to catch Jellyfin's deferred rendering
+    enforceDetailStyles();
+    setTimeout(enforceDetailStyles, 50);
+    setTimeout(enforceDetailStyles, 150);
+    setTimeout(enforceDetailStyles, 300);
+  });
 
   // ── Start ─────────────────────────────────────────────────────────────
   if (document.readyState === 'loading') {
