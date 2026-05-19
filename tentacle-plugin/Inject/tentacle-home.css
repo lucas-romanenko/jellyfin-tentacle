@@ -905,6 +905,18 @@ body.tentacle-video-active .backgroundContainer {
   background-color: transparent !important;
 }
 
+/* Reduce the large empty backdrop area above content */
+#itemDetailPage #itemBackdrop {
+  height: 100px !important;
+  min-height: 100px !important;
+  max-height: 100px !important;
+}
+
+#itemDetailPage .detailPageWrapperContainer {
+  padding-top: 0.5em !important;
+  margin-top: 0 !important;
+}
+
 /* Minor detail page polish — keeps default Jellyfin layout intact */
 
 /* Rounded poster with shadow */
