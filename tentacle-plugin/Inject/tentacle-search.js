@@ -288,39 +288,44 @@
         return;
       }
 
-      // Channel card click — find Jellyfin channel and play it directly
+      // Channel card click — find Jellyfin channel and play stream directly
       var channelCard = e.target.closest('.ts-channel-card');
       if (channelCard) {
         e.preventDefault();
         e.stopPropagation();
         var chName = channelCard.querySelector('.ts-card-title');
-        var name = chName ? chName.textContent : '';
+        var name = chName ? chName.textContent.trim() : '';
         console.log('[TentacleSearch] Channel clicked:', name);
         if (name) {
-          apiGet('LiveTv/Channels?SearchTerm=' + encodeURIComponent(name) + '&Limit=10&UserId=' + window.ApiClient.getCurrentUserId())
+          var userId = window.ApiClient.getCurrentUserId();
+          apiGet('Users/' + userId + '/Items?SearchTerm=' + encodeURIComponent(name) +
+            '&IncludeItemTypes=LiveTvChannel&Recursive=true&Limit=20')
             .then(function (data) {
               var items = (data && data.Items) || [];
+              console.log('[TentacleSearch] Found', items.length, 'LiveTvChannel results:', items.map(function(i) { return i.Name; }));
+              var nameLower = name.toLowerCase();
               var match = null;
               for (var i = 0; i < items.length; i++) {
-                if ((items[i].Name || '').toLowerCase() === name.toLowerCase()) {
-                  match = items[i]; break;
-                }
+                if ((items[i].Name || '').toLowerCase() === nameLower) { match = items[i]; break; }
               }
+              if (!match && items.length) match = items[0];
               if (match) {
-                // Play channel directly via playbackManager
+                console.log('[TentacleSearch] Playing channel:', match.Name, match.Id);
                 var pm = (typeof playbackManager !== 'undefined') ? playbackManager : null;
+                console.log('[TentacleSearch] playbackManager available:', !!pm);
+                cleanup();
                 if (pm) {
-                  cleanup();
                   pm.play({ ids: [match.Id], serverId: window.ApiClient.serverId() });
                 } else {
-                  cleanup();
                   window.location.hash = '#/details?id=' + match.Id;
                 }
               } else {
-                window.location.hash = '#/livetv';
+                console.warn('[TentacleSearch] No LiveTvChannel match found for:', name);
               }
             })
-            .catch(function () { window.location.hash = '#/livetv'; });
+            .catch(function (err) {
+              console.error('[TentacleSearch] Channel lookup failed:', err);
+            });
         }
         return;
       }
