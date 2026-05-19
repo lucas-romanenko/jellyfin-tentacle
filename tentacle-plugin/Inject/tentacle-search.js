@@ -288,7 +288,7 @@
         return;
       }
 
-      // Channel card click — find Jellyfin channel and play it
+      // Channel card click — find Jellyfin channel and play it directly
       var channelCard = e.target.closest('.ts-channel-card');
       if (channelCard) {
         e.preventDefault();
@@ -307,7 +307,16 @@
                 }
               }
               if (match) {
-                window.location.hash = '#/details?id=' + match.Id;
+                // Play the channel stream directly
+                window.ApiClient.ajax({
+                  url: window.ApiClient.getUrl('Sessions/Playing'),
+                  type: 'POST',
+                  contentType: 'application/json',
+                  data: JSON.stringify({ ItemIds: [match.Id], PlayCommand: 'PlayNow' })
+                }).catch(function () {
+                  // Fallback: navigate to detail page
+                  window.location.hash = '#/details?id=' + match.Id;
+                });
               } else {
                 window.location.hash = '#/livetv';
               }
