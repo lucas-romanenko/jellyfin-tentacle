@@ -856,6 +856,51 @@
     return str.substring(0, max) + '...';
   }
 
+  // ── Detail Page Style Enforcer ──────────────────────────────────────
+  // Jellyfin lazy-loads CSS chunks that race with our stylesheet. CSS alone
+  // can't reliably win regardless of specificity. Apply critical layout
+  // styles via JS inline setProperty('...', 'important') which is immune
+  // to any external CSS load order.
+  function enforceDetailPageStyles() {
+    var page = document.getElementById('itemDetailPage');
+    if (!page) return;
+
+    var primary = page.querySelector('.detailPagePrimaryContainer');
+    if (primary) {
+      primary.style.setProperty('display', 'flex', 'important');
+      primary.style.setProperty('flex-direction', 'column', 'important');
+      primary.style.setProperty('max-width', '1200px', 'important');
+      primary.style.setProperty('margin-left', 'auto', 'important');
+      primary.style.setProperty('margin-right', 'auto', 'important');
+    }
+
+    var hideMobile = page.querySelector('.detailImageContainer.hide-mobile');
+    if (hideMobile) hideMobile.style.setProperty('display', 'none', 'important');
+
+    var hideDesktop = page.querySelector('.detailImageContainer.hide-desktop');
+    if (hideDesktop) hideDesktop.style.setProperty('display', 'block', 'important');
+
+    var wrapper = page.querySelector('.detailPageWrapperContainer');
+    if (wrapper) {
+      wrapper.style.setProperty('padding-top', '2em', 'important');
+      wrapper.style.setProperty('margin-top', '0', 'important');
+    }
+
+    var backdrop = page.querySelector('#itemBackdrop');
+    if (backdrop) {
+      backdrop.style.setProperty('height', '100px', 'important');
+      backdrop.style.setProperty('min-height', '100px', 'important');
+      backdrop.style.setProperty('max-height', '100px', 'important');
+    }
+  }
+
+  // Fire on every SPA navigation + re-check after a short delay for late DOM
+  document.addEventListener('viewshow', function () {
+    enforceDetailPageStyles();
+    setTimeout(enforceDetailPageStyles, 100);
+    setTimeout(enforceDetailPageStyles, 500);
+  });
+
   // ── Start ─────────────────────────────────────────────────────────────
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', waitForReady);
