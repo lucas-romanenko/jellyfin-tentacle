@@ -901,6 +901,25 @@
     setTimeout(enforceDetailPageStyles, 500);
   });
 
+  // On cached page loads, Jellyfin fires viewshow BEFORE our deferred script
+  // executes, so the listener above misses it. Check immediately on init +
+  // watch for the detail page element appearing via MutationObserver.
+  enforceDetailPageStyles();
+  setTimeout(enforceDetailPageStyles, 50);
+  setTimeout(enforceDetailPageStyles, 200);
+  setTimeout(enforceDetailPageStyles, 1000);
+
+  // MutationObserver as final safety net — catches the detail page appearing
+  // in the DOM regardless of event timing
+  var _detailObserver = new MutationObserver(function () {
+    if (document.getElementById('itemDetailPage')) {
+      enforceDetailPageStyles();
+    }
+  });
+  _detailObserver.observe(document.querySelector('.mainAnimatedPages') || document.body, {
+    childList: true, subtree: true
+  });
+
   // ── Start ─────────────────────────────────────────────────────────────
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', waitForReady);
