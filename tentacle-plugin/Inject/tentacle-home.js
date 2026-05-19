@@ -857,16 +857,17 @@
   }
 
   // ── Detail Page Style Enforcer ──────────────────────────────────────
-  // Jellyfin lazy-loads CSS chunks that race with our stylesheet. CSS alone
-  // can't reliably win regardless of specificity. Apply critical layout
-  // styles via JS inline setProperty('...', 'important') which is immune
-  // to any external CSS load order.
-  function enforceDetailPageStyles() {
+  // Brute force: poll every 500ms. On non-detail pages this is just one
+  // getElementById call (negligible). On detail pages it applies inline
+  // !important styles that no CSS or late-loading chunk can override.
+  // Every other approach (CSS specificity, viewshow events, MutationObserver,
+  // deferred init) failed due to Jellyfin's unpredictable load ordering.
+  setInterval(function () {
     var page = document.getElementById('itemDetailPage');
     if (!page) return;
 
     var primary = page.querySelector('.detailPagePrimaryContainer');
-    if (primary) {
+    if (primary && primary.style.flexDirection !== 'column') {
       primary.style.setProperty('display', 'flex', 'important');
       primary.style.setProperty('flex-direction', 'column', 'important');
       primary.style.setProperty('max-width', '1200px', 'important');
@@ -875,50 +876,28 @@
     }
 
     var hideMobile = page.querySelector('.detailImageContainer.hide-mobile');
-    if (hideMobile) hideMobile.style.setProperty('display', 'none', 'important');
+    if (hideMobile && hideMobile.style.display !== 'none') {
+      hideMobile.style.setProperty('display', 'none', 'important');
+    }
 
     var hideDesktop = page.querySelector('.detailImageContainer.hide-desktop');
-    if (hideDesktop) hideDesktop.style.setProperty('display', 'block', 'important');
+    if (hideDesktop && hideDesktop.style.display !== 'block') {
+      hideDesktop.style.setProperty('display', 'block', 'important');
+    }
 
     var wrapper = page.querySelector('.detailPageWrapperContainer');
-    if (wrapper) {
+    if (wrapper && wrapper.style.paddingTop !== '2em') {
       wrapper.style.setProperty('padding-top', '2em', 'important');
       wrapper.style.setProperty('margin-top', '0', 'important');
     }
 
     var backdrop = page.querySelector('#itemBackdrop');
-    if (backdrop) {
+    if (backdrop && backdrop.style.height !== '100px') {
       backdrop.style.setProperty('height', '100px', 'important');
       backdrop.style.setProperty('min-height', '100px', 'important');
       backdrop.style.setProperty('max-height', '100px', 'important');
     }
-  }
-
-  // Fire on every SPA navigation + re-check after a short delay for late DOM
-  document.addEventListener('viewshow', function () {
-    enforceDetailPageStyles();
-    setTimeout(enforceDetailPageStyles, 100);
-    setTimeout(enforceDetailPageStyles, 500);
-  });
-
-  // On cached page loads, Jellyfin fires viewshow BEFORE our deferred script
-  // executes, so the listener above misses it. Check immediately on init +
-  // watch for the detail page element appearing via MutationObserver.
-  enforceDetailPageStyles();
-  setTimeout(enforceDetailPageStyles, 50);
-  setTimeout(enforceDetailPageStyles, 200);
-  setTimeout(enforceDetailPageStyles, 1000);
-
-  // MutationObserver as final safety net — catches the detail page appearing
-  // in the DOM regardless of event timing
-  var _detailObserver = new MutationObserver(function () {
-    if (document.getElementById('itemDetailPage')) {
-      enforceDetailPageStyles();
-    }
-  });
-  _detailObserver.observe(document.querySelector('.mainAnimatedPages') || document.body, {
-    childList: true, subtree: true
-  });
+  }, 500);
 
   // ── Start ─────────────────────────────────────────────────────────────
   if (document.readyState === 'loading') {
