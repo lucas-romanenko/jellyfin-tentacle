@@ -907,9 +907,9 @@ body.tentacle-video-active .backgroundContainer {
 
 /* Reduce the large empty backdrop area above content */
 #itemDetailPage #itemBackdrop {
-  height: 100px !important;
-  min-height: 100px !important;
-  max-height: 100px !important;
+  height: 220px !important;
+  min-height: 220px !important;
+  max-height: 220px !important;
 }
 
 #itemDetailPage .detailPageWrapperContainer {
