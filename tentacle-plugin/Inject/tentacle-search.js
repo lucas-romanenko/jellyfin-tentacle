@@ -311,14 +311,8 @@
               if (!match && items.length) match = items[0];
               if (match) {
                 console.log('[TentacleSearch] Playing channel:', match.Name, match.Id);
-                var pm = (typeof playbackManager !== 'undefined') ? playbackManager : null;
-                console.log('[TentacleSearch] playbackManager available:', !!pm);
                 cleanup();
-                if (pm) {
-                  pm.play({ ids: [match.Id], serverId: window.ApiClient.serverId() });
-                } else {
-                  window.location.hash = '#/details?id=' + match.Id;
-                }
+                playLiveTvChannel(match.Id);
               } else {
                 console.warn('[TentacleSearch] No LiveTvChannel match found for:', name);
               }
@@ -443,6 +437,33 @@
           '</div></div>';
       }).join('') +
     '</div>';
+  }
+
+  // ── Play Live TV channel (mirrors tentacle-details.js playItem) ─────
+
+  function playLiveTvChannel(itemId) {
+    var pm = (typeof playbackManager !== 'undefined') ? playbackManager : null;
+    if (pm) {
+      try {
+        pm.play({ ids: [itemId], serverId: window.ApiClient.serverId() });
+        return;
+      } catch (e) { console.error('[TentacleSearch] playbackManager.play() failed', e); }
+    }
+    var api = window.ApiClient;
+    if (api && typeof api.sendPlayCommand === 'function') {
+      var deviceId = api.deviceId();
+      api.getSessions({ DeviceId: deviceId }).then(function (sessions) {
+        if (sessions && sessions.length > 0) {
+          return api.sendPlayCommand(sessions[0].Id, {
+            ItemIds: [itemId],
+            PlayCommand: 'PlayNow'
+          });
+        }
+      }).catch(function (e) { console.error('[TentacleSearch] sendPlayCommand failed', e); });
+      return;
+    }
+    // Last resort fallback
+    window.location.hash = '#/details?id=' + itemId;
   }
 
   // ── Navigation ───────────────────────────────────────────────────────
