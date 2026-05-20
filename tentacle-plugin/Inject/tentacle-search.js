@@ -556,20 +556,19 @@
     window.addEventListener('hashchange', onNavChange);
     window.addEventListener('popstate', onNavChange);
 
-    // Fallback: poll hash every 1s — Jellyfin can reuse cached views without
+    // Fallback: poll every 500ms — Jellyfin can reuse cached views without
     // firing viewshow/hashchange/popstate, leaving our search un-initialized.
-    var lastPolledHash = '';
+    // No hash-change tracking — just check current state every tick.
     setInterval(function () {
-      var h = location.hash || '';
-      if (h === lastPolledHash) return;
-      lastPolledHash = h;
-      if (isSearchPage() && !SEARCH.active) {
-        console.log('[TS] Hash poll detected search page — triggering onSearchPage');
+      var onSearch = isSearchPage();
+      if (onSearch && !SEARCH.active && !document.getElementById('tentacleSearchResults')) {
+        console.log('[TS] Poll: on search page but not active — triggering init');
         onSearchPage(null);
-      } else if (!isSearchPage() && SEARCH.active) {
+      } else if (!onSearch && SEARCH.active) {
+        console.log('[TS] Poll: left search page — triggering cleanup');
         onLeavingSearch();
       }
-    }, 1000);
+    }, 500);
 
     // Handle initial page load
     if (isSearchPage()) {
