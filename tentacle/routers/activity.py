@@ -11,10 +11,11 @@ from datetime import datetime
 from typing import Optional
 
 import requests
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
-from models.database import get_db, get_setting, Movie, Series
+from models.database import get_db, get_setting, Movie, Series, DownloadRequest, TentacleUser
+from routers.auth import get_user_from_request
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/activity", tags=["activity"])
@@ -410,11 +411,39 @@ def _get_recently_downloaded(db: Session) -> list:
 
 
 @router.get("")
-def get_activity(db: Session = Depends(get_db)):
-    """Return current download queue (always fresh) and unreleased (5min cache)."""
+def get_activity(request: Request, db: Session = Depends(get_db)):
+    """Return current download queue (always fresh) and unreleased (5min cache).
+    Admin users see all downloads with requester names. Non-admin users only see their own."""
+    user = get_user_from_request(request, db)
     downloads = _build_downloads(db)
     unreleased = _get_unreleased(db)
     recently_downloaded = _get_recently_downloaded(db)
+
+    # Build lookup: tmdb_id -> requester display name
+    all_requests = db.query(DownloadRequest, TentacleUser.display_name).join(
+        TentacleUser, DownloadRequest.user_id == TentacleUser.id
+    ).all()
+    requester_map: dict[int, str] = {}
+    user_requests: set[int] = set()
+    for dr, display_name in all_requests:
+        requester_map[dr.tmdb_id] = display_name
+        if user and dr.user_id == user.id:
+            user_requests.add(dr.tmdb_id)
+
+    is_admin = user and user.is_admin
+    logger.info(f"Activity auth: user={user.display_name if user else None}, is_admin={is_admin}, "
+                f"requester_map={requester_map}, "
+                f"download_tmdb_ids={[d.get('tmdb_id') for d in downloads]}")
+
+    if not is_admin and user:
+        # Non-admin: only show downloads they requested
+        downloads = [d for d in downloads if d.get("tmdb_id") in user_requests]
+
+    if is_admin:
+        # Admin: attach requester name to each download
+        for d in downloads:
+            d["requested_by"] = requester_map.get(d.get("tmdb_id"))
+
     if downloads:
         logger.info(f"Activity: {len(downloads)} download(s) in queue")
     return {"downloads": downloads, "unreleased": unreleased, "recently_downloaded": recently_downloaded}
