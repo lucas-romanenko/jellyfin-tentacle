@@ -87,6 +87,38 @@ def sonarr_profiles(db: Session = Depends(get_db), user: TentacleUser = Depends(
         raise HTTPException(502, f"Failed to fetch Sonarr profiles: {e}")
 
 
+@router.get("/radarr-folders")
+def radarr_folders(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+    """Get Radarr root folders (accessible to all users for Add to Radarr modal)."""
+    radarr_url = get_setting(db, "radarr_url")
+    radarr_key = get_setting(db, "radarr_api_key")
+    if not radarr_url or not radarr_key:
+        raise HTTPException(400, "Radarr not configured")
+    try:
+        r = requests.get(f"{radarr_url.rstrip('/')}/api/v3/rootfolder",
+                         headers={"X-Api-Key": radarr_key}, timeout=10)
+        r.raise_for_status()
+        return [{"path": f["path"], "freeSpace": f["freeSpace"]} for f in r.json()]
+    except Exception as e:
+        raise HTTPException(502, f"Failed to fetch Radarr folders: {e}")
+
+
+@router.get("/sonarr-folders")
+def sonarr_folders(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+    """Get Sonarr root folders (accessible to all users for Add to Sonarr modal)."""
+    sonarr_url = get_setting(db, "sonarr_url")
+    sonarr_key = get_setting(db, "sonarr_api_key")
+    if not sonarr_url or not sonarr_key:
+        raise HTTPException(400, "Sonarr not configured")
+    try:
+        r = requests.get(f"{sonarr_url.rstrip('/')}/api/v3/rootfolder",
+                         headers={"X-Api-Key": sonarr_key}, timeout=10)
+        r.raise_for_status()
+        return [{"path": f["path"], "freeSpace": f["freeSpace"]} for f in r.json()]
+    except Exception as e:
+        raise HTTPException(502, f"Failed to fetch Sonarr folders: {e}")
+
+
 class ListCreate(BaseModel):
     name: str
     type: str

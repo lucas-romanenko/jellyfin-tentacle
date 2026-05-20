@@ -394,7 +394,7 @@ public class TentacleDiscoverController : ControllerBase
 
         try
         {
-            var response = await HttpClient.GetStringAsync(AppendUserId($"{baseUrl}/api/radarr/quality-profiles"));
+            var response = await HttpClient.GetStringAsync(AppendUserId($"{baseUrl}/api/lists/radarr-profiles"));
             return Content(response, "application/json");
         }
         catch
@@ -415,7 +415,7 @@ public class TentacleDiscoverController : ControllerBase
 
         try
         {
-            var response = await HttpClient.GetStringAsync(AppendUserId($"{baseUrl}/api/radarr/rootfolders"));
+            var response = await HttpClient.GetStringAsync(AppendUserId($"{baseUrl}/api/lists/radarr-folders"));
             return Content(response, "application/json");
         }
         catch
@@ -436,7 +436,7 @@ public class TentacleDiscoverController : ControllerBase
 
         try
         {
-            var response = await HttpClient.GetStringAsync(AppendUserId($"{baseUrl}/api/sonarr/quality-profiles"));
+            var response = await HttpClient.GetStringAsync(AppendUserId($"{baseUrl}/api/lists/sonarr-profiles"));
             return Content(response, "application/json");
         }
         catch
@@ -457,7 +457,7 @@ public class TentacleDiscoverController : ControllerBase
 
         try
         {
-            var response = await HttpClient.GetStringAsync(AppendUserId($"{baseUrl}/api/sonarr/rootfolders"));
+            var response = await HttpClient.GetStringAsync(AppendUserId($"{baseUrl}/api/lists/sonarr-folders"));
             return Content(response, "application/json");
         }
         catch
