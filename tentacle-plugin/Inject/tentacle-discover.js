@@ -592,7 +592,12 @@
           findJellyfinItem(item).then(function (itemId) {
             if (itemId) {
               closeModal();
-              window.location.hash = '#/details?id=' + itemId;
+              var itemType = item.media_type === 'series' ? 'Series' : 'Movie';
+              if (window.TentacleDetails && window.TentacleDetails.show) {
+                window.TentacleDetails.show(itemId, itemType);
+              } else {
+                window.location.hash = '#/details?id=' + itemId;
+              }
             } else {
               viewBtn.textContent = 'Not found';
               viewBtn.disabled = true;
