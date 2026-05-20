@@ -331,6 +331,31 @@
   margin-bottom: 16px;
 }
 
+.md-trailer-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 12px;
+  padding: 4px 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 150ms;
+  font-family: inherit;
+  vertical-align: middle;
+}
+.md-trailer-btn:hover {
+  background: rgba(255, 255, 255, 0.15);
+  border-color: rgba(255, 255, 255, 0.35);
+}
+.md-trailer-btn:active {
+  transform: scale(0.97);
+}
+
 .md-download-btn {
   padding: 10px 24px;
   border-radius: 0.75em;

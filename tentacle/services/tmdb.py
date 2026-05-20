@@ -208,13 +208,28 @@ class TMDBService:
 
     # ── Full Details ───────────────────────────────────────────────────────
 
+    @staticmethod
+    def _extract_trailer_url(videos_data: dict) -> Optional[str]:
+        """Extract the best YouTube trailer URL from TMDB videos response."""
+        results = videos_data.get("results", []) if videos_data else []
+        # Prefer official trailers, then teasers, then any YouTube video
+        for vtype in ("Trailer", "Teaser"):
+            for v in results:
+                if v.get("site") == "YouTube" and v.get("type") == vtype and v.get("key"):
+                    return f"https://www.youtube.com/watch?v={v['key']}"
+        # Fallback: any YouTube video
+        for v in results:
+            if v.get("site") == "YouTube" and v.get("key"):
+                return f"https://www.youtube.com/watch?v={v['key']}"
+        return None
+
     def get_movie_details(self, tmdb_id: int) -> Optional[dict]:
         cache_key = f"movie_details:{tmdb_id}"
         cached = self._cache_get(cache_key)
         if cached is not None:
             return cached
 
-        data = self._request(f"movie/{tmdb_id}", {"append_to_response": "credits"})
+        data = self._request(f"movie/{tmdb_id}", {"append_to_response": "credits,videos"})
         if not data:
             return None
 
@@ -242,6 +257,7 @@ class TMDBService:
                 if c.get("job") == "Director"
             ][:3],
             "studios": [s["name"] for s in data.get("production_companies", [])[:3]],
+            "trailer_url": self._extract_trailer_url(data.get("videos", {})),
             "media_type": "movie",
         }
 
@@ -254,7 +270,7 @@ class TMDBService:
         if cached is not None and "seasons" in cached:
             return cached
 
-        data = self._request(f"tv/{tmdb_id}", {"append_to_response": "credits"})
+        data = self._request(f"tv/{tmdb_id}", {"append_to_response": "credits,videos"})
         if not data:
             return None
 
@@ -278,6 +294,7 @@ class TMDBService:
             ],
             "creators": [c["name"] for c in data.get("created_by", [])[:3]],
             "studios": [s["name"] for s in data.get("production_companies", [])[:3]],
+            "trailer_url": self._extract_trailer_url(data.get("videos", {})),
             "media_type": "series",
             "seasons": [
                 {

@@ -434,6 +434,7 @@
         item.rating = details.rating || item.rating;
         item.backdrop_path = details.backdrop_path || item.backdrop_path || null;
         item.year = details.year || item.year;
+        if (details.trailer_url) item.trailer_url = details.trailer_url;
         if (details.library_source) item.library_source = details.library_source;
         if (details.in_library !== undefined) {
           item.in_library = details.in_library;
@@ -545,6 +546,12 @@
         '<div id="mdDownloadStatus" class="md-download-status"></div>';
     }
 
+    var trailerBtn = item.trailer_url
+      ? '<button id="mdTrailerBtn" class="md-trailer-btn">' +
+          '<svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16" style="vertical-align:-2px"><path d="M8 5v14l11-7z"/></svg> Trailer' +
+        '</button>'
+      : '';
+
     var overlay = document.createElement('div');
     overlay.id = 'mdDetailModal';
     overlay.className = 'md-modal-overlay';
@@ -554,7 +561,7 @@
         '<div class="md-modal-backdrop">' + backdrop + '<div class="md-modal-backdrop-gradient"></div></div>' +
         '<div class="md-modal-body">' +
           '<div class="md-modal-title">' + esc(item.title) + '</div>' +
-          '<div class="md-modal-subtitle">' + (item.year || '') + ' \u00b7 ' + (item.media_type === 'movie' ? 'Movie' : 'TV Show') + ' \u00b7 \u2605 ' + (item.rating || '\u2014') + '</div>' +
+          '<div class="md-modal-subtitle">' + (item.year || '') + ' \u00b7 ' + (item.media_type === 'movie' ? 'Movie' : 'TV Show') + ' \u00b7 \u2605 ' + (item.rating || '\u2014') + trailerBtn + '</div>' +
           (item.overview ? '<div class="md-modal-overview">' + esc(item.overview) + '</div>' : '') +
           downloadSection +
         '</div>' +
@@ -567,6 +574,14 @@
     overlay.addEventListener('click', function (e) {
       if (e.target === overlay) closeModal();
     });
+
+    var trailerBtnEl = overlay.querySelector('#mdTrailerBtn');
+    if (trailerBtnEl && item.trailer_url) {
+      trailerBtnEl.addEventListener('click', function (e) {
+        e.stopPropagation();
+        playDiscoverTrailer(item.trailer_url, item.title);
+      });
+    }
 
     if (item.in_library) {
       var viewBtn = overlay.querySelector('#mdViewInLibrary');
@@ -951,10 +966,79 @@
   }
 
   function closeModal() {
+    closeDiscoverTrailer();
     var m = document.getElementById('mdDetailModal');
     if (m) {
       m.classList.remove('md-visible');
       setTimeout(function () { m.remove(); }, 200);
+    }
+  }
+
+  // ── Trailer playback (reuses Details overlay CSS) ────────────────────
+  var _trailerOverlay = null;
+  var _trailerEscHandler = null;
+
+  function playDiscoverTrailer(url, title) {
+    closeDiscoverTrailer();
+
+    var videoId = null;
+    var match = url.match(/(?:youtube\.com\/(?:watch\?v=|embed\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+    if (match) videoId = match[1];
+
+    var overlay = document.createElement('div');
+    overlay.className = 'moonfin-trailer-overlay';
+    overlay.innerHTML =
+      '<div class="moonfin-trailer-modal" role="dialog" aria-modal="true" aria-label="' + esc(title || 'Trailer') + '">' +
+        '<button class="moonfin-trailer-close" aria-label="Close trailer" tabindex="0">' +
+          '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M18.3 5.71 12 12l6.3 6.29-1.41 1.42L10.59 13.4 4.29 19.71 2.88 18.3 9.17 12 2.88 5.71 4.29 4.29l6.3 6.3 6.29-6.3z"/></svg>' +
+        '</button>' +
+        '<div class="moonfin-trailer-player-host"></div>' +
+      '</div>';
+
+    overlay.addEventListener('click', function (e) {
+      if (e.target === overlay) closeDiscoverTrailer();
+    });
+    overlay.querySelector('.moonfin-trailer-close').addEventListener('click', function () {
+      closeDiscoverTrailer();
+    });
+
+    _trailerEscHandler = function (e) {
+      if (e.key === 'Escape' || e.keyCode === 27) {
+        e.preventDefault();
+        e.stopPropagation();
+        closeDiscoverTrailer();
+      }
+    };
+
+    _trailerOverlay = overlay;
+    document.addEventListener('keydown', _trailerEscHandler, true);
+    document.body.appendChild(overlay);
+
+    var host = overlay.querySelector('.moonfin-trailer-player-host');
+    if (videoId) {
+      host.innerHTML =
+        '<iframe class="moonfin-trailer-iframe visible" src="https://www.youtube.com/embed/' + videoId + '?autoplay=1&rel=0" ' +
+        'allow="autoplay; fullscreen; encrypted-media; picture-in-picture" allowfullscreen loading="eager" referrerpolicy="origin"></iframe>';
+    } else {
+      host.innerHTML =
+        '<iframe class="moonfin-trailer-iframe visible" src="' + esc(url) + '" ' +
+        'allow="autoplay; fullscreen; encrypted-media; picture-in-picture" allowfullscreen loading="eager" referrerpolicy="origin"></iframe>';
+    }
+
+    setTimeout(function () {
+      var closeBtn = overlay.querySelector('.moonfin-trailer-close');
+      if (closeBtn) closeBtn.focus();
+    }, 0);
+  }
+
+  function closeDiscoverTrailer() {
+    if (_trailerEscHandler) {
+      document.removeEventListener('keydown', _trailerEscHandler, true);
+      _trailerEscHandler = null;
+    }
+    if (_trailerOverlay) {
+      _trailerOverlay.remove();
+      _trailerOverlay = null;
     }
   }
 
