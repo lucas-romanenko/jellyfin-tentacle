@@ -366,7 +366,7 @@ body.moonfin-mediabar-active {
 
 .moonfin-mediabar-mute-btn {
     position: absolute;
-    bottom: 20px;
+    bottom: calc(15dvh + 50px);
     right: 24px;
     z-index: 12;
     width: 40px;
@@ -381,11 +381,11 @@ body.moonfin-mediabar-active {
     background: rgba(0, 0, 0, 0.45);
     backdrop-filter: blur(10px);
     transition: opacity 0.3s ease, background 0.2s ease;
-    opacity: 0;
 }
 
 .moonfin-mediabar-mute-btn.active {
     display: flex;
+    opacity: 0.7;
 }
 
 .moonfin-mediabar-mute-btn svg {
@@ -394,11 +394,8 @@ body.moonfin-mediabar-active {
     color: white;
 }
 
-.moonfin-mediabar.focused .moonfin-mediabar-mute-btn.active {
+.moonfin-mediabar-mute-btn.active:hover {
     opacity: 1;
-}
-
-.moonfin-mediabar-mute-btn:hover {
     background: rgba(0, 0, 0, 0.7);
 }
 
