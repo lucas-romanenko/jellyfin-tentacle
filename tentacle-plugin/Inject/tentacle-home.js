@@ -96,6 +96,14 @@
   // stale or fresh). Tentacle renders into a stable mount point that
   // Jellyfin's view transitions can never touch.
   function onHomePage() {
+    // Detect user switch — if userId changed, tear down and re-render
+    var currentUserId = MH.apiClient && MH.apiClient.getCurrentUserId();
+    if (currentUserId && currentUserId !== MH.userId) {
+      console.log('[TH] User switched: ' + MH.userId + ' → ' + currentUserId);
+      MH.userId = currentUserId;
+      MH.lastVersion = -1;
+      cleanupHome();
+    }
     if (document.getElementById('tentacle-home')) return;
 
     var gen = ++MH.generation;
