@@ -262,13 +262,15 @@ async function loadLibrary() {
   pages.lib.offset = 0;
   pages.lib.items = [];
   loadLibListPills();
-  loadLibStats();
+  if (state.currentUser?.is_admin) {
+    loadLibStats();
+    loadLibSyncSummary();
+    checkStaleFiles();
+  }
   loadLibDownloads();
-  loadLibSyncSummary();
-  checkStaleFiles();
   await fetchLibraryPage();
   // Update duplicates tab badge
-  _updateDupBadges();
+  if (state.currentUser?.is_admin) _updateDupBadges();
   // Update following tab badge
   _updateFollowBadge();
 }
@@ -3307,6 +3309,8 @@ function initLogViewer() {
   };
   _logEventSource.onerror = () => {
     if (dot) dot.className = 'dot dot-red';
+    if (_logEventSource && _logEventSource.readyState === EventSource.CLOSED) return;
+    _logEventSource.close();
     setTimeout(initLogViewer, 3000);
   };
 }
@@ -3352,7 +3356,9 @@ function toggleLogScroll() {
   if (btn) btn.textContent = _logAutoScroll ? '↓ Auto-scroll' : '○ Auto-scroll';
 }
 
-document.addEventListener('DOMContentLoaded', () => { setTimeout(initLogViewer, 500); });
+document.addEventListener('DOMContentLoaded', () => {
+  setTimeout(() => { if (state.currentUser?.is_admin) initLogViewer(); }, 500);
+});
 
 // ── RADARR SCAN ───────────────────────────────────────────────────────────
 async function scanRadarr() {
