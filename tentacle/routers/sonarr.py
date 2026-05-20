@@ -320,25 +320,21 @@ def sonarr_webhook(payload: dict, db: Session = Depends(get_db)):
                         f"after {max_attempts} attempts — tags will be pushed on next scheduled scan"
                     )
 
-            # Refresh SmartList playlists — poll for tag visibility first
+            # Add item directly to matching playlists — no Jellyfin tag query needed
             try:
-                if jf_item and jf_url and jf_key:
-                    tag_visible = False
-                    for _wait in range(5):
-                        time.sleep(3)
-                        check = jf.get_item_by_id(jf_item["Id"])
-                        if check and any(t in (check.get("Tags") or []) for t in (db_series.tags or [])):
-                            tag_visible = True
-                            break
-                    if not tag_visible:
-                        logger.warning(f"[Sonarr webhook] Tags not indexed after 15s for '{title}', refreshing anyway")
+                if jf_item:
+                    from services.smartlists import add_item_to_matching_playlists
+                    result = add_item_to_matching_playlists(
+                        db, jf_item["Id"], list(db_series.tags or []), "series"
+                    )
+                    logger.info(f"[Sonarr webhook] Added '{title}' to {result.get('added_to', 0)} playlist(s)")
                 else:
                     time.sleep(5)
-                from services.smartlists import refresh_smartlist_playlists
-                refresh_smartlist_playlists(db)
-                logger.info(f"[Sonarr webhook] Refreshed SmartList playlists after processing '{title}'")
+                    from services.smartlists import refresh_smartlist_playlists
+                    refresh_smartlist_playlists(db)
+                    logger.info(f"[Sonarr webhook] Full playlist refresh (no Jellyfin item found for '{title}')")
             except Exception as e:
-                logger.warning(f"[Sonarr webhook] Playlist refresh failed: {e}")
+                logger.warning(f"[Sonarr webhook] Playlist update failed: {e}")
 
             # Activity log
             from models.database import log_activity as _log_act

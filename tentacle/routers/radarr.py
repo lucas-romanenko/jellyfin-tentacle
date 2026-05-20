@@ -342,28 +342,23 @@ def radarr_webhook(payload: dict, db: Session = Depends(get_db)):
                         f"after {max_attempts} attempts — tags will be pushed on next scheduled scan"
                     )
 
-            # Refresh SmartList playlists so the movie appears immediately
-            # in IMDB TOP 250, Downloaded Movies, etc.
-            # Wait for Jellyfin to index the newly-pushed tags before querying them.
-            # Poll up to 15s for tag visibility rather than a fixed sleep.
+            # Add item directly to matching playlists — no need to wait for
+            # Jellyfin tag indexing since we match by known tags from the DB.
             try:
-                if jf_item and jf_url and jf_key:
-                    tag_visible = False
-                    for _wait in range(5):
-                        time.sleep(3)
-                        check = jf.get_item_by_id(jf_item["Id"])
-                        if check and "Downloaded Movies" in (check.get("Tags") or []):
-                            tag_visible = True
-                            break
-                    if not tag_visible:
-                        logger.warning(f"[Radarr webhook] Tags not indexed after 15s for '{title}', refreshing anyway")
+                if jf_item:
+                    from services.smartlists import add_item_to_matching_playlists
+                    result = add_item_to_matching_playlists(
+                        db, jf_item["Id"], list(db_movie.tags or []), "movie"
+                    )
+                    logger.info(f"[Radarr webhook] Added '{title}' to {result.get('added_to', 0)} playlist(s)")
                 else:
+                    # Fallback: full refresh if we couldn't find the Jellyfin item
                     time.sleep(5)
-                from services.smartlists import refresh_smartlist_playlists
-                refresh_smartlist_playlists(db)
-                logger.info(f"[Radarr webhook] Refreshed SmartList playlists after processing '{title}'")
+                    from services.smartlists import refresh_smartlist_playlists
+                    refresh_smartlist_playlists(db)
+                    logger.info(f"[Radarr webhook] Full playlist refresh (no Jellyfin item found for '{title}')")
             except Exception as e:
-                logger.warning(f"[Radarr webhook] Playlist refresh failed: {e}")
+                logger.warning(f"[Radarr webhook] Playlist update failed: {e}")
 
             # Activity log
             from models.database import log_activity as _log_act

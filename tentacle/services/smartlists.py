@@ -1177,3 +1177,107 @@ def remove_item_from_playlists(db: Session, jellyfin_item_id: str, user_id: int)
             logger.warning(f"[SmartLists] Failed to check/remove from '{name}': {e}")
 
     return {"removed_from": removed_from}
+
+
+def add_item_to_matching_playlists(db: Session, jellyfin_item_id: str, item_tags: list,
+                                    media_type: str) -> dict:
+    """Directly add a Jellyfin item to all matching playlists for all users.
+
+    Instead of querying Jellyfin by tag (which requires waiting for indexing),
+    this matches the item's known tags against playlist expressions and adds
+    the item directly. Much faster and avoids the tag-indexing race condition.
+    """
+    from services.jellyfin import JellyfinService
+
+    if not jellyfin_item_id or not item_tags:
+        return {"added_to": 0}
+
+    jellyfin_url = get_setting(db, "jellyfin_url", "")
+    jellyfin_key = get_setting(db, "jellyfin_api_key", "")
+    if not jellyfin_url or not jellyfin_key:
+        return {"added_to": 0, "error": "Jellyfin not configured"}
+
+    # Normalize media type for matching config MediaTypes
+    jf_media_type = "Movie" if media_type == "movie" else "Series"
+    item_tags_set = set(item_tags)
+
+    users = db.query(TentacleUser).all()
+    total_added = 0
+
+    for user in users:
+        try:
+            smartlists_path = _user_smartlists_path(db, user.id)
+        except ValueError:
+            continue
+
+        jf_user_id = _get_jellyfin_user_id(db, user.id)
+        if not jf_user_id:
+            continue
+
+        jf = JellyfinService(jellyfin_url, jellyfin_key, jf_user_id)
+        existing = _scan_existing(smartlists_path)
+
+        for name, (folder, config) in existing.items():
+            if not config.get("Enabled", True) or config.get("Type") != "Playlist":
+                continue
+
+            # Check media type matches
+            config_types = config.get("MediaTypes", [])
+            if jf_media_type not in config_types:
+                continue
+
+            # Check if item's tags match any of the playlist's tag expressions
+            matches = False
+            for expr_set in config.get("ExpressionSets", []):
+                for expr in expr_set.get("Expressions", []):
+                    member = (expr.get("MemberName") or "").lower()
+                    operator = (expr.get("Operator") or "").lower()
+                    value = expr.get("TargetValue", "")
+                    if member == "tags" and operator == "contains" and value in item_tags_set:
+                        matches = True
+                        break
+                if matches:
+                    break
+
+            if not matches:
+                continue
+
+            # Find Jellyfin playlist ID
+            playlist_id = None
+            for up in config.get("UserPlaylists", []):
+                if up.get("JellyfinPlaylistId"):
+                    playlist_id = up["JellyfinPlaylistId"]
+                    break
+
+            if not playlist_id:
+                continue
+
+            # Check if item is already in the playlist
+            try:
+                current_items = jf.get_playlist_items(playlist_id)
+                current_ids = {item["Id"] for item in current_items}
+                if jellyfin_item_id in current_ids:
+                    continue  # Already there
+
+                # Check sort order — prepend for DateCreated Descending (newest first)
+                order = config.get("Order", {})
+                sort_options = order.get("SortOptions", [])
+                sort_by = (sort_options[0].get("SortBy", "") if sort_options else "").lower()
+                sort_order = sort_options[0].get("SortOrder", "Descending") if sort_options else "Descending"
+
+                if sort_by == "datecreated" and sort_order == "Descending":
+                    # Prepend: remove all, add new item first, then re-add rest
+                    all_entry_ids = [e.get("PlaylistItemId", e["Id"]) for e in current_items]
+                    if all_entry_ids:
+                        jf.remove_from_playlist(playlist_id, all_entry_ids)
+                    jf.add_to_playlist(playlist_id, [jellyfin_item_id] + [e["Id"] for e in current_items])
+                else:
+                    # Append to end
+                    jf.add_to_playlist(playlist_id, [jellyfin_item_id])
+
+                total_added += 1
+                logger.info(f"[SmartLists] Added item {jellyfin_item_id} to playlist '{name}' for user {user.display_name}")
+            except Exception as e:
+                logger.warning(f"[SmartLists] Failed to add to '{name}': {e}")
+
+    return {"added_to": total_added}
