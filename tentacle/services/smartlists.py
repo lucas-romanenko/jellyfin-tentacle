@@ -13,7 +13,7 @@ import requests
 from pathlib import Path
 from sqlalchemy.orm import Session
 
-from models.database import get_setting, TagRule, TentacleUser, DownloadRequest
+from models.database import get_setting, TagRule, TentacleUser, DownloadRequest, Movie, Series
 
 logger = logging.getLogger(__name__)
 
@@ -887,7 +887,7 @@ def _refresh_smartlist_playlists_inner(db: Session, user_id: int = None) -> dict
             continue
 
         try:
-            _process_single_playlist(jf, folder, config, jf_user_id, stats)
+            _process_single_playlist(jf, folder, config, jf_user_id, stats, db=db)
         except Exception as e:
             logger.error(f"[SmartLists] Failed to process '{name}': {e}")
             stats["errors"] += 1
@@ -900,13 +900,84 @@ def _refresh_smartlist_playlists_inner(db: Session, user_id: int = None) -> dict
     return stats
 
 
-def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats: dict):
+def _resort_by_db_date(items: list, config: dict, db: Session = None) -> list:
+    """Re-sort Jellyfin items by Tentacle's date_added when sort is DateCreated.
+
+    Jellyfin's DateCreated is unreliable for bulk-imported content (all items get
+    the same timestamp from the library scan). Tentacle's DB tracks actual download
+    time, so we use that instead.
+    """
+    if not db or not items:
+        return items
+
+    order = config.get("Order") or {}
+    sort_options = order.get("SortOptions") or []
+    if not sort_options:
+        return items
+    sort_by = (sort_options[0].get("SortBy") or "").lower()
+    sort_order = sort_options[0].get("SortOrder", "Descending")
+    if sort_by != "datecreated":
+        return items
+
+    # Build TMDB ID → date_added lookup from Tentacle DB
+    media_types = config.get("MediaTypes", [])
+    date_map = {}  # jellyfin_item_id -> date_added
+    if "Movie" in media_types:
+        for m in db.query(Movie.jellyfin_item_id, Movie.date_added).filter(
+            Movie.jellyfin_item_id.isnot(None)
+        ).all():
+            if m.jellyfin_item_id and m.date_added:
+                date_map[m.jellyfin_item_id] = m.date_added
+    if "Series" in media_types:
+        for s in db.query(Series.jellyfin_item_id, Series.date_added).filter(
+            Series.jellyfin_item_id.isnot(None)
+        ).all():
+            if s.jellyfin_item_id and s.date_added:
+                date_map[s.jellyfin_item_id] = s.date_added
+
+    if not date_map:
+        return items
+
+    # Also try matching by TMDB provider ID for items without jellyfin_item_id match
+    tmdb_date_map = {}  # tmdb_id_str -> date_added
+    if "Movie" in media_types:
+        for m in db.query(Movie.tmdb_id, Movie.date_added).filter(
+            Movie.date_added.isnot(None)
+        ).all():
+            if m.tmdb_id and m.date_added:
+                tmdb_date_map[str(m.tmdb_id)] = m.date_added
+    if "Series" in media_types:
+        for s in db.query(Series.tmdb_id, Series.date_added).filter(
+            Series.date_added.isnot(None)
+        ).all():
+            if s.tmdb_id and s.date_added:
+                tmdb_date_map[str(s.tmdb_id)] = s.date_added
+
+    from datetime import datetime
+    fallback = datetime.min
+
+    def get_date(item):
+        # Try direct jellyfin_item_id match first
+        d = date_map.get(item.get("Id"))
+        if d:
+            return d
+        # Fallback to TMDB ID match
+        tmdb_id = (item.get("ProviderIds") or {}).get("Tmdb", "")
+        return tmdb_date_map.get(tmdb_id, fallback)
+
+    reverse = sort_order == "Descending"
+    items.sort(key=get_date, reverse=reverse)
+    return items
+
+
+def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats: dict, db: Session = None):
     """Process a single SmartList config: query items, create/update playlist."""
     name = config.get("Name", "Unknown")
 
     # Query Jellyfin for matching items
     query = _build_query_params(config)
     items = jf.query_items(**query)
+    items = _resort_by_db_date(items, config, db)
     item_ids = [item["Id"] for item in items]
 
     logger.debug(f"[SmartLists] '{name}': {len(item_ids)} matching items")
@@ -1040,6 +1111,7 @@ def update_playlist_sort(name: str, sort_by: str, sort_order: str, db, user_id: 
                 # Query items in new sort order and add
                 query = _build_query_params(config)
                 items = jf.query_items(**query)
+                items = _resort_by_db_date(items, config, db)
                 item_ids = [item["Id"] for item in items]
                 if item_ids:
                     jf.add_to_playlist(playlist_id, item_ids)
