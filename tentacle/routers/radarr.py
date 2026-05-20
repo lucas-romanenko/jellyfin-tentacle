@@ -344,9 +344,21 @@ def radarr_webhook(payload: dict, db: Session = Depends(get_db)):
 
             # Refresh SmartList playlists so the movie appears immediately
             # in IMDB TOP 250, Downloaded Movies, etc.
-            # Delay lets Jellyfin index the newly-pushed tags before we query them
+            # Wait for Jellyfin to index the newly-pushed tags before querying them.
+            # Poll up to 15s for tag visibility rather than a fixed sleep.
             try:
-                time.sleep(3)
+                if jf_item and jf_url and jf_key:
+                    tag_visible = False
+                    for _wait in range(5):
+                        time.sleep(3)
+                        check = jf.get_item_by_id(jf_item["Id"])
+                        if check and "Downloaded Movies" in (check.get("Tags") or []):
+                            tag_visible = True
+                            break
+                    if not tag_visible:
+                        logger.warning(f"[Radarr webhook] Tags not indexed after 15s for '{title}', refreshing anyway")
+                else:
+                    time.sleep(5)
                 from services.smartlists import refresh_smartlist_playlists
                 refresh_smartlist_playlists(db)
                 logger.info(f"[Radarr webhook] Refreshed SmartList playlists after processing '{title}'")

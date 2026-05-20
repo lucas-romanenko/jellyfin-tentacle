@@ -320,9 +320,20 @@ def sonarr_webhook(payload: dict, db: Session = Depends(get_db)):
                         f"after {max_attempts} attempts — tags will be pushed on next scheduled scan"
                     )
 
-            # Refresh SmartList playlists (delay lets Jellyfin index the new tags)
+            # Refresh SmartList playlists — poll for tag visibility first
             try:
-                time.sleep(3)
+                if jf_item and jf_url and jf_key:
+                    tag_visible = False
+                    for _wait in range(5):
+                        time.sleep(3)
+                        check = jf.get_item_by_id(jf_item["Id"])
+                        if check and any(t in (check.get("Tags") or []) for t in (db_series.tags or [])):
+                            tag_visible = True
+                            break
+                    if not tag_visible:
+                        logger.warning(f"[Sonarr webhook] Tags not indexed after 15s for '{title}', refreshing anyway")
+                else:
+                    time.sleep(5)
                 from services.smartlists import refresh_smartlist_playlists
                 refresh_smartlist_playlists(db)
                 logger.info(f"[Sonarr webhook] Refreshed SmartList playlists after processing '{title}'")
