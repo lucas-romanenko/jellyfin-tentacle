@@ -163,6 +163,15 @@ def scan_radarr_library(db: Session) -> dict:
             if file_path and existing.radarr_path != file_path:
                 existing.radarr_path = file_path
                 changed = True
+            # Backfill date_added from Radarr's file import date if more accurate
+            if movie_file and movie_file.get("dateAdded") and existing.source == "radarr":
+                try:
+                    radarr_date = datetime.fromisoformat(movie_file["dateAdded"].replace("Z", "+00:00")).replace(tzinfo=None)
+                    if existing.date_added != radarr_date:
+                        existing.date_added = radarr_date
+                        changed = True
+                except (ValueError, TypeError):
+                    pass
             # If this was a VOD-only row, create a duplicate record
             if existing.source and existing.source.startswith("provider_") and tmdb_id not in existing_dup_tmdb_ids:
                 db.add(Duplicate(
@@ -203,6 +212,13 @@ def scan_radarr_library(db: Session) -> dict:
 
             movies_needing_nfo.append((tmdb_id, existing))
         else:
+            # Use Radarr's file import date for accurate chronological ordering
+            radarr_date = None
+            if movie_file and movie_file.get("dateAdded"):
+                try:
+                    radarr_date = datetime.fromisoformat(movie_file["dateAdded"].replace("Z", "+00:00")).replace(tzinfo=None)
+                except (ValueError, TypeError):
+                    pass
             new_movie = Movie(
                 tmdb_id=tmdb_id,
                 title=title,
@@ -210,7 +226,7 @@ def scan_radarr_library(db: Session) -> dict:
                 source="radarr",
                 radarr_path=file_path,
                 tags=[],
-                date_added=datetime.utcnow(),
+                date_added=radarr_date or datetime.utcnow(),
             )
             # Fetch full TMDB metadata for new movies
             if tmdb:

@@ -391,6 +391,15 @@ def scan_sonarr_library(db: Session) -> dict:
             if series_path and existing.sonarr_path != series_path:
                 existing.sonarr_path = series_path
                 changed = True
+            # Backfill date_added from Sonarr's added date if more accurate
+            if series.get("added") and existing.source == "sonarr":
+                try:
+                    sonarr_date = datetime.fromisoformat(series["added"].replace("Z", "+00:00")).replace(tzinfo=None)
+                    if existing.date_added != sonarr_date:
+                        existing.date_added = sonarr_date
+                        changed = True
+                except (ValueError, TypeError):
+                    pass
             # If this was a VOD-only row, create a duplicate record
             # Skip if sonarr_path already set (intentional add via "Download More Episodes")
             if existing.source and existing.source.startswith("provider_") and not existing.sonarr_path and tmdb_id not in existing_dup_tmdb_ids:
@@ -432,6 +441,13 @@ def scan_sonarr_library(db: Session) -> dict:
 
             series_needing_nfo.append((tmdb_id, existing))
         else:
+            # Use Sonarr's added date for accurate chronological ordering
+            sonarr_date = None
+            if series.get("added"):
+                try:
+                    sonarr_date = datetime.fromisoformat(series["added"].replace("Z", "+00:00")).replace(tzinfo=None)
+                except (ValueError, TypeError):
+                    pass
             new_series = Series(
                 tmdb_id=tmdb_id,
                 title=title,
@@ -440,7 +456,7 @@ def scan_sonarr_library(db: Session) -> dict:
                 sonarr_path=series_path,
                 sonarr_monitored=sonarr_monitor_map.get(tmdb_id, False),
                 tags=[],
-                date_added=datetime.utcnow(),
+                date_added=sonarr_date or datetime.utcnow(),
             )
             # Fetch full TMDB metadata for new series
             if tmdb:
