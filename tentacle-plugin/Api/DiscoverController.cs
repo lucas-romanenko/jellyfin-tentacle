@@ -159,7 +159,7 @@ public class TentacleDiscoverController : ControllerBase
 
         try
         {
-            var response = await HttpClient.GetStringAsync($"{baseUrl}/api/activity");
+            var response = await HttpClient.GetStringAsync(AppendUserId($"{baseUrl}/api/activity"));
             return Content(response, "application/json");
         }
         catch (Exception ex)

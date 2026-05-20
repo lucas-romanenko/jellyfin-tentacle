@@ -414,7 +414,10 @@ def _get_recently_downloaded(db: Session) -> list:
 def get_activity(request: Request, db: Session = Depends(get_db)):
     """Return current download queue (always fresh) and unreleased (5min cache).
     Admin users see all downloads with requester names. Non-admin users only see their own."""
-    user = get_user_from_request(request, db)
+    try:
+        user = get_user_from_request(request, db)
+    except Exception:
+        user = None
     downloads = _build_downloads(db)
     unreleased = _get_unreleased(db)
     recently_downloaded = _get_recently_downloaded(db)
