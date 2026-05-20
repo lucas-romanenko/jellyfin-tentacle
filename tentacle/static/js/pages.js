@@ -378,10 +378,11 @@ function renderLibDownloads(data) {
     const statusClass = status.includes('import') ? 'importing' : status.includes('queue') ? 'queued' : 'downloading';
     const eta = d.eta ? ` · ${d.eta}` : '';
     const qual = d.quality ? ` · ${d.quality}` : '';
-    const reqBy = d.requested_by ? ` · <span class="dl-requested-by">${d.requested_by}</span>` : '';
+    const reqBy = d.requested_by ? `<span class="dl-requested-by">${d.requested_by}</span>` : '';
     return `<div class="dl-item">
       <div class="dl-item-title">${d.title || 'Unknown'}${d.episode ? ' — ' + d.episode : ''}</div>
-      <div class="dl-item-status ${statusClass}">${status}${qual}${eta}${reqBy}</div>
+      ${reqBy}
+      <div class="dl-item-status ${statusClass}">${status}${qual}${eta}</div>
       <div class="dl-item-bar"><div class="dl-item-bar-fill" style="width:${pct}%"></div></div>
       <div class="dl-item-pct">${pct}%</div>
     </div>`;
@@ -3495,13 +3496,13 @@ function renderActivity(data) {
       const etaLabel = dl.eta ? ' · ' + escapeAttr(dl.eta) : '';
       const sizeLabel = dl.size_remaining ? escapeAttr(dl.size_remaining) + ' left' : '';
       const qualityLabel = dl.quality ? escapeAttr(dl.quality) : '';
-      const reqByLabel = dl.requested_by ? ' · ' + escapeAttr(dl.requested_by) : '';
+      const reqByLabel = dl.requested_by ? `<span class="activity-requested-by">${escapeAttr(dl.requested_by)}</span>` : '';
       const metaParts = [qualityLabel, sizeLabel].filter(Boolean).join(' · ');
       return `<div class="activity-card">
         <div class="activity-poster">${poster}</div>
         <div class="activity-info">
           <div class="activity-title">${escapeAttr(dl.title)}${epLabel}</div>
-          <div class="activity-meta">${dl.year || ''}${metaParts ? ' · ' + metaParts : ''}${reqByLabel}</div>
+          <div class="activity-meta">${dl.year || ''}${metaParts ? ' · ' + metaParts : ''} ${reqByLabel}</div>
           <div class="activity-progress">
             <div class="activity-progress-bar"><div class="activity-progress-fill ${statusClass}" style="width:${pct}%"></div></div>
             <span class="activity-progress-label">${statusLabel} · ${pct.toFixed(1)}%${etaLabel}</span>

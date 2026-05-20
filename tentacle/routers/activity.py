@@ -431,9 +431,6 @@ def get_activity(request: Request, db: Session = Depends(get_db)):
             user_requests.add(dr.tmdb_id)
 
     is_admin = user and user.is_admin
-    logger.info(f"Activity auth: user={user.display_name if user else None}, is_admin={is_admin}, "
-                f"requester_map={requester_map}, "
-                f"download_tmdb_ids={[d.get('tmdb_id') for d in downloads]}")
 
     if not is_admin and user:
         # Non-admin: only show downloads they requested
