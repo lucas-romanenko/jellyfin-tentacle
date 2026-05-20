@@ -20,7 +20,9 @@
 /* Interactive children get pointer events back */
 .moonfin-mediabar-content,
 .moonfin-mediabar-nav-btn,
-.moonfin-mediabar-dots-wrap {
+.moonfin-mediabar-dots-wrap,
+.moonfin-mediabar-mute-btn,
+.moonfin-mediabar-gradient {
     pointer-events: auto;
     cursor: pointer;
 }
@@ -325,7 +327,6 @@ body.moonfin-mediabar-active {
     transition: opacity 0.3s ease;
 }
 
-.moonfin-mediabar:hover .moonfin-mediabar-nav,
 .moonfin-mediabar.focused .moonfin-mediabar-nav {
     opacity: 1;
 }
@@ -393,7 +394,6 @@ body.moonfin-mediabar-active {
     color: white;
 }
 
-.moonfin-mediabar:hover .moonfin-mediabar-mute-btn.active,
 .moonfin-mediabar.focused .moonfin-mediabar-mute-btn.active {
     opacity: 1;
 }

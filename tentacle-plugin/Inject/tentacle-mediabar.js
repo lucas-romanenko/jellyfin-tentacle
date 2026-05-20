@@ -793,13 +793,15 @@
                 }
             });
 
-            // Hover → show nav arrows (use content area since container has pointer-events: none)
-            var contentEl = this.container.querySelector('.moonfin-mediabar-content');
-            contentEl.addEventListener('mouseenter', function () {
-                self.container.classList.add('focused');
-            });
-            contentEl.addEventListener('mouseleave', function () {
-                self.container.classList.remove('focused');
+            // Hover → show nav arrows + mute button (gradient covers full hero area)
+            var hoverEls = this.container.querySelectorAll('.moonfin-mediabar-content, .moonfin-mediabar-gradient');
+            hoverEls.forEach(function (el) {
+                el.addEventListener('mouseenter', function () {
+                    self.container.classList.add('focused');
+                });
+                el.addEventListener('mouseleave', function () {
+                    self.container.classList.remove('focused');
+                });
             });
 
             // Tab visibility → pause trailer
