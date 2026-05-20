@@ -59,23 +59,29 @@
     return views.length ? views[views.length - 1] : null;
   }
 
-  function findNativeSearchInput() {
-    var view = findActiveView();
-    var scope = view || document;
+  function findSearchInputIn(scope) {
+    if (!scope) return null;
     return scope.querySelector('.searchfields-txtSearch')
       || scope.querySelector('input.emby-input[type="text"][data-action="search"]')
       || scope.querySelector('.searchPage input[type="text"]')
       || scope.querySelector('[data-type="search"] input[type="text"]');
   }
 
+  function findNativeSearchInput() {
+    var view = findActiveView();
+    var scope = view || document;
+    return findSearchInputIn(scope);
+  }
+
   // ── Navigation Handlers ─────────────────────────────────────────────
 
   function onViewShow(e) {
     var type = e.detail && e.detail.type;
+    var viewEl = e.target || null;
     if (type === 'search' || (!type && isSearchPage())) {
-      onSearchPage();
+      onSearchPage(viewEl);
     } else if (isSearchPage()) {
-      onSearchPage();
+      onSearchPage(viewEl);
     } else {
       onLeavingSearch();
     }
@@ -83,7 +89,7 @@
 
   function onNavChange() {
     if (isSearchPage()) {
-      onSearchPage();
+      onSearchPage(null);
     } else {
       onLeavingSearch();
     }
@@ -91,7 +97,7 @@
 
   // ── Search Page Entry ─────────────────────────────────────────────
 
-  function onSearchPage() {
+  function onSearchPage(viewEl) {
     // Dismiss other Tentacle overlays — only one visible at a time
     if (window.TentacleDiscover && window.TentacleDiscover.isActive && window.TentacleDiscover.isActive()) window.TentacleDiscover.hide();
     if (window.TentacleActivity && window.TentacleActivity.isActive && window.TentacleActivity.isActive()) window.TentacleActivity.hide();
@@ -102,7 +108,7 @@
     // Clean any stale state first
     cleanup();
 
-    waitForSearchInput();
+    waitForSearchInput(viewEl);
   }
 
   function onLeavingSearch() {
@@ -110,8 +116,8 @@
     cleanup();
   }
 
-  function waitForSearchInput() {
-    var input = findNativeSearchInput();
+  function waitForSearchInput(viewEl) {
+    var input = findSearchInputIn(viewEl) || findNativeSearchInput();
     if (input) {
       attachToInput(input);
       return;
@@ -119,14 +125,13 @@
     // Wait for Jellyfin to render the search input — scope observer to active view
     if (SEARCH.inputObserver) SEARCH.inputObserver.disconnect();
 
-    var view = findActiveView();
-    var observeTarget = view || document.body;
+    var observeTarget = viewEl || findActiveView() || document.body;
 
     var found = false;
 
     SEARCH.inputObserver = new MutationObserver(function () {
       if (found) return;
-      var inp = findNativeSearchInput();
+      var inp = findSearchInputIn(viewEl) || findNativeSearchInput();
       if (inp) {
         found = true;
         SEARCH.inputObserver.disconnect();
@@ -145,7 +150,7 @@
         clearInterval(pollTimer);
         return;
       }
-      var inp = findNativeSearchInput();
+      var inp = findSearchInputIn(viewEl) || findNativeSearchInput();
       if (inp) {
         found = true;
         clearInterval(pollTimer);
