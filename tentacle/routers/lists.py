@@ -901,6 +901,13 @@ def fetch_list(list_id: int, db: Session = Depends(get_db), user: TentacleUser =
 
     log_activity(db, "list_fetch", f"Fetched '{lst.name}' — {store_stats['stored']} items stored")
 
+    # Clear plugin discover cache so "From My Lists" appears immediately
+    try:
+        from services.smartlists import _notify_jellyfin_plugin
+        _notify_jellyfin_plugin(db)
+    except Exception:
+        pass
+
     return {
         "success": True,
         "fetched": len(items),
