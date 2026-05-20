@@ -113,6 +113,10 @@ def _fetch_radarr_unreleased(url: str, api_key: str) -> list:
                             release_type = release_labels[field]
                     except (ValueError, TypeError):
                         pass
+            # Skip movies that are already released (all known dates in the past)
+            if not release:
+                continue
+
             # Extract YouTube trailer from Radarr metadata
             trailer_url = None
             for yt in (m.get("youTubeTrailerId"),):
