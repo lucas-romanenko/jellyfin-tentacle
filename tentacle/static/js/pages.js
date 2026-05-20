@@ -18,6 +18,23 @@ function escapeJS(str) {
   if (!str) return '';
   return String(str).replace(/\\/g,'\\\\').replace(/'/g,'\\x27').replace(/"/g,'\\x22').replace(/`/g,'\\x60').replace(/\u2018/g,'\\x27').replace(/\u2019/g,'\\x27').replace(/\u201C/g,'\\x22').replace(/\u201D/g,'\\x22');
 }
+function _trailerBtn(url) {
+  if (!url) return '';
+  return ` <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();_playTrailerInModal('${escapeJS(url)}')" style="margin-left:6px"><svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14" style="vertical-align:-2px;margin-right:4px"><path d="M8 5v14l11-7z"/></svg>Trailer</button>`;
+}
+function _playTrailerInModal(url) {
+  const match = url.match(/[?&]v=([^&]+)/);
+  if (!match) return window.open(url, '_blank');
+  const id = match[1];
+  const overlay = document.createElement('div');
+  overlay.id = 'trailer-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;cursor:pointer';
+  overlay.innerHTML = `<iframe src="https://www.youtube-nocookie.com/embed/${id}?autoplay=1&rel=0" style="width:80vw;max-width:960px;aspect-ratio:16/9;border:none;border-radius:8px" allow="autoplay;encrypted-media" allowfullscreen></iframe>`;
+  overlay.addEventListener('click', function(e) { if (e.target === overlay) overlay.remove(); });
+  var escHandler = function(e) { if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', escHandler); } };
+  document.addEventListener('keydown', escHandler);
+  document.body.appendChild(overlay);
+}
 
 // ── HISTORY PAGE ──────────────────────────────────────────────────────────
 async function loadHistory() {
@@ -1362,12 +1379,19 @@ async function showMediaDetail(tmdbId, mediaType) {
             Source: ${data.source} · Added: ${data.date_added ? new Date(data.date_added).toLocaleDateString() : '—'}
             ${data.strm_path ? `<br>Path: ${data.strm_path}` : ''}
           </div>
+          <div id="detail-trailer-slot" style="margin-top:10px"></div>
         </div>
       </div>
       ${isSeries ? '<div id="detail-episodes" style="margin-top:20px"><div class="loading-state" style="padding:16px 0"><div class="spinner"></div></div></div>' : ''}`;
 
     // For series, load episode breakdown
     if (isSeries) _loadSeriesEpisodes(tmdbId, data);
+
+    // Fetch trailer URL from TMDB in background
+    api(`/api/library/tmdb/${mediaType}/${tmdbId}`).then(tmdbData => {
+      const slot = document.getElementById('detail-trailer-slot');
+      if (slot && tmdbData.trailer_url) slot.innerHTML = _trailerBtn(tmdbData.trailer_url);
+    }).catch(() => {});
   } catch (e) {
     document.getElementById('detail-body').innerHTML = '<div class="empty-state"><p>Failed to load details</p></div>';
   }
@@ -1610,7 +1634,7 @@ async function showCoverageDetail(tmdbId, mediaType, title, year, posterPath) {
             <div style="margin-top:8px;padding-top:12px;border-top:1px solid var(--border)">
               <span class="badge" style="background:var(--red-dim);color:var(--red);margin-bottom:8px">Not in library</span>
               <div style="margin-top:8px">
-                <button class="btn btn-primary btn-sm" onclick="closeModal('modal-media-detail');showAddToArrModal(${tmdbId},'${escapeJS(data.title||'')}','${escapeJS(data.year||'')}','${escapeJS(data.poster_path||'')}','${mediaType}')">Add to ${arrLabel}</button>
+                <button class="btn btn-primary btn-sm" onclick="closeModal('modal-media-detail');showAddToArrModal(${tmdbId},'${escapeJS(data.title||'')}','${escapeJS(data.year||'')}','${escapeJS(data.poster_path||'')}','${mediaType}')">Add to ${arrLabel}</button>${_trailerBtn(data.trailer_url)}
               </div>
             </div>
           </div>
@@ -3665,7 +3689,7 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
             ${(data.genres||[]).map(g => `<span class="badge badge-gray">${g}</span>`).join('')}
           </div>
           <div style="margin-top:8px">
-            ${actionBtn}
+            ${actionBtn}${_trailerBtn(data.trailer_url)}
           </div>
         </div>
       </div>`;
