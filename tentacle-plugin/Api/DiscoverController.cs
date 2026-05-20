@@ -95,7 +95,6 @@ public class TentacleDiscoverController : ControllerBase
         try
         {
             var response = await HttpClient.GetStringAsync(AppendUserId($"{baseUrl}/api/discover?type={type}"));
-            var cacheKey = $"{type}_{GetUserIdParam()}";
             _itemsCache[cacheKey] = (response, DateTime.UtcNow.AddMinutes(30));
             return Content(response, "application/json");
         }
