@@ -433,6 +433,10 @@ def get_activity(request: Request, db: Session = Depends(get_db)):
         if user and dr.user_id == user.id:
             user_requests.add(dr.tmdb_id)
 
+    # Remove items from unreleased that are already showing in downloads (prevents duplicates)
+    downloading_tmdb_ids = {d.get("tmdb_id") for d in downloads if d.get("tmdb_id")}
+    unreleased = [u for u in unreleased if u.get("tmdb_id") not in downloading_tmdb_ids]
+
     is_admin = user and user.is_admin
 
     if not is_admin and user:

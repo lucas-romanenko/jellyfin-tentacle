@@ -260,7 +260,7 @@
 
     // Fetch discover items and activity data (for download badges) in parallel
     var itemsPromise = apiGet('TentacleDiscover/Items?type=' + typeParam);
-    var activityPromise = apiGet('TentacleDiscover/Activity').catch(function () {
+    var activityPromise = apiGet('TentacleDiscover/Activity?userId=' + window.ApiClient.getCurrentUserId()).catch(function () {
       return { downloads: [], unreleased: [] };
     });
 
@@ -1100,7 +1100,7 @@
   }
 
   function fetchActivityData() {
-    apiGet('TentacleDiscover/Activity').then(function (data) {
+    apiGet('TentacleDiscover/Activity?userId=' + window.ApiClient.getCurrentUserId()).then(function (data) {
       MD.activityData = data;
       renderActivityContent(data);
 
@@ -1333,7 +1333,7 @@
         stopActivityPolling();
         return;
       }
-      apiGet('TentacleDiscover/Activity').then(function (data) {
+      apiGet('TentacleDiscover/Activity?userId=' + window.ApiClient.getCurrentUserId()).then(function (data) {
         MD.activityData = data;
         var count = (data.downloads || []).length + (data.unreleased || []).length;
         window.dispatchEvent(new CustomEvent('tentacle-activity-count', { detail: count }));
@@ -1361,7 +1361,7 @@
       if (!isHomePage()) { stopBadgePolling(); return; }
       // Don't poll if either overlay has its own polling
       if (ACT.timer) return;
-      apiGet('TentacleDiscover/Activity').then(function (data) {
+      apiGet('TentacleDiscover/Activity?userId=' + window.ApiClient.getCurrentUserId()).then(function (data) {
         MD.activityData = data;
         var count = (data.downloads || []).length + (data.unreleased || []).length;
         window.dispatchEvent(new CustomEvent('tentacle-activity-count', { detail: count }));
