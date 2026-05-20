@@ -436,13 +436,19 @@ def get_activity(request: Request, db: Session = Depends(get_db)):
     is_admin = user and user.is_admin
 
     if not is_admin and user:
-        # Non-admin: only show downloads they requested
+        # Non-admin: only show items they requested
         downloads = [d for d in downloads if d.get("tmdb_id") in user_requests]
+        unreleased = [u for u in unreleased if u.get("tmdb_id") in user_requests]
+        recently_downloaded = [r for r in recently_downloaded if r.get("tmdb_id") in user_requests]
 
     if is_admin:
-        # Admin: attach requester name to each download
+        # Admin: attach requester name to each item
         for d in downloads:
             d["requested_by"] = requester_map.get(d.get("tmdb_id"))
+        for u in unreleased:
+            u["requested_by"] = requester_map.get(u.get("tmdb_id"))
+        for r in recently_downloaded:
+            r["requested_by"] = requester_map.get(r.get("tmdb_id"))
 
     if downloads:
         logger.info(f"Activity: {len(downloads)} download(s) in queue")

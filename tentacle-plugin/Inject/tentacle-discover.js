@@ -1164,6 +1164,7 @@
                 '<span class="md-act-status-badge md-act-badge-' + statusClass + '">' + statusLabel + '</span>' +
                 (qualityLabel ? '<span>' + qualityLabel + '</span>' : '') +
                 (sizeLabel ? '<span>' + sizeLabel + '</span>' : '') +
+                (dl.requested_by ? '<span class="md-act-requested-by">' + esc(dl.requested_by) + '</span>' : '') +
               '</div>' +
               '<div class="md-act-progress-row">' +
                 '<div class="md-act-progress-bar"><div class="md-act-progress-fill md-act-fill-' + statusClass + '" style="width:' + progressPct + '%"></div></div>' +
@@ -1207,6 +1208,7 @@
               '<div class="md-act-upcoming-title">' + esc(item.title) + '</div>' +
               releaseLabel +
               '<div class="md-act-upcoming-date">' + esc(item.release_date || '') + '</div>' +
+              (item.requested_by ? '<div class="md-act-requested-by" style="margin-top:2px">' + esc(item.requested_by) + '</div>' : '') +
             '</div>' +
           '</div>';
         }).join('') +

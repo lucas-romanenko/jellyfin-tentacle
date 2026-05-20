@@ -616,6 +616,14 @@
   flex-wrap: wrap;
 }
 
+.md-act-requested-by {
+  font-size: 10px;
+  color: rgba(200, 195, 220, 0.5);
+  background: rgba(255, 255, 255, 0.06);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
 /* Status badges */
 .md-act-status-badge {
   font-size: 11px;
