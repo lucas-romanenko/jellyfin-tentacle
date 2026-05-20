@@ -259,7 +259,7 @@
     var typeParam = MD.mediaFilter === 'series' ? 'series' : 'movies';
 
     // Fetch discover items and activity data (for download badges) in parallel
-    var itemsPromise = apiGet('TentacleDiscover/Items?type=' + typeParam);
+    var itemsPromise = apiGet('TentacleDiscover/Items?type=' + typeParam + '&userId=' + window.ApiClient.getCurrentUserId());
     var activityPromise = apiGet('TentacleDiscover/Activity?userId=' + window.ApiClient.getCurrentUserId()).catch(function () {
       return { downloads: [], unreleased: [] };
     });
