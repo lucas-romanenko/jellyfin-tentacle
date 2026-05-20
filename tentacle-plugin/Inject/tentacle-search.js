@@ -78,7 +78,6 @@
   function onViewShow(e) {
     var type = e.detail && e.detail.type;
     var viewEl = e.target || null;
-    console.log('[TS] viewshow — type:', type, 'hash:', location.hash, 'isSearch:', isSearchPage());
     if (type === 'search' || (!type && isSearchPage())) {
       onSearchPage(viewEl);
     } else if (isSearchPage()) {
@@ -99,18 +98,12 @@
   // ── Search Page Entry ─────────────────────────────────────────────
 
   function onSearchPage(viewEl) {
-    console.log('[TS] onSearchPage — viewEl:', viewEl ? viewEl.tagName + '.' + (viewEl.className || '').substring(0, 60) : 'null',
-      'active:', SEARCH.active, 'hasContainer:', !!document.getElementById('tentacleSearchResults'));
-
     // Dismiss other Tentacle overlays — only one visible at a time
     if (window.TentacleDiscover && window.TentacleDiscover.isActive && window.TentacleDiscover.isActive()) window.TentacleDiscover.hide();
     if (window.TentacleActivity && window.TentacleActivity.isActive && window.TentacleActivity.isActive()) window.TentacleActivity.hide();
 
     // If already active with a live container, just make sure it's visible
-    if (SEARCH.active && document.getElementById('tentacleSearchResults')) {
-      console.log('[TS] Already active with container, skipping');
-      return;
-    }
+    if (SEARCH.active && document.getElementById('tentacleSearchResults')) return;
 
     // Clean any stale state first
     cleanup();
@@ -119,15 +112,12 @@
   }
 
   function onLeavingSearch() {
-    console.log('[TS] onLeavingSearch — was active:', SEARCH.active);
     SEARCH.generation++;
     cleanup();
   }
 
   function waitForSearchInput(viewEl) {
     var input = findSearchInputIn(viewEl) || findNativeSearchInput();
-    console.log('[TS] waitForSearchInput — viewEl:', !!viewEl, 'inputFound:', !!input,
-      'activeView:', findActiveView() ? findActiveView().className.substring(0, 40) : 'null');
     if (input) {
       attachToInput(input);
       return;
@@ -596,7 +586,13 @@
   // ── Public API ──────────────────────────────────────────────────────
   window.TentacleSearch = {
     hide: function () { if (SEARCH.active) { SEARCH.generation++; cleanup(); } },
-    isActive: function () { return SEARCH.active; }
+    isActive: function () { return SEARCH.active; },
+    activate: function () {
+      if (!SEARCH.active && isSearchPage()) {
+        console.log('[TS] activate() called — re-initializing search');
+        onSearchPage(null);
+      }
+    }
   };
 
   if (document.readyState === 'loading') {

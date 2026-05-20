@@ -490,7 +490,15 @@
                     this.navigateTo('/home');
                     break;
                 case 'search':
+                    // Hide overlays that may have covered search without changing hash
+                    if (window.TentacleDiscover && window.TentacleDiscover.isActive && window.TentacleDiscover.isActive()) window.TentacleDiscover.hide();
+                    if (window.TentacleActivity && window.TentacleActivity.isActive && window.TentacleActivity.isActive()) window.TentacleActivity.hide();
                     this.navigateTo('/search');
+                    // If hash was already /search, navigateTo is a no-op and no events fire.
+                    // Force search to re-initialize if it was hidden by an overlay.
+                    if (window.TentacleSearch && !window.TentacleSearch.isActive()) {
+                        window.TentacleSearch.activate();
+                    }
                     break;
                 case 'discover':
                     this.activateDiscover();
