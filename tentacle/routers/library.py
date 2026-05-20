@@ -525,12 +525,26 @@ def get_tmdb_detail(media_type: str, tmdb_id: int, db: Session = Depends(get_db)
 
 
 @router.get("/following")
-def get_following_series(db: Session = Depends(get_db)):
-    """Return all series being followed for new episodes."""
+def get_following_series(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+    """Return series being followed for new episodes by the current user."""
+    # Get TMDB IDs this user has requested (their downloads)
+    user_tmdb_ids = {
+        dr.tmdb_id for dr in
+        db.query(DownloadRequest.tmdb_id).filter(
+            DownloadRequest.user_id == user.id,
+            DownloadRequest.media_type == "series",
+        ).all()
+    }
+
     series = db.query(Series).filter(
         Series.sonarr_monitored == True,
         or_(Series.status == None, ~Series.status.in_(["Ended", "Canceled"])),
     ).order_by(Series.title).all()
+
+    # Admin sees all followed series; non-admin only sees series they requested
+    if not user.is_admin:
+        series = [s for s in series if s.tmdb_id in user_tmdb_ids]
+
     return [
         {
             "tmdb_id": s.tmdb_id,

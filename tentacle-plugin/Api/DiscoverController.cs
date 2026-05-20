@@ -80,7 +80,8 @@ public class TentacleDiscoverController : ControllerBase
         if (type != "all" && type != "movies" && type != "series")
             type = "all";
 
-        if (_itemsCache.TryGetValue(type, out var cached) && DateTime.UtcNow < cached.Expiry)
+        var cacheKey = $"{type}_{GetUserIdParam()}";
+        if (_itemsCache.TryGetValue(cacheKey, out var cached) && DateTime.UtcNow < cached.Expiry)
         {
             return Content(cached.Data, "application/json");
         }
@@ -93,8 +94,9 @@ public class TentacleDiscoverController : ControllerBase
 
         try
         {
-            var response = await HttpClient.GetStringAsync($"{baseUrl}/api/discover?type={type}");
-            _itemsCache[type] = (response, DateTime.UtcNow.AddMinutes(30));
+            var response = await HttpClient.GetStringAsync(AppendUserId($"{baseUrl}/api/discover?type={type}"));
+            var cacheKey = $"{type}_{GetUserIdParam()}";
+            _itemsCache[cacheKey] = (response, DateTime.UtcNow.AddMinutes(30));
             return Content(response, "application/json");
         }
         catch (Exception ex)

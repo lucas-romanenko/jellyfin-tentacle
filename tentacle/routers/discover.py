@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing import Optional
 from fastapi import Request
-from models.database import get_db, get_setting, Movie, Series, ListSubscription, ListItem, DownloadRequest, LiveChannel
+from models.database import get_db, get_setting, Movie, Series, ListSubscription, ListItem, DownloadRequest, LiveChannel, TentacleUser
 from routers.auth import get_user_from_request
 from services.tmdb import TMDBService
 
@@ -54,7 +54,8 @@ def _dedup_and_mark(items: list, known_ids: set) -> list:
 @router.get("")
 def get_discover(
     type: str = "movies",
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: TentacleUser = Depends(get_user_from_request),
 ):
     """Return discover sections based on media type.
     Movies: Popular, Now Playing, Upcoming, From Your Lists
@@ -123,7 +124,7 @@ def get_discover(
             })
 
     # ── From Your Lists (both types) ──
-    missing = _get_missing_from_lists(db, known_ids, type)
+    missing = _get_missing_from_lists(db, known_ids, type, user)
     if missing:
         sections.append({
             "id": "missing",
@@ -134,11 +135,12 @@ def get_discover(
     return {"sections": sections}
 
 
-def _get_missing_from_lists(db: Session, known_ids: set, type_filter: str) -> list:
+def _get_missing_from_lists(db: Session, known_ids: set, type_filter: str, user: TentacleUser = None) -> list:
     """Get items from active list subscriptions that aren't in the library."""
-    active_lists = db.query(ListSubscription).filter(
-        ListSubscription.active == True
-    ).all()
+    query = db.query(ListSubscription).filter(ListSubscription.active == True)
+    if user:
+        query = query.filter(ListSubscription.user_id == user.id)
+    active_lists = query.all()
 
     if not active_lists:
         return []
