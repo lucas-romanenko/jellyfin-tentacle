@@ -178,6 +178,32 @@ public class TentacleHomeController : ControllerBase
     }
 
     /// <summary>
+    /// Returns a version counter that increments whenever playlists are modified.
+    /// Polled by the home page JS to detect changes and live-update rows.
+    /// </summary>
+    [HttpGet("Version")]
+    [Authorize]
+    public async Task<ActionResult> GetPlaylistVersion()
+    {
+        var plugin = Plugin.Instance;
+        if (plugin == null || string.IsNullOrEmpty(plugin.Configuration.TentacleUrl))
+        {
+            return Ok(new { version = 0 });
+        }
+
+        try
+        {
+            var response = await ProxyClient.GetStringAsync(
+                $"{plugin.Configuration.TentacleUrl.TrimEnd('/')}/api/smartlists/version");
+            return Content(response, "application/json");
+        }
+        catch
+        {
+            return Ok(new { version = 0 });
+        }
+    }
+
+    /// <summary>
     /// Returns hero/spotlight items with full image data.
     /// </summary>
     [HttpGet("Hero")]

@@ -20,6 +20,25 @@ logger = logging.getLogger(__name__)
 # Prevent concurrent playlist refreshes (webhooks can fire simultaneously)
 _playlist_refresh_lock = threading.Lock()
 
+# In-memory playlist version counter — bumped whenever playlists are modified.
+# Polled by the Jellyfin plugin JS to detect changes and live-update home rows.
+_playlist_version = 0
+_playlist_version_lock = threading.Lock()
+
+
+def bump_playlist_version():
+    """Increment the playlist version counter. Called after any playlist modification."""
+    global _playlist_version
+    with _playlist_version_lock:
+        _playlist_version += 1
+    return _playlist_version
+
+
+def get_playlist_version() -> int:
+    """Return the current playlist version counter."""
+    return _playlist_version
+
+
 PRESERVED_FIELDS = ["LastRefreshed", "DateCreated", "ItemCount", "Order"]
 
 # Tag rule condition fields that map directly to Jellyfin API filters
@@ -839,7 +858,10 @@ def refresh_smartlist_playlists(db: Session, user_id: int = None) -> dict:
         logger.info("Playlist refresh already in progress, skipping")
         return {"processed": 0, "created": 0, "updated": 0, "errors": 0}
     try:
-        return _refresh_smartlist_playlists_inner(db, user_id)
+        result = _refresh_smartlist_playlists_inner(db, user_id)
+        if result.get("updated", 0) > 0 or result.get("created", 0) > 0:
+            bump_playlist_version()
+        return result
     finally:
         _playlist_refresh_lock.release()
 
@@ -1280,4 +1302,6 @@ def add_item_to_matching_playlists(db: Session, jellyfin_item_id: str, item_tags
             except Exception as e:
                 logger.warning(f"[SmartLists] Failed to add to '{name}': {e}")
 
+    if total_added > 0:
+        bump_playlist_version()
     return {"added_to": total_added}

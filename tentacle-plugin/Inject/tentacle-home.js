@@ -20,6 +20,9 @@
     userId: null,
     generation: 0,      // incremented on every navigation, stale renders check this
     lastHash: null,      // dedup rapid event firing
+    versionPollTimer: null,  // live-update polling timer
+    lastVersion: -1,         // last known playlist version from backend
+    activeSections: null,    // sections from last render (for targeted refresh)
   };
 
   // ── Bootstrap ─────────────────────────────────────────────────────────
@@ -127,6 +130,7 @@
       clearInterval(MH.heroInterval);
       MH.heroInterval = null;
     }
+    stopVersionPolling();
     var old = document.getElementById('tentacle-home');
     if (old) old.remove();
 
@@ -197,6 +201,10 @@
             loadRow(rowsContainer, section);
           }
         });
+
+        // Store sections for live-update polling and start it
+        MH.activeSections = contentSections;
+        startVersionPolling(gen);
       })
       .catch(function (err) {
         console.error('[Tentacle] Failed to load sections:', err);
@@ -683,6 +691,7 @@
   function loadRow(container, section) {
     var row = document.createElement('div');
     row.className = 'mh-row';
+    row.setAttribute('data-playlist-id', section.playlistId);
 
     row.innerHTML =
       '<div class="mh-row-header">' +
@@ -838,6 +847,82 @@
     }
 
     return card;
+  }
+
+  // ── Live-Update Polling ─────────────────────────────────────────────
+  // Polls backend version counter every 10s. When version changes,
+  // re-fetches playlist row items and updates them in-place.
+  function startVersionPolling(gen) {
+    stopVersionPolling();
+    // Seed initial version
+    apiGet('TentacleHome/Version')
+      .then(function (data) { MH.lastVersion = data.version || 0; })
+      .catch(function () {});
+
+    MH.versionPollTimer = setInterval(function () {
+      // Stop if generation changed (navigated away)
+      if (gen !== MH.generation) { stopVersionPolling(); return; }
+      if (!document.getElementById('tentacle-home')) { stopVersionPolling(); return; }
+
+      apiGet('TentacleHome/Version')
+        .then(function (data) {
+          var newVersion = data.version || 0;
+          if (newVersion === MH.lastVersion) return;
+          console.log('[TH] Playlist version changed: ' + MH.lastVersion + ' → ' + newVersion);
+          MH.lastVersion = newVersion;
+          refreshPlaylistRows(gen);
+        })
+        .catch(function () {});
+    }, 10000);
+  }
+
+  function stopVersionPolling() {
+    if (MH.versionPollTimer) {
+      clearInterval(MH.versionPollTimer);
+      MH.versionPollTimer = null;
+    }
+  }
+
+  function refreshPlaylistRows(gen) {
+    if (!MH.activeSections) return;
+    var sections = MH.activeSections.filter(function (s) { return s.type === 'row' && s.playlistId; });
+    sections.forEach(function (section) {
+      apiGet('TentacleHome/Section/' + section.playlistId + '?userId=' + MH.userId)
+        .then(function (data) {
+          if (gen !== MH.generation) return;
+          var row = document.querySelector('.mh-row[data-playlist-id="' + section.playlistId + '"]');
+          if (!row) return;
+          var itemsEl = row.querySelector('.mh-row-items');
+          if (!itemsEl) return;
+
+          if (!data.Items || !data.Items.length) {
+            row.classList.add('mh-row-hidden');
+            return;
+          }
+
+          // Build set of current item IDs for diff
+          var currentIds = [];
+          itemsEl.querySelectorAll('.mh-card[data-item-id]').forEach(function (c) {
+            currentIds.push(c.getAttribute('data-item-id'));
+          });
+          var newIds = data.Items.map(function (i) { return i.Id; });
+
+          // Skip if identical
+          if (currentIds.length === newIds.length && currentIds.every(function (id, idx) { return id === newIds[idx]; })) {
+            return;
+          }
+
+          console.log('[TH] Updating row "' + section.displayText + '": ' + currentIds.length + ' → ' + newIds.length + ' items');
+
+          // Rebuild items
+          row.classList.remove('mh-row-hidden');
+          itemsEl.innerHTML = '';
+          data.Items.forEach(function (item) {
+            itemsEl.appendChild(createCard(item));
+          });
+        })
+        .catch(function () {});
+    });
   }
 
   // ── Utilities ─────────────────────────────────────────────────────────

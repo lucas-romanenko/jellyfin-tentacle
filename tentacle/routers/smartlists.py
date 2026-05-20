@@ -21,7 +21,7 @@ from services.smartlists import (
     get_desired_smartlists, sync_smartlists, _scan_existing,
     write_home_config, _notify_jellyfin_plugin, refresh_smartlist_playlists,
     _get_smartlists_with_playlist_ids, update_playlist_sort, SORT_BY_DISPLAY,
-    _user_smartlists_path,
+    _user_smartlists_path, get_playlist_version,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,6 +42,13 @@ BUILTIN_SECTIONS = [
     {"section_id": "livetv", "display_name": "Live TV"},
 ]
 BUILTIN_MAP = {s["section_id"]: s for s in BUILTIN_SECTIONS}
+
+
+@router.get("/version")
+def playlist_version():
+    """Return the current playlist version counter. Polled by the Jellyfin plugin
+    JS to detect playlist changes and live-update home screen rows."""
+    return {"version": get_playlist_version()}
 
 
 def _home_config_path(user: TentacleUser) -> Path:
