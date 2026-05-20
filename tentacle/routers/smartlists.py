@@ -356,6 +356,7 @@ def set_row_max_items(req: RowMaxItemsRequest, db: Session = Depends(get_db), us
         return {"success": False, "message": "Row not found"}
 
     _write_home_json(user, config)
+    _notify_jellyfin_plugin(db)
     return {"success": True, "max_items": val}
 
 
