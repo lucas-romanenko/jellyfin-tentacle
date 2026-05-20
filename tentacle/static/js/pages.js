@@ -16,7 +16,7 @@ function escapeAttr(str) {
 }
 function escapeJS(str) {
   if (!str) return '';
-  return String(str).replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'\\"');
+  return String(str).replace(/\\/g,'\\\\').replace(/'/g,'\\x27').replace(/"/g,'\\x22');
 }
 
 // ── HISTORY PAGE ──────────────────────────────────────────────────────────
