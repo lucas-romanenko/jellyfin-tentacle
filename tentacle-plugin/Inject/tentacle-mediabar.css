@@ -325,6 +325,7 @@ body.moonfin-mediabar-active {
     transition: opacity 0.3s ease;
 }
 
+.moonfin-mediabar:hover .moonfin-mediabar-nav,
 .moonfin-mediabar.focused .moonfin-mediabar-nav {
     opacity: 1;
 }
@@ -339,8 +340,14 @@ body.moonfin-mediabar-active {
     align-items: center;
     justify-content: center;
     pointer-events: auto;
+    background: rgba(0, 0, 0, 0.4);
     backdrop-filter: blur(10px);
-    transition: transform 0.2s ease, opacity 0.2s ease;
+    transition: transform 0.2s ease, opacity 0.2s ease, background 0.2s ease;
+}
+
+.moonfin-mediabar-nav-btn:hover {
+    background: rgba(0, 0, 0, 0.6);
+    transform: scale(1.15);
 }
 
 .moonfin-mediabar-nav-btn svg {
@@ -349,13 +356,50 @@ body.moonfin-mediabar-active {
     color: white;
 }
 
-.moonfin-mediabar-nav-btn:hover {
-    transform: scale(1.15);
-}
-
 .moonfin-mediabar-nav-btn:focus-visible {
     outline: 2px solid white;
     outline-offset: 2px;
+}
+
+/* ==================== Mute Button ==================== */
+
+.moonfin-mediabar-mute-btn {
+    position: absolute;
+    bottom: 20px;
+    right: 24px;
+    z-index: 12;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    border: none;
+    cursor: pointer;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    pointer-events: auto;
+    background: rgba(0, 0, 0, 0.45);
+    backdrop-filter: blur(10px);
+    transition: opacity 0.3s ease, background 0.2s ease;
+    opacity: 0;
+}
+
+.moonfin-mediabar-mute-btn.active {
+    display: flex;
+}
+
+.moonfin-mediabar-mute-btn svg {
+    width: 20px;
+    height: 20px;
+    color: white;
+}
+
+.moonfin-mediabar:hover .moonfin-mediabar-mute-btn.active,
+.moonfin-mediabar.focused .moonfin-mediabar-mute-btn.active {
+    opacity: 1;
+}
+
+.moonfin-mediabar-mute-btn:hover {
+    background: rgba(0, 0, 0, 0.7);
 }
 
 /* ==================== Dot Indicators ==================== */
