@@ -145,6 +145,74 @@ def _fetch_radarr_unreleased(url: str, api_key: str) -> list:
         return []
 
 
+def _fetch_sonarr_unreleased(url: str, api_key: str) -> list:
+    """Fetch monitored series from Sonarr that haven't aired yet."""
+    try:
+        r = requests.get(
+            f"{url.rstrip('/')}/api/v3/series",
+            headers={"X-Api-Key": api_key},
+            timeout=15,
+        )
+        r.raise_for_status()
+        all_series = r.json()
+        now = datetime.utcnow()
+        unreleased = []
+        for s in all_series:
+            if not s.get("monitored"):
+                continue
+            # Series with no episodes yet — check firstAired or nextAiring
+            stats = s.get("statistics", {})
+            if stats.get("episodeFileCount", 0) > 0:
+                continue  # Already has episodes downloaded
+
+            # Find the next air date
+            release = None
+            release_type = None
+            next_airing = s.get("nextAiring")
+            first_aired = s.get("firstAired")
+
+            if next_airing:
+                try:
+                    dt = datetime.fromisoformat(next_airing.replace("Z", "+00:00")).replace(tzinfo=None)
+                    if dt > now:
+                        release = dt
+                        release_type = "Premiere"
+                except (ValueError, TypeError):
+                    pass
+
+            if not release and first_aired:
+                try:
+                    dt = datetime.fromisoformat(first_aired.replace("Z", "+00:00")).replace(tzinfo=None)
+                    if dt > now:
+                        release = dt
+                        release_type = "Premiere"
+                except (ValueError, TypeError):
+                    pass
+
+            if not release:
+                continue
+
+            unreleased.append({
+                "tmdb_id": s.get("tmdbId") or 0,
+                "tvdb_id": s.get("tvdbId") or 0,
+                "title": s.get("title", ""),
+                "year": str(s.get("year", "")),
+                "overview": s.get("overview", ""),
+                "media_type": "series",
+                "source": "sonarr",
+                "release_date": release.strftime("%Y-%m-%d") if release else "TBA",
+                "release_type": release_type or "TBA",
+                "all_dates": {release_type: release.strftime("%Y-%m-%d")} if release and release_type else {},
+                "status": "unreleased",
+                "sonarr_poster": _extract_poster(s),
+            })
+        unreleased.sort(key=lambda x: x["release_date"] if x["release_date"] != "TBA" else "9999-99-99")
+        return unreleased
+    except Exception as e:
+        logger.debug(f"Sonarr unreleased fetch failed: {e}")
+        return []
+
+
 def _format_time(timeleft: str) -> str:
     """Convert Radarr/Sonarr time string like '00:12:34' to readable format."""
     if not timeleft:
@@ -337,21 +405,30 @@ def _build_downloads(db: Session) -> list:
 
 
 def _get_unreleased(db: Session) -> list:
-    """Get unreleased movies — cached for 5 minutes (expensive call)."""
+    """Get unreleased movies and series — cached for 5 minutes (expensive call)."""
     now = time.time()
     if _unreleased_cache["data"] is not None and (now - _unreleased_cache["ts"]) < UNRELEASED_TTL:
         return _unreleased_cache["data"]
 
+    unreleased = []
+
     radarr_url = get_setting(db, "radarr_url")
     radarr_key = get_setting(db, "radarr_api_key")
+    if radarr_url and radarr_key:
+        unreleased.extend(_fetch_radarr_unreleased(radarr_url, radarr_key))
 
-    if not radarr_url or not radarr_key:
-        return []
+    sonarr_url = get_setting(db, "sonarr_url")
+    sonarr_key = get_setting(db, "sonarr_api_key")
+    if sonarr_url and sonarr_key:
+        unreleased.extend(_fetch_sonarr_unreleased(sonarr_url, sonarr_key))
 
-    unreleased = _fetch_radarr_unreleased(radarr_url, radarr_key)
-    # Enrich with posters (DB first, then Radarr fallback)
+    # Enrich with posters (DB first, then Radarr/Sonarr fallback)
     for item in unreleased:
-        item["poster_path"] = _get_poster(db, item.get("tmdb_id"), "movie") or item.pop("radarr_poster", None)
+        fallback_poster = item.pop("radarr_poster", None) or item.pop("sonarr_poster", None)
+        item["poster_path"] = _get_poster(db, item.get("tmdb_id"), item.get("media_type", "movie")) or fallback_poster
+
+    # Sort all unreleased by release date
+    unreleased.sort(key=lambda x: x["release_date"] if x["release_date"] != "TBA" else "9999-99-99")
 
     result = unreleased[:20]
     _unreleased_cache["data"] = result
@@ -439,7 +516,10 @@ def get_activity(request: Request, db: Session = Depends(get_db)):
 
     # Remove items from unreleased that are already showing in downloads (prevents duplicates)
     downloading_tmdb_ids = {d.get("tmdb_id") for d in downloads if d.get("tmdb_id")}
-    unreleased = [u for u in unreleased if u.get("tmdb_id") not in downloading_tmdb_ids]
+    downloading_tvdb_ids = {d.get("tvdb_id") for d in downloads if d.get("tvdb_id")}
+    unreleased = [u for u in unreleased
+                  if not (u.get("tmdb_id") and u["tmdb_id"] in downloading_tmdb_ids)
+                  and not (u.get("tvdb_id") and u["tvdb_id"] in downloading_tvdb_ids)]
 
     is_admin = user and user.is_admin
 
