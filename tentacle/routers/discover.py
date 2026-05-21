@@ -3,18 +3,15 @@ Tentacle - Discover Router
 Trending, popular, upcoming content from TMDB + missing from user lists
 """
 
-import hashlib
 import logging
 import random
 import re
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing import Optional
 from fastapi import Request
-import httpx
 from models.database import get_db, get_setting, Movie, Series, ListSubscription, ListItem, DownloadRequest, LiveChannel, TentacleUser
 from routers.auth import get_user_from_request
 from services.tmdb import TMDBService
@@ -243,7 +240,6 @@ def get_discover_detail(
 
 @router.get("/detail-tvdb/{tvdb_id}")
 def get_discover_detail_tvdb(
-    request: Request,
     tvdb_id: int,
     db: Session = Depends(get_db),
 ):
@@ -259,26 +255,19 @@ def get_discover_detail_tvdb(
     if not lookup:
         return {"error": "Not found"}
 
+    # Get images from TMDB via tvdbId cross-reference (TVDB CDN blocks direct access)
     poster = None
     backdrop = None
-    sonarr_base = sonarr_url.rstrip("/")
-    for img in lookup.get("images", []):
-        cover = img.get("coverType")
-        local_url = img.get("url")
-        if local_url and sonarr_base:
-            full_url = f"{sonarr_base}{local_url}?apikey={sonarr_key}"
-        else:
-            full_url = img.get("remoteUrl")
-        if not full_url:
-            full_url = img.get("remoteUrl")
-        if cover == "poster" and full_url:
-            poster = full_url
-        elif cover == "fanart" and full_url:
-            backdrop = full_url
+    tmdb = _get_tmdb(db)
+    if tmdb:
+        images = tmdb.find_images_by_tvdb_id(tvdb_id)
+        if images:
+            poster = images.get("poster")
+            backdrop = images.get("backdrop")
 
     genres = [g.strip() for g in lookup.get("genres", [])]
 
-    details = {
+    return {
         "tmdb_id": lookup.get("tmdbId") or 0,
         "tvdb_id": tvdb_id,
         "title": lookup.get("title", ""),
@@ -300,32 +289,21 @@ def get_discover_detail_tvdb(
         "source": "sonarr",
     }
 
-    base_url = str(request.base_url).rstrip("/")
-    _rewrite_item_images(details, base_url)
-    return details
 
-
-def _sonarr_lookup_to_items(results: list, sonarr_url: str = "", sonarr_key: str = "") -> list:
-    """Convert Sonarr lookup results to standard discover item format."""
+def _sonarr_lookup_to_items(results: list, tmdb: "TMDBService" = None) -> list:
+    """Convert Sonarr lookup results to standard discover item format.
+    Uses TMDB to resolve poster/backdrop since TVDB CDN blocks direct access."""
     items = []
-    sonarr_base = sonarr_url.rstrip("/") if sonarr_url else ""
     for s in results:
         poster = None
         backdrop = None
-        for img in s.get("images", []):
-            cover = img.get("coverType")
-            # Prefer Sonarr's local image proxy (TVDB CDN blocks direct access)
-            local_url = img.get("url")
-            if local_url and sonarr_base:
-                full_url = f"{sonarr_base}{local_url}?apikey={sonarr_key}" if sonarr_key else None
-            else:
-                full_url = img.get("remoteUrl")
-            if not full_url:
-                full_url = img.get("remoteUrl")
-            if cover == "poster" and full_url:
-                poster = full_url
-            elif cover == "fanart" and full_url:
-                backdrop = full_url
+        tvdb_id = s.get("tvdbId") or 0
+        # Try TMDB images via tvdbId cross-reference (TVDB CDN returns 403)
+        if tmdb and tvdb_id:
+            images = tmdb.find_images_by_tvdb_id(tvdb_id)
+            if images:
+                poster = images.get("poster")
+                backdrop = images.get("backdrop")
         items.append({
             "tmdb_id": s.get("tmdbId") or 0,
             "tvdb_id": s.get("tvdbId") or 0,
@@ -342,26 +320,20 @@ def _sonarr_lookup_to_items(results: list, sonarr_url: str = "", sonarr_key: str
     return items
 
 
-def _radarr_lookup_to_items(results: list, radarr_url: str = "", radarr_key: str = "") -> list:
-    """Convert Radarr lookup results to standard discover item format."""
+def _radarr_lookup_to_items(results: list) -> list:
+    """Convert Radarr lookup results to standard discover item format.
+    Radarr uses TMDB images natively so no cross-reference needed."""
     items = []
-    radarr_base = radarr_url.rstrip("/") if radarr_url else ""
     for m in results:
         poster = None
         backdrop = None
         for img in m.get("images", []):
             cover = img.get("coverType")
-            local_url = img.get("url")
-            if local_url and radarr_base:
-                full_url = f"{radarr_base}{local_url}?apikey={radarr_key}" if radarr_key else None
-            else:
-                full_url = img.get("remoteUrl")
-            if not full_url:
-                full_url = img.get("remoteUrl")
-            if cover == "poster" and full_url:
-                poster = full_url
-            elif cover == "fanart" and full_url:
-                backdrop = full_url
+            remote = img.get("remoteUrl")
+            if cover == "poster" and remote:
+                poster = remote
+            elif cover == "fanart" and remote:
+                backdrop = remote
         items.append({
             "tmdb_id": m.get("tmdbId") or 0,
             "title": m.get("title", ""),
@@ -379,7 +351,6 @@ def _radarr_lookup_to_items(results: list, radarr_url: str = "", radarr_key: str
 
 @router.get("/search")
 def search_discover(
-    request: Request,
     q: str = "",
     type: str = "all",
     db: Session = Depends(get_db)
@@ -461,9 +432,8 @@ def search_discover(
         # Supplement with Sonarr/Radarr (TheTVDB coverage)
         seen_tmdb = {item["tmdb_id"] for item in items if item.get("tmdb_id")}
         seen_tvdb = set()
-        base_url = str(request.base_url).rstrip("/")
 
-        for item in _sonarr_lookup_to_items(sonarr_results, sonarr_url or "", sonarr_key or ""):
+        for item in _sonarr_lookup_to_items(sonarr_results, tmdb=tmdb):
             tmdb_id = item.get("tmdb_id")
             tvdb_id = item.get("tvdb_id")
             if tmdb_id and tmdb_id in seen_tmdb:
@@ -477,10 +447,9 @@ def search_discover(
                 item["in_library"] = False
             if tvdb_id:
                 seen_tvdb.add(tvdb_id)
-            _rewrite_item_images(item, base_url)
             items.append(item)
 
-        for item in _radarr_lookup_to_items(radarr_results, radarr_url or "", radarr_key or ""):
+        for item in _radarr_lookup_to_items(radarr_results):
             tmdb_id = item.get("tmdb_id")
             if tmdb_id and tmdb_id in seen_tmdb:
                 continue
@@ -489,7 +458,6 @@ def search_discover(
                 item["in_library"] = tmdb_id in known_ids
             else:
                 item["in_library"] = False
-            _rewrite_item_images(item, base_url)
             items.append(item)
 
     # Search Live TV channels — prepend to items list
@@ -806,62 +774,3 @@ def manage_episodes(
 # ---------------------------------------------------------------------------
 # Image proxy — TVDB CDN blocks direct access, so we proxy through Tentacle
 # ---------------------------------------------------------------------------
-
-_IMG_PROXY_CACHE_DIR = Path("/data/image_cache")
-
-def _rewrite_tvdb_url(url: str, request_base: str) -> str:
-    """Rewrite a TVDB CDN URL to go through our image proxy."""
-    if not url or "thetvdb.com" not in url:
-        return url
-    encoded = hashlib.md5(url.encode()).hexdigest()
-    return f"{request_base}/api/discover/image-proxy/{encoded}?url={url}"
-
-def _rewrite_item_images(item: dict, request_base: str) -> dict:
-    """Rewrite TVDB image URLs in a discover item to use our proxy."""
-    if item.get("poster_path") and "thetvdb.com" in (item["poster_path"] or ""):
-        item["poster_path"] = _rewrite_tvdb_url(item["poster_path"], request_base)
-    if item.get("backdrop_path") and "thetvdb.com" in (item["backdrop_path"] or ""):
-        item["backdrop_path"] = _rewrite_tvdb_url(item["backdrop_path"], request_base)
-    return item
-
-
-@router.get("/image-proxy/{cache_key}")
-async def image_proxy(cache_key: str, url: str):
-    """Proxy external images (TVDB CDN blocks direct access)."""
-    # Only allow proxying known image CDNs
-    if not url.startswith("https://artworks.thetvdb.com/"):
-        raise HTTPException(status_code=400, detail="Invalid image URL")
-
-    # Check disk cache
-    _IMG_PROXY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    ext = url.rsplit(".", 1)[-1] if "." in url.split("/")[-1] else "jpg"
-    cache_file = _IMG_PROXY_CACHE_DIR / f"{cache_key}.{ext}"
-
-    if cache_file.exists():
-        content_type = "image/jpeg" if ext in ("jpg", "jpeg") else f"image/{ext}"
-        return Response(content=cache_file.read_bytes(), media_type=content_type,
-                        headers={"Cache-Control": "public, max-age=604800"})
-
-    # Fetch from upstream
-    try:
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-            resp = await client.get(url, headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Referer": "https://thetvdb.com/",
-            })
-            if resp.status_code != 200:
-                raise HTTPException(status_code=502, detail=f"Upstream returned {resp.status_code}")
-            data = resp.content
-            content_type = resp.headers.get("content-type", "image/jpeg")
-    except httpx.HTTPError as e:
-        logger.warning(f"Image proxy fetch failed: {e}")
-        raise HTTPException(status_code=502, detail="Failed to fetch image")
-
-    # Cache to disk
-    try:
-        cache_file.write_bytes(data)
-    except Exception:
-        pass  # Non-fatal
-
-    return Response(content=data, media_type=content_type,
-                    headers={"Cache-Control": "public, max-age=604800"})

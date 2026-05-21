@@ -379,6 +379,36 @@ class TMDBService:
         self._cache_set(cache_key, None)
         return None
 
+    def find_images_by_tvdb_id(self, tvdb_id: int) -> Optional[dict]:
+        """Look up TMDB poster/backdrop by TheTVDB ID. Returns {'poster': '/path.jpg', 'backdrop': '/path.jpg'} or None."""
+        if not self.enabled or not tvdb_id:
+            return None
+
+        cache_key = f"tvdb_images:{tvdb_id}"
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            if not cached:
+                return None
+            try:
+                return json.loads(cached) if isinstance(cached, str) else cached
+            except (json.JSONDecodeError, TypeError):
+                return None
+
+        data = self._request(f"find/{tvdb_id}", {"external_source": "tvdb_id"})
+        if not data:
+            self._cache_set(cache_key, "")
+            return None
+
+        for key in ("tv_results", "movie_results"):
+            results = data.get(key, [])
+            if results:
+                result = {"poster": results[0].get("poster_path"), "backdrop": results[0].get("backdrop_path")}
+                self._cache_set(cache_key, result)
+                return result
+
+        self._cache_set(cache_key, "")
+        return None
+
     # ── Trending / Discover ──────────────────────────────────────────────
 
     def get_trending(self, media_type: str = "movie", pages: int = 5) -> list:
