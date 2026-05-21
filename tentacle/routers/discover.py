@@ -258,12 +258,11 @@ def get_discover_detail_tvdb(
     # Get images from TMDB via tvdbId cross-reference (TVDB CDN blocks direct access)
     poster = None
     backdrop = None
-    tmdb = _get_tmdb(db)
-    if tmdb:
-        images = tmdb.find_images_by_tvdb_id(tvdb_id)
-        if images:
-            poster = images.get("poster")
-            backdrop = images.get("backdrop")
+    for img in lookup.get("images", []):
+        if img.get("coverType") == "poster" and img.get("remoteUrl"):
+            poster = img["remoteUrl"]
+        elif img.get("coverType") == "fanart" and img.get("remoteUrl"):
+            backdrop = img["remoteUrl"]
 
     genres = [g.strip() for g in lookup.get("genres", [])]
 
@@ -290,20 +289,17 @@ def get_discover_detail_tvdb(
     }
 
 
-def _sonarr_lookup_to_items(results: list, tmdb: "TMDBService" = None) -> list:
-    """Convert Sonarr lookup results to standard discover item format.
-    Uses TMDB to resolve poster/backdrop since TVDB CDN blocks direct access."""
+def _sonarr_lookup_to_items(results: list) -> list:
+    """Convert Sonarr lookup results to standard discover item format."""
     items = []
     for s in results:
         poster = None
         backdrop = None
-        tvdb_id = s.get("tvdbId") or 0
-        # Try TMDB images via tvdbId cross-reference (TVDB CDN returns 403)
-        if tmdb and tvdb_id:
-            images = tmdb.find_images_by_tvdb_id(tvdb_id)
-            if images:
-                poster = images.get("poster")
-                backdrop = images.get("backdrop")
+        for img in s.get("images", []):
+            if img.get("coverType") == "poster" and img.get("remoteUrl"):
+                poster = img["remoteUrl"]
+            elif img.get("coverType") == "fanart" and img.get("remoteUrl"):
+                backdrop = img["remoteUrl"]
         items.append({
             "tmdb_id": s.get("tmdbId") or 0,
             "tvdb_id": s.get("tvdbId") or 0,
@@ -433,7 +429,7 @@ def search_discover(
         seen_tmdb = {item["tmdb_id"] for item in items if item.get("tmdb_id")}
         seen_tvdb = set()
 
-        for item in _sonarr_lookup_to_items(sonarr_results, tmdb=tmdb):
+        for item in _sonarr_lookup_to_items(sonarr_results):
             tmdb_id = item.get("tmdb_id")
             tvdb_id = item.get("tvdb_id")
             if tmdb_id and tmdb_id in seen_tmdb:
