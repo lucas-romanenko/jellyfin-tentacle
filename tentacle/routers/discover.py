@@ -261,11 +261,20 @@ def get_discover_detail_tvdb(
 
     poster = None
     backdrop = None
+    sonarr_base = sonarr_url.rstrip("/")
     for img in lookup.get("images", []):
-        if img.get("coverType") == "poster" and img.get("remoteUrl"):
-            poster = img["remoteUrl"]
-        elif img.get("coverType") == "fanart" and img.get("remoteUrl"):
-            backdrop = img["remoteUrl"]
+        cover = img.get("coverType")
+        local_url = img.get("url")
+        if local_url and sonarr_base:
+            full_url = f"{sonarr_base}{local_url}?apikey={sonarr_key}"
+        else:
+            full_url = img.get("remoteUrl")
+        if not full_url:
+            full_url = img.get("remoteUrl")
+        if cover == "poster" and full_url:
+            poster = full_url
+        elif cover == "fanart" and full_url:
+            backdrop = full_url
 
     genres = [g.strip() for g in lookup.get("genres", [])]
 
@@ -296,17 +305,27 @@ def get_discover_detail_tvdb(
     return details
 
 
-def _sonarr_lookup_to_items(results: list) -> list:
+def _sonarr_lookup_to_items(results: list, sonarr_url: str = "", sonarr_key: str = "") -> list:
     """Convert Sonarr lookup results to standard discover item format."""
     items = []
+    sonarr_base = sonarr_url.rstrip("/") if sonarr_url else ""
     for s in results:
         poster = None
         backdrop = None
         for img in s.get("images", []):
-            if img.get("coverType") == "poster" and img.get("remoteUrl"):
-                poster = img["remoteUrl"]
-            elif img.get("coverType") == "fanart" and img.get("remoteUrl"):
-                backdrop = img["remoteUrl"]
+            cover = img.get("coverType")
+            # Prefer Sonarr's local image proxy (TVDB CDN blocks direct access)
+            local_url = img.get("url")
+            if local_url and sonarr_base:
+                full_url = f"{sonarr_base}{local_url}?apikey={sonarr_key}" if sonarr_key else None
+            else:
+                full_url = img.get("remoteUrl")
+            if not full_url:
+                full_url = img.get("remoteUrl")
+            if cover == "poster" and full_url:
+                poster = full_url
+            elif cover == "fanart" and full_url:
+                backdrop = full_url
         items.append({
             "tmdb_id": s.get("tmdbId") or 0,
             "tvdb_id": s.get("tvdbId") or 0,
@@ -323,17 +342,26 @@ def _sonarr_lookup_to_items(results: list) -> list:
     return items
 
 
-def _radarr_lookup_to_items(results: list) -> list:
+def _radarr_lookup_to_items(results: list, radarr_url: str = "", radarr_key: str = "") -> list:
     """Convert Radarr lookup results to standard discover item format."""
     items = []
+    radarr_base = radarr_url.rstrip("/") if radarr_url else ""
     for m in results:
         poster = None
         backdrop = None
         for img in m.get("images", []):
-            if img.get("coverType") == "poster" and img.get("remoteUrl"):
-                poster = img["remoteUrl"]
-            elif img.get("coverType") == "fanart" and img.get("remoteUrl"):
-                backdrop = img["remoteUrl"]
+            cover = img.get("coverType")
+            local_url = img.get("url")
+            if local_url and radarr_base:
+                full_url = f"{radarr_base}{local_url}?apikey={radarr_key}" if radarr_key else None
+            else:
+                full_url = img.get("remoteUrl")
+            if not full_url:
+                full_url = img.get("remoteUrl")
+            if cover == "poster" and full_url:
+                poster = full_url
+            elif cover == "fanart" and full_url:
+                backdrop = full_url
         items.append({
             "tmdb_id": m.get("tmdbId") or 0,
             "title": m.get("title", ""),
@@ -435,7 +463,7 @@ def search_discover(
         seen_tvdb = set()
         base_url = str(request.base_url).rstrip("/")
 
-        for item in _sonarr_lookup_to_items(sonarr_results):
+        for item in _sonarr_lookup_to_items(sonarr_results, sonarr_url or "", sonarr_key or ""):
             tmdb_id = item.get("tmdb_id")
             tvdb_id = item.get("tvdb_id")
             if tmdb_id and tmdb_id in seen_tmdb:
@@ -452,7 +480,7 @@ def search_discover(
             _rewrite_item_images(item, base_url)
             items.append(item)
 
-        for item in _radarr_lookup_to_items(radarr_results):
+        for item in _radarr_lookup_to_items(radarr_results, radarr_url or "", radarr_key or ""):
             tmdb_id = item.get("tmdb_id")
             if tmdb_id and tmdb_id in seen_tmdb:
                 continue
