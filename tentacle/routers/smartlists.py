@@ -21,7 +21,7 @@ from services.smartlists import (
     get_desired_smartlists, sync_smartlists, _scan_existing,
     write_home_config, _notify_jellyfin_plugin, refresh_smartlist_playlists,
     _get_smartlists_with_playlist_ids, update_playlist_sort, SORT_BY_DISPLAY,
-    _user_smartlists_path, get_playlist_version,
+    _user_smartlists_path, get_playlist_version, bump_playlist_version,
 )
 
 logger = logging.getLogger(__name__)
@@ -215,6 +215,8 @@ def reorder(req: ReorderRequest, db: Session = Depends(get_db), user: TentacleUs
 
     config["rows"] = new_rows
     _write_home_json(user, config)
+    bump_playlist_version()
+    _notify_jellyfin_plugin(db)
     logger.info(f"Reordered home rows for {user.display_name}: {[r['display_name'] for r in new_rows]}")
     return {"success": True, "rows": len(new_rows)}
 
@@ -293,6 +295,8 @@ def add_row(req: AddRowRequest, db: Session = Depends(get_db), user: TentacleUse
         return {"success": False, "message": "Must provide playlist_id or section_id"}
 
     _write_home_json(user, config)
+    bump_playlist_version()
+    _notify_jellyfin_plugin(db)
     return {"success": True, "rows": len(config["rows"])}
 
 
@@ -319,6 +323,8 @@ def remove_row(req: RemoveRowRequest, db: Session = Depends(get_db), user: Tenta
         r["order"] = i
 
     _write_home_json(user, config)
+    bump_playlist_version()
+    _notify_jellyfin_plugin(db)
     return {"success": True, "rows": len(config["rows"])}
 
 
@@ -356,6 +362,7 @@ def set_row_max_items(req: RowMaxItemsRequest, db: Session = Depends(get_db), us
         return {"success": False, "message": "Row not found"}
 
     _write_home_json(user, config)
+    bump_playlist_version()
     _notify_jellyfin_plugin(db)
     return {"success": True, "max_items": val}
 
@@ -392,6 +399,8 @@ def set_hero(req: HeroPickRequest, db: Session = Depends(get_db), user: Tentacle
         config["hero"] = {"enabled": False, "playlist_id": "", "display_name": "", "sort_by": "random", "sort_order": "Descending", "require_logo": True, "require_trailer": False}
 
     _write_home_json(user, config)
+    bump_playlist_version()
+    _notify_jellyfin_plugin(db)
     logger.info(f"Updated hero: {req.playlist_id or '(disabled)'}")
     return {"success": True}
 
@@ -422,6 +431,8 @@ def set_hero_sort(req: HeroSortRequest, db: Session = Depends(get_db), user: Ten
         hero["trailer_audio"] = req.trailer_audio
     config["hero"] = hero
     _write_home_json(user, config)
+    bump_playlist_version()
+    _notify_jellyfin_plugin(db)
     logger.info(f"Updated hero sort: {req.sort_by} {req.sort_order}")
     return {"success": True}
 
