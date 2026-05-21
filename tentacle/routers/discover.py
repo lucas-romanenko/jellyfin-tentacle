@@ -366,7 +366,13 @@ def search_discover(
     known_ids = _known_tmdb_ids(db)
 
     if type != "channels":
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from concurrent.futures import ThreadPoolExecutor
+
+        # Read settings in main thread (SQLAlchemy sessions aren't thread-safe)
+        sonarr_url = get_setting(db, "sonarr_url") if media_type in ("all", "series") else None
+        sonarr_key = get_setting(db, "sonarr_api_key") if sonarr_url else None
+        radarr_url = get_setting(db, "radarr_url") if media_type in ("all", "movie") else None
+        radarr_key = get_setting(db, "radarr_api_key") if radarr_url else None
 
         def _tmdb_search():
             if not tmdb:
@@ -374,10 +380,6 @@ def search_discover(
             return tmdb.search_multi_results(q, media_type)
 
         def _sonarr_search():
-            if media_type not in ("all", "series"):
-                return []
-            sonarr_url = get_setting(db, "sonarr_url")
-            sonarr_key = get_setting(db, "sonarr_api_key")
             if not sonarr_url or not sonarr_key:
                 return []
             from services.sonarr import SonarrService
@@ -388,10 +390,6 @@ def search_discover(
                 return []
 
         def _radarr_search():
-            if media_type not in ("all", "movie"):
-                return []
-            radarr_url = get_setting(db, "radarr_url")
-            radarr_key = get_setting(db, "radarr_api_key")
             if not radarr_url or not radarr_key:
                 return []
             from services.radarr import RadarrService
