@@ -361,66 +361,88 @@ def search_discover(
     elif type == "series":
         media_type = "series"
 
-    # Search TMDB for movies/series (skip if channels-only)
+    # Search TMDB + Sonarr + Radarr in parallel for speed
     items = []
     known_ids = _known_tmdb_ids(db)
-    if type != "channels" and tmdb:
-        results = tmdb.search_multi_results(q, media_type)
-        items = _dedup_and_mark(results, known_ids)
 
-    # Supplement with Sonarr/Radarr lookup (searches TheTVDB/TMDB via *arr APIs)
-    # This catches shows that exist on TheTVDB but not TMDB
     if type != "channels":
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def _tmdb_search():
+            if not tmdb:
+                return []
+            return tmdb.search_multi_results(q, media_type)
+
+        def _sonarr_search():
+            if media_type not in ("all", "series"):
+                return []
+            sonarr_url = get_setting(db, "sonarr_url")
+            sonarr_key = get_setting(db, "sonarr_api_key")
+            if not sonarr_url or not sonarr_key:
+                return []
+            from services.sonarr import SonarrService
+            try:
+                return SonarrService(sonarr_url, sonarr_key).lookup_by_term(q.strip())
+            except Exception as e:
+                logger.warning(f"Sonarr lookup supplement failed: {e}")
+                return []
+
+        def _radarr_search():
+            if media_type not in ("all", "movie"):
+                return []
+            radarr_url = get_setting(db, "radarr_url")
+            radarr_key = get_setting(db, "radarr_api_key")
+            if not radarr_url or not radarr_key:
+                return []
+            from services.radarr import RadarrService
+            try:
+                return RadarrService(radarr_url, radarr_key).lookup_by_term(q.strip())
+            except Exception as e:
+                logger.warning(f"Radarr lookup supplement failed: {e}")
+                return []
+
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            tmdb_future = pool.submit(_tmdb_search)
+            sonarr_future = pool.submit(_sonarr_search)
+            radarr_future = pool.submit(_radarr_search)
+
+            tmdb_results = tmdb_future.result(timeout=15)
+            sonarr_results = sonarr_future.result(timeout=15)
+            radarr_results = radarr_future.result(timeout=15)
+
+        # TMDB results first
+        items = _dedup_and_mark(tmdb_results, known_ids)
+
+        # Supplement with Sonarr/Radarr (TheTVDB coverage)
         seen_tmdb = {item["tmdb_id"] for item in items if item.get("tmdb_id")}
         seen_tvdb = set()
 
-        if media_type in ("all", "series"):
-            sonarr_url = get_setting(db, "sonarr_url")
-            sonarr_key = get_setting(db, "sonarr_api_key")
-            if sonarr_url and sonarr_key:
-                from services.sonarr import SonarrService
-                try:
-                    sonarr = SonarrService(sonarr_url, sonarr_key)
-                    sonarr_results = sonarr.lookup_by_term(q.strip())
-                    for item in _sonarr_lookup_to_items(sonarr_results):
-                        tmdb_id = item.get("tmdb_id")
-                        tvdb_id = item.get("tvdb_id")
-                        # Skip if we already have this from TMDB results
-                        if tmdb_id and tmdb_id in seen_tmdb:
-                            continue
-                        if tvdb_id and tvdb_id in seen_tvdb:
-                            continue
-                        if tmdb_id:
-                            seen_tmdb.add(tmdb_id)
-                            item["in_library"] = tmdb_id in known_ids
-                        else:
-                            item["in_library"] = False
-                        if tvdb_id:
-                            seen_tvdb.add(tvdb_id)
-                        items.append(item)
-                except Exception as e:
-                    logger.warning(f"Sonarr lookup supplement failed: {e}")
+        for item in _sonarr_lookup_to_items(sonarr_results):
+            tmdb_id = item.get("tmdb_id")
+            tvdb_id = item.get("tvdb_id")
+            if tmdb_id and tmdb_id in seen_tmdb:
+                continue
+            if tvdb_id and tvdb_id in seen_tvdb:
+                continue
+            if tmdb_id:
+                seen_tmdb.add(tmdb_id)
+                item["in_library"] = tmdb_id in known_ids
+            else:
+                item["in_library"] = False
+            if tvdb_id:
+                seen_tvdb.add(tvdb_id)
+            items.append(item)
 
-        if media_type in ("all", "movie"):
-            radarr_url = get_setting(db, "radarr_url")
-            radarr_key = get_setting(db, "radarr_api_key")
-            if radarr_url and radarr_key:
-                from services.radarr import RadarrService
-                try:
-                    radarr = RadarrService(radarr_url, radarr_key)
-                    radarr_results = radarr.lookup_by_term(q.strip())
-                    for item in _radarr_lookup_to_items(radarr_results):
-                        tmdb_id = item.get("tmdb_id")
-                        if tmdb_id and tmdb_id in seen_tmdb:
-                            continue
-                        if tmdb_id:
-                            seen_tmdb.add(tmdb_id)
-                            item["in_library"] = tmdb_id in known_ids
-                        else:
-                            item["in_library"] = False
-                        items.append(item)
-                except Exception as e:
-                    logger.warning(f"Radarr lookup supplement failed: {e}")
+        for item in _radarr_lookup_to_items(radarr_results):
+            tmdb_id = item.get("tmdb_id")
+            if tmdb_id and tmdb_id in seen_tmdb:
+                continue
+            if tmdb_id:
+                seen_tmdb.add(tmdb_id)
+                item["in_library"] = tmdb_id in known_ids
+            else:
+                item["in_library"] = False
+            items.append(item)
 
     # Search Live TV channels — prepend to items list
     if type in ("all", "channels"):
