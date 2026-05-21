@@ -416,7 +416,7 @@
 
         // TMDB movie/series card
         var posterUrl = item.poster_path
-          ? 'https://image.tmdb.org/t/p/w342' + item.poster_path
+          ? (item.poster_path.startsWith('http') ? item.poster_path : 'https://image.tmdb.org/t/p/w342' + item.poster_path)
           : '';
         var posterHtml = posterUrl
           ? '<img src="' + posterUrl + '" loading="lazy" onerror="this.style.display=\'none\'">'

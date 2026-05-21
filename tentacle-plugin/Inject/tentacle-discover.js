@@ -11,6 +11,13 @@
   'use strict';
   console.log('[Tentacle] v6 — Discover + Activity standalone overlays (Moonfin pattern)');
 
+  // Helper: build image URL — use as-is if already absolute (e.g. TheTVDB), else prepend TMDB CDN
+  function _imgUrl(path, size) {
+    if (!path) return '';
+    if (path.startsWith('http')) return path;
+    return 'https://image.tmdb.org/t/p/' + size + path;
+  }
+
   // ── Shared state ────────────────────────────────────────────────────
   var MD = {
     initialized: false,
@@ -350,7 +357,7 @@
     content.innerHTML = '<div class="md-discover-grid">' +
       items.map(function (item) {
         var poster = item.poster_path
-          ? '<img src="https://image.tmdb.org/t/p/w185' + item.poster_path + '" loading="lazy" onerror="this.style.display=\'none\'">'
+          ? '<img src="' + _imgUrl(item.poster_path, 'w185') + '" loading="lazy" onerror="this.style.display=\'none\'">'
           : '<div class="md-card-poster-placeholder">&#9707;</div>';
         var dlInfo = getDownloadInfo(item.tmdb_id);
         var ulInfo = !dlInfo ? getUnreleasedInfo(item.tmdb_id) : null;
@@ -474,7 +481,7 @@
     MD._currentItem = item;
 
     var backdrop = item.backdrop_path
-      ? '<img src="https://image.tmdb.org/t/p/w780' + item.backdrop_path + '">'
+      ? '<img src="' + _imgUrl(item.backdrop_path, 'w780') + '">'
       : '';
 
     var downloadSection = '';
@@ -1257,7 +1264,7 @@
         '<div class="md-act-dl-grid">' +
         downloads.map(function (dl) {
           var poster = dl.poster_path
-            ? '<img src="https://image.tmdb.org/t/p/w185' + dl.poster_path + '" loading="lazy" onerror="this.parentElement.innerHTML=\'<div class=md-act-poster-ph>&#9707;</div>\'">'
+            ? '<img src="' + _imgUrl(dl.poster_path, 'w185') + '" loading="lazy" onerror="this.parentElement.innerHTML=\'<div class=md-act-poster-ph>&#9707;</div>\'">'
             : '<div class="md-act-poster-ph">&#9707;</div>';
           var statusClass = dl.status === 'importing' ? 'importing' :
             dl.status === 'queued' ? 'queued' :
@@ -1301,7 +1308,7 @@
         '<div class="md-act-upcoming-grid">' +
         unreleased.map(function (item, idx) {
           var poster = item.poster_path
-            ? '<img src="https://image.tmdb.org/t/p/w185' + item.poster_path + '" loading="lazy" onerror="this.parentElement.innerHTML=\'<div class=md-act-upcoming-ph>&#9707;</div>\'">'
+            ? '<img src="' + _imgUrl(item.poster_path, 'w185') + '" loading="lazy" onerror="this.parentElement.innerHTML=\'<div class=md-act-upcoming-ph>&#9707;</div>\'">'
             : '<div class="md-act-upcoming-ph">&#9707;</div>';
           var countdown = '';
           var countdownClass = '';
@@ -1356,10 +1363,10 @@
     if (old) old.remove();
 
     var backdrop = item.poster_path
-      ? 'https://image.tmdb.org/t/p/w780' + item.poster_path
+      ? _imgUrl(item.poster_path, 'w780')
       : '';
     var poster = item.poster_path
-      ? '<img src="https://image.tmdb.org/t/p/w342' + item.poster_path + '">'
+      ? '<img src="' + _imgUrl(item.poster_path, 'w342') + '">'
       : '';
 
     // Build release dates list
