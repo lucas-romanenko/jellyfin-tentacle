@@ -3,15 +3,17 @@ Tentacle - Discover Router
 Trending, popular, upcoming content from TMDB + missing from user lists
 """
 
+import hashlib
 import logging
 import random
 import re
 from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing import Optional
-from fastapi import Request
+import httpx
 from models.database import get_db, get_setting, Movie, Series, ListSubscription, ListItem, DownloadRequest, LiveChannel, TentacleUser
 from routers.auth import get_user_from_request
 from services.tmdb import TMDBService
@@ -241,6 +243,7 @@ def get_discover_detail(
 @router.get("/detail-tvdb/{tvdb_id}")
 def get_discover_detail_tvdb(
     tvdb_id: int,
+    request: Request,
     db: Session = Depends(get_db),
 ):
     """Fetch detail for a TheTVDB-only series via Sonarr lookup."""
@@ -265,6 +268,11 @@ def get_discover_detail_tvdb(
             backdrop = img["remoteUrl"]
 
     genres = [g.strip() for g in lookup.get("genres", [])]
+
+    # Rewrite TVDB image URLs to go through proxy
+    base_url = str(request.base_url).rstrip("/")
+    poster = _rewrite_tvdb_url(poster, base_url) if poster else None
+    backdrop = _rewrite_tvdb_url(backdrop, base_url) if backdrop else None
 
     return {
         "tmdb_id": lookup.get("tmdbId") or 0,
@@ -347,6 +355,7 @@ def _radarr_lookup_to_items(results: list) -> list:
 
 @router.get("/search")
 def search_discover(
+    request: Request,
     q: str = "",
     type: str = "all",
     db: Session = Depends(get_db)
@@ -455,6 +464,10 @@ def search_discover(
             else:
                 item["in_library"] = False
             items.append(item)
+
+    # Rewrite TVDB image URLs to go through proxy
+    base_url = str(request.base_url).rstrip("/")
+    items = [_rewrite_item_images(item, base_url) for item in items]
 
     # Search Live TV channels — prepend to items list
     if type in ("all", "channels"):
@@ -768,5 +781,70 @@ def manage_episodes(
 
 
 # ---------------------------------------------------------------------------
-# Image proxy — TVDB CDN blocks direct access, so we proxy through Tentacle
+# Image proxy — TVDB CDN blocks non-browser HTTP clients (TLS fingerprinting),
+# so we proxy TVDB images through Tentacle using httpx with HTTP/2
 # ---------------------------------------------------------------------------
+
+TVDB_PROXY_CACHE = Path("/data/tvdb_image_cache")
+
+
+def _rewrite_tvdb_url(url: str, base_url: str) -> str:
+    """Rewrite a TVDB CDN URL to go through Tentacle's image proxy."""
+    if not url or "thetvdb.com" not in url:
+        return url
+    from urllib.parse import quote
+    cache_key = hashlib.md5(url.encode()).hexdigest()
+    return f"{base_url}/api/discover/image-proxy/{cache_key}?url={quote(url, safe='')}"
+
+
+def _rewrite_item_images(item: dict, base_url: str) -> dict:
+    """Rewrite TVDB image URLs in a discover item to use the proxy."""
+    if item.get("poster_path"):
+        item["poster_path"] = _rewrite_tvdb_url(item["poster_path"], base_url)
+    if item.get("backdrop_path"):
+        item["backdrop_path"] = _rewrite_tvdb_url(item["backdrop_path"], base_url)
+    return item
+
+
+@router.get("/image-proxy/{cache_key}")
+async def image_proxy(cache_key: str, url: str = ""):
+    """Proxy TVDB images through the server to bypass CDN TLS fingerprinting."""
+    if not url or "thetvdb.com" not in url:
+        raise HTTPException(status_code=400, detail="Invalid URL")
+
+    # Check disk cache
+    TVDB_PROXY_CACHE.mkdir(parents=True, exist_ok=True)
+    # Extract extension from URL path (strip query params first)
+    url_path = url.split("?")[0]
+    ext = Path(url_path).suffix if Path(url_path).suffix in (".jpg", ".jpeg", ".png", ".webp") else ".jpg"
+    cached = TVDB_PROXY_CACHE / f"{cache_key}{ext}"
+    if cached.exists():
+        media_type = "image/jpeg"
+        if ext == ".png":
+            media_type = "image/png"
+        elif ext == ".webp":
+            media_type = "image/webp"
+        return Response(content=cached.read_bytes(), media_type=media_type)
+
+    # Fetch from TVDB using httpx with HTTP/2 (better TLS fingerprint)
+    try:
+        async with httpx.AsyncClient(http2=True, follow_redirects=True, timeout=15) as client:
+            resp = await client.get(url, headers={
+                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+                "Accept": "image/webp,image/apng,image/*,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Referer": "https://thetvdb.com/",
+            })
+            if resp.status_code != 200:
+                logger.warning(f"TVDB image proxy failed: {resp.status_code} for {url}")
+                raise HTTPException(status_code=502, detail="Upstream image fetch failed")
+
+            content = resp.content
+            content_type = resp.headers.get("content-type", "image/jpeg")
+
+            # Cache to disk
+            cached.write_bytes(content)
+            return Response(content=content, media_type=content_type)
+    except httpx.HTTPError as e:
+        logger.warning(f"TVDB image proxy error: {e}")
+        raise HTTPException(status_code=502, detail="Upstream image fetch failed")
