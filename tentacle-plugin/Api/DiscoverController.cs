@@ -256,6 +256,9 @@ public class TentacleDiscoverController : ControllerBase
         {
             var detailJson = await HttpClient.GetStringAsync(
                 $"{baseUrl}/api/discover/detail-tvdb/{tvdbId}");
+            // Rewrite relative proxy paths to absolute plugin endpoint URLs
+            var jellyfinBase = $"{Request.Scheme}://{Request.Host}";
+            detailJson = detailJson.Replace("/api/discover/image-proxy/", $"{jellyfinBase}/TentacleDiscover/ImageProxy/");
             return Content(detailJson, "application/json");
         }
         catch (Exception ex)
@@ -346,6 +349,9 @@ public class TentacleDiscoverController : ControllerBase
         {
             var encodedQ = System.Net.WebUtility.UrlEncode(q);
             var response = await HttpClient.GetStringAsync($"{baseUrl}/api/discover/search?q={encodedQ}&type={type}");
+            // Rewrite relative proxy paths to absolute plugin endpoint URLs so Android TV can reach them
+            var jellyfinBase = $"{Request.Scheme}://{Request.Host}";
+            response = response.Replace("/api/discover/image-proxy/", $"{jellyfinBase}/TentacleDiscover/ImageProxy/");
             return Content(response, "application/json");
         }
         catch (Exception ex)
@@ -730,6 +736,39 @@ public class TentacleDiscoverController : ControllerBase
         if (content == null) return NotFound();
         Response.Headers["Cache-Control"] = "no-store, no-cache, must-revalidate";
         return Content(content, "text/css");
+    }
+
+    /// <summary>
+    /// Proxies TVDB image requests through Jellyfin to Tentacle backend.
+    /// TVDB CDN blocks non-browser HTTP clients, so Tentacle fetches server-side.
+    /// </summary>
+    [HttpGet("ImageProxy/{cacheKey}")]
+    public async Task<ActionResult> ImageProxy(string cacheKey, [FromQuery] string url = "")
+    {
+        var baseUrl = GetTentacleUrl();
+        if (string.IsNullOrEmpty(baseUrl) || string.IsNullOrEmpty(url))
+        {
+            return NotFound();
+        }
+
+        try
+        {
+            var encodedUrl = System.Net.WebUtility.UrlEncode(url);
+            var response = await HttpClient.GetAsync($"{baseUrl}/api/discover/image-proxy/{cacheKey}?url={encodedUrl}");
+            if (!response.IsSuccessStatusCode)
+            {
+                return StatusCode((int)response.StatusCode);
+            }
+
+            var content = await response.Content.ReadAsByteArrayAsync();
+            var contentType = response.Content.Headers.ContentType?.ToString() ?? "image/jpeg";
+            return File(content, contentType);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("[Tentacle Discover] Image proxy failed: {Error}", ex.Message);
+            return NotFound();
+        }
     }
 
     private static string? LoadEmbeddedResource(string resourceSuffix)

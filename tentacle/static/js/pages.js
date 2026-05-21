@@ -677,7 +677,7 @@ let _epPickerLoaded = {};   // season_number -> episodes array
 // Helper: resolve poster/backdrop URLs (TVDB sends full URLs, TMDB sends relative paths)
 function _imgUrl(path, size) {
   if (!path) return '';
-  if (path.startsWith('http')) return path;
+  if (path.startsWith('http') || path.startsWith('/api/discover/image-proxy/')) return path;
   return 'https://image.tmdb.org/t/p/' + size + path;
 }
 
@@ -1387,7 +1387,7 @@ async function showMediaDetail(tmdbId, mediaType) {
     const isSeries = mediaType === 'series';
     document.getElementById('detail-body').innerHTML = `
       <div style="display:flex;gap:20px">
-        ${data.poster_path ? `<img src="https://image.tmdb.org/t/p/w185${data.poster_path}" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
+        ${data.poster_path ? `<img src="${_imgUrl(data.poster_path, 'w185')}" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
         <div style="flex:1">
           <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${data.year || '—'} · ${data.runtime ? data.runtime+'m' : ''} · ★ ${data.rating || '—'}</div>
           <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${data.overview || 'No overview available.'}</p>
@@ -1621,7 +1621,7 @@ async function showCoverageDetail(tmdbId, mediaType, title, year, posterPath) {
     document.getElementById('detail-title').textContent = data.title;
     document.getElementById('detail-body').innerHTML = `
       <div style="display:flex;gap:20px">
-        ${data.poster_path ? `<img src="https://image.tmdb.org/t/p/w185${data.poster_path}" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
+        ${data.poster_path ? `<img src="${_imgUrl(data.poster_path, 'w185')}" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
         <div style="flex:1">
           <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${data.year || '—'} · ${data.runtime ? data.runtime+'m' : ''} · ★ ${data.rating || '—'}</div>
           <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${data.overview || 'No overview available.'}</p>
@@ -1646,7 +1646,7 @@ async function showCoverageDetail(tmdbId, mediaType, title, year, posterPath) {
       document.getElementById('detail-title').textContent = data.title || title || 'Unknown';
       document.getElementById('detail-body').innerHTML = `
         <div style="display:flex;gap:20px">
-          ${data.poster_path ? `<img src="https://image.tmdb.org/t/p/w185${data.poster_path}" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
+          ${data.poster_path ? `<img src="${_imgUrl(data.poster_path, 'w185')}" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
           <div style="flex:1">
             <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${data.year || '—'} · ${data.runtime ? data.runtime+'m · ' : ''}★ ${data.rating || '—'}</div>
             <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${data.overview || 'No overview available.'}</p>
@@ -1665,7 +1665,7 @@ async function showCoverageDetail(tmdbId, mediaType, title, year, posterPath) {
       document.getElementById('detail-title').textContent = title || 'Unknown';
       document.getElementById('detail-body').innerHTML = `
         <div style="display:flex;gap:20px">
-          ${posterPath ? `<img src="https://image.tmdb.org/t/p/w185${posterPath}" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
+          ${posterPath ? `<img src="${_imgUrl(posterPath, 'w185')}" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
           <div style="flex:1">
             <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${year || '—'}</div>
             <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">Not in library yet.</p>
@@ -2360,7 +2360,7 @@ function _applyCoverageFilter() {
 
 function coverageCard(item, showAdd = false) {
   const poster = item.poster_path
-    ? `<img src="https://image.tmdb.org/t/p/w200${item.poster_path}" alt="" loading="lazy">`
+    ? `<img src="${_imgUrl(item.poster_path, 'w200')}" alt="" loading="lazy">`
     : `<div class="no-poster">🎬</div>`;
   const year = item.year ? ` (${item.year})` : '';
   const isSeries = (item.media_type || 'movie') === 'series';
@@ -3537,7 +3537,7 @@ function renderActivity(data) {
     html += '<div class="activity-section-title">Downloading</div><div class="activity-grid">';
     html += downloads.map(dl => {
       const poster = dl.poster_path
-        ? `<img src="https://image.tmdb.org/t/p/w185${dl.poster_path}" loading="lazy" onerror="this.style.display='none'">`
+        ? `<img src="${_imgUrl(dl.poster_path, 'w185')}" loading="lazy" onerror="this.style.display='none'">`
         : '<div class="activity-poster-placeholder">◫</div>';
       const statusClass = 'dl-' + (dl.status || 'downloading');
       const statusLabel = dl.status === 'importing' ? 'Importing' :
@@ -3569,7 +3569,7 @@ function renderActivity(data) {
     html += '<div class="activity-section-title">Upcoming Releases</div><div class="activity-grid">';
     html += unreleased.map(item => {
       const poster = item.poster_path
-        ? `<img src="https://image.tmdb.org/t/p/w185${item.poster_path}" loading="lazy" onerror="this.style.display='none'">`
+        ? `<img src="${_imgUrl(item.poster_path, 'w185')}" loading="lazy" onerror="this.style.display='none'">`
         : '<div class="activity-poster-placeholder">◫</div>';
       let daysUntil = '';
       if (item.release_date) {

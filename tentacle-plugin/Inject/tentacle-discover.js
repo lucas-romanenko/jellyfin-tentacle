@@ -15,6 +15,7 @@
   function _imgUrl(path, size) {
     if (!path) return '';
     if (path.startsWith('http')) return path;
+    if (path.startsWith('/TentacleDiscover/')) return path;
     return 'https://image.tmdb.org/t/p/' + size + path;
   }
 

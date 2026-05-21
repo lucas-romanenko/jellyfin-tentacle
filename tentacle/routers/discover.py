@@ -243,7 +243,6 @@ def get_discover_detail(
 @router.get("/detail-tvdb/{tvdb_id}")
 def get_discover_detail_tvdb(
     tvdb_id: int,
-    request: Request,
     db: Session = Depends(get_db),
 ):
     """Fetch detail for a TheTVDB-only series via Sonarr lookup."""
@@ -270,9 +269,8 @@ def get_discover_detail_tvdb(
     genres = [g.strip() for g in lookup.get("genres", [])]
 
     # Rewrite TVDB image URLs to go through proxy
-    base_url = str(request.base_url).rstrip("/")
-    poster = _rewrite_tvdb_url(poster, base_url) if poster else None
-    backdrop = _rewrite_tvdb_url(backdrop, base_url) if backdrop else None
+    poster = _rewrite_tvdb_url(poster) if poster else None
+    backdrop = _rewrite_tvdb_url(backdrop) if backdrop else None
 
     return {
         "tmdb_id": lookup.get("tmdbId") or 0,
@@ -355,7 +353,6 @@ def _radarr_lookup_to_items(results: list) -> list:
 
 @router.get("/search")
 def search_discover(
-    request: Request,
     q: str = "",
     type: str = "all",
     db: Session = Depends(get_db)
@@ -466,8 +463,7 @@ def search_discover(
             items.append(item)
 
     # Rewrite TVDB image URLs to go through proxy
-    base_url = str(request.base_url).rstrip("/")
-    items = [_rewrite_item_images(item, base_url) for item in items]
+    items = [_rewrite_item_images(item) for item in items]
 
     # Search Live TV channels — prepend to items list
     if type in ("all", "channels"):
@@ -788,21 +784,22 @@ def manage_episodes(
 TVDB_PROXY_CACHE = Path("/data/tvdb_image_cache")
 
 
-def _rewrite_tvdb_url(url: str, base_url: str) -> str:
-    """Rewrite a TVDB CDN URL to go through Tentacle's image proxy."""
+def _rewrite_tvdb_url(url: str) -> str:
+    """Rewrite a TVDB CDN URL to a relative proxy path (no host).
+    The C# plugin prepends its own Tentacle base URL when proxying."""
     if not url or "thetvdb.com" not in url:
         return url
     from urllib.parse import quote
     cache_key = hashlib.md5(url.encode()).hexdigest()
-    return f"{base_url}/api/discover/image-proxy/{cache_key}?url={quote(url, safe='')}"
+    return f"/api/discover/image-proxy/{cache_key}?url={quote(url, safe='')}"
 
 
-def _rewrite_item_images(item: dict, base_url: str) -> dict:
+def _rewrite_item_images(item: dict) -> dict:
     """Rewrite TVDB image URLs in a discover item to use the proxy."""
     if item.get("poster_path"):
-        item["poster_path"] = _rewrite_tvdb_url(item["poster_path"], base_url)
+        item["poster_path"] = _rewrite_tvdb_url(item["poster_path"])
     if item.get("backdrop_path"):
-        item["backdrop_path"] = _rewrite_tvdb_url(item["backdrop_path"], base_url)
+        item["backdrop_path"] = _rewrite_tvdb_url(item["backdrop_path"])
     return item
 
 
