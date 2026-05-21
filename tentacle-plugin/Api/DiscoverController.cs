@@ -240,6 +240,32 @@ public class TentacleDiscoverController : ControllerBase
     }
 
     /// <summary>
+    /// Proxies TheTVDB detail requests to Tentacle (for items not on TMDB).
+    /// </summary>
+    [HttpGet("DetailTvdb/{tvdbId}")]
+    [Authorize]
+    public async Task<ActionResult> GetDetailTvdb(int tvdbId)
+    {
+        var baseUrl = GetTentacleUrl();
+        if (string.IsNullOrEmpty(baseUrl))
+        {
+            return NotFound();
+        }
+
+        try
+        {
+            var detailJson = await HttpClient.GetStringAsync(
+                $"{baseUrl}/api/discover/detail-tvdb/{tvdbId}");
+            return Content(detailJson, "application/json");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("[Tentacle Discover] Failed to fetch TVDB detail: {Error}", ex.Message);
+            return NotFound();
+        }
+    }
+
+    /// <summary>
     /// Proxies follow/unfollow toggle for a series to Tentacle.
     /// </summary>
     [HttpPost("Follow/{tmdbId}")]
@@ -507,6 +533,50 @@ public class TentacleDiscoverController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogWarning("[Tentacle Discover] Failed to fetch episodes: {Error}", ex.Message);
+            return NotFound();
+        }
+    }
+
+    /// <summary>
+    /// Proxies season list for a TheTVDB-only series via Sonarr.
+    /// </summary>
+    [HttpGet("SeasonsTvdb/{tvdbId}")]
+    [Authorize]
+    public async Task<ActionResult> GetSeasonsTvdb(int tvdbId)
+    {
+        var baseUrl = GetTentacleUrl();
+        if (string.IsNullOrEmpty(baseUrl)) return NotFound();
+
+        try
+        {
+            var response = await HttpClient.GetStringAsync($"{baseUrl}/api/discover/seasons-tvdb/{tvdbId}");
+            return Content(response, "application/json");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("[Tentacle Discover] Failed to fetch TVDB seasons: {Error}", ex.Message);
+            return NotFound();
+        }
+    }
+
+    /// <summary>
+    /// Proxies episode list for a TheTVDB-only series season via Sonarr.
+    /// </summary>
+    [HttpGet("SeasonTvdb/{tvdbId}/{seasonNumber}")]
+    [Authorize]
+    public async Task<ActionResult> GetSeasonEpisodesTvdb(int tvdbId, int seasonNumber)
+    {
+        var baseUrl = GetTentacleUrl();
+        if (string.IsNullOrEmpty(baseUrl)) return NotFound();
+
+        try
+        {
+            var response = await HttpClient.GetStringAsync($"{baseUrl}/api/discover/season-tvdb/{tvdbId}/{seasonNumber}");
+            return Content(response, "application/json");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("[Tentacle Discover] Failed to fetch TVDB episodes: {Error}", ex.Message);
             return NotFound();
         }
     }

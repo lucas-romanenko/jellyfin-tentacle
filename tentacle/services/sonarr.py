@@ -104,14 +104,46 @@ class SonarrService:
             logger.error(f"Sonarr lookup failed for tmdb:{tmdb_id}: {e}")
             return None
 
-    def add_series(self, tmdb_id: int, quality_profile_id: int, root_folder: str,
+    def lookup_by_tvdb(self, tvdb_id: int) -> Optional[dict]:
+        try:
+            r = self.session.get(
+                f"{self.url}/api/v3/series/lookup",
+                params={"term": f"tvdb:{tvdb_id}"},
+                timeout=15,
+            )
+            r.raise_for_status()
+            results = r.json()
+            return results[0] if results else None
+        except Exception as e:
+            logger.error(f"Sonarr lookup failed for tvdb:{tvdb_id}: {e}")
+            return None
+
+    def lookup_by_term(self, query: str) -> list:
+        """Search Sonarr/TheTVDB by free-text query. Returns list of lookup results."""
+        try:
+            r = self.session.get(
+                f"{self.url}/api/v3/series/lookup",
+                params={"term": query},
+                timeout=15,
+            )
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            logger.error(f"Sonarr text lookup failed for '{query}': {e}")
+            return []
+
+    def add_series(self, tmdb_id: int = None, quality_profile_id: int = 1, root_folder: str = "",
                    monitor: str = "all", season_folder: bool = True,
                    selected_episodes: list = None,
                    series_path: str = None,
-                   monitor_new: bool = False) -> Optional[dict]:
-        lookup = self.lookup_by_tmdb(tmdb_id)
+                   monitor_new: bool = False,
+                   tvdb_id: int = None) -> Optional[dict]:
+        if tvdb_id and not tmdb_id:
+            lookup = self.lookup_by_tvdb(tvdb_id)
+        else:
+            lookup = self.lookup_by_tmdb(tmdb_id)
         if not lookup:
-            logger.error(f"Sonarr: no lookup result for tmdb:{tmdb_id}")
+            logger.error(f"Sonarr: no lookup result for tmdb:{tmdb_id} tvdb:{tvdb_id}")
             return None
         payload = lookup
         payload["qualityProfileId"] = quality_profile_id

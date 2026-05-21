@@ -130,6 +130,7 @@ class ListCreate(BaseModel):
 
 class AddMissingBody(BaseModel):
     tmdb_ids: Optional[list] = None
+    tvdb_ids: Optional[list] = None  # For TheTVDB-only content (no TMDB entry)
     quality_profile_id: Optional[int] = None
     monitor: Optional[str] = None
     season_folder: Optional[bool] = None
@@ -695,9 +696,9 @@ def add_to_radarr(body: AddMissingBody, db: Session = Depends(get_db), user: Ten
 
 @router.post("/add-to-sonarr")
 def add_to_sonarr(body: AddMissingBody, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
-    """Add specific TMDB IDs to Sonarr"""
-    if not body.tmdb_ids:
-        raise HTTPException(400, "No tmdb_ids provided")
+    """Add specific TMDB or TVDB IDs to Sonarr"""
+    if not body.tmdb_ids and not body.tvdb_ids:
+        raise HTTPException(400, "No tmdb_ids or tvdb_ids provided")
 
     sonarr_url = get_setting(db, "sonarr_url")
     sonarr_key = get_setting(db, "sonarr_api_key")
@@ -724,7 +725,8 @@ def add_to_sonarr(body: AddMissingBody, db: Session = Depends(get_db), user: Ten
             vod_root = rf["path"].rstrip("/")
             break
 
-    for tmdb_id in body.tmdb_ids:
+    # Process TMDB IDs
+    for tmdb_id in (body.tmdb_ids or []):
         existing = db.query(Series).filter(Series.tmdb_id == tmdb_id).first()
         if existing and existing.source == "sonarr":
             already_exists += 1
@@ -745,6 +747,17 @@ def add_to_sonarr(body: AddMissingBody, db: Session = Depends(get_db), user: Ten
             if existing and existing.source.startswith("provider_") and result.get("path"):
                 existing.sonarr_path = result["path"]
                 db.commit()
+        else:
+            failed += 1
+
+    # Process TVDB IDs (for TheTVDB-only content not on TMDB)
+    for tvdb_id in (body.tvdb_ids or []):
+        result = sonarr.add_series(tvdb_id=tvdb_id, quality_profile_id=quality_profile_id, root_folder=root_folder, monitor=monitor, season_folder=season_folder, selected_episodes=body.selected_episodes, monitor_new=body.monitor_new or False)
+        if result:
+            added += 1
+            # Use the tmdbId from Sonarr's response if available, else use negative tvdb_id
+            result_tmdb = result.get("tmdbId") or -tvdb_id
+            _record_download_request(db, result_tmdb, "series", user.id)
         else:
             failed += 1
 

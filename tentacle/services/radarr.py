@@ -56,6 +56,20 @@ class RadarrService:
         movies = self.get_all_movies()
         return next((m for m in movies if m.get("tmdbId") == tmdb_id), None)
 
+    def lookup_by_term(self, query: str) -> list:
+        """Search Radarr/TMDB by free-text query. Returns list of lookup results."""
+        try:
+            r = self.session.get(
+                f"{self.url}/api/v3/movie/lookup",
+                params={"term": query},
+                timeout=15,
+            )
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            logger.error(f"Radarr text lookup failed for '{query}': {e}")
+            return []
+
     def add_movie(self, tmdb_id: int, root_folder: str, quality_profile_id: int = 1) -> bool:
         try:
             r = self.session.post(

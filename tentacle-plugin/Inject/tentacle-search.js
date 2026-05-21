@@ -340,9 +340,10 @@
       if (card) {
         e.preventDefault();
         e.stopPropagation();
-        var tmdb = parseInt(card.getAttribute('data-tmdb'), 10);
-        var item = findItem(tmdb);
-        console.log('[TentacleSearch] Card clicked, tmdb=' + tmdb, 'item=', item);
+        var tmdb = parseInt(card.getAttribute('data-tmdb'), 10) || 0;
+        var tvdb = parseInt(card.getAttribute('data-tvdb'), 10) || 0;
+        var item = findItem(tmdb, tvdb);
+        console.log('[TentacleSearch] Card clicked, tmdb=' + tmdb, 'tvdb=' + tvdb, 'item=', item);
         if (!item) return;
         if (item.in_library) {
           goToLibraryItem(item);
@@ -440,7 +441,7 @@
         var yearHtml = item.year || '\u2014';
         var sep = item.rating ? ' \u00b7 ' : '';
 
-        return '<div class="ts-card" data-tmdb="' + item.tmdb_id + '" data-type="' + (item.media_type || 'movie') + '">' +
+        return '<div class="ts-card" data-tmdb="' + (item.tmdb_id || 0) + '" data-tvdb="' + (item.tvdb_id || 0) + '" data-type="' + (item.media_type || 'movie') + '">' +
           '<div class="ts-card-poster">' + posterHtml + typeBadge + statusBadge + '</div>' +
           '<div class="ts-card-info">' +
             '<div class="ts-card-title">' + esc(item.title) + '</div>' +
@@ -452,9 +453,11 @@
 
   // ── Navigation ───────────────────────────────────────────────────────
 
-  function findItem(tmdbId) {
+  function findItem(tmdbId, tvdbId) {
     for (var i = 0; i < SEARCH.results.length; i++) {
-      if (SEARCH.results[i].tmdb_id === tmdbId) return SEARCH.results[i];
+      var r = SEARCH.results[i];
+      if (tmdbId && r.tmdb_id === tmdbId) return r;
+      if (tvdbId && r.tvdb_id === tvdbId) return r;
     }
     return null;
   }

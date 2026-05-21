@@ -238,19 +238,122 @@ def get_discover_detail(
     return details
 
 
+@router.get("/detail-tvdb/{tvdb_id}")
+def get_discover_detail_tvdb(
+    tvdb_id: int,
+    db: Session = Depends(get_db),
+):
+    """Fetch detail for a TheTVDB-only series via Sonarr lookup."""
+    sonarr_url = get_setting(db, "sonarr_url")
+    sonarr_key = get_setting(db, "sonarr_api_key")
+    if not sonarr_url or not sonarr_key:
+        return {"error": "Sonarr not configured"}
+
+    from services.sonarr import SonarrService
+    sonarr = SonarrService(sonarr_url, sonarr_key)
+    lookup = sonarr.lookup_by_tvdb(tvdb_id)
+    if not lookup:
+        return {"error": "Not found"}
+
+    poster = None
+    backdrop = None
+    for img in lookup.get("images", []):
+        if img.get("coverType") == "poster" and img.get("remoteUrl"):
+            poster = img["remoteUrl"]
+        elif img.get("coverType") == "fanart" and img.get("remoteUrl"):
+            backdrop = img["remoteUrl"]
+
+    genres = [g.strip() for g in lookup.get("genres", [])]
+
+    details = {
+        "tmdb_id": lookup.get("tmdbId") or 0,
+        "tvdb_id": tvdb_id,
+        "title": lookup.get("title", ""),
+        "year": str(lookup.get("year", "")),
+        "overview": lookup.get("overview", ""),
+        "runtime": lookup.get("runtime", 0),
+        "rating": round(lookup.get("ratings", {}).get("value", 0), 1),
+        "vote_count": lookup.get("ratings", {}).get("votes", 0),
+        "genres": genres,
+        "poster_path": poster,
+        "backdrop_path": backdrop,
+        "tagline": "",
+        "status": lookup.get("status", ""),
+        "cast": [],
+        "directors": [],
+        "media_type": "series",
+        "in_library": False,
+        "can_delete": False,
+        "source": "sonarr",
+    }
+
+    return details
+
+
+def _sonarr_lookup_to_items(results: list) -> list:
+    """Convert Sonarr lookup results to standard discover item format."""
+    items = []
+    for s in results:
+        poster = None
+        backdrop = None
+        for img in s.get("images", []):
+            if img.get("coverType") == "poster" and img.get("remoteUrl"):
+                poster = img["remoteUrl"]
+            elif img.get("coverType") == "fanart" and img.get("remoteUrl"):
+                backdrop = img["remoteUrl"]
+        items.append({
+            "tmdb_id": s.get("tmdbId") or 0,
+            "tvdb_id": s.get("tvdbId") or 0,
+            "title": s.get("title", ""),
+            "year": str(s.get("year", "")),
+            "overview": s.get("overview", ""),
+            "rating": round(s.get("ratings", {}).get("value", 0), 1),
+            "poster_path": poster,
+            "backdrop_path": backdrop,
+            "media_type": "series",
+            "popularity": 0,
+            "source": "sonarr",
+        })
+    return items
+
+
+def _radarr_lookup_to_items(results: list) -> list:
+    """Convert Radarr lookup results to standard discover item format."""
+    items = []
+    for m in results:
+        poster = None
+        backdrop = None
+        for img in m.get("images", []):
+            if img.get("coverType") == "poster" and img.get("remoteUrl"):
+                poster = img["remoteUrl"]
+            elif img.get("coverType") == "fanart" and img.get("remoteUrl"):
+                backdrop = img["remoteUrl"]
+        items.append({
+            "tmdb_id": m.get("tmdbId") or 0,
+            "title": m.get("title", ""),
+            "year": str(m.get("year", "")),
+            "overview": m.get("overview", ""),
+            "rating": round(m.get("ratings", {}).get("value", 0), 1),
+            "poster_path": poster,
+            "backdrop_path": backdrop,
+            "media_type": "movie",
+            "popularity": 0,
+            "source": "radarr",
+        })
+    return items
+
+
 @router.get("/search")
 def search_discover(
     q: str = "",
     type: str = "all",
     db: Session = Depends(get_db)
 ):
-    """Search TMDB for movies/series. Returns results with in_library excluded."""
+    """Search TMDB for movies/series, supplemented by Sonarr/Radarr lookup for TheTVDB coverage."""
     if not q or not q.strip():
         return {"items": []}
 
     tmdb = _get_tmdb(db)
-    if not tmdb:
-        return {"items": []}
 
     media_type = "all"
     if type == "movies":
@@ -260,10 +363,64 @@ def search_discover(
 
     # Search TMDB for movies/series (skip if channels-only)
     items = []
-    if type != "channels":
+    known_ids = _known_tmdb_ids(db)
+    if type != "channels" and tmdb:
         results = tmdb.search_multi_results(q, media_type)
-        known_ids = _known_tmdb_ids(db)
         items = _dedup_and_mark(results, known_ids)
+
+    # Supplement with Sonarr/Radarr lookup (searches TheTVDB/TMDB via *arr APIs)
+    # This catches shows that exist on TheTVDB but not TMDB
+    if type != "channels":
+        seen_tmdb = {item["tmdb_id"] for item in items if item.get("tmdb_id")}
+        seen_tvdb = set()
+
+        if media_type in ("all", "series"):
+            sonarr_url = get_setting(db, "sonarr_url")
+            sonarr_key = get_setting(db, "sonarr_api_key")
+            if sonarr_url and sonarr_key:
+                from services.sonarr import SonarrService
+                try:
+                    sonarr = SonarrService(sonarr_url, sonarr_key)
+                    sonarr_results = sonarr.lookup_by_term(q.strip())
+                    for item in _sonarr_lookup_to_items(sonarr_results):
+                        tmdb_id = item.get("tmdb_id")
+                        tvdb_id = item.get("tvdb_id")
+                        # Skip if we already have this from TMDB results
+                        if tmdb_id and tmdb_id in seen_tmdb:
+                            continue
+                        if tvdb_id and tvdb_id in seen_tvdb:
+                            continue
+                        if tmdb_id:
+                            seen_tmdb.add(tmdb_id)
+                            item["in_library"] = tmdb_id in known_ids
+                        else:
+                            item["in_library"] = False
+                        if tvdb_id:
+                            seen_tvdb.add(tvdb_id)
+                        items.append(item)
+                except Exception as e:
+                    logger.warning(f"Sonarr lookup supplement failed: {e}")
+
+        if media_type in ("all", "movie"):
+            radarr_url = get_setting(db, "radarr_url")
+            radarr_key = get_setting(db, "radarr_api_key")
+            if radarr_url and radarr_key:
+                from services.radarr import RadarrService
+                try:
+                    radarr = RadarrService(radarr_url, radarr_key)
+                    radarr_results = radarr.lookup_by_term(q.strip())
+                    for item in _radarr_lookup_to_items(radarr_results):
+                        tmdb_id = item.get("tmdb_id")
+                        if tmdb_id and tmdb_id in seen_tmdb:
+                            continue
+                        if tmdb_id:
+                            seen_tmdb.add(tmdb_id)
+                            item["in_library"] = tmdb_id in known_ids
+                        else:
+                            item["in_library"] = False
+                        items.append(item)
+                except Exception as e:
+                    logger.warning(f"Radarr lookup supplement failed: {e}")
 
     # Search Live TV channels — prepend to items list
     if type in ("all", "channels"):
@@ -326,6 +483,132 @@ def get_season_episodes(
         return {"error": "Not found"}
 
     return {"episodes": episodes}
+
+
+@router.get("/seasons-tvdb/{tvdb_id}")
+def get_seasons_tvdb(
+    tvdb_id: int,
+    db: Session = Depends(get_db)
+):
+    """Fetch season list for a TheTVDB-only series via Sonarr lookup."""
+    sonarr_url = get_setting(db, "sonarr_url")
+    sonarr_key = get_setting(db, "sonarr_api_key")
+    if not sonarr_url or not sonarr_key:
+        return {"error": "Sonarr not configured"}
+
+    from services.sonarr import SonarrService
+    sonarr = SonarrService(sonarr_url, sonarr_key)
+
+    # Check if series is already in Sonarr (has full episode data)
+    all_series = sonarr.get_all_series()
+    existing = next((s for s in all_series if s.get("tvdbId") == tvdb_id), None)
+
+    if existing:
+        # Series is in Sonarr — fetch real episode data to build accurate season info
+        episodes = sonarr.get_episodes(existing["id"])
+        season_map = {}
+        for ep in episodes:
+            sn = ep.get("seasonNumber", 0)
+            if sn not in season_map:
+                season_map[sn] = {"count": 0, "first_air": None}
+            season_map[sn]["count"] += 1
+            air = ep.get("airDateUtc")
+            if air and (season_map[sn]["first_air"] is None or air < season_map[sn]["first_air"]):
+                season_map[sn]["first_air"] = air
+
+        seasons = [
+            {
+                "season_number": sn,
+                "name": f"Season {sn}" if sn > 0 else "Specials",
+                "episode_count": info["count"],
+                "air_date": info["first_air"][:10] if info["first_air"] else None,
+                "poster_path": None,
+            }
+            for sn, info in sorted(season_map.items())
+        ]
+    else:
+        # Not in Sonarr — use lookup data (season-level only)
+        lookup = sonarr.lookup_by_tvdb(tvdb_id)
+        if not lookup:
+            return {"error": "Not found"}
+
+        seasons = []
+        for s in lookup.get("seasons", []):
+            sn = s.get("seasonNumber", 0)
+            stats = s.get("statistics", {})
+            seasons.append({
+                "season_number": sn,
+                "name": f"Season {sn}" if sn > 0 else "Specials",
+                "episode_count": stats.get("totalEpisodeCount", 0),
+                "air_date": None,
+                "poster_path": None,
+            })
+
+    return {
+        "title": existing.get("title", "") if existing else "",
+        "seasons": seasons,
+    }
+
+
+@router.get("/season-tvdb/{tvdb_id}/{season_number}")
+def get_season_episodes_tvdb(
+    tvdb_id: int,
+    season_number: int,
+    db: Session = Depends(get_db)
+):
+    """Fetch episode list for a specific season via Sonarr (TheTVDB data)."""
+    sonarr_url = get_setting(db, "sonarr_url")
+    sonarr_key = get_setting(db, "sonarr_api_key")
+    if not sonarr_url or not sonarr_key:
+        return {"error": "Sonarr not configured"}
+
+    from services.sonarr import SonarrService
+    sonarr = SonarrService(sonarr_url, sonarr_key)
+
+    # Check if series is already in Sonarr
+    all_series = sonarr.get_all_series()
+    existing = next((s for s in all_series if s.get("tvdbId") == tvdb_id), None)
+
+    if existing:
+        # Fetch episodes from Sonarr — has titles, air dates, etc.
+        all_eps = sonarr.get_episodes(existing["id"])
+        episodes = [
+            {
+                "episode_number": ep.get("episodeNumber"),
+                "name": ep.get("title", ""),
+                "overview": "",
+                "air_date": ep["airDateUtc"][:10] if ep.get("airDateUtc") else None,
+                "runtime": None,
+                "still_path": None,
+            }
+            for ep in all_eps
+            if ep.get("seasonNumber") == season_number
+        ]
+        return {"episodes": episodes}
+
+    # Not in Sonarr — we only have season-level data from lookup
+    # Return placeholder episodes based on episode count
+    lookup = sonarr.lookup_by_tvdb(tvdb_id)
+    if not lookup:
+        return {"error": "Not found"}
+
+    for s in lookup.get("seasons", []):
+        if s.get("seasonNumber") == season_number:
+            count = s.get("statistics", {}).get("totalEpisodeCount", 0)
+            episodes = [
+                {
+                    "episode_number": i + 1,
+                    "name": f"Episode {i + 1}",
+                    "overview": "",
+                    "air_date": None,
+                    "runtime": None,
+                    "still_path": None,
+                }
+                for i in range(count)
+            ]
+            return {"episodes": episodes}
+
+    return {"episodes": []}
 
 
 @router.get("/sonarr-episodes/{tmdb_id}")

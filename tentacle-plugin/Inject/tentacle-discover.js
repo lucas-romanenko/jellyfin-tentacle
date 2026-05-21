@@ -368,12 +368,12 @@
           addBtn = '';
         } else {
           badge = '<div class="md-card-badge md-badge-type">' + (item.media_type === 'movie' ? 'Movie' : 'Show') + '</div>';
-          addBtn = '<button class="md-card-add" data-tmdb="' + item.tmdb_id + '">+</button>';
+          addBtn = '<button class="md-card-add" data-tmdb="' + (item.tmdb_id || 0) + '" data-tvdb="' + (item.tvdb_id || 0) + '">+</button>';
         }
         var listTag = item.list_name
           ? '<div class="md-card-list-tag">' + esc(item.list_name) + '</div>'
           : '';
-        return '<div class="md-card" data-tmdb="' + item.tmdb_id + '" data-type="' + (item.media_type || 'movie') + '">' +
+        return '<div class="md-card" data-tmdb="' + (item.tmdb_id || 0) + '" data-tvdb="' + (item.tvdb_id || 0) + '" data-type="' + (item.media_type || 'movie') + '">' +
           '<div class="md-card-poster">' + poster + badge + addBtn + '</div>' +
           '<div class="md-card-info">' +
             '<div class="md-card-title">' + esc(item.title) + '</div>' +
@@ -387,8 +387,9 @@
     content.querySelectorAll('.md-card').forEach(function (card) {
       card.addEventListener('click', function (e) {
         if (e.target.closest('.md-card-add')) return;
-        var tmdb = parseInt(card.getAttribute('data-tmdb'), 10);
-        var item = findItem(tmdb);
+        var tmdb = parseInt(card.getAttribute('data-tmdb'), 10) || 0;
+        var tvdb = parseInt(card.getAttribute('data-tvdb'), 10) || 0;
+        var item = findItem(tmdb, tvdb);
         if (item) showDetailModal(item);
       });
     });
@@ -397,19 +398,21 @@
     content.querySelectorAll('.md-card-add').forEach(function (btn) {
       btn.addEventListener('click', function (e) {
         e.stopPropagation();
-        var tmdb = parseInt(btn.getAttribute('data-tmdb'), 10);
-        var item = findItem(tmdb);
+        var tmdb = parseInt(btn.getAttribute('data-tmdb'), 10) || 0;
+        var tvdb = parseInt(btn.getAttribute('data-tvdb'), 10) || 0;
+        var item = findItem(tmdb, tvdb);
         if (item) showDetailModal(item);
       });
     });
   }
 
-  function findItem(tmdbId) {
+  function findItem(tmdbId, tvdbId) {
     if (!MD.sections) return null;
     for (var i = 0; i < MD.sections.length; i++) {
       var items = MD.sections[i].items;
       for (var j = 0; j < items.length; j++) {
-        if (items[j].tmdb_id === tmdbId) return items[j];
+        if (tmdbId && items[j].tmdb_id === tmdbId) return items[j];
+        if (tvdbId && items[j].tvdb_id === tvdbId) return items[j];
       }
     }
     return null;
@@ -428,7 +431,10 @@
   // ── Detail Modal ────────────────────────────────────────────────────
   function showDetailModal(item) {
     var mediaType = item.media_type === 'series' ? 'series' : 'movie';
-    apiGet('TentacleDiscover/Detail/' + mediaType + '/' + item.tmdb_id).then(function (details) {
+    var detailUrl = (item.tmdb_id && item.tmdb_id > 0)
+      ? 'TentacleDiscover/Detail/' + mediaType + '/' + item.tmdb_id
+      : 'TentacleDiscover/DetailTvdb/' + (item.tvdb_id || 0);
+    apiGet(detailUrl).then(function (details) {
       if (details && !details.error) {
         item.overview = details.overview || item.overview || '';
         item.rating = details.rating || item.rating;
@@ -440,7 +446,10 @@
           item.in_library = details.in_library;
           // Update the grid card badge if in_library changed
           if (details.in_library) {
-            var card = document.querySelector('.md-card[data-tmdb="' + item.tmdb_id + '"]');
+            var cardSelector = (item.tmdb_id && item.tmdb_id > 0)
+              ? '.md-card[data-tmdb="' + item.tmdb_id + '"]'
+              : '.md-card[data-tvdb="' + (item.tvdb_id || 0) + '"]';
+            var card = document.querySelector(cardSelector);
             if (card) {
               var oldBadge = card.querySelector('.md-card-badge');
               if (oldBadge && !oldBadge.classList.contains('md-badge-inlib')) {
@@ -627,7 +636,10 @@
           if (MD._epSeasons.length > 0) return;
           var container = document.getElementById('mdEpSeasons');
           container.innerHTML = '<div style="padding:12px;color:#999;font-size:13px">Loading seasons...</div>';
-          apiGet('TentacleDiscover/Seasons/' + item.tmdb_id).then(function (data) {
+          var seasonsUrl = (item.tmdb_id && item.tmdb_id > 0)
+            ? 'TentacleDiscover/Seasons/' + item.tmdb_id
+            : 'TentacleDiscover/SeasonsTvdb/' + (item.tvdb_id || 0);
+          apiGet(seasonsUrl).then(function (data) {
             MD._epSeasons = (data.seasons || []).filter(function (s) { return s.season_number > 0; });
             _mdRenderSeasons();
           }).catch(function () {
@@ -677,7 +689,10 @@
     list.classList.add('open'); if (arrow) arrow.classList.add('open');
     if (!MD._epLoaded[sn]) {
       list.innerHTML = '<div style="padding:8px 12px;color:#999;font-size:12px">Loading...</div>';
-      apiGet('TentacleDiscover/Season/' + MD._currentItem.tmdb_id + '/' + sn).then(function (data) {
+      var epUrl = (MD._currentItem.tmdb_id && MD._currentItem.tmdb_id > 0)
+        ? 'TentacleDiscover/Season/' + MD._currentItem.tmdb_id + '/' + sn
+        : 'TentacleDiscover/SeasonTvdb/' + (MD._currentItem.tvdb_id || 0) + '/' + sn;
+      apiGet(epUrl).then(function (data) {
         MD._epLoaded[sn] = data.episodes || [];
         _mdRenderEpisodes(sn);
       }).catch(function () {
@@ -874,8 +889,11 @@
     MD._epLoaded = {};
 
     var uid = window.ApiClient.getCurrentUserId();
+    var seasonsUrl2 = (item.tmdb_id && item.tmdb_id > 0)
+      ? 'TentacleDiscover/Seasons/' + item.tmdb_id
+      : 'TentacleDiscover/SeasonsTvdb/' + (item.tvdb_id || 0);
     Promise.all([
-      apiGet('TentacleDiscover/Seasons/' + item.tmdb_id),
+      apiGet(seasonsUrl2),
       apiGet('TentacleDiscover/VodEpisodes/' + item.tmdb_id),
       apiGet('TentacleDiscover/SonarrEpisodes/' + item.tmdb_id + '?userId=' + uid).catch(function () { return { in_sonarr: false }; }),
     ]).then(function (results) {
@@ -919,9 +937,13 @@
         var uid2 = window.ApiClient.getCurrentUserId();
         var profileId = profileSelect ? profileSelect.value : '';
         var body = {
-          tmdb_ids: [item.tmdb_id],
           selected_episodes: selected,
         };
+        if (item.tmdb_id && item.tmdb_id > 0) {
+          body.tmdb_ids = [item.tmdb_id];
+        } else if (item.tvdb_id && item.tvdb_id > 0) {
+          body.tvdb_ids = [item.tvdb_id];
+        }
         if (profileId) body.quality_profile_id = parseInt(profileId, 10);
         apiPost('TentacleDiscover/AddToSonarr?userId=' + uid2, body).then(function (r) {
           var status2 = document.getElementById('mdDownloadStatus');
@@ -1087,9 +1109,13 @@
     var ep = isSeries ? 'TentacleDiscover/AddToSonarr?userId=' + uid : 'TentacleDiscover/AddToRadarr?userId=' + uid;
 
     var body = {
-      tmdb_ids: [item.tmdb_id],
       quality_profile_id: parseInt(profileId, 10),
     };
+    if (item.tmdb_id && item.tmdb_id > 0) {
+      body.tmdb_ids = [item.tmdb_id];
+    } else if (item.tvdb_id && item.tvdb_id > 0) {
+      body.tvdb_ids = [item.tvdb_id];
+    }
     if (isSeries) {
       var monitorEl = document.getElementById('mdMonitorSelect');
       var monitorVal = monitorEl ? monitorEl.value : 'all';
