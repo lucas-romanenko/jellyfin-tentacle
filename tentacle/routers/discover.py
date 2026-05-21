@@ -404,9 +404,21 @@ def search_discover(
             sonarr_future = pool.submit(_sonarr_search)
             radarr_future = pool.submit(_radarr_search)
 
-            tmdb_results = tmdb_future.result(timeout=15)
-            sonarr_results = sonarr_future.result(timeout=15)
-            radarr_results = radarr_future.result(timeout=15)
+            try:
+                tmdb_results = tmdb_future.result(timeout=15)
+            except Exception as e:
+                logger.warning(f"TMDB search failed: {e}")
+                tmdb_results = []
+            try:
+                sonarr_results = sonarr_future.result(timeout=15)
+            except Exception as e:
+                logger.warning(f"Sonarr search failed: {e}")
+                sonarr_results = []
+            try:
+                radarr_results = radarr_future.result(timeout=15)
+            except Exception as e:
+                logger.warning(f"Radarr search failed: {e}")
+                radarr_results = []
 
         # TMDB results first
         items = _dedup_and_mark(tmdb_results, known_ids)
