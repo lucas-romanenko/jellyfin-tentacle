@@ -669,17 +669,26 @@ function renderLibCard(item) {
 }
 
 let _addArrTmdbId = null;
+let _addArrTvdbId = null;
 let _addArrMediaType = 'movie';
 let _epPickerSeasons = [];  // cached season list for current series
 let _epPickerLoaded = {};   // season_number -> episodes array
+
+// Helper: resolve poster/backdrop URLs (TVDB sends full URLs, TMDB sends relative paths)
+function _imgUrl(path, size) {
+  if (!path) return '';
+  if (path.startsWith('http')) return path;
+  return 'https://image.tmdb.org/t/p/' + size + path;
+}
 
 async function showAddToRadarrModal(tmdbId, title, year, posterPath) {
   showAddToArrModal(tmdbId, title, year, posterPath, 'movie');
 }
 
-async function showAddToArrModal(tmdbId, title, year, posterPath, mediaType) {
+async function showAddToArrModal(tmdbId, title, year, posterPath, mediaType, tvdbId) {
   _resetManageMode(); // ensure modal is in add mode
   _addArrTmdbId = tmdbId;
+  _addArrTvdbId = tvdbId || 0;
   _addArrMediaType = mediaType || 'movie';
   const isSeries = _addArrMediaType === 'series';
   const arrName = isSeries ? 'Sonarr' : 'Radarr';
@@ -690,8 +699,9 @@ async function showAddToArrModal(tmdbId, title, year, posterPath, mediaType) {
   modalBox.className = 'modal modal-arr';
 
   const info = document.getElementById('add-radarr-movie-info');
-  const posterImg = posterPath
-    ? `<img src="https://image.tmdb.org/t/p/w185${posterPath}" style="border-radius:8px;width:80px;height:120px;object-fit:cover">`
+  const posterSrc = _imgUrl(posterPath, 'w185');
+  const posterImg = posterSrc
+    ? `<img src="${posterSrc}" style="border-radius:8px;width:80px;height:120px;object-fit:cover">`
     : `<div style="width:80px;height:120px;background:var(--bg3);border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--text3)">&#9707;</div>`;
   info.innerHTML = `${posterImg}<div style="display:flex;flex-direction:column;justify-content:center"><div style="font-weight:600;font-size:17px">${title || 'Unknown'}</div><div style="color:var(--text2);font-size:14px">${year || ''}</div></div>`;
 
@@ -723,14 +733,15 @@ async function showAddToArrModal(tmdbId, title, year, posterPath, mediaType) {
 }
 
 async function confirmAddToArr() {
-  if (!_addArrTmdbId) return;
+  if (!_addArrTmdbId && !_addArrTvdbId) return;
   const isSeries = _addArrMediaType === 'series';
   const arrName = isSeries ? 'Sonarr' : 'Radarr';
   const btn = document.getElementById('add-radarr-confirm-btn');
   btn.disabled = true;
   btn.textContent = 'Adding...';
   const qualityId = document.getElementById('add-radarr-quality').value;
-  const body = { tmdb_ids: [_addArrTmdbId] };
+  const isTvdbOnly = !_addArrTmdbId && _addArrTvdbId;
+  const body = isTvdbOnly ? { tvdb_ids: [_addArrTvdbId] } : { tmdb_ids: [_addArrTmdbId] };
   if (qualityId) body.quality_profile_id = parseInt(qualityId);
   if (isSeries) {
     const monitorVal = document.getElementById('add-sonarr-monitor').value;
@@ -793,7 +804,11 @@ async function onMonitorPresetChange(val) {
   const loading = document.getElementById('episode-picker-loading');
   loading.style.display = 'block';
   try {
-    const data = await api(`/api/discover/seasons/${_addArrTmdbId}`);
+    const isTvdbOnly = !_addArrTmdbId && _addArrTvdbId;
+    const seasonsUrl = isTvdbOnly
+      ? `/api/discover/seasons-tvdb/${_addArrTvdbId}`
+      : `/api/discover/seasons/${_addArrTmdbId}`;
+    const data = await api(seasonsUrl);
     _epPickerSeasons = (data.seasons || []).filter(s => s.season_number > 0);
     _renderSeasons();
   } catch (e) {
@@ -831,9 +846,13 @@ async function toggleSeasonAccordion(seasonNum) {
   arrow.classList.add('open');
   if (!_epPickerLoaded[seasonNum]) {
     const tmdbId = _downloadMoreTmdbId || _addArrTmdbId;
+    const isTvdbOnly = !tmdbId && _addArrTvdbId;
     list.innerHTML = '<div style="padding:8px 28px;color:var(--text3);font-size:12px">Loading...</div>';
     try {
-      const data = await api(`/api/discover/season/${tmdbId}/${seasonNum}`);
+      const epUrl = isTvdbOnly
+        ? `/api/discover/season-tvdb/${_addArrTvdbId}/${seasonNum}`
+        : `/api/discover/season/${tmdbId}/${seasonNum}`;
+      const data = await api(epUrl);
       _epPickerLoaded[seasonNum] = data.episodes || [];
       _renderEpisodes(seasonNum);
     } catch (e) {
@@ -967,8 +986,9 @@ async function showManageEpisodesModal(tmdbId, title, year, posterPath) {
   document.getElementById('add-arr-modal-title').textContent = 'Manage Episodes';
 
   const info = document.getElementById('add-radarr-movie-info');
-  const posterImg = posterPath
-    ? `<img src="https://image.tmdb.org/t/p/w185${posterPath}" style="border-radius:8px;width:80px;height:120px;object-fit:cover">`
+  const managePosterSrc = _imgUrl(posterPath, 'w185');
+  const posterImg = managePosterSrc
+    ? `<img src="${managePosterSrc}" style="border-radius:8px;width:80px;height:120px;object-fit:cover">`
     : `<div style="width:80px;height:120px;background:var(--bg3);border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--text3)">&#9707;</div>`;
   info.innerHTML = `${posterImg}<div style="display:flex;flex-direction:column;justify-content:center"><div style="font-weight:600;font-size:17px">${title || 'Unknown'}</div><div style="color:var(--text2);font-size:14px">${year || ''}</div></div>`;
 
@@ -1090,8 +1110,9 @@ async function showDownloadMoreModal(tmdbId, title, year, posterPath) {
   document.getElementById('add-arr-modal-title').textContent = 'Download More Episodes';
 
   const info = document.getElementById('add-radarr-movie-info');
-  const posterImg = posterPath
-    ? `<img src="https://image.tmdb.org/t/p/w185${posterPath}" style="border-radius:8px;width:80px;height:120px;object-fit:cover">`
+  const dlMorePosterSrc = _imgUrl(posterPath, 'w185');
+  const posterImg = dlMorePosterSrc
+    ? `<img src="${dlMorePosterSrc}" style="border-radius:8px;width:80px;height:120px;object-fit:cover">`
     : `<div style="width:80px;height:120px;background:var(--bg3);border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--text3)">&#9707;</div>`;
   info.innerHTML = `${posterImg}<div style="display:flex;flex-direction:column;justify-content:center"><div style="font-weight:600;font-size:17px">${title || 'Unknown'}</div><div style="color:var(--text2);font-size:14px">${year || ''}</div></div>`;
 
@@ -1280,6 +1301,7 @@ function _resetManageMode() {
   document.getElementById('add-radarr-confirm-btn').setAttribute('onclick', 'confirmAddToArr()');
   _manageTmdbId = null;
   _downloadMoreTmdbId = null;
+  _addArrTvdbId = null;
   _vodEpisodes = {};
 }
 
@@ -3632,14 +3654,17 @@ function renderDiscoverGrid(items) {
     return;
   }
   grid.innerHTML = items.map(item => {
-    const poster = item.poster_path
-      ? `<img src="https://image.tmdb.org/t/p/w185${item.poster_path}" loading="lazy" onerror="this.parentElement.innerHTML='<div class=\\'lib-card-poster-placeholder\\'>◫</div>'">`
+    const posterSrc = _imgUrl(item.poster_path, 'w185');
+    const poster = posterSrc
+      ? `<img src="${posterSrc}" loading="lazy" onerror="this.parentElement.innerHTML='<div class=\\'lib-card-poster-placeholder\\'>◫</div>'">`
       : `<div class="lib-card-poster-placeholder">◫</div>`;
     const badge = item.in_library
       ? `<span class="badge badge-green" style="font-size:9px;padding:1px 5px">In Library</span>`
       : `<span class="badge" style="font-size:9px;padding:1px 5px;background:var(--bg3);color:var(--text3)">${item.media_type === 'movie' ? 'Movie' : 'Show'}</span>`;
-    const addBtn = item.in_library ? '' : `<button onclick="event.stopPropagation();showAddToArrModal(${item.tmdb_id},'${escapeJS(item.title)}','${escapeJS(item.year||'')}','${escapeJS(item.poster_path||'')}','${item.media_type}')" class="lib-card-add-btn" title="Add to ${item.media_type === 'series' ? 'Sonarr' : 'Radarr'}">+</button>`;
-    const clickHandler = `onclick="showDiscoverDetail(${item.tmdb_id},'${escapeAttr(item.media_type)}','${escapeJS(item.title)}','${escapeJS(item.year||'')}','${escapeJS(item.poster_path||'')}',${!!item.in_library})"`;
+    const tvdbId = item.tvdb_id || 0;
+    const tmdbId = item.tmdb_id || 0;
+    const addBtn = item.in_library ? '' : `<button onclick="event.stopPropagation();showAddToArrModal(${tmdbId},'${escapeJS(item.title)}','${escapeJS(item.year||'')}','${escapeJS(item.poster_path||'')}','${item.media_type}',${tvdbId})" class="lib-card-add-btn" title="Add to ${item.media_type === 'series' ? 'Sonarr' : 'Radarr'}">+</button>`;
+    const clickHandler = `onclick="showDiscoverDetail(${tmdbId},'${escapeAttr(item.media_type)}','${escapeJS(item.title)}','${escapeJS(item.year||'')}','${escapeJS(item.poster_path||'')}',${!!item.in_library},${tvdbId})"`;
     const listTag = item.list_name ? `<div style="font-size:10px;color:var(--accent);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeAttr(item.list_name)}</div>` : '';
     return `
       <div class="lib-card" ${clickHandler}>
@@ -3657,31 +3682,38 @@ function renderDiscoverGrid(items) {
   }).join('');
 }
 
-async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, inLibrary) {
+async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, inLibrary, tvdbId) {
   showModal('modal-media-detail');
   document.getElementById('detail-title').textContent = 'Loading...';
   document.getElementById('detail-body').innerHTML = '<div class="loading-state"><div class="spinner"></div></div>';
 
+  const isTvdbOnly = !tmdbId && tvdbId;
   try {
-    const data = await api(`/api/discover/detail/${mediaType}/${tmdbId}`);
+    const detailUrl = isTvdbOnly
+      ? `/api/discover/detail-tvdb/${tvdbId}`
+      : `/api/discover/detail/${mediaType}/${tmdbId}`;
+    const data = await api(detailUrl);
     const isSeries = mediaType === 'series';
     const arrLabel = isSeries ? 'Sonarr' : 'Radarr';
+    const detailTvdbId = data.tvdb_id || tvdbId || 0;
+    const detailTmdbId = data.tmdb_id || tmdbId || 0;
     // Use detail response in_library (authoritative) over card-level flag
     const isInLibrary = data.in_library !== undefined ? data.in_library : inLibrary;
     let actionBtn;
     if (isInLibrary && isSeries && data.library_source === 'sonarr') {
-      actionBtn = `<span class="badge badge-green" style="font-size:12px;padding:4px 10px">In Library</span> <button class="btn btn-secondary btn-sm" style="margin-left:6px" onclick="closeModal('modal-media-detail');showManageEpisodesModal(${tmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}')">Manage Episodes</button>`;
+      actionBtn = `<span class="badge badge-green" style="font-size:12px;padding:4px 10px">In Library</span> <button class="btn btn-secondary btn-sm" style="margin-left:6px" onclick="closeModal('modal-media-detail');showManageEpisodesModal(${detailTmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}')">Manage Episodes</button>`;
     } else if (isInLibrary && isSeries && data.library_source && data.library_source.startsWith('provider_')) {
-      actionBtn = `<span class="badge badge-green" style="font-size:12px;padding:4px 10px">In Library</span> <button class="btn btn-primary btn-sm" style="margin-left:6px" onclick="closeModal('modal-media-detail');showDownloadMoreModal(${tmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}')">Download More Episodes</button>`;
+      actionBtn = `<span class="badge badge-green" style="font-size:12px;padding:4px 10px">In Library</span> <button class="btn btn-primary btn-sm" style="margin-left:6px" onclick="closeModal('modal-media-detail');showDownloadMoreModal(${detailTmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}')">Download More Episodes</button>`;
     } else if (isInLibrary) {
       actionBtn = `<span class="badge badge-green" style="font-size:12px;padding:4px 10px">In Library</span>`;
     } else {
-      actionBtn = `<button class="btn btn-primary btn-sm" onclick="closeModal('modal-media-detail');showAddToArrModal(${tmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}','${mediaType}')">Add to ${arrLabel}</button>`;
+      actionBtn = `<button class="btn btn-primary btn-sm" onclick="closeModal('modal-media-detail');showAddToArrModal(${detailTmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}','${mediaType}',${detailTvdbId})">Add to ${arrLabel}</button>`;
     }
     document.getElementById('detail-title').textContent = data.title || title || 'Unknown';
+    const detailPosterSrc = _imgUrl(data.poster_path, 'w185');
     document.getElementById('detail-body').innerHTML = `
       <div style="display:flex;gap:20px">
-        ${data.poster_path ? `<img src="https://image.tmdb.org/t/p/w185${data.poster_path}" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
+        ${detailPosterSrc ? `<img src="${detailPosterSrc}" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
         <div style="flex:1">
           <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${data.year || year || '—'} · ${data.runtime ? data.runtime+'m · ' : ''}★ ${data.rating || '—'}</div>
           <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${data.overview || 'No overview available.'}</p>
@@ -3697,7 +3729,7 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
     document.getElementById('detail-title').textContent = title || 'Unknown';
     document.getElementById('detail-body').innerHTML = `
       <div style="display:flex;gap:20px">
-        ${posterPath ? `<img src="https://image.tmdb.org/t/p/w185${posterPath}" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
+        ${_imgUrl(posterPath, 'w185') ? `<img src="${_imgUrl(posterPath, 'w185')}" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
         <div style="flex:1">
           <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${year || '—'}</div>
           <p style="font-size:13px;color:var(--text2)">Could not load details.</p>
