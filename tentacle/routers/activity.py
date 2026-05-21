@@ -268,7 +268,8 @@ def _get_poster(db: Session, tmdb_id: int, media_type: str) -> Optional[str]:
 
 
 def _extract_poster(arr_item: dict) -> Optional[str]:
-    """Extract TMDB poster path from Radarr/Sonarr images array."""
+    """Extract poster path from Radarr/Sonarr images array.
+    Returns TMDB relative path (e.g. /abc.jpg) or full TVDB URL."""
     for img in arr_item.get("images", []):
         if img.get("coverType") == "poster":
             # Try remoteUrl first (full TMDB URL like https://image.tmdb.org/t/p/original/abc.jpg)
@@ -278,6 +279,9 @@ def _extract_poster(arr_item: dict) -> Optional[str]:
                 slash_idx = after.find("/")
                 if slash_idx >= 0:
                     return after[slash_idx:]  # "/abc.jpg"
+            # TVDB CDN URL — return full URL (will be proxied later)
+            if url and "thetvdb.com" in url:
+                return url
             # Some Sonarr responses only have local proxy URLs — try url field too
             url = img.get("url", "")
             if "/t/p/" in url:
@@ -423,9 +427,14 @@ def _get_unreleased(db: Session) -> list:
         unreleased.extend(_fetch_sonarr_unreleased(sonarr_url, sonarr_key))
 
     # Enrich with posters (DB first, then Radarr/Sonarr fallback)
+    from routers.discover import _rewrite_tvdb_url
     for item in unreleased:
         fallback_poster = item.pop("radarr_poster", None) or item.pop("sonarr_poster", None)
-        item["poster_path"] = _get_poster(db, item.get("tmdb_id"), item.get("media_type", "movie")) or fallback_poster
+        poster = _get_poster(db, item.get("tmdb_id"), item.get("media_type", "movie")) or fallback_poster
+        # Rewrite TVDB CDN URLs to proxy paths
+        if poster:
+            poster = _rewrite_tvdb_url(poster)
+        item["poster_path"] = poster
 
     # Sort all unreleased by release date
     unreleased.sort(key=lambda x: x["release_date"] if x["release_date"] != "TBA" else "9999-99-99")

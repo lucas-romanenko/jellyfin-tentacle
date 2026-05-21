@@ -161,6 +161,9 @@ public class TentacleDiscoverController : ControllerBase
         try
         {
             var response = await HttpClient.GetStringAsync(AppendUserId($"{baseUrl}/api/activity"));
+            // Rewrite relative proxy paths to absolute plugin endpoint URLs
+            var jellyfinBase = $"{Request.Scheme}://{Request.Host}";
+            response = response.Replace("/api/discover/image-proxy/", $"{jellyfinBase}/TentacleDiscover/ImageProxy/");
             return Content(response, "application/json");
         }
         catch (Exception ex)
