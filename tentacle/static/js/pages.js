@@ -2517,6 +2517,9 @@ async function loadHomeScreen() {
     } else {
       renderHomeRows();
     }
+
+    // Load notification preference
+    loadNotificationState();
   } catch (e) {
     listEl.innerHTML = '<div class="empty-state" style="padding:24px"><p>Failed to load home config</p></div>';
   }
@@ -4614,6 +4617,30 @@ async function vodPreviewSync() {
 // ── GLOBAL EXPORTS ────────────────────────────────────────────────────────
 // All functions referenced via onclick="" in HTML must be on window.
 // ══════════════════════════════════════════════════════════════════════════
+// ── Notification toggle (Home Screen tab) ──
+async function loadNotificationState() {
+  const checkbox = document.getElementById('notif-enabled-checkbox');
+  if (!checkbox) return;
+  try {
+    const data = await api('/api/notifications');
+    const enabled = data.notifications_enabled !== false;
+    checkbox.checked = enabled;
+    updateNotifSlider(enabled);
+  } catch { checkbox.checked = true; updateNotifSlider(true); }
+}
+
+function updateNotifSlider(enabled) {
+  const slider = document.getElementById('notif-slider');
+  const track = slider?.previousElementSibling;
+  if (slider) slider.style.transform = enabled ? 'translateX(18px)' : 'translateX(0)';
+  if (track) track.style.background = enabled ? 'var(--accent)' : 'var(--bg3)';
+}
+
+async function toggleNotificationsFromCheckbox(checked) {
+  updateNotifSlider(checked);
+  try { await api('/api/notifications/toggle', { method: 'POST' }); } catch {}
+}
+
 (function exposeGlobals() {
   const fns = [
     // Lists page
@@ -4627,7 +4654,7 @@ async function vodPreviewSync() {
     loadJellyfinPage, loadAutoPlaylists, toggleAutoPlaylist, dismissAutoPlaylistBanner, saveDiscoverInJellyfin,
     showAddTagRule, editTagRule, deleteTagRule, saveTagRule, onContentSourceChange, toggleAdvancedFilters,
     addRuleCondition, updateCondOps, onCollectionNameInput, syncSmartLists, refreshTags, syncPlaylistsToJellyfin, setPlaylistSort,
-    pushHomeConfig, updateHeroPick, updateHeroSort, saveRowMaxItems, saveRowMaxItemsByKey,
+    pushHomeConfig, updateHeroPick, updateHeroSort, saveRowMaxItems, saveRowMaxItemsByKey, toggleNotificationsFromCheckbox,
     showAddHomeRow, hideAddHomeRow, confirmAddHomeRow, removeHomeRow, removeHomeRowByKey,
     homeRowDragStart, homeRowDragOver, homeRowDrop, rowKey,
     // Library

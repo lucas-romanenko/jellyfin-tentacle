@@ -159,8 +159,6 @@ function applyUserRole() {
     userEl.textContent = state.currentUser.display_name;
     userEl.style.display = '';
   }
-  // Load notification preference
-  loadNotificationState();
 }
 
 async function doLogout() {
@@ -169,28 +167,6 @@ async function doLogout() {
   showLoginOverlay();
 }
 
-async function loadNotificationState() {
-  try {
-    const data = await api('/api/notifications');
-    updateNotifButton(data.notifications_enabled !== false);
-  } catch { updateNotifButton(true); }
-}
-
-function updateNotifButton(enabled) {
-  const btn = document.getElementById('notif-toggle-btn');
-  if (!btn) return;
-  btn.style.display = '';
-  btn.textContent = enabled ? '\u{1F514}' : '\u{1F515}';
-  btn.title = enabled ? 'Download notifications: ON' : 'Download notifications: OFF';
-  btn.style.opacity = enabled ? '1' : '0.4';
-}
-
-async function toggleNotifications() {
-  try {
-    const data = await api('/api/notifications/toggle', { method: 'POST' });
-    updateNotifButton(data.notifications_enabled);
-  } catch {}
-}
 
 function setupNavigation() {
   // Sidebar nav
