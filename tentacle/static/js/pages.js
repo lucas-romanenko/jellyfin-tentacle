@@ -3080,8 +3080,12 @@ async function saveTagRule() {
       conditions.push({ field: 'downloaded', operator: 'equals', value: 'yes' });
     }
 
-    const genre = document.getElementById('tr-filter-genre').value.trim();
-    if (genre) conditions.push({ field: 'genre', operator: 'contains', value: genre });
+    const genreRaw = document.getElementById('tr-filter-genre').value.trim();
+    if (genreRaw) {
+      for (const g of genreRaw.split(',').map(s => s.trim()).filter(Boolean)) {
+        conditions.push({ field: 'genre', operator: 'contains', value: g });
+      }
+    }
 
     const rating = document.getElementById('tr-filter-rating').value.trim();
     if (rating) conditions.push({ field: 'rating', operator: 'greater_than', value: rating });
