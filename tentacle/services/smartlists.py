@@ -793,7 +793,8 @@ def _build_query_params(config: dict) -> dict:
             if member == "tags" and operator == "contains" and value:
                 params["tags"].append(value)
             elif member == "genres" and operator == "contains" and value:
-                params["genres"].append(value)
+                for g in [v.strip() for v in value.split(",") if v.strip()]:
+                    params["genres"].append(g)
             elif member in ("productionyear", "year"):
                 try:
                     year = int(value)
