@@ -317,6 +317,17 @@ def get_item_detail(media_type: str, tmdb_id: int, request: Request, db: Session
     return result
 
 
+def _get_followers_for_series(db, tmdb_id: int) -> list:
+    """Return user IDs that have a DownloadRequest for this series (i.e. followers)."""
+    return [
+        dr.user_id for dr in
+        db.query(DownloadRequest.user_id).filter(
+            DownloadRequest.tmdb_id == tmdb_id,
+            DownloadRequest.media_type == "series",
+        ).all()
+    ]
+
+
 def _cleanup_playlists_all_users(tmdb_id: int, media_type: str, jellyfin_item_id: str = None):
     """Background: remove an item from all users' playlists."""
     from models.database import SessionLocal

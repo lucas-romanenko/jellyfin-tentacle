@@ -344,7 +344,26 @@ class TentacleUser(Base):
     display_name = Column(String, nullable=False)
     is_admin = Column(Boolean, default=False)
     profile_image_tag = Column(String, nullable=True)  # Jellyfin image tag for avatar
+    notifications_enabled = Column(Boolean, default=True)  # Per-user download notifications
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+# ─── Notifications ───────────────────────────────────────────────────────────
+
+class Notification(Base):
+    __tablename__ = "notifications"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("tentacle_users.id"), nullable=False, index=True)
+    tmdb_id = Column(Integer, nullable=False)
+    media_type = Column(String, nullable=False, default="movie")  # movie | series
+    title = Column(String, nullable=False)
+    message = Column(String, nullable=False)
+    poster_path = Column(String, nullable=True)
+    jellyfin_item_id = Column(String, nullable=True)  # For click-to-play navigation
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    dismissed_at = Column(DateTime, nullable=True)
+
+    user = relationship("TentacleUser", backref="notifications")
 
 
 # ─── Download Requests (track who requested a download via Tentacle UI) ──────
@@ -447,6 +466,23 @@ def log_activity(db, event: str, message: str, detail: dict = None):
     db.commit()
 
 
+def create_notification(db, user_id: int, tmdb_id: int, media_type: str,
+                        title: str, message: str, poster_path: str = None,
+                        jellyfin_item_id: str = None):
+    """Create a notification for a user if they have notifications enabled."""
+    user = db.query(TentacleUser).filter(TentacleUser.id == user_id).first()
+    if not user or not user.notifications_enabled:
+        return None
+    notif = Notification(
+        user_id=user_id, tmdb_id=tmdb_id, media_type=media_type,
+        title=title, message=message, poster_path=poster_path,
+        jellyfin_item_id=jellyfin_item_id,
+    )
+    db.add(notif)
+    db.commit()
+    return notif
+
+
 def get_setting(db, key: str, default: str = "") -> str:
     """Get a single setting value by key"""
     s = db.query(Setting).filter(Setting.key == key).first()
@@ -490,6 +526,7 @@ def _migrate_columns():
         ("movies", "jellyfin_item_id", "TEXT"),
         ("series", "jellyfin_item_id", "TEXT"),
         ("series", "last_downloaded_episode", "TEXT"),
+        ("tentacle_users", "notifications_enabled", "BOOLEAN DEFAULT 1"),
     ]
     for table, column, col_type in migrations:
         try:

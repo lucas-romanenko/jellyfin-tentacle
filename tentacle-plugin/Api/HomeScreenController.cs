@@ -499,6 +499,12 @@ public class TentacleHomeController : ControllerBase
     [HttpGet("/Tentacle/mdblist.css")]
     public ActionResult GetMdbListCss() => ServeAsset("tentacle-mdblist.css", "text/css");
 
+    [HttpGet("/Tentacle/notifications.js")]
+    public ActionResult GetNotificationsJs() => ServeAsset("tentacle-notifications.js", "application/javascript");
+
+    [HttpGet("/Tentacle/notifications.css")]
+    public ActionResult GetNotificationsCss() => ServeAsset("tentacle-notifications.css", "text/css");
+
     /// <summary>
     /// Returns an embedded CSS/JS resource with no-cache headers so the browser
     /// always revalidates after a plugin update (cache-buster query params alone

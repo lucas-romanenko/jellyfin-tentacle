@@ -774,6 +774,107 @@ public class TentacleDiscoverController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// Proxies notifications for the current user from Tentacle.
+    /// No cache — polled periodically by JS/Android clients.
+    /// </summary>
+    [HttpGet("Notifications")]
+    [Authorize]
+    public async Task<ActionResult> GetNotifications()
+    {
+        var baseUrl = GetTentacleUrl();
+        if (string.IsNullOrEmpty(baseUrl))
+        {
+            return Ok(new { notifications = Array.Empty<object>(), notifications_enabled = true });
+        }
+
+        try
+        {
+            var response = await HttpClient.GetStringAsync(AppendUserId($"{baseUrl}/api/notifications"));
+            return Content(response, "application/json");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("[Tentacle Discover] Failed to fetch notifications: {Error}", ex.Message);
+            return Ok(new { notifications = Array.Empty<object>(), notifications_enabled = true });
+        }
+    }
+
+    /// <summary>
+    /// Dismiss a single notification.
+    /// </summary>
+    [HttpPost("Notifications/{notificationId}/Dismiss")]
+    [Authorize]
+    public async Task<ActionResult> DismissNotification(int notificationId)
+    {
+        var baseUrl = GetTentacleUrl();
+        if (string.IsNullOrEmpty(baseUrl)) return NotFound();
+
+        try
+        {
+            var response = await HttpClient.PostAsync(
+                AppendUserId($"{baseUrl}/api/notifications/{notificationId}/dismiss"),
+                new StringContent(""));
+            var body = await response.Content.ReadAsStringAsync();
+            return new ContentResult { Content = body, ContentType = "application/json", StatusCode = (int)response.StatusCode };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("[Tentacle Discover] Failed to dismiss notification: {Error}", ex.Message);
+            return StatusCode(500);
+        }
+    }
+
+    /// <summary>
+    /// Dismiss all notifications for the current user.
+    /// </summary>
+    [HttpPost("Notifications/DismissAll")]
+    [Authorize]
+    public async Task<ActionResult> DismissAllNotifications()
+    {
+        var baseUrl = GetTentacleUrl();
+        if (string.IsNullOrEmpty(baseUrl)) return NotFound();
+
+        try
+        {
+            var response = await HttpClient.PostAsync(
+                AppendUserId($"{baseUrl}/api/notifications/dismiss-all"),
+                new StringContent(""));
+            var body = await response.Content.ReadAsStringAsync();
+            return new ContentResult { Content = body, ContentType = "application/json", StatusCode = (int)response.StatusCode };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("[Tentacle Discover] Failed to dismiss all notifications: {Error}", ex.Message);
+            return StatusCode(500);
+        }
+    }
+
+    /// <summary>
+    /// Toggle notifications on/off for the current user.
+    /// </summary>
+    [HttpPost("Notifications/Toggle")]
+    [Authorize]
+    public async Task<ActionResult> ToggleNotifications()
+    {
+        var baseUrl = GetTentacleUrl();
+        if (string.IsNullOrEmpty(baseUrl)) return NotFound();
+
+        try
+        {
+            var response = await HttpClient.PostAsync(
+                AppendUserId($"{baseUrl}/api/notifications/toggle"),
+                new StringContent(""));
+            var body = await response.Content.ReadAsStringAsync();
+            return new ContentResult { Content = body, ContentType = "application/json", StatusCode = (int)response.StatusCode };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("[Tentacle Discover] Failed to toggle notifications: {Error}", ex.Message);
+            return StatusCode(500);
+        }
+    }
+
     private static string? LoadEmbeddedResource(string resourceSuffix)
     {
         var assembly = typeof(TentacleDiscoverController).Assembly;

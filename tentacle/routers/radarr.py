@@ -360,6 +360,25 @@ def radarr_webhook(payload: dict, db: Session = Depends(get_db)):
             except Exception as e:
                 logger.warning(f"[Radarr webhook] Playlist update failed: {e}")
 
+            # Per-user download notification
+            if event_type == "Download":
+                try:
+                    from models.database import DownloadRequest, create_notification
+                    dr = db.query(DownloadRequest).filter(
+                        DownloadRequest.tmdb_id == tmdb_id,
+                        DownloadRequest.media_type == "movie"
+                    ).first()
+                    if dr:
+                        create_notification(
+                            db, user_id=dr.user_id, tmdb_id=tmdb_id, media_type="movie",
+                            title=db_movie.title,
+                            message=f"{db_movie.title} has completed and is ready to watch",
+                            poster_path=db_movie.poster_path,
+                            jellyfin_item_id=db_movie.jellyfin_item_id,
+                        )
+                except Exception as e:
+                    logger.warning(f"[Radarr webhook] Notification creation failed: {e}")
+
             # Activity log
             from models.database import log_activity as _log_act
             _log_act(db, "radarr_add", f"Radarr downloaded '{db_movie.title}'")

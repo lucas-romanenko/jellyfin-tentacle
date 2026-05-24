@@ -336,6 +336,50 @@ def sonarr_webhook(payload: dict, db: Session = Depends(get_db)):
             except Exception as e:
                 logger.warning(f"[Sonarr webhook] Playlist update failed: {e}")
 
+            # Per-user download notification
+            if event_type == "Download":
+                try:
+                    from models.database import DownloadRequest, create_notification
+                    # Build episode label for the message
+                    ep_label = ""
+                    if first_episode:
+                        s = first_episode.get("seasonNumber", 0)
+                        e = first_episode.get("episodeNumber", 0)
+                        ep_label = f" - S{s:02d}E{e:02d}"
+
+                    notif_msg = f"{db_series.title}{ep_label} has completed and is ready to watch"
+
+                    # Notify the requester
+                    notified_user_ids = set()
+                    dr = db.query(DownloadRequest).filter(
+                        DownloadRequest.tmdb_id == tmdb_id,
+                        DownloadRequest.media_type == "series"
+                    ).first()
+                    if dr:
+                        create_notification(
+                            db, user_id=dr.user_id, tmdb_id=tmdb_id, media_type="series",
+                            title=db_series.title, message=notif_msg,
+                            poster_path=db_series.poster_path,
+                            jellyfin_item_id=db_series.jellyfin_item_id,
+                        )
+                        notified_user_ids.add(dr.user_id)
+
+                    # Also notify users who follow this series (auto-monitored downloads)
+                    if db_series.sonarr_monitored:
+                        from routers.library import _get_followers_for_series
+                        follower_ids = _get_followers_for_series(db, tmdb_id)
+                        for uid in follower_ids:
+                            if uid not in notified_user_ids:
+                                create_notification(
+                                    db, user_id=uid, tmdb_id=tmdb_id, media_type="series",
+                                    title=db_series.title, message=notif_msg,
+                                    poster_path=db_series.poster_path,
+                                    jellyfin_item_id=db_series.jellyfin_item_id,
+                                )
+                                notified_user_ids.add(uid)
+                except Exception as e:
+                    logger.warning(f"[Sonarr webhook] Notification creation failed: {e}")
+
             # Activity log
             from models.database import log_activity as _log_act
             _log_act(db, "sonarr_add", f"Sonarr downloaded '{db_series.title}'")
