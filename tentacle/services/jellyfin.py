@@ -321,6 +321,16 @@ class JellyfinService:
             return data.get("Items", [])
         return []
 
+    def get_genres(self) -> List[str]:
+        """Get all genres from Jellyfin library."""
+        data = self._get("/Genres", params={
+            "SortBy": "SortName",
+            "SortOrder": "Ascending",
+        })
+        if data:
+            return [item["Name"] for item in data.get("Items", []) if item.get("Name")]
+        return []
+
     # ── Item Queries ─────────────────────────────────────────────────────
 
     def query_items(self, include_types: List[str], tags: List[str] = None,

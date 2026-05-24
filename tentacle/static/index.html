@@ -905,6 +905,17 @@ td.primary { color: var(--text); font-weight: 500; }
 .tag-pill-name { font-size: 13px; font-weight: 500; }
 .tag-pill-count { font-size: 11px; color: var(--text3); font-family: 'DM Mono', monospace; }
 
+/* ── Genre chips ── */
+.genre-chips { display: flex; flex-wrap: wrap; gap: 6px; max-height: 140px; overflow-y: auto; padding: 2px 0; }
+.genre-chip {
+  padding: 4px 10px; border-radius: 20px; font-size: 12px; cursor: pointer; user-select: none;
+  background: var(--bg3); color: var(--text2); border: 1px solid var(--border); transition: all .15s;
+}
+.genre-chip:hover { border-color: var(--text3); }
+.genre-chip.selected { background: var(--accent-dim); color: var(--accent); border-color: var(--accent); font-weight: 500; }
+.match-count { font-size: 12px; color: var(--text3); margin-top: 8px; font-family: 'DM Mono', monospace; transition: opacity .2s; }
+.match-count .count-num { color: var(--accent); font-weight: 600; }
+
 /* ── Log viewer ── */
 .log-panel {
   background: #0a0a0f;
@@ -2525,7 +2536,7 @@ td.primary { color: var(--text); font-weight: 500; }
       </div>
       <div class="form-group" style="flex:1">
         <div class="form-label">Media Type</div>
-        <select class="form-input" id="tr-apply-to">
+        <select class="form-input" id="tr-apply-to" onchange="_scheduleMatchCount()">
           <option value="both">All</option>
           <option value="movies">Movies</option>
           <option value="series">Series</option>
@@ -2556,21 +2567,21 @@ td.primary { color: var(--text); font-weight: 500; }
 
     <!-- Simple filters -->
     <div class="form-group" id="tr-simple-filters">
-      <div class="form-label">Filters <span style="font-weight:400;color:var(--text3)">(optional)</span></div>
+      <div class="form-label">Genres <span style="font-weight:400;color:var(--text3)">(select one or more)</span></div>
+      <div class="genre-chips" id="tr-genre-chips"></div>
+
+      <div class="form-label" style="margin-top:12px">Filters <span style="font-weight:400;color:var(--text3)">(optional)</span></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <div style="flex:1;min-width:120px">
-          <div style="font-size:11px;color:var(--text3);margin-bottom:4px">Genre</div>
-          <input class="form-input" id="tr-filter-genre" placeholder="e.g. Comedy, Action">
-        </div>
         <div style="flex:1;min-width:100px">
           <div style="font-size:11px;color:var(--text3);margin-bottom:4px">Min Rating</div>
-          <input class="form-input" id="tr-filter-rating" type="number" min="0" max="10" step="0.5" placeholder="e.g. 7">
+          <input class="form-input" id="tr-filter-rating" type="number" min="0" max="10" step="0.5" placeholder="e.g. 7" oninput="_scheduleMatchCount()">
         </div>
         <div style="flex:1;min-width:100px">
           <div style="font-size:11px;color:var(--text3);margin-bottom:4px">Year (after)</div>
-          <input class="form-input" id="tr-filter-year" type="number" min="1900" max="2030" placeholder="e.g. 2020">
+          <input class="form-input" id="tr-filter-year" type="number" min="1900" max="2030" placeholder="e.g. 2020" oninput="_scheduleMatchCount()">
         </div>
       </div>
+      <div class="match-count" id="tr-match-count" style="display:none"></div>
     </div>
 
     <!-- Advanced toggle -->

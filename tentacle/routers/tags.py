@@ -11,8 +11,9 @@ from pydantic import BaseModel
 from typing import List, Optional
 
 from sqlalchemy import distinct
-from models.database import get_db, TagRule, Movie, Series, ListSubscription, TentacleUser
+from models.database import get_db, get_setting, TagRule, Movie, Series, ListSubscription, TentacleUser
 from routers.auth import get_user_from_request
+from services.jellyfin import JellyfinService
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/tags", tags=["tags"])
@@ -39,7 +40,18 @@ def condition_options(db: Session = Depends(get_db), user: TentacleUser = Depend
     list_options = [{"name": lst.name, "tag": lst.tag} for lst in lists]
     list_options.sort(key=lambda x: x["name"].lower())
 
-    return {"sources": sources, "lists": list_options}
+    # Fetch available genres from Jellyfin
+    genres = []
+    try:
+        jf_url = get_setting(db, "jellyfin_url")
+        jf_key = get_setting(db, "jellyfin_api_key")
+        if jf_url and jf_key:
+            jf = JellyfinService(jf_url, jf_key)
+            genres = jf.get_genres()
+    except Exception:
+        pass
+
+    return {"sources": sources, "lists": list_options, "genres": genres}
 
 
 class ConditionSchema(BaseModel):

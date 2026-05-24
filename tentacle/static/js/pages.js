@@ -2877,13 +2877,86 @@ async function loadTagRules() {
 
 let _tagRulesCache = [];
 let _conditionOptions = null;
+let _matchCountTimer = null;
 
 async function _ensureConditionOptions() {
   if (!_conditionOptions) {
     try { _conditionOptions = await api('/api/tags/condition-options'); }
-    catch (_) { _conditionOptions = { sources: [], lists: [] }; }
+    catch (_) { _conditionOptions = { sources: [], lists: [], genres: [] }; }
   }
   return _conditionOptions;
+}
+
+function _renderGenreChips(selected = []) {
+  const container = document.getElementById('tr-genre-chips');
+  if (!container) return;
+  const genres = _conditionOptions?.genres || [];
+  const selSet = new Set(selected.map(s => s.toLowerCase()));
+  container.innerHTML = genres.map(g => {
+    const sel = selSet.has(g.toLowerCase()) ? ' selected' : '';
+    return `<span class="genre-chip${sel}" data-genre="${escapeAttr(g)}" onclick="toggleGenreChip(this)">${g}</span>`;
+  }).join('');
+  if (!genres.length) {
+    container.innerHTML = '<span style="font-size:12px;color:var(--text3)">No genres found</span>';
+  }
+}
+
+function toggleGenreChip(el) {
+  el.classList.toggle('selected');
+  _scheduleMatchCount();
+}
+
+function _getSelectedGenres() {
+  return Array.from(document.querySelectorAll('#tr-genre-chips .genre-chip.selected'))
+    .map(el => el.dataset.genre);
+}
+
+function _scheduleMatchCount() {
+  clearTimeout(_matchCountTimer);
+  _matchCountTimer = setTimeout(_updateMatchCount, 400);
+}
+
+async function _updateMatchCount() {
+  const el = document.getElementById('tr-match-count');
+  if (!el || document.getElementById('tr-simple-filters').style.display === 'none') {
+    if (el) el.style.display = 'none';
+    return;
+  }
+  const conditions = _buildFriendlyConditions();
+  if (!conditions.length) { el.style.display = 'none'; return; }
+  const apply_to = document.getElementById('tr-apply-to').value;
+  try {
+    const r = await api('/api/smartlists/preview-count', { method: 'POST', body: { apply_to, conditions } });
+    if (r.count === -1) {
+      el.innerHTML = 'Preview not available for provider/list filters';
+      el.style.display = '';
+    } else {
+      el.innerHTML = `<span class="count-num">${r.count}</span> item${r.count !== 1 ? 's' : ''} match`;
+      el.style.display = '';
+    }
+  } catch { el.style.display = 'none'; }
+}
+
+function _buildFriendlyConditions() {
+  const conditions = [];
+  const contentSource = document.querySelector('input[name="tr-content-source"]:checked')?.value || 'all';
+  if (contentSource === 'source') {
+    const src = document.getElementById('tr-source-pick').value;
+    if (src) conditions.push({ field: 'source', operator: 'equals', value: src });
+  } else if (contentSource === 'list') {
+    const lst = document.getElementById('tr-list-pick').value;
+    if (lst) conditions.push({ field: 'list', operator: 'equals', value: lst });
+  } else if (contentSource === 'downloaded') {
+    conditions.push({ field: 'downloaded', operator: 'equals', value: 'yes' });
+  }
+  for (const g of _getSelectedGenres()) {
+    conditions.push({ field: 'genre', operator: 'contains', value: g });
+  }
+  const rating = document.getElementById('tr-filter-rating').value.trim();
+  if (rating) conditions.push({ field: 'rating', operator: 'greater_than', value: rating });
+  const year = document.getElementById('tr-filter-year').value.trim();
+  if (year) conditions.push({ field: 'year', operator: 'greater_than', value: year });
+  return conditions;
 }
 
 async function showAddTagRule() {
@@ -2901,15 +2974,15 @@ async function showAddTagRule() {
   for (const r of radios) r.checked = r.value === 'all';
   document.getElementById('tr-source-pick').style.display = 'none';
   document.getElementById('tr-list-pick').style.display = 'none';
-  document.getElementById('tr-filter-genre').value = '';
   document.getElementById('tr-filter-rating').value = '';
   document.getElementById('tr-filter-year').value = '';
   document.getElementById('tr-source-section').style.display = '';
   document.getElementById('tr-simple-filters').style.display = '';
   document.getElementById('tr-advanced-section').style.display = 'none';
   document.getElementById('tr-advanced-label').textContent = 'Show advanced filters';
+  document.getElementById('tr-match-count').style.display = 'none';
 
-  // Populate source/list dropdowns
+  // Populate source/list dropdowns + genre chips
   await _ensureConditionOptions();
   const srcPick = document.getElementById('tr-source-pick');
   srcPick.innerHTML = '<option value="">Select...</option>' +
@@ -2917,6 +2990,7 @@ async function showAddTagRule() {
   const listPick = document.getElementById('tr-list-pick');
   listPick.innerHTML = '<option value="">Select...</option>' +
     (_conditionOptions?.lists || []).map(l => `<option value="${escapeAttr(l.tag)}">${l.name}</option>`).join('');
+  _renderGenreChips([]);
 
   showModal('modal-tag-rule');
 }
@@ -2925,6 +2999,7 @@ function onContentSourceChange() {
   const selected = document.querySelector('input[name="tr-content-source"]:checked')?.value || 'all';
   document.getElementById('tr-source-pick').style.display = selected === 'source' ? '' : 'none';
   document.getElementById('tr-list-pick').style.display = selected === 'list' ? '' : 'none';
+  _scheduleMatchCount();
 }
 
 function toggleAdvancedFilters() {
@@ -2969,15 +3044,58 @@ async function editTagRule(id) {
   document.getElementById('tr-apply-to').value = rule.apply_to;
   document.getElementById('tr-active').checked = rule.active;
 
+  // Always populate advanced mode conditions
   const condEl = document.getElementById('tr-conditions');
   condEl.innerHTML = '';
   for (const cond of (rule.conditions || [])) addRuleCondition(cond.field, cond.operator, cond.value);
 
-  // Editing always uses advanced mode (existing rules have raw conditions)
-  document.getElementById('tr-source-section').style.display = 'none';
-  document.getElementById('tr-simple-filters').style.display = 'none';
-  document.getElementById('tr-advanced-section').style.display = '';
-  document.getElementById('tr-advanced-label').textContent = 'Use simple builder';
+  await _ensureConditionOptions();
+
+  // Check if conditions can be shown in friendly mode
+  const conds = rule.conditions || [];
+  const canUseFriendly = conds.every(c => ['genre', 'rating', 'year', 'source', 'list', 'downloaded'].includes(c.field));
+
+  if (canUseFriendly) {
+    // Populate friendly builder from conditions
+    const radios = document.querySelectorAll('input[name="tr-content-source"]');
+    const srcCond = conds.find(c => c.field === 'source');
+    const listCond = conds.find(c => c.field === 'list');
+    const dlCond = conds.find(c => c.field === 'downloaded');
+    for (const r of radios) {
+      r.checked = srcCond ? r.value === 'source' : listCond ? r.value === 'list' : dlCond ? r.value === 'downloaded' : r.value === 'all';
+    }
+    const srcPick = document.getElementById('tr-source-pick');
+    srcPick.innerHTML = '<option value="">Select...</option>' +
+      (_conditionOptions?.sources || []).map(s => `<option value="${escapeAttr(s)}">${s}</option>`).join('');
+    if (srcCond) { srcPick.value = srcCond.value; srcPick.style.display = ''; }
+    else srcPick.style.display = 'none';
+    const listPick = document.getElementById('tr-list-pick');
+    listPick.innerHTML = '<option value="">Select...</option>' +
+      (_conditionOptions?.lists || []).map(l => `<option value="${escapeAttr(l.tag)}">${l.name}</option>`).join('');
+    if (listCond) { listPick.value = listCond.value; listPick.style.display = ''; }
+    else listPick.style.display = 'none';
+
+    const selectedGenres = conds.filter(c => c.field === 'genre').map(c => c.value);
+    _renderGenreChips(selectedGenres);
+
+    const ratingCond = conds.find(c => c.field === 'rating');
+    document.getElementById('tr-filter-rating').value = ratingCond ? ratingCond.value : '';
+    const yearCond = conds.find(c => c.field === 'year');
+    document.getElementById('tr-filter-year').value = yearCond ? yearCond.value : '';
+
+    document.getElementById('tr-source-section').style.display = '';
+    document.getElementById('tr-simple-filters').style.display = '';
+    document.getElementById('tr-advanced-section').style.display = 'none';
+    document.getElementById('tr-advanced-label').textContent = 'Show advanced filters';
+    _scheduleMatchCount();
+  } else {
+    // Complex conditions — use advanced mode
+    document.getElementById('tr-source-section').style.display = 'none';
+    document.getElementById('tr-simple-filters').style.display = 'none';
+    document.getElementById('tr-advanced-section').style.display = '';
+    document.getElementById('tr-advanced-label').textContent = 'Use simple builder';
+  }
+  document.getElementById('tr-match-count').style.display = 'none';
 
   showModal('modal-tag-rule');
 }
@@ -3067,31 +3185,7 @@ async function saveTagRule() {
     }
   } else {
     // Build from friendly builder
-    const contentSource = document.querySelector('input[name="tr-content-source"]:checked')?.value || 'all';
-    if (contentSource === 'source') {
-      const src = document.getElementById('tr-source-pick').value;
-      if (!src) { toast('Select a provider source', 'error'); return; }
-      conditions.push({ field: 'source', operator: 'equals', value: src });
-    } else if (contentSource === 'list') {
-      const lst = document.getElementById('tr-list-pick').value;
-      if (!lst) { toast('Select a list', 'error'); return; }
-      conditions.push({ field: 'list', operator: 'equals', value: lst });
-    } else if (contentSource === 'downloaded') {
-      conditions.push({ field: 'downloaded', operator: 'equals', value: 'yes' });
-    }
-
-    const genreRaw = document.getElementById('tr-filter-genre').value.trim();
-    if (genreRaw) {
-      for (const g of genreRaw.split(',').map(s => s.trim()).filter(Boolean)) {
-        conditions.push({ field: 'genre', operator: 'contains', value: g });
-      }
-    }
-
-    const rating = document.getElementById('tr-filter-rating').value.trim();
-    if (rating) conditions.push({ field: 'rating', operator: 'greater_than', value: rating });
-
-    const year = document.getElementById('tr-filter-year').value.trim();
-    if (year) conditions.push({ field: 'year', operator: 'greater_than', value: year });
+    conditions.push(..._buildFriendlyConditions());
   }
 
   if (!conditions.length) { toast('At least one filter is required', 'error'); return; }
@@ -4658,7 +4752,7 @@ async function toggleNotificationsFromCheckbox(checked) {
     loadJellyfinPage, loadAutoPlaylists, toggleAutoPlaylist, dismissAutoPlaylistBanner, saveDiscoverInJellyfin,
     showAddTagRule, editTagRule, deleteTagRule, saveTagRule, onContentSourceChange, toggleAdvancedFilters,
     addRuleCondition, updateCondOps, onCollectionNameInput, syncSmartLists, refreshTags, syncPlaylistsToJellyfin, setPlaylistSort,
-    pushHomeConfig, updateHeroPick, updateHeroSort, saveRowMaxItems, saveRowMaxItemsByKey, toggleNotificationsFromCheckbox,
+    pushHomeConfig, updateHeroPick, updateHeroSort, saveRowMaxItems, saveRowMaxItemsByKey, toggleNotificationsFromCheckbox, toggleGenreChip, _scheduleMatchCount,
     showAddHomeRow, hideAddHomeRow, confirmAddHomeRow, removeHomeRow, removeHomeRowByKey,
     homeRowDragStart, homeRowDragOver, homeRowDrop, rowKey,
     // Library

@@ -170,6 +170,67 @@ def refresh_playlists(db: Session = Depends(get_db), user: TentacleUser = Depend
     return {"success": True, **stats}
 
 
+class PreviewRequest(BaseModel):
+    apply_to: str = "both"
+    conditions: list = []
+
+
+@router.post("/preview-count")
+def preview_count(body: PreviewRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+    """Return the number of items matching the given conditions (for live preview)."""
+    from services.smartlists import _classify_conditions, _conditions_to_expressions, _build_query_params
+    from services.jellyfin import JellyfinService
+
+    jf_url = get_setting(db, "jellyfin_url")
+    jf_key = get_setting(db, "jellyfin_api_key")
+    if not jf_url or not jf_key:
+        return {"count": 0}
+
+    conditions = body.conditions
+    if not conditions:
+        return {"count": 0}
+
+    media = ["Movie", "Series"]
+    if body.apply_to == "movies":
+        media = ["Movie"]
+    elif body.apply_to == "series":
+        media = ["Series"]
+
+    classification = _classify_conditions(conditions)
+
+    # Build a minimal config to reuse _build_query_params
+    expressions = []
+    if classification == "native":
+        expressions = _conditions_to_expressions(conditions)
+    else:
+        # For tentacle/mixed conditions, we can't easily preview without tag data
+        # Just count items with any tag-based conditions as 0
+        return {"count": -1}  # -1 signals "can't preview"
+
+    config = {
+        "MediaTypes": media,
+        "ExpressionSets": [{"Expressions": expressions}] if expressions else [],
+    }
+
+    jf = JellyfinService(jf_url, jf_key)
+    query = _build_query_params(config)
+    items = jf.query_items(**query)
+
+    # AND filter for multiple genres
+    required_genres = query.get("genres") or []
+    if len(required_genres) > 1:
+        required_lower = [g.lower() for g in required_genres]
+        items = [
+            item for item in items
+            if all(
+                any(ig.lower() == rg for ig in (item.get("Genres") or []))
+                for rg in required_lower
+            )
+        ]
+
+    return {"count": len(items)}
+
+
 @router.post("/notify")
 def notify(db: Session = Depends(get_db)):
     """Notify the Jellyfin plugin to reload. Does NOT touch the JSON."""
