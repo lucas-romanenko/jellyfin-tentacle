@@ -448,7 +448,12 @@ def fetch_trakt_list(url: str, client_id: str = "") -> list:
 
 def store_list_items(lst: ListSubscription, items: list, db: Session) -> dict:
     """Store fetched items in ListItem table (replace old entries).
-    Returns stats: {stored, skipped_no_tmdb, skipped_duplicate}."""
+    Returns stats: {stored, new, removed, skipped_no_tmdb, skipped_duplicate}."""
+    # Snapshot existing TMDB IDs before replacing
+    old_tmdb_ids = {
+        row.tmdb_id for row in
+        db.query(ListItem.tmdb_id).filter(ListItem.list_id == lst.id).all()
+    }
     db.query(ListItem).filter(ListItem.list_id == lst.id).delete()
     seen_tmdb = set()
     stored = 0
@@ -478,9 +483,11 @@ def store_list_items(lst: ListSubscription, items: list, db: Session) -> dict:
         ))
         stored += 1
     db.flush()
+    new_count = len(seen_tmdb - old_tmdb_ids)
+    removed_count = len(old_tmdb_ids - seen_tmdb)
     if skipped_no_tmdb or skipped_duplicate:
         logger.info(f"List '{lst.name}': stored {stored}, skipped {skipped_no_tmdb} (no TMDB match), {skipped_duplicate} (duplicate)")
-    return {"stored": stored, "skipped_no_tmdb": skipped_no_tmdb, "skipped_duplicate": skipped_duplicate}
+    return {"stored": stored, "new": new_count, "removed": removed_count, "skipped_no_tmdb": skipped_no_tmdb, "skipped_duplicate": skipped_duplicate}
 
 
 def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:

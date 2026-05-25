@@ -446,9 +446,13 @@ async function loadLibSyncSummary() {
       if (data.sonarr_new > 0) arrParts.push(`${data.sonarr_new} new Sonarr series`);
       html += `<div style="margin-bottom:6px"><strong>Downloads:</strong> ${arrParts.join(', ')}</div>`;
     }
-    // Lists
+    // Lists (only shown when items actually changed)
     if (data.lists_updated && data.lists_updated.length > 0) {
       html += `<div style="margin-bottom:6px"><strong>Lists:</strong> ${data.lists_updated.join(', ')} updated</div>`;
+    }
+    // EPG
+    if (data.epg_synced) {
+      html += `<div style="margin-bottom:6px"><strong>Live TV:</strong> EPG guide data refreshed</div>`;
     }
     if (!html) {
       html = '<div style="color:var(--text3)">No new content since last sync</div>';

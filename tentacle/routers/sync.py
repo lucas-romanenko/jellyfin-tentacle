@@ -633,7 +633,7 @@ def get_sync_summary(db: Session = Depends(get_db)):
             else:
                 sonarr_new = total
 
-    # List updates from activity logs since batch start
+    # List updates from activity logs since batch start — only include lists with actual changes
     lists_updated = []
     if earliest_start:
         list_logs = db.query(ActivityLog).filter(
@@ -642,7 +642,10 @@ def get_sync_summary(db: Session = Depends(get_db)):
         ).all()
         for log in list_logs:
             msg = log.message or ""
-            # Match both formats: "Refreshed X (N new)" and "Fetched 'X' — N items stored"
+            # Skip lists with no changes
+            if "(no changes)" in msg:
+                continue
+            # Extract list name from both formats
             if msg.startswith("Refreshed "):
                 name = msg.split("Refreshed ", 1)[1].split(" (")[0]
             elif msg.startswith("Fetched '"):
@@ -652,12 +655,21 @@ def get_sync_summary(db: Session = Depends(get_db)):
             if name and name not in lists_updated:
                 lists_updated.append(name)
 
+    # EPG sync from activity logs since batch start
+    epg_synced = False
+    if earliest_start:
+        epg_synced = db.query(ActivityLog).filter(
+            ActivityLog.event == "epg_sync",
+            ActivityLog.created_at >= earliest_start,
+        ).count() > 0
+
     return {
         "completed_at": completed_at,
         "providers": providers_data,
         "radarr_new": radarr_new,
         "sonarr_new": sonarr_new,
         "lists_updated": lists_updated,
+        "epg_synced": epg_synced,
     }
 
 

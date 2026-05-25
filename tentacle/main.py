@@ -47,7 +47,12 @@ def run_scheduled_sync():
                     lst.last_fetched = datetime.utcnow()
                     lst.last_item_count = len(items)
                     stored = store_stats.get("stored", len(items)) if store_stats else len(items)
-                    log_activity(db, "list_fetch", f"Fetched '{lst.name}' — {stored} items stored")
+                    new_count = store_stats.get("new", 0) if store_stats else 0
+                    removed_count = store_stats.get("removed", 0) if store_stats else 0
+                    if new_count or removed_count:
+                        log_activity(db, "list_fetch", f"Fetched '{lst.name}' — {stored} items (+{new_count} new, -{removed_count} removed)")
+                    else:
+                        log_activity(db, "list_fetch", f"Fetched '{lst.name}' — {stored} items (no changes)")
                     logger.info(f"List '{lst.name}' refreshed: {len(items)} items")
             except Exception as e:
                 logger.warning(f"Failed to refresh list '{lst.name}': {e}")
