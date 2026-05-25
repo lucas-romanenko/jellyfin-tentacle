@@ -893,44 +893,71 @@
 
   function refreshPlaylistRows(gen) {
     if (!MH.activeSections) return;
-    var sections = MH.activeSections.filter(function (s) { return s.type === 'row' && s.playlistId; });
-    sections.forEach(function (section) {
-      apiGet('TentacleHome/Section/' + section.playlistId + '?userId=' + MH.userId)
-        .then(function (data) {
-          if (gen !== MH.generation) return;
-          var row = document.querySelector('.mh-row[data-playlist-id="' + section.playlistId + '"]');
-          if (!row) return;
-          var itemsEl = row.querySelector('.mh-row-items');
-          if (!itemsEl) return;
 
-          if (!data.Items || !data.Items.length) {
-            row.classList.add('mh-row-hidden');
-            return;
-          }
+    // Re-fetch sections to detect structural changes (reorder, add, remove)
+    apiGet('TentacleHome/Sections?userId=' + MH.userId)
+      .then(function (data) {
+        if (gen !== MH.generation) return;
+        if (!data.sections) return;
 
-          // Build set of current item IDs for diff
-          var currentIds = [];
-          itemsEl.querySelectorAll('.mh-card[data-item-id]').forEach(function (c) {
-            currentIds.push(c.getAttribute('data-item-id'));
+        var newSections = data.sections.filter(function (s) { return s.type === 'row' || s.type === 'builtin'; });
+        var oldKeys = MH.activeSections.map(function (s) { return (s.type === 'row' ? s.playlistId : s.sectionId) || ''; }).join(',');
+        var newKeys = newSections.map(function (s) { return (s.type === 'row' ? s.playlistId : s.sectionId) || ''; }).join(',');
+
+        if (oldKeys !== newKeys) {
+          // Structure changed — rebuild rows container
+          console.log('[TH] Home structure changed, rebuilding rows');
+          var rowsContainer = document.getElementById('mh-rows-container');
+          if (!rowsContainer) return;
+          rowsContainer.innerHTML = '';
+          newSections.forEach(function (section) {
+            if (section.type === 'builtin') {
+              loadBuiltinSection(rowsContainer, section);
+            } else {
+              loadRow(rowsContainer, section);
+            }
           });
-          var newIds = data.Items.map(function (i) { return i.Id; });
+          MH.activeSections = newSections;
+          return;
+        }
 
-          // Skip if identical
-          if (currentIds.length === newIds.length && currentIds.every(function (id, idx) { return id === newIds[idx]; })) {
-            return;
-          }
+        // Structure unchanged — refresh items in-place for playlist rows
+        var sections = MH.activeSections.filter(function (s) { return s.type === 'row' && s.playlistId; });
+        sections.forEach(function (section) {
+          apiGet('TentacleHome/Section/' + section.playlistId + '?userId=' + MH.userId)
+            .then(function (itemData) {
+              if (gen !== MH.generation) return;
+              var row = document.querySelector('.mh-row[data-playlist-id="' + section.playlistId + '"]');
+              if (!row) return;
+              var itemsEl = row.querySelector('.mh-row-items');
+              if (!itemsEl) return;
 
-          console.log('[TH] Updating row "' + section.displayText + '": ' + currentIds.length + ' → ' + newIds.length + ' items');
+              if (!itemData.Items || !itemData.Items.length) {
+                row.classList.add('mh-row-hidden');
+                return;
+              }
 
-          // Rebuild items
-          row.classList.remove('mh-row-hidden');
-          itemsEl.innerHTML = '';
-          data.Items.forEach(function (item) {
-            itemsEl.appendChild(createCard(item));
-          });
-        })
-        .catch(function () {});
-    });
+              var currentIds = [];
+              itemsEl.querySelectorAll('.mh-card[data-item-id]').forEach(function (c) {
+                currentIds.push(c.getAttribute('data-item-id'));
+              });
+              var newIds = itemData.Items.map(function (i) { return i.Id; });
+
+              if (currentIds.length === newIds.length && currentIds.every(function (id, idx) { return id === newIds[idx]; })) {
+                return;
+              }
+
+              console.log('[TH] Updating row "' + section.displayText + '": ' + currentIds.length + ' → ' + newIds.length + ' items');
+              row.classList.remove('mh-row-hidden');
+              itemsEl.innerHTML = '';
+              itemData.Items.forEach(function (item) {
+                itemsEl.appendChild(createCard(item));
+              });
+            })
+            .catch(function () {});
+        });
+      })
+      .catch(function () {});
   }
 
   // ── Utilities ─────────────────────────────────────────────────────────
