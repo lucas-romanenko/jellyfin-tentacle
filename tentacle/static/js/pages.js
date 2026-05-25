@@ -2084,11 +2084,6 @@ async function syncPlaylistsToJellyfin() {
     if (removed) parts.push(`${removed} removed`);
     if (artUpdated) parts.push(`${artUpdated} artwork uploaded`);
     toast(parts.length ? `Synced: ${parts.join(', ')}` : 'Playlists up to date');
-    // Populate playlist items, sync artwork, rebuild home config, and notify plugin
-    await api('/api/smartlists/refresh-playlists', { method: 'POST' });
-    api('/api/collections/sync-artwork', { method: 'POST' }).catch(() => {});
-    await api('/api/smartlists/write-home-config', { method: 'POST' });
-    api('/api/smartlists/notify', { method: 'POST' }).catch(() => {});
   } catch (e) {
     toast('Sync failed: ' + e.message, 'error');
   }

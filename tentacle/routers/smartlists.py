@@ -139,8 +139,32 @@ def set_playlist_sort(req: PlaylistSortRequest, db: Session = Depends(get_db), u
 
 @router.post("/sync")
 def sync(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
-    """Run per-user SmartLists sync to disk."""
-    return sync_smartlists(db, user_id=user.id)
+    """Run full per-user playlist pipeline: sync configs → populate items → artwork → home config → notify plugin."""
+    result = sync_smartlists(db, user_id=user.id)
+
+    # Populate playlist items in Jellyfin
+    try:
+        refresh_smartlist_playlists(db, user_id=user.id)
+    except Exception as e:
+        logger.warning(f"Playlist refresh after sync failed: {e}")
+        result["refresh_error"] = str(e)
+
+    # Sync artwork so new playlists get images
+    try:
+        from routers.collections import sync_playlist_artwork
+        sync_playlist_artwork(db)
+    except Exception as e:
+        logger.warning(f"Artwork sync after sync failed: {e}")
+
+    # Rebuild home config and notify plugin
+    try:
+        write_home_config(db, user_id=user.id)
+        _notify_jellyfin_plugin(db)
+    except Exception as e:
+        logger.warning(f"Home config/notify after sync failed: {e}")
+
+    bump_playlist_version()
+    return result
 
 
 @router.post("/write-home-config")
@@ -686,6 +710,7 @@ def toggle_auto_playlist(req: AutoPlaylistToggleRequest, db: Session = Depends(g
             logger.warning(f"Artwork sync after toggle failed: {e}")
         write_home_config(db, user_id=user.id)
         notify_result = _notify_jellyfin_plugin(db)
+        bump_playlist_version()
     except Exception as e:
         logger.error(f"Auto playlist sync failed: {e}")
         jellyfin_error = str(e)
