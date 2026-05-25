@@ -4,7 +4,6 @@ Per-user CRUD endpoints for managing automatic tag rules (custom playlists)
 """
 
 import logging
-import threading
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -112,9 +111,6 @@ def create_rule(body: TagRuleCreate, db: Session = Depends(get_db), user: Tentac
     db.commit()
     db.refresh(rule)
 
-    # Background sync so the new playlist appears in Jellyfin
-    _bg_sync_user(user.id)
-
     return {"id": rule.id, "success": True}
 
 
@@ -137,8 +133,6 @@ def update_rule(rule_id: int, body: TagRuleUpdate, db: Session = Depends(get_db)
 
     db.commit()
 
-    _bg_sync_user(user.id)
-
     return {"success": True}
 
 
@@ -150,25 +144,4 @@ def delete_rule(rule_id: int, db: Session = Depends(get_db), user: TentacleUser 
     db.delete(rule)
     db.commit()
 
-    _bg_sync_user(user.id)
-
     return {"success": True}
-
-
-def _bg_sync_user(target_user_id: int):
-    """Trigger a background per-user smartlist sync after tag rule changes."""
-    def _run():
-        from models.database import SessionLocal
-        from services.smartlists import sync_smartlists, refresh_smartlist_playlists, write_home_config, _notify_jellyfin_plugin
-        bg_db = SessionLocal()
-        try:
-            sync_smartlists(bg_db, user_id=target_user_id)
-            refresh_smartlist_playlists(bg_db, user_id=target_user_id)
-            write_home_config(bg_db, user_id=target_user_id)
-            _notify_jellyfin_plugin(bg_db)
-        except Exception as e:
-            logger.error(f"Background smartlist sync failed for user {target_user_id}: {e}")
-        finally:
-            bg_db.close()
-
-    threading.Thread(target=_run, daemon=True).start()
