@@ -127,6 +127,42 @@
             return true; // Unknown button = show
         },
 
+        // Re-fetch toolbar config and rebuild buttons in-place (called on version change)
+        refreshToolbar: function () {
+            var self = this;
+            this.fetchToolbarConfig().then(function () {
+                var pill = document.querySelector('.moonfin-nav-pill');
+                if (!pill) return;
+
+                // Remove all configurable buttons (keep Home which is always first)
+                var btns = pill.querySelectorAll('.moonfin-nav-btn:not(.moonfin-nav-home)');
+                for (var i = 0; i < btns.length; i++) btns[i].remove();
+
+                // Rebuild from new config
+                var config = self.toolbarConfig;
+                var defaultOrder = ['search', 'discover', 'activity', 'favorites', 'libraries'];
+                var buttonsHtml = '';
+
+                if (config && config.length > 0) {
+                    for (var j = 0; j < config.length; j++) {
+                        if (config[j].enabled) buttonsHtml += self._buildButtonHtml(config[j].id);
+                    }
+                } else {
+                    for (var k = 0; k < defaultOrder.length; k++) {
+                        buttonsHtml += self._buildButtonHtml(defaultOrder[k]);
+                    }
+                }
+
+                // Append new buttons after Home
+                var temp = document.createElement('div');
+                temp.innerHTML = buttonsHtml;
+                while (temp.firstChild) pill.appendChild(temp.firstChild);
+
+                self.updateActiveState();
+                console.log('[Tentacle] Toolbar refreshed in-place');
+            });
+        },
+
         waitForApi: function () {
             return new Promise(function (resolve, reject) {
                 var attempts = 0;

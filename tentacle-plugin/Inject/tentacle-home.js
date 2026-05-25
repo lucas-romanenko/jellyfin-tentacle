@@ -881,6 +881,10 @@
           console.log('[TH] Playlist version changed: ' + MH.lastVersion + ' → ' + newVersion);
           MH.lastVersion = newVersion;
           refreshPlaylistRows(gen);
+          // Also refresh toolbar in case toolbar config changed
+          if (window.TentacleNavbar && window.TentacleNavbar.refreshToolbar) {
+            window.TentacleNavbar.refreshToolbar();
+          }
         })
         .catch(function () {});
     }, 5000);
