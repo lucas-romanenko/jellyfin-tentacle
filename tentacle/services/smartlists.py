@@ -855,16 +855,11 @@ def refresh_smartlist_playlists(db: Session, user_id: int = None) -> dict:
     If user_id is None, refreshes for all users.
     Returns {processed, created, updated, errors}.
     """
-    if not _playlist_refresh_lock.acquire(blocking=False):
-        logger.info("Playlist refresh already in progress, skipping")
-        return {"processed": 0, "created": 0, "updated": 0, "errors": 0}
-    try:
+    with _playlist_refresh_lock:
         result = _refresh_smartlist_playlists_inner(db, user_id)
         if result.get("updated", 0) > 0 or result.get("created", 0) > 0:
             bump_playlist_version()
         return result
-    finally:
-        _playlist_refresh_lock.release()
 
 
 def _refresh_smartlist_playlists_inner(db: Session, user_id: int = None) -> dict:
