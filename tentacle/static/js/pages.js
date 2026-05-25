@@ -3201,8 +3201,8 @@ async function saveTagRule() {
     _tagRulesCache = [];
     closeModal('modal-tag-rule');
     loadTagRules();
-    // Auto-sync to Jellyfin (configs + artwork)
-    syncPlaylistsToJellyfin();
+    // Sync to Jellyfin (full pipeline: configs + items + artwork + home config + notify)
+    await syncPlaylistsToJellyfin();
   } catch (e) {
     toast(e.message, 'error');
   }
@@ -3215,8 +3215,8 @@ async function deleteTagRule(id) {
     toast('Playlist deleted');
     _tagRulesCache = [];
     loadTagRules();
-    // Auto-sync to Jellyfin (configs + cleanup + artwork)
-    syncPlaylistsToJellyfin();
+    // Sync to Jellyfin (full pipeline)
+    await syncPlaylistsToJellyfin();
   } catch (e) {
     toast(e.message, 'error');
   }
