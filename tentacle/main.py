@@ -128,6 +128,54 @@ def run_scheduled_sync():
         except Exception as e:
             logger.error(f"TMDB cache cleanup failed: {e}")
 
+        # EPG sync for Live TV providers + Jellyfin guide refresh
+        logger.info("Syncing Live TV EPG data")
+        try:
+            from models.database import LiveChannel
+            from routers.livetv import _run_epg_sync_background
+            live_providers = db.query(Provider).filter(Provider.live_tv_enabled == True, Provider.active == True).all()
+            epg_synced = False
+            for lp in live_providers:
+                all_channels = db.query(LiveChannel).filter(LiveChannel.provider_id == lp.id).all()
+                if not all_channels:
+                    continue
+                enabled_count = sum(1 for ch in all_channels if ch.enabled)
+                provider_data = {
+                    "id": lp.id,
+                    "provider_type": lp.provider_type or "xtream",
+                    "server_url": lp.server_url,
+                    "username": lp.username,
+                    "password": lp.password,
+                    "user_agent": lp.user_agent or "TiviMate/4.7.0 (Linux; Android 12)",
+                    "epg_url": lp.epg_url,
+                    "channels": [
+                        {"stream_id": ch.stream_id, "epg_channel_id": ch.epg_channel_id, "name": ch.name}
+                        for ch in all_channels
+                    ],
+                    "enabled_count": enabled_count,
+                }
+                logger.info(f"EPG sync for '{lp.name}': {len(all_channels)} channels ({enabled_count} enabled)")
+                _run_epg_sync_background(provider_data)
+                epg_synced = True
+
+            # Trigger Jellyfin guide refresh so it picks up new EPG data
+            if epg_synced:
+                try:
+                    import requests as req
+                    jf_url = get_setting(db, "jellyfin_url")
+                    jf_key = get_setting(db, "jellyfin_api_key")
+                    if jf_url and jf_key:
+                        headers = {"X-Emby-Token": jf_key}
+                        tasks = req.get(f"{jf_url}/ScheduledTasks", headers=headers, timeout=10).json()
+                        guide_task = next((t for t in tasks if t.get("Key") == "RefreshGuide"), None)
+                        if guide_task:
+                            req.post(f"{jf_url}/ScheduledTasks/Running/{guide_task['Id']}", headers=headers, timeout=10)
+                            logger.info("Jellyfin guide refresh triggered after EPG sync")
+                except Exception as e:
+                    logger.error(f"Jellyfin guide refresh failed: {e}")
+        except Exception as e:
+            logger.error(f"EPG sync failed: {e}")
+
         # Sweep orphaned downloads (radarr/sonarr records no longer in Jellyfin)
         logger.info("Sweeping orphaned downloads")
         try:
