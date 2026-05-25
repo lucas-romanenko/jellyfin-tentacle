@@ -246,8 +246,8 @@ def get_desired_smartlists(db: Session, user_id: int = None) -> list:
     builtin_map = {
         "builtin:recently_added_movies": ("Recently Added Movies", ["Movie"], "DateCreated", 50),
         "builtin:recently_added_tv": ("Recently Added TV", ["Series"], "DateCreated", 50),
-        "builtin:downloaded_movies": ("Downloaded Movies", ["Movie"], None, None),
-        "builtin:downloaded_tv": ("Downloaded TV", ["Series"], None, None),
+        "builtin:downloaded_movies": ("Downloaded Movies", ["Movie"], "DateCreated", None),
+        "builtin:downloaded_tv": ("Downloaded TV", ["Series"], "DateCreated", None),
     }
     for bkey, (bname, bmedia, bsort, bmax) in builtin_map.items():
         if toggles.get(bkey) and bname not in existing_tags:
@@ -272,6 +272,7 @@ def get_desired_smartlists(db: Session, user_id: int = None) -> list:
                     smartlists.append({
                         "name": user_tag, "tag": user_tag,
                         "media_type": ["Movie", "Series"], "enabled": True, "source": "auto",
+                        "sort_by": "DateCreated",
                     })
                     existing_tags.add(user_tag)
 
