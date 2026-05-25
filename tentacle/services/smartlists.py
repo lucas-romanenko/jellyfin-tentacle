@@ -242,20 +242,18 @@ def get_desired_smartlists(db: Session, user_id: int = None) -> list:
             smartlists.append({"name": tag, "tag": tag, "media_type": ["Series"], "enabled": True, "source": "auto"})
             existing_tags.add(tag)
 
-    # Built-in playlists — (name, media_types, forced_sort or None, default_sort or None, max_items or None)
-    # forced_sort: always overrides user choice (e.g. Recently Added must stay DateCreated)
-    # default_sort: used on initial creation only, user can change later
+    # Built-in playlists — (name, media_types, default_sort, max_items or None)
+    # default_sort: applied on initial creation. User can always change sort from the dashboard.
+    # Once the user sets a sort via the dashboard, it's preserved across syncs via PRESERVED_FIELDS.
     builtin_map = {
-        "builtin:recently_added_movies": ("Recently Added Movies", ["Movie"], "DateCreated", None, 50),
-        "builtin:recently_added_tv": ("Recently Added TV", ["Series"], "DateCreated", None, 50),
-        "builtin:downloaded_movies": ("Downloaded Movies", ["Movie"], None, "DateCreated", None),
-        "builtin:downloaded_tv": ("Downloaded TV", ["Series"], None, "DateCreated", None),
+        "builtin:recently_added_movies": ("Recently Added Movies", ["Movie"], "DateCreated", 50),
+        "builtin:recently_added_tv": ("Recently Added TV", ["Series"], "DateCreated", 50),
+        "builtin:downloaded_movies": ("Downloaded Movies", ["Movie"], "DateCreated", None),
+        "builtin:downloaded_tv": ("Downloaded TV", ["Series"], "DateCreated", None),
     }
-    for bkey, (bname, bmedia, bsort, bdefault_sort, bmax) in builtin_map.items():
+    for bkey, (bname, bmedia, bdefault_sort, bmax) in builtin_map.items():
         if toggles.get(bkey) and bname not in existing_tags:
             sl = {"name": bname, "tag": bname, "media_type": bmedia, "enabled": True, "source": "auto"}
-            if bsort:
-                sl["sort_by"] = bsort
             if bdefault_sort:
                 sl["default_sort"] = bdefault_sort
             if bmax:
@@ -363,6 +361,40 @@ def _scan_existing(smartlists_path: Path) -> dict:
     return existing
 
 
+_BUILTIN_DEFAULT_SORT = {
+    "Recently Added Movies": "DateCreated",
+    "Recently Added TV": "DateCreated",
+    "Downloaded Movies": "DateCreated",
+    "Downloaded TV": "DateCreated",
+}
+
+
+def _migrate_builtin_sort_defaults(existing: dict, smartlists_path: Path):
+    """One-time migration: fix built-in playlists created before default_sort was added.
+    If a built-in playlist has ReleaseDate sort and no _sort_migrated flag, update to DateCreated."""
+    # Also migrate per-user downloads playlists ("{Name}'s Downloads")
+    migrate_targets = dict(_BUILTIN_DEFAULT_SORT)
+    for name in existing:
+        if name.endswith("'s Downloads"):
+            migrate_targets[name] = "DateCreated"
+
+    for name, expected_sort in migrate_targets.items():
+        if name not in existing:
+            continue
+        folder, config = existing[name]
+        if config.get("_sort_migrated"):
+            continue
+        order = config.get("Order", {})
+        sort_opts = order.get("SortOptions", [])
+        current_sort = sort_opts[0].get("SortBy") if sort_opts else None
+        if current_sort == "ReleaseDate":
+            config["Order"] = {"SortOptions": [{"SortBy": expected_sort, "SortOrder": "Descending"}]}
+            logger.info(f"[SmartLists] Migrated sort for '{name}': ReleaseDate → {expected_sort}")
+        config["_sort_migrated"] = True
+        config_file = folder / "config.json"
+        config_file.write_text(json.dumps(config, indent=2), encoding="utf-8")
+
+
 def migrate_global_smartlists_to_user(db: Session, user_id: int):
     """One-time migration: move existing global /data/smartlists/* configs
     into the admin user's per-user directory. Only runs if the user's
@@ -448,6 +480,10 @@ def sync_smartlists(db: Session, user_id: int = None) -> dict:
     jellyfin_url = get_setting(db, "jellyfin_url", "")
     jellyfin_key = get_setting(db, "jellyfin_api_key", "")
 
+    # One-time migration: fix built-in playlists stuck with ReleaseDate sort
+    # that should default to DateCreated (created before default_sort was added)
+    _migrate_builtin_sort_defaults(existing, smartlists_path)
+
     created = 0
     updated = 0
     changed_names = []  # Track which playlists were created or need refresh
@@ -458,7 +494,6 @@ def sync_smartlists(db: Session, user_id: int = None) -> dict:
         media_types = sl["media_type"]
         enabled = sl["enabled"]
         expressions = sl.get("expressions")  # None for tag-based, list for native
-        forced_sort = sl.get("sort_by")  # Built-in playlists can force a sort (always overrides)
         default_sort = sl.get("default_sort")  # Default sort for new playlists (user can change)
         forced_max = sl.get("max_items")  # Built-in playlists can cap item count
 
@@ -467,16 +502,12 @@ def sync_smartlists(db: Session, user_id: int = None) -> dict:
             folder, old_data = existing[name]
             folder_id = old_data.get("Id", str(uuid.uuid4()))
             config = _build_config(name, tag, media_types, folder_id, enabled, jf_user_id, expressions=expressions,
-                                   sort_by=forced_sort or default_sort or "ReleaseDate")
+                                   sort_by=default_sort or "ReleaseDate")
 
             # Preserve user-managed fields from existing config
             for field in PRESERVED_FIELDS:
                 if field in old_data:
                     config[field] = old_data[field]
-
-            # Built-in playlists with forced sort always override
-            if forced_sort:
-                config["Order"] = {"SortOptions": [{"SortBy": forced_sort, "SortOrder": "Descending"}]}
 
             # Built-in playlists with forced max items always override
             if forced_max:
@@ -511,7 +542,7 @@ def sync_smartlists(db: Session, user_id: int = None) -> dict:
             folder.mkdir(parents=True, exist_ok=True)
 
             config = _build_config(name, tag, media_types, folder_id, enabled, jf_user_id, expressions=expressions,
-                                   sort_by=forced_sort or default_sort or "ReleaseDate")
+                                   sort_by=default_sort or "ReleaseDate")
 
             if forced_max:
                 config["MaxItems"] = forced_max
@@ -1157,6 +1188,10 @@ def update_playlist_sort(name: str, sort_by: str, sort_order: str, db, user_id: 
                 logger.info(f"[SmartLists] Re-populated '{name}' with {len(item_ids)} items in new sort order")
         except Exception as e:
             logger.warning(f"[SmartLists] Failed to re-populate '{name}' after sort change: {e}")
+
+    # Notify all clients of the sort change
+    bump_playlist_version()
+    _notify_jellyfin_plugin(db)
 
     return {"success": True, "sort_by": sort_by, "sort_order": sort_order}
 

@@ -858,8 +858,10 @@
   }
 
   // ── Live-Update Polling ─────────────────────────────────────────────
-  // Polls backend version counter every 10s. When version changes,
+  // Polls backend version counter every 5s. When version changes,
   // re-fetches playlist row items and updates them in-place.
+  // The C# plugin also broadcasts LibraryChanged via WebSocket on every
+  // refresh, so Android TV gets instant updates. Web polling is a fallback.
   function startVersionPolling(gen) {
     stopVersionPolling();
     // Seed initial version
@@ -881,7 +883,7 @@
           refreshPlaylistRows(gen);
         })
         .catch(function () {});
-    }, 10000);
+    }, 5000);
   }
 
   function stopVersionPolling() {

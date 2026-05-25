@@ -364,6 +364,9 @@ def _cleanup_playlists_all_users(tmdb_id: int, media_type: str, jellyfin_item_id
             except Exception as e:
                 logger.warning(f"Playlist cleanup for user {user.id} failed: {e}")
         if total_removed:
+            from services.smartlists import bump_playlist_version, _notify_jellyfin_plugin
+            bump_playlist_version()
+            _notify_jellyfin_plugin(cleanup_db)
             logger.info(f"Playlist cleanup for tmdb:{tmdb_id}: removed from {total_removed} playlists across {len(users)} users")
     except Exception as e:
         logger.warning(f"Playlist cleanup failed for tmdb:{tmdb_id}: {e}")

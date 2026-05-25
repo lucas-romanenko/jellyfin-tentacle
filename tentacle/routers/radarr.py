@@ -357,6 +357,10 @@ def radarr_webhook(payload: dict, db: Session = Depends(get_db)):
                     from services.smartlists import refresh_smartlist_playlists
                     refresh_smartlist_playlists(db)
                     logger.info(f"[Radarr webhook] Full playlist refresh (no Jellyfin item found for '{title}')")
+
+                # Notify plugin to clear caches + broadcast WebSocket to all clients
+                from services.smartlists import _notify_jellyfin_plugin
+                _notify_jellyfin_plugin(db)
             except Exception as e:
                 logger.warning(f"[Radarr webhook] Playlist update failed: {e}")
 
