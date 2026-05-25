@@ -91,7 +91,10 @@ public class TentacleController : ControllerBase
                         ItemsAdded = Array.Empty<string>(),
                         ItemsUpdated = Array.Empty<string>(),
                         ItemsRemoved = Array.Empty<string>(),
-                        CollectionFolders = Array.Empty<string>()
+                        CollectionFolders = Array.Empty<string>(),
+                        FoldersAddedTo = Array.Empty<string>(),
+                        FoldersRemovedFrom = Array.Empty<string>(),
+                        IsEmpty = true
                     },
                     CancellationToken.None);
                 broadcastCount = userIds.Count;
