@@ -141,12 +141,13 @@ def run_scheduled_sync():
         logger.info("Syncing per-user playlists and home configs")
         try:
             from models.database import TentacleUser
-            from services.smartlists import sync_smartlists, write_home_config, migrate_global_smartlists_to_user
+            from services.smartlists import sync_smartlists, write_home_config, migrate_global_smartlists_to_user, refresh_smartlist_playlists
             users = db.query(TentacleUser).all()
             for user in users:
                 try:
                     migrate_global_smartlists_to_user(db, user.id)
                     sync_smartlists(db, user_id=user.id)
+                    refresh_smartlist_playlists(db, user_id=user.id)
                     write_home_config(db, user_id=user.id)
                 except Exception as e:
                     logger.error(f"Per-user sync failed for user {user.id}: {e}")

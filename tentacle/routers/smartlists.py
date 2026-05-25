@@ -142,12 +142,14 @@ def sync(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_fr
     """Run full per-user playlist pipeline: sync configs → populate items → artwork → home config → notify plugin."""
     result = sync_smartlists(db, user_id=user.id)
 
-    # Populate playlist items in Jellyfin
-    try:
-        refresh_smartlist_playlists(db, user_id=user.id)
-    except Exception as e:
-        logger.warning(f"Playlist refresh after sync failed: {e}")
-        result["refresh_error"] = str(e)
+    # Only refresh new/changed playlists (not all 22+)
+    changed = result.get("changed_names") or []
+    if changed:
+        try:
+            refresh_smartlist_playlists(db, user_id=user.id, only_names=changed)
+        except Exception as e:
+            logger.warning(f"Playlist refresh after sync failed: {e}")
+            result["refresh_error"] = str(e)
 
     # Sync artwork so new playlists get images
     try:

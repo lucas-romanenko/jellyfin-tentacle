@@ -445,6 +445,7 @@ def sync_smartlists(db: Session, user_id: int = None) -> dict:
 
     created = 0
     updated = 0
+    changed_names = []  # Track which playlists were created or need refresh
 
     for sl in desired:
         name = sl["name"]
@@ -488,6 +489,12 @@ def sync_smartlists(db: Session, user_id: int = None) -> dict:
                     if playlist_id:
                         config["UserPlaylists"] = [{"UserId": jf_user_id, "JellyfinPlaylistId": playlist_id}]
 
+            # Detect if expressions changed (custom playlist was edited)
+            old_exprs = old_data.get("ExpressionSets", [])
+            new_exprs = config.get("ExpressionSets", [])
+            if old_exprs != new_exprs or old_data.get("MediaTypes") != config.get("MediaTypes"):
+                changed_names.append(name)
+
             config_file = folder / "config.json"
             config_file.write_text(json.dumps(config, indent=2), encoding="utf-8")
             updated += 1
@@ -511,6 +518,7 @@ def sync_smartlists(db: Session, user_id: int = None) -> dict:
 
             config_file = folder / "config.json"
             config_file.write_text(json.dumps(config, indent=2), encoding="utf-8")
+            changed_names.append(name)
             created += 1
 
     # Clean up orphaned SmartList folders (deleted tag rules)
@@ -552,21 +560,9 @@ def sync_smartlists(db: Session, user_id: int = None) -> dict:
 
     logger.info(f"SmartLists sync (user {user_id}): {created} created, {updated} updated, {removed} removed, {len(desired)} total")
 
-    # After syncing configs, populate playlists via Jellyfin API
-    playlist_stats = refresh_smartlist_playlists(db, user_id=user_id)
-
-    # Sync artwork for this user's playlists
-    artwork_result = None
-    try:
-        from routers.collections import sync_playlist_artwork
-        artwork_result = sync_playlist_artwork(db)
-    except Exception as e:
-        logger.warning(f"Artwork sync failed: {e}")
-
     return {
         "created": created, "updated": updated, "removed": removed, "total": len(desired),
-        "playlists": playlist_stats,
-        "artwork": artwork_result,
+        "changed_names": changed_names,
     }
 
 
@@ -848,28 +844,29 @@ def _build_query_params(config: dict) -> dict:
     return params
 
 
-def refresh_smartlist_playlists(db: Session, user_id: int = None) -> dict:
+def refresh_smartlist_playlists(db: Session, user_id: int = None, only_names: list = None) -> dict:
     """Read per-user SmartList configs from disk, query Jellyfin for matching items,
     and create/update playlists. This replaces the C# SmartLists plugin entirely.
 
     If user_id is None, refreshes for all users.
+    If only_names is provided, only processes playlists with matching names.
     Returns {processed, created, updated, errors}.
     """
     with _playlist_refresh_lock:
-        result = _refresh_smartlist_playlists_inner(db, user_id)
+        result = _refresh_smartlist_playlists_inner(db, user_id, only_names=only_names)
         if result.get("updated", 0) > 0 or result.get("created", 0) > 0:
             bump_playlist_version()
         return result
 
 
-def _refresh_smartlist_playlists_inner(db: Session, user_id: int = None) -> dict:
+def _refresh_smartlist_playlists_inner(db: Session, user_id: int = None, only_names: list = None) -> dict:
     if user_id is None:
         users = db.query(TentacleUser).all()
         if not users:
             return {"processed": 0, "created": 0, "updated": 0, "errors": 0}
         combined = {"processed": 0, "created": 0, "updated": 0, "errors": 0}
         for u in users:
-            result = _refresh_smartlist_playlists_inner(db, user_id=u.id)
+            result = _refresh_smartlist_playlists_inner(db, user_id=u.id, only_names=only_names)
             for key in ("processed", "created", "updated", "errors"):
                 combined[key] += result.get(key, 0)
         return combined
@@ -902,6 +899,8 @@ def _refresh_smartlist_playlists_inner(db: Session, user_id: int = None) -> dict
 
     for name, (folder, config) in existing.items():
         if not config.get("Enabled", True) or config.get("Type") != "Playlist":
+            continue
+        if only_names and name not in only_names:
             continue
 
         try:
