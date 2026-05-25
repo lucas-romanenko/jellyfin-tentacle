@@ -145,6 +145,21 @@ public class HomeConfig
 
     [JsonPropertyName("rows")]
     public List<RowConfig>? Rows { get; set; }
+
+    [JsonPropertyName("toolbar")]
+    public List<ToolbarButton>? Toolbar { get; set; }
+}
+
+/// <summary>
+/// A toolbar button configuration (visibility and order).
+/// </summary>
+public class ToolbarButton
+{
+    [JsonPropertyName("id")]
+    public string Id { get; set; } = string.Empty;
+
+    [JsonPropertyName("enabled")]
+    public bool Enabled { get; set; } = true;
 }
 
 /// <summary>

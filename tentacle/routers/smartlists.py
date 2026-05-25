@@ -536,6 +536,54 @@ def set_hero_sort(req: HeroSortRequest, db: Session = Depends(get_db), user: Ten
     return {"success": True}
 
 
+# ── Toolbar Config ─────────────────────────────────────────────────────────
+
+VALID_TOOLBAR_BUTTONS = {"search", "discover", "activity", "favorites", "libraries"}
+DEFAULT_TOOLBAR = [
+    {"id": "search", "enabled": True},
+    {"id": "discover", "enabled": True},
+    {"id": "activity", "enabled": True},
+    {"id": "favorites", "enabled": True},
+    {"id": "libraries", "enabled": True},
+]
+
+
+class ToolbarButton(BaseModel):
+    id: str
+    enabled: bool
+
+
+class ToolbarRequest(BaseModel):
+    buttons: list[ToolbarButton]
+
+
+@router.post("/toolbar")
+def set_toolbar(req: ToolbarRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+    config = _read_home_json(user)
+    if not config:
+        config = {}
+
+    # Validate and build toolbar config
+    toolbar = []
+    seen = set()
+    for btn in req.buttons:
+        if btn.id in VALID_TOOLBAR_BUTTONS and btn.id not in seen:
+            toolbar.append({"id": btn.id, "enabled": btn.enabled})
+            seen.add(btn.id)
+
+    # Add any missing buttons at the end (disabled)
+    for btn_id in ["search", "discover", "activity", "favorites", "libraries"]:
+        if btn_id not in seen:
+            toolbar.append({"id": btn_id, "enabled": False})
+
+    config["toolbar"] = toolbar
+    _write_home_json(user, config)
+    bump_playlist_version()
+    _notify_jellyfin_plugin(db)
+    logger.info(f"Updated toolbar config: {[b['id'] for b in toolbar if b['enabled']]}")
+    return {"success": True}
+
+
 # ── Auto Playlists ─────────────────────────────────────────────────────────
 
 def _compute_auto_playlists(db: Session, user_id: int = None) -> list:

@@ -2528,6 +2528,15 @@ async function loadHomeScreen() {
 
     // Load notification preference
     loadNotificationState();
+
+    // Load toolbar buttons
+    renderToolbarButtons(config.toolbar || [
+      {id: 'search', enabled: true},
+      {id: 'discover', enabled: true},
+      {id: 'activity', enabled: true},
+      {id: 'favorites', enabled: true},
+      {id: 'libraries', enabled: true},
+    ]);
   } catch (e) {
     listEl.innerHTML = '<div class="empty-state" style="padding:24px"><p>Failed to load home config</p></div>';
   }
@@ -2536,6 +2545,72 @@ async function loadHomeScreen() {
 function rowKey(row) {
   if (row.type === 'builtin') return `builtin:${row.section_id}`;
   return `playlist:${row.playlist_id}`;
+}
+
+const TOOLBAR_LABELS = {search: 'Search', discover: 'Discover', activity: 'Activity', favorites: 'Favorites', libraries: 'Libraries'};
+const TOOLBAR_ICONS = {
+  search: '🔍', discover: '🧭', activity: '📥', favorites: '❤️', libraries: '📚',
+};
+let toolbarButtons = [];
+
+function renderToolbarButtons(buttons) {
+  toolbarButtons = buttons;
+  const listEl = document.getElementById('toolbar-buttons-list');
+  if (!listEl) return;
+
+  listEl.innerHTML = toolbarButtons.map((btn, i) => `
+    <div class="home-row-item" draggable="true" data-toolbar-idx="${i}" style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--bg2);border-radius:6px;border:1px solid var(--border);cursor:grab">
+      <span style="cursor:grab;color:var(--text3);font-size:14px">⠿</span>
+      <span style="font-size:16px">${TOOLBAR_ICONS[btn.id] || ''}</span>
+      <span style="flex:1;font-size:13px;color:var(--text)">${TOOLBAR_LABELS[btn.id] || btn.id}</span>
+      <label style="position:relative;display:inline-block;width:36px;height:20px;flex-shrink:0">
+        <input type="checkbox" ${btn.enabled ? 'checked' : ''} onchange="toggleToolbarButton(${i}, this.checked)" style="opacity:0;width:0;height:0">
+        <span style="position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:${btn.enabled ? 'var(--accent)' : 'var(--bg3)'};border-radius:10px;transition:.2s"></span>
+        <span style="position:absolute;height:14px;width:14px;left:${btn.enabled ? '19px' : '3px'};bottom:3px;background:white;border-radius:50%;transition:.2s"></span>
+      </label>
+    </div>
+  `).join('');
+
+  // Drag-and-drop reorder
+  listEl.querySelectorAll('[data-toolbar-idx]').forEach(el => {
+    el.addEventListener('dragstart', e => {
+      e.dataTransfer.setData('text/plain', el.dataset.toolbarIdx);
+      el.style.opacity = '0.5';
+    });
+    el.addEventListener('dragend', () => { el.style.opacity = '1'; });
+    el.addEventListener('dragover', e => { e.preventDefault(); el.style.borderTop = '2px solid var(--accent)'; });
+    el.addEventListener('dragleave', () => { el.style.borderTop = ''; });
+    el.addEventListener('drop', e => {
+      e.preventDefault();
+      el.style.borderTop = '';
+      const from = parseInt(e.dataTransfer.getData('text/plain'));
+      const to = parseInt(el.dataset.toolbarIdx);
+      if (from === to) return;
+      const item = toolbarButtons.splice(from, 1)[0];
+      toolbarButtons.splice(to, 0, item);
+      renderToolbarButtons(toolbarButtons);
+      saveToolbarConfig();
+    });
+  });
+}
+
+function toggleToolbarButton(idx, enabled) {
+  toolbarButtons[idx].enabled = enabled;
+  renderToolbarButtons(toolbarButtons);
+  saveToolbarConfig();
+}
+
+async function saveToolbarConfig() {
+  try {
+    const r = await api('/api/smartlists/toolbar', {
+      method: 'POST',
+      body: { buttons: toolbarButtons },
+    });
+    if (r.success) pushHomeConfig();
+    else toast(r.message || 'Failed to save toolbar', 'error');
+  } catch (e) {
+    toast('Failed to save toolbar config', 'error');
+  }
 }
 
 function renderHomeRows() {
@@ -4761,7 +4836,7 @@ async function toggleNotificationsFromCheckbox(checked) {
     loadJellyfinPage, loadAutoPlaylists, toggleAutoPlaylist, dismissAutoPlaylistBanner, saveDiscoverInJellyfin,
     showAddTagRule, editTagRule, deleteTagRule, saveTagRule, onContentSourceChange, toggleAdvancedFilters,
     addRuleCondition, updateCondOps, onCollectionNameInput, syncSmartLists, refreshTags, syncPlaylistsToJellyfin, setPlaylistSort,
-    pushHomeConfig, updateHeroPick, updateHeroSort, saveRowMaxItems, saveRowMaxItemsByKey, toggleNotificationsFromCheckbox, toggleGenreChip, _scheduleMatchCount,
+    pushHomeConfig, updateHeroPick, updateHeroSort, saveRowMaxItems, saveRowMaxItemsByKey, toggleNotificationsFromCheckbox, toggleGenreChip, _scheduleMatchCount, toggleToolbarButton,
     showAddHomeRow, hideAddHomeRow, confirmAddHomeRow, removeHomeRow, removeHomeRowByKey,
     homeRowDragStart, homeRowDragOver, homeRowDrop, rowKey,
     // Library

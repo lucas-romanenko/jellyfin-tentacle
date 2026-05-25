@@ -715,9 +715,21 @@ def write_home_config(db: Session, user_id: int = None) -> dict:
     else:
         hero = {"enabled": False, "playlist_id": "", "display_name": "", "sort_by": "random", "sort_order": "Descending", "require_logo": True, "require_trailer": False, "item_count": 10}
 
+    # Toolbar: preserve existing config or use defaults
+    existing_toolbar = existing_config.get("toolbar") if existing_config else None
+    if not existing_toolbar:
+        existing_toolbar = [
+            {"id": "search", "enabled": True},
+            {"id": "discover", "enabled": True},
+            {"id": "activity", "enabled": True},
+            {"id": "favorites", "enabled": True},
+            {"id": "libraries", "enabled": True},
+        ]
+
     config = {
         "hero": hero,
         "rows": rows,
+        "toolbar": existing_toolbar,
     }
 
     try:

@@ -406,6 +406,31 @@ public class TentacleHomeController : ControllerBase
     }
 
     /// <summary>
+    /// Returns toolbar button configuration (visibility and order).
+    /// </summary>
+    [HttpGet("Toolbar")]
+    [Authorize]
+    public ActionResult GetToolbar([FromQuery] Guid userId)
+    {
+        var homeConfig = _homeScreenManager.GetHomeConfig(userId);
+        var toolbar = homeConfig?.Toolbar;
+        if (toolbar != null && toolbar.Count > 0)
+        {
+            return Ok(new { buttons = toolbar });
+        }
+
+        // Default: all buttons enabled
+        return Ok(new { buttons = new[]
+        {
+            new { id = "search", enabled = true },
+            new { id = "discover", enabled = true },
+            new { id = "activity", enabled = true },
+            new { id = "favorites", enabled = true },
+            new { id = "libraries", enabled = true },
+        }});
+    }
+
+    /// <summary>
     /// Proxies a hero set request to the Tentacle backend.
     /// Accepts {"playlist_id": "some-guid"}
     /// </summary>

@@ -24,6 +24,7 @@
         _onViewShow: null,
         _navObserver: null,
         _lastHash: '',
+        toolbarConfig: null,
 
         getFallbackUserIconSvg: function () {
             return '<svg class="moonfin-user-fallback-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="#FFFFFF"><path d="M372-523q-42-42-42-108t42-108q42-42 108-42t108 42q42 42 42 108t-42 108q-42 42-108 42t-108-42ZM160-160v-94q0-38 19-65t49-41q67-30 128.5-45T480-420q62 0 123 15.5T731-360q31 14 50 41t19 65v94H160Zm60-60h520v-34q0-16-9.5-30.5T707-306q-64-31-117-42.5T480-360q-57 0-111 11.5T252-306q-14 7-23 21.5t-9 30.5v34Zm324.5-346.5Q570-592 570-631t-25.5-64.5Q519-721 480-721t-64.5 25.5Q390-670 390-631t25.5 64.5Q441-541 480-541t64.5-25.5ZM480-631Zm0 411Z"/></svg>';
@@ -75,6 +76,8 @@
             console.log('[Tentacle] Initializing navbar...');
 
             this.waitForApi().then(function () {
+                return self.fetchToolbarConfig();
+            }).then(function () {
                 self.createNavbar();
                 self.loadUserData();
                 self.setupEventListeners();
@@ -85,6 +88,43 @@
             }).catch(function (e) {
                 console.error('[Tentacle] Navbar: Failed to initialize -', e.message);
             });
+        },
+
+        fetchToolbarConfig: function () {
+            var self = this;
+            var api = window.ApiClient;
+            if (!api) return Promise.resolve();
+
+            var userId = api.getCurrentUserId();
+            var serverUrl = '';
+            if (typeof api.serverAddress === 'function') serverUrl = api.serverAddress();
+            else if (api._serverAddress) serverUrl = api._serverAddress;
+            var token = '';
+            if (typeof api.accessToken === 'function') token = api.accessToken();
+            else if (api._accessToken) token = api._accessToken;
+
+            var url = serverUrl + '/TentacleHome/Toolbar?userId=' + userId;
+            if (token) url += '&api_key=' + token;
+
+            return fetch(url).then(function (resp) {
+                if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                return resp.json();
+            }).then(function (data) {
+                if (data && data.buttons && data.buttons.length > 0) {
+                    self.toolbarConfig = data.buttons;
+                    console.log('[Tentacle] Toolbar config loaded:', self.toolbarConfig.map(function (b) { return b.id + ':' + b.enabled; }));
+                }
+            }).catch(function (e) {
+                console.warn('[Tentacle] Failed to load toolbar config, using defaults:', e.message);
+            });
+        },
+
+        _isButtonEnabled: function (id) {
+            if (!this.toolbarConfig) return true; // No config = show all
+            for (var i = 0; i < this.toolbarConfig.length; i++) {
+                if (this.toolbarConfig[i].id === id) return this.toolbarConfig[i].enabled;
+            }
+            return true; // Unknown button = show
         },
 
         waitForApi: function () {
@@ -107,12 +147,82 @@
             });
         },
 
+        _buttonDefs: {
+            search: {
+                cls: 'moonfin-nav-search',
+                action: 'search',
+                label: 'Search',
+                icon: '<svg class="moonfin-nav-icon" viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>'
+            },
+            discover: {
+                cls: 'moonfin-nav-discover',
+                action: 'discover',
+                label: 'Discover',
+                icon: '<svg class="moonfin-nav-icon" viewBox="0 0 24 24"><path d="M12 10.9c-.61 0-1.1.49-1.1 1.1s.49 1.1 1.1 1.1c.61 0 1.1-.49 1.1-1.1s-.49-1.1-1.1-1.1zM12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm2.19 12.19L6 18l3.81-8.19L18 6l-3.81 8.19z"/></svg>'
+            },
+            activity: {
+                cls: 'moonfin-nav-activity',
+                action: 'activity',
+                label: 'Activity',
+                icon: '<svg class="moonfin-nav-icon" viewBox="0 0 24 24"><path d="M11 7h2v2h-2zm0 4h2v6h-2zm1-9C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z"/></svg>',
+                extra: '<span class="moonfin-activity-badge hidden">0</span>'
+            },
+            favorites: {
+                cls: 'moonfin-nav-favorites',
+                action: 'favorites',
+                label: 'Favorites',
+                icon: '<svg class="moonfin-nav-icon" viewBox="0 0 24 24"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>'
+            },
+            libraries: {
+                cls: 'moonfin-libraries-group',
+                wrapper: true, // Wrapped in a div, not a plain button
+                action: 'libraries-toggle',
+                label: 'Libraries',
+                icon: '<svg class="moonfin-nav-icon" viewBox="0 0 24 24"><path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-8 12.5v-9l6 4.5-6 4.5z"/></svg>'
+            }
+        },
+
+        _buildButtonHtml: function (id) {
+            var def = this._buttonDefs[id];
+            if (!def) return '';
+            if (def.wrapper) {
+                return '<div class="' + def.cls + '">' +
+                    '<button class="moonfin-nav-btn moonfin-expandable-btn moonfin-libraries-btn" data-action="' + def.action + '" title="' + def.label + '">' +
+                    def.icon +
+                    '<span class="moonfin-expand-label">' + def.label + '</span>' +
+                    '</button></div>';
+            }
+            return '<button class="moonfin-nav-btn moonfin-expandable-btn ' + def.cls + '" data-action="' + def.action + '" title="' + def.label + '">' +
+                def.icon +
+                '<span class="moonfin-expand-label">' + def.label + '</span>' +
+                (def.extra || '') +
+                '</button>';
+        },
+
         createNavbar: function () {
             var existing = document.querySelector('.moonfin-navbar');
             if (existing) existing.remove();
 
             // Default pill background — semi-transparent dark
             var overlayColor = 'rgba(0, 0, 0, 0.45)';
+
+            // Build configurable buttons in toolbar order
+            var buttonsHtml = '';
+            var config = this.toolbarConfig;
+            var defaultOrder = ['search', 'discover', 'activity', 'favorites', 'libraries'];
+
+            if (config && config.length > 0) {
+                for (var i = 0; i < config.length; i++) {
+                    if (config[i].enabled) {
+                        buttonsHtml += this._buildButtonHtml(config[i].id);
+                    }
+                }
+            } else {
+                // No config — show all in default order
+                for (var j = 0; j < defaultOrder.length; j++) {
+                    buttonsHtml += this._buildButtonHtml(defaultOrder[j]);
+                }
+            }
 
             this.container = document.createElement('nav');
             this.container.className = 'moonfin-navbar';
@@ -136,33 +246,7 @@
                 '            <span class="moonfin-expand-label">Home</span>',
                 '        </button>',
                 '',
-                '        <button class="moonfin-nav-btn moonfin-expandable-btn moonfin-nav-search" data-action="search" title="Search">',
-                '            <svg class="moonfin-nav-icon" viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>',
-                '            <span class="moonfin-expand-label">Search</span>',
-                '        </button>',
-                '',
-                '        <button class="moonfin-nav-btn moonfin-expandable-btn moonfin-nav-discover" data-action="discover" title="Discover">',
-                '            <svg class="moonfin-nav-icon" viewBox="0 0 24 24"><path d="M12 10.9c-.61 0-1.1.49-1.1 1.1s.49 1.1 1.1 1.1c.61 0 1.1-.49 1.1-1.1s-.49-1.1-1.1-1.1zM12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm2.19 12.19L6 18l3.81-8.19L18 6l-3.81 8.19z"/></svg>',
-                '            <span class="moonfin-expand-label">Discover</span>',
-                '        </button>',
-                '',
-                '        <button class="moonfin-nav-btn moonfin-expandable-btn moonfin-nav-activity" data-action="activity" title="Activity">',
-                '            <svg class="moonfin-nav-icon" viewBox="0 0 24 24"><path d="M11 7h2v2h-2zm0 4h2v6h-2zm1-9C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z"/></svg>',
-                '            <span class="moonfin-expand-label">Activity</span>',
-                '            <span class="moonfin-activity-badge hidden">0</span>',
-                '        </button>',
-                '',
-                '        <button class="moonfin-nav-btn moonfin-expandable-btn moonfin-nav-favorites" data-action="favorites" title="Favorites">',
-                '            <svg class="moonfin-nav-icon" viewBox="0 0 24 24"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>',
-                '            <span class="moonfin-expand-label">Favorites</span>',
-                '        </button>',
-                '',
-                '        <div class="moonfin-libraries-group">',
-                '            <button class="moonfin-nav-btn moonfin-expandable-btn moonfin-libraries-btn" data-action="libraries-toggle" title="Libraries">',
-                '                <svg class="moonfin-nav-icon" viewBox="0 0 24 24"><path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-8 12.5v-9l6 4.5-6 4.5z"/></svg>',
-                '                <span class="moonfin-expand-label">Libraries</span>',
-                '            </button>',
-                '        </div>',
+                buttonsHtml,
                 '',
                 '    </div>',
                 '</div>',
