@@ -2503,6 +2503,10 @@ async function loadHomeScreen() {
       const sortOrder = config.hero.sort_order === 'Ascending' ? 'asc' : 'desc';
       heroSortEl.value = sortBy + '_' + sortOrder;
     }
+    const itemCountEl = document.getElementById('home-hero-item-count');
+    if (itemCountEl && config.hero) {
+      itemCountEl.value = String(config.hero.item_count || 10);
+    }
     const logoCheckbox = document.getElementById('home-hero-require-logo');
     if (logoCheckbox && config.hero) {
       logoCheckbox.checked = config.hero.require_logo !== false;
@@ -2622,10 +2626,11 @@ async function updateHeroSort() {
   const requireLogo = document.getElementById('home-hero-require-logo')?.checked ?? true;
   const requireTrailer = document.getElementById('home-hero-require-trailer')?.checked ?? false;
   const trailerAudio = document.getElementById('home-hero-trailer-audio')?.checked ?? true;
+  const itemCount = parseInt(document.getElementById('home-hero-item-count')?.value) || 10;
   try {
     const r = await api('/api/smartlists/hero-sort', {
       method: 'POST',
-      body: { sort_by: sortBy, sort_order: sortOrder, require_logo: requireLogo, require_trailer: requireTrailer, trailer_audio: trailerAudio },
+      body: { sort_by: sortBy, sort_order: sortOrder, require_logo: requireLogo, require_trailer: requireTrailer, trailer_audio: trailerAudio, item_count: itemCount },
     });
     if (r.success) pushHomeConfig();
     else toast(r.message || 'Failed', 'error');

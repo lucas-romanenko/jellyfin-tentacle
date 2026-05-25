@@ -489,9 +489,10 @@ def set_hero(req: HeroPickRequest, db: Session = Depends(get_db), user: Tentacle
             "sort_order": existing_hero.get("sort_order", "Descending"),
             "require_logo": existing_hero.get("require_logo", True),
             "require_trailer": existing_hero.get("require_trailer", False),
+            "item_count": existing_hero.get("item_count", 10),
         }
     else:
-        config["hero"] = {"enabled": False, "playlist_id": "", "display_name": "", "sort_by": "random", "sort_order": "Descending", "require_logo": True, "require_trailer": False}
+        config["hero"] = {"enabled": False, "playlist_id": "", "display_name": "", "sort_by": "random", "sort_order": "Descending", "require_logo": True, "require_trailer": False, "item_count": 10}
 
     _write_home_json(user, config)
     bump_playlist_version()
@@ -506,6 +507,7 @@ class HeroSortRequest(BaseModel):
     require_logo: Optional[bool] = None
     require_trailer: Optional[bool] = None
     trailer_audio: Optional[bool] = None
+    item_count: Optional[int] = None
 
 
 @router.post("/hero-sort")
@@ -524,6 +526,8 @@ def set_hero_sort(req: HeroSortRequest, db: Session = Depends(get_db), user: Ten
         hero["require_trailer"] = req.require_trailer
     if req.trailer_audio is not None:
         hero["trailer_audio"] = req.trailer_audio
+    if req.item_count is not None:
+        hero["item_count"] = max(1, min(req.item_count, 25))
     config["hero"] = hero
     _write_home_json(user, config)
     bump_playlist_version()

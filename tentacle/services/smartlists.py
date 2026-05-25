@@ -713,7 +713,7 @@ def write_home_config(db: Session, user_id: int = None) -> dict:
         existing_hero["playlist_id"] = new_id
         hero = existing_hero
     else:
-        hero = {"enabled": False, "playlist_id": "", "display_name": "", "sort_by": "random", "sort_order": "Descending", "require_logo": True, "require_trailer": False}
+        hero = {"enabled": False, "playlist_id": "", "display_name": "", "sort_by": "random", "sort_order": "Descending", "require_logo": True, "require_trailer": False, "item_count": 10}
 
     config = {
         "hero": hero,

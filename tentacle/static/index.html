@@ -1919,6 +1919,13 @@ td.primary { color: var(--text); font-weight: 500; }
                   <option value="name_asc">A &rarr; Z</option>
                   <option value="datecreated_desc">Recently Added</option>
                 </select>
+                <select id="home-hero-item-count" class="form-input" style="max-width:120px" onchange="updateHeroSort()">
+                  <option value="5">5 items</option>
+                  <option value="10" selected>10 items</option>
+                  <option value="15">15 items</option>
+                  <option value="20">20 items</option>
+                  <option value="25">25 items</option>
+                </select>
                 <label class="hero-config-checkbox">
                   <input type="checkbox" id="home-hero-require-logo" onchange="updateHeroSort()" checked>
                   <span>Title image only</span>

@@ -295,7 +295,8 @@ public class TentacleHomeController : ControllerBase
             _ => filtered.OrderBy(_ => Random.Shared.Next()), // random
         };
 
-        var heroItems = sorted.Take(10).ToList();
+        var count = hero.ItemCount > 0 ? hero.ItemCount : 10;
+        var heroItems = sorted.Take(count).ToList();
 
         var dtos = _dtoService.GetBaseItemDtos(heroItems, dtoOptions, user);
 
@@ -398,10 +399,10 @@ public class TentacleHomeController : ControllerBase
         var homeConfig = _homeScreenManager.GetHomeConfig(userId);
         if (homeConfig?.Hero is { Enabled: true } hero && !string.IsNullOrEmpty(hero.PlaylistId))
         {
-            return Ok(new { enabled = true, playlistId = hero.PlaylistId, displayName = hero.DisplayName, trailerAudio = hero.TrailerAudio });
+            return Ok(new { enabled = true, playlistId = hero.PlaylistId, displayName = hero.DisplayName, trailerAudio = hero.TrailerAudio, itemCount = hero.ItemCount });
         }
 
-        return Ok(new { enabled = false, playlistId = "", displayName = "", trailerAudio = true });
+        return Ok(new { enabled = false, playlistId = "", displayName = "", trailerAudio = true, itemCount = 10 });
     }
 
     /// <summary>
