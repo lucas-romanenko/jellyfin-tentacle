@@ -2551,7 +2551,13 @@ function rowKey(row) {
 
 const TOOLBAR_LABELS = {search: 'Search', discover: 'Discover', activity: 'Activity', favorites: 'Favorites', libraries: 'Libraries', shuffle: 'Shuffle (Android TV)', genres: 'Genres (Android TV)'};
 const TOOLBAR_ICONS = {
-  search: '🔍', discover: '🧭', activity: '📥', favorites: '❤️', libraries: '📚', shuffle: '🔀', genres: '🎭',
+  search: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>',
+  discover: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 10.9c-.61 0-1.1.49-1.1 1.1s.49 1.1 1.1 1.1c.61 0 1.1-.49 1.1-1.1s-.49-1.1-1.1-1.1zM12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm2.19 12.19L6 18l3.81-8.19L18 6l-3.81 8.19z"/></svg>',
+  activity: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M11 7h2v2h-2zm0 4h2v6h-2zm1-9C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z"/></svg>',
+  favorites: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>',
+  libraries: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-8 12.5v-9l6 4.5-6 4.5z"/></svg>',
+  shuffle: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zM14.83 13.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>',
+  genres: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm3.5-9c.83 0 1.5-.67 1.5-1.5S16.33 8 15.5 8 14 8.67 14 9.5s.67 1.5 1.5 1.5zm-7 0c.83 0 1.5-.67 1.5-1.5S9.33 8 8.5 8 7 8.67 7 9.5 7.67 11 8.5 11zm3.5 6.5c2.33 0 4.31-1.46 5.11-3.5H6.89c.8 2.04 2.78 3.5 5.11 3.5z"/></svg>',
 };
 let toolbarButtons = [];
 
@@ -2563,7 +2569,7 @@ function renderToolbarButtons(buttons) {
   listEl.innerHTML = toolbarButtons.map((btn, i) => `
     <div class="home-row-item" draggable="true" data-toolbar-idx="${i}" style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--bg2);border-radius:6px;border:1px solid var(--border);cursor:grab">
       <span style="cursor:grab;color:var(--text3);font-size:14px">⠿</span>
-      <span style="font-size:16px">${TOOLBAR_ICONS[btn.id] || ''}</span>
+      <span style="display:flex;align-items:center;color:var(--text2);flex-shrink:0">${TOOLBAR_ICONS[btn.id] || ''}</span>
       <span style="flex:1;font-size:13px;color:var(--text)">${TOOLBAR_LABELS[btn.id] || btn.id}</span>
       <label style="position:relative;display:inline-block;width:36px;height:20px;flex-shrink:0">
         <input type="checkbox" ${btn.enabled ? 'checked' : ''} onchange="toggleToolbarButton(${i}, this.checked)" style="opacity:0;width:0;height:0">
