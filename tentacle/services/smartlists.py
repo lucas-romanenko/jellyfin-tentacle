@@ -242,18 +242,22 @@ def get_desired_smartlists(db: Session, user_id: int = None) -> list:
             smartlists.append({"name": tag, "tag": tag, "media_type": ["Series"], "enabled": True, "source": "auto"})
             existing_tags.add(tag)
 
-    # Built-in playlists — (name, media_types, forced_sort or None, max_items or None)
+    # Built-in playlists — (name, media_types, forced_sort or None, default_sort or None, max_items or None)
+    # forced_sort: always overrides user choice (e.g. Recently Added must stay DateCreated)
+    # default_sort: used on initial creation only, user can change later
     builtin_map = {
-        "builtin:recently_added_movies": ("Recently Added Movies", ["Movie"], "DateCreated", 50),
-        "builtin:recently_added_tv": ("Recently Added TV", ["Series"], "DateCreated", 50),
-        "builtin:downloaded_movies": ("Downloaded Movies", ["Movie"], "DateCreated", None),
-        "builtin:downloaded_tv": ("Downloaded TV", ["Series"], "DateCreated", None),
+        "builtin:recently_added_movies": ("Recently Added Movies", ["Movie"], "DateCreated", None, 50),
+        "builtin:recently_added_tv": ("Recently Added TV", ["Series"], "DateCreated", None, 50),
+        "builtin:downloaded_movies": ("Downloaded Movies", ["Movie"], None, "DateCreated", None),
+        "builtin:downloaded_tv": ("Downloaded TV", ["Series"], None, "DateCreated", None),
     }
-    for bkey, (bname, bmedia, bsort, bmax) in builtin_map.items():
+    for bkey, (bname, bmedia, bsort, bdefault_sort, bmax) in builtin_map.items():
         if toggles.get(bkey) and bname not in existing_tags:
             sl = {"name": bname, "tag": bname, "media_type": bmedia, "enabled": True, "source": "auto"}
             if bsort:
                 sl["sort_by"] = bsort
+            if bdefault_sort:
+                sl["default_sort"] = bdefault_sort
             if bmax:
                 sl["max_items"] = bmax
             smartlists.append(sl)
@@ -272,7 +276,7 @@ def get_desired_smartlists(db: Session, user_id: int = None) -> list:
                     smartlists.append({
                         "name": user_tag, "tag": user_tag,
                         "media_type": ["Movie", "Series"], "enabled": True, "source": "auto",
-                        "sort_by": "DateCreated",
+                        "default_sort": "DateCreated",
                     })
                     existing_tags.add(user_tag)
 
@@ -454,7 +458,8 @@ def sync_smartlists(db: Session, user_id: int = None) -> dict:
         media_types = sl["media_type"]
         enabled = sl["enabled"]
         expressions = sl.get("expressions")  # None for tag-based, list for native
-        forced_sort = sl.get("sort_by")  # Built-in playlists can force a sort
+        forced_sort = sl.get("sort_by")  # Built-in playlists can force a sort (always overrides)
+        default_sort = sl.get("default_sort")  # Default sort for new playlists (user can change)
         forced_max = sl.get("max_items")  # Built-in playlists can cap item count
 
         if name in existing:
@@ -462,7 +467,7 @@ def sync_smartlists(db: Session, user_id: int = None) -> dict:
             folder, old_data = existing[name]
             folder_id = old_data.get("Id", str(uuid.uuid4()))
             config = _build_config(name, tag, media_types, folder_id, enabled, jf_user_id, expressions=expressions,
-                                   sort_by=forced_sort or "ReleaseDate")
+                                   sort_by=forced_sort or default_sort or "ReleaseDate")
 
             # Preserve user-managed fields from existing config
             for field in PRESERVED_FIELDS:
@@ -506,7 +511,7 @@ def sync_smartlists(db: Session, user_id: int = None) -> dict:
             folder.mkdir(parents=True, exist_ok=True)
 
             config = _build_config(name, tag, media_types, folder_id, enabled, jf_user_id, expressions=expressions,
-                                   sort_by=forced_sort or "ReleaseDate")
+                                   sort_by=forced_sort or default_sort or "ReleaseDate")
 
             if forced_max:
                 config["MaxItems"] = forced_max
