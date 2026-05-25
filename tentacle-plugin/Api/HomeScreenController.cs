@@ -419,7 +419,7 @@ public class TentacleHomeController : ControllerBase
             return Ok(new { buttons = toolbar });
         }
 
-        // Default: all buttons enabled
+        // Default toolbar config
         return Ok(new { buttons = new[]
         {
             new { id = "search", enabled = true },
@@ -427,6 +427,9 @@ public class TentacleHomeController : ControllerBase
             new { id = "activity", enabled = true },
             new { id = "favorites", enabled = true },
             new { id = "libraries", enabled = true },
+            new { id = "shuffle", enabled = false },
+            new { id = "genres", enabled = false },
+            new { id = "folders", enabled = false },
         }});
     }
 
