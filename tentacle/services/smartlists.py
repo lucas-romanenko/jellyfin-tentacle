@@ -1011,7 +1011,7 @@ def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats
     items = _resort_by_db_date(items, config, db)
     item_ids = [item["Id"] for item in items]
 
-    logger.debug(f"[SmartLists] '{name}': {len(item_ids)} matching items")
+    logger.info(f"[SmartLists] '{name}': {len(item_ids)} matching items from Jellyfin query")
 
     # Find existing playlist ID from UserPlaylists or JellyfinPlaylistId
     playlist_id = None
@@ -1037,14 +1037,15 @@ def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats
 
         if current_ordered_ids == item_ids:
             # No changes needed — same items in same order
-            logger.debug(f"[SmartLists] '{name}': no changes needed ({len(item_ids)} items)")
+            logger.info(f"[SmartLists] '{name}': no changes needed ({len(item_ids)} items)")
         else:
             # Items or order changed — clear and re-add in correct order
             if current_entries:
                 all_entry_ids = [entry.get("PlaylistItemId", entry["Id"]) for entry in current_entries]
                 jf.remove_from_playlist(playlist_id, all_entry_ids)
             if item_ids:
-                jf.add_to_playlist(playlist_id, item_ids)
+                result = jf.add_to_playlist(playlist_id, item_ids)
+                logger.info(f"[SmartLists] '{name}': add_to_playlist returned {result}")
 
             added = set(item_ids) - set(current_ordered_ids)
             removed = set(current_ordered_ids) - set(item_ids)
