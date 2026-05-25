@@ -895,7 +895,7 @@ def _refresh_smartlist_playlists_inner(db: Session, user_id: int = None, only_na
     if not existing:
         return {"error": "No SmartList configs found on disk", "processed": 0}
 
-    stats = {"processed": 0, "created": 0, "updated": 0, "errors": 0}
+    stats = {"processed": 0, "created": 0, "updated": 0, "errors": 0, "item_counts": {}}
 
     for name, (folder, config) in existing.items():
         if not config.get("Enabled", True) or config.get("Type") != "Playlist":
@@ -1069,6 +1069,7 @@ def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats
             return
 
     stats["processed"] += 1
+    stats["item_counts"][name] = len(item_ids)
 
 
 VALID_SORT_BY = {"releasedate", "name", "datecreated", "communityrating", "random"}

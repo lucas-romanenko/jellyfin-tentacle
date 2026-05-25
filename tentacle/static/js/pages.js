@@ -2078,11 +2078,15 @@ async function syncPlaylistsToJellyfin() {
     const updated = r.updated || 0;
     const removed = r.removed || 0;
     const artUpdated = (r.artwork || {}).updated || 0;
+    const itemCounts = (r.refresh || {}).item_counts || {};
     const parts = [];
     if (created) parts.push(`${created} created`);
     if (updated) parts.push(`${updated} updated`);
     if (removed) parts.push(`${removed} removed`);
     if (artUpdated) parts.push(`${artUpdated} artwork uploaded`);
+    // Show item counts for changed playlists
+    const countParts = Object.entries(itemCounts).map(([name, count]) => `${name}: ${count} items`);
+    if (countParts.length) parts.push(...countParts);
     toast(parts.length ? `Synced: ${parts.join(', ')}` : 'Playlists up to date');
   } catch (e) {
     toast('Sync failed: ' + e.message, 'error');

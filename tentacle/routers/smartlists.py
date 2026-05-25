@@ -146,15 +146,23 @@ def sync(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_fr
     changed = result.get("changed_names") or []
     if changed:
         try:
-            refresh_smartlist_playlists(db, user_id=user.id, only_names=changed)
+            refresh_result = refresh_smartlist_playlists(db, user_id=user.id, only_names=changed)
+            result["refresh"] = refresh_result
         except Exception as e:
             logger.warning(f"Playlist refresh after sync failed: {e}")
             result["refresh_error"] = str(e)
 
     # Sync artwork so new playlists get images
     try:
-        from routers.collections import sync_playlist_artwork
-        sync_playlist_artwork(db)
+        from routers.collections import sync_playlist_artwork, _uploaded_artwork
+        # Clear cache for changed playlists so artwork upload is always attempted
+        if changed:
+            keys_to_clear = [k for k in list(_uploaded_artwork.keys())
+                             if any(name in k for name in changed)]
+            for k in keys_to_clear:
+                _uploaded_artwork.pop(k, None)
+        artwork_result = sync_playlist_artwork(db)
+        logger.info(f"Artwork sync: {artwork_result}")
     except Exception as e:
         logger.warning(f"Artwork sync after sync failed: {e}")
 

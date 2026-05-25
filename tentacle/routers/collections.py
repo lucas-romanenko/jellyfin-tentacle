@@ -90,6 +90,7 @@ def sync_playlist_artwork(db: Session) -> dict:
             logodev_token=logodev_token or None,
         )
         if not image_path:
+            logger.warning(f"Artwork generation failed for playlist: {name}")
             errors += 1
             continue
 
@@ -101,9 +102,10 @@ def sync_playlist_artwork(db: Session) -> dict:
 
         if upload_playlist_artwork(jellyfin_url, jellyfin_key, playlist_id, image_path):
             _uploaded_artwork[cache_key] = True
-            logger.info(f"Uploaded artwork for playlist: {name}")
+            logger.info(f"Uploaded artwork for playlist: {name} ({image_path})")
             updated += 1
         else:
+            logger.warning(f"Artwork upload failed for playlist: {name} (id: {playlist_id})")
             errors += 1
 
     return {"success": True, "updated": updated, "skipped": skipped, "errors": errors, "total": len(playlists)}
