@@ -2550,7 +2550,7 @@ function rowKey(row) {
   return `playlist:${row.playlist_id}`;
 }
 
-const TOOLBAR_LABELS = {search: 'Search', discover: 'Discover', activity: 'Activity', favorites: 'Favorites', libraries: 'Libraries', shuffle: 'Shuffle', genres: 'Genres', folders: 'Folders'};
+const TOOLBAR_LABELS = {search: 'Search', discover: 'Discover', activity: 'Activity', favorites: 'Favorites', libraries: 'Libraries', shuffle: 'Shuffle (Android TV)', genres: 'Genres (Android TV)', folders: 'Folders (Android TV)'};
 const TOOLBAR_ICONS = {
   search: '🔍', discover: '🧭', activity: '📥', favorites: '❤️', libraries: '📚', shuffle: '🔀', genres: '🎭', folders: '📁',
 };
