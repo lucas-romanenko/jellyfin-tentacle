@@ -604,20 +604,25 @@ def get_sync_summary(db: Session = Depends(get_db)):
         if not provider:
             continue
         new_cats = run.new_categories or []
+        # Extract titles from the feed JSON stored on the SyncRun
+        movie_titles = [m.get("title", "?") for m in (run.new_movies or []) if isinstance(m, dict)]
+        series_titles = [s.get("title", "?") for s in (run.new_series or []) if isinstance(s, dict)]
         prov_info = {
             "name": provider.name or f"Provider {provider.id}",
             "new_movies": run.movies_new or 0,
             "new_series": run.series_new or 0,
+            "movie_titles": movie_titles[:20],
+            "series_titles": series_titles[:20],
             "new_categories": new_cats,
         }
         if prov_info["new_movies"] or prov_info["new_series"] or new_cats:
             providers_data.append(prov_info)
 
     # Radarr/Sonarr counts: parse new-item counts from scan log messages
+    import re
     radarr_new = 0
     sonarr_new = 0
     if earliest_start:
-        import re
         for event_type, accumulator_name in [("radarr_scan", "radarr"), ("sonarr_scan", "sonarr")]:
             logs = db.query(ActivityLog).filter(
                 ActivityLog.event == event_type,
@@ -640,6 +645,7 @@ def get_sync_summary(db: Session = Depends(get_db)):
             ActivityLog.event == "list_fetch",
             ActivityLog.created_at >= earliest_start,
         ).all()
+        seen_names = set()
         for log in list_logs:
             msg = log.message or ""
             # Skip lists with no changes
@@ -652,8 +658,19 @@ def get_sync_summary(db: Session = Depends(get_db)):
                 name = msg.split("'")[1] if "'" in msg else ""
             else:
                 name = ""
-            if name and name not in lists_updated:
-                lists_updated.append(name)
+            if not name or name in seen_names:
+                continue
+            seen_names.add(name)
+            # Parse +N new, -M removed from message
+            added = 0
+            removed = 0
+            m_add = re.search(r'\+(\d+)\s+new', msg)
+            m_rem = re.search(r'-(\d+)\s+removed', msg)
+            if m_add:
+                added = int(m_add.group(1))
+            if m_rem:
+                removed = int(m_rem.group(1))
+            lists_updated.append({"name": name, "added": added, "removed": removed})
 
     # EPG sync from activity logs since batch start
     epg_synced = False

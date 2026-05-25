@@ -427,9 +427,13 @@ async function loadLibSyncSummary() {
     if (data.providers && data.providers.length > 0) {
       data.providers.forEach(p => {
         let parts = [];
-        if (p.new_movies > 0 || p.new_series > 0) {
-          if (p.new_movies > 0) parts.push(`${p.new_movies} new movie${p.new_movies !== 1 ? 's' : ''}`);
-          if (p.new_series > 0) parts.push(`${p.new_series} new series`);
+        if (p.new_movies > 0) {
+          const titles = (p.movie_titles || []).join(', ');
+          parts.push(`${p.new_movies} new movie${p.new_movies !== 1 ? 's' : ''}${titles ? ': ' + titles : ''}`);
+        }
+        if (p.new_series > 0) {
+          const titles = (p.series_titles || []).join(', ');
+          parts.push(`${p.new_series} new series${titles ? ': ' + titles : ''}`);
         }
         if (p.new_categories && p.new_categories.length > 0) {
           parts.push(`<span style="color:var(--amber)">${p.new_categories.length} new categor${p.new_categories.length !== 1 ? 'ies' : 'y'}: ${p.new_categories.join(', ')}</span> <a href="#" onclick="showPage('vod');return false" style="color:var(--accent);font-size:11px">Enable →</a>`);
@@ -446,9 +450,15 @@ async function loadLibSyncSummary() {
       if (data.sonarr_new > 0) arrParts.push(`${data.sonarr_new} new Sonarr series`);
       html += `<div style="margin-bottom:6px"><strong>Downloads:</strong> ${arrParts.join(', ')}</div>`;
     }
-    // Lists (only shown when items actually changed)
+    // Lists (only shown when items actually changed, with counts)
     if (data.lists_updated && data.lists_updated.length > 0) {
-      html += `<div style="margin-bottom:6px"><strong>Lists:</strong> ${data.lists_updated.join(', ')} updated</div>`;
+      let listParts = data.lists_updated.map(l => {
+        let changes = [];
+        if (l.added > 0) changes.push(`+${l.added}`);
+        if (l.removed > 0) changes.push(`-${l.removed}`);
+        return changes.length > 0 ? `${l.name} (${changes.join(', ')})` : l.name;
+      });
+      html += `<div style="margin-bottom:6px"><strong>Lists:</strong> ${listParts.join(' · ')}</div>`;
     }
     // EPG
     if (data.epg_synced) {
