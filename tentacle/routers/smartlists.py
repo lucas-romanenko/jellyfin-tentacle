@@ -538,7 +538,7 @@ def set_hero_sort(req: HeroSortRequest, db: Session = Depends(get_db), user: Ten
 
 # ── Toolbar Config ─────────────────────────────────────────────────────────
 
-VALID_TOOLBAR_BUTTONS = {"search", "discover", "activity", "favorites", "libraries", "shuffle", "genres", "folders"}
+VALID_TOOLBAR_BUTTONS = {"search", "discover", "activity", "favorites", "libraries", "shuffle", "genres"}
 DEFAULT_TOOLBAR = [
     {"id": "search", "enabled": True},
     {"id": "discover", "enabled": True},
@@ -547,7 +547,6 @@ DEFAULT_TOOLBAR = [
     {"id": "libraries", "enabled": True},
     {"id": "shuffle", "enabled": False},
     {"id": "genres", "enabled": False},
-    {"id": "folders", "enabled": False},
 ]
 
 
@@ -575,7 +574,7 @@ def set_toolbar(req: ToolbarRequest, db: Session = Depends(get_db), user: Tentac
             seen.add(btn.id)
 
     # Add any missing buttons at the end (disabled)
-    for btn_id in ["search", "discover", "activity", "favorites", "libraries", "shuffle", "genres", "folders"]:
+    for btn_id in ["search", "discover", "activity", "favorites", "libraries", "shuffle", "genres"]:
         if btn_id not in seen:
             toolbar.append({"id": btn_id, "enabled": False})
 

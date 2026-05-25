@@ -429,7 +429,6 @@ public class TentacleHomeController : ControllerBase
             new { id = "libraries", enabled = true },
             new { id = "shuffle", enabled = false },
             new { id = "genres", enabled = false },
-            new { id = "folders", enabled = false },
         }});
     }
 

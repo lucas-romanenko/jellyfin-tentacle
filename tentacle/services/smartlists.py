@@ -726,7 +726,6 @@ def write_home_config(db: Session, user_id: int = None) -> dict:
             {"id": "libraries", "enabled": True},
             {"id": "shuffle", "enabled": False},
             {"id": "genres", "enabled": False},
-            {"id": "folders", "enabled": False},
         ]
 
     config = {

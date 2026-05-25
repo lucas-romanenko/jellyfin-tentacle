@@ -2538,7 +2538,6 @@ async function loadHomeScreen() {
       {id: 'libraries', enabled: true},
       {id: 'shuffle', enabled: false},
       {id: 'genres', enabled: false},
-      {id: 'folders', enabled: false},
     ]);
   } catch (e) {
     listEl.innerHTML = '<div class="empty-state" style="padding:24px"><p>Failed to load home config</p></div>';
@@ -2550,9 +2549,9 @@ function rowKey(row) {
   return `playlist:${row.playlist_id}`;
 }
 
-const TOOLBAR_LABELS = {search: 'Search', discover: 'Discover', activity: 'Activity', favorites: 'Favorites', libraries: 'Libraries', shuffle: 'Shuffle (Android TV)', genres: 'Genres (Android TV)', folders: 'Folders (Android TV)'};
+const TOOLBAR_LABELS = {search: 'Search', discover: 'Discover', activity: 'Activity', favorites: 'Favorites', libraries: 'Libraries', shuffle: 'Shuffle (Android TV)', genres: 'Genres (Android TV)'};
 const TOOLBAR_ICONS = {
-  search: '🔍', discover: '🧭', activity: '📥', favorites: '❤️', libraries: '📚', shuffle: '🔀', genres: '🎭', folders: '📁',
+  search: '🔍', discover: '🧭', activity: '📥', favorites: '❤️', libraries: '📚', shuffle: '🔀', genres: '🎭',
 };
 let toolbarButtons = [];
 
