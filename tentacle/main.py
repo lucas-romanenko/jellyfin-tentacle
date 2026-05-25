@@ -42,10 +42,12 @@ def run_scheduled_sync():
                 if items:
                     if tmdb:
                         enrich_items_with_tmdb(items, tmdb)
-                    store_list_items(lst, items, db)
+                    store_stats = store_list_items(lst, items, db)
                     apply_list_tags_to_library(items, lst.tag, db)
                     lst.last_fetched = datetime.utcnow()
                     lst.last_item_count = len(items)
+                    stored = store_stats.get("stored", len(items)) if store_stats else len(items)
+                    log_activity(db, "list_fetch", f"Fetched '{lst.name}' — {stored} items stored")
                     logger.info(f"List '{lst.name}' refreshed: {len(items)} items")
             except Exception as e:
                 logger.warning(f"Failed to refresh list '{lst.name}': {e}")

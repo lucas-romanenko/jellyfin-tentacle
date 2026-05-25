@@ -574,7 +574,9 @@ def get_activity(limit: int = 15, db: Session = Depends(get_db)):
 
 @router.get("/summary")
 def get_sync_summary(db: Session = Depends(get_db)):
-    """Last nightly sync summary for the Library page card"""
+    """Last nightly sync summary for the Library page card.
+    Aggregates all provider runs from the same nightly batch (within 1 hour of each other),
+    plus Radarr/Sonarr scan results and list refreshes."""
     # Most recent completed sync run
     last_run = db.query(SyncRun).filter(
         SyncRun.status.in_(["completed", "failed"])
@@ -585,47 +587,70 @@ def get_sync_summary(db: Session = Depends(get_db)):
 
     completed_at = last_run.completed_at.isoformat() if last_run.completed_at else None
 
-    # Build per-provider data from the run
+    # Find all runs from the same nightly batch (started within 1 hour before the last run)
+    batch_start = last_run.started_at - timedelta(hours=1) if last_run.started_at else last_run.completed_at - timedelta(hours=2)
+    batch_runs = db.query(SyncRun).filter(
+        SyncRun.status.in_(["completed", "failed"]),
+        SyncRun.started_at >= batch_start,
+    ).all()
+
+    # Build per-provider data from all runs in the batch
     providers_data = []
-    provider = last_run.provider
-    if provider:
-        new_cats = last_run.new_categories or []
+    earliest_start = last_run.started_at
+    for run in batch_runs:
+        if run.started_at and (not earliest_start or run.started_at < earliest_start):
+            earliest_start = run.started_at
+        provider = run.provider
+        if not provider:
+            continue
+        new_cats = run.new_categories or []
         prov_info = {
             "name": provider.name or f"Provider {provider.id}",
-            "new_movies": last_run.movies_new or 0,
-            "new_series": last_run.series_new or 0,
+            "new_movies": run.movies_new or 0,
+            "new_series": run.series_new or 0,
             "new_categories": new_cats,
         }
         if prov_info["new_movies"] or prov_info["new_series"] or new_cats:
             providers_data.append(prov_info)
 
-    # Radarr/Sonarr counts from activity logs since last sync
+    # Radarr/Sonarr counts: parse new-item counts from scan log messages
     radarr_new = 0
     sonarr_new = 0
-    if last_run.started_at:
-        radarr_new = db.query(ActivityLog).filter(
-            ActivityLog.event == "radarr_add",
-            ActivityLog.created_at >= last_run.started_at,
-        ).count()
-        sonarr_new = db.query(ActivityLog).filter(
-            ActivityLog.event == "sonarr_add",
-            ActivityLog.created_at >= last_run.started_at,
-        ).count()
+    if earliest_start:
+        import re
+        for event_type, accumulator_name in [("radarr_scan", "radarr"), ("sonarr_scan", "sonarr")]:
+            logs = db.query(ActivityLog).filter(
+                ActivityLog.event == event_type,
+                ActivityLog.created_at >= earliest_start,
+            ).all()
+            total = 0
+            for log in logs:
+                m = re.search(r'(\d+)\s+new\b', log.message or "")
+                if m:
+                    total += int(m.group(1))
+            if accumulator_name == "radarr":
+                radarr_new = total
+            else:
+                sonarr_new = total
 
-    # List updates from activity logs since last sync
+    # List updates from activity logs since batch start
     lists_updated = []
-    if last_run.started_at:
+    if earliest_start:
         list_logs = db.query(ActivityLog).filter(
             ActivityLog.event == "list_fetch",
-            ActivityLog.created_at >= last_run.started_at,
+            ActivityLog.created_at >= earliest_start,
         ).all()
         for log in list_logs:
-            # Extract list name from message like "Refreshed IMDB TOP 250 (3 new)"
             msg = log.message or ""
+            # Match both formats: "Refreshed X (N new)" and "Fetched 'X' — N items stored"
             if msg.startswith("Refreshed "):
                 name = msg.split("Refreshed ", 1)[1].split(" (")[0]
-                if name and name not in lists_updated:
-                    lists_updated.append(name)
+            elif msg.startswith("Fetched '"):
+                name = msg.split("'")[1] if "'" in msg else ""
+            else:
+                name = ""
+            if name and name not in lists_updated:
+                lists_updated.append(name)
 
     return {
         "completed_at": completed_at,
