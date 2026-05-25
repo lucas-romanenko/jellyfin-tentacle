@@ -1332,21 +1332,21 @@ def add_item_to_matching_playlists(db: Session, jellyfin_item_id: str, item_tags
                 if jellyfin_item_id in current_ids:
                     continue  # Already there
 
-                # Check sort order — prepend for DateCreated Descending (newest first)
-                order = config.get("Order", {})
-                sort_options = order.get("SortOptions", [])
-                sort_by = (sort_options[0].get("SortBy", "") if sort_options else "").lower()
-                sort_order = sort_options[0].get("SortOrder", "Descending") if sort_options else "Descending"
-
-                if sort_by == "datecreated" and sort_order == "Descending":
-                    # Prepend: remove all, add new item first, then re-add rest
-                    all_entry_ids = [e.get("PlaylistItemId", e["Id"]) for e in current_items]
-                    if all_entry_ids:
-                        jf.remove_from_playlist(playlist_id, all_entry_ids)
-                    jf.add_to_playlist(playlist_id, [jellyfin_item_id] + [e["Id"] for e in current_items])
-                else:
-                    # Append to end
-                    jf.add_to_playlist(playlist_id, [jellyfin_item_id])
+                # Add item, then re-sort entire playlist to match user's sort order
+                jf.add_to_playlist(playlist_id, [jellyfin_item_id])
+                try:
+                    query = _build_query_params(config)
+                    sorted_items = jf.query_items(**query)
+                    sorted_items = _resort_by_db_date(sorted_items, config, db)
+                    sorted_ids = [item["Id"] for item in sorted_items]
+                    if sorted_ids:
+                        all_entries = jf.get_playlist_items(playlist_id)
+                        entry_ids = [e.get("PlaylistItemId", e["Id"]) for e in all_entries]
+                        if entry_ids:
+                            jf.remove_from_playlist(playlist_id, entry_ids)
+                        jf.add_to_playlist(playlist_id, sorted_ids)
+                except Exception as sort_err:
+                    logger.warning(f"[SmartLists] Re-sort after add failed for '{name}': {sort_err}")
 
                 total_added += 1
                 logger.info(f"[SmartLists] Added item {jellyfin_item_id} to playlist '{name}' for user {user.display_name}")
