@@ -1081,7 +1081,7 @@ def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats
             playlist_id = None
 
     if playlist_id:
-        # Update existing playlist — compare ordered lists to detect changes
+        # Update existing playlist — incremental diff to minimize API calls
         current_entries = jf.get_playlist_items(playlist_id)
         current_ordered_ids = [entry["Id"] for entry in current_entries]
 
@@ -1089,17 +1089,56 @@ def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats
             # No changes needed — same items in same order
             logger.info(f"[SmartLists] '{name}': no changes needed ({len(item_ids)} items)")
         else:
-            # Items or order changed — clear and re-add in correct order
-            if current_entries:
-                all_entry_ids = [entry.get("PlaylistItemId", entry["Id"]) for entry in current_entries]
-                jf.remove_from_playlist(playlist_id, all_entry_ids)
-            if item_ids:
-                result = jf.add_to_playlist(playlist_id, item_ids)
-                logger.info(f"[SmartLists] '{name}': add_to_playlist returned {result}")
+            desired_set = set(item_ids)
+            current_set = set(current_ordered_ids)
+            to_add = desired_set - current_set
+            to_remove = current_set - desired_set
 
-            added = set(item_ids) - set(current_ordered_ids)
-            removed = set(current_ordered_ids) - set(item_ids)
-            logger.info(f"[SmartLists] Updated '{name}': +{len(added)} -{len(removed)} items (total {len(item_ids)})")
+            # Determine if we can do an incremental update instead of full rebuild.
+            # Jellyfin playlists only support append — no insert-at-position.
+            # Safe incremental cases:
+            #   1. Only removals (order of remaining items preserved)
+            #   2. Only appends at end (new items all come after existing kept items)
+            #   3. Only removals + appends at end combined
+            kept_current = [x for x in current_ordered_ids if x in desired_set]
+            kept_desired = [x for x in item_ids if x in current_set]
+            order_preserved = kept_current == kept_desired
+
+            # New items must all be at the end of the desired list (after all kept items)
+            if to_add and order_preserved:
+                last_kept_pos = max(
+                    (i for i, x in enumerate(item_ids) if x in current_set),
+                    default=-1
+                )
+                first_add_pos = min(
+                    (i for i, x in enumerate(item_ids) if x in to_add),
+                    default=len(item_ids)
+                )
+                adds_at_end = first_add_pos > last_kept_pos
+            else:
+                adds_at_end = not to_add  # no adds = trivially true
+
+            can_incremental = order_preserved and adds_at_end and (to_add or to_remove)
+
+            if can_incremental:
+                # Incremental update — only add/remove the diff
+                if to_remove:
+                    entry_id_map = {entry["Id"]: entry.get("PlaylistItemId", entry["Id"]) for entry in current_entries}
+                    remove_entry_ids = [entry_id_map[rid] for rid in to_remove if rid in entry_id_map]
+                    if remove_entry_ids:
+                        jf.remove_from_playlist(playlist_id, remove_entry_ids)
+                if to_add:
+                    add_ordered = [x for x in item_ids if x in to_add]
+                    jf.add_to_playlist(playlist_id, add_ordered)
+                logger.info(f"[SmartLists] '{name}': incremental update +{len(to_add)} -{len(to_remove)} (total {len(item_ids)})")
+            else:
+                # Order changed or complex reorder — full rebuild required
+                if current_entries:
+                    all_entry_ids = [entry.get("PlaylistItemId", entry["Id"]) for entry in current_entries]
+                    jf.remove_from_playlist(playlist_id, all_entry_ids)
+                if item_ids:
+                    jf.add_to_playlist(playlist_id, item_ids)
+                logger.info(f"[SmartLists] '{name}': full rebuild +{len(to_add)} -{len(to_remove)} reorder (total {len(item_ids)})")
 
         stats["updated"] += 1
     else:
