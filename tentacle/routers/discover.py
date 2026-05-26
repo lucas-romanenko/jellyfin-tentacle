@@ -32,15 +32,29 @@ def _get_tmdb(db: Session) -> Optional[TMDBService]:
     return TMDBService(bearer, data_dir)
 
 
-def _known_tmdb_ids(db: Session) -> set:
-    """Set of all TMDB IDs already in library."""
+def _known_tmdb_ids(db: Session) -> dict:
+    """Separate sets of TMDB IDs by media type (TMDB uses separate ID spaces for movies vs series)."""
     movie_ids = {m.tmdb_id for m in db.query(Movie.tmdb_id).all()}
     series_ids = {s.tmdb_id for s in db.query(Series.tmdb_id).all()}
-    return movie_ids | series_ids
+    return {"movie": movie_ids, "series": series_ids}
 
 
-def _dedup_and_mark(items: list, known_ids: set) -> list:
-    """Deduplicate by tmdb_id and annotate in_library status."""
+def _is_in_library(item: dict, known_ids: dict) -> bool:
+    """Check if item is in library using the correct media-type-specific ID set."""
+    tid = item.get("tmdb_id")
+    if not tid:
+        return False
+    mt = item.get("media_type", "movie")
+    if mt == "series":
+        return tid in known_ids["series"]
+    elif mt == "movie":
+        return tid in known_ids["movie"]
+    # Unknown type — check both (backward compat)
+    return tid in known_ids["movie"] or tid in known_ids["series"]
+
+
+def _dedup_and_mark(items: list, known_ids: dict) -> list:
+    """Deduplicate by tmdb_id+media_type and annotate in_library status."""
     seen = set()
     result = []
     for item in items:
@@ -48,7 +62,7 @@ def _dedup_and_mark(items: list, known_ids: set) -> list:
         if not tid or tid in seen:
             continue
         seen.add(tid)
-        item["in_library"] = tid in known_ids
+        item["in_library"] = _is_in_library(item, known_ids)
         result.append(item)
     return result
 
@@ -137,7 +151,7 @@ def get_discover(
     return {"sections": sections}
 
 
-def _get_missing_from_lists(db: Session, known_ids: set, type_filter: str, user: TentacleUser = None) -> list:
+def _get_missing_from_lists(db: Session, known_ids: dict, type_filter: str, user: TentacleUser = None) -> list:
     """Get items from active list subscriptions that aren't in the library."""
     query = db.query(ListSubscription).filter(ListSubscription.active == True)
     if user:
@@ -164,7 +178,9 @@ def _get_missing_from_lists(db: Session, known_ids: set, type_filter: str, user:
     seen = set()
     result = []
     for item in all_items:
-        if item.tmdb_id in known_ids or item.tmdb_id in seen:
+        mt = item.media_type or "movie"
+        type_ids = known_ids.get("series" if mt == "series" else "movie", set())
+        if item.tmdb_id in type_ids or item.tmdb_id in seen:
             continue
         if not item.poster_path:
             continue
@@ -444,7 +460,7 @@ def search_discover(
                 continue
             if tmdb_id:
                 seen_tmdb.add(tmdb_id)
-                item["in_library"] = tmdb_id in known_ids
+                item["in_library"] = _is_in_library(item, known_ids)
             else:
                 item["in_library"] = False
             if tvdb_id:
@@ -457,7 +473,7 @@ def search_discover(
                 continue
             if tmdb_id:
                 seen_tmdb.add(tmdb_id)
-                item["in_library"] = tmdb_id in known_ids
+                item["in_library"] = _is_in_library(item, known_ids)
             else:
                 item["in_library"] = False
             items.append(item)

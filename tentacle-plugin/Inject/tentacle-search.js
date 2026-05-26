@@ -498,10 +498,12 @@
             window.location.hash = '#/details?id=' + match.Id;
           }
         } else {
-          console.warn('[TentacleSearch] No library match found for:', item.title);
+          console.warn('[TentacleSearch] No library match found for:', item.title, '- falling back to detail modal');
+          openModal(item);
         }
       }).catch(function (err) {
         console.error('[TentacleSearch] goToLibraryItem error:', err);
+        openModal(item);
       });
   }
 
