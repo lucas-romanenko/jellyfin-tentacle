@@ -212,7 +212,7 @@ class PreviewRequest(BaseModel):
 @router.post("/preview-count")
 def preview_count(body: PreviewRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Return the number of items matching the given conditions (for live preview)."""
-    from services.smartlists import _classify_conditions, _conditions_to_expressions, _build_query_params
+    from services.smartlists import _classify_conditions, _conditions_to_expressions, _build_query_params, _extract_genre_logic
     from services.jellyfin import JellyfinService
 
     jf_url = get_setting(db, "jellyfin_url")
@@ -250,9 +250,10 @@ def preview_count(body: PreviewRequest, db: Session = Depends(get_db), user: Ten
     query = _build_query_params(config)
     items = jf.query_items(**query)
 
-    # AND filter for multiple genres
+    # AND filter for multiple genres (skip if OR mode)
     required_genres = query.get("genres") or []
-    if len(required_genres) > 1:
+    genre_logic = _extract_genre_logic(conditions)
+    if len(required_genres) > 1 and genre_logic != "or":
         required_lower = [g.lower() for g in required_genres]
         items = [
             item for item in items

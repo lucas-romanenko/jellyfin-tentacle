@@ -133,12 +133,13 @@ public class TentacleHomeController : ControllerBase
             return NotFound("Playlist not found");
         }
 
-        // Read max_items from home config for this row (default 20)
+        // Read row config (max_items, sort) from home config
         var limit = 20;
+        RowConfig? row = null;
         var config = _homeScreenManager.GetHomeConfig(userId);
         if (config?.Rows != null)
         {
-            var row = config.Rows.FirstOrDefault(r => r.PlaylistId == playlistId);
+            row = config.Rows.FirstOrDefault(r => r.PlaylistId == playlistId);
             if (row?.MaxItems is > 0)
             {
                 limit = row.MaxItems.Value;
@@ -163,16 +164,36 @@ public class TentacleHomeController : ControllerBase
             ImageTypeLimit = 1,
         };
 
-        // Group episodes by series, taking only what we need
+        // Group episodes by series
         var grouped = playlist.GetManageableItems()
             .Where(i => i.Item2.IsVisible(user))
             .GroupBy(x => x.Item2 is Episode ep ? (BaseItem)ep.Series : x.Item2)
-            .Take(limit)
             .Select(g => g.Key)
             .Where(i => i != null)
             .ToList();
 
-        var dtos = _dtoService.GetBaseItemDtos(grouped, dtoOptions, user);
+        // Apply sort from home config (same pattern as hero sort)
+        var sortBy = row?.SortBy?.ToLowerInvariant() ?? "releasedate";
+        var descending = !string.Equals(row?.SortOrder, "Ascending", StringComparison.OrdinalIgnoreCase);
+        IEnumerable<BaseItem> sorted = sortBy switch
+        {
+            "communityrating" => descending
+                ? grouped.OrderByDescending(i => i.CommunityRating ?? 0)
+                : grouped.OrderBy(i => i.CommunityRating ?? 0),
+            "releasedate" => descending
+                ? grouped.OrderByDescending(i => i.PremiereDate ?? DateTime.MinValue)
+                : grouped.OrderBy(i => i.PremiereDate ?? DateTime.MinValue),
+            "name" => descending
+                ? grouped.OrderByDescending(i => i.SortName)
+                : grouped.OrderBy(i => i.SortName),
+            "datecreated" => descending
+                ? grouped.OrderByDescending(i => i.DateCreated)
+                : grouped.OrderBy(i => i.DateCreated),
+            _ => grouped.OrderBy(_ => Random.Shared.Next()),
+        };
+
+        var finalItems = sorted.Take(limit).ToList();
+        var dtos = _dtoService.GetBaseItemDtos(finalItems, dtoOptions, user);
 
         return Ok(new QueryResult<BaseItemDto>(dtos));
     }

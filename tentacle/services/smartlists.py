@@ -57,6 +57,14 @@ def _extract_source_value(conditions: list) -> str | None:
     return None
 
 
+def _extract_genre_logic(conditions: list) -> str:
+    """Extract genre_logic from conditions (default 'and')."""
+    for c in conditions:
+        if c.get("field") == "genre" and c.get("genre_logic"):
+            return c["genre_logic"]
+    return "and"
+
+
 def _classify_conditions(conditions: list) -> str:
     """Classify tag rule conditions as 'native' (can query Jellyfin directly),
     'tentacle' (requires Tentacle tags), or 'mixed'."""
@@ -110,7 +118,8 @@ def _get_jellyfin_user_id(db: Session, user_id: int) -> str:
 
 def _build_config(name: str, tag: str, media_types: list, folder_id: str,
                   enabled: bool = True, jellyfin_user_id: str = "",
-                  expressions: list = None, sort_by: str = "ReleaseDate") -> dict:
+                  expressions: list = None, sort_by: str = "ReleaseDate",
+                  genre_logic: str = "and") -> dict:
     user_playlists = [{"UserId": jellyfin_user_id, "JellyfinPlaylistId": ""}] if jellyfin_user_id else []
 
     if expressions is None:
@@ -139,6 +148,7 @@ def _build_config(name: str, tag: str, media_types: list, folder_id: str,
             ]
         },
         "MediaTypes": media_types,
+        "GenreLogic": genre_logic,
         "IncludeExtras": False,
         "Enabled": enabled,
         "MaxItems": 500,
@@ -329,7 +339,8 @@ def get_desired_smartlists(db: Session, user_id: int = None) -> list:
             type_suffix = "Movies" if media == ["Movie"] else "TV"
             tag = f"{source_value} {type_suffix}"
 
-        sl_entry = {"name": rule.output_tag, "tag": tag, "media_type": media, "enabled": True, "source": "custom"}
+        gl = _extract_genre_logic(rule.conditions or [])
+        sl_entry = {"name": rule.output_tag, "tag": tag, "media_type": media, "enabled": True, "source": "custom", "genre_logic": gl}
         # If all conditions are Jellyfin-native (genre/rating/year),
         # query Jellyfin directly instead of going through Tentacle tags
         classification = _classify_conditions(rule.conditions or [])
@@ -496,13 +507,14 @@ def sync_smartlists(db: Session, user_id: int = None) -> dict:
         expressions = sl.get("expressions")  # None for tag-based, list for native
         default_sort = sl.get("default_sort")  # Default sort for new playlists (user can change)
         forced_max = sl.get("max_items")  # Built-in playlists can cap item count
+        gl = sl.get("genre_logic", "and")
 
         if name in existing:
             # Update existing
             folder, old_data = existing[name]
             folder_id = old_data.get("Id", str(uuid.uuid4()))
             config = _build_config(name, tag, media_types, folder_id, enabled, jf_user_id, expressions=expressions,
-                                   sort_by=default_sort or "ReleaseDate")
+                                   sort_by=default_sort or "ReleaseDate", genre_logic=gl)
 
             # Preserve user-managed fields from existing config
             for field in PRESERVED_FIELDS:
@@ -542,7 +554,7 @@ def sync_smartlists(db: Session, user_id: int = None) -> dict:
             folder.mkdir(parents=True, exist_ok=True)
 
             config = _build_config(name, tag, media_types, folder_id, enabled, jf_user_id, expressions=expressions,
-                                   sort_by=default_sort or "ReleaseDate")
+                                   sort_by=default_sort or "ReleaseDate", genre_logic=gl)
 
             if forced_max:
                 config["MaxItems"] = forced_max
@@ -623,11 +635,24 @@ def _get_smartlists_with_playlist_ids(db: Session, user_id: int = None) -> list:
                 break
         if not playlist_id:
             continue
+
+        # Extract sort info from config
+        sort_by = "releasedate"
+        sort_order = "Descending"
+        order = data.get("Order") or {}
+        sort_options = order.get("SortOptions") or []
+        if sort_options:
+            raw_sort = sort_options[0].get("SortBy", "ReleaseDate")
+            sort_by = SORT_BY_DISPLAY.get(raw_sort, "releasedate")
+            sort_order = sort_options[0].get("SortOrder", "Descending")
+
         result.append({
             "name": name,
             "playlist_id": playlist_id,
             "media_types": data.get("MediaTypes", []),
             "enabled": data.get("Enabled", True),
+            "sort_by": sort_by,
+            "sort_order": sort_order,
         })
     return result
 
@@ -666,6 +691,8 @@ def write_home_config(db: Session, user_id: int = None) -> dict:
     # Lookup for display names and reverse lookup by name
     name_by_id = {sl["playlist_id"]: sl["name"] for sl in smartlists}
     id_by_name = {sl["name"]: sl["playlist_id"] for sl in smartlists}
+    # Sort info lookup by playlist_id
+    sort_by_id = {sl["playlist_id"]: (sl.get("sort_by", "releasedate"), sl.get("sort_order", "Descending")) for sl in smartlists}
 
     # Start with existing rows (in their saved order)
     rows = []
@@ -697,11 +724,14 @@ def write_home_config(db: Session, user_id: int = None) -> dict:
 
     # No auto-bootstrap: users add rows manually via the Home Screen page.
 
-    # Renumber and set max_items for playlist rows
+    # Renumber, set max_items, and enrich playlist rows with sort info
     for i, r in enumerate(rows, start=1):
         r["order"] = i
         if r.get("type", "playlist") == "playlist":
             r.setdefault("max_items", home_row_limit)
+            pid = r.get("playlist_id", "")
+            if pid in sort_by_id:
+                r["sort_by"], r["sort_order"] = sort_by_id[pid]
 
     # Hero: preserve existing pick, remap if playlist was recreated, disable if gone
     if existing_hero and existing_hero.get("playlist_id") in current_ids:
@@ -810,23 +840,6 @@ def _notify_jellyfin_plugin(db: Session) -> dict:
         return {"notified": False, "error": "Jellyfin connection timed out"}
     except Exception:
         return {"notified": False, "error": "Jellyfin plugin not reachable"}
-
-
-def _notify_jellyfin_plugin_standalone(jellyfin_url: str, jellyfin_key: str) -> dict:
-    """POST to the Tentacle Jellyfin plugin refresh endpoint without a DB session."""
-    if not jellyfin_url or not jellyfin_key:
-        return {"notified": False}
-    try:
-        r = requests.post(
-            f"{jellyfin_url.rstrip('/')}/Tentacle/Refresh",
-            headers={"X-Emby-Token": jellyfin_key},
-            timeout=5,
-        )
-        if r.ok:
-            logger.info("Notified Tentacle Jellyfin plugin to refresh")
-        return {"notified": r.ok}
-    except Exception:
-        return {"notified": False}
 
 
 # ── Playlist Population (replaces C# SmartLists plugin) ─────────────────
@@ -1063,9 +1076,10 @@ def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats
     query = _build_query_params(config)
     items = jf.query_items(**query)
 
-    # Jellyfin Genres filter is OR — post-filter to require ALL genres (AND logic)
+    # Jellyfin Genres filter is OR — post-filter for AND logic if genre_logic != "or"
     required_genres = query.get("genres") or []
-    if len(required_genres) > 1:
+    genre_logic = config.get("GenreLogic", "and")
+    if len(required_genres) > 1 and genre_logic != "or":
         required_lower = [g.lower() for g in required_genres]
         items = [
             item for item in items
@@ -1191,13 +1205,13 @@ SORT_BY_DISPLAY = {
 SORT_BY_TO_CONFIG = {v: k for k, v in SORT_BY_DISPLAY.items()}
 
 
-_sort_lock = threading.Lock()
-_sort_generation = {}  # {playlist_name: int} — incremented on each sort change, background thread skips if stale
-
-
 def update_playlist_sort(name: str, sort_by: str, sort_order: str, db, user_id: int = None) -> dict:
-    """Update sort order for a per-user playlist config on disk and re-populate in Jellyfin."""
+    """Update sort order for a per-user playlist and notify clients.
 
+    Sort is applied at read time by the C# plugin (same pattern as hero spotlight),
+    so we just save the config, regenerate home config, and notify — no Jellyfin
+    playlist manipulation needed.
+    """
     if sort_by not in VALID_SORT_BY:
         return {"success": False, "message": f"Invalid sort_by: {sort_by}"}
     if sort_order not in ("Ascending", "Descending"):
@@ -1227,88 +1241,10 @@ def update_playlist_sort(name: str, sort_by: str, sort_order: str, db, user_id: 
     config_file.write_text(json.dumps(config, indent=2), encoding="utf-8")
     logger.info(f"[SmartLists] Updated sort for '{name}': {config_sort_by} {sort_order}")
 
-    # Capture settings for background thread (DB session not safe across threads)
-    jellyfin_url = get_setting(db, "jellyfin_url")
-    jellyfin_key = get_setting(db, "jellyfin_api_key")
-    jf_user_id = _get_jellyfin_user_id(db, user_id) if user_id else get_setting(db, "jellyfin_user_id")
-
-    # Increment generation so any in-flight background thread for this playlist is cancelled
-    gen = _sort_generation.get(name, 0) + 1
-    _sort_generation[name] = gen
-
-    def _repopulate_in_background():
-        """Re-populate the Jellyfin playlist in a background thread so the API returns instantly."""
-        from services.jellyfin import JellyfinService
-        if not (jellyfin_url and jellyfin_key and jf_user_id):
-            return
-
-        # Serialize sort operations on the same playlist
-        with _sort_lock:
-            # Skip if a newer sort was requested while we waited for the lock
-            if _sort_generation.get(name, 0) != gen:
-                logger.info(f"[SmartLists] Skipping stale sort repopulation for '{name}' (gen {gen} < {_sort_generation.get(name)})")
-                return
-
-            try:
-                jf = JellyfinService(jellyfin_url, jellyfin_key, jf_user_id)
-
-                # Re-read config from disk (latest sort order)
-                config_file = folder / "config.json"
-                current_config = json.loads(config_file.read_text(encoding="utf-8"))
-
-                # Find playlist ID
-                playlist_id = None
-                for entry in current_config.get("UserPlaylists", []):
-                    if entry.get("JellyfinPlaylistId"):
-                        playlist_id = entry["JellyfinPlaylistId"]
-                        break
-
-                if playlist_id:
-                    # Clear all items and re-add in new sort order
-                    current_entries = jf.get_playlist_items(playlist_id)
-                    if current_entries:
-                        entry_ids = [e.get("PlaylistItemId", e["Id"]) for e in current_entries]
-                        jf.remove_from_playlist(playlist_id, entry_ids)
-
-                    # Query items in new sort order and add
-                    query = _build_query_params(current_config)
-                    items = jf.query_items(**query)
-
-                    # Jellyfin Genres filter is OR — post-filter to require ALL genres (AND logic)
-                    required_genres = query.get("genres") or []
-                    if len(required_genres) > 1:
-                        required_lower = [g.lower() for g in required_genres]
-                        items = [
-                            item for item in items
-                            if all(
-                                any(ig.lower() == rg for ig in (item.get("Genres") or []))
-                                for rg in required_lower
-                            )
-                        ]
-
-                    # _resort_by_db_date needs a DB session — create one in the thread
-                    from models.database import SessionLocal
-                    thread_db = SessionLocal()
-                    try:
-                        items = _resort_by_db_date(items, current_config, thread_db)
-                    finally:
-                        thread_db.close()
-
-                    item_ids = [item["Id"] for item in items]
-                    if item_ids:
-                        jf.add_to_playlist(playlist_id, item_ids)
-
-                    logger.info(f"[SmartLists] Re-populated '{name}' with {len(item_ids)} items in new sort order")
-            except Exception as e:
-                logger.warning(f"[SmartLists] Failed to re-populate '{name}' after sort change: {e}")
-
-        # Notify clients after repopulation is done
-        bump_playlist_version()
-        _notify_jellyfin_plugin_standalone(jellyfin_url, jellyfin_key)
-
-    # Return immediately, repopulate in background
+    # Regenerate home config (includes new sort info for plugin) and notify clients
+    write_home_config(db, user_id=user_id)
+    _notify_jellyfin_plugin(db)
     bump_playlist_version()
-    threading.Thread(target=_repopulate_in_background, daemon=True).start()
 
     return {"success": True, "sort_by": sort_by, "sort_order": sort_order}
 

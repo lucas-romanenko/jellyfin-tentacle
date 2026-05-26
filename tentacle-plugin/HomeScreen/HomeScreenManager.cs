@@ -219,6 +219,12 @@ public class RowConfig
     [JsonPropertyName("max_items")]
     public int? MaxItems { get; set; }
 
+    [JsonPropertyName("sort_by")]
+    public string? SortBy { get; set; }
+
+    [JsonPropertyName("sort_order")]
+    public string? SortOrder { get; set; }
+
     /// <summary>
     /// Returns true if this is a built-in Jellyfin section (not a Tentacle playlist).
     /// </summary>

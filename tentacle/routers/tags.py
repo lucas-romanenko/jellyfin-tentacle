@@ -57,6 +57,7 @@ class ConditionSchema(BaseModel):
     field: str       # genre | rating | year | source | list | runtime
     operator: str    # contains | equals | greater_than | less_than
     value: str
+    genre_logic: Optional[str] = None  # "and" or "or" — only on genre conditions
 
 
 class TagRuleCreate(BaseModel):

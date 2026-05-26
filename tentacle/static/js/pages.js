@@ -3126,6 +3126,10 @@ function _renderGenreChips(selected = []) {
 
 function toggleGenreChip(el) {
   el.classList.toggle('selected');
+  // Show AND/OR toggle when 2+ genres selected
+  const count = document.querySelectorAll('#tr-genre-chips .genre-chip.selected').length;
+  const logicEl = document.getElementById('tr-genre-logic');
+  if (logicEl) logicEl.style.display = count >= 2 ? '' : 'none';
   _scheduleMatchCount();
 }
 
@@ -3172,8 +3176,10 @@ function _buildFriendlyConditions() {
   } else if (contentSource === 'downloaded') {
     conditions.push({ field: 'downloaded', operator: 'equals', value: 'yes' });
   }
-  for (const g of _getSelectedGenres()) {
-    conditions.push({ field: 'genre', operator: 'contains', value: g });
+  const genres = _getSelectedGenres();
+  const genreLogic = (genres.length >= 2 && document.getElementById('tr-genre-logic')?.value) || 'and';
+  for (const g of genres) {
+    conditions.push({ field: 'genre', operator: 'contains', value: g, genre_logic: genreLogic });
   }
   const rating = document.getElementById('tr-filter-rating').value.trim();
   if (rating) conditions.push({ field: 'rating', operator: 'greater_than', value: rating });
@@ -3199,6 +3205,8 @@ async function showAddTagRule() {
   document.getElementById('tr-list-pick').style.display = 'none';
   document.getElementById('tr-filter-rating').value = '';
   document.getElementById('tr-filter-year').value = '';
+  const glEl = document.getElementById('tr-genre-logic');
+  if (glEl) { glEl.value = 'and'; glEl.style.display = 'none'; }
   document.getElementById('tr-source-section').style.display = '';
   document.getElementById('tr-simple-filters').style.display = '';
   document.getElementById('tr-advanced-section').style.display = 'none';
@@ -3300,6 +3308,11 @@ async function editTagRule(id) {
 
     const selectedGenres = conds.filter(c => c.field === 'genre').map(c => c.value);
     _renderGenreChips(selectedGenres);
+
+    // Restore AND/OR genre logic
+    const genreLogicVal = conds.find(c => c.field === 'genre' && c.genre_logic)?.genre_logic || 'and';
+    const glEl = document.getElementById('tr-genre-logic');
+    if (glEl) { glEl.value = genreLogicVal; glEl.style.display = selectedGenres.length >= 2 ? '' : 'none'; }
 
     const ratingCond = conds.find(c => c.field === 'rating');
     document.getElementById('tr-filter-rating').value = ratingCond ? ratingCond.value : '';

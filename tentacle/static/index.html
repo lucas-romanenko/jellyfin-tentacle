@@ -2596,7 +2596,13 @@ td.primary { color: var(--text); font-weight: 500; }
 
     <!-- Simple filters -->
     <div class="form-group" id="tr-simple-filters">
-      <div class="form-label">Genres <span style="font-weight:400;color:var(--text3)">(select one or more)</span></div>
+      <div class="form-label" style="display:flex;align-items:center;gap:8px">
+        Genres <span style="font-weight:400;color:var(--text3)">(select one or more)</span>
+        <select id="tr-genre-logic" onchange="_scheduleMatchCount()" style="font-size:11px;padding:2px 6px;background:var(--bg2);color:var(--text2);border:1px solid var(--border);border-radius:4px;cursor:pointer;display:none">
+          <option value="and">Match ALL (AND)</option>
+          <option value="or">Match ANY (OR)</option>
+        </select>
+      </div>
       <div class="genre-chips" id="tr-genre-chips"></div>
 
       <div class="form-label" style="margin-top:12px">Filters <span style="font-weight:400;color:var(--text3)">(optional)</span></div>
