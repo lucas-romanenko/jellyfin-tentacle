@@ -594,15 +594,22 @@ def get_sync_summary(db: Session = Depends(get_db)):
         SyncRun.started_at >= batch_start,
     ).all()
 
-    # Build per-provider data from all runs in the batch
+    # Build per-provider data from all runs in the batch (latest completed run per provider only)
     providers_data = []
     earliest_start = last_run.started_at
+    seen_providers = set()
+    # Sort by started_at descending so we pick the latest run per provider
+    batch_runs.sort(key=lambda r: r.started_at or r.completed_at, reverse=True)
     for run in batch_runs:
         if run.started_at and (not earliest_start or run.started_at < earliest_start):
             earliest_start = run.started_at
         provider = run.provider
         if not provider:
             continue
+        # Skip failed runs and duplicates — only use latest completed run per provider
+        if run.status != "completed" or provider.id in seen_providers:
+            continue
+        seen_providers.add(provider.id)
         new_cats = run.new_categories or []
         # Extract titles from the feed JSON stored on the SyncRun
         movie_titles = [m.get("title", "?") for m in (run.new_movies or []) if isinstance(m, dict)]
