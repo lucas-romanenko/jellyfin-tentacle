@@ -1274,6 +1274,17 @@ def sync_single_custom_playlist(db: Session, user_id: int, rule_name: str, condi
     stats = {"processed": 0, "created": 0, "updated": 0, "errors": 0, "item_counts": {}}
     _process_single_playlist(jf, folder, config, jf_user_id, stats, db=db)
 
+    # Sync artwork for this playlist
+    try:
+        from routers.collections import sync_playlist_artwork, _uploaded_artwork
+        # Clear cache so artwork upload is attempted
+        keys_to_clear = [k for k in list(_uploaded_artwork.keys()) if rule_name in k]
+        for k in keys_to_clear:
+            _uploaded_artwork.pop(k, None)
+        sync_playlist_artwork(db)
+    except Exception as e:
+        logger.warning(f"Artwork sync for '{rule_name}' failed: {e}")
+
     # Update home config and notify clients
     write_home_config(db, user_id=user_id)
     _notify_jellyfin_plugin(db)
