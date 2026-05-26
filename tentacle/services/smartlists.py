@@ -1191,9 +1191,12 @@ SORT_BY_DISPLAY = {
 SORT_BY_TO_CONFIG = {v: k for k, v in SORT_BY_DISPLAY.items()}
 
 
+_sort_lock = threading.Lock()
+_sort_generation = {}  # {playlist_name: int} — incremented on each sort change, background thread skips if stale
+
+
 def update_playlist_sort(name: str, sort_by: str, sort_order: str, db, user_id: int = None) -> dict:
     """Update sort order for a per-user playlist config on disk and re-populate in Jellyfin."""
-    import threading
 
     if sort_by not in VALID_SORT_BY:
         return {"success": False, "message": f"Invalid sort_by: {sort_by}"}
@@ -1229,59 +1232,75 @@ def update_playlist_sort(name: str, sort_by: str, sort_order: str, db, user_id: 
     jellyfin_key = get_setting(db, "jellyfin_api_key")
     jf_user_id = _get_jellyfin_user_id(db, user_id) if user_id else get_setting(db, "jellyfin_user_id")
 
+    # Increment generation so any in-flight background thread for this playlist is cancelled
+    gen = _sort_generation.get(name, 0) + 1
+    _sort_generation[name] = gen
+
     def _repopulate_in_background():
         """Re-populate the Jellyfin playlist in a background thread so the API returns instantly."""
         from services.jellyfin import JellyfinService
         if not (jellyfin_url and jellyfin_key and jf_user_id):
             return
-        try:
-            jf = JellyfinService(jellyfin_url, jellyfin_key, jf_user_id)
 
-            # Find playlist ID
-            playlist_id = None
-            for entry in config.get("UserPlaylists", []):
-                if entry.get("JellyfinPlaylistId"):
-                    playlist_id = entry["JellyfinPlaylistId"]
-                    break
+        # Serialize sort operations on the same playlist
+        with _sort_lock:
+            # Skip if a newer sort was requested while we waited for the lock
+            if _sort_generation.get(name, 0) != gen:
+                logger.info(f"[SmartLists] Skipping stale sort repopulation for '{name}' (gen {gen} < {_sort_generation.get(name)})")
+                return
 
-            if playlist_id:
-                # Clear all items and re-add in new sort order
-                current_entries = jf.get_playlist_items(playlist_id)
-                if current_entries:
-                    entry_ids = [e.get("PlaylistItemId", e["Id"]) for e in current_entries]
-                    jf.remove_from_playlist(playlist_id, entry_ids)
+            try:
+                jf = JellyfinService(jellyfin_url, jellyfin_key, jf_user_id)
 
-                # Query items in new sort order and add
-                query = _build_query_params(config)
-                items = jf.query_items(**query)
+                # Re-read config from disk (latest sort order)
+                config_file = folder / "config.json"
+                current_config = json.loads(config_file.read_text(encoding="utf-8"))
 
-                # Jellyfin Genres filter is OR — post-filter to require ALL genres (AND logic)
-                required_genres = query.get("genres") or []
-                if len(required_genres) > 1:
-                    required_lower = [g.lower() for g in required_genres]
-                    items = [
-                        item for item in items
-                        if all(
-                            any(ig.lower() == rg for ig in (item.get("Genres") or []))
-                            for rg in required_lower
-                        )
-                    ]
+                # Find playlist ID
+                playlist_id = None
+                for entry in current_config.get("UserPlaylists", []):
+                    if entry.get("JellyfinPlaylistId"):
+                        playlist_id = entry["JellyfinPlaylistId"]
+                        break
 
-                # _resort_by_db_date needs a DB session — create one in the thread
-                from models.database import SessionLocal
-                thread_db = SessionLocal()
-                try:
-                    items = _resort_by_db_date(items, config, thread_db)
-                finally:
-                    thread_db.close()
+                if playlist_id:
+                    # Clear all items and re-add in new sort order
+                    current_entries = jf.get_playlist_items(playlist_id)
+                    if current_entries:
+                        entry_ids = [e.get("PlaylistItemId", e["Id"]) for e in current_entries]
+                        jf.remove_from_playlist(playlist_id, entry_ids)
 
-                item_ids = [item["Id"] for item in items]
-                if item_ids:
-                    jf.add_to_playlist(playlist_id, item_ids)
+                    # Query items in new sort order and add
+                    query = _build_query_params(current_config)
+                    items = jf.query_items(**query)
 
-                logger.info(f"[SmartLists] Re-populated '{name}' with {len(item_ids)} items in new sort order")
-        except Exception as e:
-            logger.warning(f"[SmartLists] Failed to re-populate '{name}' after sort change: {e}")
+                    # Jellyfin Genres filter is OR — post-filter to require ALL genres (AND logic)
+                    required_genres = query.get("genres") or []
+                    if len(required_genres) > 1:
+                        required_lower = [g.lower() for g in required_genres]
+                        items = [
+                            item for item in items
+                            if all(
+                                any(ig.lower() == rg for ig in (item.get("Genres") or []))
+                                for rg in required_lower
+                            )
+                        ]
+
+                    # _resort_by_db_date needs a DB session — create one in the thread
+                    from models.database import SessionLocal
+                    thread_db = SessionLocal()
+                    try:
+                        items = _resort_by_db_date(items, current_config, thread_db)
+                    finally:
+                        thread_db.close()
+
+                    item_ids = [item["Id"] for item in items]
+                    if item_ids:
+                        jf.add_to_playlist(playlist_id, item_ids)
+
+                    logger.info(f"[SmartLists] Re-populated '{name}' with {len(item_ids)} items in new sort order")
+            except Exception as e:
+                logger.warning(f"[SmartLists] Failed to re-populate '{name}' after sort change: {e}")
 
         # Notify clients after repopulation is done
         bump_playlist_version()
