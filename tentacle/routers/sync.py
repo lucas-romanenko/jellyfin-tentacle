@@ -687,13 +687,130 @@ def get_sync_summary(db: Session = Depends(get_db)):
             ActivityLog.created_at >= earliest_start,
         ).count() > 0
 
+    # Jellyfin pipeline stats from activity logs
+    tags_pushed = 0
+    jellyfin_pipeline_status = None
+    if earliest_start:
+        jf_logs = db.query(ActivityLog).filter(
+            ActivityLog.event == "jellyfin_push",
+            ActivityLog.created_at >= earliest_start,
+        ).order_by(ActivityLog.created_at.desc()).all()
+        for log in jf_logs:
+            msg = log.message or ""
+            if "failed" in msg.lower():
+                jellyfin_pipeline_status = "failed"
+            else:
+                if jellyfin_pipeline_status != "failed":
+                    jellyfin_pipeline_status = "ok"
+                m_tags = re.search(r'(\d+)\s+tag', msg)
+                if m_tags:
+                    tags_pushed = max(tags_pushed, int(m_tags.group(1)))
+
+    # Orphan sweep stats from activity logs
+    orphans_removed = 0
+    vod_orphans_removed = 0
+    if earliest_start:
+        for log in db.query(ActivityLog).filter(
+            ActivityLog.event.in_(["orphan_sweep", "vod_sweep"]),
+            ActivityLog.created_at >= earliest_start,
+        ).all():
+            m_count = re.search(r'(\d+)', log.message or "")
+            if m_count:
+                if log.event == "orphan_sweep":
+                    orphans_removed += int(m_count.group(1))
+                else:
+                    vod_orphans_removed += int(m_count.group(1))
+
+    # EPG details from activity log message
+    epg_details = None
+    if earliest_start:
+        epg_log = db.query(ActivityLog).filter(
+            ActivityLog.event == "epg_sync",
+            ActivityLog.created_at >= earliest_start,
+        ).order_by(ActivityLog.created_at.desc()).first()
+        if epg_log:
+            epg_synced = True
+            epg_details = epg_log.message
+
+    # Per-provider full stats (including existing/failed/skipped counts)
+    all_providers_data = []
+    seen_all = set()
+    for run in batch_runs:
+        provider = run.provider
+        if not provider or provider.id in seen_all:
+            continue
+        if run.status != "completed":
+            # Include failed runs too for visibility
+            if provider.id not in seen_providers:
+                all_providers_data.append({
+                    "name": provider.name or f"Provider {provider.id}",
+                    "status": "failed",
+                    "error": run.error_message or "Unknown error",
+                    "new_movies": 0, "new_series": 0,
+                    "existing_movies": 0, "existing_series": 0,
+                    "failed_movies": 0, "failed_series": 0,
+                    "skipped_movies": 0, "skipped_series": 0,
+                    "movie_titles": [], "series_titles": [],
+                    "new_categories": [], "duration_seconds": run.duration_seconds or 0,
+                })
+            seen_all.add(provider.id)
+            continue
+        seen_all.add(provider.id)
+        new_cats = run.new_categories or []
+        movie_titles = [m.get("title", "?") for m in (run.new_movies or []) if isinstance(m, dict)]
+        series_titles = [s.get("title", "?") for s in (run.new_series or []) if isinstance(s, dict)]
+        all_providers_data.append({
+            "name": provider.name or f"Provider {provider.id}",
+            "status": "completed",
+            "new_movies": run.movies_new or 0,
+            "existing_movies": run.movies_existing or 0,
+            "failed_movies": run.movies_failed or 0,
+            "skipped_movies": run.movies_skipped or 0,
+            "new_series": run.series_new or 0,
+            "existing_series": run.series_existing or 0,
+            "failed_series": run.series_failed or 0,
+            "skipped_series": run.series_skipped or 0,
+            "movie_titles": movie_titles[:20],
+            "series_titles": series_titles[:20],
+            "new_categories": new_cats,
+            "duration_seconds": run.duration_seconds or 0,
+        })
+
+    # Sonarr scan status (did it fail?)
+    sonarr_status = None
+    radarr_status = None
+    if earliest_start:
+        for log in db.query(ActivityLog).filter(
+            ActivityLog.event.in_(["radarr_scan", "sonarr_scan"]),
+            ActivityLog.created_at >= earliest_start,
+        ).all():
+            if log.event == "radarr_scan":
+                radarr_status = "failed" if "failed" in (log.message or "").lower() else "ok"
+            elif log.event == "sonarr_scan":
+                sonarr_status = "failed" if "failed" in (log.message or "").lower() else "ok"
+
+    # Total duration from earliest start to latest completion
+    total_duration = None
+    if earliest_start and last_run.completed_at:
+        total_duration = int((last_run.completed_at - earliest_start).total_seconds())
+
     return {
         "completed_at": completed_at,
+        "started_at": earliest_start.isoformat() if earliest_start else None,
+        "total_duration": total_duration,
         "providers": providers_data,
+        "providers_detail": all_providers_data,
         "radarr_new": radarr_new,
+        "radarr_status": radarr_status,
         "sonarr_new": sonarr_new,
+        "sonarr_status": sonarr_status,
         "lists_updated": lists_updated,
         "epg_synced": epg_synced,
+        "epg_details": epg_details,
+        "tags_pushed": tags_pushed,
+        "jellyfin_status": jellyfin_pipeline_status,
+        "orphans_removed": orphans_removed,
+        "vod_orphans_removed": vod_orphans_removed,
     }
 
 

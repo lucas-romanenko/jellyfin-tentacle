@@ -409,70 +409,187 @@ function renderLibDownloads(data) {
 }
 
 // ── Library Sync Summary ──
+let _lastSyncData = null;
+
 async function loadLibSyncSummary() {
   const container = document.getElementById('lib-sync-summary');
-  const body = document.getElementById('lib-sync-body');
   const timeEl = document.getElementById('lib-sync-time');
-  if (!container || !body) return;
+  const briefEl = document.getElementById('lib-sync-brief');
+  if (!container) return;
   try {
     const data = await api('/api/sync/summary');
     if (!data || !data.completed_at) {
       container.style.display = 'none';
       return;
     }
+    _lastSyncData = data;
     container.style.display = '';
     timeEl.textContent = dashTimeAgo(data.completed_at) || data.completed_at || '';
-    let html = '';
-    // VOD providers
-    if (data.providers && data.providers.length > 0) {
-      data.providers.forEach(p => {
-        let parts = [];
-        if (p.new_movies > 0) {
-          const titles = (p.movie_titles || []).join(', ');
-          parts.push(`${p.new_movies} new movie${p.new_movies !== 1 ? 's' : ''}${titles ? ': ' + titles : ''}`);
-        }
-        if (p.new_series > 0) {
-          const titles = (p.series_titles || []).join(', ');
-          parts.push(`${p.new_series} new series${titles ? ': ' + titles : ''}`);
-        }
-        if (p.new_categories && p.new_categories.length > 0) {
-          parts.push(`<span style="color:var(--amber)">${p.new_categories.length} new categor${p.new_categories.length !== 1 ? 'ies' : 'y'}: ${p.new_categories.join(', ')}</span> <a href="#" onclick="showPage('vod');return false" style="color:var(--accent);font-size:11px">Enable →</a>`);
-        }
-        if (parts.length > 0) {
-          html += `<div style="margin-bottom:6px"><strong>${p.name}:</strong> ${parts.join(' · ')}</div>`;
-        }
-      });
-    }
-    // Radarr/Sonarr
-    if (data.radarr_new > 0 || data.sonarr_new > 0) {
-      let arrParts = [];
-      if (data.radarr_new > 0) arrParts.push(`${data.radarr_new} new Radarr movie${data.radarr_new !== 1 ? 's' : ''}`);
-      if (data.sonarr_new > 0) arrParts.push(`${data.sonarr_new} new Sonarr series`);
-      html += `<div style="margin-bottom:6px"><strong>Downloads:</strong> ${arrParts.join(', ')}</div>`;
-    }
-    // Lists (only shown when items actually changed, with counts)
-    if (data.lists_updated && data.lists_updated.length > 0) {
-      let listParts = data.lists_updated.map(l => {
-        let changes = [];
-        if (l.added > 0) changes.push(`+${l.added}`);
-        if (l.removed > 0) changes.push(`-${l.removed}`);
-        return changes.length > 0 ? `${l.name} (${changes.join(', ')})` : l.name;
-      });
-      html += `<div style="margin-bottom:6px"><strong>Lists:</strong> ${listParts.join(' · ')}</div>`;
-    }
-    // EPG
-    if (data.epg_synced) {
-      html += `<div style="margin-bottom:6px"><strong>Live TV:</strong> EPG guide data refreshed</div>`;
-    }
-    if (!html) {
-      html = '<div style="color:var(--text3)">No new content since last sync</div>';
-    } else {
-      html += `<div style="margin-top:8px"><a href="#" onclick="setLibSort('date_desc');document.getElementById('lib-sort').value='date_desc';fetchLibraryPage();return false" style="color:var(--accent);font-size:12px">View recently added →</a></div>`;
-    }
-    body.innerHTML = html;
+    // Build brief inline summary
+    let brief = [];
+    const totalNew = (data.providers || []).reduce((s, p) => s + (p.new_movies || 0) + (p.new_series || 0), 0);
+    if (totalNew > 0) brief.push(`${totalNew} new VOD`);
+    if (data.radarr_new > 0) brief.push(`${data.radarr_new} Radarr`);
+    if (data.sonarr_new > 0) brief.push(`${data.sonarr_new} Sonarr`);
+    // Check for any failures
+    const hasFailure = (data.providers_detail || []).some(p => p.status === 'failed')
+      || data.radarr_status === 'failed' || data.sonarr_status === 'failed'
+      || data.jellyfin_status === 'failed';
+    if (hasFailure) brief.push('<span style="color:var(--red)">errors</span>');
+    if (brief.length === 0) brief.push('no changes');
+    briefEl.innerHTML = '· ' + brief.join(' · ');
   } catch (e) {
     container.style.display = 'none';
   }
+}
+
+function openSyncDetailModal() {
+  if (!_lastSyncData) return;
+  const overlay = document.getElementById('modal-sync-detail');
+  const body = document.getElementById('sync-detail-body');
+  if (!overlay || !body) return;
+  body.innerHTML = _buildSyncDetailHtml(_lastSyncData);
+  overlay.style.display = '';
+}
+
+function closeSyncDetailModal() {
+  document.getElementById('modal-sync-detail').style.display = 'none';
+}
+
+function _syncStepHtml(icon, label, status, detail) {
+  const colors = { ok: 'var(--green)', failed: 'var(--red)', skipped: 'var(--text3)' };
+  const icons = { ok: '✓', failed: '✗', skipped: '–' };
+  const c = colors[status] || 'var(--text3)';
+  const ic = icons[status] || icon;
+  return `<div style="display:flex;gap:10px;padding:10px 0;border-bottom:1px solid var(--border)">
+    <div style="color:${c};font-size:14px;width:18px;text-align:center;flex-shrink:0;padding-top:1px">${ic}</div>
+    <div style="flex:1;min-width:0">
+      <div style="font-weight:500;color:var(--text);margin-bottom:2px">${label}</div>
+      <div style="font-size:12px;color:var(--text3)">${detail}</div>
+    </div>
+  </div>`;
+}
+
+function _buildSyncDetailHtml(d) {
+  let html = '';
+  // Header with time info
+  const timeAgo = dashTimeAgo(d.completed_at) || '';
+  const duration = d.total_duration ? _fmtDuration(d.total_duration) : '';
+  html += `<div style="margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid var(--border)">
+    <div style="font-size:12px;color:var(--text3)">Completed ${timeAgo}${duration ? ' · Duration: ' + duration : ''}</div>
+  </div>`;
+
+  // 1. Lists
+  if (d.lists_updated && d.lists_updated.length > 0) {
+    const parts = d.lists_updated.map(l => {
+      let ch = [];
+      if (l.added > 0) ch.push(`<span style="color:var(--green)">+${l.added}</span>`);
+      if (l.removed > 0) ch.push(`<span style="color:var(--red)">-${l.removed}</span>`);
+      return `${l.name} (${ch.join(', ')})`;
+    });
+    html += _syncStepHtml('↻', 'List Refresh', 'ok', parts.join(' · '));
+  } else {
+    html += _syncStepHtml('↻', 'List Refresh', 'ok', 'No list changes');
+  }
+
+  // 2. VOD Sync per provider
+  const providers = d.providers_detail || d.providers || [];
+  if (providers.length > 0) {
+    providers.forEach(p => {
+      if (p.status === 'failed') {
+        html += _syncStepHtml('⟳', `VOD: ${p.name}`, 'failed', p.error || 'Sync failed');
+        return;
+      }
+      let lines = [];
+      const nm = p.new_movies || 0, ns = p.new_series || 0;
+      const em = p.existing_movies || 0, es = p.existing_series || 0;
+      const fm = p.failed_movies || 0, fs = p.failed_series || 0;
+      const sm = p.skipped_movies || 0, ss = p.skipped_series || 0;
+      // Movies line
+      if (nm > 0 || em > 0) {
+        let mParts = [];
+        if (nm > 0) mParts.push(`<span style="color:var(--green)">${nm} new</span>`);
+        mParts.push(`${em} existing`);
+        if (fm > 0) mParts.push(`<span style="color:var(--red)">${fm} failed</span>`);
+        if (sm > 0) mParts.push(`${sm} skipped`);
+        lines.push(`Movies: ${mParts.join(', ')}`);
+      }
+      // Series line
+      if (ns > 0 || es > 0) {
+        let sParts = [];
+        if (ns > 0) sParts.push(`<span style="color:var(--green)">${ns} new</span>`);
+        sParts.push(`${es} existing`);
+        if (fs > 0) sParts.push(`<span style="color:var(--red)">${fs} failed</span>`);
+        if (ss > 0) sParts.push(`${ss} skipped`);
+        lines.push(`Series: ${sParts.join(', ')}`);
+      }
+      // New titles
+      if (p.movie_titles && p.movie_titles.length > 0) {
+        lines.push(`<span style="color:var(--text3)">New movies: ${p.movie_titles.join(', ')}</span>`);
+      }
+      if (p.series_titles && p.series_titles.length > 0) {
+        lines.push(`<span style="color:var(--text3)">New series: ${p.series_titles.join(', ')}</span>`);
+      }
+      // New categories
+      if (p.new_categories && p.new_categories.length > 0) {
+        lines.push(`<span style="color:var(--amber)">${p.new_categories.length} new categories: ${p.new_categories.join(', ')}</span>`);
+      }
+      const dur = p.duration_seconds ? ` (${_fmtDuration(p.duration_seconds)})` : '';
+      html += _syncStepHtml('⟳', `VOD: ${p.name}${dur}`, 'ok', lines.join('<br>') || 'No changes');
+    });
+  }
+
+  // 3. Radarr
+  if (d.radarr_status) {
+    const detail = d.radarr_status === 'failed' ? '<span style="color:var(--red)">Scan failed</span>'
+      : d.radarr_new > 0 ? `<span style="color:var(--green)">${d.radarr_new} new movie${d.radarr_new !== 1 ? 's' : ''} imported</span>`
+      : 'No new movies';
+    html += _syncStepHtml('⬇', 'Radarr Scan', d.radarr_status, detail);
+  }
+
+  // 4. Sonarr
+  if (d.sonarr_status) {
+    const detail = d.sonarr_status === 'failed' ? '<span style="color:var(--red)">Scan failed</span>'
+      : d.sonarr_new > 0 ? `<span style="color:var(--green)">${d.sonarr_new} new series imported</span>`
+      : 'No new series';
+    html += _syncStepHtml('⬇', 'Sonarr Scan', d.sonarr_status, detail);
+  }
+
+  // 5. Jellyfin Pipeline
+  if (d.jellyfin_status) {
+    const detail = d.jellyfin_status === 'failed' ? '<span style="color:var(--red)">Pipeline failed</span>'
+      : d.tags_pushed > 0 ? `${d.tags_pushed} tags pushed, playlists refreshed`
+      : 'Playlists refreshed';
+    html += _syncStepHtml('☁', 'Jellyfin Pipeline', d.jellyfin_status, detail);
+  }
+
+  // 6. EPG
+  if (d.epg_synced) {
+    html += _syncStepHtml('📡', 'Live TV EPG', 'ok', d.epg_details || 'EPG data refreshed');
+  }
+
+  // 7. Cleanup
+  if (d.orphans_removed > 0 || d.vod_orphans_removed > 0) {
+    let parts = [];
+    if (d.orphans_removed > 0) parts.push(`${d.orphans_removed} orphaned download(s)`);
+    if (d.vod_orphans_removed > 0) parts.push(`${d.vod_orphans_removed} orphaned VOD record(s)`);
+    html += _syncStepHtml('🧹', 'Cleanup', 'ok', 'Removed ' + parts.join(', '));
+  }
+
+  // Remove last border
+  html = html.replace(/border-bottom:1px solid var\(--border\)"><\/div>\s*$/, '"></div>');
+
+  return html;
+}
+
+function _fmtDuration(secs) {
+  if (secs < 60) return `${secs}s`;
+  const m = Math.floor(secs / 60);
+  const s = secs % 60;
+  if (m < 60) return s > 0 ? `${m}m ${s}s` : `${m}m`;
+  const h = Math.floor(m / 60);
+  const rm = m % 60;
+  return rm > 0 ? `${h}h ${rm}m` : `${h}h`;
 }
 
 // ── Stale files check (moved from Dashboard) ──
@@ -4862,6 +4979,7 @@ async function toggleNotificationsFromCheckbox(checked) {
     showAddHomeRow, hideAddHomeRow, confirmAddHomeRow, removeHomeRow, removeHomeRowByKey,
     homeRowDragStart, homeRowDragOver, homeRowDrop, rowKey,
     // Library
+    openSyncDetailModal, closeSyncDetailModal,
     loadLibListPills, setLibList, setLibListStatus, setLibSort, scrollListPills,
     showMediaDetail, showCoverageDetail, filterByTag, searchLibrary, setLibType, setLibSrc,
     loadMoreLibrary, showAddToRadarrModal, showAddToArrModal, confirmAddToRadarr, confirmAddToArr,

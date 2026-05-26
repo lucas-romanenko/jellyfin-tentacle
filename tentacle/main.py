@@ -192,6 +192,28 @@ def run_scheduled_sync():
         except Exception as e:
             logger.error(f"Orphan sweep failed: {e}")
 
+        # Sweep VOD DB records whose .strm files no longer exist on disk
+        logger.info("Sweeping orphaned VOD records")
+        try:
+            from pathlib import Path as _Path
+            vod_orphans = 0
+            for m in db.query(Movie).filter(Movie.source.like("provider_%"), Movie.strm_path.isnot(None)).all():
+                if not _Path(m.strm_path).exists():
+                    logger.info(f"[VOD sweep] Removing orphaned movie: {m.title} (missing: {m.strm_path})")
+                    db.delete(m)
+                    vod_orphans += 1
+            for s in db.query(Series).filter(Series.source.like("provider_%"), Series.strm_path.isnot(None)).all():
+                if not _Path(s.strm_path).exists():
+                    logger.info(f"[VOD sweep] Removing orphaned series: {s.title} (missing: {s.strm_path})")
+                    db.delete(s)
+                    vod_orphans += 1
+            if vod_orphans:
+                db.commit()
+                log_activity(db, "vod_sweep", f"Removed {vod_orphans} orphaned VOD record(s) with missing files")
+                logger.info(f"VOD sweep: removed {vod_orphans} orphaned record(s)")
+        except Exception as e:
+            logger.error(f"VOD sweep failed: {e}")
+
         # Per-user: sync smartlist configs + write home configs
         logger.info("Syncing per-user playlists and home configs")
         try:

@@ -1761,13 +1761,24 @@ td.primary { color: var(--text); font-weight: 500; }
           <span style="display:flex;align-items:center;gap:5px"><span style="width:6px;height:6px;border-radius:50%;background:var(--amber);flex-shrink:0"></span><span id="lib-stat-vod">—</span> VOD</span>
         </div>
 
-        <!-- Last Sync (collapsed single line, expandable) -->
+        <!-- Last Sync (clickable, opens detailed modal) -->
         <div id="lib-sync-summary" style="display:none;margin-bottom:10px">
-          <div style="display:flex;align-items:center;gap:8px;padding:6px 14px;background:var(--bg1);border:1px solid var(--border);border-radius:var(--radius);font-size:12px;color:var(--text3);cursor:pointer" onclick="var b=document.getElementById('lib-sync-body');b.style.display=b.style.display==='none'?'':'none';this.querySelector('.sync-chevron').textContent=b.style.display==='none'?'▸':'▾'">
+          <div style="display:flex;align-items:center;gap:8px;padding:6px 14px;background:var(--bg1);border:1px solid var(--border);border-radius:var(--radius);font-size:12px;color:var(--text3);cursor:pointer" onclick="openSyncDetailModal()">
             <span>Last sync: <span id="lib-sync-time" style="color:var(--text2);font-family:'DM Mono',monospace"></span></span>
-            <span class="sync-chevron" style="font-size:10px">▸</span>
+            <span id="lib-sync-brief" style="color:var(--text3);margin-left:4px"></span>
+            <span style="font-size:10px;margin-left:auto;color:var(--text3)">Details ▸</span>
           </div>
-          <div id="lib-sync-body" style="display:none;padding:10px 14px;font-size:13px;color:var(--text2);background:var(--bg1);border:1px solid var(--border);border-top:none;border-radius:0 0 var(--radius) var(--radius)"></div>
+        </div>
+
+        <!-- Sync Detail Modal -->
+        <div class="modal-overlay" id="modal-sync-detail" style="display:none">
+          <div class="modal modal-wide" style="max-width:640px;max-height:80vh;overflow-y:auto">
+            <div class="modal-header">
+              <div class="modal-title">Nightly Sync Summary</div>
+              <button class="modal-close" onclick="closeSyncDetailModal()">✕</button>
+            </div>
+            <div id="sync-detail-body" style="font-size:13px;color:var(--text2)"></div>
+          </div>
         </div>
 
         <!-- Active Downloads (auto-hides when empty) -->
