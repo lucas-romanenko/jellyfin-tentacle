@@ -812,6 +812,23 @@ def _notify_jellyfin_plugin(db: Session) -> dict:
         return {"notified": False, "error": "Jellyfin plugin not reachable"}
 
 
+def _notify_jellyfin_plugin_standalone(jellyfin_url: str, jellyfin_key: str) -> dict:
+    """POST to the Tentacle Jellyfin plugin refresh endpoint without a DB session."""
+    if not jellyfin_url or not jellyfin_key:
+        return {"notified": False}
+    try:
+        r = requests.post(
+            f"{jellyfin_url.rstrip('/')}/Tentacle/Refresh",
+            headers={"X-Emby-Token": jellyfin_key},
+            timeout=5,
+        )
+        if r.ok:
+            logger.info("Notified Tentacle Jellyfin plugin to refresh")
+        return {"notified": r.ok}
+    except Exception:
+        return {"notified": False}
+
+
 # ── Playlist Population (replaces C# SmartLists plugin) ─────────────────
 
 def _build_query_params(config: dict) -> dict:
@@ -1176,7 +1193,7 @@ SORT_BY_TO_CONFIG = {v: k for k, v in SORT_BY_DISPLAY.items()}
 
 def update_playlist_sort(name: str, sort_by: str, sort_order: str, db, user_id: int = None) -> dict:
     """Update sort order for a per-user playlist config on disk and re-populate in Jellyfin."""
-    from services.jellyfin import JellyfinService
+    import threading
 
     if sort_by not in VALID_SORT_BY:
         return {"success": False, "message": f"Invalid sort_by: {sort_by}"}
@@ -1207,12 +1224,16 @@ def update_playlist_sort(name: str, sort_by: str, sort_order: str, db, user_id: 
     config_file.write_text(json.dumps(config, indent=2), encoding="utf-8")
     logger.info(f"[SmartLists] Updated sort for '{name}': {config_sort_by} {sort_order}")
 
-    # Re-populate the Jellyfin playlist with the new sort order
+    # Capture settings for background thread (DB session not safe across threads)
     jellyfin_url = get_setting(db, "jellyfin_url")
     jellyfin_key = get_setting(db, "jellyfin_api_key")
     jf_user_id = _get_jellyfin_user_id(db, user_id) if user_id else get_setting(db, "jellyfin_user_id")
 
-    if jellyfin_url and jellyfin_key and jf_user_id:
+    def _repopulate_in_background():
+        """Re-populate the Jellyfin playlist in a background thread so the API returns instantly."""
+        from services.jellyfin import JellyfinService
+        if not (jellyfin_url and jellyfin_key and jf_user_id):
+            return
         try:
             jf = JellyfinService(jellyfin_url, jellyfin_key, jf_user_id)
 
@@ -1246,7 +1267,14 @@ def update_playlist_sort(name: str, sort_by: str, sort_order: str, db, user_id: 
                         )
                     ]
 
-                items = _resort_by_db_date(items, config, db)
+                # _resort_by_db_date needs a DB session — create one in the thread
+                from models.database import SessionLocal
+                thread_db = SessionLocal()
+                try:
+                    items = _resort_by_db_date(items, config, thread_db)
+                finally:
+                    thread_db.close()
+
                 item_ids = [item["Id"] for item in items]
                 if item_ids:
                     jf.add_to_playlist(playlist_id, item_ids)
@@ -1255,9 +1283,13 @@ def update_playlist_sort(name: str, sort_by: str, sort_order: str, db, user_id: 
         except Exception as e:
             logger.warning(f"[SmartLists] Failed to re-populate '{name}' after sort change: {e}")
 
-    # Notify all clients of the sort change
+        # Notify clients after repopulation is done
+        bump_playlist_version()
+        _notify_jellyfin_plugin_standalone(jellyfin_url, jellyfin_key)
+
+    # Return immediately, repopulate in background
     bump_playlist_version()
-    _notify_jellyfin_plugin(db)
+    threading.Thread(target=_repopulate_in_background, daemon=True).start()
 
     return {"success": True, "sort_by": sort_by, "sort_order": sort_order}
 
