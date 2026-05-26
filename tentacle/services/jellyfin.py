@@ -402,7 +402,7 @@ class JellyfinService:
             logger.debug(f"Failed to create playlist '{name}': {e}")
             return None
 
-    def get_playlist_items(self, playlist_id: str, limit: int = 5000) -> List[dict]:
+    def get_playlist_items(self, playlist_id: str, limit: int = 50000) -> List[dict]:
         """Get all items in a playlist."""
         params = {"Limit": limit}
         if self.user_id:
