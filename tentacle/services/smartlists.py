@@ -1233,6 +1233,19 @@ def update_playlist_sort(name: str, sort_by: str, sort_order: str, db, user_id: 
                 # Query items in new sort order and add
                 query = _build_query_params(config)
                 items = jf.query_items(**query)
+
+                # Jellyfin Genres filter is OR — post-filter to require ALL genres (AND logic)
+                required_genres = query.get("genres") or []
+                if len(required_genres) > 1:
+                    required_lower = [g.lower() for g in required_genres]
+                    items = [
+                        item for item in items
+                        if all(
+                            any(ig.lower() == rg for ig in (item.get("Genres") or []))
+                            for rg in required_lower
+                        )
+                    ]
+
                 items = _resort_by_db_date(items, config, db)
                 item_ids = [item["Id"] for item in items]
                 if item_ids:
