@@ -1193,6 +1193,97 @@ def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats
     stats["item_counts"][name] = len(item_ids)
 
 
+def sync_single_custom_playlist(db: Session, user_id: int, rule_name: str, conditions: list,
+                                 apply_to: str, output_tag: str) -> dict:
+    """Sync a single custom playlist to Jellyfin — fast path for create/edit.
+
+    Instead of rebuilding all 20+ playlist configs, this writes only the one
+    changed playlist's config, creates/populates the Jellyfin playlist, writes
+    home config, and notifies clients. Instant from the user's perspective.
+    """
+    from services.jellyfin import JellyfinService
+
+    smartlists_path = _user_smartlists_path(db, user_id)
+    smartlists_path.mkdir(parents=True, exist_ok=True)
+    jf_user_id = _get_jellyfin_user_id(db, user_id)
+    jellyfin_url = get_setting(db, "jellyfin_url", "")
+    jellyfin_key = get_setting(db, "jellyfin_api_key", "")
+
+    if not jellyfin_url or not jellyfin_key:
+        return {"error": "Jellyfin not configured"}
+
+    # Determine media types
+    media_types = ["Movie", "Series"]
+    if apply_to == "movies":
+        media_types = ["Movie"]
+    elif apply_to == "series":
+        media_types = ["Series"]
+
+    # Classify conditions and build expressions
+    classification = _classify_conditions(conditions)
+    expressions = _conditions_to_expressions(conditions) if classification == "native" else None
+    gl = _extract_genre_logic(conditions)
+
+    # Compute tag (with source suffix if applicable)
+    tag = output_tag
+    source_value = _extract_source_value(conditions)
+    if source_value and len(media_types) == 1:
+        type_suffix = "Movies" if media_types == ["Movie"] else "TV"
+        tag = f"{source_value} {type_suffix}"
+
+    # Check if config already exists on disk
+    existing = _scan_existing(smartlists_path)
+    is_new = rule_name not in existing
+
+    if is_new:
+        folder_id = str(uuid.uuid4())
+        folder = smartlists_path / folder_id
+        folder.mkdir(parents=True, exist_ok=True)
+        config = _build_config(rule_name, tag, media_types, folder_id, True, jf_user_id,
+                               expressions=expressions, genre_logic=gl)
+        # Create Jellyfin playlist
+        playlist_id = _create_jellyfin_playlist(rule_name, jf_user_id, jellyfin_url, jellyfin_key)
+        if playlist_id:
+            config["UserPlaylists"] = [{"UserId": jf_user_id, "JellyfinPlaylistId": playlist_id}]
+    else:
+        folder, old_data = existing[rule_name]
+        folder_id = old_data.get("Id", str(uuid.uuid4()))
+        config = _build_config(rule_name, tag, media_types, folder_id, True, jf_user_id,
+                               expressions=expressions, genre_logic=gl)
+        # Preserve user-managed fields
+        for field in PRESERVED_FIELDS:
+            if field in old_data:
+                config[field] = old_data[field]
+        # Preserve playlist link
+        old_playlists = old_data.get("UserPlaylists") or []
+        for entry in old_playlists:
+            if entry.get("JellyfinPlaylistId"):
+                config["UserPlaylists"] = old_playlists
+                break
+        else:
+            playlist_id = _create_jellyfin_playlist(rule_name, jf_user_id, jellyfin_url, jellyfin_key)
+            if playlist_id:
+                config["UserPlaylists"] = [{"UserId": jf_user_id, "JellyfinPlaylistId": playlist_id}]
+
+    # Write config to disk
+    config_file = folder / "config.json"
+    config_file.write_text(json.dumps(config, indent=2), encoding="utf-8")
+
+    # Populate the Jellyfin playlist with matching items
+    jf = JellyfinService(jellyfin_url, jellyfin_key, user_id=jf_user_id)
+    stats = {"processed": 0, "created": 0, "updated": 0, "errors": 0, "item_counts": {}}
+    _process_single_playlist(jf, folder, config, jf_user_id, stats, db=db)
+
+    # Update home config and notify clients
+    write_home_config(db, user_id=user_id)
+    _notify_jellyfin_plugin(db)
+    bump_playlist_version()
+
+    item_count = stats["item_counts"].get(rule_name, 0)
+    logger.info(f"[SmartLists] Fast sync '{rule_name}': {item_count} items ({'created' if is_new else 'updated'})")
+    return {"success": True, "name": rule_name, "item_count": item_count, "is_new": is_new}
+
+
 VALID_SORT_BY = {"releasedate", "name", "datecreated", "communityrating", "random"}
 SORT_BY_DISPLAY = {
     "ReleaseDate": "releasedate",

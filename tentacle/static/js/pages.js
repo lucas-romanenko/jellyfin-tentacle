@@ -3429,16 +3429,19 @@ async function saveTagRule() {
   try {
     if (ruleId) {
       await api(`/api/tags/rules/${ruleId}`, { method: 'PUT', body: { name, output_tag, apply_to, active, conditions } });
-      toast('Playlist updated');
     } else {
       await api('/api/tags/rules', { method: 'POST', body: { name, output_tag, apply_to, active, conditions } });
-      toast('Playlist created');
     }
     _tagRulesCache = [];
     closeModal('modal-tag-rule');
     loadTagRules();
-    // Sync to Jellyfin (full pipeline: configs + items + artwork + home config + notify)
-    await syncPlaylistsToJellyfin();
+    // Fast sync: only this one playlist (not all 20+)
+    const r = await api('/api/smartlists/sync-one', { method: 'POST', body: { name, output_tag, apply_to, conditions } });
+    if (r.item_count !== undefined) {
+      toast(`${r.is_new ? 'Created' : 'Updated'}: ${name} — ${r.item_count} items`);
+    } else {
+      toast(r.error || 'Sync failed', 'error');
+    }
   } catch (e) {
     toast(e.message, 'error');
   }

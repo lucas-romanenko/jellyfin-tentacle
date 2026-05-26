@@ -22,6 +22,7 @@ from services.smartlists import (
     write_home_config, _notify_jellyfin_plugin, refresh_smartlist_playlists,
     _get_smartlists_with_playlist_ids, update_playlist_sort, SORT_BY_DISPLAY,
     _user_smartlists_path, get_playlist_version, bump_playlist_version,
+    sync_single_custom_playlist,
 )
 
 logger = logging.getLogger(__name__)
@@ -135,6 +136,18 @@ class PlaylistSortRequest(BaseModel):
 def set_playlist_sort(req: PlaylistSortRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Update sort order for a per-user playlist and re-populate in Jellyfin."""
     return update_playlist_sort(req.name, req.sort_by, req.sort_order, db, user_id=user.id)
+
+
+@router.post("/sync-one")
+def sync_one(body: dict, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+    """Fast sync a single custom playlist — used by create/edit to avoid rebuilding all configs."""
+    name = body.get("name", "")
+    conditions = body.get("conditions", [])
+    apply_to = body.get("apply_to", "both")
+    output_tag = body.get("output_tag", name)
+    if not name or not conditions:
+        return {"error": "name and conditions required"}
+    return sync_single_custom_playlist(db, user.id, name, conditions, apply_to, output_tag)
 
 
 @router.post("/sync")
