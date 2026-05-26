@@ -1295,6 +1295,158 @@ def sync_single_custom_playlist(db: Session, user_id: int, rule_name: str, condi
     return {"success": True, "name": rule_name, "item_count": item_count, "is_new": is_new}
 
 
+def toggle_auto_playlist_fast(db: Session, user_id: int, key: str, enabled: bool) -> dict:
+    """Fast toggle for auto/list/built-in playlists.
+
+    ON: write one config + create Jellyfin playlist + populate + artwork + notify.
+    OFF: remove config + delete Jellyfin playlist + notify.
+    """
+    from services.jellyfin import JellyfinService
+
+    smartlists_path = _user_smartlists_path(db, user_id)
+    smartlists_path.mkdir(parents=True, exist_ok=True)
+    jf_user_id = _get_jellyfin_user_id(db, user_id)
+    jellyfin_url = get_setting(db, "jellyfin_url", "")
+    jellyfin_key = get_setting(db, "jellyfin_api_key", "")
+
+    if not jellyfin_url or not jellyfin_key:
+        return {"error": "Jellyfin not configured"}
+
+    # Resolve key → playlist name, tag, media_types
+    builtin_map = {
+        "builtin:recently_added_movies": ("Recently Added Movies", ["Movie"], "DateCreated", 50),
+        "builtin:recently_added_tv": ("Recently Added TV", ["Series"], "DateCreated", 50),
+        "builtin:downloaded_movies": ("Downloaded Movies", ["Movie"], "DateCreated", None),
+        "builtin:downloaded_tv": ("Downloaded TV", ["Series"], "DateCreated", None),
+    }
+
+    name = tag = None
+    media_types = ["Movie", "Series"]
+    default_sort = "ReleaseDate"
+    max_items = None
+
+    if key in builtin_map:
+        name, media_types, default_sort, max_items = builtin_map[key]
+        tag = name
+    elif key.startswith("source:"):
+        parts = key.split(":")
+        if len(parts) == 3:
+            source_tag, mtype = parts[1], parts[2]
+            if mtype == "movies":
+                tag = f"{source_tag} Movies"
+                media_types = ["Movie"]
+            elif mtype == "series":
+                tag = f"{source_tag} TV"
+                media_types = ["Series"]
+            else:
+                tag = source_tag
+            name = tag
+    elif key.startswith("list:"):
+        list_id = int(key.replace("list:", ""))
+        lst = db.query(ListSubscription).filter(ListSubscription.id == list_id).first()
+        if lst:
+            name = lst.tag
+            tag = lst.tag
+            from models.database import ListItem
+            item_types = db.query(ListItem.media_type).filter(
+                ListItem.list_id == lst.id, ListItem.media_type.isnot(None),
+            ).distinct().all()
+            types = {t[0] for t in item_types if t[0]}
+            if types == {"movie"}:
+                media_types = ["Movie"]
+            elif types == {"series"}:
+                media_types = ["Series"]
+    elif key == "builtin:my_downloads":
+        user_obj = db.query(TentacleUser).filter(TentacleUser.id == user_id).first()
+        if user_obj:
+            name = f"{user_obj.display_name}'s Downloads"
+            tag = name
+            default_sort = "DateCreated"
+
+    if not name or not tag:
+        return {"error": f"Unknown playlist key: {key}"}
+
+    existing = _scan_existing(smartlists_path)
+    jf = JellyfinService(jellyfin_url, jellyfin_key, user_id=jf_user_id)
+
+    if enabled:
+        # Create config + Jellyfin playlist + populate
+        if name in existing:
+            folder, old_data = existing[name]
+            folder_id = old_data.get("Id", str(uuid.uuid4()))
+            config = _build_config(name, tag, media_types, folder_id, True, jf_user_id,
+                                   sort_by=default_sort)
+            for field in PRESERVED_FIELDS:
+                if field in old_data:
+                    config[field] = old_data[field]
+            if max_items:
+                config["MaxItems"] = max_items
+            old_playlists = old_data.get("UserPlaylists") or []
+            for entry in old_playlists:
+                if entry.get("JellyfinPlaylistId"):
+                    config["UserPlaylists"] = old_playlists
+                    break
+            else:
+                playlist_id = _create_jellyfin_playlist(name, jf_user_id, jellyfin_url, jellyfin_key)
+                if playlist_id:
+                    config["UserPlaylists"] = [{"UserId": jf_user_id, "JellyfinPlaylistId": playlist_id}]
+        else:
+            folder_id = str(uuid.uuid4())
+            folder = smartlists_path / folder_id
+            folder.mkdir(parents=True, exist_ok=True)
+            config = _build_config(name, tag, media_types, folder_id, True, jf_user_id,
+                                   sort_by=default_sort)
+            if max_items:
+                config["MaxItems"] = max_items
+            playlist_id = _create_jellyfin_playlist(name, jf_user_id, jellyfin_url, jellyfin_key)
+            if playlist_id:
+                config["UserPlaylists"] = [{"UserId": jf_user_id, "JellyfinPlaylistId": playlist_id}]
+
+        config_file = folder / "config.json"
+        config_file.write_text(json.dumps(config, indent=2), encoding="utf-8")
+
+        # Populate
+        stats = {"processed": 0, "created": 0, "updated": 0, "errors": 0, "item_counts": {}}
+        _process_single_playlist(jf, folder, config, jf_user_id, stats, db=db)
+        item_count = stats["item_counts"].get(name, 0)
+
+        # Artwork
+        try:
+            from routers.collections import sync_playlist_artwork, _uploaded_artwork
+            keys_to_clear = [k for k in list(_uploaded_artwork.keys()) if name in k]
+            for k in keys_to_clear:
+                _uploaded_artwork.pop(k, None)
+            sync_playlist_artwork(db)
+        except Exception as e:
+            logger.warning(f"Artwork sync for '{name}' failed: {e}")
+
+        logger.info(f"[SmartLists] Fast toggle ON '{name}': {item_count} items")
+    else:
+        # Disable: delete Jellyfin playlist + remove config folder
+        item_count = 0
+        if name in existing:
+            folder, old_data = existing[name]
+            # Delete Jellyfin playlist
+            for entry in (old_data.get("UserPlaylists") or []):
+                pid = entry.get("JellyfinPlaylistId")
+                if pid:
+                    try:
+                        jf.delete_item(pid)
+                    except Exception:
+                        pass
+            # Remove config folder
+            import shutil
+            shutil.rmtree(folder, ignore_errors=True)
+        logger.info(f"[SmartLists] Fast toggle OFF '{name}'")
+
+    # Update home config and notify clients
+    write_home_config(db, user_id=user_id)
+    _notify_jellyfin_plugin(db)
+    bump_playlist_version()
+
+    return {"success": True, "name": name, "item_count": item_count, "enabled": enabled}
+
+
 VALID_SORT_BY = {"releasedate", "name", "datecreated", "communityrating", "random"}
 SORT_BY_DISPLAY = {
     "ReleaseDate": "releasedate",

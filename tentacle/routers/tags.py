@@ -142,7 +142,41 @@ def delete_rule(rule_id: int, db: Session = Depends(get_db), user: TentacleUser 
     rule = db.query(TagRule).filter(TagRule.id == rule_id, TagRule.user_id == user.id).first()
     if not rule:
         raise HTTPException(404, "Rule not found")
+    rule_name = rule.output_tag
     db.delete(rule)
     db.commit()
+
+    # Fast cleanup: remove the one SmartList config + Jellyfin playlist
+    try:
+        from services.smartlists import (
+            _user_smartlists_path, _scan_existing, _get_jellyfin_user_id,
+            write_home_config, _notify_jellyfin_plugin, bump_playlist_version,
+        )
+        from services.jellyfin import JellyfinService
+        import shutil
+
+        smartlists_path = _user_smartlists_path(db, user.id)
+        existing = _scan_existing(smartlists_path)
+        if rule_name in existing:
+            folder, old_data = existing[rule_name]
+            # Delete Jellyfin playlist
+            jf_url = get_setting(db, "jellyfin_url")
+            jf_key = get_setting(db, "jellyfin_api_key")
+            if jf_url and jf_key:
+                jf = JellyfinService(jf_url, jf_key)
+                for entry in (old_data.get("UserPlaylists") or []):
+                    pid = entry.get("JellyfinPlaylistId")
+                    if pid:
+                        try:
+                            jf.delete_item(pid)
+                        except Exception:
+                            pass
+            shutil.rmtree(folder, ignore_errors=True)
+
+        write_home_config(db, user_id=user.id)
+        _notify_jellyfin_plugin(db)
+        bump_playlist_version()
+    except Exception as e:
+        logger.warning(f"Cleanup after delete '{rule_name}' failed: {e}")
 
     return {"success": True}

@@ -22,7 +22,7 @@ from services.smartlists import (
     write_home_config, _notify_jellyfin_plugin, refresh_smartlist_playlists,
     _get_smartlists_with_playlist_ids, update_playlist_sort, SORT_BY_DISPLAY,
     _user_smartlists_path, get_playlist_version, bump_playlist_version,
-    sync_single_custom_playlist,
+    sync_single_custom_playlist, toggle_auto_playlist_fast,
 )
 
 logger = logging.getLogger(__name__)
@@ -774,23 +774,14 @@ def toggle_auto_playlist(req: AutoPlaylistToggleRequest, db: Session = Depends(g
             db.add(AutoPlaylistToggle(key=req.key, enabled=req.enabled, user_id=user.id))
         db.commit()
 
-    # Synchronous sync to Jellyfin (per-user) — create/remove playlist + populate items
+    # Fast sync: only this one playlist (not all 20+)
     jellyfin_error = None
-    notify_result = {"notified": False}
     try:
-        sync_smartlists(db, user_id=user.id)
-        refresh_smartlist_playlists(db, user_id=user.id)
-        # Sync artwork so newly created playlists get images immediately
-        try:
-            from routers.collections import sync_playlist_artwork
-            sync_playlist_artwork(db)
-        except Exception as e:
-            logger.warning(f"Artwork sync after toggle failed: {e}")
-        write_home_config(db, user_id=user.id)
-        notify_result = _notify_jellyfin_plugin(db)
-        bump_playlist_version()
+        result = toggle_auto_playlist_fast(db, user.id, req.key, req.enabled)
+        if result.get("error"):
+            jellyfin_error = result["error"]
     except Exception as e:
-        logger.error(f"Auto playlist sync failed: {e}")
+        logger.error(f"Auto playlist toggle failed: {e}")
         jellyfin_error = str(e)
 
     action = "enabled" if req.enabled else "disabled"
@@ -799,5 +790,4 @@ def toggle_auto_playlist(req: AutoPlaylistToggleRequest, db: Session = Depends(g
         "message": f"Playlist {action}",
         "enabled": req.enabled,
         "jellyfin_error": jellyfin_error,
-        "notified": notify_result.get("notified", False) if not jellyfin_error else False,
     }

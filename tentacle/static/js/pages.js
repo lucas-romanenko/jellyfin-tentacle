@@ -3454,8 +3454,6 @@ async function deleteTagRule(id) {
     toast('Playlist deleted');
     _tagRulesCache = [];
     loadTagRules();
-    // Sync to Jellyfin (full pipeline)
-    await syncPlaylistsToJellyfin();
   } catch (e) {
     toast(e.message, 'error');
   }
