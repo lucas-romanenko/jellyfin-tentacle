@@ -3434,9 +3434,10 @@ async function saveTagRule() {
     }
     _tagRulesCache = [];
     closeModal('modal-tag-rule');
-    loadTagRules();
     // Fast sync: only this one playlist (not all 20+)
     const r = await api('/api/smartlists/sync-one', { method: 'POST', body: { name, output_tag, apply_to, conditions } });
+    loadTagRules();
+    loadAutoPlaylists();
     if (r.item_count !== undefined) {
       toast(`${r.is_new ? 'Created' : 'Updated'}: ${name} — ${r.item_count} items`);
     } else {
@@ -3454,6 +3455,7 @@ async function deleteTagRule(id) {
     toast('Playlist deleted');
     _tagRulesCache = [];
     loadTagRules();
+    loadAutoPlaylists();
   } catch (e) {
     toast(e.message, 'error');
   }
