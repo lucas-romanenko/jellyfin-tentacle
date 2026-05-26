@@ -2174,8 +2174,10 @@ async function toggleAutoPlaylist(key) {
     } else {
       toast(r.message || (enabled ? 'Playlist enabled' : 'Playlist disabled'));
     }
-    // Reload to reflect updated state
-    setTimeout(() => loadAutoPlaylists(), 500);
+    // Reload all playlist sections to reflect updated state
+    loadAutoPlaylists();
+    loadTagRules();
+    if (typeof loadHomeScreen === 'function') loadHomeScreen();
   } catch (e) {
     toast(e.message, 'error');
     loadAutoPlaylists();
@@ -3438,6 +3440,7 @@ async function saveTagRule() {
     const r = await api('/api/smartlists/sync-one', { method: 'POST', body: { name, output_tag, apply_to, conditions } });
     loadTagRules();
     loadAutoPlaylists();
+    if (typeof loadHomeScreen === 'function') loadHomeScreen();
     if (r.item_count !== undefined) {
       toast(`${r.is_new ? 'Created' : 'Updated'}: ${name} — ${r.item_count} items`);
     } else {
@@ -3456,6 +3459,7 @@ async function deleteTagRule(id) {
     _tagRulesCache = [];
     loadTagRules();
     loadAutoPlaylists();
+    if (typeof loadHomeScreen === 'function') loadHomeScreen();
   } catch (e) {
     toast(e.message, 'error');
   }
