@@ -67,7 +67,7 @@ def run_scheduled_sync():
             _running_syncs[provider.id] = True
             _cancel_flags[provider.id] = cancel_event
 
-            def progress_cb(phase, category, stats):
+            def progress_cb(phase, category, stats, **kwargs):
                 _notify_sync_progress(provider.id, phase, category, stats)
 
             def cancel_check():
@@ -360,7 +360,7 @@ async def no_cache_static(request: Request, call_next):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": "1.0.0"}
+    return {"status": "ok"}
 
 
 @app.get("/{full_path:path}")

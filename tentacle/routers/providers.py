@@ -380,6 +380,10 @@ def test_provider(provider_id: int, db: Session = Depends(get_db)):
             except Exception:
                 setattr(p, attr, False)
 
+        # Auto-enable live TV if provider has live categories
+        if p.has_live:
+            p.live_tv_enabled = True
+
         db.commit()
         return {
             "success": True,

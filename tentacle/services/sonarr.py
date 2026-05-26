@@ -424,9 +424,9 @@ def scan_sonarr_library(db: Session) -> dict:
                 existing.sonarr_path = series_path
                 changed = True
             # Backfill date_added from Sonarr's added date if more accurate
-            if series.get("added") and existing.source == "sonarr":
+            if show.get("added") and existing.source == "sonarr":
                 try:
-                    sonarr_date = datetime.fromisoformat(series["added"].replace("Z", "+00:00")).replace(tzinfo=None)
+                    sonarr_date = datetime.fromisoformat(show["added"].replace("Z", "+00:00")).replace(tzinfo=None)
                     if existing.date_added != sonarr_date:
                         existing.date_added = sonarr_date
                         changed = True
@@ -475,9 +475,9 @@ def scan_sonarr_library(db: Session) -> dict:
         else:
             # Use Sonarr's added date for accurate chronological ordering
             sonarr_date = None
-            if series.get("added"):
+            if show.get("added"):
                 try:
-                    sonarr_date = datetime.fromisoformat(series["added"].replace("Z", "+00:00")).replace(tzinfo=None)
+                    sonarr_date = datetime.fromisoformat(show["added"].replace("Z", "+00:00")).replace(tzinfo=None)
                 except (ValueError, TypeError):
                     pass
             new_series = Series(
