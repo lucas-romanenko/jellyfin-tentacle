@@ -1094,16 +1094,20 @@ def bulk_update_groups(update: BulkGroupUpdate, db: Session = Depends(get_db)):
     if not groups:
         return {"success": True, "updated": 0}
 
+    # Only cascade channel enable/disable for groups that are actually changing state.
+    # Without this, re-saving already-enabled groups resets individually-disabled channels.
+    changing_names = [g.name for g in groups if g.enabled != update.enabled]
+
     db.query(LiveChannelGroup).filter(LiveChannelGroup.id.in_(update.group_ids)).update(
         {LiveChannelGroup.enabled: update.enabled}, synchronize_session=False
     )
 
-    group_names = [g.name for g in groups]
-    provider_id = groups[0].provider_id
-    db.query(LiveChannel).filter(
-        LiveChannel.provider_id == provider_id,
-        LiveChannel.group_title.in_(group_names),
-    ).update({LiveChannel.enabled: update.enabled}, synchronize_session=False)
+    if changing_names:
+        provider_id = groups[0].provider_id
+        db.query(LiveChannel).filter(
+            LiveChannel.provider_id == provider_id,
+            LiveChannel.group_title.in_(changing_names),
+        ).update({LiveChannel.enabled: update.enabled}, synchronize_session=False)
 
     db.commit()
     return {"success": True, "updated": len(groups)}
