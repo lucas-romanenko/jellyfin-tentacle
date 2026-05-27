@@ -1133,6 +1133,22 @@ def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats
             items = items[:saved_limit]
 
     items = _resort_by_db_date(items, config, db)
+
+    # Deduplicate items — Jellyfin can return the same content twice if it exists
+    # in multiple libraries (e.g. "TV Shows" + "4K TV"). Keep first occurrence only.
+    seen_tmdb = set()
+    deduped = []
+    for item in items:
+        tmdb_id = (item.get("ProviderIds") or {}).get("Tmdb")
+        if tmdb_id and tmdb_id in seen_tmdb:
+            continue
+        if tmdb_id:
+            seen_tmdb.add(tmdb_id)
+        deduped.append(item)
+    if len(deduped) < len(items):
+        logger.info(f"[SmartLists] '{name}': deduplicated {len(items)} → {len(deduped)} items")
+    items = deduped
+
     item_ids = [item["Id"] for item in items]
 
     logger.info(f"[SmartLists] '{name}': {len(item_ids)} matching items from Jellyfin query")
