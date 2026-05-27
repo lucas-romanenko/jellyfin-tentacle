@@ -2226,6 +2226,27 @@ async function syncPlaylistsToJellyfin() {
   }
 }
 
+async function resyncAllPlaylists() {
+  const btn = document.getElementById('resync-all-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Syncing...'; }
+  toast('Resyncing all playlists to Jellyfin...', 'info');
+  try {
+    const r = await api('/api/smartlists/sync', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({full: true}) });
+    const parts = [];
+    if (r.created) parts.push(`${r.created} created`);
+    if (r.updated) parts.push(`${r.updated} updated`);
+    if (r.removed) parts.push(`${r.removed} removed`);
+    toast(parts.length ? `Resync complete: ${parts.join(', ')}` : 'All playlists up to date');
+    loadAutoPlaylists();
+    loadTagRules();
+    loadHomeScreen();
+  } catch (e) {
+    toast('Resync failed: ' + e.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Resync All'; }
+  }
+}
+
 async function loadListSubscriptions() {
   loadListCards();
 }
@@ -4994,7 +5015,7 @@ async function toggleNotificationsFromCheckbox(checked) {
     // Jellyfin page (home screen + playlists + discover tabs)
     loadJellyfinPage, loadAutoPlaylists, toggleAutoPlaylist, dismissAutoPlaylistBanner, saveDiscoverInJellyfin,
     showAddTagRule, editTagRule, deleteTagRule, saveTagRule, onContentSourceChange, toggleAdvancedFilters,
-    addRuleCondition, updateCondOps, onCollectionNameInput, syncSmartLists, refreshTags, syncPlaylistsToJellyfin, setPlaylistSort,
+    addRuleCondition, updateCondOps, onCollectionNameInput, syncSmartLists, refreshTags, syncPlaylistsToJellyfin, resyncAllPlaylists, setPlaylistSort,
     pushHomeConfig, updateHeroPick, updateHeroSort, saveRowMaxItems, saveRowMaxItemsByKey, toggleNotificationsFromCheckbox, toggleGenreChip, _scheduleMatchCount, toggleToolbarButton,
     showAddHomeRow, hideAddHomeRow, confirmAddHomeRow, removeHomeRow, removeHomeRowByKey,
     homeRowDragStart, homeRowDragOver, homeRowDrop, rowKey,

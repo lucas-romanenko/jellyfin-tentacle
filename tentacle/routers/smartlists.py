@@ -151,15 +151,20 @@ def sync_one(body: dict, db: Session = Depends(get_db), user: TentacleUser = Dep
 
 
 @router.post("/sync")
-def sync(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
-    """Run full per-user playlist pipeline: sync configs → populate items → artwork → home config → notify plugin."""
+def sync(body: dict = None, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+    """Run full per-user playlist pipeline: sync configs → populate items → artwork → home config → notify plugin.
+    Pass {"full": true} to force refresh ALL playlists (recreates missing Jellyfin playlists)."""
+    full = (body or {}).get("full", False)
     result = sync_smartlists(db, user_id=user.id)
 
-    # Only refresh new/changed playlists (not all 22+)
+    # Full refresh: rebuild all playlists (recreates missing Jellyfin playlists)
+    # Targeted refresh: only new/changed playlists
     changed = result.get("changed_names") or []
-    if changed:
+    if full or changed:
         try:
-            refresh_result = refresh_smartlist_playlists(db, user_id=user.id, only_names=changed)
+            refresh_result = refresh_smartlist_playlists(
+                db, user_id=user.id, only_names=None if full else changed
+            )
             result["refresh"] = refresh_result
         except Exception as e:
             logger.warning(f"Playlist refresh after sync failed: {e}")

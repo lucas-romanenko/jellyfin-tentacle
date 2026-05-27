@@ -2023,7 +2023,10 @@ td.primary { color: var(--text); font-weight: 500; }
           <div class="card">
             <div class="card-header">
               <div class="card-title">Auto Playlists</div>
-              <span style="font-size:11px;color:var(--text3)">Generated from your synced content</span>
+              <div style="display:flex;align-items:center;gap:10px">
+                <span style="font-size:11px;color:var(--text3)">Generated from your synced content</span>
+                <button class="btn btn-secondary btn-sm" onclick="resyncAllPlaylists()" id="resync-all-btn" style="font-size:11px;padding:3px 10px">Resync All</button>
+              </div>
             </div>
             <div id="auto-playlists-list">
               <div class="loading-state"><div class="spinner"></div></div>
