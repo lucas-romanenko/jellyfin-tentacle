@@ -4174,6 +4174,7 @@ const liveState = {
   chGroupFilter: '',
   chEpgFilter: '',
   syncPollTimer: null,
+  dirtyChannels: {},  // persists across page/search/filter changes
 };
 
 async function loadLiveTV() {
@@ -4191,6 +4192,7 @@ async function loadLiveTV() {
       if (tabsEl) tabsEl.style.display = 'flex';
       panels.forEach(p => p.style.display = '');
 
+      liveState.dirtyChannels = {};  // Reset pending changes on fresh page load
       const data = await api('/api/live/status');
       renderLiveStats(data);
       await loadLiveGroups();
@@ -4520,7 +4522,13 @@ function renderLiveChannels(channels, total) {
 
   liveState.pageChannels = channels;
   liveState.lastToggledChIdx = null;
-  liveState.dirtyChannels = {};
+
+  // Apply pending dirty overrides so toggled channels stay correct across page/search changes
+  for (const ch of channels) {
+    if (ch.id in liveState.dirtyChannels) {
+      ch.enabled = liveState.dirtyChannels[ch.id];
+    }
+  }
 
   el.innerHTML = channels.map((ch, i) => `
     <div class="live-ch-row" data-ch-idx="${i}">
@@ -4585,6 +4593,7 @@ function toggleLiveChannel(idx, btn, evt) {
       if (row) { if (enabled) row.classList.add('on'); else row.classList.remove('on'); }
     }
     liveState.lastToggledChIdx = idx;
+    _updateDirtyBadge();
     return;
   }
 
@@ -4592,6 +4601,7 @@ function toggleLiveChannel(idx, btn, evt) {
   ch.enabled = enabled;
   liveState.dirtyChannels[ch.id] = enabled;
   if (enabled) btn.classList.add('on'); else btn.classList.remove('on');
+  _updateDirtyBadge();
 }
 
 function toggleAllChannels(enabled) {
@@ -4602,6 +4612,7 @@ function toggleAllChannels(enabled) {
     const row = document.querySelector(`.live-ch-row[data-ch-idx="${i}"] .live-toggle`);
     if (row) { if (enabled) row.classList.add('on'); else row.classList.remove('on'); }
   });
+  _updateDirtyBadge();
 }
 
 async function saveLiveChannels() {
@@ -4614,10 +4625,17 @@ async function saveLiveChannels() {
     if (enableIds.length) await api('/api/live/channels/bulk', { method: 'POST', body: { channel_ids: enableIds, enabled: true } });
     if (disableIds.length) await api('/api/live/channels/bulk', { method: 'POST', body: { channel_ids: disableIds, enabled: false } });
     liveState.dirtyChannels = {};
+    _updateDirtyBadge();
     toast(`Saved ${enableIds.length + disableIds.length} channel changes`);
   } catch (e) {
     toast(`Failed: ${e.message}`, 'error');
   }
+}
+
+function _updateDirtyBadge() {
+  const count = Object.keys(liveState.dirtyChannels).length;
+  const btn = document.getElementById('live-save-ch-btn');
+  if (btn) btn.textContent = count ? `Save Channels (${count})` : 'Save Channels';
 }
 
 // ── Sync actions ──────────────────────────────────────────────────────────
