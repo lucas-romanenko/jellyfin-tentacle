@@ -19,7 +19,8 @@ if not os.path.exists(os.path.join(_data_dir, _db_name)) and os.path.exists(os.p
     _db_name = "mediahub.db"
 DATABASE_URL = f"sqlite:///{_data_dir}/{_db_name}"
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False, "timeout": 30})
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False, "timeout": 30},
+                       pool_size=10, max_overflow=20, pool_timeout=60)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
