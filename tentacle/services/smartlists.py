@@ -570,17 +570,17 @@ def sync_smartlists(db: Session, user_id: int = None) -> dict:
             changed_names.append(name)
             created += 1
 
-    # Clean up orphaned SmartList folders (deleted tag rules)
+    # Clean up orphaned SmartList folders (deleted tag rules, disabled toggles, removed providers)
     desired_names = {sl["name"] for sl in desired}
     orphaned = {name: (folder, data) for name, (folder, data) in existing.items() if name not in desired_names}
     removed = 0
 
-    # Safety check: if more than half of existing playlists would be removed,
-    # something is likely wrong (DB issue, toggle reset, etc.) — skip cleanup
-    if orphaned and existing and len(orphaned) > len(existing) / 2:
+    # Safety check: only skip if ALL existing playlists would be removed and none are desired
+    # (likely a transient DB issue). Partial orphan removal is normal — e.g. provider deleted.
+    if orphaned and len(orphaned) == len(existing) and not desired:
         logger.warning(
-            f"Skipping orphan cleanup for user {user_id}: {len(orphaned)}/{len(existing)} playlists would be removed "
-            f"— likely a transient issue, not intentional deletions. "
+            f"Skipping orphan cleanup for user {user_id}: ALL {len(orphaned)} playlists would be removed "
+            f"with 0 desired — likely a transient issue. "
             f"Orphans: {list(orphaned.keys())}"
         )
     else:
@@ -606,6 +606,39 @@ def sync_smartlists(db: Session, user_id: int = None) -> dict:
                 removed += 1
             except Exception as e:
                 logger.warning(f"Could not remove folder for '{name}': {e}")
+
+    # Clean up stale AutoPlaylistToggle entries (sources that no longer have content)
+    try:
+        from models.database import AutoPlaylistToggle
+        valid_keys = set()
+        # Source keys from current DB content
+        movie_src = db.query(Movie.source_tag).filter(
+            Movie.source_tag.isnot(None), Movie.source_tag != "", Movie.source != "radarr",
+        ).distinct().all()
+        for (tag,) in movie_src:
+            valid_keys.add(f"source:{tag}:movies")
+        series_src = db.query(Series.source_tag).filter(
+            Series.source_tag.isnot(None), Series.source_tag != "", Series.source != "sonarr",
+        ).distinct().all()
+        for (tag,) in series_src:
+            valid_keys.add(f"source:{tag}:series")
+        # Built-in keys are always valid
+        valid_keys.update(["builtin:recently_added_movies", "builtin:recently_added_tv",
+                          "builtin:downloaded_movies", "builtin:downloaded_tv", "builtin:my_downloads"])
+
+        stale_toggles = db.query(AutoPlaylistToggle).filter(
+            AutoPlaylistToggle.user_id == user_id,
+            ~AutoPlaylistToggle.key.in_(valid_keys),
+            ~AutoPlaylistToggle.key.like("list:%"),  # Lists use ListSubscription, not toggles
+        ).all()
+        if stale_toggles:
+            stale_keys = [t.key for t in stale_toggles]
+            for t in stale_toggles:
+                db.delete(t)
+            db.commit()
+            logger.info(f"Cleaned up {len(stale_keys)} stale auto playlist toggles for user {user_id}: {stale_keys}")
+    except Exception as e:
+        logger.warning(f"Failed to clean stale toggles for user {user_id}: {e}")
 
     logger.info(f"SmartLists sync (user {user_id}): {created} created, {updated} updated, {removed} removed, {len(desired)} total")
 
