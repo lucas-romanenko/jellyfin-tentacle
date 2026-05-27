@@ -304,6 +304,12 @@ def sonarr_webhook(payload: dict, db: Session = Depends(get_db)):
                         db_series.jellyfin_item_id = jf_item["Id"]
                         db.commit()
 
+                    # Fetch full item DTO (includes Genres, CommunityRating, ProductionYear)
+                    # for native playlist expression matching
+                    full_item = jf.get_item_by_id(jf_item["Id"])
+                    if full_item:
+                        jf_item = full_item
+
                     existing_jf_tags = set(jf_item.get("Tags", []))
                     desired_tags = set(db_series.tags)
                     merged = list(existing_jf_tags | desired_tags)
@@ -325,7 +331,7 @@ def sonarr_webhook(payload: dict, db: Session = Depends(get_db)):
                 if jf_item:
                     from services.smartlists import add_item_to_matching_playlists
                     result = add_item_to_matching_playlists(
-                        db, jf_item["Id"], list(db_series.tags or []), "series"
+                        db, jf_item["Id"], list(db_series.tags or []), "series", jf_item=jf_item
                     )
                     logger.info(f"[Sonarr webhook] Added '{title}' to {result.get('added_to', 0)} playlist(s)")
                 else:

@@ -324,6 +324,12 @@ def radarr_webhook(payload: dict, db: Session = Depends(get_db)):
                         db_movie.jellyfin_item_id = jf_item["Id"]
                         db.commit()
 
+                    # Fetch full item DTO (includes Genres, CommunityRating, ProductionYear)
+                    # for native playlist expression matching
+                    full_item = jf.get_item_by_id(jf_item["Id"])
+                    if full_item:
+                        jf_item = full_item
+
                     # Merge with existing Jellyfin tags rather than replacing
                     existing_jf_tags = set(jf_item.get("Tags", []))
                     desired_tags = set(db_movie.tags)
@@ -348,7 +354,7 @@ def radarr_webhook(payload: dict, db: Session = Depends(get_db)):
                 if jf_item:
                     from services.smartlists import add_item_to_matching_playlists
                     result = add_item_to_matching_playlists(
-                        db, jf_item["Id"], list(db_movie.tags or []), "movie"
+                        db, jf_item["Id"], list(db_movie.tags or []), "movie", jf_item=jf_item
                     )
                     logger.info(f"[Radarr webhook] Added '{title}' to {result.get('added_to', 0)} playlist(s)")
                 else:

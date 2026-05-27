@@ -1569,17 +1569,111 @@ def remove_item_from_playlists(db: Session, jellyfin_item_id: str, user_id: int)
     return {"removed_from": removed_from}
 
 
+def _item_matches_expressions(config: dict, item_tags: set, jf_item: dict = None) -> bool:
+    """Check if an item matches a playlist config's expressions.
+
+    Evaluates both tag-based and native (genre/rating/year) expressions.
+    For genre AND logic, all required genres must be present on the item.
+    """
+    expressions = []
+    for expr_set in config.get("ExpressionSets", []):
+        expressions.extend(expr_set.get("Expressions", []))
+
+    if not expressions:
+        return False
+
+    # Separate expressions by type
+    tag_exprs = []
+    genre_exprs = []
+    rating_exprs = []
+    year_exprs = []
+
+    for expr in expressions:
+        member = (expr.get("MemberName") or "").lower()
+        if member == "tags":
+            tag_exprs.append(expr)
+        elif member == "genres":
+            genre_exprs.append(expr)
+        elif member in ("communityrating", "rating"):
+            rating_exprs.append(expr)
+        elif member in ("productionyear", "year"):
+            year_exprs.append(expr)
+
+    # Tag matching — any matching tag expression is sufficient
+    if tag_exprs:
+        tag_match = any(
+            (expr.get("Operator") or "").lower() == "contains"
+            and expr.get("TargetValue", "") in item_tags
+            for expr in tag_exprs
+        )
+        if not tag_match:
+            return False
+
+    # Native expressions require jf_item metadata
+    if (genre_exprs or rating_exprs or year_exprs) and not jf_item:
+        return False
+
+    # Genre matching — respects AND/OR logic
+    if genre_exprs:
+        required_genres = [
+            expr.get("TargetValue", "")
+            for expr in genre_exprs
+            if (expr.get("Operator") or "").lower() == "contains"
+        ]
+        if required_genres:
+            item_genres = [g.lower() for g in (jf_item.get("Genres") or [])]
+            genre_logic = config.get("GenreLogic", "and")
+            if genre_logic == "or":
+                if not any(rg.lower() in item_genres for rg in required_genres):
+                    return False
+            else:
+                if not all(rg.lower() in item_genres for rg in required_genres):
+                    return False
+
+    # Rating matching
+    if rating_exprs:
+        item_rating = jf_item.get("CommunityRating") or 0
+        for expr in rating_exprs:
+            op = (expr.get("Operator") or "").lower()
+            try:
+                val = float(expr.get("TargetValue", 0))
+            except (ValueError, TypeError):
+                continue
+            if op == "greaterthan" and item_rating < val:
+                return False
+            if op == "lessthan" and item_rating > val:
+                return False
+
+    # Year matching
+    if year_exprs:
+        item_year = jf_item.get("ProductionYear") or 0
+        for expr in year_exprs:
+            op = (expr.get("Operator") or "").lower()
+            try:
+                val = int(expr.get("TargetValue", 0))
+            except (ValueError, TypeError):
+                continue
+            if op == "greaterthan" and item_year <= val:
+                return False
+            if op == "lessthan" and item_year >= val:
+                return False
+            if op == "equals" and item_year != val:
+                return False
+
+    return True
+
+
 def add_item_to_matching_playlists(db: Session, jellyfin_item_id: str, item_tags: list,
-                                    media_type: str) -> dict:
+                                    media_type: str, jf_item: dict = None) -> dict:
     """Directly add a Jellyfin item to all matching playlists for all users.
 
-    Instead of querying Jellyfin by tag (which requires waiting for indexing),
-    this matches the item's known tags against playlist expressions and adds
-    the item directly. Much faster and avoids the tag-indexing race condition.
+    Matches both tag-based AND native (genre/rating/year) expressions against
+    the item's known metadata. No Jellyfin query needed — avoids the tag-indexing
+    race condition entirely. Plugin applies sort at read time, so we just append.
     """
     from services.jellyfin import JellyfinService
 
-    if not jellyfin_item_id or not item_tags:
+    if not jellyfin_item_id:
         return {"added_to": 0}
 
     jellyfin_url = get_setting(db, "jellyfin_url", "")
@@ -1587,9 +1681,8 @@ def add_item_to_matching_playlists(db: Session, jellyfin_item_id: str, item_tags
     if not jellyfin_url or not jellyfin_key:
         return {"added_to": 0, "error": "Jellyfin not configured"}
 
-    # Normalize media type for matching config MediaTypes
     jf_media_type = "Movie" if media_type == "movie" else "Series"
-    item_tags_set = set(item_tags)
+    item_tags_set = set(item_tags or [])
 
     users = db.query(TentacleUser).all()
     total_added = 0
@@ -1616,20 +1709,8 @@ def add_item_to_matching_playlists(db: Session, jellyfin_item_id: str, item_tags
             if jf_media_type not in config_types:
                 continue
 
-            # Check if item's tags match any of the playlist's tag expressions
-            matches = False
-            for expr_set in config.get("ExpressionSets", []):
-                for expr in expr_set.get("Expressions", []):
-                    member = (expr.get("MemberName") or "").lower()
-                    operator = (expr.get("Operator") or "").lower()
-                    value = expr.get("TargetValue", "")
-                    if member == "tags" and operator == "contains" and value in item_tags_set:
-                        matches = True
-                        break
-                if matches:
-                    break
-
-            if not matches:
+            # Check if item matches this playlist's expressions
+            if not _item_matches_expressions(config, item_tags_set, jf_item):
                 continue
 
             # Find Jellyfin playlist ID
@@ -1638,7 +1719,6 @@ def add_item_to_matching_playlists(db: Session, jellyfin_item_id: str, item_tags
                 if up.get("JellyfinPlaylistId"):
                     playlist_id = up["JellyfinPlaylistId"]
                     break
-
             if not playlist_id:
                 continue
 
@@ -1647,24 +1727,11 @@ def add_item_to_matching_playlists(db: Session, jellyfin_item_id: str, item_tags
                 current_items = jf.get_playlist_items(playlist_id)
                 current_ids = {item["Id"] for item in current_items}
                 if jellyfin_item_id in current_ids:
-                    continue  # Already there
+                    continue
 
-                # Add item, then re-sort entire playlist to match user's sort order
+                # Just append — plugin applies sort at read time for home screen rows.
+                # Nightly sync rebuilds playlists in correct order for direct access.
                 jf.add_to_playlist(playlist_id, [jellyfin_item_id])
-                try:
-                    query = _build_query_params(config)
-                    sorted_items = jf.query_items(**query)
-                    sorted_items = _resort_by_db_date(sorted_items, config, db)
-                    sorted_ids = [item["Id"] for item in sorted_items]
-                    if sorted_ids:
-                        all_entries = jf.get_playlist_items(playlist_id)
-                        entry_ids = [e.get("PlaylistItemId", e["Id"]) for e in all_entries]
-                        if entry_ids:
-                            jf.remove_from_playlist(playlist_id, entry_ids)
-                        jf.add_to_playlist(playlist_id, sorted_ids)
-                except Exception as sort_err:
-                    logger.warning(f"[SmartLists] Re-sort after add failed for '{name}': {sort_err}")
-
                 total_added += 1
                 logger.info(f"[SmartLists] Added item {jellyfin_item_id} to playlist '{name}' for user {user.display_name}")
             except Exception as e:
