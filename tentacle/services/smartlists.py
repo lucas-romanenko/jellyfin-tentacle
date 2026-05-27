@@ -1074,12 +1074,19 @@ def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats
 
     # Query Jellyfin for matching items
     query = _build_query_params(config)
-    items = jf.query_items(**query)
 
-    # Jellyfin Genres filter is OR — post-filter for AND logic if genre_logic != "or"
+    # Jellyfin Genres filter is OR — if we need AND post-filtering, remove the
+    # query limit so we get ALL matching items before filtering. Apply MaxItems after.
     required_genres = query.get("genres") or []
     genre_logic = config.get("GenreLogic", "and")
-    if len(required_genres) > 1 and genre_logic != "or":
+    needs_genre_filter = len(required_genres) > 1 and genre_logic != "or"
+    saved_limit = query.get("limit")
+    if needs_genre_filter:
+        query["limit"] = None
+
+    items = jf.query_items(**query)
+
+    if needs_genre_filter:
         required_lower = [g.lower() for g in required_genres]
         items = [
             item for item in items
@@ -1088,6 +1095,9 @@ def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats
                 for rg in required_lower
             )
         ]
+        # Re-apply MaxItems limit after post-filter
+        if saved_limit and saved_limit > 0:
+            items = items[:saved_limit]
 
     items = _resort_by_db_date(items, config, db)
     item_ids = [item["Id"] for item in items]
