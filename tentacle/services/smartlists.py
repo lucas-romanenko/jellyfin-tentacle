@@ -776,7 +776,7 @@ def write_home_config(db: Session, user_id: int = None) -> dict:
         existing_hero["playlist_id"] = new_id
         hero = existing_hero
     else:
-        hero = {"enabled": False, "playlist_id": "", "display_name": "", "sort_by": "random", "sort_order": "Descending", "require_logo": True, "require_trailer": False, "item_count": 10}
+        hero = {"enabled": False, "playlist_id": "", "display_name": "", "sort_by": "random", "sort_order": "Descending", "require_logo": True, "require_trailer": False, "trailer_audio": False, "item_count": 10}
 
     # Toolbar: preserve existing config or use defaults
     existing_toolbar = existing_config.get("toolbar") if existing_config else None
@@ -1778,9 +1778,24 @@ def add_item_to_matching_playlists(db: Session, jellyfin_item_id: str, item_tags
                 if jellyfin_item_id in current_ids:
                     continue
 
-                # Just append — plugin applies sort at read time for home screen rows.
-                # Nightly sync rebuilds playlists in correct order for direct access.
                 jf.add_to_playlist(playlist_id, [jellyfin_item_id])
+
+                # For recently-added / downloaded playlists (DateCreated sort),
+                # move the new item to the front so it appears first immediately
+                # instead of waiting for the nightly full rebuild.
+                sort_by = (config.get("Order", {}).get("SortOptions", [{}])[0]
+                           .get("SortBy", "")) if config.get("Order") else ""
+                if sort_by == "DateCreated":
+                    # Jellyfin's move endpoint needs the PlaylistItemId, not the library Id.
+                    # Re-fetch playlist entries to find the newly appended item's PlaylistItemId.
+                    updated_items = jf.get_playlist_items(playlist_id)
+                    for entry in reversed(updated_items):  # newly added is last
+                        if entry.get("Id") == jellyfin_item_id:
+                            playlist_item_id = entry.get("PlaylistItemId")
+                            if playlist_item_id:
+                                jf.move_playlist_item(playlist_id, playlist_item_id, 0)
+                            break
+
                 total_added += 1
                 logger.info(f"[SmartLists] Added item {jellyfin_item_id} to playlist '{name}' for user {user.display_name}")
             except Exception as e:

@@ -189,7 +189,7 @@ public class HeroConfig
     public bool RequireTrailer { get; set; } = false;
 
     [JsonPropertyName("trailer_audio")]
-    public bool TrailerAudio { get; set; } = true;
+    public bool TrailerAudio { get; set; } = false;
 
     [JsonPropertyName("item_count")]
     public int ItemCount { get; set; } = 10;

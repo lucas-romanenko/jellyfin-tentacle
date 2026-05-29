@@ -173,6 +173,9 @@ public class TentacleHomeController : ControllerBase
             .ToList();
 
         // Apply sort from home config (same pattern as hero sort)
+        // For "datecreated", trust the playlist order set by the Python backend
+        // (which uses Tentacle's date_added — more reliable than Jellyfin's DateCreated
+        // which can shift after metadata refreshes or library rescans).
         var sortBy = row?.SortBy?.ToLowerInvariant() ?? "releasedate";
         var descending = !string.Equals(row?.SortOrder, "Ascending", StringComparison.OrdinalIgnoreCase);
         IEnumerable<BaseItem> sorted = sortBy switch
@@ -186,9 +189,7 @@ public class TentacleHomeController : ControllerBase
             "name" => descending
                 ? grouped.OrderByDescending(i => i.SortName)
                 : grouped.OrderBy(i => i.SortName),
-            "datecreated" => descending
-                ? grouped.OrderByDescending(i => i.DateCreated)
-                : grouped.OrderBy(i => i.DateCreated),
+            "datecreated" => grouped,
             _ => grouped.OrderBy(_ => Random.Shared.Next()),
         };
 
@@ -297,6 +298,8 @@ public class TentacleHomeController : ControllerBase
         }
 
         // Apply hero-specific sort from config
+        // For "datecreated", trust the playlist order from the Python backend
+        // (uses Tentacle's date_added, more reliable than Jellyfin's DateCreated).
         var heroSort = hero.SortBy?.ToLowerInvariant() ?? "random";
         var descending = !string.Equals(hero.SortOrder, "Ascending", StringComparison.OrdinalIgnoreCase);
         IEnumerable<BaseItem> sorted = heroSort switch
@@ -310,9 +313,7 @@ public class TentacleHomeController : ControllerBase
             "name" => descending
                 ? filtered.OrderByDescending(i => i.SortName)
                 : filtered.OrderBy(i => i.SortName),
-            "datecreated" => descending
-                ? filtered.OrderByDescending(i => i.DateCreated)
-                : filtered.OrderBy(i => i.DateCreated),
+            "datecreated" => filtered,
             _ => filtered.OrderBy(_ => Random.Shared.Next()), // random
         };
 
@@ -423,7 +424,9 @@ public class TentacleHomeController : ControllerBase
             return Ok(new { enabled = true, playlistId = hero.PlaylistId, displayName = hero.DisplayName, trailerAudio = hero.TrailerAudio, itemCount = hero.ItemCount });
         }
 
-        return Ok(new { enabled = false, playlistId = "", displayName = "", trailerAudio = true, itemCount = 10 });
+        // Return whatever the backend has — defaults are set by the Tentacle dashboard, not the plugin
+        var fallbackHero = homeConfig?.Hero;
+        return Ok(new { enabled = false, playlistId = "", displayName = "", trailerAudio = fallbackHero?.TrailerAudio ?? false, itemCount = fallbackHero?.ItemCount ?? 10 });
     }
 
     /// <summary>
@@ -440,17 +443,8 @@ public class TentacleHomeController : ControllerBase
             return Ok(new { buttons = toolbar });
         }
 
-        // Default toolbar config
-        return Ok(new { buttons = new[]
-        {
-            new { id = "search", enabled = true },
-            new { id = "discover", enabled = true },
-            new { id = "activity", enabled = true },
-            new { id = "favorites", enabled = true },
-            new { id = "libraries", enabled = true },
-            new { id = "shuffle", enabled = false },
-            new { id = "genres", enabled = false },
-        }});
+        // No local defaults — Tentacle backend always provides toolbar config via write_home_config()
+        return Ok(new { buttons = Array.Empty<object>() });
     }
 
     /// <summary>

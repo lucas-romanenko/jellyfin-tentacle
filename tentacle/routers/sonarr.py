@@ -320,6 +320,13 @@ def sonarr_webhook(payload: dict, db: Session = Depends(get_db)):
 
                     if jf.refresh_item_metadata(jf_item["Id"]):
                         logger.info(f"[Sonarr webhook] Triggered metadata refresh for '{title}'")
+                        if jf.wait_for_images(jf_item["Id"], max_wait=30, poll_interval=3):
+                            logger.info(f"[Sonarr webhook] Images ready for '{title}'")
+                            refreshed = jf.get_item_by_id(jf_item["Id"])
+                            if refreshed:
+                                jf_item = refreshed
+                        else:
+                            logger.info(f"[Sonarr webhook] Images not ready for '{title}' after 30s, continuing anyway")
                 else:
                     logger.warning(
                         f"[Sonarr webhook] '{title}' (tmdb:{tmdb_id}) not found in Jellyfin "
@@ -335,10 +342,7 @@ def sonarr_webhook(payload: dict, db: Session = Depends(get_db)):
                     )
                     logger.info(f"[Sonarr webhook] Added '{title}' to {result.get('added_to', 0)} playlist(s)")
                 else:
-                    time.sleep(5)
-                    from services.smartlists import refresh_smartlist_playlists
-                    refresh_smartlist_playlists(db)
-                    logger.info(f"[Sonarr webhook] Full playlist refresh (no Jellyfin item found for '{title}')")
+                    logger.info(f"[Sonarr webhook] Skipping playlist update for '{title}' (not in Jellyfin yet)")
 
                 # Notify plugin to clear caches + broadcast WebSocket to all clients
                 from services.smartlists import _notify_jellyfin_plugin

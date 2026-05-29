@@ -292,6 +292,22 @@ class JellyfinService:
             logger.debug(f"Metadata refresh failed for {item_id}: {e}")
             return False
 
+    def wait_for_images(self, item_id: str, max_wait: int = 30, poll_interval: int = 3) -> bool:
+        """Wait for Jellyfin to fetch poster/backdrop images after a metadata refresh.
+
+        Polls the item until ImageTags.Primary exists or timeout is reached.
+        Returns True if images are available, False on timeout.
+        """
+        import time
+        elapsed = 0
+        while elapsed < max_wait:
+            item = self.get_item_by_id(item_id)
+            if item and item.get("ImageTags", {}).get("Primary"):
+                return True
+            time.sleep(poll_interval)
+            elapsed += poll_interval
+        return False
+
     def get_libraries(self) -> List[dict]:
         """Get all libraries"""
         data = self._get("/Library/VirtualFolders")
@@ -439,6 +455,19 @@ class JellyfinService:
                 logger.error(f"[Jellyfin] Failed to add items to playlist {playlist_id}: {e}")
                 return False
         return True
+
+    def move_playlist_item(self, playlist_id: str, item_id: str, new_index: int) -> bool:
+        """Move an item within a playlist to a new position."""
+        try:
+            r = self.session.post(
+                f"{self.url}/Playlists/{playlist_id}/Items/{item_id}/Move/{new_index}",
+                timeout=10,
+            )
+            self._check_401(r, f"/Playlists/{playlist_id}/Items/{item_id}/Move/{new_index}")
+            return r.status_code < 400
+        except Exception as e:
+            logger.debug(f"Failed to move playlist item: {e}")
+            return False
 
     def remove_from_playlist(self, playlist_id: str, entry_ids: List[str]) -> bool:
         """Remove items from a playlist by their PlaylistItemId, in chunks of 50."""

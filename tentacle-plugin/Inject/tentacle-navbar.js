@@ -120,11 +120,12 @@
         },
 
         _isButtonEnabled: function (id) {
-            if (!this.toolbarConfig) return true; // No config = show all
+            // No local fallback — Tentacle backend always provides toolbar config
+            if (!this.toolbarConfig || this.toolbarConfig.length === 0) return false;
             for (var i = 0; i < this.toolbarConfig.length; i++) {
                 if (this.toolbarConfig[i].id === id) return this.toolbarConfig[i].enabled;
             }
-            return true; // Unknown button = show
+            return false; // Unknown button = hide (dashboard didn't include it)
         },
 
         // Re-fetch toolbar config and rebuild buttons in-place (called on version change)

@@ -22,6 +22,11 @@ from routers.auth import require_admin
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/radarr", tags=["radarr"], dependencies=[Depends(require_admin)])
 
+# Per-movie lock to prevent duplicate webhook processing (e.g. Download + MovieAdded
+# firing close together for the same movie). Only one background thread per tmdb_id.
+_webhook_locks: dict[int, threading.Lock] = {}
+_webhook_locks_guard = threading.Lock()
+
 _scan_running = False
 
 
@@ -243,6 +248,21 @@ def radarr_webhook(payload: dict, db: Session = Depends(get_db)):
         from models.database import SessionLocal, get_setting
         from pathlib import Path
         from services.jellyfin import JellyfinService
+
+        # Per-movie lock: if another webhook event for the same movie is already
+        # being processed (e.g. Download + MovieAdded close together), skip.
+        with _webhook_locks_guard:
+            if tmdb_id in _webhook_locks and _webhook_locks[tmdb_id].locked():
+                logger.info(f"[Radarr webhook] Skipping duplicate processing for tmdb:{tmdb_id}")
+                return
+            if tmdb_id not in _webhook_locks:
+                _webhook_locks[tmdb_id] = threading.Lock()
+            lock = _webhook_locks[tmdb_id]
+
+        if not lock.acquire(blocking=False):
+            logger.info(f"[Radarr webhook] Skipping duplicate processing for tmdb:{tmdb_id}")
+            return
+
         db = SessionLocal()
         try:
             scan_radarr_library(db)
@@ -339,9 +359,18 @@ def radarr_webhook(payload: dict, db: Session = Depends(get_db)):
                     else:
                         logger.warning(f"[Radarr webhook] Failed to set tags on '{title}' in Jellyfin")
 
-                    # Refresh metadata so Jellyfin fetches posters/info from TMDB
+                    # Refresh metadata so Jellyfin fetches posters/info from TMDB,
+                    # then wait for images before notifying clients (avoids empty posters).
                     if jf.refresh_item_metadata(jf_item["Id"]):
                         logger.info(f"[Radarr webhook] Triggered metadata refresh for '{title}'")
+                        if jf.wait_for_images(jf_item["Id"], max_wait=30, poll_interval=3):
+                            logger.info(f"[Radarr webhook] Images ready for '{title}'")
+                            # Re-fetch full DTO now that images are available
+                            refreshed = jf.get_item_by_id(jf_item["Id"])
+                            if refreshed:
+                                jf_item = refreshed
+                        else:
+                            logger.info(f"[Radarr webhook] Images not ready for '{title}' after 30s, continuing anyway")
                 else:
                     logger.warning(
                         f"[Radarr webhook] '{title}' (tmdb:{tmdb_id}) not found in Jellyfin "
@@ -358,11 +387,12 @@ def radarr_webhook(payload: dict, db: Session = Depends(get_db)):
                     )
                     logger.info(f"[Radarr webhook] Added '{title}' to {result.get('added_to', 0)} playlist(s)")
                 else:
-                    # Fallback: full refresh if we couldn't find the Jellyfin item
-                    time.sleep(5)
-                    from services.smartlists import refresh_smartlist_playlists
-                    refresh_smartlist_playlists(db)
-                    logger.info(f"[Radarr webhook] Full playlist refresh (no Jellyfin item found for '{title}')")
+                    # Item not in Jellyfin yet — skip playlist update.
+                    # Nightly sync will pick it up once Jellyfin has indexed it.
+                    # Never do a full playlist rebuild from a webhook — clearing
+                    # and re-querying all playlists can drop items whose tags
+                    # haven't been indexed yet, causing content to disappear.
+                    logger.info(f"[Radarr webhook] Skipping playlist update for '{title}' (not in Jellyfin yet)")
 
                 # Notify plugin to clear caches + broadcast WebSocket to all clients
                 from services.smartlists import _notify_jellyfin_plugin
@@ -408,6 +438,7 @@ def radarr_webhook(payload: dict, db: Session = Depends(get_db)):
         except Exception as e:
             logger.error(f"[Radarr webhook] Background processing failed: {e}", exc_info=True)
         finally:
+            lock.release()
             db.close()
 
     thread = threading.Thread(target=_webhook_background, args=(tmdb_id, title, event_type), daemon=True)
