@@ -1554,6 +1554,12 @@ def update_playlist_sort(name: str, sort_by: str, sort_order: str, db, user_id: 
     config_file.write_text(json.dumps(config, indent=2), encoding="utf-8")
     logger.info(f"[SmartLists] Updated sort for '{name}': {config_sort_by} {sort_order}")
 
+    # Refresh this playlist so the new sort order takes effect immediately
+    try:
+        refresh_smartlist_playlists(db, user_id=user_id, only_names=[name])
+    except Exception as e:
+        logger.warning(f"[SmartLists] Playlist refresh after sort change failed: {e}")
+
     # Regenerate home config (includes new sort info for plugin) and notify clients
     write_home_config(db, user_id=user_id)
     _notify_jellyfin_plugin(db)
