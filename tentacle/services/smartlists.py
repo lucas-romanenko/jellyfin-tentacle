@@ -1793,7 +1793,13 @@ def add_item_to_matching_playlists(db: Session, jellyfin_item_id: str, item_tags
                         if entry.get("Id") == jellyfin_item_id:
                             playlist_item_id = entry.get("PlaylistItemId")
                             if playlist_item_id:
-                                jf.move_playlist_item(playlist_id, playlist_item_id, 0)
+                                moved = jf.move_playlist_item(playlist_id, playlist_item_id, 0)
+                                if moved:
+                                    logger.info(f"[SmartLists] Moved item to front of '{name}' (DateCreated sort)")
+                                else:
+                                    logger.warning(f"[SmartLists] Failed to move item to front of '{name}' — will be fixed on next full rebuild")
+                            else:
+                                logger.warning(f"[SmartLists] No PlaylistItemId for item {jellyfin_item_id} in '{name}'")
                             break
 
                 total_added += 1

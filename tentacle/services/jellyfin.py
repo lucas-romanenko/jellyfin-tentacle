@@ -464,9 +464,11 @@ class JellyfinService:
                 timeout=10,
             )
             self._check_401(r, f"/Playlists/{playlist_id}/Items/{item_id}/Move/{new_index}")
+            if r.status_code >= 400:
+                logger.warning(f"Move playlist item failed: HTTP {r.status_code} for playlist={playlist_id} item={item_id} index={new_index}")
             return r.status_code < 400
         except Exception as e:
-            logger.debug(f"Failed to move playlist item: {e}")
+            logger.warning(f"Move playlist item exception: {e}")
             return False
 
     def remove_from_playlist(self, playlist_id: str, entry_ids: List[str]) -> bool:

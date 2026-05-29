@@ -227,8 +227,9 @@ def sonarr_webhook(payload: dict, db: Session = Depends(get_db)):
                 logger.warning(f"[Sonarr webhook] Series tmdb:{tmdb_id} not found after scan")
                 return
 
-            # Stamp date_added and episode info on Download
-            if event_type == "Download":
+            # Ensure date_added is set (scan_sonarr_library sets it from Sonarr;
+            # only stamp now() if it's still missing).
+            if event_type == "Download" and not db_series.date_added:
                 db_series.date_added = datetime.utcnow()
                 if first_episode:
                     s = first_episode.get("seasonNumber", 0)
