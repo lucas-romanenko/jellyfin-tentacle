@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import or_
 from typing import Optional
 from models.database import get_db, get_setting, Movie, Series, ListItem, DownloadRequest, TentacleUser
-from routers.auth import get_user_from_request, require_internal_or_admin
+from routers.auth import get_user_from_request
 from services.logstream import library_event_generator, emit_library_event
 from services.tmdb import TMDBService
 
@@ -374,7 +374,7 @@ def _cleanup_playlists_all_users(tmdb_id: int, media_type: str, jellyfin_item_id
         cleanup_db.close()
 
 
-@router.delete("/item/{media_type}/{tmdb_id}", dependencies=[Depends(require_internal_or_admin)])
+@router.delete("/item/{media_type}/{tmdb_id}")
 def delete_library_item(
     media_type: str,
     tmdb_id: int,
@@ -383,9 +383,11 @@ def delete_library_item(
 ):
     """Lightweight: remove from Tentacle DB + playlists only (Jellyfin item already gone).
 
-    Used by the C# plugin event handler when items are deleted through Jellyfin's native UI.
-    Authenticated by the shared internal secret (plugin) or an admin session, so an
-    anonymous caller cannot mass-delete DB records + playlist entries by tmdb_id.
+    Called by the C# plugin's ItemRemoved handler (a server-side hosted service with no
+    user context) when items are deleted through Jellyfin's native UI. Left unauthenticated
+    to keep the plugin zero-config; it's self-healing if abused — the Jellyfin item still
+    exists, so the next Radarr/Sonarr/VOD scan re-creates the DB record and the nightly
+    orphan sweep reconciles anything stale. Keep the backend on the internal network.
     """
     if media_type not in ("movie", "series"):
         raise HTTPException(400, "Invalid media type")

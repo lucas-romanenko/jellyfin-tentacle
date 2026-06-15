@@ -17,12 +17,6 @@
                                placeholder="http://192.168.1.100:8888" />
                         <div class="fieldDescription">The URL where your Tentacle dashboard is running. The plugin uses this to fetch home screen layout and playlist data.</div>
                     </div>
-                    <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="txtTentacleSecret">Tentacle Secret</label>
-                        <input id="txtTentacleSecret" type="text" is="emby-input"
-                               placeholder="" />
-                        <div class="fieldDescription">Shared secret copied from the Tentacle dashboard. Used to authenticate the plugin's server-to-server calls (native-delete cleanup, API key fetch). Leave blank only if your Tentacle backend does not require it.</div>
-                    </div>
                 </div>
 
                 <div class="verticalSection" style="margin-top:1em;">
@@ -56,14 +50,12 @@
                 Dashboard.showLoadingMsg();
                 ApiClient.getPluginConfiguration(PLUGIN_ID).then(function (config) {
                     document.querySelector('#txtTentacleUrl').value = config.TentacleUrl || '';
-                    document.querySelector('#txtTentacleSecret').value = config.TentacleSecret || '';
                     Dashboard.hideLoadingMsg();
                 });
             });
 
             function TentacleSave() {
                 var url = document.querySelector('#txtTentacleUrl').value.trim();
-                var secret = document.querySelector('#txtTentacleSecret').value.trim();
                 var msgEl = document.querySelector('#saveMsg');
                 msgEl.style.display = 'block';
                 msgEl.style.color = '#aaa';
@@ -71,7 +63,6 @@
 
                 ApiClient.getPluginConfiguration(PLUGIN_ID).then(function (config) {
                     config.TentacleUrl = url;
-                    config.TentacleSecret = secret;
                     return ApiClient.updatePluginConfiguration(PLUGIN_ID, config);
                 }).then(function (result) {
                     msgEl.style.color = '#4caf50';

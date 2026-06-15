@@ -118,13 +118,7 @@ public class LibraryDeleteHandler : IHostedService, IDisposable
                 try
                 {
                     var url = $"{tentacleUrl.TrimEnd('/')}/api/library/item/{mediaType}/{tmdbId}";
-                    using var request = new HttpRequestMessage(HttpMethod.Delete, url);
-                    var secret = Plugin.Instance?.Configuration?.TentacleSecret;
-                    if (!string.IsNullOrEmpty(secret))
-                    {
-                        request.Headers.Add("X-Tentacle-Secret", secret);
-                    }
-                    var response = await _httpClient.SendAsync(request).ConfigureAwait(false);
+                    var response = await _httpClient.DeleteAsync(url).ConfigureAwait(false);
 
                     if (response.IsSuccessStatusCode)
                     {

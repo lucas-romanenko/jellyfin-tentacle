@@ -260,7 +260,7 @@ public class TentacleTmdbController : ControllerBase
             var client = _httpClientFactory.CreateClient();
             client.Timeout = TimeSpan.FromSeconds(10);
 
-            var response = await PluginKeysClient.GetSecuredStringAsync(client, $"{tentacleUrl}/api/settings/plugin-keys");
+            var response = await PluginKeysClient.GetSecuredStringAsync(client, $"{tentacleUrl}/api/settings/plugin-keys", HttpContext.Request);
             using var doc = JsonDocument.Parse(response);
 
             // Try bearer token first (v4), then API key (v3)
