@@ -428,6 +428,36 @@ class TMDBService:
         self._cache_set(cache_key, "")
         return None
 
+    def find_by_tvdb_id(self, tvdb_id: int) -> Optional[int]:
+        """Resolve a TheTVDB id to its TMDB id via /find. Returns the TMDB id or None.
+
+        Sonarr is TheTVDB-native, so brand-new shows often have a tvdbId before TMDB
+        lists them. Once TMDB catches up, this exact cross-reference recovers the TMDB
+        id so the show picks up metadata — more reliable than a fuzzy title search.
+        """
+        if not self.enabled or not tvdb_id:
+            return None
+
+        cache_key = f"tvdb_to_tmdb:{tvdb_id}"
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            try:
+                return int(cached) if cached else None
+            except (ValueError, TypeError):
+                return None
+
+        data = self._request(f"find/{tvdb_id}", {"external_source": "tvdb_id"})
+        if data:
+            for key in ("tv_results", "movie_results"):
+                results = data.get(key, [])
+                if results and results[0].get("id"):
+                    tmdb_id = results[0]["id"]
+                    self._cache_set(cache_key, str(tmdb_id))
+                    return tmdb_id
+
+        self._cache_set(cache_key, "")
+        return None
+
     # ── Trending / Discover ──────────────────────────────────────────────
 
     def get_trending(self, media_type: str = "movie", pages: int = 5) -> list:

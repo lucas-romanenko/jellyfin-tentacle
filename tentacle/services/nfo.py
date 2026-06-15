@@ -143,6 +143,12 @@ def write_series_nfo(
         if metadata.get("tmdb_id"):
             lines.append(f'  <tmdbid>{metadata["tmdb_id"]}</tmdbid>')
 
+        if metadata.get("tvdb_id"):
+            # Preserve the TheTVDB id so Jellyfin keeps the cross-reference (and a
+            # TheTVDB metadata plugin, if installed, can use it).
+            lines.append(f'  <tvdbid>{metadata["tvdb_id"]}</tvdbid>')
+            lines.append(f'  <uniqueid type="tvdb">{metadata["tvdb_id"]}</uniqueid>')
+
         if metadata.get("rating"):
             lines.append(f'  <rating>{metadata["rating"]}</rating>')
             lines.append(f'  <votes>{metadata.get("vote_count", 0)}</votes>')

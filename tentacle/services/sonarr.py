@@ -394,21 +394,35 @@ def scan_sonarr_library(db: Session) -> dict:
         if tid:
             sonarr_monitor_map[tid] = s.get("monitorNewItems", "none") == "all"
 
+    # Map resolved tmdb_id -> Sonarr tvdbId so the NFO writer can include <tvdbid>.
+    series_tvdb_by_tmdb: dict = {}
+
     for show in downloaded:
         tmdb_id = show.get("tmdbId") or 0
         title = show.get("title", "")
         year = str(show.get("year", "")) if show.get("year") else None
         series_path = show.get("path", "")
 
-        # If no TMDB ID from Sonarr, try to look it up via TMDB
-        if not tmdb_id and tmdb and title:
-            details = tmdb.search_series(title, year)
-            if details:
-                tmdb_id = details.get("tmdb_id", 0)
+        # If no TMDB ID from Sonarr, resolve it. Prefer the exact TheTVDB->TMDB
+        # cross-reference (Sonarr is TVDB-native, so tvdbId is always present), then
+        # fall back to a fuzzy title search. This recovers TVDB-first shows that TMDB
+        # only listed later — otherwise they sit in the library with no metadata.
+        if not tmdb_id and tmdb:
+            sonarr_tvdb_id = show.get("tvdbId") or 0
+            if sonarr_tvdb_id:
+                tmdb_id = tmdb.find_by_tvdb_id(sonarr_tvdb_id) or 0
+            if not tmdb_id and title:
+                details = tmdb.search_series(title, year)
+                if details:
+                    tmdb_id = details.get("tmdb_id", 0)
 
         if not tmdb_id:
-            logger.debug(f"Sonarr: skipping '{title}' — no TMDB ID")
+            logger.debug(f"Sonarr: skipping '{title}' — no TMDB ID (tvdb:{show.get('tvdbId')})")
             continue
+
+        # Remember the TVDB id for this resolved series (for <tvdbid> in the NFO).
+        if show.get("tvdbId"):
+            series_tvdb_by_tmdb[tmdb_id] = show.get("tvdbId")
 
         existing = all_series_by_tmdb.get(tmdb_id)
         details = None
@@ -622,6 +636,7 @@ def scan_sonarr_library(db: Session) -> dict:
             nfo_metadata = {
                 "title": db_series.title,
                 "tmdb_id": tmdb_id,
+                "tvdb_id": series_tvdb_by_tmdb.get(tmdb_id),
                 "year": db_series.year,
                 "overview": db_series.overview,
                 "rating": db_series.rating,
