@@ -1,7 +1,6 @@
 using System;
 using System.Linq;
 using Jellyfin.Plugin.Tentacle.HomeScreen;
-using Jellyfin.Plugin.Tentacle.Playlists;
 using MediaBrowser.Controller.Session;
 using MediaBrowser.Model.Session;
 using Microsoft.AspNetCore.Authorization;
@@ -12,35 +11,32 @@ namespace Jellyfin.Plugin.Tentacle.Api;
 
 /// <summary>
 /// API controller for Tentacle plugin.
-/// POST /Tentacle/Refresh is the main webhook — triggers the full pipeline:
-///   1. Refresh all SmartList playlists
-///   2. Clear home config cache
-///   3. Clear item cache
-///   4. Broadcast WebSocket event to all connected clients
+/// POST /Tentacle/Refresh is the main webhook — triggers:
+///   1. Clear home config cache
+///   2. Clear item / discover / ratings caches
+///   3. Broadcast WebSocket event to all connected clients
+/// (Playlists are managed by the Tentacle backend via the Jellyfin API, not here.)
 /// </summary>
 [ApiController]
 [Route("[controller]")]
 public class TentacleController : ControllerBase
 {
     private readonly HomeScreenManager _homeScreenManager;
-    private readonly PlaylistManager _playlistManager;
     private readonly ISessionManager _sessionManager;
     private readonly ILogger<TentacleController> _logger;
 
     public TentacleController(
         HomeScreenManager homeScreenManager,
-        PlaylistManager playlistManager,
         ISessionManager sessionManager,
         ILogger<TentacleController> logger)
     {
         _homeScreenManager = homeScreenManager;
-        _playlistManager = playlistManager;
         _sessionManager = sessionManager;
         _logger = logger;
     }
 
     /// <summary>
-    /// Full refresh: refreshes playlists, clears caches.
+    /// Full refresh: clears caches and broadcasts a library-changed event.
     /// Called by Tentacle server after every sync.
     /// Requires Jellyfin API key auth (X-Emby-Token header).
     /// </summary>
@@ -50,23 +46,19 @@ public class TentacleController : ControllerBase
     {
         _logger.LogInformation("Tentacle refresh triggered — full pipeline starting");
 
-        // Step 1: Refresh all SmartList playlists
-        int playlistCount = 0;
-        try
-        {
-            playlistCount = await _playlistManager.RefreshAllPlaylists();
-            _logger.LogInformation("Refreshed {Count} playlists", playlistCount);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Playlist refresh failed");
-        }
+        // Step 1: (Removed) Legacy disk-based playlist rebuild.
+        // Playlists are now managed per-user by the Tentacle backend via the Jellyfin API
+        // (IsPublic=false, owned by each user). The plugin's old PlaylistManager built
+        // admin-owned playlists from on-disk SmartList configs, which conflicted with the
+        // backend-driven playlists. This endpoint only clears caches and broadcasts now.
+        const int playlistCount = 0;
 
         // Step 2: Clear home config + discover + ratings caches
         _homeScreenManager.ClearCache();
         TentacleResultsHandler.ClearItemCache();
         TentacleDiscoverController.ClearCache();
         TentacleMdbListController.ClearSettingsCache();
+        Services.MdbListCacheService.Clear();
         TentacleTmdbController.ClearCache();
         TentacleConfigController.ClearCache();
 
@@ -124,7 +116,11 @@ public class TentacleController : ControllerBase
     [Authorize]
     public ActionResult GetHomeConfig([FromQuery] Guid userId)
     {
-        var config = _homeScreenManager.GetHomeConfig(userId);
+        var req = HttpContext.Request;
+        var apiKey = req.Query["api_key"].FirstOrDefault()
+                     ?? req.Headers["X-Emby-Token"].FirstOrDefault()
+                     ?? "";
+        var config = _homeScreenManager.GetHomeConfig(userId, apiKey);
         if (config == null)
         {
             return Ok(new { enabled = false, message = "No home config loaded" });

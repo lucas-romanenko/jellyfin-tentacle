@@ -8,6 +8,7 @@ Parses XMLTV from provider URLs and stores programs.
 import gzip
 import io
 import logging
+import re
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from typing import Optional
@@ -15,6 +16,30 @@ from typing import Optional
 import requests
 
 logger = logging.getLogger(__name__)
+
+# Hardening limits for untrusted (provider-supplied) XMLTV input.
+# stdlib ElementTree has no XXE / billion-laughs protection and defusedxml is
+# not available, so we reject DOCTYPE/ENTITY declarations outright and cap the
+# decompressed/parsed size.
+MAX_XMLTV_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB hard cap on (decompressed) XML
+_DOCTYPE_RE = re.compile(rb"<!(DOCTYPE|ENTITY)", re.IGNORECASE)
+
+
+class XMLTVSecurityError(ValueError):
+    """Raised when XMLTV input contains a disallowed DOCTYPE/ENTITY declaration."""
+
+
+def _reject_doctype_bytes(head: bytes):
+    """Raise if the XML prologue contains a DOCTYPE/ENTITY declaration.
+
+    DOCTYPE/ENTITY only appears in the document prologue (before the root
+    element), so scanning the leading bytes is sufficient and cheap.
+    """
+    if _DOCTYPE_RE.search(head):
+        raise XMLTVSecurityError(
+            "XMLTV input contains a disallowed DOCTYPE/ENTITY declaration "
+            "(possible XXE / entity-expansion attack)"
+        )
 
 
 def generate_xmltv(channels: list[dict], programs: list[dict]) -> str:
@@ -68,6 +93,8 @@ def parse_xmltv(content: str) -> tuple[list[dict], list[dict]]:
         programs: [{"channel_id": str, "title": str, "description": str|None,
                      "start": datetime, "stop": datetime, "category": str|None}]
     """
+    # Harden against XXE / entity-expansion: reject DOCTYPE/ENTITY in prologue.
+    _reject_doctype_bytes(content[:4096].encode("utf-8", errors="ignore"))
     root = ET.fromstring(content)
     channels = []
     programs = []
@@ -163,36 +190,72 @@ def stream_parse_xmltv(
         resp.raise_for_status()
         resp.raw.decode_content = True
 
-        total_bytes = 0
-        with open(cache_path, "wb") as f:
-            for chunk in resp.iter_content(chunk_size=65536):
-                if chunk:
-                    f.write(chunk)
-                    total_bytes += len(chunk)
-                    if total_bytes % (1024 * 1024) < 65536:  # ~every 1MB
-                        mb = total_bytes / (1024 * 1024)
-                        logger.info(f"[XMLTV] Downloaded {mb:.1f}MB...")
-                        if on_progress:
-                            on_progress(5 + min(25, int(mb)), f"Downloading... {mb:.1f}MB")
+        # Download to a temp file first so an interrupted download never
+        # poisons the 8h cache (M16). Only os.replace() into the final path
+        # once the download + decompress + validation all succeed.
+        tmp_path = cache_path + ".tmp"
+        try:
+            total_bytes = 0
+            with open(tmp_path, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=65536):
+                    if chunk:
+                        f.write(chunk)
+                        total_bytes += len(chunk)
+                        if total_bytes > MAX_XMLTV_BYTES:
+                            raise XMLTVSecurityError(
+                                f"XMLTV download exceeded {MAX_XMLTV_BYTES} bytes — aborting"
+                            )
+                        if total_bytes % (1024 * 1024) < 65536:  # ~every 1MB
+                            mb = total_bytes / (1024 * 1024)
+                            logger.info(f"[XMLTV] Downloaded {mb:.1f}MB...")
+                            if on_progress:
+                                on_progress(5 + min(25, int(mb)), f"Downloading... {mb:.1f}MB")
 
-        # Decompress gzip if needed
-        with open(cache_path, "rb") as f:
-            magic = f.read(2)
-        if magic == b'\x1f\x8b':
-            logger.info("[XMLTV] Decompressing gzipped XMLTV...")
-            if on_progress:
-                on_progress(28, "Decompressing...")
-            with open(cache_path, "rb") as f:
-                raw = gzip.decompress(f.read())
-            with open(cache_path, "wb") as f:
-                f.write(raw)
-            del raw
+            # Decompress gzip if needed — stream-decompress in chunks with a
+            # size cap so a malicious/huge payload can't exhaust memory (M15).
+            with open(tmp_path, "rb") as f:
+                magic = f.read(2)
+            if magic == b'\x1f\x8b':
+                logger.info("[XMLTV] Decompressing gzipped XMLTV...")
+                if on_progress:
+                    on_progress(28, "Decompressing...")
+                decompressed_tmp = cache_path + ".dec.tmp"
+                try:
+                    written = 0
+                    with gzip.open(tmp_path, "rb") as gz, open(decompressed_tmp, "wb") as out:
+                        while True:
+                            block = gz.read(1024 * 1024)
+                            if not block:
+                                break
+                            written += len(block)
+                            if written > MAX_XMLTV_BYTES:
+                                raise XMLTVSecurityError(
+                                    f"Decompressed XMLTV exceeded {MAX_XMLTV_BYTES} bytes — aborting"
+                                )
+                            out.write(block)
+                    os.replace(decompressed_tmp, tmp_path)
+                finally:
+                    if os.path.exists(decompressed_tmp):
+                        os.remove(decompressed_tmp)
 
-        size_mb = os.path.getsize(cache_path) / (1024 * 1024)
-        logger.info(f"[XMLTV] Saved to cache: {size_mb:.1f}MB")
+            # Validate prologue: reject DOCTYPE/ENTITY before promoting to cache (M3).
+            with open(tmp_path, "rb") as f:
+                _reject_doctype_bytes(f.read(4096))
+
+            os.replace(tmp_path, cache_path)
+            size_mb = os.path.getsize(cache_path) / (1024 * 1024)
+            logger.info(f"[XMLTV] Saved to cache: {size_mb:.1f}MB")
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
 
     if on_progress:
         on_progress(30, "Parsing guide data...")
+
+    # Validate the (possibly cached) file before parsing — guards against a
+    # cache written by an older build or a DOCTYPE/ENTITY-bearing payload (M3).
+    with open(cache_path, "rb") as f:
+        _reject_doctype_bytes(f.read(4096))
 
     # Stream-parse from cached file — only keep matching channels
     programs = []
@@ -258,14 +321,34 @@ def download_xmltv(
         if chunk:
             chunks.append(chunk)
             total += len(chunk)
+            if total > MAX_XMLTV_BYTES:
+                raise XMLTVSecurityError(
+                    f"XMLTV download exceeded {MAX_XMLTV_BYTES} bytes — aborting"
+                )
 
     content = b"".join(chunks)
     logger.info(f"Downloaded XMLTV: {total // 1024}KB")
 
     if content[:2] == b'\x1f\x8b':
         logger.info("Decompressing gzipped XMLTV...")
-        content = gzip.decompress(content)
+        # Stream-decompress with a size cap so a small gzip can't expand into
+        # an unbounded payload (billion-laughs-style amplification).
+        decompressed = io.BytesIO()
+        with gzip.GzipFile(fileobj=io.BytesIO(content)) as gz:
+            while True:
+                block = gz.read(1024 * 1024)
+                if not block:
+                    break
+                if decompressed.tell() + len(block) > MAX_XMLTV_BYTES:
+                    raise XMLTVSecurityError(
+                        f"Decompressed XMLTV exceeded {MAX_XMLTV_BYTES} bytes — aborting"
+                    )
+                decompressed.write(block)
+        content = decompressed.getvalue()
         logger.info(f"Decompressed XMLTV: {len(content) // 1024}KB")
+
+    # Harden against XXE / entity-expansion: reject DOCTYPE/ENTITY in prologue.
+    _reject_doctype_bytes(content[:4096])
 
     for encoding in ("utf-8", "latin-1", "iso-8859-1"):
         try:

@@ -177,19 +177,20 @@ def trigger_sync(body: SyncRequest, db: Session = Depends(get_db)):
     if not provider.active:
         raise HTTPException(400, "Provider is not active")
 
-    # Check both in-memory and DB for running sync
-    if body.provider_id in _running_syncs:
-        raise HTTPException(400, "A sync is already running for this provider")
-    db_running = db.query(SyncRun).filter(
-        SyncRun.provider_id == body.provider_id,
-        SyncRun.status == "running"
-    ).first()
-    if db_running:
-        raise HTTPException(400, "A sync is already running for this provider")
-
-    # TMDB always available (built-in token as fallback)
-
-    _running_syncs[body.provider_id] = True
+    # Check both in-memory and DB for running sync. Atomically check-and-set the
+    # in-memory flag under _sync_lock so two concurrent requests (or a request
+    # racing the nightly scheduler) can't both pass the check and start a sync.
+    with _sync_lock:
+        if body.provider_id in _running_syncs:
+            raise HTTPException(400, "A sync is already running for this provider")
+        db_running = db.query(SyncRun).filter(
+            SyncRun.provider_id == body.provider_id,
+            SyncRun.status == "running"
+        ).first()
+        if db_running:
+            raise HTTPException(400, "A sync is already running for this provider")
+        # TMDB always available (built-in token as fallback)
+        _running_syncs[body.provider_id] = True
 
     thread = threading.Thread(
         target=_run_sync_background,

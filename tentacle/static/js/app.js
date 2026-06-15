@@ -617,7 +617,7 @@ function confirmDeleteStaleFiles() {
 async function executeDeleteStaleFiles() {
   document.getElementById('stale-confirm-modal').style.display = 'none';
   try {
-    const res = await api('/api/settings/stale-files/delete', { method: 'POST' });
+    const res = await api('/api/settings/stale-files/delete', { method: 'POST', body: JSON.stringify({ confirm: true }) });
     document.getElementById('stale-files-banner').style.display = 'none';
     toast(`Deleted ${res.deleted_strm} .strm and ${res.deleted_nfo} .nfo files`);
   } catch (e) {

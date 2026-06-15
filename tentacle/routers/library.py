@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import or_
 from typing import Optional
 from models.database import get_db, get_setting, Movie, Series, ListItem, DownloadRequest, TentacleUser
-from routers.auth import get_user_from_request
+from routers.auth import get_user_from_request, require_internal_or_admin
 from services.logstream import library_event_generator, emit_library_event
 from services.tmdb import TMDBService
 
@@ -374,7 +374,7 @@ def _cleanup_playlists_all_users(tmdb_id: int, media_type: str, jellyfin_item_id
         cleanup_db.close()
 
 
-@router.delete("/item/{media_type}/{tmdb_id}")
+@router.delete("/item/{media_type}/{tmdb_id}", dependencies=[Depends(require_internal_or_admin)])
 def delete_library_item(
     media_type: str,
     tmdb_id: int,
@@ -384,6 +384,8 @@ def delete_library_item(
     """Lightweight: remove from Tentacle DB + playlists only (Jellyfin item already gone).
 
     Used by the C# plugin event handler when items are deleted through Jellyfin's native UI.
+    Authenticated by the shared internal secret (plugin) or an admin session, so an
+    anonymous caller cannot mass-delete DB records + playlist entries by tmdb_id.
     """
     if media_type not in ("movie", "series"):
         raise HTTPException(400, "Invalid media type")
@@ -470,23 +472,46 @@ def delete_download(
             jf_item = jf.search_by_tmdb_id(tmdb_id, media_type=jf_type)
             jf_item_id = jf_item["Id"] if jf_item else None
 
-    # Delete from Radarr/Sonarr (removes files from disk)
+    # Delete from Radarr/Sonarr (removes files from disk). Track whether the
+    # backend that owns the files was attempted and whether it actually succeeded
+    # so we don't claim success — and don't drop the DB record — when the disk
+    # files may still be present (which would orphan them outside Tentacle).
     radarr_deleted = False
     sonarr_deleted = False
-    if media_type == "movie":
-        radarr_url = get_setting(db, "radarr_url", "")
-        radarr_key = get_setting(db, "radarr_api_key", "")
-        if radarr_url and radarr_key:
-            from services.radarr import RadarrService
-            radarr = RadarrService(radarr_url, radarr_key)
-            radarr_deleted = radarr.delete_movie(tmdb_id, delete_files=True)
-    else:
-        sonarr_url = get_setting(db, "sonarr_url", "")
-        sonarr_key = get_setting(db, "sonarr_api_key", "")
-        if sonarr_url and sonarr_key:
-            from services.sonarr import SonarrService
-            sonarr = SonarrService(sonarr_url, sonarr_key)
-            sonarr_deleted = sonarr.delete_series(tmdb_id, delete_files=True)
+    arr_attempted = False
+    arr_ok = True
+    try:
+        if media_type == "movie":
+            radarr_url = get_setting(db, "radarr_url", "")
+            radarr_key = get_setting(db, "radarr_api_key", "")
+            if radarr_url and radarr_key:
+                arr_attempted = True
+                from services.radarr import RadarrService
+                radarr = RadarrService(radarr_url, radarr_key)
+                radarr_deleted = radarr.delete_movie(tmdb_id, delete_files=True)
+                arr_ok = bool(radarr_deleted)
+        else:
+            sonarr_url = get_setting(db, "sonarr_url", "")
+            sonarr_key = get_setting(db, "sonarr_api_key", "")
+            if sonarr_url and sonarr_key:
+                arr_attempted = True
+                from services.sonarr import SonarrService
+                sonarr = SonarrService(sonarr_url, sonarr_key)
+                sonarr_deleted = sonarr.delete_series(tmdb_id, delete_files=True)
+                arr_ok = bool(sonarr_deleted)
+    except Exception as e:
+        arr_ok = False
+        logger.error(f"Delete-download tmdb:{tmdb_id} ({media_type}): Radarr/Sonarr delete error: {e}")
+
+    # If the *arr backend was configured and attempted but failed, the files are
+    # still on disk. Abort: keep the Tentacle DB record (and playlists) so the
+    # user can retry / the nightly orphan sweep can reconcile, and surface 502.
+    if arr_attempted and not arr_ok:
+        logger.warning(
+            f"Delete-download tmdb:{tmdb_id} ({media_type}): backend delete failed — "
+            f"keeping DB record for retry (user={user.display_name})"
+        )
+        raise HTTPException(502, f"Failed to delete '{title}' from {'Radarr' if media_type == 'movie' else 'Sonarr'} — files may still exist")
 
     # Delete from Jellyfin
     jf_deleted = False
@@ -519,7 +544,16 @@ def delete_download(
         f"jellyfin={jf_deleted}, user={user.display_name}"
     )
 
-    return {"success": True, "deleted": True, "title": title}
+    # jf_deleted may be False if the item wasn't found in Jellyfin (already gone) —
+    # that's not a failure for the caller, but report it so clients can react.
+    return {
+        "success": True,
+        "deleted": True,
+        "title": title,
+        "radarr_deleted": radarr_deleted,
+        "sonarr_deleted": sonarr_deleted,
+        "jellyfin_deleted": jf_deleted,
+    }
 
 
 @router.get("/tmdb/{media_type}/{tmdb_id}")
@@ -583,8 +617,10 @@ class FollowBody(BaseModel):
 
 
 @router.post("/follow/{tmdb_id}")
-def toggle_follow(tmdb_id: int, body: FollowBody, db: Session = Depends(get_db)):
-    """Enable or disable following for new episodes on a series."""
+def toggle_follow(tmdb_id: int, body: FollowBody, db: Session = Depends(get_db),
+                  user: TentacleUser = Depends(get_user_from_request)):
+    """Enable or disable following for new episodes on a series. Requires auth
+    (dashboard cookie or the plugin-forwarded user token)."""
     from services.sonarr import SonarrService
 
     sonarr_url = get_setting(db, "sonarr_url")

@@ -6,7 +6,7 @@ Sonarr library scanning, webhooks, and NFO management
 import threading
 import logging
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from models.database import get_db, Series, ListItem, ListSubscription, DownloadRequest, get_setting, log_activity
@@ -14,10 +14,30 @@ from services.sonarr import scan_sonarr_library, SonarrService
 from services.nfo import update_nfo_tags, write_series_nfo
 from services.logstream import emit_library_event
 
-from routers.auth import require_admin
+from routers.auth import require_admin, _has_internal_secret
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/sonarr", tags=["sonarr"], dependencies=[Depends(require_admin)])
+
+
+def _check_webhook_auth(request: Request, db: Session) -> None:
+    """Opt-in webhook authentication (see routers/radarr.py for rationale).
+
+    If `webhook_secret` is configured, require a matching `?secret=` (or
+    X-Tentacle-Secret header); otherwise allow but log a one-line warning.
+    """
+    import hmac
+    secret = get_setting(db, "webhook_secret", "")
+    if not secret:
+        logger.warning(
+            "[Sonarr webhook] Received unauthenticated webhook — set a 'webhook_secret' "
+            "in settings and add ?secret=... to the webhook URL to reject forged events."
+        )
+        return
+    provided = request.headers.get("X-Tentacle-Secret") or request.query_params.get("secret") or ""
+    if not (provided and hmac.compare_digest(provided, secret)):
+        logger.warning("[Sonarr webhook] Rejected webhook with missing/invalid secret")
+        raise HTTPException(401, "Invalid or missing webhook secret")
 
 _scan_running = False
 
@@ -160,8 +180,9 @@ webhook_router = APIRouter(prefix="/api/sonarr", tags=["sonarr"])
 
 
 @webhook_router.post("/webhook")
-def sonarr_webhook(payload: dict, db: Session = Depends(get_db)):
+def sonarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db)):
     """Sonarr webhook — triggered on Download, SeriesAdd, SeriesDelete, EpisodeFileDelete events."""
+    _check_webhook_auth(request, db)
     event_type = payload.get("eventType", "unknown")
     logger.info(f"[Sonarr webhook] Received event: {event_type}")
     valid_events = ("Download", "SeriesAdd", "SeriesDelete", "EpisodeFileDelete", "Test")
@@ -193,14 +214,19 @@ def sonarr_webhook(payload: dict, db: Session = Depends(get_db)):
     # SeriesDelete — remove from DB or clear sonarr state
     if event_type == "SeriesDelete":
         if tmdb_id:
-            # Clear following state on any matching series (hybrid VOD+Sonarr)
-            hybrid = db.query(Series).filter(Series.tmdb_id == tmdb_id, Series.source != "sonarr").first()
-            if hybrid:
-                hybrid.sonarr_monitored = False
-                hybrid.sonarr_path = None
-            deleted = db.query(Series).filter(Series.tmdb_id == tmdb_id, Series.source == "sonarr").delete()
-            db.query(DownloadRequest).filter(DownloadRequest.tmdb_id == tmdb_id, DownloadRequest.media_type == "series").delete()
-            db.commit()
+            try:
+                # Clear following state on any matching series (hybrid VOD+Sonarr)
+                hybrid = db.query(Series).filter(Series.tmdb_id == tmdb_id, Series.source != "sonarr").first()
+                if hybrid:
+                    hybrid.sonarr_monitored = False
+                    hybrid.sonarr_path = None
+                deleted = db.query(Series).filter(Series.tmdb_id == tmdb_id, Series.source == "sonarr").delete()
+                db.query(DownloadRequest).filter(DownloadRequest.tmdb_id == tmdb_id, DownloadRequest.media_type == "series").delete()
+                db.commit()
+            except Exception as e:
+                db.rollback()
+                logger.error(f"[Sonarr webhook] SeriesDelete DB cleanup failed for tmdb:{tmdb_id}: {e}")
+                raise HTTPException(500, "Failed to process delete event")
             if deleted:
                 emit_library_event("series_removed", {"tmdb_id": tmdb_id, "title": title, "media_type": "series"})
                 log_activity(db, "sonarr_remove", f"Removed '{title}' from Sonarr library")

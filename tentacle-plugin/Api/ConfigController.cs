@@ -1,4 +1,6 @@
 using System.Text.Json;
+using Jellyfin.Plugin.Tentacle.Services;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 
@@ -17,7 +19,11 @@ public class TentacleConfigController : ControllerBase
     private readonly ILogger<TentacleConfigController> _logger;
 
     private static readonly TimeSpan CacheDuration = TimeSpan.FromMinutes(5);
-    private static string? _cachedConfig;
+
+    // _cachedConfig is volatile so the unlocked fast-path read in GetConfig sees the
+    // latest write; a stale _configCacheExpiry read is benign (the locked
+    // double-check below corrects it).
+    private static volatile string? _cachedConfig;
     private static DateTime _configCacheExpiry = DateTime.MinValue;
     private static readonly SemaphoreSlim _cacheLock = new(1, 1);
 
@@ -44,6 +50,7 @@ public class TentacleConfigController : ControllerBase
     /// Keys are masked in the response for security.
     /// </summary>
     [HttpGet]
+    [Authorize]
     public async Task<ActionResult> GetConfig()
     {
         if (_cachedConfig != null && DateTime.UtcNow < _configCacheExpiry)
@@ -75,7 +82,7 @@ public class TentacleConfigController : ControllerBase
 
             try
             {
-                var response = await client.GetStringAsync($"{tentacleUrl}/api/settings/plugin-keys");
+                var response = await PluginKeysClient.GetSecuredStringAsync(client, $"{tentacleUrl}/api/settings/plugin-keys");
                 using var doc = JsonDocument.Parse(response);
 
                 if (doc.RootElement.TryGetProperty("mdblist_api_key", out var mdbElement))

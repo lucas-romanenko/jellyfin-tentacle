@@ -101,6 +101,10 @@ def sync_playlist_artwork(db: Session) -> dict:
             continue
 
         if upload_playlist_artwork(jellyfin_url, jellyfin_key, playlist_id, image_path):
+            # Bound the in-memory upload cache so it can't grow without limit over
+            # a long-running container (one entry per playlist:image pair).
+            if len(_uploaded_artwork) > 2000:
+                _uploaded_artwork.clear()
             _uploaded_artwork[cache_key] = True
             logger.info(f"Uploaded artwork for playlist: {name} ({image_path})")
             updated += 1

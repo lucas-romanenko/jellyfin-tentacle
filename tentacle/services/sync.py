@@ -30,6 +30,13 @@ MIN_DISK_SPACE_MB = 500
 WARN_DISK_SPACE_MB = 2000
 DISK_CHECK_INTERVAL = 50  # Check every N items
 
+# Sentinel offset for synthetic (no-TMDB-match) negative tmdb_ids.
+# Each provider gets a 1-billion-wide block so a large Xtream stream_id can
+# never collide with another provider's range (modern stream_ids can exceed
+# the old 10M window). Keep this large enough that stream_id never overflows
+# into the next provider's block.
+NEGATIVE_ID_BLOCK = 1_000_000_000
+
 
 def check_disk_space(path: Path) -> int:
     """Check available disk space in MB. Returns available MB."""
@@ -159,6 +166,90 @@ def _merge_source_tag(tmdb_id: int, media_type: str, source_tag: str, provider_i
             pass  # NFO update is best-effort
 
 
+def _write_episode_strms(client: "XtreamClient", episodes: dict, show_dir: Path, folder_name: str) -> int:
+    """Write .strm files for any episodes that don't already exist on disk.
+
+    Returns the number of NEW episode files written. Safe to call on an
+    existing series to back-fill newly-added seasons/episodes (idempotent —
+    existing .strm files are left untouched).
+    """
+    ep_count = 0
+    for season_num, eps in episodes.items():
+        if isinstance(eps, list) and eps and isinstance(eps[0], list):
+            eps = eps[0]
+        if not isinstance(eps, list):
+            continue
+
+        try:
+            season_int = int(season_num)
+        except (TypeError, ValueError):
+            continue
+
+        season_dir = show_dir / f"Season {season_int:02d}"
+        season_dir.mkdir(parents=True, exist_ok=True)
+
+        for ep in eps:
+            if not isinstance(ep, dict):
+                continue
+            ep_id = ep.get("id")
+            ep_num = ep.get("episode_num", 0)
+            container = ep.get("container_extension", "mp4")
+            try:
+                ep_filename = f"{folder_name} S{season_int:02d}E{int(ep_num):02d}"
+            except (TypeError, ValueError):
+                continue
+            strm_file = season_dir / f"{ep_filename}.strm"
+            if not strm_file.exists():
+                strm_file.write_text(
+                    client.episode_stream_url(ep_id, container),
+                    encoding='utf-8'
+                )
+                ep_count += 1
+    return ep_count
+
+
+def _backfill_series_episodes(
+    client: "XtreamClient",
+    series: dict,
+    tmdb_id: int,
+    provider: Provider,
+    db: Session,
+) -> int:
+    """For an EXISTING VOD series owned by this provider, fetch series info and
+    write any newly-added season/episode .strm files. Returns count of new files.
+
+    No-ops for series not owned by this provider or without a known folder.
+    Best-effort: any provider/IO error is swallowed so a single bad series
+    doesn't break the category batch.
+    """
+    record = db.query(Series).filter(Series.tmdb_id == tmdb_id).first()
+    if not record or record.provider_id != provider.id:
+        return 0
+    show_dir_str = record.strm_path
+    if not show_dir_str:
+        return 0
+    show_dir = Path(show_dir_str)
+    if not show_dir.exists():
+        return 0
+
+    try:
+        series_info = client.get_series_info(series.get("series_id"))
+        episodes = series_info.get("episodes", {})
+        if isinstance(episodes, list):
+            episodes = {"1": episodes}
+        if not episodes:
+            return 0
+        folder_name = show_dir.name
+        new_eps = _write_episode_strms(client, episodes, show_dir, folder_name)
+        if new_eps:
+            record.date_updated = datetime.utcnow()
+            logger.info(f"[Sync] Back-filled {new_eps} new episode(s) for existing series '{record.title}'")
+        return new_eps
+    except Exception as e:
+        logger.debug(f"[Sync] Episode back-fill failed for tmdb_id={tmdb_id}: {e}")
+        return 0
+
+
 # ── Duplicate Detection ───────────────────────────────────────────────────
 
 def check_and_record_duplicate(
@@ -210,13 +301,77 @@ def check_and_record_duplicate(
     if existing.source == "radarr":
         return True
 
-    # If existing is from another provider, check priority
+    # If existing is from another provider, decide which wins by priority.
+    # tmdb_id is globally unique, so we must NEVER let the caller insert a
+    # competing row — that would raise an IntegrityError and lose the whole
+    # per-category batch. Either skip (existing wins) or update the existing
+    # row in place to point at the higher-priority provider (new wins).
     if existing.provider_id and existing.provider_id != provider.id:
         existing_provider = db.query(Provider).filter(Provider.id == existing.provider_id).first()
         if existing_provider and existing_provider.priority <= provider.priority:
             return True  # Existing provider has equal or higher priority, skip
 
+        # New provider is higher priority (lower number) — take over the
+        # existing row instead of inserting a duplicate tmdb_id.
+        existing.provider_id = provider.id
+        existing.source = source
+        existing.date_updated = datetime.utcnow()
+        return True
+
+    # Same provider (e.g. re-sync / appears in a second category of the same
+    # provider): the existing row already belongs to us — don't insert again.
+    if existing.provider_id == provider.id:
+        return True
+
     return False
+
+
+def _prune_removed_content(db: Session, provider: Provider, media_type: str, seen_ids: set) -> int:
+    """Delete DB rows (and their .strm/.nfo files) for content this provider
+    used to offer but didn't return during the latest successful sync.
+
+    Strictly scoped to rows owned by this provider. Returns count removed.
+    """
+    Model = Movie if media_type == "movie" else Series
+    stale = db.query(Model).filter(
+        Model.provider_id == provider.id,
+        Model.tmdb_id.notin_(seen_ids),
+    ).all()
+    if not stale:
+        return 0
+
+    removed = 0
+    for record in stale:
+        try:
+            if media_type == "movie":
+                # Movie strm_path points at the .strm file; remove the whole
+                # movie folder (strm + nfo + artwork) for a clean delete.
+                strm = record.strm_path
+                if strm:
+                    movie_dir = Path(strm).parent
+                    if movie_dir.exists() and movie_dir.is_dir():
+                        shutil.rmtree(movie_dir, ignore_errors=True)
+            else:
+                # Series strm_path points at the show directory.
+                show_dir = record.strm_path
+                if show_dir:
+                    show_path = Path(show_dir)
+                    if show_path.exists() and show_path.is_dir():
+                        shutil.rmtree(show_path, ignore_errors=True)
+        except Exception as e:
+            logger.warning(f"[Sync] Failed to remove files for stale {media_type} '{record.title}': {e}")
+
+        # Clean up any duplicate records referencing this content
+        db.query(Duplicate).filter(
+            Duplicate.tmdb_id == record.tmdb_id,
+            Duplicate.media_type == media_type,
+        ).delete(synchronize_session=False)
+
+        db.delete(record)
+        removed += 1
+
+    db.commit()
+    return removed
 
 
 # ── Main Sync Functions ────────────────────────────────────────────────────
@@ -270,8 +425,11 @@ def sync_provider(
         new_movies_feed = []
         new_series_feed = []
 
+        m_cleanup = None
+        s_cleanup = None
+
         if sync_type in ("full", "movies"):
-            m_stats, m_feed, m_cat_stats = _sync_movies(
+            m_stats, m_feed, m_cat_stats, m_cleanup = _sync_movies(
                 provider, client, tmdb, db,
                 vod_movies_path, recently_added_days,
                 progress_callback, cancel_check, require_tmdb
@@ -284,7 +442,7 @@ def sync_provider(
             category_stats.update(m_cat_stats)
 
         if sync_type in ("full", "series"):
-            s_stats, s_feed, s_cat_stats = _sync_series(
+            s_stats, s_feed, s_cat_stats, s_cleanup = _sync_series(
                 provider, client, tmdb, db,
                 vod_series_path, recently_added_days,
                 progress_callback, cancel_check, require_tmdb
@@ -295,6 +453,18 @@ def sync_provider(
             run.series_skipped = s_stats["skipped"]
             new_series_feed = s_feed
             category_stats.update(s_cat_stats)
+
+        # Prune content the provider has dropped upstream. Only when the sync
+        # fetched everything cleanly AND found at least some content (an empty
+        # seen set with fetch_ok almost certainly means a transient/empty
+        # response — never wipe the whole provider on that basis).
+        removed = 0
+        if m_cleanup and m_cleanup.get("fetch_ok") and m_cleanup.get("seen_ids"):
+            removed += _prune_removed_content(db, provider, "movie", m_cleanup["seen_ids"])
+        if s_cleanup and s_cleanup.get("fetch_ok") and s_cleanup.get("seen_ids"):
+            removed += _prune_removed_content(db, provider, "series", s_cleanup["seen_ids"])
+        if removed:
+            logger.info(f"Sync pruned {removed} item(s) removed upstream by provider {provider.name}")
 
         run.status = "completed"
         run.category_stats = category_stats
@@ -363,6 +533,13 @@ def _sync_movies(
 
     # Track TMDB IDs seen this run to dedupe across categories
     seen_tmdb_ids = set()
+    # Comprehensive set of every tmdb_id this provider still offers (new OR
+    # existing). Used after a successful run to delete rows for content the
+    # provider has dropped upstream.
+    seen_ids_all = set()
+    # True only if every whitelisted category was fetched successfully. If any
+    # fetch failed, the seen set is incomplete and we must NOT prune.
+    fetch_ok = True
 
     # Load existing TMDB IDs from this provider to avoid re-processing
     existing_provider_tmdb_ids = {
@@ -398,6 +575,7 @@ def _sync_movies(
             streams = client.get_vod_streams(cat.category_id)
         except Exception as e:
             logger.error(f"Failed to fetch streams for {cat.category_name}: {e}")
+            fetch_ok = False  # a failed fetch means our "seen" set is incomplete
             continue
 
         total_in_cat = len(streams)
@@ -478,6 +656,7 @@ def _sync_movies(
                 # Known title but not in batch — it's existing, merge tags
                 if known_id in existing_provider_tmdb_ids or known_id in seen_tmdb_ids:
                     _merge_source_tag(known_id, "movie", cat.source_tag, provider.id, db)
+                    seen_ids_all.add(known_id)
                     cat_existing += 1
                     stats["existing"] += 1
                     if item_idx % 10 == 0 or item_idx == total_in_cat:
@@ -494,7 +673,7 @@ def _sync_movies(
                 # No TMDB match but require_tmdb is off — use provider title
                 stream_id = int(stream.get("stream_id", 0))
                 metadata = {
-                    "tmdb_id": -(provider.id * 10_000_000 + stream_id),
+                    "tmdb_id": -(provider.id * NEGATIVE_ID_BLOCK + stream_id),
                     "title": clean_name,
                     "year": year,
                     "overview": None,
@@ -506,6 +685,7 @@ def _sync_movies(
                 }
 
             tmdb_id = metadata["tmdb_id"]
+            seen_ids_all.add(tmdb_id)
 
             # Skip if already seen this run or in library from this provider — merge tags
             if tmdb_id in seen_tmdb_ids or tmdb_id in existing_provider_tmdb_ids:
@@ -648,7 +828,7 @@ def _sync_movies(
         f"{stats['skipped']} skipped (no TMDB), {stats['failed']} failed"
     )
 
-    return stats, feed, category_stats
+    return stats, feed, category_stats, {"seen_ids": seen_ids_all, "fetch_ok": fetch_ok}
 
 
 def _sync_series(
@@ -677,6 +857,10 @@ def _sync_series(
     category_stats = {}
 
     seen_tmdb_ids = set()
+    # Comprehensive set of every tmdb_id this provider still offers (new OR
+    # existing), and whether all categories fetched cleanly — see _sync_movies.
+    seen_ids_all = set()
+    fetch_ok = True
     existing_provider_tmdb_ids = {
         s.tmdb_id for s in db.query(Series.tmdb_id).filter(
             Series.provider_id == provider.id
@@ -710,6 +894,7 @@ def _sync_series(
             series_list = client.get_series_list(cat.category_id)
         except Exception as e:
             logger.error(f"Failed to fetch series for {cat.category_name}: {e}")
+            fetch_ok = False  # a failed fetch means our "seen" set is incomplete
             continue
 
         total_in_cat = len(series_list)
@@ -783,6 +968,9 @@ def _sync_series(
             if not metadata and known_id:
                 if known_id in existing_provider_tmdb_ids or known_id in seen_tmdb_ids:
                     _merge_source_tag(known_id, "series", cat.source_tag, provider.id, db)
+                    seen_ids_all.add(known_id)
+                    # Existing VOD series — back-fill any new seasons/episodes
+                    _backfill_series_episodes(client, series, known_id, provider, db)
                     cat_existing += 1
                     stats["existing"] += 1
                     if item_idx % 10 == 0 or item_idx == total_in_cat:
@@ -799,7 +987,7 @@ def _sync_series(
                 # No TMDB match but require_tmdb is off — use provider title
                 series_id = int(series.get("series_id", 0))
                 metadata = {
-                    "tmdb_id": -(provider.id * 10_000_000 + series_id),
+                    "tmdb_id": -(provider.id * NEGATIVE_ID_BLOCK + series_id),
                     "title": clean_name,
                     "year": year,
                     "overview": None,
@@ -810,9 +998,12 @@ def _sync_series(
                 }
 
             tmdb_id = metadata["tmdb_id"]
+            seen_ids_all.add(tmdb_id)
 
             if tmdb_id in seen_tmdb_ids or tmdb_id in existing_provider_tmdb_ids:
                 _merge_source_tag(tmdb_id, "series", cat.source_tag, provider.id, db)
+                # Existing VOD series — back-fill any new seasons/episodes
+                _backfill_series_episodes(client, series, tmdb_id, provider, db)
                 cat_existing += 1
                 stats["existing"] += 1
                 if item_idx % 10 == 0 or item_idx == total_in_cat:
@@ -825,6 +1016,8 @@ def _sync_series(
             if db.query(Series).filter(Series.tmdb_id == tmdb_id).first():
                 existing_provider_tmdb_ids.add(tmdb_id)
                 _merge_source_tag(tmdb_id, "series", cat.source_tag, provider.id, db)
+                # Existing VOD series — back-fill any new seasons/episodes
+                _backfill_series_episodes(client, series, tmdb_id, provider, db)
                 cat_existing += 1
                 stats["existing"] += 1
                 if item_idx % 10 == 0 or item_idx == total_in_cat:
@@ -875,30 +1068,7 @@ def _sync_series(
                 write_series_nfo(nfo_file, metadata, tags)
 
                 # Write episode strm files
-                ep_count = 0
-                for season_num, eps in episodes.items():
-                    if isinstance(eps, list) and eps and isinstance(eps[0], list):
-                        eps = eps[0]
-                    if not isinstance(eps, list):
-                        continue
-
-                    season_dir = show_dir / f"Season {int(season_num):02d}"
-                    season_dir.mkdir(parents=True, exist_ok=True)
-
-                    for ep in eps:
-                        if not isinstance(ep, dict):
-                            continue
-                        ep_id = ep.get("id")
-                        ep_num = ep.get("episode_num", 0)
-                        container = ep.get("container_extension", "mp4")
-                        ep_filename = f"{folder_name} S{int(season_num):02d}E{int(ep_num):02d}"
-                        strm_file = season_dir / f"{ep_filename}.strm"
-                        if not strm_file.exists():
-                            strm_file.write_text(
-                                client.episode_stream_url(ep_id, container),
-                                encoding='utf-8'
-                            )
-                            ep_count += 1
+                ep_count = _write_episode_strms(client, episodes, show_dir, folder_name)
 
                 # Record in DB
                 series_record = Series(
@@ -978,4 +1148,4 @@ def _sync_series(
         f"{stats['skipped']} skipped, {stats['failed']} failed"
     )
 
-    return stats, feed, category_stats
+    return stats, feed, category_stats, {"seen_ids": seen_ids_all, "fetch_ok": fetch_ok}

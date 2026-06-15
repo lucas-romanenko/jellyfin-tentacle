@@ -58,25 +58,45 @@ def run_scheduled_sync():
                 logger.warning(f"Failed to refresh list '{lst.name}': {e}")
         db.commit()
 
-        from routers.sync import _running_syncs, _cancel_flags, _notify_sync_progress, _sync_progress
+        from routers.sync import _running_syncs, _cancel_flags, _notify_sync_progress, _sync_progress, _sync_lock
         import threading
         active_providers = db.query(Provider).filter(Provider.active == True).all()
         for provider in active_providers:
+            # Respect the same running-guard the manual sync endpoint uses, so the
+            # nightly run never starts a second concurrent sync for a provider a
+            # user (or a previous nightly job) is already syncing. Check-and-set
+            # atomically under _sync_lock to avoid a TOCTOU race.
+            with _sync_lock:
+                if provider.id in _running_syncs:
+                    logger.info(f"Scheduled sync skipping {provider.name} — sync already running")
+                    continue
+                _running_syncs[provider.id] = True
+            db_running = db.query(SyncRun).filter(
+                SyncRun.provider_id == provider.id,
+                SyncRun.status == "running",
+            ).first()
+            if db_running:
+                logger.info(f"Scheduled sync skipping {provider.name} — sync already running (DB)")
+                _running_syncs.pop(provider.id, None)
+                continue
+
             logger.info(f"Scheduled sync starting for {provider.name}")
             cancel_event = threading.Event()
-            _running_syncs[provider.id] = True
             _cancel_flags[provider.id] = cancel_event
 
-            def progress_cb(phase, category, stats, **kwargs):
-                _notify_sync_progress(provider.id, phase, category, stats)
+            def progress_cb(phase, category, stats, _pid=provider.id, **kwargs):
+                _notify_sync_progress(_pid, phase, category, stats)
 
-            def cancel_check():
-                return cancel_event.is_set()
+            def cancel_check(_ev=cancel_event):
+                return _ev.is_set()
 
             try:
                 run = sync_provider(provider, "full", db, progress_callback=progress_cb, cancel_check=cancel_check)
                 phase = "complete" if run.status == "completed" else "cancelled" if run.status == "cancelled" else "error"
                 _notify_sync_progress(provider.id, phase, "", {})
+            except Exception as e:
+                logger.error(f"Scheduled sync failed for {provider.name}: {e}")
+                log_activity(db, "sync", f"Scheduled sync failed for {provider.name}: {e}")
             finally:
                 _running_syncs.pop(provider.id, None)
                 _cancel_flags.pop(provider.id, None)
@@ -247,7 +267,12 @@ def run_scheduled_sync():
 
         logger.info("Scheduled sync complete")
     except Exception as e:
-        logger.error(f"Scheduled sync failed: {e}")
+        logger.error(f"Scheduled sync failed: {e}", exc_info=True)
+        # Surface the failure in the activity feed so it isn't silently swallowed.
+        try:
+            log_activity(db, "sync", f"Scheduled nightly sync failed: {e}")
+        except Exception:
+            pass
     finally:
         db.close()
 
@@ -334,9 +359,43 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+def _build_cors_origins() -> list[str]:
+    """Allowlist of browser origins permitted to call the API.
+
+    Restricts CORS from the previous wildcard to: the configured Jellyfin origin
+    (the web plugin runs inside Jellyfin's page), the dashboard's own external
+    host if set, and localhost for local dev. The Jellyfin plugin and Android TV
+    app call the API server-to-server (no browser Origin / CORS preflight), so
+    they are unaffected. allow_credentials stays False, so this is purely about
+    which web origins' JS may read responses.
+    """
+    from urllib.parse import urlparse
+    origins: set[str] = {
+        "http://localhost:8888",
+        "http://127.0.0.1:8888",
+    }
+    try:
+        db = SessionLocal()
+        try:
+            from models.database import get_setting
+            for key in ("jellyfin_url", "external_url", "hdhr_base_url"):
+                val = (get_setting(db, key, "") or "").strip().rstrip("/")
+                if not val:
+                    continue
+                p = urlparse(val)
+                if p.scheme and p.netloc:
+                    origins.add(f"{p.scheme}://{p.netloc}")
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"Could not build CORS allowlist from settings: {e}")
+    return sorted(origins)
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_build_cors_origins(),
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -399,8 +458,11 @@ async def serve_frontend(full_path: str):
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    logger.error(f"Unhandled exception: {exc}")
+    # Log the full detail server-side, but return a generic message to the client
+    # so internal paths, library/version info, or secrets in exception text aren't
+    # leaked to callers.
+    logger.error(f"Unhandled exception on {request.method} {request.url.path}: {exc}", exc_info=True)
     return JSONResponse(
         status_code=500,
-        content={"detail": str(exc)}
+        content={"detail": "Internal server error"}
     )

@@ -4,6 +4,7 @@ Creates and syncs per-user Jellyfin SmartList config files to disk.
 Also generates per-user home configs for the Tentacle Jellyfin plugin.
 """
 
+import os
 import uuid
 import json
 import shutil
@@ -19,6 +20,21 @@ logger = logging.getLogger(__name__)
 
 # Prevent concurrent playlist refreshes (webhooks can fire simultaneously)
 _playlist_refresh_lock = threading.Lock()
+
+# Serialize home-config read-modify-write across the scheduler thread and HTTP
+# handlers so concurrent edits can't lose each other's changes or tear the
+# file. A single global lock is simplest and safe — home-config writes are
+# infrequent and fast. Shared with routers/smartlists.py.
+home_config_lock = threading.RLock()
+
+
+def _atomic_write_json(path: Path, data: dict):
+    """Write JSON to a temp file in the same dir, then os.replace() it into
+    place so readers never observe a half-written (torn) file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
 
 # In-memory playlist version counter — bumped whenever playlists are modified.
 # Polled by the Jellyfin plugin JS to detect changes and live-update home rows.
@@ -334,10 +350,19 @@ def get_desired_smartlists(db: Session, user_id: int = None) -> list:
         # Source/source_tag conditions need the media type suffix because the tagger
         # writes tags like "Netflix Movies" / "Netflix TV", not just "Netflix".
         tag = rule.output_tag
+        dual_tag_expressions = None
         source_value = _extract_source_value(rule.conditions or [])
         if source_value and len(media) == 1:
             type_suffix = "Movies" if media == ["Movie"] else "TV"
             tag = f"{source_value} {type_suffix}"
+        elif source_value and len(media) == 2:
+            # Applies to BOTH movies and series — the tagger never writes the
+            # bare source value, only "X Movies" / "X TV". Emit two OR'd tag
+            # expressions so the query matches either suffixed tag.
+            dual_tag_expressions = [
+                {"MemberName": "Tags", "Operator": "Contains", "TargetValue": f"{source_value} Movies"},
+                {"MemberName": "Tags", "Operator": "Contains", "TargetValue": f"{source_value} TV"},
+            ]
 
         gl = _extract_genre_logic(rule.conditions or [])
         sl_entry = {"name": rule.output_tag, "tag": tag, "media_type": media, "enabled": True, "source": "custom", "genre_logic": gl}
@@ -346,6 +371,8 @@ def get_desired_smartlists(db: Session, user_id: int = None) -> list:
         classification = _classify_conditions(rule.conditions or [])
         if classification == "native":
             sl_entry["expressions"] = _conditions_to_expressions(rule.conditions)
+        elif dual_tag_expressions is not None:
+            sl_entry["expressions"] = dual_tag_expressions
         smartlists.append(sl_entry)
         existing_tags.add(rule.output_tag)
 
@@ -715,96 +742,115 @@ def write_home_config(db: Session, user_id: int = None) -> dict:
         logger.warning(f"No SmartLists with JellyfinPlaylistId found for user {user_id}, skipping home config write")
         return {}
 
-    existing_config = get_home_config(db, user_id=user_id)
-    existing_rows = existing_config.get("rows", []) if existing_config else []
-    existing_hero = existing_config.get("hero") if existing_config else None
+    with home_config_lock:
+        existing_config = get_home_config(db, user_id=user_id)
+        existing_rows = existing_config.get("rows", []) if existing_config else []
+        existing_hero = existing_config.get("hero") if existing_config else None
 
-    # Set of playlist_ids from the disk scan (current truth)
-    current_ids = {sl["playlist_id"] for sl in smartlists}
-    # Lookup for display names and reverse lookup by name
-    name_by_id = {sl["playlist_id"]: sl["name"] for sl in smartlists}
-    id_by_name = {sl["name"]: sl["playlist_id"] for sl in smartlists}
-    # Sort info lookup by playlist_id
-    sort_by_id = {sl["playlist_id"]: (sl.get("sort_by", "releasedate"), sl.get("sort_order", "Descending")) for sl in smartlists}
+        # Set of playlist_ids from the disk scan (current truth)
+        current_ids = {sl["playlist_id"] for sl in smartlists}
+        # Lookup for display names and reverse lookup by name
+        name_by_id = {sl["playlist_id"]: sl["name"] for sl in smartlists}
+        # Reverse lookup by name — but a display name can be shared by more than
+        # one playlist. Only remap-by-name when the name is unambiguous, else a
+        # collision would silently point the row at the wrong playlist.
+        name_counts = {}
+        for sl in smartlists:
+            name_counts[sl["name"]] = name_counts.get(sl["name"], 0) + 1
+        id_by_name = {sl["name"]: sl["playlist_id"] for sl in smartlists if name_counts[sl["name"]] == 1}
+        # Sort info lookup by playlist_id
+        sort_by_id = {sl["playlist_id"]: (sl.get("sort_by", "releasedate"), sl.get("sort_order", "Descending")) for sl in smartlists}
 
-    # Start with existing rows (in their saved order)
-    rows = []
-    for r in existing_rows:
-        if r.get("type") == "builtin":
-            # Always keep built-in sections
-            rows.append(r)
-        elif r.get("playlist_id") in current_ids:
-            # Keep playlist rows that still exist on disk, ensure type field
-            r["type"] = "playlist"
-            r["display_name"] = name_by_id.get(r["playlist_id"], r["display_name"])
-            rows.append(r)
-        elif r.get("display_name") and r["display_name"] in id_by_name:
-            # Playlist was recreated with a new ID — remap the reference
-            new_id = id_by_name[r["display_name"]]
-            logger.info(f"Home config: remapping '{r['display_name']}' from {r.get('playlist_id')} to {new_id}")
-            r["playlist_id"] = new_id
-            r["type"] = "playlist"
-            rows.append(r)
+        # Start with existing rows (in their saved order)
+        rows = []
+        for r in existing_rows:
+            if r.get("type") == "builtin":
+                # Always keep built-in sections
+                rows.append(r)
+            elif r.get("playlist_id") in current_ids:
+                # Keep playlist rows that still exist on disk, ensure type field
+                r["type"] = "playlist"
+                r["display_name"] = name_by_id.get(r["playlist_id"], r["display_name"])
+                rows.append(r)
+            elif r.get("display_name") and r["display_name"] in id_by_name:
+                # Playlist was recreated with a new ID — remap the reference
+                # (only when the name is unambiguous; see name_counts above)
+                new_id = id_by_name[r["display_name"]]
+                logger.info(f"Home config: remapping '{r['display_name']}' from {r.get('playlist_id')} to {new_id}")
+                r["playlist_id"] = new_id
+                r["type"] = "playlist"
+                rows.append(r)
 
-    # Safety check: if we'd drop more than half the playlist rows, something is wrong
-    existing_playlist_rows = [r for r in existing_rows if r.get("type") != "builtin"]
-    if existing_playlist_rows and len(rows) < len(existing_rows) / 2:
-        logger.warning(
-            f"Home config safety: would drop from {len(existing_rows)} to {len(rows)} rows "
-            f"— keeping existing config to prevent data loss"
-        )
-        return existing_config
+        # Safety check: if we'd drop more than half the playlist rows, something is wrong
+        existing_playlist_rows = [r for r in existing_rows if r.get("type") != "builtin"]
+        if existing_playlist_rows and len(rows) < len(existing_rows) / 2:
+            logger.warning(
+                f"Home config safety: would drop from {len(existing_rows)} to {len(rows)} rows "
+                f"— keeping existing config to prevent data loss"
+            )
+            return existing_config
 
-    # No auto-bootstrap: users add rows manually via the Home Screen page.
+        # No auto-bootstrap: users add rows manually via the Home Screen page.
 
-    # Renumber, set max_items, and enrich playlist rows with sort info
-    for i, r in enumerate(rows, start=1):
-        r["order"] = i
-        if r.get("type", "playlist") == "playlist":
-            r.setdefault("max_items", home_row_limit)
-            pid = r.get("playlist_id", "")
-            if pid in sort_by_id:
-                r["sort_by"], r["sort_order"] = sort_by_id[pid]
+        # Renumber, set max_items, and enrich playlist rows with sort info
+        for i, r in enumerate(rows, start=1):
+            r["order"] = i
+            if r.get("type", "playlist") == "playlist":
+                r.setdefault("max_items", home_row_limit)
+                pid = r.get("playlist_id", "")
+                if pid in sort_by_id:
+                    r["sort_by"], r["sort_order"] = sort_by_id[pid]
 
-    # Hero: preserve existing pick, remap if playlist was recreated, disable if gone
-    if existing_hero and existing_hero.get("playlist_id") in current_ids:
-        hero = existing_hero
-    elif existing_hero and existing_hero.get("display_name") and existing_hero["display_name"] in id_by_name:
-        # Hero playlist was recreated with a new ID — remap
-        new_id = id_by_name[existing_hero["display_name"]]
-        logger.info(f"Home config: remapping hero '{existing_hero['display_name']}' from {existing_hero.get('playlist_id')} to {new_id}")
-        existing_hero["playlist_id"] = new_id
-        hero = existing_hero
-    else:
-        hero = {"enabled": False, "playlist_id": "", "display_name": "", "sort_by": "random", "sort_order": "Descending", "require_logo": True, "require_trailer": False, "trailer_audio": False, "item_count": 10}
+        # Hero: preserve existing pick, remap if playlist was recreated, disable if gone
+        if existing_hero and existing_hero.get("playlist_id") in current_ids:
+            hero = existing_hero
+        elif existing_hero and existing_hero.get("display_name") and existing_hero["display_name"] in id_by_name:
+            # Hero playlist was recreated with a new ID — remap (unambiguous name only)
+            new_id = id_by_name[existing_hero["display_name"]]
+            logger.info(f"Home config: remapping hero '{existing_hero['display_name']}' from {existing_hero.get('playlist_id')} to {new_id}")
+            existing_hero["playlist_id"] = new_id
+            hero = existing_hero
+        else:
+            hero = {"enabled": False, "playlist_id": "", "display_name": "", "sort_by": "random", "sort_order": "Descending", "require_logo": True, "require_trailer": False, "trailer_audio": False, "item_count": 10}
 
-    # Toolbar: preserve existing config or use defaults
-    existing_toolbar = existing_config.get("toolbar") if existing_config else None
-    if not existing_toolbar:
-        existing_toolbar = [
-            {"id": "search", "enabled": True},
-            {"id": "discover", "enabled": True},
-            {"id": "activity", "enabled": True},
-            {"id": "favorites", "enabled": True},
-            {"id": "libraries", "enabled": True},
-            {"id": "shuffle", "enabled": False},
-            {"id": "genres", "enabled": False},
-        ]
+        # Toolbar: preserve existing config or use defaults
+        existing_toolbar = existing_config.get("toolbar") if existing_config else None
+        if not existing_toolbar:
+            existing_toolbar = [
+                {"id": "search", "enabled": True},
+                {"id": "discover", "enabled": True},
+                {"id": "activity", "enabled": True},
+                {"id": "favorites", "enabled": True},
+                {"id": "libraries", "enabled": True},
+                {"id": "shuffle", "enabled": False},
+                {"id": "genres", "enabled": False},
+            ]
 
-    config = {
-        "hero": hero,
-        "rows": rows,
-        "toolbar": existing_toolbar,
-    }
+        config = {
+            "hero": hero,
+            "rows": rows,
+            "toolbar": existing_toolbar,
+        }
 
-    try:
-        path = _user_home_config_path(db, user_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(config, indent=2), encoding="utf-8")
-        logger.info(f"Wrote home config with {len(rows)} rows to {path}")
-    except Exception as e:
-        logger.error(f"Failed to write home config: {e}")
-        return {}
+        # Detect whether the generated config actually differs from what's on disk,
+        # so we only bump the live-update version (and notify clients) on real
+        # changes. Nightly syncs that produce an identical config won't spam clients,
+        # but a config that genuinely changed (e.g. remapped playlist IDs) will.
+        config_changed = existing_config != config
+
+        try:
+            path = _user_home_config_path(db, user_id)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            _atomic_write_json(path, config)
+            logger.info(f"Wrote home config with {len(rows)} rows to {path}")
+        except Exception as e:
+            logger.error(f"Failed to write home config: {e}")
+            return {}
+
+        # M22: bump the playlist version when the home config changed so web
+        # clients (which poll /api/smartlists/version) pick up the update.
+        if config_changed:
+            bump_playlist_version()
 
     # If user has Tentacle home rows, disable Jellyfin's built-in home sections
     # to prevent overlap between the two home screens
@@ -1117,7 +1163,14 @@ def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats
     if needs_genre_filter:
         query["limit"] = None
 
-    items = jf.query_items(**query)
+    # A query FAILURE (timeout / connection reset / HTTP error) must never be
+    # treated as a genuine empty result — otherwise we'd clear the playlist.
+    try:
+        items = jf.query_items(**query)
+    except Exception as e:
+        logger.warning(f"[SmartLists] '{name}': query failed ({e}) — leaving playlist unchanged")
+        stats["errors"] = stats.get("errors", 0) + 1
+        return
 
     if needs_genre_filter:
         required_lower = [g.lower() for g in required_genres]
@@ -1175,6 +1228,22 @@ def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats
         current_entries = jf.get_playlist_items(playlist_id)
         current_ordered_ids = [entry["Id"] for entry in current_entries]
 
+        # M5 guard: query_items() also returns [] when the underlying request
+        # fails silently (timeout / connection reset → _get returns None). If
+        # the query came back empty but the playlist currently has items, treat
+        # it as a likely transient failure and leave the playlist untouched
+        # rather than wiping it. A genuine "all items removed" case will be
+        # picked up on the next successful run.
+        if not item_ids and current_ordered_ids:
+            logger.warning(
+                f"[SmartLists] '{name}': query returned 0 items but playlist has "
+                f"{len(current_ordered_ids)} — skipping clear (likely transient failure)"
+            )
+            stats["updated"] += 1
+            stats["processed"] += 1
+            stats["item_counts"][name] = len(current_ordered_ids)
+            return
+
         if current_ordered_ids == item_ids:
             # No changes needed — same items in same order
             logger.info(f"[SmartLists] '{name}': no changes needed ({len(item_ids)} items)")
@@ -1211,23 +1280,35 @@ def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats
             can_incremental = order_preserved and adds_at_end and (to_add or to_remove)
 
             if can_incremental:
-                # Incremental update — only add/remove the diff
+                # Incremental update — add new items first, then remove stale
+                # ones. If the add fails we abort before removing, so we never
+                # leave the playlist short.
+                if to_add:
+                    add_ordered = [x for x in item_ids if x in to_add]
+                    if not jf.add_to_playlist(playlist_id, add_ordered):
+                        logger.error(f"[SmartLists] '{name}': add failed — leaving playlist unchanged")
+                        stats["errors"] = stats.get("errors", 0) + 1
+                        return
                 if to_remove:
                     entry_id_map = {entry["Id"]: entry.get("PlaylistItemId", entry["Id"]) for entry in current_entries}
                     remove_entry_ids = [entry_id_map[rid] for rid in to_remove if rid in entry_id_map]
                     if remove_entry_ids:
                         jf.remove_from_playlist(playlist_id, remove_entry_ids)
-                if to_add:
-                    add_ordered = [x for x in item_ids if x in to_add]
-                    jf.add_to_playlist(playlist_id, add_ordered)
                 logger.info(f"[SmartLists] '{name}': incremental update +{len(to_add)} -{len(to_remove)} (total {len(item_ids)})")
             else:
-                # Order changed or complex reorder — full rebuild required
+                # Order changed or complex reorder — full rebuild required.
+                # Add the desired items FIRST (Jellyfin appends them), and only
+                # remove the original entries once the add is confirmed. A
+                # failed add then leaves the playlist intact instead of empty.
+                if item_ids:
+                    if not jf.add_to_playlist(playlist_id, item_ids):
+                        logger.error(f"[SmartLists] '{name}': rebuild add failed — leaving playlist unchanged")
+                        stats["errors"] = stats.get("errors", 0) + 1
+                        return
                 if current_entries:
                     all_entry_ids = [entry.get("PlaylistItemId", entry["Id"]) for entry in current_entries]
-                    jf.remove_from_playlist(playlist_id, all_entry_ids)
-                if item_ids:
-                    jf.add_to_playlist(playlist_id, item_ids)
+                    if not jf.remove_from_playlist(playlist_id, all_entry_ids):
+                        logger.warning(f"[SmartLists] '{name}': rebuild remove failed — playlist may contain stale duplicates")
                 logger.info(f"[SmartLists] '{name}': full rebuild +{len(to_add)} -{len(to_remove)} reorder (total {len(item_ids)})")
 
         stats["updated"] += 1

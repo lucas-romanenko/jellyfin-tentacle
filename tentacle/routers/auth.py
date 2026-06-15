@@ -4,6 +4,7 @@ Handles user authentication via Jellyfin, session management, and user listing.
 """
 
 import logging
+import time
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -21,6 +22,12 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 COOKIE_NAME = "tentacle_session"
 COOKIE_MAX_AGE = 30 * 24 * 60 * 60  # 30 days
+
+# Cache mapping a Jellyfin access token → (normalized_jellyfin_user_id, expiry).
+# The ?api_key= auth path resolves the token's owner from Jellyfin once and then
+# trusts it for a short window, avoiding a /Users/Me round-trip on every request.
+_token_cache: dict[str, tuple[str, float]] = {}
+_TOKEN_CACHE_TTL = 300  # 5 minutes
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -75,22 +82,69 @@ def get_current_user_optional(request: Request, db: Session = Depends(get_db)) -
         return None
 
 
+def _resolve_token_user(db: Session, api_key: str) -> Optional[str]:
+    """Return the normalized Jellyfin user id that owns `api_key`, or None.
+
+    Calls Jellyfin's user-scoped /Users/Me with the token — only the real owner of
+    a valid access token gets a 200 here, so this turns the api_key into proof of
+    identity (not an unverified claim). Results are cached for `_TOKEN_CACHE_TTL`
+    so high-frequency plugin polling does not hit Jellyfin on every request.
+    """
+    if not api_key:
+        return None
+    now = time.time()
+    cached = _token_cache.get(api_key)
+    if cached and cached[1] > now:
+        return cached[0]
+    jf_url = get_setting(db, "jellyfin_url")
+    if not jf_url:
+        return None
+    try:
+        r = requests.get(
+            f"{jf_url.rstrip('/')}/Users/Me",
+            headers={"X-Emby-Token": api_key},
+            timeout=10,
+        )
+        if r.status_code != 200:
+            return None
+        token_uid = str(r.json().get("Id", "")).replace("-", "")
+        if token_uid:
+            # Opportunistically prune expired entries to bound memory growth.
+            if len(_token_cache) > 512:
+                for k, (_, exp) in list(_token_cache.items()):
+                    if exp <= now:
+                        _token_cache.pop(k, None)
+            _token_cache[api_key] = (token_uid, now + _TOKEN_CACHE_TTL)
+            return token_uid
+    except Exception as e:
+        logger.warning(f"Jellyfin token validation failed: {e}")
+    return None
+
+
 def get_user_from_request(request: Request, db: Session = Depends(get_db)) -> TentacleUser:
-    """Get user from session cookie OR from ?userId= query param (for plugin/API calls)."""
-    # Try cookie first
+    """Get user from session cookie OR from a *verified* ?api_key= access token.
+
+    The userId is only a claim — identity is established by resolving the api_key
+    (the caller's Jellyfin access token) to its real owner via Jellyfin. Without a
+    valid token, anyone who could reach the backend could impersonate any user or
+    admin simply by passing their userId, so a bare userId is never trusted. When
+    a userId is also supplied it must match the token's owner. The cookie path
+    remains HMAC-verified.
+    """
+    # Try cookie first (HMAC-signed session)
     try:
         return get_current_user(request, db)
     except HTTPException:
         pass
-    # Try userId query param (Jellyfin user ID, not internal ID)
-    jf_user_id = request.query_params.get("userId")
-    if jf_user_id:
-        # Normalize: strip dashes for comparison (SDK sends with dashes, Jellyfin stores without)
-        normalized = jf_user_id.replace("-", "")
-        user = db.query(TentacleUser).filter(TentacleUser.jellyfin_user_id == normalized).first()
-        if not user:
-            # Also try the original value in case it was stored with dashes
-            user = db.query(TentacleUser).filter(TentacleUser.jellyfin_user_id == jf_user_id).first()
+    # Query-param path: identity comes from the verified Jellyfin access token
+    api_key = request.query_params.get("api_key")
+    token_uid = _resolve_token_user(db, api_key) if api_key else None
+    if token_uid:
+        # If a userId was also claimed, it must belong to the same token owner.
+        jf_user_id = request.query_params.get("userId")
+        if jf_user_id and jf_user_id.replace("-", "") != token_uid:
+            raise HTTPException(401, "Not authenticated")
+        user = db.query(TentacleUser).filter(TentacleUser.jellyfin_user_id == token_uid).first()
         if user:
             return user
     raise HTTPException(401, "Not authenticated")
@@ -108,6 +162,33 @@ def require_admin(request: Request, db: Session = Depends(get_db)) -> Optional[T
     return user
 
 
+def _has_internal_secret(request: Request, db: Session) -> bool:
+    """True if the request carries the shared internal secret (header or ?secret=).
+
+    Used to authenticate trusted server-to-server callers — the Jellyfin plugin's
+    delete/plugin-keys calls and Radarr/Sonarr webhooks — which cannot present a
+    user session. Constant-time compared against the stored secret.
+    """
+    import hmac
+    provided = request.headers.get("X-Tentacle-Secret") or request.query_params.get("secret")
+    if not provided:
+        return False
+    secret = get_setting(db, "internal_secret", "")
+    return bool(secret) and hmac.compare_digest(provided, secret)
+
+
+def require_internal_or_admin(request: Request, db: Session = Depends(get_db)):
+    """Allow trusted server-to-server callers (valid internal secret) OR an admin.
+
+    Bootstrap mode (no users yet) is allowed so first-run setup is not blocked.
+    """
+    if db.query(TentacleUser).count() == 0:
+        return None
+    if _has_internal_secret(request, db):
+        return None
+    return require_admin(request, db)
+
+
 # ─── Models ──────────────────────────────────────────────────────────────────
 
 class LoginRequest(BaseModel):
@@ -120,28 +201,26 @@ class LoginRequest(BaseModel):
 @router.get("/users")
 def get_jellyfin_users(db: Session = Depends(get_db)):
     """Fetch Jellyfin users for the login picker. No auth required.
-    Uses authenticated /Users endpoint (API key) so hidden users are included.
-    Falls back to /Users/Public if no API key configured.
+
+    Uses the unauthenticated /Users/Public endpoint, which only returns accounts
+    Jellyfin itself shows on its login screen. The privileged /Users endpoint is
+    NOT used here — calling it (with the server API key) over an unauthenticated
+    route enumerated every account including admin-hidden ones plus their ids,
+    which is exactly the data an attacker needs.
     """
     jf_url = get_setting(db, "jellyfin_url")
     if not jf_url:
         raise HTTPException(400, "Jellyfin URL not configured")
-    jf_key = get_setting(db, "jellyfin_api_key", "")
     try:
-        if jf_key:
-            r = requests.get(
-                f"{jf_url.rstrip('/')}/Users",
-                headers={"X-Emby-Token": jf_key},
-                timeout=10,
-            )
-        else:
-            r = requests.get(f"{jf_url.rstrip('/')}/Users/Public", timeout=10)
+        r = requests.get(f"{jf_url.rstrip('/')}/Users/Public", timeout=10)
         r.raise_for_status()
         users = r.json()
         return [
             {
                 "id": u["Id"],
                 "name": u["Name"],
+                # HasPassword is part of Jellyfin's own public login payload and the
+                # picker needs it to decide whether to prompt for a password.
                 "has_password": u.get("HasPassword", True),
                 "image_tag": u.get("PrimaryImageTag"),
                 "jellyfin_url": jf_url.rstrip("/"),
@@ -154,7 +233,7 @@ def get_jellyfin_users(db: Session = Depends(get_db)):
 
 
 @router.post("/login")
-def login(body: LoginRequest, response: Response, db: Session = Depends(get_db)):
+def login(body: LoginRequest, response: Response, request: Request, db: Session = Depends(get_db)):
     """Authenticate with Jellyfin and create a Tentacle session."""
     jf_url = get_setting(db, "jellyfin_url")
     if not jf_url:
@@ -211,14 +290,19 @@ def login(body: LoginRequest, response: Response, db: Session = Depends(get_db))
 
     db.commit()
 
-    # Set session cookie
+    # Set session cookie. Mark Secure when the request reached us over HTTPS
+    # (Cloudflare tunnel sets X-Forwarded-Proto) so the session token is not sent
+    # in cleartext over the public domain — but stay non-Secure for plain-HTTP LAN
+    # access (http://<ip>:8888) so local logins keep working.
     secret = _get_session_secret(db)
     token = _sign_session(user.id, secret)
+    forwarded_proto = request.headers.get("x-forwarded-proto", request.url.scheme)
     response.set_cookie(
         COOKIE_NAME, token,
         max_age=COOKIE_MAX_AGE,
         httponly=True,
         samesite="lax",
+        secure=(forwarded_proto == "https"),
         path="/",
     )
 

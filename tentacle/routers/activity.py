@@ -501,13 +501,13 @@ def _get_recently_downloaded(db: Session) -> list:
 
 
 @router.get("")
-def get_activity(request: Request, db: Session = Depends(get_db)):
+def get_activity(request: Request, db: Session = Depends(get_db),
+                 user: TentacleUser = Depends(get_user_from_request)):
     """Return current download queue (always fresh) and unreleased (5min cache).
-    Admin users see all downloads with requester names. Non-admin users only see their own."""
-    try:
-        user = get_user_from_request(request, db)
-    except Exception:
-        user = None
+    Admin users see all downloads with requester names. Non-admin users only see their own.
+
+    Requires authentication (dashboard cookie or plugin-forwarded user token) — an
+    anonymous caller previously received the full, unfiltered download queue."""
     downloads = _build_downloads(db)
     unreleased = _get_unreleased(db)
     recently_downloaded = _get_recently_downloaded(db)

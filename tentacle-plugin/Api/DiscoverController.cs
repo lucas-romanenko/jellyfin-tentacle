@@ -53,7 +53,7 @@ public class TentacleDiscoverController : ControllerBase
 
     /// <summary>
     /// Gets the userId query param forwarded from the JS client.
-    /// Used to authenticate proxy requests to Tentacle backend.
+    /// Used as a cache key discriminator (not for auth on its own).
     /// </summary>
     private string GetUserIdParam()
     {
@@ -61,11 +61,47 @@ public class TentacleDiscoverController : ControllerBase
         return string.IsNullOrEmpty(userId) ? "" : $"userId={userId}";
     }
 
+    /// <summary>
+    /// Extracts the caller's Jellyfin access token from the (Jellyfin-authenticated)
+    /// inbound request so it can be forwarded to the Tentacle backend as api_key.
+    /// The backend validates this token against Jellyfin before trusting the userId
+    /// claim, which prevents impersonation by anyone hitting the backend directly.
+    /// </summary>
+    private string GetApiKey()
+    {
+        var req = HttpContext.Request;
+        var token = req.Query["api_key"].FirstOrDefault();
+        if (string.IsNullOrEmpty(token))
+            token = req.Headers["X-Emby-Token"].FirstOrDefault();
+        if (string.IsNullOrEmpty(token))
+            token = req.Headers["X-MediaBrowser-Token"].FirstOrDefault();
+        if (string.IsNullOrEmpty(token))
+        {
+            var auth = req.Headers["Authorization"].FirstOrDefault()
+                       ?? req.Headers["X-Emby-Authorization"].FirstOrDefault();
+            if (!string.IsNullOrEmpty(auth))
+            {
+                var m = System.Text.RegularExpressions.Regex.Match(auth, "Token=\"?([^\",]+)\"?");
+                if (m.Success) token = m.Groups[1].Value;
+            }
+        }
+        return token ?? "";
+    }
+
+    /// <summary>
+    /// Appends the forwarded userId AND the caller's Jellyfin token (api_key) to a
+    /// backend URL so the backend can authenticate the request as that user.
+    /// </summary>
     private string AppendUserId(string url)
     {
-        var param = GetUserIdParam();
-        if (string.IsNullOrEmpty(param)) return url;
-        return url.Contains('?') ? $"{url}&{param}" : $"{url}?{param}";
+        var parts = new List<string>();
+        var userId = HttpContext.Request.Query["userId"].FirstOrDefault();
+        if (!string.IsNullOrEmpty(userId)) parts.Add($"userId={Uri.EscapeDataString(userId)}");
+        var apiKey = GetApiKey();
+        if (!string.IsNullOrEmpty(apiKey)) parts.Add($"api_key={Uri.EscapeDataString(apiKey)}");
+        if (parts.Count == 0) return url;
+        var qs = string.Join("&", parts);
+        return url.Contains('?') ? $"{url}&{qs}" : $"{url}?{qs}";
     }
 
     /// <summary>
@@ -189,7 +225,7 @@ public class TentacleDiscoverController : ControllerBase
 
         try
         {
-            var detailTask = HttpClient.GetStringAsync(
+            var detailTask = HttpClient.GetAsync(
                     AppendUserId($"{baseUrl}/api/discover/detail/{mediaType}/{tmdbId}"));
 
             // For series, also fetch library data to get following/sonarr state
@@ -201,7 +237,15 @@ public class TentacleDiscoverController : ControllerBase
                     t.IsCompletedSuccessfully ? t.Result : "");
             }
 
-            var detailJson = await detailTask;
+            var detailResponse = await detailTask;
+            var detailJson = await detailResponse.Content.ReadAsStringAsync();
+
+            // Surface the backend's status code (e.g. 404 for unknown items) instead of
+            // masking everything as NotFound.
+            if (!detailResponse.IsSuccessStatusCode)
+            {
+                return new ContentResult { Content = detailJson, ContentType = "application/json", StatusCode = (int)detailResponse.StatusCode };
+            }
 
             if (libraryTask != null)
             {
@@ -754,6 +798,20 @@ public class TentacleDiscoverController : ControllerBase
             return NotFound();
         }
 
+        // This endpoint is anonymous (Android TV/web image tags can't send auth headers),
+        // so validate the forwarded url and require the cacheKey to be the MD5 of the url.
+        // This prevents using the plugin as an open proxy to arbitrary hosts.
+        if (!IsAllowedImageHost(url))
+        {
+            _logger.LogWarning("[Tentacle Discover] Image proxy rejected disallowed host: {Url}", url);
+            return NotFound();
+        }
+
+        if (!string.Equals(cacheKey, Md5Hex(url), StringComparison.OrdinalIgnoreCase))
+        {
+            return BadRequest();
+        }
+
         try
         {
             var encodedUrl = System.Net.WebUtility.UrlEncode(url);
@@ -873,6 +931,37 @@ public class TentacleDiscoverController : ControllerBase
             _logger.LogWarning("[Tentacle Discover] Failed to toggle notifications: {Error}", ex.Message);
             return StatusCode(500);
         }
+    }
+
+    /// <summary>
+    /// Allowlist check for the ImageProxy forward target. Only TheTVDB hosts are
+    /// permitted (exact "thetvdb.com" or any "*.thetvdb.com" subdomain).
+    /// </summary>
+    private static bool IsAllowedImageHost(string url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        {
+            return false;
+        }
+
+        if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)
+        {
+            return false;
+        }
+
+        var host = uri.Host;
+        return string.Equals(host, "thetvdb.com", StringComparison.OrdinalIgnoreCase)
+               || host.EndsWith(".thetvdb.com", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Lower-case hex MD5 of the raw string, matching the backend's cacheKey scheme.
+    /// </summary>
+    private static string Md5Hex(string value)
+    {
+        using var md5 = System.Security.Cryptography.MD5.Create();
+        var bytes = md5.ComputeHash(System.Text.Encoding.UTF8.GetBytes(value));
+        return Convert.ToHexString(bytes).ToLowerInvariant();
     }
 
     private static string? LoadEmbeddedResource(string resourceSuffix)

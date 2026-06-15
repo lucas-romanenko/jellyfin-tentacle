@@ -26,9 +26,10 @@ public class HomeScreenManager
 
     /// <summary>
     /// Gets the current home configuration for a specific Jellyfin user, with 5-second caching.
-    /// Fetches from Tentacle API with userId query param. Returns null if unavailable.
+    /// Fetches from Tentacle API with userId + api_key (the caller's Jellyfin access token,
+    /// which the backend validates before trusting the userId). Returns null if unavailable.
     /// </summary>
-    public HomeConfig? GetHomeConfig(Guid userId = default)
+    public HomeConfig? GetHomeConfig(Guid userId = default, string apiKey = "")
     {
         var plugin = Plugin.Instance;
         if (plugin == null || string.IsNullOrEmpty(plugin.Configuration.TentacleUrl))
@@ -46,7 +47,7 @@ public class HomeScreenManager
             }
         }
 
-        var config = FetchFromApi(plugin.Configuration.TentacleUrl, userId);
+        var config = FetchFromApi(plugin.Configuration.TentacleUrl, userId, apiKey);
 
         lock (_cacheLock)
         {
@@ -69,7 +70,7 @@ public class HomeScreenManager
         _logger.LogInformation("[Tentacle] Home config cache cleared");
     }
 
-    private HomeConfig? FetchFromApi(string tentacleUrl, Guid userId = default)
+    private HomeConfig? FetchFromApi(string tentacleUrl, Guid userId = default, string apiKey = "")
     {
         if (string.IsNullOrEmpty(tentacleUrl))
         {
@@ -82,9 +83,18 @@ public class HomeScreenManager
             var client = _httpClientFactory.CreateClient();
             client.Timeout = TimeSpan.FromSeconds(3);
             var url = $"{tentacleUrl.TrimEnd('/')}/api/smartlists/home-config";
+            var query = new List<string>();
             if (userId != default)
             {
-                url += $"?userId={userId:N}";
+                query.Add($"userId={userId:N}");
+            }
+            if (!string.IsNullOrEmpty(apiKey))
+            {
+                query.Add($"api_key={Uri.EscapeDataString(apiKey)}");
+            }
+            if (query.Count > 0)
+            {
+                url += "?" + string.Join("&", query);
             }
 
             // Sync-over-async: GetHomeConfig is called from sync Jellyfin IHomeSection interface

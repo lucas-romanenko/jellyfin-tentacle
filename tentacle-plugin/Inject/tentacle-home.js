@@ -87,8 +87,11 @@
   }
 
   function isHomePage() {
-    var hash = location.hash || '';
-    return hash === '' || hash === '#/' || hash === '#/home.html' || hash === '#/home';
+    // Normalize the hash the same way tentacle-navbar.js does: strip the
+    // leading '#/', then drop any query string and file extension. This keeps
+    // the home detection consistent across navbar, home, and mediabar.
+    var h = (location.hash || '').replace('#', '').replace(/^\//, '').split('?')[0].split('.')[0];
+    return h === '' || h === 'home';
   }
 
   // ── Home Page Entry ─────────────────────────────────────────────────
@@ -847,7 +850,12 @@
       var ratingEl = document.createElement('div');
       ratingEl.className = 'mh-card-mdblist';
       card.querySelector('.mh-card-info').appendChild(ratingEl);
+      // Capture the generation so a fetch that resolves after the user navigates
+      // away or the rows are rebuilt doesn't write into a recycled/detached card.
+      var ratingsGen = MH.generation;
       MdbList.fetchRatings(item).then(function (ratings) {
+        if (ratingsGen !== MH.generation) return; // navigated/rebuilt — stale
+        if (!ratingEl.isConnected) return;          // card removed from DOM
         if (ratings && MdbList.buildRatingsHtml) {
           ratingEl.innerHTML = MdbList.buildRatingsHtml(ratings, 'compact') || '';
         }

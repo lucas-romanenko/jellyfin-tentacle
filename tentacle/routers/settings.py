@@ -12,17 +12,19 @@ from typing import Optional, Dict
 import requests
 
 from models.database import get_db, Setting, get_setting, set_setting
-from routers.auth import require_admin
+from routers.auth import require_admin, require_internal_or_admin
 
 router = APIRouter(prefix="/api/settings", tags=["settings"], dependencies=[Depends(require_admin)])
 
-# Separate router for plugin-facing endpoints (no auth required — internal network only)
+# Separate router for plugin-facing endpoints. Gated by the shared internal secret
+# (or an admin session) since these expose third-party API keys.
 plugin_router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 
-@plugin_router.get("/plugin-keys")
+@plugin_router.get("/plugin-keys", dependencies=[Depends(require_internal_or_admin)])
 def get_plugin_keys(db: Session = Depends(get_db)):
-    """Return API keys needed by the Jellyfin plugin (no auth).
+    """Return API keys needed by the Jellyfin plugin. Requires the shared internal
+    secret (sent by the plugin as X-Tentacle-Secret) or an admin session.
     Only exposes specific keys, not all settings."""
     result = {}
     for key in ["mdblist_api_key", "tmdb_bearer_token", "tmdb_api_key"]:
@@ -377,27 +379,56 @@ def check_stale_files(db: Session = Depends(get_db)):
     return {"show": True, "strm_count": strm_count, "nfo_count": nfo_count}
 
 
+class StaleFilesDelete(BaseModel):
+    confirm: bool = False
+
+
+def _is_within(child: Path, parent: Path) -> bool:
+    """True if `child` (resolved) is inside `parent` (resolved) — guards against
+    symlinks pointing outside the VOD roots."""
+    try:
+        child.resolve().relative_to(parent.resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
 @router.post("/stale-files/delete")
-def delete_stale_files(db: Session = Depends(get_db)):
-    """Delete all .strm and .nfo files in VOD folders, then remove empty directories."""
-    import shutil
-    movies_path = Path("/media/vod/movies")
-    shows_path = Path("/media/vod/shows")
+def delete_stale_files(
+    body: StaleFilesDelete | None = None,
+    confirm: bool = False,
+    db: Session = Depends(get_db),
+):
+    """Delete all .strm and .nfo files in the (fixed) VOD folders, then remove empty
+    directories. Destructive, so it requires an explicit confirm flag (body
+    {"confirm": true} or ?confirm=true). Every deletion is constrained to the two
+    known VOD roots (no user-supplied paths; resolved-path containment check guards
+    against symlink escapes)."""
+    if not ((body and body.confirm) or confirm):
+        raise HTTPException(400, "Confirmation required: pass {\"confirm\": true} (or ?confirm=true) to delete stale files")
+
+    # Hardcoded roots — never derived from request input, so there is no traversal
+    # vector. The containment check below is defence-in-depth against symlinks.
+    vod_roots = [Path("/media/vod/movies"), Path("/media/vod/shows")]
     deleted_strm = 0
     deleted_nfo = 0
 
-    for vod_dir in [movies_path, shows_path]:
+    for vod_dir in vod_roots:
         if not vod_dir.exists():
             continue
         for f in vod_dir.rglob("*.strm"):
+            if not _is_within(f, vod_dir):
+                continue
             f.unlink(missing_ok=True)
             deleted_strm += 1
         for f in vod_dir.rglob("*.nfo"):
+            if not _is_within(f, vod_dir):
+                continue
             f.unlink(missing_ok=True)
             deleted_nfo += 1
         # Remove empty directories bottom-up
         for dirpath in sorted(vod_dir.rglob("*"), reverse=True):
-            if dirpath.is_dir():
+            if dirpath.is_dir() and _is_within(dirpath, vod_dir):
                 try:
                     dirpath.rmdir()  # only removes if empty
                 except OSError:
@@ -418,17 +449,54 @@ class WebhookTest(BaseModel):
     url: str
 
 
+def _validate_webhook_target(url: str) -> None:
+    """Constrain the admin-triggered webhook-test proxy.
+
+    Radarr/Sonarr legitimately run on the LAN, so (unlike the public stream/image
+    proxies) we can't require a fully public host here. But we still block the most
+    dangerous SSRF targets — loopback (the Tentacle process itself / other local
+    daemons) and link-local (cloud metadata, 169.254.169.254) — and reject
+    non-http(s) schemes so this can't be pointed at file:// or internal admin APIs
+    on the host itself.
+    """
+    import ipaddress
+    import socket
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(400, "Webhook URL must be http or https")
+    host = parsed.hostname
+    if not host:
+        raise HTTPException(400, "Webhook URL has no host")
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except (socket.gaierror, UnicodeError, OSError):
+        raise HTTPException(400, "Webhook host could not be resolved")
+    for info in infos:
+        try:
+            addr = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            raise HTTPException(400, "Webhook host resolved to an invalid address")
+        if addr.is_loopback or addr.is_link_local or addr.is_multicast or addr.is_unspecified:
+            raise HTTPException(400, "Webhook URL points to a disallowed (loopback/metadata) host")
+
+
 @router.post("/test-webhook")
 def test_webhook(body: WebhookTest):
     """Proxy a webhook test through the backend to avoid mixed-content browser issues."""
+    _validate_webhook_target(body.url)
     try:
         r = requests.post(
             body.url,
             json={"eventType": "Test"},
-            timeout=10
+            timeout=10,
+            allow_redirects=False,
         )
         r.raise_for_status()
         return {"success": True, "message": "Webhook test successful"}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(400, f"Webhook test failed: {str(e)}")
 

@@ -1478,15 +1478,24 @@
 
   // Background badge polling — runs on home page even when overlays are closed
   var _badgeTimer = null;
+  var _badgeIdleTicks = 0; // consecutive empty polls, used for idle backoff
   function startBadgePolling() {
     if (_badgeTimer) return; // already running
+    _badgeIdleTicks = 0;
     _badgeTimer = setInterval(function () {
       if (!isHomePage()) { stopBadgePolling(); return; }
       // Don't poll if either overlay has its own polling
       if (ACT.timer) return;
+      // Skip the network request when Discover is disabled (config fetched).
+      // null = config not yet known, so we still poll once to seed the badge.
+      if (MD.enabled === false) return;
+      // Idle backoff — once nothing is active, only poll every other tick (~20s)
+      // instead of every 10s, until activity resumes.
+      if (_badgeIdleTicks > 0 && (_badgeIdleTicks % 2) === 1) { _badgeIdleTicks++; return; }
       apiGet('TentacleDiscover/Activity?userId=' + window.ApiClient.getCurrentUserId()).then(function (data) {
         MD.activityData = data;
         var count = (data.downloads || []).length + (data.unreleased || []).length;
+        _badgeIdleTicks = count > 0 ? 0 : (_badgeIdleTicks + 1);
         window.dispatchEvent(new CustomEvent('tentacle-activity-count', { detail: count }));
       }).catch(function () {});
     }, 10000); // slower interval for background

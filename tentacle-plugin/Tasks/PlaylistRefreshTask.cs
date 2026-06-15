@@ -5,58 +5,41 @@ using Microsoft.Extensions.Logging;
 namespace Jellyfin.Plugin.Tentacle.Tasks;
 
 /// <summary>
-/// Scheduled task that refreshes all SmartList playlists.
-/// Runs on a configurable interval and on library changes.
+/// Legacy scheduled task that rebuilt SmartList playlists from on-disk config files.
+/// Disabled: playlists are now managed per-user by the Tentacle backend via the Jellyfin
+/// API (IsPublic=false). This task created admin-owned playlists that conflicted with
+/// the backend-driven ones, so it has no default triggers and is a no-op when run
+/// manually. Kept (with the manual entry point) only so existing scheduled-task state
+/// degrades gracefully.
 /// </summary>
 public class PlaylistRefreshTask : IScheduledTask
 {
-    private readonly PlaylistManager _playlistManager;
     private readonly ILogger<PlaylistRefreshTask> _logger;
 
-    public PlaylistRefreshTask(
-        PlaylistManager playlistManager,
-        ILogger<PlaylistRefreshTask> logger)
+    public PlaylistRefreshTask(ILogger<PlaylistRefreshTask> logger)
     {
-        _playlistManager = playlistManager;
         _logger = logger;
     }
 
-    public string Name => "Tentacle Playlist Refresh";
+    public string Name => "Tentacle Playlist Refresh (disabled)";
 
     public string Key => "TentaclePlaylistRefresh";
 
-    public string Description => "Refreshes all Tentacle SmartList playlists by querying the Jellyfin library and updating playlist contents.";
+    public string Description => "Legacy task — playlists are managed by the Tentacle backend. This task does nothing.";
 
     public string Category => "Tentacle";
 
-    public async Task ExecuteAsync(IProgress<double> progress, CancellationToken cancellationToken)
+    public Task ExecuteAsync(IProgress<double> progress, CancellationToken cancellationToken)
     {
-        _logger.LogInformation("Tentacle playlist refresh task started");
-        progress.Report(0);
-
-        try
-        {
-            var count = await _playlistManager.RefreshAllPlaylists(cancellationToken);
-            _logger.LogInformation("Tentacle playlist refresh completed: {Count} playlists processed", count);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Tentacle playlist refresh task failed");
-        }
-
+        _logger.LogInformation("Tentacle playlist refresh task is disabled — playlists are managed by the Tentacle backend. No action taken.");
         progress.Report(100);
+        return Task.CompletedTask;
     }
 
     public IEnumerable<TaskTriggerInfo> GetDefaultTriggers()
     {
-        return new[]
-        {
-            // Run every 6 hours
-            new TaskTriggerInfo
-            {
-                Type = TaskTriggerInfoType.IntervalTrigger,
-                IntervalTicks = TimeSpan.FromHours(6).Ticks,
-            },
-        };
+        // No automatic triggers — the legacy disk-based rebuild conflicts with the
+        // backend-driven playlist management.
+        return Array.Empty<TaskTriggerInfo>();
     }
 }

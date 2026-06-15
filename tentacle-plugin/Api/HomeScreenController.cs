@@ -30,6 +30,10 @@ public class TentacleHomeController : ControllerBase
     private readonly ILogger<TentacleHomeController> _logger;
     private static readonly HttpClient ProxyClient = new() { Timeout = TimeSpan.FromSeconds(15) };
 
+    // Guards the UserSettings.json read-modify-write so concurrent saves don't clobber
+    // each other or read a half-written file.
+    private static readonly object UserSettingsLock = new();
+
     public TentacleHomeController(
         HomeScreenManager homeScreenManager,
         ILibraryManager libraryManager,
@@ -45,13 +49,54 @@ public class TentacleHomeController : ControllerBase
     }
 
     /// <summary>
+    /// Extracts the caller's Jellyfin access token from the (authenticated) request so
+    /// it can be forwarded to the backend as api_key for per-user validation.
+    /// </summary>
+    private string GetApiKey()
+    {
+        var req = HttpContext.Request;
+        var token = req.Query["api_key"].FirstOrDefault();
+        if (string.IsNullOrEmpty(token))
+            token = req.Headers["X-Emby-Token"].FirstOrDefault();
+        if (string.IsNullOrEmpty(token))
+            token = req.Headers["X-MediaBrowser-Token"].FirstOrDefault();
+        if (string.IsNullOrEmpty(token))
+        {
+            var auth = req.Headers["Authorization"].FirstOrDefault()
+                       ?? req.Headers["X-Emby-Authorization"].FirstOrDefault();
+            if (!string.IsNullOrEmpty(auth))
+            {
+                var m = System.Text.RegularExpressions.Regex.Match(auth, "Token=\"?([^\",]+)\"?");
+                if (m.Success) token = m.Groups[1].Value;
+            }
+        }
+        return token ?? "";
+    }
+
+    /// <summary>
+    /// Appends the forwarded userId (if present in the query) and the caller's token as
+    /// api_key so backend smartlist proxies authenticate as the calling user.
+    /// </summary>
+    private string AppendAuth(string url)
+    {
+        var parts = new List<string>();
+        var userId = HttpContext.Request.Query["userId"].FirstOrDefault();
+        if (!string.IsNullOrEmpty(userId)) parts.Add($"userId={Uri.EscapeDataString(userId)}");
+        var apiKey = GetApiKey();
+        if (!string.IsNullOrEmpty(apiKey)) parts.Add($"api_key={Uri.EscapeDataString(apiKey)}");
+        if (parts.Count == 0) return url;
+        var qs = string.Join("&", parts);
+        return url.Contains('?') ? $"{url}&{qs}" : $"{url}?{qs}";
+    }
+
+    /// <summary>
     /// Returns the list of homepage sections (rows) for the current user.
     /// </summary>
     [HttpGet("Sections")]
     [Authorize]
     public ActionResult GetSections([FromQuery] Guid userId)
     {
-        var config = _homeScreenManager.GetHomeConfig(userId);
+        var config = _homeScreenManager.GetHomeConfig(userId, GetApiKey());
         if (config == null)
         {
             return Ok(new { enabled = false, sections = Array.Empty<object>() });
@@ -136,7 +181,7 @@ public class TentacleHomeController : ControllerBase
         // Read row config (max_items, sort) from home config
         var limit = 20;
         RowConfig? row = null;
-        var config = _homeScreenManager.GetHomeConfig(userId);
+        var config = _homeScreenManager.GetHomeConfig(userId, GetApiKey());
         if (config?.Rows != null)
         {
             row = config.Rows.FirstOrDefault(r => r.PlaylistId == playlistId);
@@ -232,7 +277,7 @@ public class TentacleHomeController : ControllerBase
     [Authorize]
     public ActionResult GetHeroItems([FromQuery] Guid userId)
     {
-        var config = _homeScreenManager.GetHomeConfig(userId);
+        var config = _homeScreenManager.GetHomeConfig(userId, GetApiKey());
         if (config?.Hero is not { Enabled: true } hero || string.IsNullOrEmpty(hero.PlaylistId))
         {
             return Ok(new QueryResult<BaseItemDto>());
@@ -400,9 +445,9 @@ public class TentacleHomeController : ControllerBase
         try
         {
             var httpClient = ProxyClient;
-            var response = await httpClient.GetAsync($"{baseUrl}/api/smartlists/all-playlists");
+            var response = await httpClient.GetAsync(AppendAuth($"{baseUrl}/api/smartlists/all-playlists"));
             var result = await response.Content.ReadAsStringAsync();
-            return Content(result, "application/json");
+            return new ContentResult { Content = result, ContentType = "application/json", StatusCode = (int)response.StatusCode };
         }
         catch (Exception ex)
         {
@@ -418,7 +463,7 @@ public class TentacleHomeController : ControllerBase
     [Authorize]
     public ActionResult GetHeroConfig([FromQuery] Guid userId)
     {
-        var homeConfig = _homeScreenManager.GetHomeConfig(userId);
+        var homeConfig = _homeScreenManager.GetHomeConfig(userId, GetApiKey());
         if (homeConfig?.Hero is { Enabled: true } hero && !string.IsNullOrEmpty(hero.PlaylistId))
         {
             return Ok(new { enabled = true, playlistId = hero.PlaylistId, displayName = hero.DisplayName, trailerAudio = hero.TrailerAudio, itemCount = hero.ItemCount });
@@ -436,7 +481,7 @@ public class TentacleHomeController : ControllerBase
     [Authorize]
     public ActionResult GetToolbar([FromQuery] Guid userId)
     {
-        var homeConfig = _homeScreenManager.GetHomeConfig(userId);
+        var homeConfig = _homeScreenManager.GetHomeConfig(userId, GetApiKey());
         var toolbar = homeConfig?.Toolbar;
         if (toolbar != null && toolbar.Count > 0)
         {
@@ -466,13 +511,14 @@ public class TentacleHomeController : ControllerBase
         {
             var httpClient = ProxyClient;
             var content = new StringContent(body.GetRawText(), System.Text.Encoding.UTF8, "application/json");
-            var response = await httpClient.PostAsync($"{baseUrl}/api/smartlists/hero", content);
+            var response = await httpClient.PostAsync(AppendAuth($"{baseUrl}/api/smartlists/hero"), content);
             var result = await response.Content.ReadAsStringAsync();
 
-            // Clear the home screen cache so the new hero takes effect
-            _homeScreenManager.ClearCache();
+            // Clear the home screen cache so the new hero takes effect (only when it actually changed)
+            if (response.IsSuccessStatusCode)
+                _homeScreenManager.ClearCache();
 
-            return Content(result, "application/json");
+            return new ContentResult { Content = result, ContentType = "application/json", StatusCode = (int)response.StatusCode };
         }
         catch (Exception ex)
         {
@@ -500,13 +546,14 @@ public class TentacleHomeController : ControllerBase
         {
             var httpClient = ProxyClient;
             var content = new StringContent(body.GetRawText(), System.Text.Encoding.UTF8, "application/json");
-            var response = await httpClient.PostAsync($"{baseUrl}/api/smartlists/reorder", content);
+            var response = await httpClient.PostAsync(AppendAuth($"{baseUrl}/api/smartlists/reorder"), content);
             var result = await response.Content.ReadAsStringAsync();
 
-            // Clear the home screen cache so the new order takes effect
-            _homeScreenManager.ClearCache();
+            // Clear the home screen cache so the new order takes effect (only when it actually changed)
+            if (response.IsSuccessStatusCode)
+                _homeScreenManager.ClearCache();
 
-            return Content(result, "application/json");
+            return new ContentResult { Content = result, ContentType = "application/json", StatusCode = (int)response.StatusCode };
         }
         catch (Exception ex)
         {
@@ -589,56 +636,62 @@ public class TentacleHomeController : ControllerBase
     private UserSectionSettings LoadUserSettings(Guid userId)
     {
         var settingsPath = GetUserSettingsPath();
-        if (!System.IO.File.Exists(settingsPath))
+        lock (UserSettingsLock)
         {
-            return new UserSectionSettings { UserId = userId };
-        }
+            if (!System.IO.File.Exists(settingsPath))
+            {
+                return new UserSectionSettings { UserId = userId };
+            }
 
-        try
-        {
-            var json = System.IO.File.ReadAllText(settingsPath);
-            var allSettings = System.Text.Json.JsonSerializer.Deserialize<List<UserSectionSettings>>(json)
-                              ?? new List<UserSectionSettings>();
+            try
+            {
+                var json = System.IO.File.ReadAllText(settingsPath);
+                var allSettings = System.Text.Json.JsonSerializer.Deserialize<List<UserSectionSettings>>(json)
+                                  ?? new List<UserSectionSettings>();
 
-            return allSettings.FirstOrDefault(s => s.UserId == userId)
-                   ?? new UserSectionSettings { UserId = userId };
-        }
-        catch
-        {
-            return new UserSectionSettings { UserId = userId };
+                return allSettings.FirstOrDefault(s => s.UserId == userId)
+                       ?? new UserSectionSettings { UserId = userId };
+            }
+            catch
+            {
+                return new UserSectionSettings { UserId = userId };
+            }
         }
     }
 
     private void SaveUserSettingsToDisk(UserSectionSettings settings)
     {
         var settingsPath = GetUserSettingsPath();
-        var allSettings = new List<UserSectionSettings>();
-
-        if (System.IO.File.Exists(settingsPath))
+        lock (UserSettingsLock)
         {
-            try
+            var allSettings = new List<UserSectionSettings>();
+
+            if (System.IO.File.Exists(settingsPath))
             {
-                var json = System.IO.File.ReadAllText(settingsPath);
-                allSettings = System.Text.Json.JsonSerializer.Deserialize<List<UserSectionSettings>>(json)
-                              ?? new List<UserSectionSettings>();
+                try
+                {
+                    var json = System.IO.File.ReadAllText(settingsPath);
+                    allSettings = System.Text.Json.JsonSerializer.Deserialize<List<UserSectionSettings>>(json)
+                                  ?? new List<UserSectionSettings>();
+                }
+                catch
+                {
+                    allSettings = new List<UserSectionSettings>();
+                }
             }
-            catch
+
+            allSettings.RemoveAll(s => s.UserId == settings.UserId);
+            allSettings.Add(settings);
+
+            var dir = Path.GetDirectoryName(settingsPath);
+            if (!string.IsNullOrEmpty(dir))
             {
-                allSettings = new List<UserSectionSettings>();
+                Directory.CreateDirectory(dir);
             }
+
+            var output = System.Text.Json.JsonSerializer.Serialize(allSettings, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+            System.IO.File.WriteAllText(settingsPath, output);
         }
-
-        allSettings.RemoveAll(s => s.UserId == settings.UserId);
-        allSettings.Add(settings);
-
-        var dir = Path.GetDirectoryName(settingsPath);
-        if (!string.IsNullOrEmpty(dir))
-        {
-            Directory.CreateDirectory(dir);
-        }
-
-        var output = System.Text.Json.JsonSerializer.Serialize(allSettings, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
-        System.IO.File.WriteAllText(settingsPath, output);
     }
 
     private static string GetUserSettingsPath()

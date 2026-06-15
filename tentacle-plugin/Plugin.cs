@@ -15,7 +15,7 @@ namespace Jellyfin.Plugin.Tentacle;
 /// Media Bar, Plugin Pages, and File Transformation into a single plugin.
 ///
 /// Homepage rendering is done via injected JS/CSS (Harmony patch on index.html).
-/// Playlist management is handled by PlaylistManager.
+/// Playlist management is handled by the Tentacle backend via the Jellyfin API.
 /// Section data is served by HomeScreenController API endpoints.
 /// No external plugin dependencies.
 /// </summary>

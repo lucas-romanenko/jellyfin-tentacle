@@ -175,6 +175,17 @@ var MdbList = {
         return this.sources[source] || { name: source, icon: source, color: '#666', textColor: '#fff' };
     },
 
+    // ── HTML escaping helpers (MDBList source name is attacker-influenceable) ──
+    esc: function(str) {
+        if (str == null) return '';
+        return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    },
+
+    escAttr: function(str) {
+        if (str == null) return '';
+        return String(str).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    },
+
     clearCache: function() {
         this._cache = {};
     },
@@ -196,17 +207,22 @@ var MdbList = {
             var info = this.getSourceInfo(source);
             var iconUrl = this.getIconUrl(source, rating);
 
+            var nameAttr = this.escAttr(info.name);
+            var nameHtml = this.esc(info.name);
+            var iconAttr = this.escAttr(iconUrl);
+            var formattedHtml = this.esc(formatted);
+
             if (mode === 'compact') {
                 html += '<span class="moonfin-mdblist-rating-compact">' +
-                    '<img class="moonfin-mdblist-icon" src="' + iconUrl + '" alt="' + info.name + '" title="' + info.name + '" loading="lazy">' +
-                    '<span class="moonfin-mdblist-value">' + formatted + '</span>' +
+                    '<img class="moonfin-mdblist-icon" src="' + iconAttr + '" alt="' + nameAttr + '" title="' + nameAttr + '" loading="lazy">' +
+                    '<span class="moonfin-mdblist-value">' + formattedHtml + '</span>' +
                 '</span>';
             } else {
                 html += '<div class="moonfin-mdblist-rating-full">' +
-                    '<img class="moonfin-mdblist-icon-lg" src="' + iconUrl + '" alt="' + info.name + '" title="' + info.name + '" loading="lazy">' +
+                    '<img class="moonfin-mdblist-icon-lg" src="' + iconAttr + '" alt="' + nameAttr + '" title="' + nameAttr + '" loading="lazy">' +
                     '<div class="moonfin-mdblist-rating-info">' +
-                        '<span class="moonfin-mdblist-rating-value">' + formatted + '</span>' +
-                        (showNames ? '<span class="moonfin-mdblist-rating-name">' + info.name + '</span>' : '') +
+                        '<span class="moonfin-mdblist-rating-value">' + formattedHtml + '</span>' +
+                        (showNames ? '<span class="moonfin-mdblist-rating-name">' + nameHtml + '</span>' : '') +
                     '</div>' +
                 '</div>';
             }

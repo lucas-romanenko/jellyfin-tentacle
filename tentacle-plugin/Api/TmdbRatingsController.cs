@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Jellyfin.Plugin.Tentacle.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 
@@ -24,8 +25,11 @@ public class TentacleTmdbController : ControllerBase
     private static readonly ConcurrentDictionary<string, (string Data, DateTime CachedAt)> _episodeCache = new();
     private static readonly ConcurrentDictionary<string, (string Data, DateTime CachedAt)> _seasonCache = new();
 
-    // Cache for the TMDB token fetched from Tentacle backend
-    private static string? _cachedToken;
+    // Cache for the TMDB token fetched from Tentacle backend.
+    // _cachedToken is volatile so the unlocked fast-path read in GetTmdbToken sees
+    // the latest write; a stale _tokenCacheExpiry read is benign (the locked
+    // double-check below corrects it).
+    private static volatile string? _cachedToken;
     private static DateTime _tokenCacheExpiry = DateTime.MinValue;
     private static readonly SemaphoreSlim _tokenLock = new(1, 1);
 
@@ -77,7 +81,7 @@ public class TentacleTmdbController : ControllerBase
         var token = await GetTmdbToken();
         if (string.IsNullOrEmpty(token))
         {
-            return Ok(new TmdbEpisodeRatingResponse());
+            return Ok(new TmdbEpisodeRatingResponse { Success = false });
         }
 
         try
@@ -93,7 +97,7 @@ public class TentacleTmdbController : ControllerBase
             {
                 _logger.LogWarning("[Tentacle TMDB] API returned {Status} for episode {Series}/S{Season}E{Episode}",
                     response.StatusCode, seriesId, seasonNumber, episodeNumber);
-                return Ok(new TmdbEpisodeRatingResponse());
+                return Ok(new TmdbEpisodeRatingResponse { Success = false });
             }
 
             var json = await response.Content.ReadAsStringAsync();
@@ -102,6 +106,7 @@ public class TentacleTmdbController : ControllerBase
 
             var result = new TmdbEpisodeRatingResponse
             {
+                Success = true,
                 VoteAverage = root.TryGetProperty("vote_average", out var va) ? va.GetDouble() : null,
                 VoteCount = root.TryGetProperty("vote_count", out var vc) ? vc.GetInt32() : null,
             };
@@ -118,7 +123,7 @@ public class TentacleTmdbController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogWarning("[Tentacle TMDB] Failed to fetch episode rating: {Error}", ex.Message);
-            return Ok(new TmdbEpisodeRatingResponse());
+            return Ok(new TmdbEpisodeRatingResponse { Success = false });
         }
     }
 
@@ -148,7 +153,7 @@ public class TentacleTmdbController : ControllerBase
         var token = await GetTmdbToken();
         if (string.IsNullOrEmpty(token))
         {
-            return Ok(new TmdbSeasonRatingsResponse());
+            return Ok(new TmdbSeasonRatingsResponse { Success = false });
         }
 
         try
@@ -164,7 +169,7 @@ public class TentacleTmdbController : ControllerBase
             {
                 _logger.LogWarning("[Tentacle TMDB] API returned {Status} for season {Series}/S{Season}",
                     response.StatusCode, seriesId, seasonNumber);
-                return Ok(new TmdbSeasonRatingsResponse());
+                return Ok(new TmdbSeasonRatingsResponse { Success = false });
             }
 
             var json = await response.Content.ReadAsStringAsync();
@@ -186,7 +191,7 @@ public class TentacleTmdbController : ControllerBase
                 }
             }
 
-            var result = new TmdbSeasonRatingsResponse { Episodes = episodes };
+            var result = new TmdbSeasonRatingsResponse { Success = true, Episodes = episodes };
 
             var resultJson = JsonSerializer.Serialize(result, new JsonSerializerOptions
             {
@@ -200,7 +205,7 @@ public class TentacleTmdbController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogWarning("[Tentacle TMDB] Failed to fetch season ratings: {Error}", ex.Message);
-            return Ok(new TmdbSeasonRatingsResponse());
+            return Ok(new TmdbSeasonRatingsResponse { Success = false });
         }
     }
 
@@ -255,7 +260,7 @@ public class TentacleTmdbController : ControllerBase
             var client = _httpClientFactory.CreateClient();
             client.Timeout = TimeSpan.FromSeconds(10);
 
-            var response = await client.GetStringAsync($"{tentacleUrl}/api/settings/plugin-keys");
+            var response = await PluginKeysClient.GetSecuredStringAsync(client, $"{tentacleUrl}/api/settings/plugin-keys");
             using var doc = JsonDocument.Parse(response);
 
             // Try bearer token first (v4), then API key (v3)
@@ -299,6 +304,9 @@ public class TentacleTmdbController : ControllerBase
 /// </summary>
 public class TmdbEpisodeRatingResponse
 {
+    [JsonPropertyName("success")]
+    public bool Success { get; set; }
+
     [JsonPropertyName("voteAverage")]
     public double? VoteAverage { get; set; }
 
@@ -311,6 +319,9 @@ public class TmdbEpisodeRatingResponse
 /// </summary>
 public class TmdbSeasonRatingsResponse
 {
+    [JsonPropertyName("success")]
+    public bool Success { get; set; }
+
     [JsonPropertyName("episodes")]
     public List<TmdbEpisodeRating> Episodes { get; set; } = new();
 }

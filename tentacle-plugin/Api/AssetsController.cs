@@ -43,8 +43,13 @@ public class TentacleAssetsController : ControllerBase
         }
 
         var assembly = typeof(TentacleAssetsController).Assembly;
+
+        // Match the exact embedded resource name (e.g. "Jellyfin.Plugin.Tentacle.Assets.imdb.svg")
+        // rather than a ".{fileName}" suffix — the latter can resolve the wrong resource
+        // (e.g. "rt-fresh.svg" matching "fresh.svg").
+        var expectedSuffix = $".Assets.{fileName}";
         var resourceName = assembly.GetManifestResourceNames()
-            .FirstOrDefault(n => n.EndsWith($".{fileName}", StringComparison.OrdinalIgnoreCase));
+            .FirstOrDefault(n => n.EndsWith(expectedSuffix, StringComparison.OrdinalIgnoreCase));
 
         if (resourceName == null)
         {

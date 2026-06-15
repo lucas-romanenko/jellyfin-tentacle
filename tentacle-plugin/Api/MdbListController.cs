@@ -19,7 +19,10 @@ public class TentacleMdbListController : ControllerBase
     private static readonly TimeSpan CacheDuration = TimeSpan.FromDays(7);
     private static readonly TimeSpan SettingsCacheDuration = TimeSpan.FromMinutes(10);
 
-    private static string? _cachedApiKey;
+    // _cachedApiKey is volatile so the unlocked fast-path read in GetMdbListApiKey
+    // sees the latest write; a stale _apiKeyCacheExpiry read is benign (the locked
+    // double-check below corrects it).
+    private static volatile string? _cachedApiKey;
     private static DateTime _apiKeyCacheExpiry = DateTime.MinValue;
     private static readonly SemaphoreSlim _apiKeyLock = new(1, 1);
 
@@ -139,7 +142,7 @@ public class TentacleMdbListController : ControllerBase
 
             var client = _httpClientFactory.CreateClient();
             client.Timeout = TimeSpan.FromSeconds(10);
-            var response = await client.GetStringAsync($"{tentacleUrl}/api/settings/plugin-keys");
+            var response = await PluginKeysClient.GetSecuredStringAsync(client, $"{tentacleUrl}/api/settings/plugin-keys");
             using var doc = JsonDocument.Parse(response);
 
             if (doc.RootElement.TryGetProperty("mdblist_api_key", out var el))

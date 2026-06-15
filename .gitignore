@@ -30,3 +30,6 @@ site/
 *.suo
 *.user
 
+# Stray solution file at repo root (not tracked)
+jellyfin-tentacle.sln
+

@@ -30,6 +30,17 @@
             return '<svg class="moonfin-user-fallback-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="#FFFFFF"><path d="M372-523q-42-42-42-108t42-108q42-42 108-42t108 42q42 42 42 108t-42 108q-42 42-108 42t-108-42ZM160-160v-94q0-38 19-65t49-41q67-30 128.5-45T480-420q62 0 123 15.5T731-360q31 14 50 41t19 65v94H160Zm60-60h520v-34q0-16-9.5-30.5T707-306q-64-31-117-42.5T480-360q-57 0-111 11.5T252-306q-14 7-23 21.5t-9 30.5v34Zm324.5-346.5Q570-592 570-631t-25.5-64.5Q519-721 480-721t-64.5 25.5Q390-670 390-631t25.5 64.5Q441-541 480-541t64.5-25.5ZM480-631Zm0 411Z"/></svg>';
         },
 
+        // ── HTML escaping helpers (library/user names are attacker-influenceable) ──
+        esc: function (str) {
+            if (str == null) return '';
+            return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        },
+
+        escAttr: function (str) {
+            if (str == null) return '';
+            return String(str).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        },
+
         isMobile: function () {
             return window.innerWidth <= 768;
         },
@@ -393,7 +404,7 @@
                     height: 88
                 });
                 if (url) {
-                    avatarContainer.innerHTML = '<img src="' + url + '" alt="' + (this.currentUser.Name || '') + '" class="moonfin-user-img">';
+                    avatarContainer.innerHTML = '<img src="' + this.escAttr(url) + '" alt="' + this.escAttr(this.currentUser.Name || '') + '" class="moonfin-user-img">';
                     return;
                 }
             }
@@ -405,8 +416,8 @@
 
             this.librariesDropdown.innerHTML = this.libraries.map(function (lib) {
                 var collectionType = lib.CollectionType || '';
-                return '<button class="moonfin-nav-btn moonfin-library-btn" data-action="library" data-library-id="' + lib.Id + '" data-collection-type="' + collectionType + '" title="' + lib.Name + '">' +
-                    '<span class="moonfin-library-name">' + lib.Name + '</span>' +
+                return '<button class="moonfin-nav-btn moonfin-library-btn" data-action="library" data-library-id="' + Navbar.escAttr(lib.Id) + '" data-collection-type="' + Navbar.escAttr(collectionType) + '" title="' + Navbar.escAttr(lib.Name) + '">' +
+                    '<span class="moonfin-library-name">' + Navbar.esc(lib.Name) + '</span>' +
                     '</button>';
             }).join('');
         },
@@ -733,23 +744,32 @@
 
         _watchForTabs: function () {
             var self = this;
-            // Disconnect any previous observer
+            // Disconnect any previous observer and cancel its pending auto-disconnect
+            // timer. Without clearing the old timer, a rapid re-entry would let the
+            // stale timeout disconnect the freshly-created observer early.
             if (this._tabObserver) {
                 this._tabObserver.disconnect();
                 this._tabObserver = null;
             }
+            if (this._tabObserverTimer) {
+                clearTimeout(this._tabObserverTimer);
+                this._tabObserverTimer = null;
+            }
             var skinHeader = document.querySelector('.skinHeader');
             if (!skinHeader) return;
 
-            this._tabObserver = new MutationObserver(function () {
+            var observer = new MutationObserver(function () {
                 self._showPageTabs();
             });
-            this._tabObserver.observe(skinHeader, { childList: true, subtree: true });
+            this._tabObserver = observer;
+            observer.observe(skinHeader, { childList: true, subtree: true });
 
-            // Auto-disconnect after 5s to avoid permanent overhead
-            setTimeout(function () {
-                if (self._tabObserver) {
-                    self._tabObserver.disconnect();
+            // Auto-disconnect after 5s to avoid permanent overhead. Only disconnect
+            // if this is still the active observer (guards against rapid re-entry).
+            this._tabObserverTimer = setTimeout(function () {
+                self._tabObserverTimer = null;
+                if (self._tabObserver === observer) {
+                    observer.disconnect();
                     self._tabObserver = null;
                 }
             }, 5000);
@@ -868,50 +888,6 @@
         showBackButton: function (show) {
             var btn = this.container ? this.container.querySelector('.moonfin-nav-back') : null;
             if (btn) btn.style.display = show ? '' : 'none';
-        },
-
-        destroy: function () {
-            if (this.clockInterval) {
-                clearInterval(this.clockInterval);
-                this.clockInterval = null;
-            }
-            if (this.librariesTimeout) {
-                clearTimeout(this.librariesTimeout);
-                this.librariesTimeout = null;
-            }
-            if (this._tabRetryTimer) {
-                clearTimeout(this._tabRetryTimer);
-                this._tabRetryTimer = null;
-            }
-            if (this._tabRetryTimer2) {
-                clearTimeout(this._tabRetryTimer2);
-                this._tabRetryTimer2 = null;
-            }
-            if (this._tabObserver) {
-                this._tabObserver.disconnect();
-                this._tabObserver = null;
-            }
-            if (this.librariesDropdown) {
-                this.librariesDropdown.remove();
-                this.librariesDropdown = null;
-            }
-            if (this.container) {
-                this.container.remove();
-                this.container = null;
-            }
-            if (this._onViewShow) {
-                window.removeEventListener('viewshow', this._onViewShow);
-                window.removeEventListener('hashchange', this._onViewShow);
-                window.removeEventListener('popstate', this._onViewShow);
-                this._onViewShow = null;
-            }
-            if (this._navObserver) {
-                this._navObserver.disconnect();
-                this._navObserver = null;
-            }
-            document.body.classList.remove('moonfin-navbar-active');
-            this.librariesExpanded = false;
-            this.initialized = false;
         }
     };
 

@@ -36,8 +36,10 @@
         _defaultMuted: true,  // from hero config trailerAudio setting
 
         isHomePage: function () {
-            var h = location.hash || '';
-            return h === '' || h === '#/' || h === '#/home.html' || h === '#/home';
+            // Normalize the hash the same way tentacle-navbar.js does so home
+            // detection is consistent across navbar, home, and mediabar.
+            var h = (location.hash || '').replace('#', '').replace(/^\//, '').split('?')[0].split('.')[0];
+            return h === '' || h === 'home';
         },
 
         init: function () {
@@ -396,6 +398,7 @@
 
         startAutoAdvance: function () {
             if (!this._autoAdvance) return;
+            if (this.autoAdvanceTimer) clearInterval(this.autoAdvanceTimer);
             var self = this;
             this.autoAdvanceTimer = setInterval(function () {
                 if (!self.isPaused && self.isVisible && self._trailerState === 'idle') {
@@ -479,15 +482,27 @@
                 tag.src = 'https://www.youtube.com/iframe_api';
                 document.head.appendChild(tag);
             }
+            var resolved = false;
             var checkInterval = setInterval(function () {
                 if (window.YT && window.YT.Player) {
+                    resolved = true;
                     clearInterval(checkInterval);
                     self._ytApiReady = true;
                     self._ytApiLoading = false;
                     callback();
                 }
             }, 100);
-            setTimeout(function () { clearInterval(checkInterval); }, 10000);
+            setTimeout(function () {
+                clearInterval(checkInterval);
+                if (resolved) return;
+                // YT IFrame API never loaded — don't leave the trailer stuck in
+                // 'resolving', which would permanently block auto-advance.
+                self._ytApiLoading = false;
+                if (self._trailerState === 'resolving') {
+                    self._trailerState = 'idle';
+                    if (self._autoAdvance && !self.isPaused && self.isVisible) self.resetAutoAdvance();
+                }
+            }, 10000);
         },
 
         _loadYTPlayer: function (videoId) {
@@ -627,26 +642,41 @@
 
         show: function () {
             if (this.container) {
+                var self = this;
                 var wasDetached = !this.container.parentElement;
                 // Re-attach to body if removed by SPA navigation
                 if (wasDetached) {
                     document.body.appendChild(this.container);
                 }
                 this.container.classList.remove('disabled', 'hidden', 'scrolled-partial', 'scrolled-full');
+
+                // Detect in-app user switch: if the current Jellyfin user changed
+                // since init, reload so we don't show the previous user's hero.
+                var userChanged = false;
+                if (this.apiClient) {
+                    var currentUserId = this.apiClient.getCurrentUserId();
+                    if (currentUserId && currentUserId !== this.userId) {
+                        this.userId = currentUserId;
+                        userChanged = true;
+                    }
+                }
+
                 if (this.isHomePage() && this.items && this.items.length > 0) {
                     document.body.classList.add('moonfin-mediabar-active');
                     // Scroll to top so hero is fully visible
                     window.scrollTo(0, 0);
                 }
-                // If container was detached and re-attached, reload content
-                // to avoid showing stale or empty hero
-                if (wasDetached && this.apiClient) {
-                    var self = this;
+                // If container was detached/re-attached or the user switched,
+                // reload content to avoid showing stale or another user's hero
+                if ((wasDetached || userChanged) && this.apiClient) {
                     this.loadContent().then(function () {
                         if (self.items.length > 0 && self._autoAdvance) {
                             self.resetAutoAdvance();
                         }
                     }).catch(function () {});
+                } else if (this.items && this.items.length > 0 && this._autoAdvance) {
+                    // Restart the timer stopped by hide()
+                    this.resetAutoAdvance();
                 }
             }
         },
@@ -657,6 +687,7 @@
                 this.container.classList.add('hidden');
                 document.body.classList.remove('moonfin-mediabar-active');
                 this.stopTrailer();
+                this.stopAutoAdvance(); // don't keep advancing after leaving home
             }
         },
 
@@ -852,32 +883,6 @@
                 }
             };
             window.addEventListener('hashchange', this._onNavChange);
-        },
-
-        destroy: function () {
-            this.stopAutoAdvance();
-            this.stopTrailer();
-            this.generation++;
-            if (this._onScroll) {
-                window.removeEventListener('scroll', this._onScroll);
-                this._onScroll = null;
-            }
-            if (this._onViewShow) {
-                document.removeEventListener('viewshow', this._onViewShow);
-                this._onViewShow = null;
-            }
-            if (this._onNavChange) {
-                window.removeEventListener('hashchange', this._onNavChange);
-                this._onNavChange = null;
-            }
-            if (this.container) {
-                this.container.remove();
-                this.container = null;
-            }
-            document.body.classList.remove('moonfin-mediabar-active');
-            this.initialized = false;
-            this.items = [];
-            this.currentIndex = 0;
         }
     };
 

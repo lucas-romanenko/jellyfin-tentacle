@@ -21,6 +21,7 @@
     hideStyle: null,
     generation: 0,       // incremented on every nav, stale searches check this
     _onInputChange: null, // bound listener ref for cleanup
+    configEnabled: null,  // null = unknown, true/false once config fetched
   };
 
   function apiGet(path) {
@@ -32,6 +33,23 @@
     var d = document.createElement('div');
     d.textContent = str;
     return d.innerHTML;
+  }
+
+  // Attribute-context escaping (escapes quotes, unlike esc()).
+  function escAttr(str) {
+    if (str == null) return '';
+    return String(str).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  // Validate + encode a URL for use in an attribute. Allows http(s) and
+  // root-relative paths (Tentacle/Jellyfin proxies); rejects anything else
+  // (e.g. javascript: / data:). Returns '' if not allowed.
+  function safeUrl(url) {
+    if (!url) return '';
+    var s = String(url).trim();
+    if (s.charAt(0) === '/') return encodeURI(s);
+    if (/^https?:\/\//i.test(s)) return encodeURI(s);
+    return '';
   }
 
   // ── Route detection ──────────────────────────────────────────────────
@@ -108,7 +126,26 @@
     // Clean any stale state first
     cleanup();
 
-    waitForSearchInput(viewEl);
+    // Gate the hijack on the discover/config enabled flag. If Tentacle search is
+    // disabled (or config fetch fails), leave Jellyfin's native search untouched.
+    checkConfigThen(function (enabled) {
+      if (!enabled) return;
+      if (!isSearchPage()) return; // navigated away while fetching config
+      waitForSearchInput(viewEl);
+    });
+  }
+
+  // Fetch the discover/config enabled flag (cached for the session) and invoke
+  // cb(enabled). On fetch failure, treat as disabled so native search is kept.
+  function checkConfigThen(cb) {
+    if (SEARCH.configEnabled !== null) { cb(SEARCH.configEnabled); return; }
+    apiGet('TentacleDiscover/Config').then(function (cfg) {
+      SEARCH.configEnabled = !!(cfg && cfg.discover_in_jellyfin === true);
+      cb(SEARCH.configEnabled);
+    }).catch(function () {
+      SEARCH.configEnabled = false;
+      cb(false);
+    });
   }
 
   function onLeavingSearch() {
@@ -385,7 +422,11 @@
       })
       .catch(function () {
         if (gen !== SEARCH.generation) return;
-        grid.innerHTML = '<div class="tentacle-search-empty">Search failed</div>';
+        // Tentacle search failed — fall back to Jellyfin's native results rather
+        // than leaving the user with a dead, CSS-hidden native search page.
+        var el = document.getElementById('tentacleSearchResults');
+        if (el) el.remove();
+        removeHideCSS();
       });
   }
 
@@ -400,11 +441,12 @@
       items.map(function (item) {
         // Live TV channel card
         if (item.media_type === 'channel') {
-          var logoHtml = item.logo_url
-            ? '<img src="' + esc(item.logo_url) + '" loading="lazy" onerror="this.style.display=\'none\'">'
+          var logoSafe = safeUrl(item.logo_url);
+          var logoHtml = logoSafe
+            ? '<img src="' + escAttr(logoSafe) + '" loading="lazy" onerror="this.style.display=\'none\'">'
             : '<div class="ts-card-poster-placeholder">&#9654;</div>';
           var groupHtml = item.group_title ? esc(item.group_title) : 'Live TV';
-          return '<div class="ts-card ts-channel-card" data-channel-id="' + item.channel_id + '">' +
+          return '<div class="ts-card ts-channel-card" data-channel-id="' + escAttr(item.channel_id) + '">' +
             '<div class="ts-card-poster">' + logoHtml +
               '<div class="ts-card-badge ts-badge-type ts-badge-livetv">Live TV</div>' +
             '</div>' +
@@ -418,8 +460,9 @@
         var posterUrl = item.poster_path
           ? (item.poster_path.startsWith('http') || item.poster_path.startsWith('/TentacleDiscover/') ? item.poster_path : 'https://image.tmdb.org/t/p/w342' + item.poster_path)
           : '';
-        var posterHtml = posterUrl
-          ? '<img src="' + posterUrl + '" loading="lazy" onerror="this.style.display=\'none\'">'
+        var posterSafe = safeUrl(posterUrl);
+        var posterHtml = posterSafe
+          ? '<img src="' + escAttr(posterSafe) + '" loading="lazy" onerror="this.style.display=\'none\'">'
           : '<div class="ts-card-poster-placeholder">&#9707;</div>';
 
         var dlInfo = getDownloadInfo(item.tmdb_id);
@@ -436,12 +479,12 @@
         }
 
         var ratingHtml = item.rating
-          ? '<span class="ts-card-meta-rating">\u2605 ' + item.rating + '</span>'
+          ? '<span class="ts-card-meta-rating">\u2605 ' + esc(String(item.rating)) + '</span>'
           : '';
-        var yearHtml = item.year || '\u2014';
+        var yearHtml = item.year ? esc(String(item.year)) : '\u2014';
         var sep = item.rating ? ' \u00b7 ' : '';
 
-        return '<div class="ts-card" data-tmdb="' + (item.tmdb_id || 0) + '" data-tvdb="' + (item.tvdb_id || 0) + '" data-type="' + (item.media_type || 'movie') + '">' +
+        return '<div class="ts-card" data-tmdb="' + escAttr(item.tmdb_id || 0) + '" data-tvdb="' + escAttr(item.tvdb_id || 0) + '" data-type="' + escAttr(item.media_type || 'movie') + '">' +
           '<div class="ts-card-poster">' + posterHtml + typeBadge + statusBadge + '</div>' +
           '<div class="ts-card-info">' +
             '<div class="ts-card-title">' + esc(item.title) + '</div>' +

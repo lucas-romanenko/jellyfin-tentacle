@@ -11,7 +11,11 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
 import os
+import logging
+import sqlite3
 import secrets
+
+logger = logging.getLogger(__name__)
 
 _data_dir = os.getenv('DATA_DIR', '/data')
 _db_name = "tentacle.db"
@@ -500,8 +504,49 @@ def set_setting(db, key: str, value: str):
     db.commit()
 
 
+def _sqlite_type_for(column) -> str:
+    """Map a SQLAlchemy column to a SQLite column-type string for ALTER TABLE.
+
+    Used by the generic migration pass to add model-defined columns that are
+    absent on an upgraded DB. Best-effort — falls back to the SQLAlchemy
+    compiled type, then TEXT.
+    """
+    from sqlalchemy import Integer as _Int, Boolean as _Bool, Float as _Float, DateTime as _DT
+    t = column.type
+    if isinstance(t, _Bool):
+        base = "BOOLEAN"
+    elif isinstance(t, _Int):
+        base = "INTEGER"
+    elif isinstance(t, _Float):
+        base = "REAL"
+    elif isinstance(t, _DT):
+        base = "DATETIME"
+    else:
+        try:
+            base = t.compile(dialect=engine.dialect)
+        except Exception:
+            base = "TEXT"
+    return base
+
+
+def _existing_columns(cursor, table: str) -> set:
+    """Return the set of existing column names for a table (empty if no table)."""
+    try:
+        cursor.execute(f"PRAGMA table_info({table})")
+        return {row[1] for row in cursor.fetchall()}
+    except sqlite3.OperationalError:
+        return set()
+
+
 def _migrate_columns():
-    """Add columns that may be missing from older databases."""
+    """Add columns that may be missing from older databases.
+
+    Two passes:
+      1. An explicit list for columns that need a specific SQL default / FK.
+      2. A generic pass that introspects each mapped table and adds any
+         model-defined column that's absent — so newly added model columns
+         don't silently go missing on upgraded DBs.
+    """
     import sqlite3
     db_path = DATABASE_URL.replace("sqlite:///", "")
     conn = sqlite3.connect(db_path)
@@ -530,11 +575,46 @@ def _migrate_columns():
         ("tentacle_users", "notifications_enabled", "BOOLEAN DEFAULT 1"),
     ]
     for table, column, col_type in migrations:
+        existing = _existing_columns(cursor, table)
+        if not existing:
+            continue  # table doesn't exist yet (create_all handles it)
+        if column in existing:
+            continue
         try:
             cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
             conn.commit()
-        except sqlite3.OperationalError:
-            pass  # Column already exists
+        except sqlite3.OperationalError as e:
+            # Only "duplicate column" is benign; surface anything else.
+            if "duplicate column" in str(e).lower():
+                pass
+            else:
+                logger.error(f"[migrate] ALTER {table}.{column} failed: {e}")
+
+    # Generic pass: add any model-defined column missing from the live table.
+    # SQLite can't add NOT NULL columns without a default, so skip those.
+    for table_name, table_obj in Base.metadata.tables.items():
+        existing = _existing_columns(cursor, table_name)
+        if not existing:
+            continue  # table not created yet
+        for col in table_obj.columns:
+            if col.name in existing:
+                continue
+            if not col.nullable and col.default is None and col.server_default is None:
+                logger.warning(
+                    f"[migrate] Skipping NOT NULL column {table_name}.{col.name} "
+                    f"(no default — needs a manual migration)"
+                )
+                continue
+            col_type = _sqlite_type_for(col)
+            try:
+                cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {col.name} {col_type}")
+                conn.commit()
+                logger.info(f"[migrate] Added missing column {table_name}.{col.name} ({col_type})")
+            except sqlite3.OperationalError as e:
+                if "duplicate column" in str(e).lower():
+                    pass
+                else:
+                    logger.error(f"[migrate] ALTER {table_name}.{col.name} failed: {e}")
 
     # Recreate tables that need PK changes (HomeRowOrder, AutoPlaylistToggle)
     _migrate_home_row_order(cursor, conn)
@@ -629,12 +709,24 @@ def seed_defaults(db):
         "hdhr_tuner_count": "3",
         "hdhr_device_id": "TENTACLE1",
         "session_secret": secrets.token_hex(32),
+        # Shared secret for trusted server-to-server callers (the Jellyfin plugin's
+        # delete/plugin-keys calls, Radarr/Sonarr webhooks) that cannot present a
+        # user session. Copied into the plugin config / webhook URL by the operator.
+        "internal_secret": secrets.token_hex(32),
     }
+    # Insert each missing default in its own transaction so a concurrent
+    # worker seeding the same key (IntegrityError on the PK) doesn't abort the
+    # whole batch — we just roll back and move on (get-or-create semantics).
+    from sqlalchemy.exc import IntegrityError
     for key, value in defaults.items():
         existing = db.query(Setting).filter(Setting.key == key).first()
-        if not existing:
-            db.add(Setting(key=key, value=value))
-    db.commit()
+        if existing:
+            continue
+        db.add(Setting(key=key, value=value))
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()  # another worker inserted it first — fine
 
 
 def migrate_orphaned_data_to_user(db, user_id: int):

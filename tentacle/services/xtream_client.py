@@ -79,7 +79,15 @@ class XtreamClient:
         # Use (connect_timeout, read_timeout) tuple for large responses
         resp = self.session.get(url, timeout=(10, t))
         resp.raise_for_status()
-        return resp.json()
+        try:
+            return resp.json()
+        except ValueError as e:
+            # Provider returned non-JSON (HTML error page, empty body, etc.).
+            # Surface a clear error instead of an opaque JSONDecodeError.
+            snippet = (resp.text or "")[:200]
+            raise ValueError(
+                f"Xtream provider returned malformed/non-JSON response: {e} — body starts: {snippet!r}"
+            )
 
     # ── auth ─────────────────────────────────────────────────────────────
 

@@ -50,23 +50,35 @@ class TMDBService:
     def _cache_path(self, key: str) -> Path:
         return self.cache_dir / f"{hashlib.md5(key.encode()).hexdigest()}.json"
 
+    # Negative matches (no TMDB result) shouldn't be cached for the full 30
+    # days — the title may match later (new TMDB entry, fixed metadata).
+    NEGATIVE_TTL_SECONDS = 3 * 86400  # 3 days
+
     def _cache_get(self, key: str, ttl_seconds: int = 30 * 86400) -> Optional[Any]:
         path = self._cache_path(key)
         if not path.exists():
             return None
         try:
             data = json.loads(path.read_text())
-            if data.get("ts", 0) > datetime.now().timestamp() - ttl_seconds:
+            # An entry can carry its own TTL (e.g. short TTL for negative
+            # matches); fall back to the caller-supplied default otherwise.
+            effective_ttl = data.get("ttl", ttl_seconds)
+            if data.get("ts", 0) > datetime.now().timestamp() - effective_ttl:
                 return data.get("v")
         except Exception:
             pass
         return None
 
-    def _cache_set(self, key: str, value: Any):
+    def _cache_set(self, key: str, value: Any, ttl_seconds: Optional[int] = None):
+        # Cache negative results (None) for a shorter window so they expire and
+        # get re-checked sooner than positive matches.
+        if ttl_seconds is None and value is None:
+            ttl_seconds = self.NEGATIVE_TTL_SECONDS
         try:
-            self._cache_path(key).write_text(
-                json.dumps({"ts": datetime.now().timestamp(), "v": value})
-            )
+            payload = {"ts": datetime.now().timestamp(), "v": value}
+            if ttl_seconds is not None:
+                payload["ttl"] = ttl_seconds
+            self._cache_path(key).write_text(json.dumps(payload))
         except Exception:
             pass
 
@@ -128,11 +140,18 @@ class TMDBService:
             tmdb_year = tmdb_year_raw[:4] if tmdb_year_raw else None
 
             score = self._similarity(title, tmdb_title)
-            if year and tmdb_year and year == tmdb_year:
-                score += 0.15
+            if year and tmdb_year:
+                if year == tmdb_year:
+                    # Strongly prefer an exact-year match so two same-titled
+                    # candidates (remake / re-release) resolve to the right one.
+                    score += 0.20
+                else:
+                    # Year known but mismatched — small penalty so a matching-year
+                    # candidate with comparable title similarity wins.
+                    score -= 0.10
             if result.get('popularity', 0) > 50:
                 score += 0.05
-            score = min(score, 1.0)
+            score = max(0.0, min(score, 1.0))
 
             if score > best_score:
                 best_score = score

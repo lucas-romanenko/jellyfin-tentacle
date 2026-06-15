@@ -20,6 +20,35 @@ var Details = {
         return '<div class="moonfin-watched-indicator">' + this.WATCHED_INDICATOR_SVG + '</div>';
     },
 
+    // ── HTML escaping helpers (item data is attacker-influenceable: IPTV + TMDB) ──
+    esc: function(str) {
+        if (str == null) return '';
+        return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    },
+
+    escAttr: function(str) {
+        if (str == null) return '';
+        return String(str).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    },
+
+    // Validate a trailer/iframe URL against an https + known-host allowlist.
+    // Returns the URL string if allowed, otherwise null.
+    safeTrailerUrl: function(url) {
+        if (!url) return null;
+        var parsed;
+        try { parsed = new URL(url, window.location.href); } catch (e) { return null; }
+        if (parsed.protocol !== 'https:') return null;
+        var host = parsed.hostname.toLowerCase();
+        var allowed = [
+            'www.youtube.com', 'youtube.com', 'youtube-nocookie.com', 'www.youtube-nocookie.com',
+            'youtu.be', 'player.vimeo.com', 'vimeo.com', 'www.dailymotion.com', 'dailymotion.com'
+        ];
+        for (var i = 0; i < allowed.length; i++) {
+            if (host === allowed[i] || host.endsWith('.' + allowed[i])) return parsed.href;
+        }
+        return null;
+    },
+
     init: function() {
         this.createContainer();
         this.setupItemInterception();
@@ -580,8 +609,8 @@ var Details = {
 
         var infoItems = [];
         if (year) infoItems.push('<span class="moonfin-info-item">' + year + '</span>');
-        if (rating) infoItems.push('<span class="moonfin-info-pill">' + rating + '</span>');
-        if (runtime && item.Type !== 'Series') infoItems.push('<span class="moonfin-info-item">' + runtime + '</span>');
+        if (rating) infoItems.push('<span class="moonfin-info-pill">' + this.esc(rating) + '</span>');
+        if (runtime && item.Type !== 'Series') infoItems.push('<span class="moonfin-info-item">' + this.esc(runtime) + '</span>');
         if (communityRating) infoItems.push('<span class="moonfin-info-item moonfin-star-rating"><svg viewBox="0 -960 960 960" fill="currentColor" width="16" height="16"><path d="m354-287 126-76 126 77-33-144 111-96-146-13-58-136-58 135-146 13 111 97-33 143ZM233-120l65-281L80-590l288-25 112-265 112 265 288 25-218 189 65 281-247-149-247 149Z"/></svg> ' + communityRating + '</span>');
         if (isSeries && seasonCount > 0) {
             infoItems.push('<span class="moonfin-info-item">' + seasonCount + ' Season' + (seasonCount !== 1 ? 's' : '') + '</span>');
@@ -596,8 +625,8 @@ var Details = {
                 epInfo = 'S' + item.ParentIndexNumber + ' E' + item.IndexNumber;
             }
             episodeHeader = '<div class="moonfin-episode-header">' +
-                (item.SeriesName ? '<span class="moonfin-series-name">' + item.SeriesName + '</span>' : '') +
-                (epInfo ? '<span class="moonfin-episode-number">' + epInfo + '</span>' : '') +
+                (item.SeriesName ? '<span class="moonfin-series-name">' + this.esc(item.SeriesName) + '</span>' : '') +
+                (epInfo ? '<span class="moonfin-episode-number">' + this.esc(epInfo) + '</span>' : '') +
             '</div>';
         }
 
@@ -676,7 +705,7 @@ var Details = {
                     '<div class="moonfin-btn-circle">' +
                         '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="M320-280h320v-80H320v80Zm0-160h320v-80H320v80ZM240-80q-33 0-56.5-23.5T160-160v-640q0-33 23.5-56.5T240-880h320l240 240v480q0 33-23.5 56.5T720-80H240Zm280-560v-160H240v640h480v-480H520ZM240-800v160-160 640-640Z"/></svg>' +
                     '</div>' +
-                    '<span class="moonfin-btn-label">' + (item.MediaSources[0].Name || 'Version') + '</span>' +
+                    '<span class="moonfin-btn-label">' + this.esc(item.MediaSources[0].Name || 'Version') + '</span>' +
                 '</div>'
             );
         } else {
@@ -750,10 +779,10 @@ var Details = {
         );
 
         var metadataRows = [];
-        if (genres) metadataRows.push('<div class="moonfin-metadata-cell"><span class="moonfin-metadata-label">Genres</span><span class="moonfin-metadata-value">' + genres + '</span></div>');
-        if (directors) metadataRows.push('<div class="moonfin-metadata-cell"><span class="moonfin-metadata-label">Director</span><span class="moonfin-metadata-value">' + directors + '</span></div>');
-        if (writers) metadataRows.push('<div class="moonfin-metadata-cell"><span class="moonfin-metadata-label">Writers</span><span class="moonfin-metadata-value">' + writers + '</span></div>');
-        if (studios) metadataRows.push('<div class="moonfin-metadata-cell"><span class="moonfin-metadata-label">Studio</span><span class="moonfin-metadata-value">' + studios + '</span></div>');
+        if (genres) metadataRows.push('<div class="moonfin-metadata-cell"><span class="moonfin-metadata-label">Genres</span><span class="moonfin-metadata-value">' + this.esc(genres) + '</span></div>');
+        if (directors) metadataRows.push('<div class="moonfin-metadata-cell"><span class="moonfin-metadata-label">Director</span><span class="moonfin-metadata-value">' + this.esc(directors) + '</span></div>');
+        if (writers) metadataRows.push('<div class="moonfin-metadata-cell"><span class="moonfin-metadata-label">Writers</span><span class="moonfin-metadata-value">' + this.esc(writers) + '</span></div>');
+        if (studios) metadataRows.push('<div class="moonfin-metadata-cell"><span class="moonfin-metadata-label">Studio</span><span class="moonfin-metadata-value">' + this.esc(studios) + '</span></div>');
         if (runtime) metadataRows.push('<div class="moonfin-metadata-cell"><span class="moonfin-metadata-label">Runtime</span><span class="moonfin-metadata-value">' + runtime + '</span></div>');
         if (isSeries && seasonCount > 0) metadataRows.push('<div class="moonfin-metadata-cell"><span class="moonfin-metadata-label">Seasons</span><span class="moonfin-metadata-value">' + seasonCount + '</span></div>');
         
@@ -775,8 +804,8 @@ var Details = {
                 '<div class="moonfin-cast-photo">' +
                     (personImg ? '<img src="' + personImg + '" alt="" loading="lazy">' : '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 4a4 4 0 0 1 4 4 4 4 0 0 1-4 4 4 4 0 0 1-4-4 4 4 0 0 1 4-4m0 10c4.42 0 8 1.79 8 4v2H4v-2c0-2.21 3.58-4 8-4"/></svg>') +
                 '</div>' +
-                '<span class="moonfin-cast-name">' + person.Name + '</span>' +
-                '<span class="moonfin-cast-role">' + (person.Role || person.Type || '') + '</span>' +
+                '<span class="moonfin-cast-name">' + self.esc(person.Name) + '</span>' +
+                '<span class="moonfin-cast-role">' + self.esc(person.Role || person.Type || '') + '</span>' +
             '</div>';
         }).join('');
 
@@ -785,13 +814,13 @@ var Details = {
             var simPosterUrl = simPosterTag ? serverUrl + '/Items/' + sim.Id + '/Images/Primary?maxHeight=400&quality=80' : '';
             var simWatched = sim.UserData && sim.UserData.Played;
             var simFavorite = sim.UserData && sim.UserData.IsFavorite;
-            return '<div class="moonfin-similar-card moonfin-focusable" data-item-id="' + sim.Id + '" data-type="' + sim.Type + '" tabindex="0">' +
+            return '<div class="moonfin-similar-card moonfin-focusable" data-item-id="' + self.escAttr(sim.Id) + '" data-type="' + self.escAttr(sim.Type) + '" tabindex="0">' +
                 '<div class="moonfin-similar-poster">' +
                     (simPosterUrl ? '<img src="' + simPosterUrl + '" alt="" loading="lazy">' : '') +
                     (simFavorite ? self.buildFavoriteIndicator() : '') +
                     (simWatched ? self.buildWatchedIndicator() : '') +
                 '</div>' +
-                '<span class="moonfin-similar-title">' + sim.Name + '</span>' +
+                '<span class="moonfin-similar-title">' + self.esc(sim.Name) + '</span>' +
             '</div>';
         }).join('');
 
@@ -814,12 +843,12 @@ var Details = {
                         var seasonUnplayed = season.UserData ? season.UserData.UnplayedItemCount : null;
                         return '<div class="moonfin-season-card moonfin-focusable" data-item-id="' + season.Id + '" data-type="Season" tabindex="0">' +
                             '<div class="moonfin-season-poster">' +
-                                (seasonPoster ? '<img src="' + seasonPoster + '" alt="" loading="lazy">' : '<span>' + season.Name + '</span>') +
+                                (seasonPoster ? '<img src="' + seasonPoster + '" alt="" loading="lazy">' : '<span>' + self.esc(season.Name) + '</span>') +
                                 (seasonFavorite ? self.buildFavoriteIndicator() : '') +
                                 (seasonWatched ? self.buildWatchedIndicator() :
                                 (seasonUnplayed > 0 ? '<div class="moonfin-unplayed-count">' + seasonUnplayed + '</div>' : '')) +
                             '</div>' +
-                            '<span class="moonfin-season-name">' + season.Name + '</span>' +
+                            '<span class="moonfin-season-name">' + self.esc(season.Name) + '</span>' +
                         '</div>';
                     }).join('') +
                 '</div>' +
@@ -845,9 +874,9 @@ var Details = {
                         (ep.UserData && ep.UserData.PlayedPercentage ? '<div class="moonfin-episode-progress"><div class="moonfin-episode-progress-bar" style="width:' + Math.min(ep.UserData.PlayedPercentage, 100) + '%"></div></div>' : '') +
                     '</div>' +
                     '<div class="moonfin-episode-info">' +
-                        '<span class="moonfin-episode-ep-number">E' + (ep.IndexNumber || '?') + '</span>' +
-                        '<span class="moonfin-episode-ep-title">' + ep.Name + '</span>' +
-                        (epRuntime ? '<span class="moonfin-episode-ep-runtime">' + epRuntime + '</span>' : '') +
+                        '<span class="moonfin-episode-ep-number">E' + self.esc(ep.IndexNumber || '?') + '</span>' +
+                        '<span class="moonfin-episode-ep-title">' + self.esc(ep.Name) + '</span>' +
+                        (epRuntime ? '<span class="moonfin-episode-ep-runtime">' + self.esc(epRuntime) + '</span>' : '') +
                     '</div>' +
                 '</div>';
             }).join('');
@@ -881,8 +910,8 @@ var Details = {
                                 '<img src="' + chapterImage + '" alt="" loading="lazy" onerror="this.style.display=\'none\';this.parentNode.classList.add(\'moonfin-chapter-thumb-empty\')">' +
                             '</div>' +
                             '<div class="moonfin-chapter-info">' +
-                                '<span class="moonfin-chapter-title">' + chapterName + '</span>' +
-                                '<span class="moonfin-chapter-time">' + chapterStart + '</span>' +
+                                '<span class="moonfin-chapter-title">' + self.esc(chapterName) + '</span>' +
+                                '<span class="moonfin-chapter-time">' + self.esc(chapterStart) + '</span>' +
                             '</div>' +
                         '</div>';
                     }).join('') +
@@ -909,7 +938,7 @@ var Details = {
                                 (featureFavorite ? self.buildFavoriteIndicator() : '') +
                                 (featureWatched ? self.buildWatchedIndicator() : '') +
                             '</div>' +
-                            '<span class="moonfin-similar-title">' + (feature.Name || 'Feature') + '</span>' +
+                            '<span class="moonfin-similar-title">' + self.esc(feature.Name || 'Feature') + '</span>' +
                         '</div>';
                     }).join('') +
                 '</div>' +
@@ -921,7 +950,7 @@ var Details = {
         var collectionsHtml = collectionItems.length > 0 ? (
             '<div class="moonfin-section">' +
                 '<div class="moonfin-section-header">' +
-                    '<h3 class="moonfin-section-title">' + collectionTitle + '</h3>' +
+                    '<h3 class="moonfin-section-title">' + this.esc(collectionTitle) + '</h3>' +
                     arrowsHtml +
                 '</div>' +
                 '<div class="moonfin-section-scroll">' +
@@ -934,7 +963,7 @@ var Details = {
                                 (colPosterUrl ? '<img src="' + colPosterUrl + '" alt="" loading="lazy">' : '') +
                                 (colWatched ? '<div class="moonfin-watched-indicator"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M21 7L9 19l-5.5-5.5 1.41-1.41L9 16.17 19.59 5.59 21 7z"/></svg></div>' : '') +
                             '</div>' +
-                            '<span class="moonfin-similar-title">' + (col.Name || '') + '</span>' +
+                            '<span class="moonfin-similar-title">' + self.esc(col.Name || '') + '</span>' +
                         '</div>';
                     }).join('') +
                 '</div>' +
@@ -957,12 +986,12 @@ var Details = {
                     '<div class="moonfin-info-section">' +
                         episodeHeader +
                         '<div class="moonfin-title-section">' +
-                            (logoUrl ? '<img class="moonfin-logo" src="' + logoUrl + '" alt="' + item.Name + '">' : '<h1 class="moonfin-title">' + item.Name + '</h1>') +
+                            (logoUrl ? '<img class="moonfin-logo" src="' + this.escAttr(logoUrl) + '" alt="' + this.escAttr(item.Name) + '">' : '<h1 class="moonfin-title">' + this.esc(item.Name) + '</h1>') +
                         '</div>' +
                         infoRowHtml +
                         '<div class="moonfin-mdblist-ratings-row" id="moonfin-details-mdblist"></div>' +
-                        (tagline ? '<p class="moonfin-tagline">&ldquo;' + tagline + '&rdquo;</p>' : '') +
-                        (item.Overview ? '<p class="moonfin-overview">' + item.Overview + '</p>' : '') +
+                        (tagline ? '<p class="moonfin-tagline">&ldquo;' + this.esc(tagline) + '&rdquo;</p>' : '') +
+                        (item.Overview ? '<p class="moonfin-overview">' + this.esc(item.Overview) + '</p>' : '') +
                     '</div>' +
                     
                     '<div class="moonfin-poster-section' + (item.Type === 'Episode' ? ' moonfin-poster-landscape' : '') + '">' +
@@ -1638,7 +1667,7 @@ var Details = {
         var overlay = document.createElement('div');
         overlay.className = 'moonfin-trailer-overlay';
         overlay.innerHTML =
-            '<div class="moonfin-trailer-modal" role="dialog" aria-modal="true" aria-label="' + (title || 'Trailer') + '">' +
+            '<div class="moonfin-trailer-modal" role="dialog" aria-modal="true" aria-label="' + this.escAttr(title || 'Trailer') + '">' +
                 '<button class="moonfin-trailer-close moonfin-focusable" aria-label="Close trailer" tabindex="0">' +
                     '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M18.3 5.71 12 12l6.3 6.29-1.41 1.42L10.59 13.4 4.29 19.71 2.88 18.3 9.17 12 2.88 5.71 4.29 4.29l6.3 6.3 6.29-6.3z"/></svg>' +
                 '</button>' +
@@ -1689,8 +1718,13 @@ var Details = {
             return;
         }
 
+        var safeUrl = this.safeTrailerUrl(source.url);
+        if (!safeUrl) {
+            host.innerHTML = '<div class="moonfin-details-error"><span>Unable to load trailer</span></div>';
+            return;
+        }
         host.innerHTML =
-            '<iframe class="moonfin-trailer-iframe visible" src="' + source.url + '" allow="autoplay; fullscreen; encrypted-media; picture-in-picture" allowfullscreen loading="eager" referrerpolicy="origin"></iframe>';
+            '<iframe class="moonfin-trailer-iframe visible" src="' + this.escAttr(safeUrl) + '" allow="autoplay; fullscreen; encrypted-media; picture-in-picture" allowfullscreen loading="eager" referrerpolicy="origin"></iframe>';
     },
 
     _ensureYTApi: function(callback) {
@@ -2037,7 +2071,7 @@ var Details = {
         menuItems.push({ id: 'opennative', name: 'Open in Jellyfin', icon: '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="M200-120q-33 0-56.5-23.5T120-200v-560q0-33 23.5-56.5T200-840h280v80H200v560h560v-280h80v280q0 33-23.5 56.5T760-120H200Zm188-212-56-56 372-372H560v-80h280v280h-80v-144L388-332Z"/></svg>' });
 
         var menuHtml = '<div class="moonfin-more-menu">' +
-            '<h3 class="moonfin-more-title">' + (item.Name || 'Options') + '</h3>' +
+            '<h3 class="moonfin-more-title">' + this.esc(item.Name || 'Options') + '</h3>' +
             '<div class="moonfin-more-items">';
 
         for (var i = 0; i < menuItems.length; i++) {
@@ -2193,7 +2227,7 @@ var Details = {
         overlay.className = 'moonfin-more-overlay';
         overlay.innerHTML = '<div class="moonfin-more-menu">' +
             '<h3 class="moonfin-more-title">Delete</h3>' +
-            '<p style="color:rgba(255,255,255,0.7);margin:0 0 20px;text-align:center">Are you sure you want to delete<br><strong>' + (item.Name || 'this item') + '</strong>?<br><span style="color:#ff6b6b;font-size:13px">This action cannot be undone.</span></p>' +
+            '<p style="color:rgba(255,255,255,0.7);margin:0 0 20px;text-align:center">Are you sure you want to delete<br><strong>' + this.esc(item.Name || 'this item') + '</strong>?<br><span style="color:#ff6b6b;font-size:13px">This action cannot be undone.</span></p>' +
             '<div style="display:flex;gap:12px;justify-content:center">' +
                 '<button class="moonfin-more-item moonfin-focusable moonfin-delete-cancel" tabindex="0"><span class="moonfin-more-item-text">Cancel</span></button>' +
                 '<button class="moonfin-more-item moonfin-focusable moonfin-more-item-danger moonfin-delete-confirm" tabindex="0"><span class="moonfin-more-item-text">Delete</span></button>' +
@@ -2222,8 +2256,15 @@ var Details = {
             var mediaType = item.Type === 'Series' ? 'series' : 'movie';
 
             if (tmdbId) {
+                // Route through Tentacle for full cleanup (disk, DB, playlists).
+                // Do NOT silently fall back to a raw Jellyfin item delete — that
+                // bypasses Tentacle cleanup. Surface errors to the user instead.
                 var deleteUrl = serverUrl + '/TentacleDiscover/LibraryItem/' + mediaType + '/' + tmdbId;
-                if (item.Id) deleteUrl += '?jellyfinItemId=' + item.Id;
+                var params = [];
+                if (item.Id) params.push('jellyfinItemId=' + encodeURIComponent(item.Id));
+                var currentUserId = (window.ApiClient && window.ApiClient.getCurrentUserId) ? window.ApiClient.getCurrentUserId() : null;
+                if (currentUserId) params.push('userId=' + encodeURIComponent(currentUserId));
+                if (params.length) deleteUrl += '?' + params.join('&');
                 fetch(deleteUrl, {
                     method: 'DELETE',
                     headers: headers
@@ -2234,38 +2275,13 @@ var Details = {
                     } else if (resp.status === 403) {
                         self.showToast('Permission denied — you can only delete content you downloaded');
                     } else {
-                        // Fallback to direct Jellyfin delete (e.g. VOD or non-Tentacle content)
-                        fetch(serverUrl + '/Items/' + item.Id, {
-                            method: 'DELETE',
-                            headers: headers
-                        }).then(function(r2) {
-                            if (r2.ok) {
-                                self.showToast('Deleted successfully');
-                                self.hide();
-                            } else {
-                                self.showToast('Failed to delete - check permissions');
-                            }
-                        });
+                        self.showToast('Failed to delete - check permissions');
                     }
                     closeOverlay();
                 }).catch(function(err) {
-                    console.error('[Moonfin] Details: Tentacle delete failed, falling back', err);
-                    // Fallback to direct Jellyfin delete
-                    fetch(serverUrl + '/Items/' + item.Id, {
-                        method: 'DELETE',
-                        headers: headers
-                    }).then(function(resp) {
-                        if (resp.ok) {
-                            self.showToast('Deleted successfully');
-                            self.hide();
-                        } else {
-                            self.showToast('Failed to delete - check permissions');
-                        }
-                        closeOverlay();
-                    }).catch(function() {
-                        self.showToast('Delete failed');
-                        closeOverlay();
-                    });
+                    console.error('[Moonfin] Details: Tentacle delete failed', err);
+                    self.showToast('Delete failed');
+                    closeOverlay();
                 });
             } else {
                 // No TMDB ID — direct Jellyfin delete (non-Tentacle content)
@@ -2330,7 +2346,7 @@ var Details = {
             var isSelected = src.Id === self._selectedMediaSourceId;
             menuHtml += '<button class="moonfin-more-item moonfin-focusable' + (isSelected ? ' active' : '') + '" data-source-id="' + src.Id + '" tabindex="0">' +
                 '<span class="moonfin-more-item-icon"><svg viewBox="0 -960 960 960" fill="currentColor"><path d="M320-280h320v-80H320v80Zm0-160h320v-80H320v80ZM240-80q-33 0-56.5-23.5T160-160v-640q0-33 23.5-56.5T240-880h320l240 240v480q0 33-23.5 56.5T720-80H240Zm280-560v-160H240v640h480v-480H520ZM240-800v160-160 640-640Z"/></svg></span>' +
-                '<span class="moonfin-more-item-text">' + (src.Name || ('Version ' + (i + 1))) + '</span>' +
+                '<span class="moonfin-more-item-text">' + self.esc(src.Name || ('Version ' + (i + 1))) + '</span>' +
             '</button>';
         }
 
@@ -2428,7 +2444,7 @@ var Details = {
             var isSelected = audioTracks[i].Index === self._selectedAudioIndex;
             menuHtml += '<button class="moonfin-more-item moonfin-focusable' + (isSelected ? ' active' : '') + '" data-audio-index="' + audioTracks[i].Index + '" tabindex="0">' +
                 '<span class="moonfin-more-item-icon"><svg viewBox="0 -960 960 960" fill="currentColor"><path d="M400-120q-66 0-113-47t-47-113q0-66 47-113t113-47q23 0 42.5 5.5T480-418v-422h240v160H560v400q0 66-47 113t-113 47Z"/></svg></span>' +
-                '<span class="moonfin-more-item-text">' + (audioTracks[i].DisplayTitle || ('Audio ' + (i + 1))) + '</span>' +
+                '<span class="moonfin-more-item-text">' + self.esc(audioTracks[i].DisplayTitle || ('Audio ' + (i + 1))) + '</span>' +
             '</button>';
         }
 
@@ -2491,7 +2507,7 @@ var Details = {
             var isSelected = subtitleTracks[i].Index === self._selectedSubtitleIndex;
             menuHtml += '<button class="moonfin-more-item moonfin-focusable' + (isSelected ? ' active' : '') + '" data-sub-index="' + subtitleTracks[i].Index + '" tabindex="0">' +
                 '<span class="moonfin-more-item-icon"><svg viewBox="0 -960 960 960" fill="currentColor"><path d="M200-160q-33 0-56.5-23.5T120-240v-480q0-33 23.5-56.5T200-800h560q33 0 56.5 23.5T840-720v480q0 33-23.5 56.5T760-160H200Zm0-80h560v-480H200v480Zm80-120h120q17 0 28.5-11.5T440-400v-40h-60v20h-80v-120h80v20h60v-40q0-17-11.5-28.5T400-600H280q-17 0-28.5 11.5T240-560v160q0 17 11.5 28.5T280-360Zm280 0h120q17 0 28.5-11.5T720-400v-40h-60v20h-80v-120h80v20h60v-40q0-17-11.5-28.5T680-600H560q-17 0-28.5 11.5T520-560v160q0 17 11.5 28.5T560-360ZM200-240v-480 480Z\"/></svg></span>' +
-                '<span class="moonfin-more-item-text">' + (subtitleTracks[i].DisplayTitle || ('Subtitle ' + (i + 1))) + '</span>' +
+                '<span class="moonfin-more-item-text">' + self.esc(subtitleTracks[i].DisplayTitle || ('Subtitle ' + (i + 1))) + '</span>' +
             '</button>';
         }
 
@@ -2569,7 +2585,7 @@ var Details = {
             for (var i = 0; i < playlists.length; i++) {
                 menuHtml += '<button class="moonfin-more-item moonfin-focusable" data-playlist-id="' + playlists[i].Id + '" tabindex="0">' +
                     '<span class="moonfin-more-item-icon"><svg viewBox="0 -960 960 960" fill="currentColor"><path d="M500-360q42 0 71-29t29-71q0-42-29-71t-71-29q-42 0-71 29t-29 71q0 42 29 71t71 29ZM200-120v-640h560v361q-20-2-40 1t-40 12V-680H280v368l220-140 64 41q-13 17-20.5 37T536-334l-36 22-300-190v382Z"/></svg></span>' +
-                    '<span class="moonfin-more-item-text">' + playlists[i].Name + '</span>' +
+                    '<span class="moonfin-more-item-text">' + self.esc(playlists[i].Name) + '</span>' +
                 '</button>';
             }
 
@@ -2754,7 +2770,7 @@ var Details = {
             for (var i = 0; i < collections.length; i++) {
                 menuHtml += '<button class="moonfin-more-item moonfin-focusable" data-collection-id="' + collections[i].Id + '" tabindex="0">' +
                     '<span class="moonfin-more-item-icon"><svg viewBox="0 -960 960 960" fill="currentColor"><path d="M260-160q-91 0-155.5-63T40-377q0-78 47-139t121-71q17-91 90-147t163-56q100 0 172.5 69T707-554q71 5 122 57t51 127q0 75-52.5 127.5T700-190H260Z"/></svg></span>' +
-                    '<span class="moonfin-more-item-text">' + collections[i].Name + '</span>' +
+                    '<span class="moonfin-more-item-text">' + self.esc(collections[i].Name) + '</span>' +
                 '</button>';
             }
 
@@ -2826,30 +2842,30 @@ var Details = {
             for (var i = 0; i < streams.length; i++) {
                 var s = streams[i];
                 infoHtml += '<div class="moonfin-media-info-stream">';
-                infoHtml += '<div class="moonfin-media-info-stream-header">' + s.Type + (s.Language ? ' (' + s.Language + ')' : '') + '</div>';
+                infoHtml += '<div class="moonfin-media-info-stream-header">' + this.esc(s.Type) + (s.Language ? ' (' + this.esc(s.Language) + ')' : '') + '</div>';
 
                 if (s.Type === 'Video') {
-                    if (s.DisplayTitle) infoHtml += '<div class="moonfin-media-info-row">' + s.DisplayTitle + '</div>';
+                    if (s.DisplayTitle) infoHtml += '<div class="moonfin-media-info-row">' + this.esc(s.DisplayTitle) + '</div>';
                     var details = [];
                     if (s.Width && s.Height) details.push(s.Width + 'x' + s.Height);
                     if (s.Codec) details.push(s.Codec.toUpperCase());
                     if (s.BitRate) details.push(Math.round(s.BitRate / 1000000) + ' Mbps');
                     if (s.VideoRange) details.push(s.VideoRange);
-                    if (details.length) infoHtml += '<div class="moonfin-media-info-row">' + details.join(' · ') + '</div>';
+                    if (details.length) infoHtml += '<div class="moonfin-media-info-row">' + this.esc(details.join(' · ')) + '</div>';
                 } else if (s.Type === 'Audio') {
-                    if (s.DisplayTitle) infoHtml += '<div class="moonfin-media-info-row">' + s.DisplayTitle + '</div>';
+                    if (s.DisplayTitle) infoHtml += '<div class="moonfin-media-info-row">' + this.esc(s.DisplayTitle) + '</div>';
                     var aDetails = [];
                     if (s.Codec) aDetails.push(s.Codec.toUpperCase());
                     if (s.Channels) aDetails.push(s.Channels + ' ch');
                     if (s.SampleRate) aDetails.push(s.SampleRate + ' Hz');
                     if (s.BitRate) aDetails.push(Math.round(s.BitRate / 1000) + ' kbps');
-                    if (aDetails.length) infoHtml += '<div class="moonfin-media-info-row">' + aDetails.join(' · ') + '</div>';
+                    if (aDetails.length) infoHtml += '<div class="moonfin-media-info-row">' + this.esc(aDetails.join(' · ')) + '</div>';
                 } else if (s.Type === 'Subtitle') {
                     var subDetails = [];
                     if (s.DisplayTitle) subDetails.push(s.DisplayTitle);
                     else if (s.Title) subDetails.push(s.Title);
                     if (s.Codec) subDetails.push(s.Codec.toUpperCase());
-                    if (subDetails.length) infoHtml += '<div class="moonfin-media-info-row">' + subDetails.join(' · ') + '</div>';
+                    if (subDetails.length) infoHtml += '<div class="moonfin-media-info-row">' + this.esc(subDetails.join(' · ')) + '</div>';
                 }
 
                 infoHtml += '</div>';
@@ -2858,7 +2874,7 @@ var Details = {
             if (item.Container) {
                 infoHtml += '<div class="moonfin-media-info-stream">';
                 infoHtml += '<div class="moonfin-media-info-stream-header">Container</div>';
-                infoHtml += '<div class="moonfin-media-info-row">' + item.Container.toUpperCase() + '</div>';
+                infoHtml += '<div class="moonfin-media-info-row">' + this.esc(item.Container.toUpperCase()) + '</div>';
                 infoHtml += '</div>';
             }
         }
@@ -2983,14 +2999,14 @@ var Details = {
                 '</div>' +
                 '<div class="moonfin-season-ep-body">' +
                     '<div class="moonfin-season-ep-top">' +
-                        '<span class="moonfin-season-ep-number">Episode ' + (ep.IndexNumber || '?') + '</span>' +
+                        '<span class="moonfin-season-ep-number">Episode ' + self.esc(ep.IndexNumber || '?') + '</span>' +
                         '<span class="moonfin-season-ep-meta">' +
-                            (epRuntime ? '<span>' + epRuntime + '</span>' : '') +
+                            (epRuntime ? '<span>' + self.esc(epRuntime) + '</span>' : '') +
                             (isPlayed ? '<svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16" class="moonfin-season-ep-check"><path d="M21 7L9 19l-5.5-5.5 1.41-1.41L9 16.17 19.59 5.59 21 7z"/></svg>' : '') +
                         '</span>' +
                     '</div>' +
-                    '<span class="moonfin-season-ep-title">' + ep.Name + '</span>' +
-                    (ep.Overview ? '<p class="moonfin-season-ep-overview">' + ep.Overview + '</p>' : '') +
+                    '<span class="moonfin-season-ep-title">' + self.esc(ep.Name) + '</span>' +
+                    (ep.Overview ? '<p class="moonfin-season-ep-overview">' + self.esc(ep.Overview) + '</p>' : '') +
                 '</div>' +
             '</div>';
         }).join('');
@@ -3012,8 +3028,8 @@ var Details = {
                         (posterUrl ? '<img src="' + posterUrl + '" alt="">' : '') +
                     '</div>' +
                     '<div class="moonfin-season-detail-info">' +
-                        (item.SeriesName ? '<span class="moonfin-season-detail-series">' + item.SeriesName + '</span>' : '') +
-                        '<h1 class="moonfin-season-detail-title">' + item.Name + '</h1>' +
+                        (item.SeriesName ? '<span class="moonfin-season-detail-series">' + this.esc(item.SeriesName) + '</span>' : '') +
+                        '<h1 class="moonfin-season-detail-title">' + this.esc(item.Name) + '</h1>' +
                         '<span class="moonfin-season-detail-count">' + episodes.length + ' Episode' + (episodes.length !== 1 ? 's' : '') + '</span>' +
                     '</div>' +
                 '</div>' +
@@ -3192,7 +3208,7 @@ var Details = {
             }
         }
         if (birthPlace) {
-            infoItems.push('<span class="moonfin-info-item">' + birthPlace + '</span>');
+            infoItems.push('<span class="moonfin-info-item">' + self.esc(birthPlace) + '</span>');
         }
         var infoRowHtml = infoItems.length > 0 ? '<div class="moonfin-info-row">' + infoItems.join('') + '</div>' : '';
 
@@ -3210,14 +3226,14 @@ var Details = {
                 var fiYear = fi.ProductionYear || (fi.PremiereDate ? new Date(fi.PremiereDate).getFullYear() : '');
                 var fiWatched = fi.UserData && fi.UserData.Played;
                 var fiFavorite = fi.UserData && fi.UserData.IsFavorite;
-                return '<div class="moonfin-similar-card moonfin-focusable" data-item-id="' + fi.Id + '" data-type="' + fi.Type + '" tabindex="0">' +
+                return '<div class="moonfin-similar-card moonfin-focusable" data-item-id="' + self.escAttr(fi.Id) + '" data-type="' + self.escAttr(fi.Type) + '" tabindex="0">' +
                     '<div class="moonfin-similar-poster">' +
                         (fiPosterUrl ? '<img src="' + fiPosterUrl + '" alt="" loading="lazy">' : '<div class="moonfin-poster-placeholder"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M21 3H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H3V5h18v14z"/></svg></div>') +
                         (fiFavorite ? self.buildFavoriteIndicator() : '') +
                         (fiWatched ? self.buildWatchedIndicator() : '') +
                     '</div>' +
-                    '<span class="moonfin-similar-title">' + fi.Name + '</span>' +
-                    (fiYear ? '<span class="moonfin-person-film-year">' + fiYear + '</span>' : '') +
+                    '<span class="moonfin-similar-title">' + self.esc(fi.Name) + '</span>' +
+                    (fiYear ? '<span class="moonfin-person-film-year">' + self.esc(fiYear) + '</span>' : '') +
                 '</div>';
             }).join('');
         };
@@ -3267,9 +3283,9 @@ var Details = {
                         (photoUrl ? '<img class="moonfin-person-photo" src="' + photoUrl + '" alt="">' : '<div class="moonfin-person-photo moonfin-person-photo-placeholder"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 4a4 4 0 0 1 4 4 4 4 0 0 1-4 4 4 4 0 0 1-4-4 4 4 0 0 1 4-4m0 10c4.42 0 8 1.79 8 4v2H4v-2c0-2.21 3.58-4 8-4"/></svg></div>') +
                     '</div>' +
                     '<div class="moonfin-person-info">' +
-                        '<h1 class="moonfin-title">' + item.Name + '</h1>' +
+                        '<h1 class="moonfin-title">' + this.esc(item.Name) + '</h1>' +
                         infoRowHtml +
-                        (item.Overview ? '<p class="moonfin-overview">' + item.Overview + '</p>' : '') +
+                        (item.Overview ? '<p class="moonfin-overview">' + this.esc(item.Overview) + '</p>' : '') +
                         '<div class="moonfin-action-btns" style="margin-top:16px">' +
                             '<div class="moonfin-btn-wrapper moonfin-focusable ' + (isFavorite ? 'active' : '') + '" data-action="favorite" tabindex="0">' +
                                 '<div class="moonfin-btn-circle">' +

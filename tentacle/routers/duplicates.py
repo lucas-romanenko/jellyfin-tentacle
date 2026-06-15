@@ -55,9 +55,15 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
 
     elif resolution == "keep_vod":
         # Delete from Radarr via API (removes from Radarr + deletes files on disk)
-        _delete_from_radarr(dup.tmdb_id, db)
+        deleted_ok = _delete_from_radarr(dup.tmdb_id, db)
 
-        # Remove Radarr DB record
+        # Only remove the Radarr DB record if the API delete actually succeeded —
+        # otherwise the files are still on disk and dropping the record would
+        # orphan them. Keep the record so the resolution can be retried.
+        if not deleted_ok:
+            db.rollback()
+            raise HTTPException(502, f"Failed to delete tmdb:{dup.tmdb_id} from Radarr — files may still exist")
+
         radarr_movie = db.query(Movie).filter(
             Movie.tmdb_id == dup.tmdb_id,
             Movie.source == "radarr"
@@ -92,18 +98,26 @@ def _delete_vod_files(strm_path: str):
         logger.warning(f"Could not delete VOD files at {strm_path}: {e}")
 
 
-def _delete_from_radarr(tmdb_id: int, db: Session):
-    """Delete a movie from Radarr via its API."""
+def _delete_from_radarr(tmdb_id: int, db: Session) -> bool:
+    """Delete a movie from Radarr via its API. Returns True on success.
+
+    If Radarr is not configured there is nothing to delete on the *arr side, so
+    we treat it as success (the caller still removes the DB record).
+    """
     from services.radarr import RadarrService
 
     radarr_url = get_setting(db, "radarr_url")
     radarr_key = get_setting(db, "radarr_api_key")
     if not radarr_url or not radarr_key:
         logger.warning(f"Cannot delete tmdb:{tmdb_id} from Radarr — not configured")
-        return
+        return True
 
-    radarr = RadarrService(radarr_url, radarr_key)
-    radarr.delete_movie(tmdb_id, delete_files=True)
+    try:
+        radarr = RadarrService(radarr_url, radarr_key)
+        return bool(radarr.delete_movie(tmdb_id, delete_files=True))
+    except Exception as e:
+        logger.error(f"Failed to delete tmdb:{tmdb_id} from Radarr: {e}")
+        return False
 
 
 class ResolveRequest(BaseModel):
@@ -173,16 +187,23 @@ def resolve_duplicate(dup_id: int, body: ResolveRequest, db: Session = Depends(g
 @router.post("/resolve-all")
 def resolve_all(body: ResolveAllRequest, db: Session = Depends(get_db)):
     pending = db.query(Duplicate).filter(Duplicate.resolution == "pending").all()
-    count = len(pending)
+    total = len(pending)
 
-    # Apply resolution to each duplicate (delete files, clean up DB)
+    # Apply resolution to each duplicate (delete files, clean up DB). Only mark a
+    # duplicate resolved if its resolution actually succeeded — failed ones stay
+    # pending so they can be retried instead of being silently dropped.
+    resolved = 0
+    failed = 0
     for dup in pending:
         try:
             _apply_resolution(dup, body.resolution, db)
         except Exception as e:
             logger.error(f"Failed to apply resolution for tmdb:{dup.tmdb_id}: {e}")
+            failed += 1
+            continue
         dup.resolution = body.resolution
         dup.resolved_at = datetime.now(timezone.utc)
+        resolved += 1
     db.commit()
 
-    return {"success": True, "count": count}
+    return {"success": failed == 0, "count": resolved, "total": total, "failed": failed}

@@ -16,6 +16,7 @@ from typing import Optional
 import httpx
 from models.database import get_db, get_setting, Movie, Series, ListSubscription, ListItem, DownloadRequest, LiveChannel, TentacleUser
 from routers.auth import get_user_from_request
+from services.ssrf import is_safe_url
 from services.tmdb import TMDBService
 
 logger = logging.getLogger(__name__)
@@ -822,7 +823,9 @@ def _rewrite_item_images(item: dict) -> dict:
 @router.get("/image-proxy/{cache_key}")
 async def image_proxy(cache_key: str, url: str = ""):
     """Proxy TVDB images through the server to bypass CDN TLS fingerprinting."""
-    if not url or "thetvdb.com" not in url:
+    # Strict host allowlist + public-IP check (substring matching like
+    # "thetvdb.com" in url is trivially bypassed, e.g. ?url=http://169.254.169.254/?x=thetvdb.com).
+    if not is_safe_url(url, allowed_hosts={"thetvdb.com"}):
         raise HTTPException(status_code=400, detail="Invalid URL")
 
     # Check disk cache
@@ -839,9 +842,11 @@ async def image_proxy(cache_key: str, url: str = ""):
             media_type = "image/webp"
         return Response(content=cached.read_bytes(), media_type=media_type)
 
-    # Fetch from TVDB using httpx with HTTP/2 (better TLS fingerprint)
+    # Fetch from TVDB using httpx with HTTP/2 (better TLS fingerprint).
+    # follow_redirects=False: a redirect could send us to an internal host that
+    # the up-front allowlist check would not have covered (TVDB artwork is direct).
     try:
-        async with httpx.AsyncClient(http2=True, follow_redirects=True, timeout=15) as client:
+        async with httpx.AsyncClient(http2=True, follow_redirects=False, timeout=15) as client:
             resp = await client.get(url, headers={
                 "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
                 "Accept": "image/webp,image/apng,image/*,*/*;q=0.8",

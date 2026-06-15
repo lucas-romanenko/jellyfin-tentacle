@@ -5,18 +5,32 @@ Tags are written here — this is the single source of truth for NFO content.
 """
 
 import logging
+import re
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List
+from xml.sax.saxutils import escape as _xml_escape
 
 logger = logging.getLogger(__name__)
 
+# Characters that are illegal in XML 1.0 (everything below 0x20 except
+# tab/newline/carriage-return). These must be stripped, not escaped, or the
+# resulting NFO is not well-formed and Jellyfin will fail to parse it.
+_INVALID_XML_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
 
 def _x(text) -> str:
-    """XML escape"""
+    """Escape text for safe inclusion in XML element content/attributes.
+
+    Uses xml.sax.saxutils.escape (handles &, <, >) plus an explicit quote
+    map, and strips control characters that are illegal in XML 1.0. This
+    prevents both malformed output and injection of closing tags via raw
+    metadata (e.g. a title containing '</movie>').
+    """
     if not text:
         return ""
-    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+    cleaned = _INVALID_XML_CHARS.sub("", str(text))
+    return _xml_escape(cleaned, {'"': "&quot;", "'": "&apos;"})
 
 
 def write_movie_nfo(

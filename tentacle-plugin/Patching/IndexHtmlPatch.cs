@@ -14,9 +14,26 @@ namespace Jellyfin.Plugin.Tentacle.Patching;
 public static class IndexHtmlPatch
 {
     private static readonly Harmony HarmonyInstance = new("jellyfin.plugin.tentacle");
+    private static ILogger? _logger;
+
+    // Stable cache-buster for the plugin process lifetime so browsers cache injected
+    // JS/CSS instead of re-downloading them on every page load. Derived from the plugin
+    // assembly version (falling back to process start), so it only changes after a
+    // plugin update / Jellyfin restart.
+    private static readonly string CacheBust =
+        (typeof(IndexHtmlPatch).Assembly.GetName().Version?.ToString() ?? "0")
+            + "-" + DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+    // Cache of the transformed index.html bytes, keyed by the original content so a
+    // changed source (Jellyfin update) invalidates it. Avoids re-running the string
+    // replacements on every request.
+    private static string? _cachedSourceHash;
+    private static byte[]? _cachedTransformed;
+    private static readonly object _transformLock = new();
 
     public static void SetupPatches(ILogger? logger = null)
     {
+        _logger = logger;
         var targetMethod = typeof(PhysicalFileProvider).GetMethod(
             nameof(PhysicalFileProvider.GetFileInfo),
             BindingFlags.Public | BindingFlags.Instance);
@@ -74,7 +91,20 @@ public static class IndexHtmlPatch
                 return;
             }
 
-            var cacheBust = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString();
+            // Serve a cached transformation when the source index.html is unchanged so we
+            // don't re-run the string replacements (and don't change the cache-buster) on
+            // every request — that was forcing browsers to re-download all injected assets.
+            var sourceHash = content.Length + ":" + content.GetHashCode();
+            lock (_transformLock)
+            {
+                if (_cachedTransformed != null && _cachedSourceHash == sourceHash)
+                {
+                    __result = new TransformedFileInfo(__result, _cachedTransformed);
+                    return;
+                }
+            }
+
+            var cacheBust = CacheBust;
             var cssTag = $"<link rel=\"stylesheet\" href=\"/Tentacle/home.css?v={cacheBust}\" />";
             var jsTag = $"<script src=\"/Tentacle/home.js?v={cacheBust}\" defer></script>";
             var discoverCssTag = $"<link rel=\"stylesheet\" href=\"/Tentacle/discover.css?v={cacheBust}\" />";
@@ -100,10 +130,16 @@ public static class IndexHtmlPatch
                 .Replace("</body>", $"{mdblistJsTag}{tmdbJsTag}{navbarJsTag}{mediabarJsTag}{jsTag}{discoverJsTag}{searchJsTag}{livetvJsTag}{detailsJsTag}{notifJsTag}</body>");
 
             var bytes = System.Text.Encoding.UTF8.GetBytes(content);
+            lock (_transformLock)
+            {
+                _cachedTransformed = bytes;
+                _cachedSourceHash = sourceHash;
+            }
             __result = new TransformedFileInfo(__result, bytes);
         }
-        catch
+        catch (Exception ex)
         {
+            _logger?.LogWarning(ex, "[Tentacle] Failed to inject Tentacle assets into index.html");
         }
     }
 

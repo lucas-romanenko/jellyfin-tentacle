@@ -5,7 +5,7 @@ Radarr library scanning, quality profiles, and provider migration
 
 import threading
 import logging
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -17,7 +17,30 @@ from services.nfo import update_nfo_tags, write_movie_nfo, make_folder_name
 from services.migration import migrate_provider, preview_migration
 from services.logstream import log_event_generator, get_recent_logs, emit_library_event
 
-from routers.auth import require_admin
+from routers.auth import require_admin, _has_internal_secret
+
+
+def _check_webhook_auth(request: Request, db: Session) -> None:
+    """Opt-in webhook authentication.
+
+    If a `webhook_secret` setting is configured, require the caller to present a
+    matching `?secret=` (or X-Tentacle-Secret header) — otherwise reject 401 so
+    forged delete/scan events can't be injected. If no secret is configured
+    (default), allow the call but log a one-line warning recommending setup, so
+    existing Radarr/Sonarr installs keep working with no change.
+    """
+    import hmac
+    secret = get_setting(db, "webhook_secret", "")
+    if not secret:
+        logger.warning(
+            "[Radarr webhook] Received unauthenticated webhook — set a 'webhook_secret' "
+            "in settings and add ?secret=... to the webhook URL to reject forged events."
+        )
+        return
+    provided = request.headers.get("X-Tentacle-Secret") or request.query_params.get("secret") or ""
+    if not (provided and hmac.compare_digest(provided, secret)):
+        logger.warning("[Radarr webhook] Rejected webhook with missing/invalid secret")
+        raise HTTPException(401, "Invalid or missing webhook secret")
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/radarr", tags=["radarr"], dependencies=[Depends(require_admin)])
@@ -189,8 +212,9 @@ webhook_router = APIRouter(prefix="/api/radarr", tags=["radarr"])
 
 
 @webhook_router.post("/webhook")
-def radarr_webhook(payload: dict, db: Session = Depends(get_db)):
+def radarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db)):
     """Radarr webhook — triggered on Download, MovieAdded, MovieDelete, MovieFileDelete events."""
+    _check_webhook_auth(request, db)
     event_type = payload.get("eventType", "unknown")
     logger.info(f"[Radarr webhook] Received event: {event_type}")
     valid_events = ("Download", "MovieAdded", "MovieDelete", "MovieFileDelete", "Test")
@@ -217,9 +241,14 @@ def radarr_webhook(payload: dict, db: Session = Depends(get_db)):
             logger.info(f"[Radarr webhook] MovieFileDelete upgrade for '{title}' — ignoring")
             return {"status": "ignored", "reason": "upgrade"}
         # Non-upgrade file deletion — remove from DB
-        deleted = db.query(Movie).filter(Movie.tmdb_id == tmdb_id, Movie.source == "radarr").delete()
-        db.query(DownloadRequest).filter(DownloadRequest.tmdb_id == tmdb_id, DownloadRequest.media_type == "movie").delete()
-        db.commit()
+        try:
+            deleted = db.query(Movie).filter(Movie.tmdb_id == tmdb_id, Movie.source == "radarr").delete()
+            db.query(DownloadRequest).filter(DownloadRequest.tmdb_id == tmdb_id, DownloadRequest.media_type == "movie").delete()
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            logger.error(f"[Radarr webhook] MovieFileDelete DB cleanup failed for tmdb:{tmdb_id}: {e}")
+            raise HTTPException(500, "Failed to process delete event")
         if deleted:
             emit_library_event("movie_removed", {"tmdb_id": tmdb_id, "title": title, "media_type": "movie"})
             log_activity(db, "radarr_remove", f"Removed '{title}' from Radarr library")
@@ -230,9 +259,14 @@ def radarr_webhook(payload: dict, db: Session = Depends(get_db)):
 
     # MovieDelete — remove from DB
     if event_type == "MovieDelete":
-        deleted = db.query(Movie).filter(Movie.tmdb_id == tmdb_id, Movie.source == "radarr").delete()
-        db.query(DownloadRequest).filter(DownloadRequest.tmdb_id == tmdb_id, DownloadRequest.media_type == "movie").delete()
-        db.commit()
+        try:
+            deleted = db.query(Movie).filter(Movie.tmdb_id == tmdb_id, Movie.source == "radarr").delete()
+            db.query(DownloadRequest).filter(DownloadRequest.tmdb_id == tmdb_id, DownloadRequest.media_type == "movie").delete()
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            logger.error(f"[Radarr webhook] MovieDelete DB cleanup failed for tmdb:{tmdb_id}: {e}")
+            raise HTTPException(500, "Failed to process delete event")
         if deleted:
             emit_library_event("movie_removed", {"tmdb_id": tmdb_id, "title": title, "media_type": "movie"})
             log_activity(db, "radarr_remove", f"Removed '{title}' from Radarr library")
@@ -255,6 +289,10 @@ def radarr_webhook(payload: dict, db: Session = Depends(get_db)):
             if tmdb_id in _webhook_locks and _webhook_locks[tmdb_id].locked():
                 logger.info(f"[Radarr webhook] Skipping duplicate processing for tmdb:{tmdb_id}")
                 return
+            # Bound the dict: prune unlocked (idle) locks if it grows large.
+            if len(_webhook_locks) > 512:
+                for k in [k for k, l in _webhook_locks.items() if not l.locked()]:
+                    _webhook_locks.pop(k, None)
             if tmdb_id not in _webhook_locks:
                 _webhook_locks[tmdb_id] = threading.Lock()
             lock = _webhook_locks[tmdb_id]

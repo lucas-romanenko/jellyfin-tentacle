@@ -22,6 +22,7 @@ Channel management:
   GET    /api/live/status            → Live TV status overview
 """
 
+import asyncio
 import logging
 import threading
 from datetime import datetime
@@ -42,10 +43,33 @@ from models.database import (
     get_setting,
     log_activity,
 )
+from routers.auth import require_admin
+from services.ssrf import is_safe_url
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Reusable dependency list for Live TV *management* routes (provider config,
+# sync, channel/group mutations, guide refresh). The HDHomeRun tuner-emulation,
+# stream-proxy, playlist and XMLTV routes are intentionally left public because
+# Jellyfin's tuner integration cannot present credentials.
+_admin = [Depends(require_admin)]
+
+# Cap simultaneous live stream proxies so a burst of clients can't exhaust the
+# IPTV provider's max_connections (and our own socket/CPU budget). When at
+# capacity, new stream requests get a 503 rather than silently degrading every
+# active stream. Created lazily on first use so it binds to the running loop.
+_MAX_CONCURRENT_STREAMS = 6
+_stream_semaphore: "asyncio.Semaphore | None" = None
+
+
+def _get_stream_semaphore() -> "asyncio.Semaphore":
+    global _stream_semaphore
+    if _stream_semaphore is None:
+        _stream_semaphore = asyncio.Semaphore(_MAX_CONCURRENT_STREAMS)
+    return _stream_semaphore
+
 
 # ─── Background sync tracking ────────────────────────────────────────────────
 
@@ -111,7 +135,7 @@ class LiveProviderConfig(BaseModel):
 # ─── Provider config ────────────────────────────────────────────────────────
 
 
-@router.get("/api/live/provider")
+@router.get("/api/live/provider", dependencies=_admin)
 def get_live_provider(db: Session = Depends(get_db)):
     """Get the live TV provider config."""
     provider = db.query(Provider).filter(Provider.live_tv_enabled == True).first()
@@ -138,7 +162,7 @@ def get_live_provider(db: Session = Depends(get_db)):
     }
 
 
-@router.post("/api/live/provider")
+@router.post("/api/live/provider", dependencies=_admin)
 def save_live_provider(body: LiveProviderConfig, db: Session = Depends(get_db)):
     """Create or update the live TV provider."""
     # Clean up any duplicate providers with masked passwords (from earlier bug)
@@ -197,7 +221,7 @@ def save_live_provider(body: LiveProviderConfig, db: Session = Depends(get_db)):
     return {"success": True, "provider_id": provider.id}
 
 
-@router.post("/api/live/provider/test")
+@router.post("/api/live/provider/test", dependencies=_admin)
 def test_live_provider(db: Session = Depends(get_db)):
     """Test connection to the live TV provider."""
     provider = db.query(Provider).filter(Provider.live_tv_enabled == True).first()
@@ -250,7 +274,7 @@ def test_live_provider(db: Session = Depends(get_db)):
 # ─── Channel sync ───────────────────────────────────────────────────────────
 
 
-@router.post("/api/live/sync/{provider_id}")
+@router.post("/api/live/sync/{provider_id}", dependencies=_admin)
 def sync_live_groups(provider_id: int, db: Session = Depends(get_db)):
     """Phase 1: Fetch categories/groups only (fast). No channels downloaded."""
     provider = db.query(Provider).filter(Provider.id == provider_id).first()
@@ -272,7 +296,7 @@ def sync_live_groups(provider_id: int, db: Session = Depends(get_db)):
     return {"success": True, "message": "Group sync started", "status_url": "/api/live/sync-status"}
 
 
-@router.post("/api/live/sync-channels/{provider_id}")
+@router.post("/api/live/sync-channels/{provider_id}", dependencies=_admin)
 def sync_live_channels(provider_id: int, db: Session = Depends(get_db)):
     """Phase 2: Fetch channels only for enabled groups. Call after enabling groups."""
     provider = db.query(Provider).filter(Provider.id == provider_id).first()
@@ -302,7 +326,7 @@ def sync_live_channels(provider_id: int, db: Session = Depends(get_db)):
     return {"success": True, "message": "Channel sync started", "status_url": "/api/live/sync-status"}
 
 
-@router.get("/api/live/sync-status")
+@router.get("/api/live/sync-status", dependencies=_admin)
 def sync_status_endpoint(provider_id: Optional[int] = None):
     """Get sync progress for a provider or all providers."""
     if provider_id is not None:
@@ -767,7 +791,7 @@ def _update_group_counts(provider_id: int, db: Session):
 # ─── EPG sync ───────────────────────────────────────────────────────────────
 
 
-@router.post("/api/live/sync-epg/{provider_id}")
+@router.post("/api/live/sync-epg/{provider_id}", dependencies=_admin)
 def sync_epg(provider_id: int, db: Session = Depends(get_db)):
     """Sync EPG data for enabled channels only (runs in background)."""
     provider = db.query(Provider).filter(Provider.id == provider_id).first()
@@ -937,7 +961,7 @@ def _run_epg_sync_background(provider_data: dict):
 # ─── Channel management ────────────────────────────────────────────────────
 
 
-@router.get("/api/live/channels")
+@router.get("/api/live/channels", dependencies=_admin)
 def list_channels(
     provider_id: Optional[int] = None,
     group: Optional[str] = None,
@@ -1012,7 +1036,7 @@ def list_channels(
     }
 
 
-@router.put("/api/live/channels/{channel_id}")
+@router.put("/api/live/channels/{channel_id}", dependencies=_admin)
 def update_channel(channel_id: int, update: ChannelUpdate, db: Session = Depends(get_db)):
     """Update a single channel."""
     ch = db.query(LiveChannel).filter(LiveChannel.id == channel_id).first()
@@ -1033,7 +1057,7 @@ def update_channel(channel_id: int, update: ChannelUpdate, db: Session = Depends
     return {"success": True}
 
 
-@router.post("/api/live/channels/bulk")
+@router.post("/api/live/channels/bulk", dependencies=_admin)
 def bulk_update_channels(update: BulkChannelUpdate, db: Session = Depends(get_db)):
     """Bulk enable/disable channels."""
     count = db.query(LiveChannel).filter(
@@ -1043,7 +1067,7 @@ def bulk_update_channels(update: BulkChannelUpdate, db: Session = Depends(get_db
     return {"success": True, "updated": count}
 
 
-@router.post("/api/live/channels/bulk-filter")
+@router.post("/api/live/channels/bulk-filter", dependencies=_admin)
 def bulk_update_channels_by_filter(update: BulkChannelFilter, db: Session = Depends(get_db)):
     """Bulk enable/disable channels matching filters (group, search)."""
     q = db.query(LiveChannel).filter(LiveChannel.provider_id == update.provider_id)
@@ -1064,7 +1088,7 @@ def bulk_update_channels_by_filter(update: BulkChannelFilter, db: Session = Depe
 # ─── Group management ──────────────────────────────────────────────────────
 
 
-@router.get("/api/live/groups")
+@router.get("/api/live/groups", dependencies=_admin)
 def list_groups(provider_id: Optional[int] = None, db: Session = Depends(get_db)):
     """List channel groups."""
     q = db.query(LiveChannelGroup)
@@ -1087,7 +1111,7 @@ def list_groups(provider_id: Optional[int] = None, db: Session = Depends(get_db)
     }
 
 
-@router.put("/api/live/groups/bulk")
+@router.put("/api/live/groups/bulk", dependencies=_admin)
 def bulk_update_groups(update: BulkGroupUpdate, db: Session = Depends(get_db)):
     """Enable/disable multiple groups and their channels in one request."""
     groups = db.query(LiveChannelGroup).filter(LiveChannelGroup.id.in_(update.group_ids)).all()
@@ -1113,7 +1137,7 @@ def bulk_update_groups(update: BulkGroupUpdate, db: Session = Depends(get_db)):
     return {"success": True, "updated": len(groups)}
 
 
-@router.put("/api/live/groups/{group_id}")
+@router.put("/api/live/groups/{group_id}", dependencies=_admin)
 def update_group(group_id: int, update: GroupUpdate, db: Session = Depends(get_db)):
     """Enable/disable a group and all its channels."""
     group = db.query(LiveChannelGroup).filter(LiveChannelGroup.id == group_id).first()
@@ -1134,7 +1158,7 @@ def update_group(group_id: int, update: GroupUpdate, db: Session = Depends(get_d
 # ─── Status ─────────────────────────────────────────────────────────────────
 
 
-@router.get("/api/live/status")
+@router.get("/api/live/status", dependencies=_admin)
 def live_status(db: Session = Depends(get_db)):
     """Overview of Live TV status."""
     total_channels = db.query(LiveChannel).count()
@@ -1169,7 +1193,7 @@ def live_status(db: Session = Depends(get_db)):
 # ─── Jellyfin Guide Refresh ────────────────────────────────────────────────
 
 
-@router.post("/api/live/refresh-guide")
+@router.post("/api/live/refresh-guide", dependencies=_admin)
 def refresh_jellyfin_guide(db: Session = Depends(get_db)):
     """
     One-click Jellyfin refresh: checks for missing EPG data, re-syncs listing
@@ -1243,21 +1267,34 @@ def refresh_jellyfin_guide(db: Session = Depends(get_db)):
                 epg_resynced = True
 
     try:
-        # Step 1: Delete + re-create XMLTV listing provider to force full channel remap
-        # Re-POSTing with the same ID doesn't remap new channels; must delete and recreate
+        # Step 1: Re-create the *Tentacle* XMLTV listing provider to force a full
+        # channel remap. Re-POSTing with the same Id doesn't remap new channels;
+        # we must recreate. Two safeguards vs. the old "delete every xmltv provider"
+        # behaviour:
+        #   1. Only touch listing providers whose Path points at Tentacle's own
+        #      xmltv.xml endpoint — never other (unrelated) xmltv providers.
+        #   2. Recreate FIRST and verify success before deleting the old one, so a
+        #      failed recreate can't leave Jellyfin with no listing provider.
         livetv_cfg = req.get(f"{jf_url}/System/Configuration/livetv", headers=headers, timeout=10).json()
         for lp in livetv_cfg.get("ListingProviders", []):
-            if lp.get("Type") == "xmltv":
-                lp_id = lp.get("Id")
-                # Delete existing
+            if lp.get("Type") != "xmltv":
+                continue
+            lp_path = (lp.get("Path") or "")
+            if "xmltv.xml" not in lp_path.lower():
+                # Not Tentacle's listing provider — leave it untouched.
+                logger.info(f"[LiveTV] Skipping non-Tentacle xmltv listing provider (Path={lp_path})")
+                continue
+            lp_id = lp.get("Id")
+            # Recreate without an Id so Jellyfin treats it as new — and only delete
+            # the old entry once the new one is confirmed created.
+            lp_new = {k: v for k, v in lp.items() if k != "Id"}
+            resp = req.post(f"{jf_url}/LiveTv/ListingProviders", headers=headers, json=lp_new, timeout=15)
+            resp.raise_for_status()
+            new_id = resp.json().get("Id", "?")
+            logger.info(f"[LiveTV] Re-created Tentacle XMLTV listing provider as {new_id}")
+            if lp_id and new_id and new_id != "?" and new_id != lp_id:
                 req.delete(f"{jf_url}/LiveTv/ListingProviders?Id={lp_id}", headers=headers, timeout=10)
-                logger.info(f"[LiveTV] Deleted XMLTV listing provider {lp_id}")
-                # Re-create without ID so Jellyfin treats it as new
-                lp_new = {k: v for k, v in lp.items() if k != "Id"}
-                resp = req.post(f"{jf_url}/LiveTv/ListingProviders", headers=headers, json=lp_new, timeout=15)
-                resp.raise_for_status()
-                new_id = resp.json().get("Id", "?")
-                logger.info(f"[LiveTV] Re-created XMLTV listing provider as {new_id}")
+                logger.info(f"[LiveTV] Deleted old Tentacle XMLTV listing provider {lp_id}")
 
         # Step 2: Trigger RefreshGuide task — fetches new lineup from tuner + refreshes EPG data
         tasks = req.get(f"{jf_url}/ScheduledTasks", headers=headers, timeout=10).json()
@@ -1449,19 +1486,52 @@ async def stream_proxy(channel_id: int, db: Session = Depends(get_db)):
       2. Proxy the HLS stream as continuous MPEG-TS bytes (fetch m3u8,
          download chunks, pipe raw bytes).
     """
+    # Cap concurrent streams. If we're at capacity, bail with 503 instead of
+    # opening yet another upstream connection (which could exhaust the provider).
+    sem = _get_stream_semaphore()
+    if sem.locked():
+        logger.warning(f"[LiveTV] At capacity ({_MAX_CONCURRENT_STREAMS} streams) — rejecting channel {channel_id}")
+        raise HTTPException(503, "Too many concurrent live streams")
+    await sem.acquire()
+    # Ownership of the release is handed to the streaming generator on the
+    # success paths; on every early-exit / error path below we release here.
+    sem_released = False
+
+    def _release_sem():
+        nonlocal sem_released
+        if not sem_released:
+            sem_released = True
+            sem.release()
+
+    try:
+        channel = db.query(LiveChannel).filter(LiveChannel.id == channel_id).first()
+        if not channel:
+            raise HTTPException(404, "Channel not found")
+
+        provider = db.query(Provider).filter(Provider.id == channel.provider_id).first()
+        user_agent = (provider.user_agent if provider else None) or "TiviMate/4.7.0 (Linux; Android 12)"
+
+        stream_url = channel.stream_url
+        logger.info(f"[LiveTV] Stream request for channel {channel_id} ({channel.name}): {stream_url}")
+
+        # SSRF guard: this endpoint is public, so refuse to fetch anything that
+        # resolves to a private/loopback/link-local/metadata address.
+        if not is_safe_url(stream_url):
+            logger.warning(f"[LiveTV] Blocked stream URL (non-public host) for channel {channel_id}: {stream_url}")
+            raise HTTPException(502, "Stream URL points to a non-public host")
+
+        return await _stream_proxy_inner(channel_id, user_agent, stream_url, _release_sem)
+    except BaseException:
+        _release_sem()
+        raise
+
+
+async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str, _release_sem):
+    """Inner stream proxy logic. `_release_sem()` is called when the concurrency
+    slot can be freed: immediately on early-exit paths, or by the streaming
+    generator's `finally` once the long-lived stream ends."""
     import httpx
     from urllib.parse import urljoin
-    from fastapi.responses import RedirectResponse
-
-    channel = db.query(LiveChannel).filter(LiveChannel.id == channel_id).first()
-    if not channel:
-        raise HTTPException(404, "Channel not found")
-
-    provider = db.query(Provider).filter(Provider.id == channel.provider_id).first()
-    user_agent = (provider.user_agent if provider else None) or "TiviMate/4.7.0 (Linux; Android 12)"
-
-    stream_url = channel.stream_url
-    logger.info(f"[LiveTV] Stream request for channel {channel_id} ({channel.name}): {stream_url}")
 
     # Step 1: Follow the provider's redirect chain with the required UA
     # to get the tokenized URL on the real streaming server
@@ -1482,6 +1552,9 @@ async def stream_proxy(channel_id: int, db: Session = Depends(get_db)):
                 if not location:
                     raise HTTPException(502, "Redirect without Location header")
                 url = urljoin(url, location)
+                if not is_safe_url(url):
+                    logger.warning(f"[LiveTV] Blocked redirect to non-public host for channel {channel_id}: {url}")
+                    raise HTTPException(502, "Stream redirect points to a non-public host")
                 logger.info(f"[LiveTV] Following redirect → {url}")
                 continue
             break
@@ -1536,6 +1609,7 @@ async def stream_proxy(channel_id: int, db: Session = Depends(get_db)):
                 logger.warning(f"[LiveTV] Stream interrupted for channel {channel_id}: {e}")
             finally:
                 await raw_client.aclose()
+                _release_sem()
                 logger.info(f"[LiveTV] Stream ended for channel {channel_id}")
 
         return StreamingResponse(
@@ -1552,12 +1626,25 @@ async def stream_proxy(channel_id: int, db: Session = Depends(get_db)):
     logger.info(f"[LiveTV] HLS stream for channel {channel_id} — proxying chunks as MPEG-TS")
 
     async def hls_to_mpegts():
+        """Wrapper that releases the concurrency slot once the stream ends."""
+        try:
+            async for chunk in _hls_worker():
+                yield chunk
+        finally:
+            _release_sem()
+            logger.info(f"[LiveTV] Stream ended for channel {channel_id}")
+
+    async def _hls_worker():
         """Continuously fetch the HLS playlist and pipe chunk data as raw MPEG-TS."""
         import asyncio
+        from urllib.parse import urlparse as _urlparse
         seen_chunks: set[str] = set()
         current_playlist = playlist_text
         ua_headers = {"User-Agent": user_agent}
         consecutive_errors = 0
+        # playlist_base is already validated as public; only re-validate chunk
+        # URLs that point at a different host (SSRF guard for absolute chunk URLs).
+        base_host = (_urlparse(playlist_base).hostname or "").lower()
 
         async with httpx.AsyncClient(
             follow_redirects=True,
@@ -1579,6 +1666,10 @@ async def stream_proxy(channel_id: int, db: Session = Depends(get_db)):
                             pass
                     elif stripped and not stripped.startswith("#"):
                         chunk_url = urljoin(playlist_base, stripped)
+                        ch_host = (_urlparse(chunk_url).hostname or "").lower()
+                        if ch_host != base_host and not is_safe_url(chunk_url):
+                            logger.warning(f"[LiveTV] Skipping HLS chunk on non-public host for channel {channel_id}: {chunk_url}")
+                            continue
                         chunk_urls.append(chunk_url)
 
                 # Fetch new chunks

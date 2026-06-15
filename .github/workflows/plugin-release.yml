@@ -85,15 +85,6 @@ jobs:
               f.write("\n")
           PYEOF
 
-      - name: Commit updated manifest
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git fetch origin main
-          git checkout main
-          git add tentacle-plugin/manifest.json
-          git diff --cached --quiet && echo "No manifest changes" || (git commit -m "Update plugin manifest for v${{ steps.version.outputs.version }}" && git push origin main)
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -112,3 +103,46 @@ jobs:
             **Checksum (MD5):** `${{ steps.checksum.outputs.md5 }}`
           files: |
             tentacle-plugin/bin/Release/net9.0/tentacle-plugin-v${{ steps.version.outputs.version }}.zip
+
+      # Verify the release asset is actually downloadable before publishing the manifest.
+      # If the release/upload failed, the sourceUrl would 404 — so we must not commit the
+      # manifest pointing at it.
+      - name: Verify release asset is downloadable
+        run: |
+          URL="https://github.com/lucas-romanenko/jellyfin-tentacle/releases/download/plugin-v${{ steps.version.outputs.version }}/tentacle-plugin-v${{ steps.version.outputs.version }}.zip"
+          for i in 1 2 3 4 5; do
+            CODE=$(curl -sL -o /dev/null -w "%{http_code}" "$URL")
+            echo "Attempt $i: HTTP $CODE for $URL"
+            if [ "$CODE" = "200" ]; then
+              echo "Release asset is available."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Release asset never returned 200 — aborting before manifest commit."
+          exit 1
+
+      - name: Commit updated manifest
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git checkout main
+          git add tentacle-plugin/manifest.json
+          if git diff --cached --quiet; then
+            echo "No manifest changes"
+            exit 0
+          fi
+          git commit -m "Update plugin manifest for v${{ steps.version.outputs.version }}"
+          # Rebase + retry to tolerate concurrent pushes to main.
+          for i in 1 2 3 4 5; do
+            git pull --rebase origin main
+            if git push origin main; then
+              echo "Manifest pushed."
+              exit 0
+            fi
+            echo "Push attempt $i failed — retrying after rebase."
+            sleep 5
+          done
+          echo "Failed to push manifest after retries."
+          exit 1

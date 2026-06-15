@@ -48,12 +48,32 @@ public class LibraryDeleteHandler : IHostedService, IDisposable
     private void OnItemRemoved(object? sender, ItemChangeEventArgs e)
     {
         var item = e.Item;
+        if (item == null) return;
 
         // Only handle Movie and Series types
         string? mediaType = null;
         if (item is Movie) mediaType = "movie";
         else if (item is MediaBrowser.Controller.Entities.TV.Series) mediaType = "series";
         else return;
+
+        // Ignore virtual/placeholder items — these are never real on-disk deletions.
+        if (item.IsVirtualItem)
+        {
+            return;
+        }
+
+        // Only act on genuine user deletions. During a library scan/refresh Jellyfin
+        // removes and re-resolves items, firing ItemRemoved while the underlying files
+        // still exist on disk. A real delete removes the files, so if the path still
+        // exists we treat it as scan churn and skip it to avoid wiping DB records and
+        // playlists for content that is still present.
+        var path = item.Path;
+        if (!string.IsNullOrEmpty(path) && (File.Exists(path) || Directory.Exists(path)))
+        {
+            _logger.LogDebug("[Tentacle] {Type} '{Name}' removed but path still exists ({Path}) — treating as scan churn, skipping",
+                mediaType, item.Name, path);
+            return;
+        }
 
         // Extract TMDB provider ID
         if (!item.ProviderIds.TryGetValue("Tmdb", out var tmdbId) || string.IsNullOrEmpty(tmdbId))
@@ -98,7 +118,13 @@ public class LibraryDeleteHandler : IHostedService, IDisposable
                 try
                 {
                     var url = $"{tentacleUrl.TrimEnd('/')}/api/library/item/{mediaType}/{tmdbId}";
-                    var response = await _httpClient.DeleteAsync(url).ConfigureAwait(false);
+                    using var request = new HttpRequestMessage(HttpMethod.Delete, url);
+                    var secret = Plugin.Instance?.Configuration?.TentacleSecret;
+                    if (!string.IsNullOrEmpty(secret))
+                    {
+                        request.Headers.Add("X-Tentacle-Secret", secret);
+                    }
+                    var response = await _httpClient.SendAsync(request).ConfigureAwait(false);
 
                     if (response.IsSuccessStatusCode)
                     {

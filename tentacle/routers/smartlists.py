@@ -3,11 +3,13 @@ Tentacle - SmartLists Router
 Manage per-user Jellyfin SmartList config files.
 """
 
+import os
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Optional
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -23,6 +25,7 @@ from services.smartlists import (
     _get_smartlists_with_playlist_ids, update_playlist_sort, SORT_BY_DISPLAY,
     _user_smartlists_path, get_playlist_version, bump_playlist_version,
     sync_single_custom_playlist, toggle_auto_playlist_fast,
+    home_config_lock, _atomic_write_json,
 )
 
 logger = logging.getLogger(__name__)
@@ -60,7 +63,13 @@ def _home_config_path(user: TentacleUser) -> Path:
 
 
 def _read_home_json(user: TentacleUser) -> dict:
-    """Read per-user home config from disk. Returns empty dict if missing."""
+    """Read per-user home config from disk.
+
+    Returns an empty dict ONLY when the file is genuinely missing. If the file
+    exists but is corrupt/unparseable, the bad file is backed up and an error
+    is raised — we must never treat a parse error as "no config", because the
+    caller would then overwrite (and wipe) the user's real rows.
+    """
     p = _home_config_path(user)
     if not p.exists():
         # Fall back to legacy global file only for admin (migration from pre-multi-user)
@@ -74,15 +83,25 @@ def _read_home_json(user: TentacleUser) -> dict:
         return {}
     try:
         return json.loads(p.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    except Exception as e:
+        # Corrupt file — back it up and refuse to proceed rather than silently
+        # treating it as empty (which would wipe the user's rows on next write).
+        backup = p.with_name(f"{p.name}.corrupt.{int(time.time())}")
+        try:
+            os.replace(p, backup)
+            logger.error(f"Corrupt home config for {user.display_name}, backed up to {backup}: {e}")
+        except Exception as move_err:
+            logger.error(f"Corrupt home config for {user.display_name} and backup failed: {move_err}")
+        raise HTTPException(
+            status_code=500,
+            detail="Home config file was corrupt and has been backed up. Please retry.",
+        )
 
 
 def _write_home_json(user: TentacleUser, config: dict):
-    """Write per-user home config to disk."""
+    """Write per-user home config to disk atomically (temp file + os.replace)."""
     p = _home_config_path(user)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    _atomic_write_json(p, config)
 
 
 @router.get("")
@@ -309,26 +328,28 @@ class ReorderRequest(BaseModel):
 @router.post("/reorder")
 def reorder(req: ReorderRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Read JSON, reorder rows to match, write JSON back. That's it."""
-    config = _read_home_json(user)
-    if not config or "rows" not in config:
-        return {"success": False, "message": "No home config found"}
+    with home_config_lock:
+        config = _read_home_json(user)
+        if not config or "rows" not in config:
+            return {"success": False, "message": "No home config found"}
 
-    rows_by_key = {_row_key(r): r for r in config["rows"]}
+        rows_by_key = {_row_key(r): r for r in config["rows"]}
 
-    new_rows = []
-    for i, key in enumerate(req.order, start=1):
-        if key in rows_by_key:
-            row = rows_by_key.pop(key)
-            row["order"] = i
+        new_rows = []
+        for i, key in enumerate(req.order, start=1):
+            if key in rows_by_key:
+                row = rows_by_key.pop(key)
+                row["order"] = i
+                new_rows.append(row)
+
+        # Append any leftover rows not in the request, continuing the order
+        # sequence so order ints stay unique (no duplicate trailing values).
+        for row in rows_by_key.values():
+            row["order"] = len(new_rows) + 1
             new_rows.append(row)
 
-    # Append any leftover rows not in the request
-    for row in rows_by_key.values():
-        row["order"] = len(new_rows) + 1
-        new_rows.append(row)
-
-    config["rows"] = new_rows
-    _write_home_json(user, config)
+        config["rows"] = new_rows
+        _write_home_json(user, config)
     bump_playlist_version()
     _notify_jellyfin_plugin(db)
     logger.info(f"Reordered home rows for {user.display_name}: {[r['display_name'] for r in new_rows]}")
@@ -368,50 +389,53 @@ class AddRowRequest(BaseModel):
 @router.post("/add-row")
 def add_row(req: AddRowRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Add a playlist or built-in section as a new row to the home config."""
-    config = _read_home_json(user)
-    if not config:
-        config = {"hero": {"enabled": False, "playlist_id": "", "display_name": ""}, "rows": []}
+    with home_config_lock:
+        config = _read_home_json(user)
+        if not config:
+            config = {"hero": {"enabled": False, "playlist_id": "", "display_name": ""}, "rows": []}
+        config.setdefault("rows", [])
 
-    if req.section_id:
-        # Adding a built-in Jellyfin section
-        builtin = BUILTIN_MAP.get(req.section_id)
-        if not builtin:
-            return {"success": False, "message": "Unknown built-in section"}
-        if any(r.get("type") == "builtin" and r.get("section_id") == req.section_id for r in config["rows"]):
-            return {"success": False, "message": "Already in home screen"}
-        for r in config["rows"]:
-            r["order"] = r.get("order", 0) + 1
-        config["rows"].insert(0, {
-            "type": "builtin",
-            "section_id": req.section_id,
-            "display_name": builtin["display_name"],
-            "order": 1,
-        })
-    elif req.playlist_id:
-        # Adding a Tentacle playlist (per-user)
-        all_playlists = _get_smartlists_with_playlist_ids(db, user_id=user.id)
-        match = next((p for p in all_playlists if p["playlist_id"] == req.playlist_id), None)
-        if not match:
-            return {"success": False, "message": "Playlist not found"}
-        if any(r.get("playlist_id") == req.playlist_id and r.get("type", "playlist") == "playlist" for r in config["rows"]):
-            return {"success": False, "message": "Already in home screen"}
-        home_row_limit = int(get_setting(db, "home_row_limit", "20") or "20")
-        for r in config["rows"]:
-            r["order"] = r.get("order", 0) + 1
-        config["rows"].insert(0, {
-            "type": "playlist",
-            "playlist_id": req.playlist_id,
-            "display_name": match["name"],
-            "order": 1,
-            "max_items": home_row_limit,
-        })
-    else:
-        return {"success": False, "message": "Must provide playlist_id or section_id"}
+        if req.section_id:
+            # Adding a built-in Jellyfin section
+            builtin = BUILTIN_MAP.get(req.section_id)
+            if not builtin:
+                return {"success": False, "message": "Unknown built-in section"}
+            if any(r.get("type") == "builtin" and r.get("section_id") == req.section_id for r in config["rows"]):
+                return {"success": False, "message": "Already in home screen"}
+            for r in config["rows"]:
+                r["order"] = r.get("order", 0) + 1
+            config["rows"].insert(0, {
+                "type": "builtin",
+                "section_id": req.section_id,
+                "display_name": builtin["display_name"],
+                "order": 1,
+            })
+        elif req.playlist_id:
+            # Adding a Tentacle playlist (per-user)
+            all_playlists = _get_smartlists_with_playlist_ids(db, user_id=user.id)
+            match = next((p for p in all_playlists if p["playlist_id"] == req.playlist_id), None)
+            if not match:
+                return {"success": False, "message": "Playlist not found"}
+            if any(r.get("playlist_id") == req.playlist_id and r.get("type", "playlist") == "playlist" for r in config["rows"]):
+                return {"success": False, "message": "Already in home screen"}
+            home_row_limit = int(get_setting(db, "home_row_limit", "20") or "20")
+            for r in config["rows"]:
+                r["order"] = r.get("order", 0) + 1
+            config["rows"].insert(0, {
+                "type": "playlist",
+                "playlist_id": req.playlist_id,
+                "display_name": match["name"],
+                "order": 1,
+                "max_items": home_row_limit,
+            })
+        else:
+            return {"success": False, "message": "Must provide playlist_id or section_id"}
 
-    _write_home_json(user, config)
+        _write_home_json(user, config)
+        rows_count = len(config["rows"])
     bump_playlist_version()
     _notify_jellyfin_plugin(db)
-    return {"success": True, "rows": len(config["rows"])}
+    return {"success": True, "rows": rows_count}
 
 
 class RemoveRowRequest(BaseModel):
@@ -422,24 +446,26 @@ class RemoveRowRequest(BaseModel):
 @router.post("/remove-row")
 def remove_row(req: RemoveRowRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Remove a row from the home config."""
-    config = _read_home_json(user)
-    if not config or "rows" not in config:
-        return {"success": False, "message": "No home config"}
+    with home_config_lock:
+        config = _read_home_json(user)
+        if not config or "rows" not in config:
+            return {"success": False, "message": "No home config"}
 
-    if req.row_key:
-        config["rows"] = [r for r in config["rows"] if _row_key(r) != req.row_key]
-    elif req.playlist_id:
-        config["rows"] = [r for r in config["rows"] if r.get("playlist_id") != req.playlist_id]
-    else:
-        return {"success": False, "message": "Must provide row_key or playlist_id"}
+        if req.row_key:
+            config["rows"] = [r for r in config["rows"] if _row_key(r) != req.row_key]
+        elif req.playlist_id:
+            config["rows"] = [r for r in config["rows"] if r.get("playlist_id") != req.playlist_id]
+        else:
+            return {"success": False, "message": "Must provide row_key or playlist_id"}
 
-    for i, r in enumerate(config["rows"], start=1):
-        r["order"] = i
+        for i, r in enumerate(config["rows"], start=1):
+            r["order"] = i
 
-    _write_home_json(user, config)
+        _write_home_json(user, config)
+        rows_count = len(config["rows"])
     bump_playlist_version()
     _notify_jellyfin_plugin(db)
-    return {"success": True, "rows": len(config["rows"])}
+    return {"success": True, "rows": rows_count}
 
 
 @router.get("/builtin-sections")
@@ -460,22 +486,23 @@ class RowMaxItemsRequest(BaseModel):
 @router.post("/row-max-items")
 def set_row_max_items(req: RowMaxItemsRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Update max_items for a specific row."""
-    config = _read_home_json(user)
-    if not config or "rows" not in config:
-        return {"success": False, "message": "No home config found"}
+    with home_config_lock:
+        config = _read_home_json(user)
+        if not config or "rows" not in config:
+            return {"success": False, "message": "No home config found"}
 
-    val = max(5, min(100, req.max_items))
-    for row in config["rows"]:
-        if req.row_key and _row_key(row) == req.row_key:
-            row["max_items"] = val
-            break
-        elif req.playlist_id and row.get("playlist_id") == req.playlist_id:
-            row["max_items"] = val
-            break
-    else:
-        return {"success": False, "message": "Row not found"}
+        val = max(5, min(100, req.max_items))
+        for row in config["rows"]:
+            if req.row_key and _row_key(row) == req.row_key:
+                row["max_items"] = val
+                break
+            elif req.playlist_id and row.get("playlist_id") == req.playlist_id:
+                row["max_items"] = val
+                break
+        else:
+            return {"success": False, "message": "Row not found"}
 
-    _write_home_json(user, config)
+        _write_home_json(user, config)
     bump_playlist_version()
     _notify_jellyfin_plugin(db)
     return {"success": True, "max_items": val}
@@ -484,36 +511,37 @@ def set_row_max_items(req: RowMaxItemsRequest, db: Session = Depends(get_db), us
 @router.post("/hero")
 def set_hero(req: HeroPickRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Read JSON, update hero, write JSON back. That's it."""
-    config = _read_home_json(user)
-    if not config:
-        config = {"hero": {"enabled": False, "playlist_id": "", "display_name": ""}, "rows": []}
-    if "rows" not in config:
-        config["rows"] = []
+    with home_config_lock:
+        config = _read_home_json(user)
+        if not config:
+            config = {"hero": {"enabled": False, "playlist_id": "", "display_name": ""}, "rows": []}
+        if "rows" not in config:
+            config["rows"] = []
 
-    existing_hero = config.get("hero", {})
-    if req.playlist_id:
-        # Look up display name from rows first, then all playlists
-        matching = next((r for r in config["rows"] if r.get("playlist_id") == req.playlist_id), None)
-        if matching:
-            display_name = matching["display_name"]
+        existing_hero = config.get("hero", {})
+        if req.playlist_id:
+            # Look up display name from rows first, then all playlists
+            matching = next((r for r in config["rows"] if r.get("playlist_id") == req.playlist_id), None)
+            if matching:
+                display_name = matching["display_name"]
+            else:
+                all_playlists = _get_smartlists_with_playlist_ids(db, user_id=user.id)
+                pl = next((p for p in all_playlists if p["playlist_id"] == req.playlist_id), None)
+                display_name = pl["name"] if pl else req.playlist_id
+            config["hero"] = {
+                "enabled": True,
+                "playlist_id": req.playlist_id,
+                "display_name": display_name,
+                "sort_by": existing_hero.get("sort_by", "random"),
+                "sort_order": existing_hero.get("sort_order", "Descending"),
+                "require_logo": existing_hero.get("require_logo", True),
+                "require_trailer": existing_hero.get("require_trailer", False),
+                "item_count": existing_hero.get("item_count", 10),
+            }
         else:
-            all_playlists = _get_smartlists_with_playlist_ids(db, user_id=user.id)
-            pl = next((p for p in all_playlists if p["playlist_id"] == req.playlist_id), None)
-            display_name = pl["name"] if pl else req.playlist_id
-        config["hero"] = {
-            "enabled": True,
-            "playlist_id": req.playlist_id,
-            "display_name": display_name,
-            "sort_by": existing_hero.get("sort_by", "random"),
-            "sort_order": existing_hero.get("sort_order", "Descending"),
-            "require_logo": existing_hero.get("require_logo", True),
-            "require_trailer": existing_hero.get("require_trailer", False),
-            "item_count": existing_hero.get("item_count", 10),
-        }
-    else:
-        config["hero"] = {"enabled": False, "playlist_id": "", "display_name": "", "sort_by": "random", "sort_order": "Descending", "require_logo": True, "require_trailer": False, "item_count": 10}
+            config["hero"] = {"enabled": False, "playlist_id": "", "display_name": "", "sort_by": "random", "sort_order": "Descending", "require_logo": True, "require_trailer": False, "item_count": 10}
 
-    _write_home_json(user, config)
+        _write_home_json(user, config)
     bump_playlist_version()
     _notify_jellyfin_plugin(db)
     logger.info(f"Updated hero: {req.playlist_id or '(disabled)'}")
@@ -532,23 +560,24 @@ class HeroSortRequest(BaseModel):
 @router.post("/hero-sort")
 def set_hero_sort(req: HeroSortRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Update hero spotlight sort order."""
-    config = _read_home_json(user)
-    hero = config.get("hero", {})
-    if not hero.get("enabled"):
-        return {"success": False, "message": "Hero is not enabled"}
+    with home_config_lock:
+        config = _read_home_json(user)
+        hero = config.get("hero", {})
+        if not hero.get("enabled"):
+            return {"success": False, "message": "Hero is not enabled"}
 
-    hero["sort_by"] = req.sort_by
-    hero["sort_order"] = req.sort_order
-    if req.require_logo is not None:
-        hero["require_logo"] = req.require_logo
-    if req.require_trailer is not None:
-        hero["require_trailer"] = req.require_trailer
-    if req.trailer_audio is not None:
-        hero["trailer_audio"] = req.trailer_audio
-    if req.item_count is not None:
-        hero["item_count"] = max(1, min(req.item_count, 25))
-    config["hero"] = hero
-    _write_home_json(user, config)
+        hero["sort_by"] = req.sort_by
+        hero["sort_order"] = req.sort_order
+        if req.require_logo is not None:
+            hero["require_logo"] = req.require_logo
+        if req.require_trailer is not None:
+            hero["require_trailer"] = req.require_trailer
+        if req.trailer_audio is not None:
+            hero["trailer_audio"] = req.trailer_audio
+        if req.item_count is not None:
+            hero["item_count"] = max(1, min(req.item_count, 25))
+        config["hero"] = hero
+        _write_home_json(user, config)
     bump_playlist_version()
     _notify_jellyfin_plugin(db)
     logger.info(f"Updated hero sort: {req.sort_by} {req.sort_order}")
@@ -580,25 +609,26 @@ class ToolbarRequest(BaseModel):
 
 @router.post("/toolbar")
 def set_toolbar(req: ToolbarRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
-    config = _read_home_json(user)
-    if not config:
-        config = {}
+    with home_config_lock:
+        config = _read_home_json(user)
+        if not config:
+            config = {}
 
-    # Validate and build toolbar config
-    toolbar = []
-    seen = set()
-    for btn in req.buttons:
-        if btn.id in VALID_TOOLBAR_BUTTONS and btn.id not in seen:
-            toolbar.append({"id": btn.id, "enabled": btn.enabled})
-            seen.add(btn.id)
+        # Validate and build toolbar config
+        toolbar = []
+        seen = set()
+        for btn in req.buttons:
+            if btn.id in VALID_TOOLBAR_BUTTONS and btn.id not in seen:
+                toolbar.append({"id": btn.id, "enabled": btn.enabled})
+                seen.add(btn.id)
 
-    # Add any missing buttons at the end (disabled)
-    for btn_id in ["search", "discover", "activity", "favorites", "libraries", "shuffle", "genres"]:
-        if btn_id not in seen:
-            toolbar.append({"id": btn_id, "enabled": False})
+        # Add any missing buttons at the end (disabled)
+        for btn_id in ["search", "discover", "activity", "favorites", "libraries", "shuffle", "genres"]:
+            if btn_id not in seen:
+                toolbar.append({"id": btn_id, "enabled": False})
 
-    config["toolbar"] = toolbar
-    _write_home_json(user, config)
+        config["toolbar"] = toolbar
+        _write_home_json(user, config)
     bump_playlist_version()
     _notify_jellyfin_plugin(db)
     logger.info(f"Updated toolbar config: {[b['id'] for b in toolbar if b['enabled']]}")
