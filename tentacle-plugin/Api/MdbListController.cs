@@ -142,7 +142,7 @@ public class TentacleMdbListController : ControllerBase
 
             var client = _httpClientFactory.CreateClient();
             client.Timeout = TimeSpan.FromSeconds(10);
-            var response = await PluginKeysClient.GetSecuredStringAsync(client, $"{tentacleUrl}/api/settings/plugin-keys");
+            var response = await PluginKeysClient.GetSecuredStringAsync(client, $"{tentacleUrl}/api/settings/plugin-keys", HttpContext.Request);
             using var doc = JsonDocument.Parse(response);
 
             if (doc.RootElement.TryGetProperty("mdblist_api_key", out var el))

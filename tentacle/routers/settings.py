@@ -12,19 +12,20 @@ from typing import Optional, Dict
 import requests
 
 from models.database import get_db, Setting, get_setting, set_setting
-from routers.auth import require_admin, require_internal_or_admin
+from routers.auth import require_admin, get_user_from_request
 
 router = APIRouter(prefix="/api/settings", tags=["settings"], dependencies=[Depends(require_admin)])
 
-# Separate router for plugin-facing endpoints. Gated by the shared internal secret
-# (or an admin session) since these expose third-party API keys.
+# Separate router for plugin-facing endpoints. Gated by a valid Jellyfin user token
+# (the plugin forwards the caller's token automatically — zero config) rather than a
+# manually-configured shared secret.
 plugin_router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 
-@plugin_router.get("/plugin-keys", dependencies=[Depends(require_internal_or_admin)])
+@plugin_router.get("/plugin-keys", dependencies=[Depends(get_user_from_request)])
 def get_plugin_keys(db: Session = Depends(get_db)):
-    """Return API keys needed by the Jellyfin plugin. Requires the shared internal
-    secret (sent by the plugin as X-Tentacle-Secret) or an admin session.
+    """Return API keys needed by the Jellyfin plugin. Requires a valid Jellyfin user
+    token (forwarded by the plugin as ?api_key=) — no manual secret setup.
     Only exposes specific keys, not all settings."""
     result = {}
     for key in ["mdblist_api_key", "tmdb_bearer_token", "tmdb_api_key"]:

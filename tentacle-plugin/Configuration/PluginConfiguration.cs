@@ -19,13 +19,4 @@ public class PluginConfiguration : BasePluginConfiguration
     /// </summary>
     public string SmartListsPath { get; set; } = string.Empty;
 
-    /// <summary>
-    /// Gets or sets the shared internal secret used to authenticate the plugin's
-    /// server-to-server calls to the Tentacle backend (native-delete cleanup,
-    /// plugin-keys fetch). Copy this from the Tentacle dashboard (Settings). When
-    /// empty those server-to-server calls are unauthenticated and the backend may
-    /// reject them.
-    /// </summary>
-    public string TentacleSecret { get; set; } = string.Empty;
-
 }
