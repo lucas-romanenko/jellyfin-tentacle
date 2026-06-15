@@ -42,49 +42,6 @@ jobs:
           CHECKSUM=$(md5sum tentacle-plugin/bin/Release/net9.0/tentacle-plugin-v${{ steps.version.outputs.version }}.zip | awk '{print $1}')
           echo "md5=${CHECKSUM}" >> "$GITHUB_OUTPUT"
 
-      - name: Update manifest.json
-        run: |
-          export VERSION="${{ steps.version.outputs.version }}"
-          export FULL_VERSION="${{ steps.version.outputs.full_version }}"
-          export CHECKSUM="${{ steps.checksum.outputs.md5 }}"
-          export TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-
-          python3 <<'PYEOF'
-          import json, os
-
-          version = os.environ.get("VERSION", "${{ steps.version.outputs.version }}")
-          full_version = os.environ.get("FULL_VERSION", "${{ steps.version.outputs.full_version }}")
-          checksum = os.environ.get("CHECKSUM", "${{ steps.checksum.outputs.md5 }}")
-          timestamp = os.environ.get("TIMESTAMP", "${{ env.TIMESTAMP }}")
-
-          with open("tentacle-plugin/manifest.json", "r") as f:
-              manifest = json.load(f)
-
-          new_entry = {
-              "version": full_version,
-              "changelog": f"Release v{version}",
-              "targetAbi": "10.11.0.0",
-              "sourceUrl": f"https://github.com/lucas-romanenko/jellyfin-tentacle/releases/download/plugin-v{version}/tentacle-plugin-v{version}.zip",
-              "checksum": checksum,
-              "timestamp": timestamp
-          }
-
-          # Replace existing entry with same major.minor.patch or prepend
-          versions = manifest[0]["versions"]
-          replaced = False
-          for i, v in enumerate(versions):
-              if v["version"] == full_version:
-                  versions[i] = new_entry
-                  replaced = True
-                  break
-          if not replaced:
-              versions.insert(0, new_entry)
-
-          with open("tentacle-plugin/manifest.json", "w") as f:
-              json.dump(manifest, f, indent=2)
-              f.write("\n")
-          PYEOF
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -122,12 +79,57 @@ jobs:
           echo "Release asset never returned 200 — aborting before manifest commit."
           exit 1
 
+      # Update the manifest on a CLEAN main checkout. Editing manifest.json while on the
+      # detached tag commit makes `git checkout main` abort ("local changes would be
+      # overwritten"), so we switch to main first and regenerate the entry there.
       - name: Commit updated manifest
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git fetch origin main
           git checkout main
+
+          export VERSION="${{ steps.version.outputs.version }}"
+          export FULL_VERSION="${{ steps.version.outputs.full_version }}"
+          export CHECKSUM="${{ steps.checksum.outputs.md5 }}"
+          export TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          python3 <<'PYEOF'
+          import json, os
+
+          version = os.environ["VERSION"]
+          full_version = os.environ["FULL_VERSION"]
+          checksum = os.environ["CHECKSUM"]
+          timestamp = os.environ["TIMESTAMP"]
+
+          with open("tentacle-plugin/manifest.json", "r") as f:
+              manifest = json.load(f)
+
+          new_entry = {
+              "version": full_version,
+              "changelog": f"Release v{version}",
+              "targetAbi": "10.11.0.0",
+              "sourceUrl": f"https://github.com/lucas-romanenko/jellyfin-tentacle/releases/download/plugin-v{version}/tentacle-plugin-v{version}.zip",
+              "checksum": checksum,
+              "timestamp": timestamp
+          }
+
+          # Replace existing entry with same major.minor.patch, else prepend
+          versions = manifest[0]["versions"]
+          replaced = False
+          for i, v in enumerate(versions):
+              if v["version"] == full_version:
+                  versions[i] = new_entry
+                  replaced = True
+                  break
+          if not replaced:
+              versions.insert(0, new_entry)
+
+          with open("tentacle-plugin/manifest.json", "w") as f:
+              json.dump(manifest, f, indent=2)
+              f.write("\n")
+          PYEOF
+
           git add tentacle-plugin/manifest.json
           if git diff --cached --quiet; then
             echo "No manifest changes"
