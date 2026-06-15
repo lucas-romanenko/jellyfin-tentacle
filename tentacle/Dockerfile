@@ -11,7 +11,7 @@ COPY requirements.txt .
 RUN pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt
 
 
-# ── Final stage: runtime only (no gcc), runs as a non-root user ──
+# ── Final stage: runtime only (no gcc) ──
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -31,16 +31,10 @@ RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.t
 
 COPY . .
 
-# Create the data dir and a non-root user that owns the app + data.
-# NOTE: bind-mounted volumes (/data, /media/*) keep the *host* directory's
-# ownership, which overrides the chown below. For writes to succeed the host
-# must allow uid 10001 (e.g. `chown -R 10001 /docker/appdata/tentacle/data`)
-# or the compose file should set `user: "<uid>:<gid>"` to match the host owner.
-RUN mkdir -p /data/smartlists \
-    && useradd --create-home --uid 10001 tentacle \
-    && chown -R tentacle:tentacle /app /data
-
-USER tentacle
+# Ensure the data dir exists. Runs as root so writes to bind-mounted /data and
+# /media/* volumes work without the operator having to chown host directories —
+# important for an easy-to-deploy, freely-distributed app.
+RUN mkdir -p /data/smartlists
 
 EXPOSE 8888
 
