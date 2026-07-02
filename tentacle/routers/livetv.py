@@ -1057,12 +1057,28 @@ def update_channel(channel_id: int, update: ChannelUpdate, db: Session = Depends
     return {"success": True}
 
 
+# SQLite caps host parameters per statement (SQLITE_MAX_VARIABLE_NUMBER, 999 on
+# older builds). A big IPTV provider can have thousands of channels/groups, so an
+# unchunked IN (...) list raises "too many SQL variables" (an unhandled 500) when
+# saving. Chunk the lists so bulk saves scale to any provider size.
+_SQL_IN_CHUNK = 500
+
+
+def _chunked(seq, size=_SQL_IN_CHUNK):
+    """Yield successive `size`-length slices of `seq`."""
+    seq = list(seq)
+    for i in range(0, len(seq), size):
+        yield seq[i:i + size]
+
+
 @router.post("/api/live/channels/bulk", dependencies=_admin)
 def bulk_update_channels(update: BulkChannelUpdate, db: Session = Depends(get_db)):
     """Bulk enable/disable channels."""
-    count = db.query(LiveChannel).filter(
-        LiveChannel.id.in_(update.channel_ids)
-    ).update({LiveChannel.enabled: update.enabled}, synchronize_session=False)
+    count = 0
+    for chunk in _chunked(update.channel_ids):
+        count += db.query(LiveChannel).filter(
+            LiveChannel.id.in_(chunk)
+        ).update({LiveChannel.enabled: update.enabled}, synchronize_session=False)
     db.commit()
     return {"success": True, "updated": count}
 
@@ -1114,7 +1130,9 @@ def list_groups(provider_id: Optional[int] = None, db: Session = Depends(get_db)
 @router.put("/api/live/groups/bulk", dependencies=_admin)
 def bulk_update_groups(update: BulkGroupUpdate, db: Session = Depends(get_db)):
     """Enable/disable multiple groups and their channels in one request."""
-    groups = db.query(LiveChannelGroup).filter(LiveChannelGroup.id.in_(update.group_ids)).all()
+    groups = []
+    for chunk in _chunked(update.group_ids):
+        groups.extend(db.query(LiveChannelGroup).filter(LiveChannelGroup.id.in_(chunk)).all())
     if not groups:
         return {"success": True, "updated": 0}
 
@@ -1122,16 +1140,18 @@ def bulk_update_groups(update: BulkGroupUpdate, db: Session = Depends(get_db)):
     # Without this, re-saving already-enabled groups resets individually-disabled channels.
     changing_names = [g.name for g in groups if g.enabled != update.enabled]
 
-    db.query(LiveChannelGroup).filter(LiveChannelGroup.id.in_(update.group_ids)).update(
-        {LiveChannelGroup.enabled: update.enabled}, synchronize_session=False
-    )
+    for chunk in _chunked(update.group_ids):
+        db.query(LiveChannelGroup).filter(LiveChannelGroup.id.in_(chunk)).update(
+            {LiveChannelGroup.enabled: update.enabled}, synchronize_session=False
+        )
 
     if changing_names:
         provider_id = groups[0].provider_id
-        db.query(LiveChannel).filter(
-            LiveChannel.provider_id == provider_id,
-            LiveChannel.group_title.in_(changing_names),
-        ).update({LiveChannel.enabled: update.enabled}, synchronize_session=False)
+        for chunk in _chunked(changing_names):
+            db.query(LiveChannel).filter(
+                LiveChannel.provider_id == provider_id,
+                LiveChannel.group_title.in_(chunk),
+            ).update({LiveChannel.enabled: update.enabled}, synchronize_session=False)
 
     db.commit()
     return {"success": True, "updated": len(groups)}

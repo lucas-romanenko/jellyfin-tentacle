@@ -19,26 +19,38 @@ logger = logging.getLogger(__name__)
 
 # Hardening limits for untrusted (provider-supplied) XMLTV input.
 # stdlib ElementTree has no XXE / billion-laughs protection and defusedxml is
-# not available, so we reject DOCTYPE/ENTITY declarations outright and cap the
-# decompressed/parsed size.
+# not available, so we cap the decompressed/parsed size and block the actual
+# entity-expansion vectors below.
 MAX_XMLTV_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB hard cap on (decompressed) XML
-_DOCTYPE_RE = re.compile(rb"<!(DOCTYPE|ENTITY)", re.IGNORECASE)
+
+# Real XMLTV feeds routinely start with an EXTERNAL DTD declaration, e.g.
+#   <!DOCTYPE tv SYSTEM "xmltv.dtd">
+# which is harmless: stdlib ElementTree/expat does not fetch external DTDs or
+# resolve external entities by default. The genuine threats are (a) an internal
+# <!ENTITY ...> declaration (billion-laughs / entity expansion) and (b) a DOCTYPE
+# carrying an internal subset ("[ ... ]") where such entities live. We block
+# those two and allow a bare external DOCTYPE, so legitimate provider EPGs parse
+# (rejecting every DOCTYPE broke real feeds with "disallowed DOCTYPE").
+_ENTITY_RE = re.compile(rb"<!ENTITY", re.IGNORECASE)
+_DOCTYPE_INTERNAL_SUBSET_RE = re.compile(rb"<!DOCTYPE[^>]*\[", re.IGNORECASE)
 
 
 class XMLTVSecurityError(ValueError):
-    """Raised when XMLTV input contains a disallowed DOCTYPE/ENTITY declaration."""
+    """Raised when XMLTV input contains a disallowed ENTITY / internal-subset DOCTYPE."""
 
 
 def _reject_doctype_bytes(head: bytes):
-    """Raise if the XML prologue contains a DOCTYPE/ENTITY declaration.
+    """Raise if the XML prologue contains an entity-expansion vector.
 
-    DOCTYPE/ENTITY only appears in the document prologue (before the root
-    element), so scanning the leading bytes is sufficient and cheap.
+    An internal ``<!ENTITY ...>`` declaration, or a DOCTYPE with an internal
+    subset (``[ ... ]``), is rejected; a bare external DOCTYPE (SYSTEM/PUBLIC
+    reference) is allowed because expat does not resolve it. These only appear
+    in the document prologue, so scanning the leading bytes is enough and cheap.
     """
-    if _DOCTYPE_RE.search(head):
+    if _ENTITY_RE.search(head) or _DOCTYPE_INTERNAL_SUBSET_RE.search(head):
         raise XMLTVSecurityError(
-            "XMLTV input contains a disallowed DOCTYPE/ENTITY declaration "
-            "(possible XXE / entity-expansion attack)"
+            "XMLTV input contains a disallowed ENTITY or internal-subset DOCTYPE "
+            "declaration (possible XXE / entity-expansion attack)"
         )
 
 
