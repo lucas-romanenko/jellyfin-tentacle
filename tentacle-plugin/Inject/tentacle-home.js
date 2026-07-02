@@ -61,9 +61,11 @@
     var type = e.detail && e.detail.type;
     var hash = location.hash || '';
     console.log('[TH] viewshow fired — type=' + JSON.stringify(type) + ' hash=' + JSON.stringify(hash) + ' ts=' + Date.now());
-    if (type === 'home' || (!type && isHomePage())) {
-      onHomePage();
-    } else if (isHomePage()) {
+    // The home view's Favorites tab (tab=1) is native — isHomePage() is false
+    // there, so keep the type==='home' fast-path (covers the hash lagging
+    // viewshow on first load) but suppress it when the hash says a non-zero tab.
+    var favTab = /[?&]tab=[1-9]/.test(hash);
+    if ((type === 'home' && !favTab) || isHomePage()) {
       onHomePage();
     } else {
       onLeavingHome();
@@ -90,8 +92,14 @@
     // Normalize the hash the same way tentacle-navbar.js does: strip the
     // leading '#/', then drop any query string and file extension. This keeps
     // the home detection consistent across navbar, home, and mediabar.
-    var h = (location.hash || '').replace('#', '').replace(/^\//, '').split('?')[0].split('.')[0];
-    return h === '' || h === 'home';
+    var raw = location.hash || '';
+    var h = raw.replace('#', '').replace(/^\//, '').split('?')[0].split('.')[0];
+    if (h !== '' && h !== 'home') return false;
+    // The home view has a Home tab (tab 0 / none) and a Favorites tab (tab 1).
+    // Only the Home tab is the Tentacle home; on Favorites (any non-zero tab)
+    // step aside so the native Favorites content shows, not Tentacle's rows.
+    var m = raw.match(/[?&]tab=(\d+)/);
+    return !m || m[1] === '0';
   }
 
   // ── Home Page Entry ─────────────────────────────────────────────────

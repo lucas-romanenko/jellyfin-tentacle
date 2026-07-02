@@ -38,8 +38,13 @@
         isHomePage: function () {
             // Normalize the hash the same way tentacle-navbar.js does so home
             // detection is consistent across navbar, home, and mediabar.
-            var h = (location.hash || '').replace('#', '').replace(/^\//, '').split('?')[0].split('.')[0];
-            return h === '' || h === 'home';
+            var raw = location.hash || '';
+            var h = raw.replace('#', '').replace(/^\//, '').split('?')[0].split('.')[0];
+            if (h !== '' && h !== 'home') return false;
+            // Home tab (tab 0 / none) shows the media bar; the Favorites tab
+            // (tab 1) is native, so step aside there.
+            var m = raw.match(/[?&]tab=(\d+)/);
+            return !m || m[1] === '0';
         },
 
         init: function () {
@@ -864,9 +869,10 @@
             // Primary: viewshow — Jellyfin's own SPA navigation event (most reliable)
             this._onViewShow = function (e) {
                 var type = e.detail && e.detail.type;
-                if (type === 'home' || (!type && self.isHomePage())) {
-                    self.show();
-                } else if (self.isHomePage()) {
+                // Favorites tab (tab=1) is native — suppress the type==='home'
+                // fast-path there so the media bar hides on Favorites.
+                var favTab = /[?&]tab=[1-9]/.test(location.hash || '');
+                if ((type === 'home' && !favTab) || self.isHomePage()) {
                     self.show();
                 } else {
                     self.hide();
