@@ -1077,6 +1077,49 @@ def _refresh_smartlist_playlists_inner(db: Session, user_id: int = None, only_na
     return stats
 
 
+def _is_native_playlist_config(config: dict) -> bool:
+    """True if a playlist queries Jellyfin's OWN metadata only (genre/rating/year),
+    i.e. has expressions but none tag-based. Native queries are stable: unlike
+    tag-based ones they can't transiently 'lose' matches to a tag-indexing race, so
+    they are safe to re-query on a short interval."""
+    expr_sets = config.get("ExpressionSets") or []
+    exprs = [e for es in expr_sets for e in (es.get("Expressions") or [])]
+    if not exprs:
+        return False
+    return all((e.get("MemberName") or "").lower() != "tags" for e in exprs)
+
+
+def refresh_native_playlists(db: Session, user_id: int = None) -> dict:
+    """Re-query only native (genre/rating/year) playlists so they pick up items whose
+    Jellyfin metadata arrived after the last full refresh (VOD .strm NFO scans, late
+    TMDB fetches) — instead of waiting for the 3am sync. Reuses the incremental,
+    add-before-remove _process_single_playlist path (no-op when unchanged, never
+    clears on a transient failure). Tag-based playlists are intentionally excluded:
+    they stay on the webhook + nightly path to avoid the tag-indexing race.
+    Returns combined {processed, created, updated, errors}."""
+    combined = {"processed": 0, "created": 0, "updated": 0, "errors": 0}
+    users = ([db.query(TentacleUser).filter(TentacleUser.id == user_id).first()]
+             if user_id else db.query(TentacleUser).all())
+    for u in users:
+        if not u:
+            continue
+        try:
+            smartlists_path = _user_smartlists_path(db, u.id)
+        except ValueError:
+            continue
+        native_names = [
+            name for name, (folder, config) in _scan_existing(smartlists_path).items()
+            if config.get("Enabled", True) and config.get("Type") == "Playlist"
+            and _is_native_playlist_config(config)
+        ]
+        if not native_names:
+            continue
+        result = refresh_smartlist_playlists(db, user_id=u.id, only_names=native_names)
+        for key in ("processed", "created", "updated", "errors"):
+            combined[key] += result.get(key, 0)
+    return combined
+
+
 def _resort_by_db_date(items: list, config: dict, db: Session = None) -> list:
     """Re-sort Jellyfin items by Tentacle's date_added when sort is DateCreated.
 

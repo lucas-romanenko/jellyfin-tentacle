@@ -16,6 +16,7 @@ from models.database import create_tables, SessionLocal, seed_defaults, Setting,
 from routers import settings, providers, sync as sync_router, library, duplicates, lists as lists_router, widget, radarr as radarr_router, sonarr as sonarr_router, tags as tags_router, collections as collections_router, smartlists as smartlists_router, discover as discover_router, livetv as livetv_router, auth as auth_router, activity as activity_router, notifications as notifications_router
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 scheduler = BackgroundScheduler()
 
@@ -277,6 +278,25 @@ def run_scheduled_sync():
         db.close()
 
 
+def run_native_playlist_refresh():
+    """Periodic: re-query only native (genre/rating/year) playlists so they pick up
+    items whose Jellyfin metadata arrived after the last full refresh — without waiting
+    for the 3am sync. Reuses the incremental, add-before-remove refresh path (no-op when
+    unchanged); tag-based playlists are excluded to avoid the tag-indexing race. Notifies
+    both clients (web version + Android WebSocket) only when something actually changed."""
+    db = SessionLocal()
+    try:
+        from services.smartlists import refresh_native_playlists, _notify_jellyfin_plugin
+        result = refresh_native_playlists(db)
+        if result.get("updated", 0) or result.get("created", 0):
+            _notify_jellyfin_plugin(db)
+            logger.info(f"[Native refresh] genre/rating playlists updated: {result}")
+    except Exception as e:
+        logger.warning(f"[Native refresh] failed: {e}")
+    finally:
+        db.close()
+
+
 def setup_scheduler(db):
     """Setup cron scheduler from settings"""
     s = db.query(Setting).filter(Setting.key == "sync_schedule").first()
@@ -293,6 +313,19 @@ def setup_scheduler(db):
             logger.info(f"Sync scheduled: {cron}")
     except Exception as e:
         logger.warning(f"Could not parse cron schedule '{cron}': {e}")
+
+    # Keep native (genre/rating/year) playlists current between nightly syncs, so a
+    # genre row fills in within minutes of its content getting Jellyfin metadata
+    # instead of waiting until 3am. Cheap: incremental + no-op when nothing changed.
+    scheduler.add_job(
+        run_native_playlist_refresh,
+        IntervalTrigger(minutes=15),
+        id="native_playlist_refresh",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    logger.info("Native playlist refresh scheduled: every 15 min")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
