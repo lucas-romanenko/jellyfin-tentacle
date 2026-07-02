@@ -639,7 +639,11 @@
                     this.activateActivity();
                     break;
                 case 'favorites':
-                    this.navigateTo('/home?tab=1');
+                    // navigateTo('/home?tab=1') routes via Emby.Page.show, which no-ops
+                    // when already on /home (the usual case, since the navbar replaces the
+                    // home header), so the Favorites tab never activates. Force a real hash
+                    // change so the router re-selects the Favorites tab (index 1 on home).
+                    window.location.hash = '#/home.html?tab=1';
                     break;
                 case 'library':
                     var libraryId = btn.dataset.libraryId;
