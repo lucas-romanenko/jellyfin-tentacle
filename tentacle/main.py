@@ -245,8 +245,22 @@ def run_scheduled_sync():
                 try:
                     migrate_global_smartlists_to_user(db, user.id)
                     sync_smartlists(db, user_id=user.id)
-                    refresh_smartlist_playlists(db, user_id=user.id)
+                    stats = refresh_smartlist_playlists(db, user_id=user.id) or {}
                     write_home_config(db, user_id=user.id)
+                    logger.info(
+                        f"[Nightly] Playlists rebuilt for user {user.id}: "
+                        f"{stats.get('processed', 0)} processed, {stats.get('created', 0)} created, "
+                        f"{stats.get('updated', 0)} updated, {stats.get('errors', 0)} errors"
+                    )
+                    counts = stats.get("item_counts") or {}
+                    if counts:
+                        detail = ", ".join(f"{n}={c}" for n, c in sorted(counts.items()))
+                        logger.info(f"[Nightly] Playlist item counts (user {user.id}): {detail}")
+                    if stats.get("errors"):
+                        logger.warning(
+                            f"[Nightly] {stats['errors']} playlist(s) failed for user {user.id} "
+                            f"— see [SmartLists] lines above"
+                        )
                 except Exception as e:
                     logger.error(f"Per-user sync failed for user {user.id}: {e}")
             # Notify plugin to clear caches once at end

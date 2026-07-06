@@ -2229,22 +2229,54 @@ async function syncPlaylistsToJellyfin() {
 async function resyncAllPlaylists() {
   const btn = document.getElementById('resync-all-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Syncing...'; }
-  toast('Resyncing all playlists to Jellyfin...', 'info');
   try {
+    // Full resync runs in the background on the server and returns immediately —
+    // rebuilding every playlist can take minutes, which used to trip the gateway
+    // timeout. We poll /sync-status for completion.
     const r = await api('/api/smartlists/sync', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({full: true}) });
-    const parts = [];
-    if (r.created) parts.push(`${r.created} created`);
-    if (r.updated) parts.push(`${r.updated} updated`);
-    if (r.removed) parts.push(`${r.removed} removed`);
-    toast(parts.length ? `Resync complete: ${parts.join(', ')}` : 'All playlists up to date');
-    loadAutoPlaylists();
-    loadTagRules();
-    loadHomeScreen();
+    if (r.status === 'already_running') {
+      toast('A resync is already running — watching progress…', 'info');
+    } else {
+      toast('Resync started — running in the background', 'info');
+    }
+    pollResyncStatus();
   } catch (e) {
-    toast('Resync failed: ' + e.message, 'error');
-  } finally {
+    toast('Resync failed to start: ' + e.message, 'error');
     if (btn) { btn.disabled = false; btn.textContent = 'Resync All'; }
   }
+}
+
+async function pollResyncStatus() {
+  const btn = document.getElementById('resync-all-btn');
+  let s;
+  try {
+    s = await api('/api/smartlists/sync-status');
+  } catch (e) {
+    setTimeout(pollResyncStatus, 5000); // transient error — keep polling
+    return;
+  }
+  if (s.running) {
+    setTimeout(pollResyncStatus, 3000);
+    return;
+  }
+  // Finished
+  if (btn) { btn.disabled = false; btn.textContent = 'Resync All'; }
+  if (s.error) {
+    toast('Resync failed: ' + s.error, 'error');
+  } else if (s.summary) {
+    const parts = [];
+    if (s.summary.created) parts.push(`${s.summary.created} created`);
+    if (s.summary.updated) parts.push(`${s.summary.updated} updated`);
+    if (s.summary.removed) parts.push(`${s.summary.removed} removed`);
+    if (s.summary.errors) parts.push(`${s.summary.errors} errors`);
+    const t = s.summary.elapsed_seconds != null ? ` in ${s.summary.elapsed_seconds}s` : '';
+    toast(`Resync complete${t}: ${parts.join(', ') || 'all up to date'}`, s.summary.errors ? 'error' : 'success');
+  } else {
+    toast('Resync complete');
+  }
+  loadAutoPlaylists();
+  loadTagRules();
+  loadHomeScreen();
 }
 
 async function loadListSubscriptions() {

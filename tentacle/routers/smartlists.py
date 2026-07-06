@@ -7,6 +7,7 @@ import os
 import json
 import logging
 import time
+import threading
 from pathlib import Path
 from typing import Optional
 from fastapi import APIRouter, Depends, Request, HTTPException
@@ -169,20 +170,119 @@ def sync_one(body: dict, db: Session = Depends(get_db), user: TentacleUser = Dep
     return sync_single_custom_playlist(db, user.id, name, conditions, apply_to, output_tag)
 
 
+# ── Full resync: run in the background so the request returns immediately ──
+# A full resync rebuilds every playlist in Jellyfin, which can take minutes on
+# large libraries. Running it inline blew past the reverse-proxy gateway timeout
+# (Cloudflare tunnel / Nginx) even though the work succeeded. We run it in a
+# daemon thread with its own DB session and expose progress via /sync-status.
+_resync_lock = threading.Lock()
+_resync_state = {
+    "running": False,
+    "started_at": None,
+    "finished_at": None,
+    "summary": None,
+    "error": None,
+}
+
+
+def _run_full_resync(user_id: int):
+    """Full playlist resync pipeline, run in a background thread. Logs a clear
+    start line and a completion summary (counts, per-playlist item totals,
+    duration) so both manual and nightly runs are traceable in `docker logs`."""
+    from models.database import SessionLocal
+    start = time.time()
+    logger.info(f"[Resync] Full playlist resync started (user_id={user_id})")
+    db = SessionLocal()
+    try:
+        result = sync_smartlists(db, user_id=user_id)
+        refresh = {}
+        try:
+            refresh = refresh_smartlist_playlists(db, user_id=user_id, only_names=None)
+        except Exception as e:
+            logger.error(f"[Resync] Playlist refresh failed: {e}", exc_info=True)
+            result["refresh_error"] = str(e)
+
+        try:
+            from routers.collections import sync_playlist_artwork
+            sync_playlist_artwork(db)
+        except Exception as e:
+            logger.warning(f"[Resync] Artwork sync failed: {e}")
+
+        try:
+            write_home_config(db, user_id=user_id)
+            _notify_jellyfin_plugin(db)
+        except Exception as e:
+            logger.warning(f"[Resync] Home config / plugin notify failed: {e}")
+
+        bump_playlist_version()
+
+        elapsed = round(time.time() - start, 1)
+        counts = refresh.get("item_counts") or {}
+        summary = {
+            "created": result.get("created", 0),
+            "updated": result.get("updated", 0),
+            "removed": result.get("removed", 0),
+            "errors": refresh.get("errors", 0),
+            "playlists": len(counts),
+            "elapsed_seconds": elapsed,
+        }
+        logger.info(
+            f"[Resync] Full playlist resync complete in {elapsed}s — "
+            f"created={summary['created']} updated={summary['updated']} "
+            f"removed={summary['removed']} errors={summary['errors']} "
+            f"playlists={summary['playlists']}"
+        )
+        if summary["errors"]:
+            logger.warning(f"[Resync] {summary['errors']} playlist(s) had errors — see [SmartLists] lines above")
+        if counts:
+            detail = ", ".join(f"{n}={c}" for n, c in sorted(counts.items()))
+            logger.info(f"[Resync] Playlist item counts: {detail}")
+        with _resync_lock:
+            _resync_state.update(running=False, finished_at=time.time(), summary=summary, error=None)
+    except Exception as e:
+        logger.error(f"[Resync] Full playlist resync failed: {e}", exc_info=True)
+        with _resync_lock:
+            _resync_state.update(running=False, finished_at=time.time(), error=str(e))
+    finally:
+        db.close()
+
+
+@router.get("/sync-status")
+def sync_status(user: TentacleUser = Depends(get_user_from_request)):
+    """Report whether a full resync is running plus the last completion summary.
+    Polled by the dashboard after triggering Resync All."""
+    with _resync_lock:
+        return dict(_resync_state)
+
+
 @router.post("/sync")
 def sync(body: dict = None, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
-    """Run full per-user playlist pipeline: sync configs → populate items → artwork → home config → notify plugin.
-    Pass {"full": true} to force refresh ALL playlists (recreates missing Jellyfin playlists)."""
+    """Run per-user playlist pipeline: sync configs → populate items → artwork → home config → notify plugin.
+    Pass {"full": true} to force refresh ALL playlists — this runs in the background
+    and returns {"status": "started"} immediately (poll /sync-status for completion)."""
     full = (body or {}).get("full", False)
-    result = sync_smartlists(db, user_id=user.id)
 
-    # Full refresh: rebuild all playlists (recreates missing Jellyfin playlists)
-    # Targeted refresh: only new/changed playlists
+    if full:
+        # Heavy full rebuild — hand off to a background thread and return now.
+        with _resync_lock:
+            if _resync_state["running"]:
+                return {"status": "already_running", "started_at": _resync_state["started_at"]}
+            _resync_state.update(
+                running=True, started_at=time.time(),
+                finished_at=None, summary=None, error=None,
+            )
+        threading.Thread(
+            target=_run_full_resync, args=(user.id,), daemon=True, name=f"resync-{user.id}",
+        ).start()
+        return {"status": "started"}
+
+    # Targeted sync (fast path) — synchronous, only new/changed playlists.
+    result = sync_smartlists(db, user_id=user.id)
     changed = result.get("changed_names") or []
-    if full or changed:
+    if changed:
         try:
             refresh_result = refresh_smartlist_playlists(
-                db, user_id=user.id, only_names=None if full else changed
+                db, user_id=user.id, only_names=changed
             )
             result["refresh"] = refresh_result
         except Exception as e:
