@@ -235,7 +235,13 @@ public class TentacleHomeController : ControllerBase
                 ? grouped.OrderByDescending(i => i.SortName)
                 : grouped.OrderBy(i => i.SortName),
             "datecreated" => grouped,
-            _ => grouped.OrderBy(_ => Random.Shared.Next()),
+            // "random" and any unspecified/unknown sort: trust the playlist order the
+            // Python backend already populated. It stores a STABLE order (including a
+            // fixed random shuffle applied once at populate time). Re-shuffling here on
+            // every request made rows swap items and re-order on each home refresh
+            // ("order changed while it was open" / "doesn't match Tentacle"), and the
+            // per-request .Take(limit) over a fresh shuffle also dropped items.
+            _ => grouped,
         };
 
         var finalItems = sorted.Take(limit).ToList();
