@@ -1339,20 +1339,28 @@ def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats
                         jf.remove_from_playlist(playlist_id, remove_entry_ids)
                 logger.info(f"[SmartLists] '{name}': incremental update +{len(to_add)} -{len(to_remove)} (total {len(item_ids)})")
             else:
-                # Order changed or complex reorder — full rebuild required.
-                # Add the desired items FIRST (Jellyfin appends them), and only
-                # remove the original entries once the add is confirmed. A
-                # failed add then leaves the playlist intact instead of empty.
-                if item_ids:
-                    if not jf.add_to_playlist(playlist_id, item_ids):
-                        logger.error(f"[SmartLists] '{name}': rebuild add failed — leaving playlist unchanged")
-                        stats["errors"] = stats.get("errors", 0) + 1
-                        return
+                # Order changed — rebuild in the desired order. Jellyfin DEDUPES
+                # playlist adds: re-adding an item already in the playlist is a
+                # no-op that keeps its OLD position. The previous "add all, then
+                # remove old" therefore silently dropped every item present in
+                # BOTH the old and new set — its old entry got removed and the
+                # re-add was deduped away — leaving only the brand-new items
+                # (e.g. Netflix 420 → 72, keeping just the 72 newly-added).
+                # Clear the playlist first, then add all desired items in order.
+                # Adds are reliable now (120s timeout); if the re-add fails the
+                # playlist is briefly empty and the next sync repopulates it.
                 if current_entries:
                     all_entry_ids = [entry.get("PlaylistItemId", entry["Id"]) for entry in current_entries]
                     if not jf.remove_from_playlist(playlist_id, all_entry_ids):
-                        logger.warning(f"[SmartLists] '{name}': rebuild remove failed — playlist may contain stale duplicates")
-                logger.info(f"[SmartLists] '{name}': full rebuild +{len(to_add)} -{len(to_remove)} reorder (total {len(item_ids)})")
+                        logger.error(f"[SmartLists] '{name}': rebuild clear failed — leaving playlist unchanged")
+                        stats["errors"] = stats.get("errors", 0) + 1
+                        return
+                if item_ids:
+                    if not jf.add_to_playlist(playlist_id, item_ids):
+                        logger.error(f"[SmartLists] '{name}': rebuild re-add failed after clear — will repopulate next sync")
+                        stats["errors"] = stats.get("errors", 0) + 1
+                        return
+                logger.info(f"[SmartLists] '{name}': full rebuild — cleared + re-added {len(item_ids)} in order (+{len(to_add)} -{len(to_remove)})")
 
         stats["updated"] += 1
     else:
