@@ -408,7 +408,7 @@ class JellyfinService:
         if item_ids:
             body["Ids"] = item_ids
         try:
-            r = self.session.post(f"{self.url}/Playlists", json=body, timeout=15)
+            r = self.session.post(f"{self.url}/Playlists", json=body, timeout=120)
             self._check_401(r, "/Playlists")
             r.raise_for_status()
             return r.json().get("Id")
@@ -429,10 +429,17 @@ class JellyfinService:
         return []
 
     def add_to_playlist(self, playlist_id: str, item_ids: List[str]) -> bool:
-        """Add items to an existing playlist in chunks of 50."""
+        """Add items to an existing playlist in chunks of 25.
+
+        Jellyfin re-saves and re-indexes the whole playlist on every add, so the
+        request time grows with playlist size. Smaller chunks keep each request
+        light and the timeout is generous — a 50-item chunk at a 15s timeout was
+        timing out on larger playlists, which aborted the whole rebuild and left
+        playlists frozen at their previous (partial) contents.
+        """
         if not item_ids:
             return True
-        chunk_size = 50
+        chunk_size = 25
         for i in range(0, len(item_ids), chunk_size):
             chunk = item_ids[i:i + chunk_size]
             try:
@@ -442,7 +449,7 @@ class JellyfinService:
                 r = self.session.post(
                     f"{self.url}/Playlists/{playlist_id}/Items",
                     params=params,
-                    timeout=15,
+                    timeout=120,
                 )
                 self._check_401(r, f"/Playlists/{playlist_id}/Items")
                 if r.status_code >= 400:
@@ -472,17 +479,17 @@ class JellyfinService:
             return False
 
     def remove_from_playlist(self, playlist_id: str, entry_ids: List[str]) -> bool:
-        """Remove items from a playlist by their PlaylistItemId, in chunks of 50."""
+        """Remove items from a playlist by their PlaylistItemId, in chunks of 25."""
         if not entry_ids:
             return True
-        chunk_size = 50
+        chunk_size = 25
         for i in range(0, len(entry_ids), chunk_size):
             chunk = entry_ids[i:i + chunk_size]
             try:
                 r = self.session.delete(
                     f"{self.url}/Playlists/{playlist_id}/Items",
                     params={"EntryIds": ",".join(chunk)},
-                    timeout=30,
+                    timeout=120,
                 )
                 self._check_401(r, f"/Playlists/{playlist_id}/Items")
                 if r.status_code >= 400:
