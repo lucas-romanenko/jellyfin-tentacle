@@ -466,8 +466,13 @@ class JellyfinService:
     def move_playlist_item(self, playlist_id: str, item_id: str, new_index: int) -> bool:
         """Move an item within a playlist to a new position."""
         try:
+            # UserId for private per-user playlists (same reason as remove_from_playlist).
+            params = {}
+            if self.user_id:
+                params["UserId"] = self.user_id
             r = self.session.post(
                 f"{self.url}/Playlists/{playlist_id}/Items/{item_id}/Move/{new_index}",
+                params=params,
                 timeout=10,
             )
             self._check_401(r, f"/Playlists/{playlist_id}/Items/{item_id}/Move/{new_index}")
@@ -486,9 +491,15 @@ class JellyfinService:
         for i in range(0, len(entry_ids), chunk_size):
             chunk = entry_ids[i:i + chunk_size]
             try:
+                # UserId is REQUIRED for private (per-user) playlists — without it
+                # Jellyfin returns 204 but silently removes nothing, so playlists
+                # could only ever grow (this is what bloated them over time).
+                params = {"EntryIds": ",".join(chunk)}
+                if self.user_id:
+                    params["UserId"] = self.user_id
                 r = self.session.delete(
                     f"{self.url}/Playlists/{playlist_id}/Items",
-                    params={"EntryIds": ",".join(chunk)},
+                    params=params,
                     timeout=120,
                 )
                 self._check_401(r, f"/Playlists/{playlist_id}/Items")
