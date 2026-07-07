@@ -69,6 +69,7 @@ body {
   position: fixed;
   top: 0; left: 0;
   height: 100vh;
+  height: 100dvh; /* mobile: exclude browser chrome so the footer isn't cut off */
   z-index: 100;
 }
 
@@ -1329,12 +1330,34 @@ td.primary { color: var(--text); font-weight: 500; }
 
   /* Keep toasts clear of the bottom safe-area */
   .toast-container { bottom: calc(16px + env(safe-area-inset-bottom)); right: 16px; left: 16px; }
+
+  /* ── Width overflow guards ─────────────────────────────────────────
+     Any single element wider than the viewport forces the whole page to
+     lay out wide (the "zoomed-in" effect). Fix the known offenders and
+     clip the rest so it can never happen again. */
+  .page-content { overflow-x: hidden; }
+  img, video { max-width: 100%; height: auto; }
+  table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+  /* Library stats bar: wrap segments, hide the "·" separators (odd at line starts) */
+  #lib-stats-bar { gap: 6px 14px !important; }
+  #lib-stats-bar > span:nth-child(even) { display: none; }
+
+  /* Inline-styled grids (style="" beats stylesheet without !important) */
+  #dup-stats, #live-stats { grid-template-columns: repeat(2, 1fr) !important; }
+  .grid-2col { grid-template-columns: 1fr !important; }
+
+  /* Tab strips: tighter padding so 3 tabs fit a phone width */
+  .live-tab { padding: 8px 12px; }
 }
 
 /* ── Small phones (≤420px) ── */
 @media (max-width: 420px) {
   .stats-grid { grid-template-columns: 1fr 1fr; }
   .topbar-title { font-size: 14px; }
+  /* Downloads card rows: drop the requester badge, slim the progress bar */
+  .dl-requested-by { display: none; }
+  .dl-item-bar { width: 70px; }
 }
 </style>
 </head>
@@ -1484,7 +1507,7 @@ td.primary { color: var(--text); font-weight: 500; }
 
         <!-- Tab: Sync -->
         <div id="vod-tab-sync" style="display:none">
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
+          <div class="grid-2col" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
             <div class="card">
               <div class="card-header"><div class="card-title">Sync Actions</div></div>
               <div style="padding:8px 0;display:flex;flex-direction:column;gap:8px">
@@ -1855,7 +1878,7 @@ td.primary { color: var(--text); font-weight: 500; }
         </div>
 
         <!-- Compact stats bar -->
-        <div id="lib-stats-bar" style="display:flex;align-items:center;gap:16px;padding:8px 14px;margin-bottom:10px;background:var(--bg1);border:1px solid var(--border);border-radius:var(--radius);font-size:13px;font-family:'DM Mono',monospace;color:var(--text2)">
+        <div id="lib-stats-bar" style="display:flex;flex-wrap:wrap;align-items:center;gap:16px;padding:8px 14px;margin-bottom:10px;background:var(--bg1);border:1px solid var(--border);border-radius:var(--radius);font-size:13px;font-family:'DM Mono',monospace;color:var(--text2)">
           <span style="display:flex;align-items:center;gap:5px"><span style="width:6px;height:6px;border-radius:50%;background:var(--accent);flex-shrink:0"></span><span id="lib-stat-movies">—</span> Movies</span>
           <span style="color:var(--border2)">·</span>
           <span style="display:flex;align-items:center;gap:5px"><span style="width:6px;height:6px;border-radius:50%;background:var(--pink);flex-shrink:0"></span><span id="lib-stat-series">—</span> Series</span>
