@@ -98,6 +98,34 @@ def parse_m3u_from_file(path: str) -> list[dict]:
         return parse_m3u(f.read())
 
 
+# ── VOD classification helpers (used by the M3U VOD sync client) ──────────
+# SxxExx (S01E05 / S01 E05 / S01.E05 / S01xE05) then the NxNN fallback (1x05).
+_SXXEXX = re.compile(r"\bS(\d{1,3})\s*[._x -]?\s*E(\d{1,4})\b", re.I)
+_NXNN = re.compile(r"\b(\d{1,2})[xX](\d{1,3})\b")
+
+
+def episode_from_title(title: str):
+    """Extract (show_name, season, episode) from an episode title, else None."""
+    m = _SXXEXX.search(title) or _NXNN.search(title)
+    if not m:
+        return None
+    show = title[:m.start()].strip(" -._|")
+    try:
+        return show, int(m.group(1)), int(m.group(2))
+    except (TypeError, ValueError):
+        return None
+
+
+def container_from_url(url: str) -> str:
+    """Best-effort file container extension from a stream URL (default 'mp4')."""
+    tail = url.rsplit("/", 1)[-1].split("?", 1)[0]
+    if "." in tail:
+        ext = tail.rsplit(".", 1)[-1].lower()
+        if 1 <= len(ext) <= 4 and ext.isalnum():
+            return ext
+    return "mp4"
+
+
 def xtream_streams_to_m3u(
     streams: list[dict],
     categories: dict[str, str],

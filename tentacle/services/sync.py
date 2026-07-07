@@ -4,7 +4,6 @@ Core sync logic for VOD content.
 Replaces xtream_to_jellyfin.py as a proper service.
 """
 
-import re
 import zlib
 import shutil
 import logging
@@ -23,6 +22,7 @@ from models.database import (
 from services.tmdb import TMDBService
 from services.nfo import write_movie_nfo, write_series_nfo, make_folder_name
 from services.cleaner import clean_title
+from services.m3u_parser import episode_from_title, container_from_url
 from services.tagger import compute_tags, get_list_tags_for_tmdb_id, apply_tag_rules
 from services.exceptions import ProviderConnectionError, SyncCancelledError, SyncError
 
@@ -128,32 +128,6 @@ def _m3u_id(s: str) -> int:
     return zlib.crc32(s.encode("utf-8", "ignore")) % NEGATIVE_ID_BLOCK
 
 
-def _container_from_url(url: str) -> str:
-    tail = url.rsplit("/", 1)[-1].split("?", 1)[0]
-    if "." in tail:
-        ext = tail.rsplit(".", 1)[-1].lower()
-        if 1 <= len(ext) <= 4 and ext.isalnum():
-            return ext
-    return "mp4"
-
-
-# SxxExx (S01E05 / S01 E05 / S01.E05 / S01xE05) then the NxNN fallback (1x05).
-_M3U_SXXEXX = re.compile(r"\bS(\d{1,3})\s*[._x -]?\s*E(\d{1,4})\b", re.I)
-_M3U_NXNN = re.compile(r"\b(\d{1,2})[xX](\d{1,3})\b")
-
-
-def _parse_m3u_episode(title: str):
-    """Return (show_name, season, episode) parsed from an episode title, else None."""
-    m = _M3U_SXXEXX.search(title) or _M3U_NXNN.search(title)
-    if not m:
-        return None
-    show = title[:m.start()].strip(" -._|")
-    try:
-        return show, int(m.group(1)), int(m.group(2))
-    except (TypeError, ValueError):
-        return None
-
-
 class M3UClient:
     """XtreamClient-compatible adapter backed by a parsed M3U playlist."""
 
@@ -186,8 +160,8 @@ class M3UClient:
                 continue
             group = (e.get("group_title") or "").strip() or "Uncategorized"
             low = url.lower()
-            container = _container_from_url(url)
-            ep = _parse_m3u_episode(name)
+            container = container_from_url(url)
+            ep = episode_from_title(name)
             is_series = ("/series/" in low) or (ep is not None and "/movie/" not in low)
             if is_series:
                 if not ep:
