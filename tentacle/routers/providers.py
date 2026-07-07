@@ -58,18 +58,26 @@ SOURCE_TAG_MAP = {
 
 class ProviderCreate(BaseModel):
     name: str
-    server_url: str
-    username: str
-    password: str
+    provider_type: Optional[str] = "xtream"  # xtream | m3u_url | m3u_file
+    server_url: Optional[str] = ""            # Xtream only
+    username: Optional[str] = ""              # Xtream only
+    password: Optional[str] = ""              # Xtream only
+    m3u_url: Optional[str] = None             # M3U URL or local file path
+    epg_url: Optional[str] = None
+    user_agent: Optional[str] = None
     priority: Optional[int] = 1
     require_tmdb_match: Optional[bool] = True
 
 
 class ProviderUpdate(BaseModel):
     name: Optional[str] = None
+    provider_type: Optional[str] = None
     server_url: Optional[str] = None
     username: Optional[str] = None
     password: Optional[str] = None
+    m3u_url: Optional[str] = None
+    epg_url: Optional[str] = None
+    user_agent: Optional[str] = None
     priority: Optional[int] = None
     active: Optional[bool] = None
     require_tmdb_match: Optional[bool] = None
@@ -132,7 +140,13 @@ def is_likely_english(name: str) -> bool:
 
 
 def fetch_provider_categories(provider: Provider):
-    """Fetch all categories and stream counts from Xtream API"""
+    """Fetch VOD/series categories + counts. Xtream via the player API; M3U by
+    parsing the playlist and using group-titles as categories."""
+    if (provider.provider_type or "xtream") in ("m3u_url", "m3u_file"):
+        from services.sync import M3UClient
+        c = M3UClient(provider)
+        return c.get_vod_categories(), c.get_series_categories(), c.vod_counts(), c.series_counts()
+
     base = f"{provider.server_url.rstrip('/')}/player_api.php?username={provider.username}&password={provider.password}"
     session = requests.Session()
     session.headers.update(HEADERS)
@@ -164,7 +178,18 @@ def fetch_provider_categories(provider: Provider):
 
 
 def test_provider_connection(provider: Provider):
-    """Test connection and get account info"""
+    """Test connection and get account info. For M3U, verify the playlist is
+    reachable and contains VOD content."""
+    if (provider.provider_type or "xtream") in ("m3u_url", "m3u_file"):
+        from services.sync import M3UClient
+        c = M3UClient(provider)
+        c._load()  # raises ProviderConnectionError if unreachable/unparseable
+        n_movies = sum(len(v) for v in c._movies.values())
+        n_series = sum(len(s) for s in c._series.values())
+        if n_movies == 0 and n_series == 0:
+            raise Exception("Playlist reachable but no VOD movies or series found")
+        return {"user_info": {"auth": 1}, "_m3u": {"has_vod": n_movies > 0, "has_series": n_series > 0}}
+
     url = f"{provider.server_url.rstrip('/')}/player_api.php?username={provider.username}&password={provider.password}"
     r = requests.get(url, headers=HEADERS, timeout=15)
     r.raise_for_status()
@@ -195,7 +220,9 @@ def list_providers(db: Session = Depends(get_db)):
         {
             "id": p.id,
             "name": p.name,
+            "provider_type": p.provider_type or "xtream",
             "server_url": p.server_url,
+            "m3u_url": p.m3u_url,
             "username": p.username,
             "active": p.active,
             "priority": p.priority,
@@ -217,16 +244,28 @@ def list_providers(db: Session = Depends(get_db)):
 
 @router.post("")
 def create_provider(body: ProviderCreate, db: Session = Depends(get_db)):
+    ptype = body.provider_type or "xtream"
+    if ptype in ("m3u_url", "m3u_file"):
+        if not body.m3u_url:
+            raise HTTPException(400, "An M3U URL (or file path) is required for M3U providers")
+    elif not (body.server_url and body.username and body.password):
+        raise HTTPException(400, "Server URL, username and password are required for Xtream providers")
+
     provider = Provider(
         name=body.name,
-        server_url=body.server_url,
-        username=body.username,
-        password=body.password,
+        provider_type=ptype,
+        server_url=body.server_url or "",
+        username=body.username or "",
+        password=body.password or "",
+        m3u_url=body.m3u_url,
+        epg_url=body.epg_url,
         priority=body.priority,
         require_tmdb_match=body.require_tmdb_match,
         active=True,
         status="untested",
     )
+    if body.user_agent:
+        provider.user_agent = body.user_agent
     db.add(provider)
     db.commit()
     db.refresh(provider)
@@ -240,6 +279,8 @@ def update_provider(provider_id: int, body: ProviderUpdate, db: Session = Depend
         raise HTTPException(404, "Provider not found")
     if body.name is not None:
         p.name = body.name
+    if body.provider_type is not None:
+        p.provider_type = body.provider_type
     if body.server_url is not None:
         p.server_url = body.server_url
         p.status = "untested"
@@ -247,6 +288,13 @@ def update_provider(provider_id: int, body: ProviderUpdate, db: Session = Depend
         p.username = body.username
     if body.password is not None:
         p.password = body.password
+    if body.m3u_url is not None:
+        p.m3u_url = body.m3u_url
+        p.status = "untested"
+    if body.epg_url is not None:
+        p.epg_url = body.epg_url
+    if body.user_agent is not None:
+        p.user_agent = body.user_agent
     if body.priority is not None:
         p.priority = body.priority
     if body.active is not None:
@@ -362,9 +410,21 @@ def test_provider(provider_id: int, db: Session = Depends(get_db)):
     try:
         data = test_provider_connection(p)
         info = data.get("user_info", {})
-        exp_ts = info.get("exp_date")
         p.status = "ok"
         p.last_tested = datetime.utcnow()
+
+        # M3U provider: capabilities come from parsing the playlist; no account/expiry.
+        if "_m3u" in data:
+            p.has_vod = data["_m3u"].get("has_vod", False)
+            p.has_series = data["_m3u"].get("has_series", False)
+            p.has_live = False
+            db.commit()
+            return {
+                "success": True, "status": "Active",
+                "has_live": False, "has_vod": p.has_vod, "has_series": p.has_series,
+            }
+
+        exp_ts = info.get("exp_date")
         if exp_ts:
             p.expiry = datetime.fromtimestamp(int(exp_ts))
         p.max_connections = int(info.get("max_connections", 1))

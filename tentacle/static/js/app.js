@@ -738,7 +738,7 @@ function renderProviderCard(p) {
             ${capBadges}
           </div>
           <div class="provider-card-name" style="margin-top:6px">${p.name}</div>
-          <div class="provider-card-url">${p.server_url}</div>
+          <div class="provider-card-url">${(p.provider_type && p.provider_type !== 'xtream') ? ((p.m3u_url || '').split('?')[0] || 'M3U playlist') : p.server_url}</div>
         </div>
         <div style="display:flex;align-items:center;gap:6px">
           <div class="dot dot-${statusColor}"></div>
@@ -771,7 +771,28 @@ function showAddProvider() {
   document.getElementById('p-pass').value = '';
   document.getElementById('p-priority').value = '1';
   document.getElementById('p-require-tmdb').checked = true;
+  document.getElementById('p-type').value = 'xtream';
+  document.getElementById('p-m3u-url').value = '';
+  onProviderTypeChange();
   showModal('modal-add-provider');
+}
+
+// Show/hide Xtream vs M3U fields based on the selected provider type.
+function onProviderTypeChange() {
+  const type = document.getElementById('p-type').value;
+  const isM3u = type === 'm3u_url' || type === 'm3u_file';
+  document.getElementById('p-xtream-fields').style.display = isM3u ? 'none' : '';
+  document.getElementById('p-m3u-fields').style.display = isM3u ? '' : 'none';
+  if (isM3u) {
+    const isFile = type === 'm3u_file';
+    document.getElementById('p-m3u-label').textContent = isFile ? 'M3U File Path' : 'M3U URL';
+    document.getElementById('p-m3u-hint').textContent = isFile
+      ? 'Absolute path to a .m3u file inside the Tentacle container (e.g. /data/playlist.m3u).'
+      : 'Direct link to the playlist. VOD movies & series are parsed from it and matched to TMDB.';
+    document.getElementById('p-m3u-url').placeholder = isFile
+      ? '/data/playlist.m3u'
+      : 'http://provider.com/get.php?username=…&password=…&type=m3u_plus';
+  }
 }
 
 function editProvider(id) {
@@ -786,27 +807,40 @@ function editProvider(id) {
   document.getElementById('p-pass').value = '';
   document.getElementById('p-priority').value = p.priority;
   document.getElementById('p-require-tmdb').checked = p.require_tmdb_match !== false;
+  document.getElementById('p-type').value = p.provider_type || 'xtream';
+  document.getElementById('p-m3u-url').value = p.m3u_url || '';
+  onProviderTypeChange();
   showModal('modal-add-provider');
 }
 
 async function saveProvider() {
   const id = state.editingProviderId;
+  const type = document.getElementById('p-type').value;
+  const isM3u = type === 'm3u_url' || type === 'm3u_file';
   const body = {
     name: document.getElementById('p-name').value.trim(),
-    server_url: document.getElementById('p-url').value.trim(),
-    username: document.getElementById('p-user').value.trim(),
-    password: document.getElementById('p-pass').value.trim(),
+    provider_type: type,
     priority: parseInt(document.getElementById('p-priority').value) || 1,
     require_tmdb_match: document.getElementById('p-require-tmdb').checked,
   };
 
-  if (!body.name || !body.server_url || !body.username) {
-    toast('Name, URL and username are required', 'error');
-    return;
+  if (!body.name) { toast('Provider name is required', 'error'); return; }
+
+  if (isM3u) {
+    body.m3u_url = document.getElementById('p-m3u-url').value.trim();
+    if (!body.m3u_url) { toast(type === 'm3u_file' ? 'M3U file path is required' : 'M3U URL is required', 'error'); return; }
+  } else {
+    body.server_url = document.getElementById('p-url').value.trim();
+    body.username = document.getElementById('p-user').value.trim();
+    body.password = document.getElementById('p-pass').value.trim();
+    if (!body.server_url || !body.username) {
+      toast('Server URL and username are required', 'error');
+      return;
+    }
   }
 
   // For edits, don't require password if empty
-  if (id && !body.password) delete body.password;
+  if (id && !isM3u && !body.password) delete body.password;
 
   try {
     let providerId = id;
@@ -814,7 +848,7 @@ async function saveProvider() {
       await api(`/api/providers/${id}`, { method: 'PUT', body });
       toast('Provider updated');
     } else {
-      if (!body.password) { toast('Password required', 'error'); return; }
+      if (!isM3u && !body.password) { toast('Password required', 'error'); return; }
       const result = await api('/api/providers', { method: 'POST', body });
       providerId = result.id;
       toast('Provider added — connecting...', 'info');

@@ -4,6 +4,8 @@ Core sync logic for VOD content.
 Replaces xtream_to_jellyfin.py as a proper service.
 """
 
+import re
+import zlib
 import shutil
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -111,6 +113,163 @@ class XtreamClient:
 
     def episode_stream_url(self, episode_id, container="mp4") -> str:
         return f"{self.server}/series/{self.username}/{self.password}/{episode_id}.{container}"
+
+
+# ── M3U provider support ─────────────────────────────────────────────────
+# An M3U playlist has no categories/streams API — it's a flat list. M3UClient
+# parses it once and exposes the SAME interface as XtreamClient so the entire
+# VOD sync pipeline (_sync_movies / _sync_series) works unchanged. Movies vs
+# series are classified by URL path (/movie/ vs /series/) and SxxExx markers in
+# the title; the M3U group-title is used as the category.
+
+# Stable positive id from a string, kept < NEGATIVE_ID_BLOCK so the synthetic
+# negative tmdb_id math (require_tmdb=False) can't overflow into other providers.
+def _m3u_id(s: str) -> int:
+    return zlib.crc32(s.encode("utf-8", "ignore")) % NEGATIVE_ID_BLOCK
+
+
+def _container_from_url(url: str) -> str:
+    tail = url.rsplit("/", 1)[-1].split("?", 1)[0]
+    if "." in tail:
+        ext = tail.rsplit(".", 1)[-1].lower()
+        if 1 <= len(ext) <= 4 and ext.isalnum():
+            return ext
+    return "mp4"
+
+
+# SxxExx (S01E05 / S01 E05 / S01.E05 / S01xE05) then the NxNN fallback (1x05).
+_M3U_SXXEXX = re.compile(r"\bS(\d{1,3})\s*[._x -]?\s*E(\d{1,4})\b", re.I)
+_M3U_NXNN = re.compile(r"\b(\d{1,2})[xX](\d{1,3})\b")
+
+
+def _parse_m3u_episode(title: str):
+    """Return (show_name, season, episode) parsed from an episode title, else None."""
+    m = _M3U_SXXEXX.search(title) or _M3U_NXNN.search(title)
+    if not m:
+        return None
+    show = title[:m.start()].strip(" -._|")
+    try:
+        return show, int(m.group(1)), int(m.group(2))
+    except (TypeError, ValueError):
+        return None
+
+
+class M3UClient:
+    """XtreamClient-compatible adapter backed by a parsed M3U playlist."""
+
+    def __init__(self, provider: Provider):
+        self.provider = provider
+        self._loaded = False
+        self._movies: dict = {}        # group-title -> [stream dict]
+        self._series: dict = {}        # group-title -> { show -> { season(str) -> [ep dict] } }
+        self._series_info: dict = {}   # series_id -> {"episodes": {season: [ep dict]}}
+        self._urls: dict = {}          # stream_id / ep_id -> direct url
+
+    def _load(self):
+        if self._loaded:
+            return
+        ua = self.provider.user_agent or "TiviMate/4.7.0 (Linux; Android 12)"
+        try:
+            if self.provider.provider_type == "m3u_file":
+                from services.m3u_parser import parse_m3u_from_file
+                entries = parse_m3u_from_file(self.provider.m3u_url)
+            else:
+                from services.m3u_parser import parse_m3u_from_url
+                entries = parse_m3u_from_url(self.provider.m3u_url, user_agent=ua)
+        except Exception as e:
+            raise ProviderConnectionError(self.provider.name, str(e))
+
+        for e in entries:
+            url = (e.get("stream_url") or "").strip()
+            name = (e.get("name") or "").strip()
+            if not url or not name:
+                continue
+            group = (e.get("group_title") or "").strip() or "Uncategorized"
+            low = url.lower()
+            container = _container_from_url(url)
+            ep = _parse_m3u_episode(name)
+            is_series = ("/series/" in low) or (ep is not None and "/movie/" not in low)
+            if is_series:
+                if not ep:
+                    continue  # series-ish but no parseable SxxExx — can't place it
+                show, season, epnum = ep
+                if not show:
+                    show = name
+                ep_id = _m3u_id(url)
+                self._urls[ep_id] = url
+                seasons = self._series.setdefault(group, {}).setdefault(show, {})
+                seasons.setdefault(str(season), []).append(
+                    {"id": ep_id, "episode_num": epnum, "container_extension": container}
+                )
+            else:
+                sid = _m3u_id(url)
+                self._urls[sid] = url
+                self._movies.setdefault(group, []).append({
+                    "stream_id": sid, "name": name, "category_id": group,
+                    "container_extension": container, "stream_icon": e.get("logo_url") or "",
+                })
+
+        for group, shows in self._series.items():
+            for show, seasons in shows.items():
+                self._series_info[_m3u_id(f"{group}|{show}")] = {"episodes": seasons}
+        self._loaded = True
+
+    # ── Category discovery (fetch-categories) ──
+    def get_vod_categories(self) -> list:
+        self._load()
+        return [{"category_id": g, "category_name": g} for g in sorted(self._movies)]
+
+    def get_series_categories(self) -> list:
+        self._load()
+        return [{"category_id": g, "category_name": g} for g in sorted(self._series)]
+
+    def vod_counts(self) -> dict:
+        self._load()
+        return {g: len(v) for g, v in self._movies.items()}
+
+    def series_counts(self) -> dict:
+        self._load()
+        return {g: len(shows) for g, shows in self._series.items()}
+
+    # ── XtreamClient-compatible interface used by _sync_movies / _sync_series ──
+    def get_vod_streams(self, category_id: str) -> list:
+        self._load()
+        return list(self._movies.get(category_id, []))
+
+    def get_series_list(self, category_id: str) -> list:
+        self._load()
+        shows = self._series.get(category_id, {})
+        return [
+            {"series_id": _m3u_id(f"{category_id}|{show}"), "name": show,
+             "category_id": category_id, "cover": ""}
+            for show in sorted(shows)
+        ]
+
+    def get_series_info(self, series_id) -> dict:
+        self._load()
+        try:
+            return self._series_info.get(int(series_id), {"episodes": {}})
+        except (TypeError, ValueError):
+            return {"episodes": {}}
+
+    def movie_stream_url(self, stream_id, container="mp4") -> str:
+        try:
+            return self._urls.get(int(stream_id), "")
+        except (TypeError, ValueError):
+            return ""
+
+    def episode_stream_url(self, episode_id, container="mp4") -> str:
+        try:
+            return self._urls.get(int(episode_id), "")
+        except (TypeError, ValueError):
+            return ""
+
+
+def make_provider_client(provider: Provider):
+    """Return the right VOD client for a provider based on provider_type."""
+    if (provider.provider_type or "xtream") in ("m3u_url", "m3u_file"):
+        return M3UClient(provider)
+    return XtreamClient(provider)
 
 
 # ── Tag Merging ──────────────────────────────────────────────────────────
@@ -419,7 +578,7 @@ def sync_provider(
             _check_disk_before_sync(vod_series_path)
 
         tmdb = TMDBService(bearer_token, data_dir, match_threshold)
-        client = XtreamClient(provider)
+        client = make_provider_client(provider)
 
         category_stats = {}
         new_movies_feed = []
