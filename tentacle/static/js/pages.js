@@ -2821,7 +2821,7 @@ function renderHomeRows() {
       ? '<span style="font-size:9px;padding:2px 6px;border-radius:3px;background:var(--blue);color:#fff;white-space:nowrap">Jellyfin</span>'
       : '<span style="font-size:9px;padding:2px 6px;border-radius:3px;background:var(--purple);color:#fff;white-space:nowrap">Tentacle</span>';
     const maxItemsInput = isBuiltin ? '' : `
-      <input type="number" min="5" max="100" value="${row.max_items || 20}"
+      <input type="number" min="5" max="30" value="${Math.min(row.max_items || 20, 30)}"
         onclick="event.stopPropagation()" onmousedown="event.stopPropagation()"
         onchange="saveRowMaxItemsByKey('${key}', this.value)"
         style="width:52px;padding:3px 4px;font-size:11px;text-align:center;background:var(--bg1);border:1px solid var(--border);border-radius:4px;color:var(--text);cursor:text"

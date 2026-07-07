@@ -692,7 +692,9 @@ def set_row_max_items(req: RowMaxItemsRequest, db: Session = Depends(get_db), us
         if not config or "rows" not in config:
             return {"success": False, "message": "No home config found"}
 
-        val = max(5, min(100, req.max_items))
+        # Hard ceiling of 30 per row — keeps plugin payloads small and TV row
+        # rendering snappy (full lists are always available via the playlist itself)
+        val = max(5, min(30, req.max_items))
         for row in config["rows"]:
             if req.row_key and _row_key(row) == req.row_key:
                 row["max_items"] = val

@@ -191,6 +191,10 @@ public class TentacleHomeController : ControllerBase
             }
         }
 
+        // Hard ceiling: 30 items per home row. Keeps payloads small and TV row
+        // rendering snappy; also clamps legacy configs saved before the cap.
+        limit = Math.Min(limit, 30);
+
         var dtoOptions = new DtoOptions
         {
             Fields = new[]
