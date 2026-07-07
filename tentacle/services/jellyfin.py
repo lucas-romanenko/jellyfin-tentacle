@@ -314,30 +314,6 @@ class JellyfinService:
         data = self._get("/Library/VirtualFolders")
         return data or []
 
-    def get_all_movies(self, limit: int = 5000) -> List[dict]:
-        """Get all movies from Jellyfin"""
-        data = self._get("/Items", params={
-            "IncludeItemTypes": "Movie",
-            "Recursive": "true",
-            "Fields": "ProviderIds,Tags,Path",
-            "Limit": limit,
-        })
-        if data:
-            return data.get("Items", [])
-        return []
-
-    def get_all_series(self, limit: int = 2000) -> List[dict]:
-        """Get all series from Jellyfin"""
-        data = self._get("/Items", params={
-            "IncludeItemTypes": "Series",
-            "Recursive": "true",
-            "Fields": "ProviderIds,Tags,Path",
-            "Limit": limit,
-        })
-        if data:
-            return data.get("Items", [])
-        return []
-
     def get_genres(self) -> List[str]:
         """Get all genres from Jellyfin library."""
         data = self._get("/Genres", params={
