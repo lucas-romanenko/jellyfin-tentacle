@@ -380,13 +380,33 @@ class JellyfinService:
         if sort_by:
             params["SortBy"] = sort_by
             params["SortOrder"] = sort_order
-        if limit:
-            params["Limit"] = limit
 
-        data = self._get("/Items", params=params)
-        if data:
-            return data.get("Items", [])
-        return []
+        if limit:
+            # An explicit limit is requested — a single page is enough.
+            params["Limit"] = limit
+            data = self._get("/Items", params=params)
+            return data.get("Items", []) if data else []
+
+        # No limit: page through ALL matching items. A single un-limited /Items
+        # response is capped at ~500 by Jellyfin, which silently truncated large
+        # playlists (e.g. Netflix Movies stuck at ~500 of 3,600+ tagged). Paging
+        # with StartIndex/Limit preserves the sort (Jellyfin sorts before paging).
+        all_items = []
+        start = 0
+        page = 2000
+        while True:
+            params["Limit"] = page
+            params["StartIndex"] = start
+            data = self._get("/Items", params=params)
+            if not data:
+                break
+            items = data.get("Items", [])
+            all_items.extend(items)
+            start += len(items)
+            total = data.get("TotalRecordCount") or 0
+            if len(items) < page or start >= total or start > 100000:
+                break
+        return all_items
 
     # ── Playlist Management ──────────────────────────────────────────────
 
