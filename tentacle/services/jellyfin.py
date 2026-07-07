@@ -420,8 +420,10 @@ class JellyfinService:
             return None
 
     def get_playlist_items(self, playlist_id: str, limit: int = 50000) -> List[dict]:
-        """Get all items in a playlist."""
-        params = {"Limit": limit}
+        """Get all items in a playlist. Includes SeriesId so callers can group
+        episodes (Jellyfin expands series into episodes inside playlists) back to
+        their series for comparison."""
+        params = {"Limit": limit, "Fields": "SeriesId"}
         if self.user_id:
             params["UserId"] = self.user_id
         data = self._get(f"/Playlists/{playlist_id}/Items", params=params)

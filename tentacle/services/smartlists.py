@@ -1287,6 +1287,30 @@ def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats
             stats["item_counts"][name] = len(current_ordered_ids)
             return
 
+        # Jellyfin expands series into their episodes inside playlists, so a
+        # "series" playlist stores episode entries, not the series themselves.
+        # Comparing episode IDs to the desired series IDs never matches, which
+        # rebuilt the playlist EVERY sync (clear all episodes → re-add series →
+        # re-expand) — perpetual churn and huge episode counts. Group current
+        # episodes back to their SeriesId; if that set already equals the desired
+        # series, the playlist holds exactly the right series (as episodes), so
+        # skip the rebuild entirely.
+        if any(e.get("Type") == "Episode" for e in current_entries):
+            current_series = set()
+            for e in current_entries:
+                sid = e.get("SeriesId") if e.get("Type") == "Episode" else e.get("Id")
+                if sid:
+                    current_series.add(sid)
+            if current_series == set(item_ids):
+                logger.info(
+                    f"[SmartLists] '{name}': no changes needed "
+                    f"({len(item_ids)} series → {len(current_entries)} episodes)"
+                )
+                stats["updated"] += 1
+                stats["processed"] += 1
+                stats["item_counts"][name] = len(item_ids)
+                return
+
         if current_ordered_ids == item_ids:
             # No changes needed — same items in same order
             logger.info(f"[SmartLists] '{name}': no changes needed ({len(item_ids)} items)")
