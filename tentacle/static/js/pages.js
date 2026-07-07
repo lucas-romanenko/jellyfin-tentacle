@@ -4013,7 +4013,12 @@ async function loadDiscover() {
   const tabsEl = document.getElementById('discover-section-tabs');
   grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text3)"><span class="toast-spinner"></span> Loading…</div>';
   try {
-    const data = await api(`/api/discover?type=${_discoverType}`);
+    // Fetch discover content and (if not already cached) activity in parallel, so
+    // cards can show Downloading / Awaiting Release badges on first paint.
+    const [data] = await Promise.all([
+      api(`/api/discover?type=${_discoverType}`),
+      _activityData ? Promise.resolve() : loadActivity().catch(() => {}),
+    ]);
     _discoverSections = data.sections || [];
     if (!_discoverSections.length) {
       tabsEl.innerHTML = '';
@@ -4044,6 +4049,17 @@ function switchDiscoverSection(sectionId) {
   if (section) renderDiscoverGrid(section.items);
 }
 
+// Live download / unreleased state for a discover item, from /api/activity (_activityData).
+// Mirrors the Jellyfin plugin: downloading and awaiting-release items hide the add button.
+function _discoverDownloadInfo(tmdbId) {
+  if (!tmdbId || !_activityData || !_activityData.downloads) return null;
+  return _activityData.downloads.find(d => d.tmdb_id == tmdbId) || null;
+}
+function _discoverUnreleasedInfo(tmdbId) {
+  if (!tmdbId || !_activityData || !_activityData.unreleased) return null;
+  return _activityData.unreleased.find(u => u.tmdb_id == tmdbId) || null;
+}
+
 function renderDiscoverGrid(items) {
   const grid = document.getElementById('discover-grid');
   if (!items.length) {
@@ -4055,12 +4071,24 @@ function renderDiscoverGrid(items) {
     const poster = posterSrc
       ? `<img src="${posterSrc}" loading="lazy" onerror="this.parentElement.innerHTML='<div class=\\'lib-card-poster-placeholder\\'>◫</div>'">`
       : `<div class="lib-card-poster-placeholder">◫</div>`;
-    const badge = item.in_library
-      ? `<span class="badge badge-green" style="font-size:9px;padding:1px 5px">In Library</span>`
-      : `<span class="badge" style="font-size:9px;padding:1px 5px;background:var(--bg3);color:var(--text3)">${item.media_type === 'movie' ? 'Movie' : 'Show'}</span>`;
     const tvdbId = item.tvdb_id || 0;
     const tmdbId = item.tmdb_id || 0;
-    const addBtn = item.in_library ? '' : `<button onclick="event.stopPropagation();showAddToArrModal(${tmdbId},'${escapeJS(item.title)}','${escapeJS(item.year||'')}','${escapeJS(item.poster_path||'')}','${item.media_type}',${tvdbId})" class="lib-card-add-btn" title="Add to ${item.media_type === 'series' ? 'Sonarr' : 'Radarr'}">+</button>`;
+    // Precedence mirrors the plugin: downloading → in library → awaiting release → addable
+    const dlInfo = _discoverDownloadInfo(tmdbId);
+    const ulInfo = !dlInfo ? _discoverUnreleasedInfo(tmdbId) : null;
+    let badge, addBtn = '';
+    if (dlInfo) {
+      const pct = (dlInfo.progress || 0).toFixed(0);
+      const st = dlInfo.status === 'importing' ? 'Importing' : dlInfo.status === 'queued' ? 'Queued' : `Downloading ${pct}%`;
+      badge = `<span class="badge badge-accent" style="font-size:9px;padding:1px 5px">${st}</span>`;
+    } else if (item.in_library) {
+      badge = `<span class="badge badge-green" style="font-size:9px;padding:1px 5px">In Library</span>`;
+    } else if (ulInfo) {
+      badge = `<span class="badge badge-amber" style="font-size:9px;padding:1px 5px">Awaiting Release</span>`;
+    } else {
+      badge = `<span class="badge" style="font-size:9px;padding:1px 5px;background:var(--bg3);color:var(--text3)">${item.media_type === 'movie' ? 'Movie' : 'Show'}</span>`;
+      addBtn = `<button onclick="event.stopPropagation();showAddToArrModal(${tmdbId},'${escapeJS(item.title)}','${escapeJS(item.year||'')}','${escapeJS(item.poster_path||'')}','${item.media_type}',${tvdbId})" class="lib-card-add-btn" title="Add to ${item.media_type === 'series' ? 'Sonarr' : 'Radarr'}">+</button>`;
+    }
     const clickHandler = `onclick="showDiscoverDetail(${tmdbId},'${escapeAttr(item.media_type)}','${escapeJS(item.title)}','${escapeJS(item.year||'')}','${escapeJS(item.poster_path||'')}',${!!item.in_library},${tvdbId})"`;
     const listTag = item.list_name ? `<div style="font-size:10px;color:var(--accent);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeAttr(item.list_name)}</div>` : '';
     return `
@@ -4096,13 +4124,24 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
     const detailTmdbId = data.tmdb_id || tmdbId || 0;
     // Use detail response in_library (authoritative) over card-level flag
     const isInLibrary = data.in_library !== undefined ? data.in_library : inLibrary;
+    // Live download / unreleased state (from /api/activity) — mirrors the plugin
+    const dlInfo = _discoverDownloadInfo(detailTmdbId);
+    const ulInfo = !dlInfo ? _discoverUnreleasedInfo(detailTmdbId) : null;
     let actionBtn;
-    if (isInLibrary && isSeries && data.library_source === 'sonarr') {
+    if (dlInfo) {
+      const pct = (dlInfo.progress || 0).toFixed(0);
+      const st = dlInfo.status === 'importing' ? 'Importing…' : dlInfo.status === 'queued' ? 'Queued' : `Downloading ${pct}%`;
+      const eta = dlInfo.eta ? ` · ETA ${dlInfo.eta}` : '';
+      actionBtn = `<span class="badge badge-accent" style="font-size:12px;padding:4px 10px">${st}${eta}</span>`;
+    } else if (isInLibrary && isSeries && data.library_source === 'sonarr') {
       actionBtn = `<span class="badge badge-green" style="font-size:12px;padding:4px 10px">In Library</span> <button class="btn btn-secondary btn-sm" style="margin-left:6px" onclick="closeModal('modal-media-detail');showManageEpisodesModal(${detailTmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}')">Manage Episodes</button>`;
     } else if (isInLibrary && isSeries && data.library_source && data.library_source.startsWith('provider_')) {
       actionBtn = `<span class="badge badge-green" style="font-size:12px;padding:4px 10px">In Library</span> <button class="btn btn-primary btn-sm" style="margin-left:6px" onclick="closeModal('modal-media-detail');showDownloadMoreModal(${detailTmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}')">Download More Episodes</button>`;
     } else if (isInLibrary) {
       actionBtn = `<span class="badge badge-green" style="font-size:12px;padding:4px 10px">In Library</span>`;
+    } else if (ulInfo) {
+      const ulLabel = (ulInfo.release_type && ulInfo.release_type !== 'TBA') ? `${ulInfo.release_type} release: ${ulInfo.release_date}` : ulInfo.release_date;
+      actionBtn = `<span class="badge badge-amber" style="font-size:12px;padding:4px 10px">⏳ Awaiting Release</span> <span style="font-size:12px;color:var(--text3);margin-left:6px">${escapeAttr(ulLabel)}</span>`;
     } else {
       actionBtn = `<button class="btn btn-primary btn-sm" onclick="closeModal('modal-media-detail');showAddToArrModal(${detailTmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}','${mediaType}',${detailTvdbId})">Add to ${arrLabel}</button>`;
     }
