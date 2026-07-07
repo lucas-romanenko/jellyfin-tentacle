@@ -2088,6 +2088,68 @@ function dismissAutoPlaylistBanner() {
 const _autoCategoryLabels = { source: 'Sources', list: 'Lists', builtin: 'Built-in' };
 const _autoCategoryOrder = ['source', 'list', 'builtin'];
 
+// ── Playlist Health ───────────────────────────────────────────────────────
+function _healthRelTime(iso) {
+  if (!iso) return '—';
+  const t = Date.parse(iso);
+  if (isNaN(t)) return '—';
+  const s = Math.max(0, (Date.now() - t) / 1000);
+  if (s < 90) return 'just now';
+  if (s < 5400) return Math.round(s / 60) + 'm ago';
+  if (s < 129600) return Math.round(s / 3600) + 'h ago';
+  return Math.round(s / 86400) + 'd ago';
+}
+
+function _healthBadge(status) {
+  const map = {
+    ok:       ['#1f8b4c', 'OK'],
+    empty:    ['#c98a00', 'Empty'],
+    missing:  ['#c0392b', 'Missing'],
+    disabled: ['#6b7280', 'Off'],
+  };
+  const [bg, label] = map[status] || ['#6b7280', status];
+  return `<span style="background:${bg}22;color:${bg};border:1px solid ${bg}55;border-radius:10px;padding:1px 8px;font-size:11px;font-weight:600">${label}</span>`;
+}
+
+async function loadPlaylistHealth() {
+  const el = document.getElementById('playlist-health-list');
+  if (!el) return;
+  el.innerHTML = '<div class="loading-state"><div class="spinner"></div></div>';
+  try {
+    const data = await api('/api/smartlists/health');
+    if (data.error) { el.innerHTML = `<div class="empty-state">${data.error}</div>`; return; }
+    const rows = (data.playlists || []).map(p => `
+      <tr>
+        <td style="padding:6px 10px">${p.name}${p.is_series ? ' <span title="TV playlist — count is episodes, grouped to series on the home screen" style="opacity:.6">📺</span>' : ''}</td>
+        <td style="padding:6px 10px;text-align:right;font-variant-numeric:tabular-nums">${p.count == null ? '—' : p.count}</td>
+        <td style="padding:6px 10px;color:var(--text2)">${p.sort || '—'}</td>
+        <td style="padding:6px 10px;color:var(--text3);font-size:12px">${_healthRelTime(p.last_refreshed)}</td>
+        <td style="padding:6px 10px">${_healthBadge(p.status)}</td>
+      </tr>`).join('');
+    let html = `
+      <div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead><tr style="text-align:left;color:var(--text3);font-size:11px;text-transform:uppercase;letter-spacing:.04em">
+          <th style="padding:6px 10px">Playlist</th>
+          <th style="padding:6px 10px;text-align:right">Items</th>
+          <th style="padding:6px 10px">Sort</th>
+          <th style="padding:6px 10px">Refreshed</th>
+          <th style="padding:6px 10px">Status</th>
+        </tr></thead>
+        <tbody>${rows || '<tr><td colspan="5" style="padding:12px;color:var(--text3)">No playlists yet.</td></tr>'}</tbody>
+      </table></div>`;
+    if (data.orphans && data.orphans.length) {
+      const list = data.orphans.map(o => `${o.name} (${o.count == null ? '?' : o.count})`).join(', ');
+      html += `<div style="margin-top:10px;padding:8px 12px;background:#c9350022;border:1px solid #c0392b55;border-radius:8px;font-size:12px;color:var(--text2)">
+        ⚠ ${data.orphans.length} duplicate/orphan playlist(s): <strong>${list}</strong> — removed automatically on the next Resync All.</div>`;
+    }
+    html += `<div style="margin-top:8px;font-size:11px;color:var(--text3)">📺 = TV playlist (Jellyfin stores episodes; the home screen groups them back to series).</div>`;
+    el.innerHTML = html;
+  } catch (e) {
+    el.innerHTML = '<div class="empty-state">Failed to load playlist health</div>';
+  }
+}
+
 async function loadAutoPlaylists() {
   const el = document.getElementById('auto-playlists-list');
   try {
@@ -5063,7 +5125,7 @@ async function toggleNotificationsFromCheckbox(checked) {
     // Coverage modal
     addAllMissingToRadarr, addAllMissingToArr, setCoverageFilter,
     // Jellyfin page (home screen + playlists + discover tabs)
-    loadJellyfinPage, loadAutoPlaylists, toggleAutoPlaylist, dismissAutoPlaylistBanner, saveDiscoverInJellyfin,
+    loadJellyfinPage, loadAutoPlaylists, loadPlaylistHealth, toggleAutoPlaylist, dismissAutoPlaylistBanner, saveDiscoverInJellyfin,
     showAddTagRule, editTagRule, deleteTagRule, saveTagRule, onContentSourceChange, toggleAdvancedFilters,
     addRuleCondition, updateCondOps, onCollectionNameInput, syncSmartLists, refreshTags, syncPlaylistsToJellyfin, resyncAllPlaylists, setPlaylistSort,
     pushHomeConfig, updateHeroPick, updateHeroSort, saveRowMaxItems, saveRowMaxItemsByKey, toggleNotificationsFromCheckbox, toggleGenreChip, _scheduleMatchCount, toggleToolbarButton,

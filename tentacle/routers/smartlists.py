@@ -353,6 +353,95 @@ def refresh_playlists(db: Session = Depends(get_db), user: TentacleUser = Depend
     return {"success": True, **stats}
 
 
+_SORT_LABELS = {
+    "datecreated": "Recently Added", "releasedate": "Release Date",
+    "premieredate": "Release Date", "sortname": "Name", "name": "Name",
+    "communityrating": "Rating", "random": "Random",
+}
+
+
+@router.get("/health")
+def playlist_health(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+    """Per-playlist health: live Jellyfin item count, sort, last refresh, status,
+    plus any orphan/duplicate Jellyfin playlists. One Jellyfin call (ChildCount
+    for all playlists) + on-disk configs — cheap enough to poll from the UI."""
+    from services.jellyfin import JellyfinService
+    from services.smartlists import _get_jellyfin_user_id
+
+    jellyfin_url = get_setting(db, "jellyfin_url", "")
+    jellyfin_key = get_setting(db, "jellyfin_api_key", "")
+    if not jellyfin_url or not jellyfin_key:
+        return {"playlists": [], "orphans": [], "error": "Jellyfin not configured"}
+    try:
+        smartlists_path = _user_smartlists_path(db, user.id)
+    except ValueError:
+        return {"playlists": [], "orphans": []}
+    jf_user_id = _get_jellyfin_user_id(db, user.id)
+    if not jf_user_id:
+        return {"playlists": [], "orphans": [], "error": "No Jellyfin user"}
+
+    jf = JellyfinService(jellyfin_url, jellyfin_key, jf_user_id)
+    # Live playlists: id -> {name, count}
+    live = {}
+    try:
+        for pl in jf.get_playlists(jf_user_id):
+            live[pl.get("Id")] = {"name": pl.get("Name") or "", "count": pl.get("ChildCount")}
+    except Exception:
+        return {"playlists": [], "orphans": [], "error": "Could not reach Jellyfin"}
+
+    existing = _scan_existing(smartlists_path)
+    canonical_ids = set()
+    managed_names = {n.strip().lower() for n in existing.keys()}
+    playlists = []
+    for name, (folder, config) in existing.items():
+        if config.get("Type") != "Playlist":
+            continue
+        cid = None
+        for up in (config.get("UserPlaylists") or []):
+            if up.get("JellyfinPlaylistId"):
+                cid = up["JellyfinPlaylistId"]
+                break
+        if not cid:
+            cid = config.get("JellyfinPlaylistId")
+        if cid:
+            canonical_ids.add(cid)
+        media_types = config.get("MediaTypes", []) or []
+        is_series = "Series" in media_types and "Movie" not in media_types
+        sort_opts = (config.get("Order", {}).get("SortOptions") or [{}])
+        sort_raw = (sort_opts[0].get("SortBy") or "").strip() if sort_opts else ""
+        sort = _SORT_LABELS.get(sort_raw.lower(), sort_raw or "—")
+        info = live.get(cid) if cid else None
+        count = info["count"] if info else None
+        enabled = config.get("Enabled", True)
+        if not enabled:
+            status = "disabled"
+        elif info is None:
+            status = "missing"
+        elif count == 0:
+            status = "empty"
+        else:
+            status = "ok"
+        playlists.append({
+            "name": name,
+            "count": count,
+            "sort": sort,
+            "media_types": media_types,
+            "is_series": is_series,
+            "last_refreshed": config.get("LastRefreshed"),
+            "enabled": enabled,
+            "status": status,
+        })
+    playlists.sort(key=lambda p: p["name"].lower())
+
+    orphans = []
+    for pid, info in live.items():
+        nl = (info["name"] or "").strip().lower()
+        if nl in managed_names and pid not in canonical_ids:
+            orphans.append({"name": info["name"], "count": info["count"], "id": pid})
+
+    return {"playlists": playlists, "orphans": orphans}
+
+
 class PreviewRequest(BaseModel):
     apply_to: str = "both"
     conditions: list = []
