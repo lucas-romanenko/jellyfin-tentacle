@@ -1257,20 +1257,20 @@ td.primary { color: var(--text); font-weight: 500; }
 }
 .mobile-menu-btn:hover { background: var(--bg3); }
 .sidebar-overlay {
-  display: none;
   position: fixed;
   inset: 0;
   background: rgba(0,0,0,0.55);
   z-index: 99;
   opacity: 0;
-  transition: opacity 0.25s ease;
+  visibility: hidden;      /* hidden = no pointer capture when closed */
+  pointer-events: none;
+  transition: opacity 0.25s ease, visibility 0.25s ease;
 }
-.sidebar-overlay.show { opacity: 1; }
+.sidebar-overlay.show { opacity: 1; visibility: visible; pointer-events: auto; }
 
 /* ── Responsive: tablet & mobile (≤768px) ── */
 @media (max-width: 768px) {
   .mobile-menu-btn { display: inline-flex; align-items: center; justify-content: center; }
-  .sidebar-overlay { display: block; }
 
   /* Sidebar becomes an off-canvas drawer */
   .sidebar {
