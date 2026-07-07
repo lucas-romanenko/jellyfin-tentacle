@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="theme-color" content="#0c0c10">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -1330,6 +1330,12 @@ td.primary { color: var(--text); font-weight: 500; }
 
   /* Keep toasts clear of the bottom safe-area */
   .toast-container { bottom: calc(16px + env(safe-area-inset-bottom)); right: 16px; left: 16px; }
+
+  /* ── Kill mobile auto-zoom ─────────────────────────────────────────
+     iOS/Android zoom the page when a focused input/select has a font
+     under 16px — that's the "zooms in then zooms out" dance on every
+     tap/navigation. 16px inputs remove the trigger entirely. */
+  input, select, textarea { font-size: 16px !important; }
 
   /* ── Width overflow guards ─────────────────────────────────────────
      Any single element wider than the viewport forces the whole page to
