@@ -47,6 +47,16 @@
 
 * { margin:0; padding:0; box-sizing:border-box; }
 
+html {
+  /* Disable mobile text inflation (iOS text-size-adjust / Android font
+     boosting) — it re-inflates text per layout pass, which reads as a quick
+     zoom-in/zoom-out pulse on every SPA page switch. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  /* Never allow horizontal overflow to widen the layout viewport */
+  overflow-x: clip;
+}
+
 body {
   background: var(--bg0);
   color: var(--text);
