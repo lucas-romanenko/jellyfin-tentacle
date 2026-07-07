@@ -1384,6 +1384,71 @@ def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats
     stats["item_counts"][name] = len(item_ids)
 
 
+def cleanup_orphaned_playlists(db: Session, user_id: int) -> int:
+    """Delete Jellyfin playlists that share a name with a Tentacle-managed
+    playlist but aren't that config's canonical playlist (duplicates / orphans
+    left behind by renames or ID mismatches).
+
+    Safety guards:
+    - Only considers names Tentacle actually manages (a user's own manually
+      created playlists are never touched).
+    - Only deletes when the canonical Jellyfin ID(s) for that name are KNOWN
+      (non-empty) — never guesses, so a config with a missing ID can't cause
+      the real playlist to be deleted.
+    - Playlists whose ID IS a canonical ID are always kept (so two legitimately
+      distinct configs that share a name, e.g. "Docs" and "DOCS", both survive).
+    """
+    from services.jellyfin import JellyfinService
+
+    jellyfin_url = get_setting(db, "jellyfin_url", "")
+    jellyfin_key = get_setting(db, "jellyfin_api_key", "")
+    if not jellyfin_url or not jellyfin_key:
+        return 0
+    try:
+        smartlists_path = _user_smartlists_path(db, user_id)
+    except ValueError:
+        return 0
+    jf_user_id = _get_jellyfin_user_id(db, user_id)
+    if not jf_user_id:
+        return 0
+
+    existing = _scan_existing(smartlists_path)
+
+    # name(lower) -> set of canonical Jellyfin playlist IDs
+    canonical: dict[str, set] = {}
+    for name, (folder, config) in existing.items():
+        if config.get("Type") != "Playlist":
+            continue
+        ids = set()
+        for up in config.get("UserPlaylists", []):
+            pid = up.get("JellyfinPlaylistId")
+            if pid:
+                ids.add(pid)
+        if config.get("JellyfinPlaylistId"):
+            ids.add(config["JellyfinPlaylistId"])
+        if ids:
+            canonical.setdefault(name.strip().lower(), set()).update(ids)
+
+    if not canonical:
+        return 0
+
+    jf = JellyfinService(jellyfin_url, jellyfin_key, jf_user_id)
+    deleted = 0
+    for pl in jf.get_playlists(jf_user_id):
+        nl = (pl.get("Name") or "").strip().lower()
+        cids = canonical.get(nl)
+        pid = pl.get("Id")
+        if cids and pid and pid not in cids:
+            if jf.delete_item(pid):
+                deleted += 1
+                logger.info(f"[SmartLists] Deleted duplicate/orphaned playlist '{pl.get('Name')}' ({pid}) for user {user_id}")
+            else:
+                logger.warning(f"[SmartLists] Failed to delete duplicate playlist '{pl.get('Name')}' ({pid})")
+    if deleted:
+        logger.info(f"[SmartLists] Cleaned up {deleted} duplicate/orphaned playlist(s) for user {user_id}")
+    return deleted
+
+
 def sync_single_custom_playlist(db: Session, user_id: int, rule_name: str, conditions: list,
                                  apply_to: str, output_tag: str) -> dict:
     """Sync a single custom playlist to Jellyfin — fast path for create/edit.

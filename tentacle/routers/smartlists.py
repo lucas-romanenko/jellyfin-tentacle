@@ -202,6 +202,17 @@ def _run_full_resync(user_id: int):
             logger.error(f"[Resync] Playlist refresh failed: {e}", exc_info=True)
             result["refresh_error"] = str(e)
 
+        # Remove duplicate/orphaned Jellyfin playlists (same name as a managed
+        # playlist but not its canonical ID). Runs after the refresh so configs
+        # hold current canonical IDs.
+        try:
+            from services.smartlists import cleanup_orphaned_playlists
+            removed_dupes = cleanup_orphaned_playlists(db, user_id)
+            if removed_dupes:
+                result["orphans_removed"] = removed_dupes
+        except Exception as e:
+            logger.warning(f"[Resync] Orphan playlist cleanup failed: {e}")
+
         try:
             from routers.collections import sync_playlist_artwork
             sync_playlist_artwork(db)
@@ -224,13 +235,14 @@ def _run_full_resync(user_id: int):
             "removed": result.get("removed", 0),
             "errors": refresh.get("errors", 0),
             "playlists": len(counts),
+            "orphans_removed": result.get("orphans_removed", 0),
             "elapsed_seconds": elapsed,
         }
         logger.info(
             f"[Resync] Full playlist resync complete in {elapsed}s — "
             f"created={summary['created']} updated={summary['updated']} "
             f"removed={summary['removed']} errors={summary['errors']} "
-            f"playlists={summary['playlists']}"
+            f"playlists={summary['playlists']} orphans_removed={summary['orphans_removed']}"
         )
         if summary["errors"]:
             logger.warning(f"[Resync] {summary['errors']} playlist(s) had errors — see [SmartLists] lines above")

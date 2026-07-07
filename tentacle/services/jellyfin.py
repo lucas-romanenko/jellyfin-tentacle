@@ -4,6 +4,7 @@ Manages Jellyfin items, tags, and playlists via the REST API.
 """
 
 import re
+import time
 import logging
 import requests
 from typing import Optional, List
@@ -484,36 +485,62 @@ class JellyfinService:
             return False
 
     def remove_from_playlist(self, playlist_id: str, entry_ids: List[str]) -> bool:
-        """Remove items from a playlist by their PlaylistItemId, in chunks of 25."""
+        """Remove items from a playlist by their PlaylistItemId, in chunks of 25.
+
+        UserId is REQUIRED for private (per-user) playlists — without it Jellyfin
+        returns 204 but silently removes nothing, which is what bloated playlists
+        over time. Each chunk is retried a few times and a chunk that ultimately
+        fails is skipped rather than aborting the whole clear — when many
+        playlists rebuild at once Jellyfin can transiently error, and aborting on
+        the first bad chunk left playlists only partially cleared. Returns True
+        only if every chunk succeeded.
+        """
         if not entry_ids:
             return True
         chunk_size = 25
+        all_ok = True
         for i in range(0, len(entry_ids), chunk_size):
             chunk = entry_ids[i:i + chunk_size]
-            try:
-                # UserId is REQUIRED for private (per-user) playlists — without it
-                # Jellyfin returns 204 but silently removes nothing, so playlists
-                # could only ever grow (this is what bloated them over time).
-                params = {"EntryIds": ",".join(chunk)}
-                if self.user_id:
-                    params["UserId"] = self.user_id
-                r = self.session.delete(
-                    f"{self.url}/Playlists/{playlist_id}/Items",
-                    params=params,
-                    timeout=120,
-                )
-                self._check_401(r, f"/Playlists/{playlist_id}/Items")
-                if r.status_code >= 400:
+            params = {"EntryIds": ",".join(chunk)}
+            if self.user_id:
+                params["UserId"] = self.user_id
+            removed = False
+            for attempt in range(3):
+                try:
+                    r = self.session.delete(
+                        f"{self.url}/Playlists/{playlist_id}/Items",
+                        params=params,
+                        timeout=120,
+                    )
+                    self._check_401(r, f"/Playlists/{playlist_id}/Items")
+                    if r.status_code < 400:
+                        removed = True
+                        break
                     body = r.text[:200] if r.text else "(empty)"
-                    logger.error(f"[Jellyfin] Failed to remove items from playlist {playlist_id}: {r.status_code} {body}")
-                    return False
-                logger.debug(f"[Jellyfin] Removed {len(chunk)} items from playlist {playlist_id}")
-            except requests.HTTPError:
-                raise
-            except Exception as e:
-                logger.error(f"[Jellyfin] Failed to remove items from playlist {playlist_id}: {e}")
-                return False
-        return True
+                    logger.warning(f"[Jellyfin] Remove chunk failed (try {attempt + 1}/3) for playlist {playlist_id}: {r.status_code} {body}")
+                except requests.HTTPError:
+                    raise
+                except Exception as e:
+                    logger.warning(f"[Jellyfin] Remove chunk error (try {attempt + 1}/3) for playlist {playlist_id}: {e}")
+                if attempt < 2:
+                    time.sleep(1.5 * (attempt + 1))
+            if not removed:
+                all_ok = False
+                logger.error(f"[Jellyfin] Gave up on a remove chunk for playlist {playlist_id} after 3 tries — continuing with the rest")
+        return all_ok
+
+    def get_playlists(self, user_id: str = None) -> List[dict]:
+        """List all playlists owned by / visible to the user (name + id + counts)."""
+        uid = user_id or self.user_id
+        data = self._get("/Items", params={
+            "IncludeItemTypes": "Playlist",
+            "Recursive": "true",
+            "UserId": uid,
+            "Fields": "ChildCount",
+        })
+        if data:
+            return data.get("Items", [])
+        return []
 
     def delete_item(self, item_id: str) -> bool:
         """Delete an item (playlist, collection, etc.) from Jellyfin."""
