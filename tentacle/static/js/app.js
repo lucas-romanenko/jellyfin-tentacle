@@ -253,7 +253,7 @@ function showJellyfinTab(tab) {
   const actions = document.getElementById('jf-tab-actions');
   if (actions) actions.style.display = tab === 'playlists' ? 'flex' : 'none';
   // Load tab content on switch
-  if (tab === 'playlists') { loadAutoPlaylists(); loadTagRules(); loadPlaylistHealth(); }
+  if (tab === 'playlists') { loadAutoPlaylists(); loadTagRules(); }
   if (tab === 'home') loadHomeScreen();
 }
 
