@@ -528,6 +528,20 @@ async def favicon():
     return FileResponse("static/favicon.ico")
 
 
+@app.get("/sw.js", include_in_schema=False)
+async def service_worker():
+    # Served from root (not /static) so the service worker gets root scope and
+    # can control SPA navigations. Service-Worker-Allowed pins the scope to "/".
+    return FileResponse(
+        "static/sw.js",
+        media_type="application/javascript",
+        headers={
+            "Service-Worker-Allowed": "/",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+        },
+    )
+
+
 @app.middleware("http")
 async def no_cache_static(request: Request, call_next):
     response = await call_next(request)
