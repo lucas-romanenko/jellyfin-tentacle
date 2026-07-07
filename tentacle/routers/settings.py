@@ -92,7 +92,27 @@ def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
     if "discover_in_jellyfin" in body.settings:
         _notify_plugin_discover_changed(db)
 
+    # If the sync schedule changed, reschedule the job live (no restart needed).
+    if "sync_schedule" in body.settings:
+        try:
+            from main import reschedule_main_sync
+            reschedule_main_sync(body.settings["sync_schedule"])
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning("Could not reschedule sync after settings save", exc_info=True)
+
     return {"success": True}
+
+
+@router.get("/schedule-info")
+def schedule_info():
+    """Sync schedule as a friendly time + the effective timezone + next run time.
+    Used by the Settings UI to show the schedule without exposing raw cron."""
+    try:
+        from main import get_schedule_info
+        return get_schedule_info()
+    except Exception:
+        return {"cron": "0 3 * * *", "time": "03:00", "timezone": "", "timezone_abbr": "", "next_run_human": None}
 
 
 def _notify_plugin_discover_changed(db: Session):

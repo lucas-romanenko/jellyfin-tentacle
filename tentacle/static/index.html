@@ -1558,9 +1558,9 @@ td.primary { color: var(--text); font-weight: 500; }
 
               <div class="section-title">Sync</div>
               <div class="form-group">
-                <div class="form-label">Sync Schedule (Cron)</div>
-                <input class="form-input mono" id="sync_schedule" placeholder="0 3 * * *">
-                <div class="form-hint">Default: 3am daily. Use cron format.</div>
+                <div class="form-label">Daily Sync Time</div>
+                <input class="form-input" id="sync_schedule_time" type="time" value="03:00" style="max-width:160px">
+                <div class="form-hint" id="sync_schedule_hint">Runs every day at this time.</div>
               </div>
 
               <div class="form-group">
@@ -2939,7 +2939,7 @@ td.primary { color: var(--text); font-weight: 500; }
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<script src="/static/js/app.js?v=18"></script>
-<script src="/static/js/pages.js?v=18"></script>
+<script src="/static/js/app.js?v=19"></script>
+<script src="/static/js/pages.js?v=19"></script>
 </body>
 </html>

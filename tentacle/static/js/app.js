@@ -660,6 +660,39 @@ function dashNextSync(cron) {
   return 'Next sync: 3:00 AM';
 }
 
+// Sync schedule stored as a 5-field cron; the UI shows a friendly daily time.
+function cronToTime(cron) {
+  const p = (cron || '').trim().split(/\s+/);
+  if (p.length >= 2) {
+    const m = parseInt(p[0], 10), h = parseInt(p[1], 10);
+    if (!isNaN(m) && !isNaN(h) && h >= 0 && h < 24 && m >= 0 && m < 60) {
+      return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
+    }
+  }
+  return '03:00';
+}
+
+function timeToCron(t) {
+  const [h, m] = (t || '03:00').split(':').map(x => parseInt(x, 10) || 0);
+  return `${m} ${h} * * *`; // daily at H:M
+}
+
+// Fetch + show the effective timezone and next run under the time picker.
+async function loadScheduleInfo() {
+  try {
+    const info = await api('/api/settings/schedule-info');
+    const hint = document.getElementById('sync_schedule_hint');
+    if (!hint) return;
+    let txt = 'Runs every day at this time';
+    if (info.timezone) {
+      txt += ` · timezone ${info.timezone}`;
+      if (info.timezone_abbr) txt += ` (${info.timezone_abbr})`;
+    }
+    if (info.next_run_human) txt += ` · next run: ${info.next_run_human}`;
+    hint.textContent = txt + '.';
+  } catch (e) { /* keep default hint */ }
+}
+
 // ── Providers ─────────────────────────────────────────────────────────────
 async function loadProviders() {
   const grid = document.getElementById('provider-grid');
@@ -979,13 +1012,17 @@ async function loadSettings() {
       'tmdb_bearer_token', 'mdblist_api_key', 'radarr_url', 'radarr_api_key',
       'sonarr_url', 'sonarr_api_key',
       'jellyfin_url', 'jellyfin_api_key',
-      'sync_schedule', 'recently_added_days', 'tmdb_match_threshold',
+      'recently_added_days', 'tmdb_match_threshold',
       'webhook_host', 'sonarr_webhook_host', 'trakt_client_id', 'logodev_api_key'
     ];
     fields.forEach(key => {
       const el = document.getElementById(key);
       if (el && settings[key]) el.value = settings[key];
     });
+    // Sync schedule is stored as cron but shown as a friendly daily time.
+    const _st = document.getElementById('sync_schedule_time');
+    if (_st) _st.value = cronToTime(settings.sync_schedule);
+    loadScheduleInfo();
     // Show current auth user in Jellyfin integration section
     const jfLabel = document.getElementById('jellyfin-logged-in-label');
     if (jfLabel && state.currentUser) {
@@ -1062,7 +1099,7 @@ async function saveSettings() {
     'tmdb_bearer_token', 'mdblist_api_key', 'radarr_url', 'radarr_api_key',
     'sonarr_url', 'sonarr_api_key',
     'jellyfin_url', 'jellyfin_api_key',
-    'sync_schedule', 'recently_added_days', 'tmdb_match_threshold',
+    'recently_added_days', 'tmdb_match_threshold',
     'webhook_host', 'sonarr_webhook_host', 'trakt_client_id', 'logodev_api_key'
   ];
 
@@ -1071,9 +1108,13 @@ async function saveSettings() {
     const el = document.getElementById(key);
     if (el) settings[key] = el.value.trim();
   });
+  // Sync schedule: convert the friendly daily time back to cron for storage.
+  const _st = document.getElementById('sync_schedule_time');
+  if (_st) settings.sync_schedule = timeToCron(_st.value);
   try {
     await api('/api/settings', { method: 'POST', body: { settings } });
     toast('Settings saved');
+    loadScheduleInfo();
   } catch (e) {
     toast(e.message, 'error');
   }

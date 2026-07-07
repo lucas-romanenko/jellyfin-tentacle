@@ -311,22 +311,74 @@ def run_native_playlist_refresh():
         db.close()
 
 
+def reschedule_main_sync(cron: str = None) -> bool:
+    """(Re)schedule the daily sync from a 5-field cron string. Reads the
+    sync_schedule setting when cron is None. Safe to call at runtime — the job is
+    replaced in place, so schedule changes take effect without a restart."""
+    if cron is None:
+        db = SessionLocal()
+        try:
+            s = db.query(Setting).filter(Setting.key == "sync_schedule").first()
+            cron = s.value if s and s.value else "0 3 * * *"
+        finally:
+            db.close()
+    parts = (cron or "").strip().split()
+    if len(parts) != 5:
+        logger.warning(f"Invalid sync schedule '{cron}' — expected 5 cron fields")
+        return False
+    try:
+        trigger = CronTrigger(
+            minute=parts[0], hour=parts[1],
+            day=parts[2], month=parts[3], day_of_week=parts[4]
+        )
+        scheduler.add_job(run_scheduled_sync, trigger, id="main_sync", replace_existing=True)
+        logger.info(f"Sync scheduled: {cron}")
+        return True
+    except Exception as e:
+        logger.warning(f"Could not schedule sync '{cron}': {e}")
+        return False
+
+
+def get_schedule_info() -> dict:
+    """Current sync schedule as a friendly time + the effective timezone + next run."""
+    from datetime import datetime
+    db = SessionLocal()
+    try:
+        s = db.query(Setting).filter(Setting.key == "sync_schedule").first()
+        cron = s.value if s and s.value else "0 3 * * *"
+    finally:
+        db.close()
+    parts = cron.strip().split()
+    time_str = "03:00"
+    if len(parts) >= 2:
+        try:
+            time_str = f"{int(parts[1]):02d}:{int(parts[0]):02d}"
+        except Exception:
+            pass
+    tz = scheduler.timezone
+    try:
+        tz_abbr = datetime.now(tz).strftime("%Z")
+    except Exception:
+        tz_abbr = ""
+    next_run_human = None
+    try:
+        job = scheduler.get_job("main_sync")
+        if job and job.next_run_time:
+            next_run_human = job.next_run_time.strftime("%a %b %-d, %-I:%M %p %Z")
+    except Exception:
+        pass
+    return {
+        "cron": cron,
+        "time": time_str,
+        "timezone": str(tz),
+        "timezone_abbr": tz_abbr,
+        "next_run_human": next_run_human,
+    }
+
+
 def setup_scheduler(db):
     """Setup cron scheduler from settings"""
-    s = db.query(Setting).filter(Setting.key == "sync_schedule").first()
-    cron = s.value if s and s.value else "0 3 * * *"
-
-    try:
-        parts = cron.strip().split()
-        if len(parts) == 5:
-            trigger = CronTrigger(
-                minute=parts[0], hour=parts[1],
-                day=parts[2], month=parts[3], day_of_week=parts[4]
-            )
-            scheduler.add_job(run_scheduled_sync, trigger, id="main_sync", replace_existing=True)
-            logger.info(f"Sync scheduled: {cron}")
-    except Exception as e:
-        logger.warning(f"Could not parse cron schedule '{cron}': {e}")
+    reschedule_main_sync()
 
     # Keep native (genre/rating/year) playlists current between nightly syncs, so a
     # genre row fills in within minutes of its content getting Jellyfin metadata
