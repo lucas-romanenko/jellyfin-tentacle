@@ -1064,12 +1064,6 @@ async function loadSettings() {
     }
     loadPathStatus();
     loadConnectionStatus();
-    // Load discover_in_jellyfin toggle
-    try {
-      const cfg = await api('/api/discover/config');
-      const cb = document.getElementById('discover_in_jellyfin');
-      if (cb) cb.checked = cfg.discover_in_jellyfin;
-    } catch {}
   } catch (e) {}
 }
 

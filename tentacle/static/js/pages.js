@@ -2064,17 +2064,6 @@ async function loadDiscoverPage() {
   else { stopActivityPolling(); loadActivity(); } // Fetch badge count even when not on activity tab
 }
 
-async function saveDiscoverInJellyfin() {
-  const cb = document.getElementById('discover_in_jellyfin');
-  if (!cb) return;
-  try {
-    await api('/api/settings', { method: 'POST', body: { settings: { discover_in_jellyfin: cb.checked ? 'true' : 'false' } } });
-    toast(cb.checked ? 'Discover tab enabled in Jellyfin' : 'Discover tab disabled in Jellyfin');
-  } catch (e) {
-    toast(e.message, 'error');
-  }
-}
-
 function dismissAutoPlaylistBanner() {
   localStorage.setItem('tentacle_dismiss_auto_banner', '1');
   const el = document.getElementById('auto-playlist-banner');
@@ -5131,7 +5120,7 @@ async function saveMergeContinueWatching(checked) {
     // Coverage modal
     addAllMissingToRadarr, addAllMissingToArr, setCoverageFilter,
     // Jellyfin page (home screen + playlists + discover tabs)
-    loadJellyfinPage, loadAutoPlaylists, toggleAutoPlaylist, dismissAutoPlaylistBanner, saveDiscoverInJellyfin,
+    loadJellyfinPage, loadAutoPlaylists, toggleAutoPlaylist, dismissAutoPlaylistBanner,
     showAddTagRule, editTagRule, deleteTagRule, saveTagRule, onContentSourceChange, toggleAdvancedFilters,
     addRuleCondition, updateCondOps, onCollectionNameInput, syncSmartLists, refreshTags, syncPlaylistsToJellyfin, resyncAllPlaylists, setPlaylistSort,
     pushHomeConfig, updateHeroPick, updateHeroSort, saveRowMaxItems, saveRowMaxItemsByKey, toggleNotificationsFromCheckbox, saveMergeContinueWatching, toggleGenreChip, _scheduleMatchCount, toggleToolbarButton,

@@ -145,7 +145,7 @@
     // disabled (or config fetch fails), leave Jellyfin's native search untouched.
     checkConfigThen(function (enabled) {
       if (!enabled) {
-        console.log('[TentacleSearch] Native search kept: discover_in_jellyfin is disabled (or Tentacle backend unreachable). Enable it on the dashboard: Jellyfin → Discover tab.');
+        console.log('[TentacleSearch] Native search kept: Tentacle backend unreachable (check the plugin TentacleUrl setting).');
         return;
       }
       if (!isSearchPage()) return; // navigated away while fetching config
@@ -153,8 +153,12 @@
     });
   }
 
-  // Fetch the discover/config enabled flag (cached for the session) and invoke
-  // cb(enabled). On fetch failure, treat as disabled so native search is kept.
+  // Reachability check (cached for the session): the unified search needs the
+  // Tentacle backend for results, so keep native search when it's unreachable.
+  // The backend now always returns discover_in_jellyfin=true (the global toggle
+  // is retired — per-user toolbar config governs tab visibility), and the C#
+  // proxy returns false when the backend is unreachable/unconfigured — so the
+  // flag value IS the reachability signal.
   function checkConfigThen(cb) {
     if (SEARCH.configEnabled !== null) { cb(SEARCH.configEnabled); return; }
     apiGet('TentacleDiscover/Config').then(function (cfg) {
