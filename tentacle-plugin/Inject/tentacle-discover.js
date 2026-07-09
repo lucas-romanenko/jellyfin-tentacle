@@ -60,7 +60,11 @@
 
   function isHomePage() {
     var h = location.hash || '';
-    return h === '' || h === '#/' || h === '#/home.html' || h === '#/home';
+    if (h === '' || h === '#/') return true;
+    // Accept query params — '#/home.html?tab=1' (Favorites) IS the home page.
+    // Strict equality here used to make nav events tear down overlays that
+    // were opened from the Favorites tab.
+    return /^#\/home(\.html)?(\?|$)/.test(h);
   }
 
   var _tryInjectTimer = null;
@@ -191,6 +195,8 @@
     // Dismiss all other Tentacle overlays — only one should be visible at a time
     if (ACT.active) hideActivity();
     if (window.TentacleSearch && window.TentacleSearch.isActive && window.TentacleSearch.isActive()) window.TentacleSearch.hide();
+    // Live TV overlay sits at z-index 900 — anything opened under it is invisible
+    if (window.TentacleLiveTV && window.TentacleLiveTV.isActive && window.TentacleLiveTV.isActive()) window.TentacleLiveTV.hide();
 
     MD.active = true;
     ++MD.generation;
@@ -1180,6 +1186,8 @@
     // Dismiss all other Tentacle overlays — only one should be visible at a time
     if (MD.active) hideDiscover();
     if (window.TentacleSearch && window.TentacleSearch.isActive && window.TentacleSearch.isActive()) window.TentacleSearch.hide();
+    // Live TV overlay sits at z-index 900 — anything opened under it is invisible
+    if (window.TentacleLiveTV && window.TentacleLiveTV.isActive && window.TentacleLiveTV.isActive()) window.TentacleLiveTV.hide();
 
     ACT.active = true;
 

@@ -250,6 +250,14 @@
   window.addEventListener('hashchange', onRouteChange);
   window.addEventListener('popstate', onRouteChange);
 
+  // Public API — lets other Tentacle overlays (Discover/Activity) dismiss this
+  // one. The Live TV overlay sits at z-index 900, so anything opened without
+  // dismissing it first would be invisible underneath.
+  window.TentacleLiveTV = {
+    isActive: function () { return LIVETV.active; },
+    hide: function () { deactivate(); },
+  };
+
   // Initial check
   if (isLiveTvFavoritesPage()) {
     setTimeout(activate, 100);

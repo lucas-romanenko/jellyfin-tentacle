@@ -658,39 +658,60 @@
         },
 
         activateDiscover: function () {
-            if (window.TentacleDiscover && window.TentacleDiscover.show) {
-                window.TentacleDiscover.show();
-                this.setOverlayActive('discover');
-                return;
-            }
             var self = this;
-            var tryClick = function () {
+            this.ensureHomeThen(function () {
+                if (window.TentacleDiscover && window.TentacleDiscover.show) {
+                    window.TentacleDiscover.show();
+                    self.setOverlayActive('discover');
+                    return;
+                }
                 var tab = document.querySelector('#mdDiscoverTab');
                 if (tab) {
                     tab.click();
                     self.setOverlayActive('discover');
-                } else {
-                    var h = location.hash || '';
-                    if (h !== '' && h !== '#/' && h !== '#/home.html' && h !== '#/home') {
-                        self.navigateTo('/home');
-                        setTimeout(tryClick, 500);
-                    }
                 }
-            };
-            tryClick();
+            });
         },
 
         activateActivity: function () {
-            if (window.TentacleActivity && window.TentacleActivity.show) {
-                window.TentacleActivity.show();
-                this.setOverlayActive('activity');
-                return;
-            }
-            // Fallback: try legacy method
-            if (window.TentacleDiscover && window.TentacleDiscover.showActivity) {
-                window.TentacleDiscover.showActivity();
-                this.setOverlayActive('activity');
-            }
+            var self = this;
+            this.ensureHomeThen(function () {
+                if (window.TentacleActivity && window.TentacleActivity.show) {
+                    window.TentacleActivity.show();
+                    self.setOverlayActive('activity');
+                    return;
+                }
+                // Fallback: try legacy method
+                if (window.TentacleDiscover && window.TentacleDiscover.showActivity) {
+                    window.TentacleDiscover.showActivity();
+                    self.setOverlayActive('activity');
+                }
+            });
+        },
+
+        // The Discover/Activity overlays live on the home page: their teardown
+        // logic hides them on any navigation event to a non-home route, and the
+        // Live TV overlay (z-index 900) would cover them entirely. So from any
+        // other page (Live TV, libraries, details, search) we navigate home
+        // first, wait for the route to land, then open the overlay. This is
+        // what makes every navbar button work from every page.
+        ensureHomeThen: function (fn) {
+            var isHomeHash = function () {
+                var h = location.hash || '';
+                return h === '' || h === '#/' || /^#\/home(\.html)?(\?|$)/.test(h);
+            };
+            if (isHomeHash()) { fn(); return; }
+            this.navigateTo('/home');
+            var attempts = 0;
+            var t = setInterval(function () {
+                attempts++;
+                if (isHomeHash() || attempts > 20) {
+                    clearInterval(t);
+                    // Small settle delay so route-driven teardowns (Live TV
+                    // overlay, search cleanup) finish before the overlay opens
+                    setTimeout(fn, 150);
+                }
+            }, 100);
         },
 
         setOverlayActive: function (which) {
