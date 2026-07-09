@@ -1159,11 +1159,30 @@
       }
     }
 
-    apiPost(ep, body).then(function () {
-      status.style.color = '#4caf50';
-      status.textContent = '\u2713 Added to ' + (isSeries ? 'Sonarr' : 'Radarr');
-      btn.textContent = 'Added!';
-      item.in_library = true;
+    var arrName = isSeries ? 'Sonarr' : 'Radarr';
+    apiPost(ep, body).then(function (r) {
+      r = r || {};
+      // The backend returns 200 with counts \u2014 inspect them instead of
+      // blind-trusting the status code ("added: 0" is not a success)
+      if (r.added > 0) {
+        status.style.color = '#4caf50';
+        var extra = r.release_date
+          ? ' \u2014 releases ' + r.release_date + ', will download when available'
+          : ' \u2014 searching for release';
+        status.textContent = '\u2713 Added to ' + arrName + extra;
+        btn.textContent = 'Added!';
+        item.in_library = true;
+      } else if (r.already_exists > 0) {
+        status.style.color = '#ff9800';
+        status.textContent = 'Already in ' + arrName;
+        btn.disabled = false;
+        btn.textContent = 'Add to ' + arrName;
+      } else {
+        status.style.color = '#f44336';
+        status.textContent = r.detail || ('Failed to add \u2014 check ' + arrName + ' settings/logs');
+        btn.disabled = false;
+        btn.textContent = 'Retry';
+      }
     }).catch(function (err) {
       status.style.color = '#f44336';
       status.textContent = 'Error: ' + (err.message || 'Failed');

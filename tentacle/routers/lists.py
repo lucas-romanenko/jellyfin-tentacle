@@ -649,7 +649,12 @@ def add_to_radarr(body: AddMissingBody, db: Session = Depends(get_db), user: Ten
     release_date = None
 
     for tmdb_id in body.tmdb_ids:
-        if db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first():
+        existing = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
+        # Only an already-DOWNLOADED copy blocks the add. A VOD (.strm) copy
+        # must not: adding to Radarr is exactly how users get a proper download
+        # of a VOD title (the duplicate system then tracks the overlap). Radarr
+        # itself rejects true duplicates via MovieExistsValidator below.
+        if existing and existing.source == "radarr":
             already_exists += 1
             continue
         try:
