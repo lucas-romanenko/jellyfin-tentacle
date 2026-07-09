@@ -38,6 +38,8 @@
     <EmbeddedResource Include="Inject/tentacle-search.css" />
     <EmbeddedResource Include="Inject/tentacle-livetv.js" />
     <EmbeddedResource Include="Inject/tentacle-livetv.css" />
+    <EmbeddedResource Include="Inject/tentacle-favorites.js" />
+    <EmbeddedResource Include="Inject/tentacle-favorites.css" />
     <EmbeddedResource Include="Inject/tentacle-notifications.js" />
     <EmbeddedResource Include="Inject/tentacle-notifications.css" />
     <EmbeddedResource Include="Assets/imdb.svg" />

@@ -619,10 +619,11 @@
 
             switch (action) {
                 case 'home':
-                    // From an overlay route ('#/home.html?tentacle=...') the SPA
-                    // router may no-op (already "home") and leave the stale param
-                    // in the URL — force a clean hash so the route matches reality.
-                    if ((location.hash || '').indexOf('tentacle=') !== -1) {
+                    // From a home route with params ('?tentacle=...' overlays or
+                    // '?tab=1' favorites) the SPA router may no-op (already
+                    // "home") and leave the stale param in the URL — force a
+                    // clean hash so the route matches reality.
+                    if (/^#\/home(\.html)?\?/.test(location.hash || '')) {
                         window.location.hash = '#/home.html';
                     } else {
                         this.navigateTo('/home');
@@ -691,8 +692,12 @@
             this.container.querySelectorAll('.moonfin-nav-btn').forEach(function (btn) {
                 btn.classList.remove('active');
             });
-            var selector = which === 'discover' ? '.moonfin-nav-discover' : '.moonfin-nav-activity';
-            var btn = this.container.querySelector(selector);
+            var selectors = {
+                discover: '.moonfin-nav-discover',
+                activity: '.moonfin-nav-activity',
+                favorites: '.moonfin-nav-favorites',
+            };
+            var btn = this.container.querySelector(selectors[which] || '.moonfin-nav-activity');
             if (btn) btn.classList.add('active');
         },
 
@@ -820,6 +825,11 @@
             var rawHash = location.hash || '';
             if (rawHash.indexOf('tentacle=discover') !== -1) { this.setOverlayActive('discover'); return; }
             if (rawHash.indexOf('tentacle=activity') !== -1) { this.setOverlayActive('activity'); return; }
+            // Favorites is home tab=1 — highlight its own button, not Home
+            if (/^#\/home(\.html)?\?/.test(rawHash) && /[?&]tab=1\b/.test(rawHash)) {
+                this.setOverlayActive('favorites');
+                return;
+            }
 
             // Don't override active state if an overlay is open
             var discoverOpen = window.TentacleDiscover && window.TentacleDiscover.isActive && window.TentacleDiscover.isActive();

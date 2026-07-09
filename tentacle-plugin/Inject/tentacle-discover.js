@@ -200,8 +200,9 @@
     // Dismiss all other Tentacle overlays — only one should be visible at a time
     if (ACT.active) hideActivity();
     if (window.TentacleSearch && window.TentacleSearch.isActive && window.TentacleSearch.isActive()) window.TentacleSearch.hide();
-    // Live TV overlay sits at z-index 900 — anything opened under it is invisible
+    // Live TV / Favorites overlays sit at z-index 900 — anything opened under them is invisible
     if (window.TentacleLiveTV && window.TentacleLiveTV.isActive && window.TentacleLiveTV.isActive()) window.TentacleLiveTV.hide();
+    if (window.TentacleFavorites && window.TentacleFavorites.isActive && window.TentacleFavorites.isActive()) window.TentacleFavorites.hide();
 
     MD.active = true;
     ++MD.generation;
@@ -1191,8 +1192,9 @@
     // Dismiss all other Tentacle overlays — only one should be visible at a time
     if (MD.active) hideDiscover();
     if (window.TentacleSearch && window.TentacleSearch.isActive && window.TentacleSearch.isActive()) window.TentacleSearch.hide();
-    // Live TV overlay sits at z-index 900 — anything opened under it is invisible
+    // Live TV / Favorites overlays sit at z-index 900 — anything opened under them is invisible
     if (window.TentacleLiveTV && window.TentacleLiveTV.isActive && window.TentacleLiveTV.isActive()) window.TentacleLiveTV.hide();
+    if (window.TentacleFavorites && window.TentacleFavorites.isActive && window.TentacleFavorites.isActive()) window.TentacleFavorites.hide();
 
     ACT.active = true;
 

@@ -786,6 +786,32 @@ public class TentacleDiscoverController : ControllerBase
     }
 
     /// <summary>
+    /// Serves the Tentacle Favorites JavaScript.
+    /// </summary>
+    [HttpGet("/Tentacle/favorites.js")]
+    [ResponseCache(NoStore = true)]
+    public ActionResult GetFavoritesJs()
+    {
+        var content = LoadEmbeddedResource("tentacle-favorites.js");
+        if (content == null) return NotFound();
+        Response.Headers["Cache-Control"] = "no-store, no-cache, must-revalidate";
+        return Content(content, "application/javascript");
+    }
+
+    /// <summary>
+    /// Serves the Tentacle Favorites CSS.
+    /// </summary>
+    [HttpGet("/Tentacle/favorites.css")]
+    [ResponseCache(NoStore = true)]
+    public ActionResult GetFavoritesCss()
+    {
+        var content = LoadEmbeddedResource("tentacle-favorites.css");
+        if (content == null) return NotFound();
+        Response.Headers["Cache-Control"] = "no-store, no-cache, must-revalidate";
+        return Content(content, "text/css");
+    }
+
+    /// <summary>
     /// Proxies TVDB image requests through Jellyfin to Tentacle backend.
     /// TVDB CDN blocks non-browser HTTP clients, so Tentacle fetches server-side.
     /// </summary>

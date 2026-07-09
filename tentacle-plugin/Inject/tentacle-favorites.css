@@ -1,0 +1,209 @@
+/* Tentacle Favorites — styled favorites page (matches Live TV / Discover look) */
+
+#tentacleFavoritesContainer {
+    position: fixed;
+    inset: 0;
+    z-index: 900;
+    background: #110f1e;
+    overflow-y: auto;
+    padding: 80px 40px 40px;
+    display: none;
+}
+
+body.tentacle-favorites-active #tentacleFavoritesContainer {
+    display: block;
+}
+
+/* Hide native home/favorites content behind the overlay */
+body.tentacle-favorites-active .view {
+    display: none !important;
+}
+
+/* ==================== Header ==================== */
+
+.tfav-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 28px;
+}
+
+.tfav-title {
+    font-size: 26px;
+    font-weight: 700;
+    color: rgba(255, 255, 255, 0.95);
+    letter-spacing: -0.3px;
+}
+
+.tfav-count {
+    font-size: 13px;
+    color: rgba(255, 255, 255, 0.45);
+    font-weight: 500;
+}
+
+.tfav-empty {
+    padding: 80px 20px;
+    text-align: center;
+    color: rgba(255, 255, 255, 0.45);
+    font-size: 15px;
+}
+
+/* ==================== Sections ==================== */
+
+.tfav-section {
+    margin-bottom: 34px;
+}
+
+.tfav-section-title {
+    font-size: 17px;
+    font-weight: 700;
+    color: rgba(255, 255, 255, 0.92);
+    margin-bottom: 14px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.tfav-section-count {
+    font-size: 12px;
+    font-weight: 600;
+    color: rgba(139, 128, 255, 0.9);
+    background: rgba(139, 128, 255, 0.12);
+    border: 1px solid rgba(139, 128, 255, 0.25);
+    padding: 1px 9px;
+    border-radius: 10px;
+}
+
+/* ==================== Grids ==================== */
+
+.tfav-grid-poster {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 16px;
+}
+
+.tfav-grid-wide {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 16px;
+}
+
+/* ==================== Cards ==================== */
+
+.tfav-card {
+    cursor: pointer;
+    transition: transform 0.15s;
+}
+
+.tfav-card:hover {
+    transform: translateY(-3px);
+}
+
+.tfav-card-img {
+    position: relative;
+    border-radius: 10px;
+    overflow: hidden;
+    background: rgba(26, 22, 50, 0.6);
+    border: 1px solid rgba(139, 128, 255, 0.08);
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.tfav-card:hover .tfav-card-img {
+    border-color: rgba(139, 128, 255, 0.45);
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+}
+
+.tfav-card-poster .tfav-card-img {
+    aspect-ratio: 2 / 3;
+}
+
+.tfav-card-wide .tfav-card-img {
+    aspect-ratio: 16 / 9;
+}
+
+.tfav-card-img img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+.tfav-card-placeholder {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: rgba(255, 255, 255, 0.25);
+    font-size: 34px;
+}
+
+.tfav-card-name {
+    margin-top: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.92);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.tfav-card-sub {
+    margin-top: 2px;
+    font-size: 11.5px;
+    color: rgba(255, 255, 255, 0.45);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* ==================== Unfavorite heart ==================== */
+
+.tfav-unfav {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    border: none;
+    background: rgba(17, 15, 30, 0.75);
+    color: #f472b6;
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s, transform 0.15s, background 0.15s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.tfav-card:hover .tfav-unfav {
+    opacity: 1;
+}
+
+.tfav-unfav:hover {
+    background: rgba(244, 114, 182, 0.25);
+    transform: scale(1.12);
+}
+
+/* ==================== Responsive ==================== */
+
+@media (max-width: 900px) {
+    #tentacleFavoritesContainer {
+        padding: 72px 16px 24px;
+    }
+    .tfav-grid-poster {
+        grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+        gap: 10px;
+    }
+    .tfav-grid-wide {
+        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+        gap: 10px;
+    }
+    /* Touch devices: heart always visible */
+    .tfav-unfav {
+        opacity: 1;
+    }
+}
