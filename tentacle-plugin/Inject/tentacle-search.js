@@ -140,8 +140,6 @@
     // Clean any stale state first
     cleanup();
 
-    // Gate the hijack on the discover/config enabled flag. If Tentacle search is
-    // disabled (or config fetch fails), leave Jellyfin's native search untouched.
     // No gate: Tentacle clients always show OUR search. If the backend is
     // unreachable, doSearch renders an error state inside our UI instead of
     // silently reverting to Jellyfin's native search.
