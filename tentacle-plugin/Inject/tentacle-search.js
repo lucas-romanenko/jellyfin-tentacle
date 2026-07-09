@@ -56,7 +56,10 @@
 
   function isSearchPage() {
     var h = (location.hash || '').replace('#', '').replace(/^\//, '').split('?')[0];
-    return h === 'search' || h === 'search.html';
+    if (h === 'search' || h === 'search.html') return true;
+    // Newer jellyfin-web builds can route without the hash — check the path too
+    var p = (location.pathname || '').replace(/\/+$/, '');
+    return /\/search$/.test(p);
   }
 
   // ── Find the ACTIVE view's search input (not stale views) ──────────
@@ -79,10 +82,22 @@
 
   function findSearchInputIn(scope) {
     if (!scope) return null;
-    return scope.querySelector('.searchfields-txtSearch')
+    // Legacy jellyfin-web search page markup
+    var legacy = scope.querySelector('.searchfields-txtSearch')
       || scope.querySelector('input.emby-input[type="text"][data-action="search"]')
       || scope.querySelector('.searchPage input[type="text"]')
       || scope.querySelector('[data-type="search"] input[type="text"]');
+    if (legacy) return legacy;
+    // Newer (React/MUI) jellyfin-web search page — markup changed entirely.
+    // Skip Tentacle's own inputs (discover overlay etc.) when scanning broadly.
+    var cands = scope.querySelectorAll('input[type="search"], input.MuiInputBase-input, input[placeholder="Search"]');
+    for (var i = 0; i < cands.length; i++) {
+      var c = cands[i];
+      if (c.closest('#tentacleSearchResults')) continue;
+      if (c.closest('[id^="tentacle"], [id^="mh-"], [class^="md-"], [class*=" md-"]')) continue;
+      return c;
+    }
+    return null;
   }
 
   function findNativeSearchInput() {
@@ -129,7 +144,10 @@
     // Gate the hijack on the discover/config enabled flag. If Tentacle search is
     // disabled (or config fetch fails), leave Jellyfin's native search untouched.
     checkConfigThen(function (enabled) {
-      if (!enabled) return;
+      if (!enabled) {
+        console.log('[TentacleSearch] Native search kept: discover_in_jellyfin is disabled (or Tentacle backend unreachable). Enable it on the dashboard: Jellyfin → Discover tab.');
+        return;
+      }
       if (!isSearchPage()) return; // navigated away while fetching config
       waitForSearchInput(viewEl);
     });
@@ -204,6 +222,9 @@
       if (SEARCH.inputObserver) {
         SEARCH.inputObserver.disconnect();
         SEARCH.inputObserver = null;
+        if (!found) {
+          console.warn('[TentacleSearch] Native search kept: could not find the search input after 10s — this jellyfin-web version may use markup we do not recognize. Please report your Jellyfin version.');
+        }
       }
     }, 10000);
   }
