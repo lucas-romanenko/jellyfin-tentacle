@@ -12,7 +12,7 @@ import os
 import logging
 from datetime import datetime
 
-from models.database import create_tables, SessionLocal, seed_defaults, Setting, Provider, SyncRun
+from models.database import create_tables, SessionLocal, seed_defaults, Setting, Provider, SyncRun, Movie, Series
 from routers import settings, providers, sync as sync_router, library, duplicates, lists as lists_router, widget, radarr as radarr_router, sonarr as sonarr_router, tags as tags_router, collections as collections_router, smartlists as smartlists_router, discover as discover_router, livetv as livetv_router, auth as auth_router, activity as activity_router, notifications as notifications_router
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -193,8 +193,11 @@ def run_scheduled_sync():
                     "enabled_count": enabled_count,
                 }
                 logger.info(f"EPG sync for '{lp.name}': {len(all_channels)} channels ({enabled_count} enabled)")
-                _run_epg_sync_background(provider_data)
-                epg_synced = True
+                # Only trigger the Jellyfin guide refresh if the sync actually
+                # produced data — refreshing after a failed sync makes Jellyfin
+                # re-ingest a draining/stale guide for nothing.
+                if _run_epg_sync_background(provider_data):
+                    epg_synced = True
 
             # Trigger Jellyfin guide refresh so it picks up new EPG data
             if epg_synced:

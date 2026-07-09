@@ -861,21 +861,7 @@ def _run_epg_sync_background(provider_data: dict):
                     "phase": "epg", "status": "error", "progress": 0,
                     "message": "No enabled channels have EPG IDs. Cannot fetch guide data.",
                 })
-                return
-
-            # Clear old EPG data for this provider's channels (by provider_id, not just epg_ids)
-            provider_channel_epg_ids = {
-                ch.epg_channel_id
-                for ch in db.query(LiveChannel).filter(
-                    LiveChannel.provider_id == pid,
-                    LiveChannel.epg_channel_id.isnot(None),
-                ).all()
-            }
-            if provider_channel_epg_ids:
-                db.query(EPGProgram).filter(
-                    EPGProgram.channel_id.in_(provider_channel_epg_ids)
-                ).delete(synchronize_session=False)
-                db.flush()
+                return False
 
             # Determine XMLTV URL
             epg_url = provider_data.get("epg_url")
@@ -895,22 +881,89 @@ def _run_epg_sync_background(provider_data: dict):
                     "phase": "epg", "status": "error", "progress": 0,
                     "message": "No EPG URL available.",
                 })
-                return
+                return False
 
             # Progress callback
             def on_progress(pct, msg):
                 _set_sync_status(pid, {"phase": "epg", "status": "running", "progress": pct, "message": msg})
 
-            _set_sync_status(pid, {"phase": "epg", "status": "running", "progress": 5, "message": "Downloading XMLTV guide..."})
+            # Download + parse FIRST — the existing guide data stays untouched
+            # until we're sure we have a good replacement. Providers sometimes
+            # serve a throttled/empty-but-parseable XMLTV (especially at 3am);
+            # the old delete-first flow committed that as a full guide wipe.
+            # Retries bust the 8h disk cache so a bad cached file can't stick.
+            import os as _os
+            import time as _time
+            from services.xmltv import stream_parse_xmltv, _get_cache_path
 
-            # Stream-parse: downloads full XMLTV but only keeps programs for our channels
-            from services.xmltv import stream_parse_xmltv
-            programs = stream_parse_xmltv(
-                url=epg_url,
-                channel_ids=epg_ids,
-                user_agent=provider_data["user_agent"],
-                on_progress=on_progress,
+            def _drop_xmltv_cache():
+                try:
+                    _os.remove(_get_cache_path(epg_url))
+                except OSError:
+                    pass
+
+            programs = None
+            last_err = None
+            for attempt in range(1, 4):
+                try:
+                    suffix = f" (attempt {attempt}/3)" if attempt > 1 else ""
+                    _set_sync_status(pid, {"phase": "epg", "status": "running", "progress": 5, "message": f"Downloading XMLTV guide{suffix}..."})
+                    programs = stream_parse_xmltv(
+                        url=epg_url,
+                        channel_ids=epg_ids,
+                        user_agent=provider_data["user_agent"],
+                        on_progress=on_progress,
+                        force_download=attempt > 1,
+                    )
+                    if programs:
+                        break
+                    last_err = "provider returned no programs for our channels"
+                    logger.warning(f"[LiveTV] EPG attempt {attempt}/3: {last_err}")
+                except Exception as e:
+                    last_err = str(e)
+                    logger.warning(f"[LiveTV] EPG download attempt {attempt}/3 failed: {e}")
+                if attempt < 3:
+                    _drop_xmltv_cache()  # don't let a bad cached file poison the retry
+                    _time.sleep(30 * attempt)
+
+            provider_channel_epg_ids = {
+                ch.epg_channel_id
+                for ch in db.query(LiveChannel).filter(
+                    LiveChannel.provider_id == pid,
+                    LiveChannel.epg_channel_id.isnot(None),
+                ).all()
+            }
+            old_count = (
+                db.query(EPGProgram).filter(EPGProgram.channel_id.in_(provider_channel_epg_ids)).count()
+                if provider_channel_epg_ids else 0
             )
+
+            # Sanity guards — never replace a healthy guide with a suspiciously
+            # empty one. Keep the old data and surface the failure instead.
+            if not programs:
+                msg = f"EPG sync failed: {last_err or 'no programs'} — kept existing guide data ({old_count} programs)"
+                logger.error(f"[LiveTV] {msg}")
+                log_activity(db, "epg_sync_failed", msg)
+                db.commit()
+                _drop_xmltv_cache()
+                _set_sync_status(pid, {"phase": "epg", "status": "error", "progress": 0, "message": msg})
+                return False
+            if old_count >= 1000 and len(programs) < old_count * 0.1:
+                msg = (f"EPG sync aborted: provider returned only {len(programs)} programs "
+                       f"(previously {old_count}) — looks like a bad/partial guide, kept existing data")
+                logger.error(f"[LiveTV] {msg}")
+                log_activity(db, "epg_sync_failed", msg)
+                db.commit()
+                _drop_xmltv_cache()
+                _set_sync_status(pid, {"phase": "epg", "status": "error", "progress": 0, "message": msg})
+                return False
+
+            # Replace guide data — quick transaction, no network inside it
+            if provider_channel_epg_ids:
+                db.query(EPGProgram).filter(
+                    EPGProgram.channel_id.in_(provider_channel_epg_ids)
+                ).delete(synchronize_session=False)
+                db.flush()
 
             # Insert into DB
             _set_sync_status(pid, {"phase": "epg", "status": "running", "progress": 90, "message": f"Saving {len(programs)} programs..."})
@@ -950,12 +1003,14 @@ def _run_epg_sync_background(provider_data: dict):
                 "programs": inserted,
                 "channels": total,
             })
+            return True
         finally:
             db.close()
 
     except Exception as e:
         logger.error(f"[LiveTV] EPG sync failed: {e}")
         _set_sync_status(pid, {"phase": "epg", "status": "error", "progress": 0, "message": str(e)})
+        return False
 
 
 # ─── Channel management ────────────────────────────────────────────────────
