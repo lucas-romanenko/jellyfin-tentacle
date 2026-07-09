@@ -21,7 +21,6 @@
     hideStyle: null,
     generation: 0,       // incremented on every nav, stale searches check this
     _onInputChange: null, // bound listener ref for cleanup
-    configEnabled: null,  // null = unknown, true/false once config fetched
   };
 
   function apiGet(path) {
@@ -143,31 +142,10 @@
 
     // Gate the hijack on the discover/config enabled flag. If Tentacle search is
     // disabled (or config fetch fails), leave Jellyfin's native search untouched.
-    checkConfigThen(function (enabled) {
-      if (!enabled) {
-        console.log('[TentacleSearch] Native search kept: Tentacle backend unreachable (check the plugin TentacleUrl setting).');
-        return;
-      }
-      if (!isSearchPage()) return; // navigated away while fetching config
-      waitForSearchInput(viewEl);
-    });
-  }
-
-  // Reachability check (cached for the session): the unified search needs the
-  // Tentacle backend for results, so keep native search when it's unreachable.
-  // The backend now always returns discover_in_jellyfin=true (the global toggle
-  // is retired — per-user toolbar config governs tab visibility), and the C#
-  // proxy returns false when the backend is unreachable/unconfigured — so the
-  // flag value IS the reachability signal.
-  function checkConfigThen(cb) {
-    if (SEARCH.configEnabled !== null) { cb(SEARCH.configEnabled); return; }
-    apiGet('TentacleDiscover/Config').then(function (cfg) {
-      SEARCH.configEnabled = !!(cfg && cfg.discover_in_jellyfin === true);
-      cb(SEARCH.configEnabled);
-    }).catch(function () {
-      SEARCH.configEnabled = false;
-      cb(false);
-    });
+    // No gate: Tentacle clients always show OUR search. If the backend is
+    // unreachable, doSearch renders an error state inside our UI instead of
+    // silently reverting to Jellyfin's native search.
+    waitForSearchInput(viewEl);
   }
 
   function onLeavingSearch() {
@@ -447,11 +425,9 @@
       })
       .catch(function () {
         if (gen !== SEARCH.generation) return;
-        // Tentacle search failed — fall back to Jellyfin's native results rather
-        // than leaving the user with a dead, CSS-hidden native search page.
-        var el = document.getElementById('tentacleSearchResults');
-        if (el) el.remove();
-        removeHideCSS();
+        // Tentacle search is the only search — show an honest error state in
+        // our UI instead of silently reverting to Jellyfin's native results.
+        grid.innerHTML = '<div class="tentacle-search-empty">Search is unavailable — the Tentacle backend could not be reached.<br>Check the plugin’s TentacleUrl setting and that the Tentacle server is running.</div>';
       });
   }
 
