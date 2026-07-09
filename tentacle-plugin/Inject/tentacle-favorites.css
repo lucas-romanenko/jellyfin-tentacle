@@ -179,8 +179,19 @@ body.tentacle-favorites-active .view {
     justify-content: center;
 }
 
-.tfav-card:hover .tfav-unfav {
+.tfav-card:hover .tfav-unfav,
+#tentacleFavoritesContainer .tltv-card:hover .tfav-unfav {
     opacity: 1;
+}
+
+/* Channel-card hearts (flex-row cards from the Live TV styles) sit at the
+   card's top-right corner */
+#tentacleFavoritesContainer .tltv-card .tfav-unfav {
+    top: 6px;
+    right: 6px;
+    width: 26px;
+    height: 26px;
+    font-size: 12px;
 }
 
 .tfav-unfav:hover {

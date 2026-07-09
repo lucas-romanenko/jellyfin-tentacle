@@ -256,6 +256,8 @@
   window.TentacleLiveTV = {
     isActive: function () { return LIVETV.active; },
     hide: function () { deactivate(); },
+    // Shared with the Favorites page (favorited channel cards play on click)
+    playChannel: playChannel,
   };
 
   // Initial check

@@ -99,10 +99,15 @@
       });
     });
 
-    Promise.all(fetches).then(function (results) {
+    // Favorited Live TV channels (with now-playing info, like the Live TV page)
+    var channelsFetch = apiGet('LiveTv/Channels?IsFavorite=true&AddCurrentProgram=true&SortBy=SortName&SortOrder=Ascending')
+      .then(function (data) { return (data && data.Items) || []; })
+      .catch(function () { return []; });
+
+    Promise.all([Promise.all(fetches), channelsFetch]).then(function (all) {
       FAV.loading = false;
       if (!FAV.active) return;
-      render(results);
+      render(all[0], all[1]);
     }).catch(function () {
       FAV.loading = false;
     });
@@ -118,8 +123,9 @@
     });
   }
 
-  function render(results) {
-    var total = results.reduce(function (n, r) { return n + r.items.length; }, 0);
+  function render(results, channels) {
+    channels = channels || [];
+    var total = results.reduce(function (n, r) { return n + r.items.length; }, 0) + channels.length;
 
     var html =
       '<div class="tfav-header">' +
@@ -128,25 +134,91 @@
       '</div>';
 
     if (!total) {
-      html += '<div class="tfav-empty">No favorites yet. Mark movies, shows or episodes with the ♥ heart and they’ll show up here.</div>';
+      html += '<div class="tfav-empty">No favorites yet. Mark movies, shows, episodes or channels with the ♥ heart and they’ll show up here.</div>';
       FAV.container.innerHTML = html;
       return;
     }
 
-    results.forEach(function (r) {
-      if (!r.items.length) return;
+    var sectionHtml = function (r) {
+      if (!r.items.length) return '';
       var wide = r.section.shape === 'wide';
-      html +=
-        '<div class="tfav-section">' +
+      return '<div class="tfav-section">' +
           '<div class="tfav-section-title">' + esc(r.section.title) +
             '<span class="tfav-section-count">' + r.items.length + '</span></div>' +
           '<div class="tfav-grid ' + (wide ? 'tfav-grid-wide' : 'tfav-grid-poster') + '">' +
           r.items.map(function (item) { return card(item, wide); }).join('') +
           '</div>' +
         '</div>';
+    };
+
+    results.forEach(function (r, idx) {
+      html += sectionHtml(r);
+      // Live TV channels slot in after Episodes (index 2)
+      if (idx === 2 && channels.length) {
+        html += channelsSection(channels);
+      }
     });
 
     FAV.container.innerHTML = html;
+  }
+
+  // ── Live TV channels section — same look as the Tentacle Live TV page
+  //    (reuses .tltv-card styles from tentacle-livetv.css) ──────────────
+
+  function channelsSection(channels) {
+    return '<div class="tfav-section">' +
+        '<div class="tfav-section-title">Live TV' +
+          '<span class="tfav-section-count">' + channels.length + '</span></div>' +
+        '<div class="tltv-grid">' +
+        channels.map(channelCard).join('') +
+        '</div>' +
+      '</div>';
+  }
+
+  function channelCard(channel) {
+    var name = esc(channel.Name || 'Unknown');
+    var program = channel.CurrentProgram;
+    var programName = program ? esc(program.Name || '') : '';
+    var timeStr = '';
+    var progress = 0;
+
+    if (program && program.StartDate && program.EndDate) {
+      var start = new Date(program.StartDate);
+      var end = new Date(program.EndDate);
+      var now = new Date();
+      timeStr = formatTime(start) + ' - ' + formatTime(end);
+      var totalMs = end - start;
+      if (totalMs > 0) {
+        progress = Math.min(100, Math.max(0, ((now - start) / totalMs) * 100));
+      }
+    }
+
+    var logoHtml;
+    if (channel.ImageTags && channel.ImageTags.Primary) {
+      var imgUrl = window.ApiClient.getUrl('Items/' + channel.Id + '/Images/Primary', { maxHeight: 112, quality: 90 });
+      logoHtml = '<div class="tltv-logo"><img src="' + imgUrl + '" alt="" loading="lazy" /></div>';
+    } else {
+      logoHtml = '<div class="tltv-logo"><div class="tltv-logo-fallback"><svg viewBox="0 0 24 24"><path d="M21 6h-7.59l3.29-3.29L16 2l-4 4-4-4-.71.71L10.59 6H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 14H3V8h18v12z"/></svg></div></div>';
+    }
+
+    return '<div class="tltv-card" data-channel-id="' + channel.Id + '">' +
+      logoHtml +
+      '<div class="tltv-info">' +
+        '<div class="tltv-channel-name">' + name + '</div>' +
+        (programName ? '<div class="tltv-program-name">' + programName + '</div>' : '') +
+        (timeStr ? '<div class="tltv-program-time">' + timeStr + '</div>' : '') +
+      '</div>' +
+      '<button class="tfav-unfav" title="Remove from favorites" data-unfav="' + channel.Id + '">&#10084;</button>' +
+      '<div class="tltv-progress"><div class="tltv-progress-bar" style="width:' + progress.toFixed(1) + '%"></div></div>' +
+    '</div>';
+  }
+
+  function formatTime(date) {
+    var h = date.getHours();
+    var m = date.getMinutes();
+    var ampm = h >= 12 ? 'PM' : 'AM';
+    h = h % 12 || 12;
+    return h + ':' + (m < 10 ? '0' : '') + m + ' ' + ampm;
   }
 
   function card(item, wide) {
@@ -186,6 +258,18 @@
       return;
     }
 
+    // Live TV channel card → play (same behavior as the Live TV page)
+    var channelEl = e.target.closest('[data-channel-id]');
+    if (channelEl) {
+      var channelId = channelEl.getAttribute('data-channel-id');
+      if (window.TentacleLiveTV && window.TentacleLiveTV.playChannel) {
+        window.TentacleLiveTV.playChannel(channelId);
+      } else {
+        window.location.hash = '#/details?id=' + channelId;
+      }
+      return;
+    }
+
     // Card → details
     var cardEl = e.target.closest('.tfav-card');
     if (!cardEl) return;
@@ -204,7 +288,7 @@
   function unfavorite(itemId, btnEl) {
     var uid = window.ApiClient.getCurrentUserId();
     var done = function () {
-      var cardEl = btnEl.closest('.tfav-card');
+      var cardEl = btnEl.closest('.tfav-card') || btnEl.closest('.tltv-card');
       if (!cardEl) return;
       var grid = cardEl.parentElement;
       var section = cardEl.closest('.tfav-section');
