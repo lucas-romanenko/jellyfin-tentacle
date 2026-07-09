@@ -142,7 +142,12 @@
     btn.addEventListener('click', function (e) {
       e.preventDefault();
       e.stopPropagation();
-      showDiscover();
+      // Go through the route so the URL reflects the overlay (back/refresh work)
+      if ((location.hash || '').indexOf('tentacle=discover') === -1) {
+        window.location.hash = '#/home.html?tentacle=discover';
+      } else {
+        showDiscover();
+      }
     });
 
     slider.addEventListener('click', function (e) {
@@ -1569,14 +1574,29 @@
     waitForReady();
   }
 
+  // Route param for the overlays — '#/home.html?tentacle=discover|activity'.
+  // Gives Discover/Activity real URLs: direct navigation from ANY page,
+  // browser back/forward, and refresh all work. The Jellyfin router treats
+  // the route as home (and ignores the unknown param), so home renders
+  // behind the overlay as before.
+  function overlayRouteParam() {
+    var m = (location.hash || '').match(/[?&]tentacle=(discover|activity)\b/);
+    return m ? m[1] : null;
+  }
+
   var _navTimer = null;
   var navHandler = function () {
     closeModal();
-    if (!isHomePage()) {
-      // Navigated away from home — hide overlays, stop polling, cancel stale API calls
+    var route = overlayRouteParam();
+    if (route === 'discover') {
+      if (!MD.active) showDiscover();
+    } else if (route === 'activity') {
+      if (!ACT.active) showActivity();
+    } else {
+      // No overlay route — hide overlays if they were open
       if (MD.active) hideDiscover();
       if (ACT.active) hideActivity();
-      stopBadgePolling();
+      if (!isHomePage()) stopBadgePolling();
     }
     // Debounce tryInject to avoid multiple concurrent calls from rapid nav events
     if (_navTimer) clearTimeout(_navTimer);
@@ -1588,5 +1608,12 @@
   window.addEventListener('hashchange', navHandler);
   window.addEventListener('popstate', navHandler);
   window.addEventListener('pageshow', navHandler);
+
+  // Deep link / refresh: if the page loaded directly on an overlay route,
+  // open it once the app has booted (viewshow usually covers this, but not
+  // every load path fires one).
+  setTimeout(function () {
+    if (overlayRouteParam()) navHandler();
+  }, 800);
 
 })();

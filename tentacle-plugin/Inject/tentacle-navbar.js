@@ -619,7 +619,14 @@
 
             switch (action) {
                 case 'home':
-                    this.navigateTo('/home');
+                    // From an overlay route ('#/home.html?tentacle=...') the SPA
+                    // router may no-op (already "home") and leave the stale param
+                    // in the URL — force a clean hash so the route matches reality.
+                    if ((location.hash || '').indexOf('tentacle=') !== -1) {
+                        window.location.hash = '#/home.html';
+                    } else {
+                        this.navigateTo('/home');
+                    }
                     break;
                 case 'search':
                     // Hide overlays that may have covered search without changing hash
@@ -658,60 +665,25 @@
         },
 
         activateDiscover: function () {
-            var self = this;
-            this.ensureHomeThen(function () {
-                if (window.TentacleDiscover && window.TentacleDiscover.show) {
-                    window.TentacleDiscover.show();
-                    self.setOverlayActive('discover');
-                    return;
-                }
-                var tab = document.querySelector('#mdDiscoverTab');
-                if (tab) {
-                    tab.click();
-                    self.setOverlayActive('discover');
-                }
-            });
+            // Route-driven: Discover has a real URL. The discover module opens
+            // the overlay on the hashchange, so back/forward and refresh all
+            // work, and the overlay covers the home view before it can flash.
+            if ((location.hash || '').indexOf('tentacle=discover') !== -1) {
+                // Already on the route — hashchange won't fire, re-assert directly
+                if (window.TentacleDiscover && window.TentacleDiscover.show) window.TentacleDiscover.show();
+            } else {
+                window.location.hash = '#/home.html?tentacle=discover';
+            }
+            this.setOverlayActive('discover');
         },
 
         activateActivity: function () {
-            var self = this;
-            this.ensureHomeThen(function () {
-                if (window.TentacleActivity && window.TentacleActivity.show) {
-                    window.TentacleActivity.show();
-                    self.setOverlayActive('activity');
-                    return;
-                }
-                // Fallback: try legacy method
-                if (window.TentacleDiscover && window.TentacleDiscover.showActivity) {
-                    window.TentacleDiscover.showActivity();
-                    self.setOverlayActive('activity');
-                }
-            });
-        },
-
-        // The Discover/Activity overlays live on the home page: their teardown
-        // logic hides them on any navigation event to a non-home route, and the
-        // Live TV overlay (z-index 900) would cover them entirely. So from any
-        // other page (Live TV, libraries, details, search) we navigate home
-        // first, wait for the route to land, then open the overlay. This is
-        // what makes every navbar button work from every page.
-        ensureHomeThen: function (fn) {
-            var isHomeHash = function () {
-                var h = location.hash || '';
-                return h === '' || h === '#/' || /^#\/home(\.html)?(\?|$)/.test(h);
-            };
-            if (isHomeHash()) { fn(); return; }
-            this.navigateTo('/home');
-            var attempts = 0;
-            var t = setInterval(function () {
-                attempts++;
-                if (isHomeHash() || attempts > 20) {
-                    clearInterval(t);
-                    // Small settle delay so route-driven teardowns (Live TV
-                    // overlay, search cleanup) finish before the overlay opens
-                    setTimeout(fn, 150);
-                }
-            }, 100);
+            if ((location.hash || '').indexOf('tentacle=activity') !== -1) {
+                if (window.TentacleActivity && window.TentacleActivity.show) window.TentacleActivity.show();
+            } else {
+                window.location.hash = '#/home.html?tentacle=activity';
+            }
+            this.setOverlayActive('activity');
         },
 
         setOverlayActive: function (which) {
@@ -841,6 +813,13 @@
             if (!this.container) return;
 
             this.updateVisibility();
+
+            // Route-driven overlays: highlight from the URL, so back/forward
+            // navigation into an overlay route highlights the right button
+            // even without a click.
+            var rawHash = location.hash || '';
+            if (rawHash.indexOf('tentacle=discover') !== -1) { this.setOverlayActive('discover'); return; }
+            if (rawHash.indexOf('tentacle=activity') !== -1) { this.setOverlayActive('activity'); return; }
 
             // Don't override active state if an overlay is open
             var discoverOpen = window.TentacleDiscover && window.TentacleDiscover.isActive && window.TentacleDiscover.isActive();
