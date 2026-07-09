@@ -41,6 +41,26 @@ If you plan to use "Download More Episodes" to fill in missing episodes on VOD s
 
 This lets Sonarr download new episodes directly into existing VOD series folders, creating a unified view in Jellyfin.
 
+!!! note "The folder name must contain \"vod\""
+    Tentacle identifies the hybrid root folder by looking for `vod` in the path
+    (e.g. `/data/vod/tv`, `/data/vod/Series`). Regular downloads always go to
+    your non-VOD root folder — Tentacle never defaults new series into the VOD
+    root, regardless of root-folder order in Sonarr.
+
+!!! tip "Guardrails if you skip this"
+    Nothing breaks silently. If the VOD root folder is missing:
+
+    - **Download More Episodes** on a VOD series fails with a clear message
+      explaining exactly what to add (instead of downloading to the regular
+      root and creating a duplicate series in Jellyfin)
+    - **Settings → Connections** shows an amber warning on Sonarr:
+      *"Connected — no VOD root folder (needed for hybrid series)"*
+
+!!! info "\"Unmapped Folders\" in Sonarr is normal"
+    Sonarr will show a large **Unmapped Folders** count for the VOD root — one
+    per VOD series folder it isn't tracking. This is cosmetic and harmless:
+    Sonarr only manages series you explicitly add to it.
+
 ## What Happens When Episodes Download
 
 1. Sonarr fires a `Download` webhook → Tentacle receives it

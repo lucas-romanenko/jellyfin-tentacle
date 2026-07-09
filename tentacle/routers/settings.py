@@ -362,6 +362,26 @@ def connection_status(db: Session = Depends(get_db)):
                 results[name] = fut.result(timeout=10)
             except Exception:
                 results[name] = {"ok": False, "error": "Test timed out", "configured": True}
+
+    # Hybrid-series prerequisite: Sonarr needs a root folder pointing at the VOD
+    # shows directory, or "Download More Episodes" on a VOD series would create
+    # a duplicate series in Jellyfin. Only relevant when the user has VOD series.
+    if results.get("sonarr", {}).get("ok"):
+        try:
+            from models.database import Series
+            has_vod_series = db.query(Series).filter(Series.source.like("provider_%")).count() > 0
+            if has_vod_series:
+                r = requests.get(
+                    f"{sonarr_url.rstrip('/')}/api/v3/rootfolder",
+                    headers={"X-Api-Key": sonarr_key},
+                    timeout=5,
+                )
+                r.raise_for_status()
+                has_vod_root = any("vod" in (rf.get("path") or "").lower() for rf in r.json())
+                results["sonarr"]["vod_root_missing"] = not has_vod_root
+        except Exception:
+            pass
+
     return results
 
 

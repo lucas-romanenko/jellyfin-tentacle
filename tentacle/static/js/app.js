@@ -1076,6 +1076,14 @@ async function loadConnectionStatus() {
       if (!info.configured) { badge.style.display = 'none'; continue; }
       badge.style.display = 'inline';
       if (info.ok) {
+        if (info.vod_root_missing) {
+          // Connected, but hybrid series would duplicate — surface the fix
+          badge.textContent = 'Connected — no VOD root folder (needed for hybrid series)';
+          badge.title = 'Add your VOD shows folder as a Root Folder in Sonarr → Settings → Media Management. Without it, "Download More Episodes" on a VOD series would create a duplicate series in Jellyfin.';
+          badge.style.background = 'rgba(245,158,11,0.15)';
+          badge.style.color = 'var(--amber)';
+          continue;
+        }
         badge.textContent = 'Connected';
         badge.style.background = 'rgba(34,197,94,0.15)';
         badge.style.color = 'var(--green)';

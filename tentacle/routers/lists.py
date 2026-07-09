@@ -49,7 +49,9 @@ def _get_radarr_root_folder(radarr_url: str, radarr_key: str) -> str:
         r.raise_for_status()
         folders = r.json()
         if folders:
-            return folders[0]["path"]
+            # Prefer a non-VOD root — never default movie downloads into a VOD mount
+            non_vod = [f for f in folders if "vod" not in f["path"].lower()]
+            return (non_vod or folders)[0]["path"]
     except Exception as e:
         logger.warning(f"Failed to fetch Radarr root folders: {e}")
     return "/data/movies"  # sensible fallback
@@ -725,7 +727,10 @@ def add_to_sonarr(body: AddMissingBody, db: Session = Depends(get_db), user: Ten
     from services.sonarr import SonarrService
     sonarr = SonarrService(sonarr_url, sonarr_key)
     root_folders = sonarr.get_root_folders()
-    root_folder = root_folders[0]["path"] if root_folders else "/data/tv"
+    # Regular adds must never default into the VOD root folder (used only for
+    # hybrid series) — prefer the first non-VOD root
+    _non_vod_roots = [rf for rf in root_folders if "vod" not in rf["path"].lower()]
+    root_folder = (_non_vod_roots or root_folders)[0]["path"] if root_folders else "/data/tv"
     quality_profile_id = body.quality_profile_id or int(get_setting(db, "sonarr_quality_profile_id", "1") or "1")
 
     added = 0
@@ -743,10 +748,25 @@ def add_to_sonarr(body: AddMissingBody, db: Session = Depends(get_db), user: Ten
             break
 
     # Process TMDB IDs
+    detail = None
     for tmdb_id in (body.tmdb_ids or []):
         existing = db.query(Series).filter(Series.tmdb_id == tmdb_id).first()
         if existing and existing.source == "sonarr":
             already_exists += 1
+            continue
+
+        # Hybrid VOD series REQUIRE the VOD root folder in Sonarr. Without it,
+        # Sonarr downloads into the regular root next to the VOD folder and
+        # Jellyfin shows the series TWICE. Fail loudly with a fix-it message
+        # instead of silently creating that duplicate.
+        if existing and existing.strm_path and existing.source.startswith("provider_") \
+                and not existing.sonarr_path and not vod_root:
+            failed += 1
+            detail = ("Sonarr has no VOD root folder. Add the folder containing your VOD "
+                      "series (the same host folder Tentacle writes .strm shows into) as a "
+                      "Root Folder in Sonarr → Settings → Media Management, then retry. "
+                      "Without it, downloads would create a duplicate series in Jellyfin.")
+            logger.warning(f"Blocked hybrid add for tmdb:{tmdb_id} — no VOD root folder in Sonarr")
             continue
 
         # For VOD series with strm_path, use the existing VOD folder in Sonarr
@@ -781,7 +801,10 @@ def add_to_sonarr(body: AddMissingBody, db: Session = Depends(get_db), user: Ten
     if added:
         from routers.discover import bust_arr_ids_cache
         bust_arr_ids_cache()
-    return {"added": added, "already_exists": already_exists, "failed": failed}
+    resp = {"added": added, "already_exists": already_exists, "failed": failed}
+    if detail:
+        resp["detail"] = detail
+    return resp
 
 
 @router.delete("/{list_id}")
@@ -1160,7 +1183,10 @@ def add_missing_to_sonarr(list_id: int, body: AddMissingBody = None, db: Session
     from services.sonarr import SonarrService
     sonarr = SonarrService(sonarr_url, sonarr_key)
     root_folders = sonarr.get_root_folders()
-    root_folder = root_folders[0]["path"] if root_folders else "/data/tv"
+    # Regular adds must never default into the VOD root folder (used only for
+    # hybrid series) — prefer the first non-VOD root
+    _non_vod_roots = [rf for rf in root_folders if "vod" not in rf["path"].lower()]
+    root_folder = (_non_vod_roots or root_folders)[0]["path"] if root_folders else "/data/tv"
     quality_profile_id = (body.quality_profile_id if body else None) or int(get_setting(db, "sonarr_quality_profile_id", "1") or "1")
 
     if body and body.tmdb_ids:
