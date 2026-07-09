@@ -502,9 +502,11 @@ def search_discover(
 
 @router.get("/config")
 def get_discover_config(db: Session = Depends(get_db)):
-    """Return whether the Discover tab is enabled for Jellyfin."""
-    enabled = get_setting(db, "discover_in_jellyfin", "false")
-    return {"discover_in_jellyfin": enabled.lower() == "true"}
+    """DEPRECATED: the global discover_in_jellyfin toggle is retired — per-user
+    toolbar config (Home Screen tab) now controls which tabs each client shows.
+    Always returns enabled for backwards compatibility with older plugin builds
+    that still gate the Discover tab / unified search on this flag."""
+    return {"discover_in_jellyfin": True}
 
 
 @router.get("/seasons/{tmdb_id}")

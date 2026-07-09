@@ -88,10 +88,6 @@ def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
     if all_set:
         set_setting(db, "setup_complete", "true")
 
-    # If discover toggle changed, notify the Jellyfin plugin to clear its cache
-    if "discover_in_jellyfin" in body.settings:
-        _notify_plugin_discover_changed(db)
-
     # If the sync schedule changed, reschedule the job live (no restart needed).
     if "sync_schedule" in body.settings:
         try:

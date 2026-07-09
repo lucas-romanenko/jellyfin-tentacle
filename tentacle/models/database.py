@@ -705,7 +705,6 @@ def seed_defaults(db):
         "home_row_limit": "20",
         "setup_complete": "false",
         "data_dir": os.getenv("DATA_DIR", "/data"),
-        "discover_in_jellyfin": "false",
         "hdhr_tuner_count": "3",
         "hdhr_device_id": "TENTACLE1",
         "session_secret": secrets.token_hex(32),

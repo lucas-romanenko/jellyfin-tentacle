@@ -99,7 +99,10 @@
     _tryInjectRetries = 0;
 
     apiGet('TentacleDiscover/Config').then(function (cfg) {
-      MD.enabled = cfg && cfg.discover_in_jellyfin === true;
+      // The backend now always returns true (the global toggle is retired —
+      // per-user toolbar config governs tab visibility); the C# proxy returns
+      // false when the backend is unreachable, so this is a reachability check.
+      MD.enabled = !!(cfg && cfg.discover_in_jellyfin === true);
       var existingTab = slider.querySelector('#mdDiscoverTab');
       if (MD.enabled && !existingTab) {
         addTab(slider);
