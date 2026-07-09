@@ -366,7 +366,7 @@ def connection_status(db: Session = Depends(get_db)):
     # Hybrid-series prerequisite: Sonarr needs a root folder pointing at the VOD
     # shows directory, or "Download More Episodes" on a VOD series would create
     # a duplicate series in Jellyfin. Only relevant when the user has VOD series.
-    if results.get("sonarr", {}).get("ok"):
+    if results.get("sonarr", {}).get("ok") and get_setting(db, "hybrid_series_layout", "vod_root") == "vod_root":
         try:
             from models.database import Series
             has_vod_series = db.query(Series).filter(Series.source.like("provider_%")).count() > 0

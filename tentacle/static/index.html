@@ -1745,6 +1745,15 @@ td.primary { color: var(--text); font-weight: 500; }
                 <div class="form-hint">Paste into Sonarr → Settings → Connect → Webhook</div>
               </div>
 
+              <div class="form-group">
+                <div class="form-label">Hybrid series layout</div>
+                <select class="form-input" id="hybrid_series_layout" style="max-width:460px">
+                  <option value="vod_root">Download into the VOD folder (needs a VOD root folder in Sonarr)</option>
+                  <option value="shared_library">Shared Jellyfin library — same folder name, separate roots</option>
+                </select>
+                <div class="form-hint">How VOD (.strm) + downloaded episodes combine into one Jellyfin series when using "Download More Episodes". Shared library: your VOD shows folder and Sonarr's shows folder must both be folders of ONE Jellyfin library — Sonarr then needs no VOD root folder.</div>
+              </div>
+
               <hr class="divider">
 
               <div class="section-title">Manual Scans</div>
@@ -3122,8 +3131,8 @@ td.primary { color: var(--text); font-weight: 500; }
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<script src="/static/js/app.js?v=30"></script>
-<script src="/static/js/pages.js?v=30"></script>
+<script src="/static/js/app.js?v=31"></script>
+<script src="/static/js/pages.js?v=31"></script>
 <script>
   // ── Mobile off-canvas sidebar ──
   function toggleSidebar() {

@@ -703,6 +703,13 @@ def seed_defaults(db):
         "logodev_api_key": "",
         "trakt_client_id": "",
         "home_row_limit": "20",
+        # How hybrid VOD+downloaded series are unified in Jellyfin:
+        #   vod_root       - Sonarr downloads INTO the VOD show folder (needs a
+        #                    VOD root folder registered in Sonarr)
+        #   shared_library - Sonarr downloads to its own root using the SAME
+        #                    folder name as the VOD show; Jellyfin merges the
+        #                    two folders (both must be in ONE Jellyfin library)
+        "hybrid_series_layout": "vod_root",
         "setup_complete": "false",
         "data_dir": os.getenv("DATA_DIR", "/data"),
         "hdhr_tuner_count": "3",

@@ -755,26 +755,37 @@ def add_to_sonarr(body: AddMissingBody, db: Session = Depends(get_db), user: Ten
             already_exists += 1
             continue
 
-        # Hybrid VOD series REQUIRE the VOD root folder in Sonarr. Without it,
-        # Sonarr downloads into the regular root next to the VOD folder and
-        # Jellyfin shows the series TWICE. Fail loudly with a fix-it message
-        # instead of silently creating that duplicate.
-        if existing and existing.strm_path and existing.source.startswith("provider_") \
-                and not existing.sonarr_path and not vod_root:
-            failed += 1
-            detail = ("Sonarr has no VOD root folder. Add the folder containing your VOD "
-                      "series (the same host folder Tentacle writes .strm shows into) as a "
-                      "Root Folder in Sonarr → Settings → Media Management, then retry. "
-                      "Without it, downloads would create a duplicate series in Jellyfin.")
-            logger.warning(f"Blocked hybrid add for tmdb:{tmdb_id} — no VOD root folder in Sonarr")
-            continue
-
-        # For VOD series with strm_path, use the existing VOD folder in Sonarr
+        # Hybrid VOD series: unify VOD (.strm) + downloaded episodes as ONE
+        # Jellyfin series. Two layouts (hybrid_series_layout setting):
+        #   vod_root       — Sonarr downloads INTO the VOD folder (needs the VOD
+        #                    root folder registered in Sonarr)
+        #   shared_library — Sonarr downloads to its own root but with the SAME
+        #                    folder name as the VOD show; Jellyfin merges the
+        #                    same-named folders (both in one Jellyfin library)
         series_path = None
-        if existing and existing.strm_path and existing.source.startswith("provider_") and vod_root:
+        is_hybrid = existing and existing.strm_path and existing.source.startswith("provider_")
+        if is_hybrid:
             import os
             folder_name = os.path.basename(existing.strm_path.rstrip("/"))
-            series_path = f"{vod_root}/{folder_name}"
+            layout = get_setting(db, "hybrid_series_layout", "vod_root")
+            if layout == "shared_library":
+                # Same folder name under Sonarr's regular root — Jellyfin's
+                # cross-folder merge keys on matching series folder names
+                series_path = f"{root_folder.rstrip('/')}/{folder_name}"
+            elif vod_root:
+                series_path = f"{vod_root}/{folder_name}"
+            elif not existing.sonarr_path:
+                # vod_root layout but no VOD root folder in Sonarr: downloading
+                # to the regular root would show the series TWICE in Jellyfin.
+                # Fail loudly with a fix-it message instead.
+                failed += 1
+                detail = ("Sonarr has no VOD root folder. Add the folder containing your VOD "
+                          "series (the same host folder Tentacle writes .strm shows into) as a "
+                          "Root Folder in Sonarr → Settings → Media Management, then retry — or "
+                          "switch to the shared-library layout in Tentacle Settings → Integrations. "
+                          "Without one of these, downloads would create a duplicate series in Jellyfin.")
+                logger.warning(f"Blocked hybrid add for tmdb:{tmdb_id} — no VOD root folder in Sonarr")
+                continue
 
         result = sonarr.add_series(tmdb_id, quality_profile_id, root_folder, monitor=monitor, season_folder=season_folder, selected_episodes=body.selected_episodes, series_path=series_path, monitor_new=body.monitor_new or False)
         if result:

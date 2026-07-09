@@ -1047,7 +1047,8 @@ async function loadSettings() {
       'sonarr_url', 'sonarr_api_key',
       'jellyfin_url', 'jellyfin_api_key',
       'recently_added_days', 'tmdb_match_threshold',
-      'webhook_host', 'sonarr_webhook_host', 'trakt_client_id', 'logodev_api_key'
+      'webhook_host', 'sonarr_webhook_host', 'trakt_client_id', 'logodev_api_key',
+      'hybrid_series_layout'
     ];
     fields.forEach(key => {
       const el = document.getElementById(key);
@@ -1136,7 +1137,8 @@ async function saveSettings() {
     'sonarr_url', 'sonarr_api_key',
     'jellyfin_url', 'jellyfin_api_key',
     'recently_added_days', 'tmdb_match_threshold',
-    'webhook_host', 'sonarr_webhook_host', 'trakt_client_id', 'logodev_api_key'
+    'webhook_host', 'sonarr_webhook_host', 'trakt_client_id', 'logodev_api_key',
+    'hybrid_series_layout'
   ];
 
   const settings = {};
