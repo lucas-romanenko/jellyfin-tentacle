@@ -389,6 +389,10 @@
         } else if (ulInfo) {
           badge = '<div class="md-card-badge md-badge-unreleased">Awaiting Release</div>';
           addBtn = '';
+        } else if (item.requested) {
+          // In Radarr/Sonarr but no file yet (searching / no release found)
+          badge = '<div class="md-card-badge md-badge-requested">' + (item.media_type === 'series' ? 'In Sonarr' : 'In Radarr') + '</div>';
+          addBtn = '';
         } else {
           badge = '<div class="md-card-badge md-badge-type">' + (item.media_type === 'movie' ? 'Movie' : 'Show') + '</div>';
           addBtn = '<button class="md-card-add" data-tmdb="' + (item.tmdb_id || 0) + '" data-tvdb="' + (item.tvdb_id || 0) + '">+</button>';
@@ -545,6 +549,12 @@
             '<button id="mdManageSaveBtn" class="md-download-btn" style="font-size:13px;padding:8px 20px">Save Changes</button>' +
           '</div>' +
           '<div id="mdDownloadStatus" class="md-download-status"></div>' +
+        '</div>';
+    } else if (item.requested) {
+      // In Radarr/Sonarr but no file yet — no add button, just the state
+      downloadSection =
+        '<div class="md-inlib-row">' +
+          '<div class="md-requested-badge">⏳ In ' + (item.media_type === 'series' ? 'Sonarr' : 'Radarr') + ' — searching for release</div>' +
         '</div>';
     } else {
       var isSeries = item.media_type === 'series';

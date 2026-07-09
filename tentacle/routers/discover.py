@@ -54,6 +54,69 @@ def _is_in_library(item: dict, known_ids: dict) -> bool:
     return tid in known_ids["movie"] or tid in known_ids["series"]
 
 
+# ── "Requested" annotation: titles known to Radarr/Sonarr with no file yet ──
+# A movie added to Radarr that hasn't downloaded (searching, or no findable
+# release) is otherwise invisible: not in the Tentacle DB (scans import
+# files), not "unreleased" (already released), not in the download queue.
+# Without this, Discover shows it as addable — and adding reports
+# "Already in Radarr".
+_arr_ids_cache: dict = {"data": None, "ts": 0}
+ARR_IDS_TTL = 300  # 5 minutes
+
+
+def _get_arr_tmdb_ids() -> dict:
+    """Cached tmdb-id sets of everything Radarr/Sonarr track (incl. no-file)."""
+    import time as _time
+    now = _time.time()
+    if _arr_ids_cache["data"] is not None and now - _arr_ids_cache["ts"] < ARR_IDS_TTL:
+        return _arr_ids_cache["data"]
+
+    from models.database import SessionLocal
+    result = {"movie": set(), "series": set()}
+    db = SessionLocal()
+    try:
+        try:
+            url, key = get_setting(db, "radarr_url"), get_setting(db, "radarr_api_key")
+            if url and key:
+                from services.radarr import RadarrService
+                for m in RadarrService(url, key).get_all_movies():
+                    if m.get("tmdbId"):
+                        result["movie"].add(m["tmdbId"])
+        except Exception as e:
+            logger.debug(f"Radarr id fetch for requested-badges failed: {e}")
+        try:
+            url, key = get_setting(db, "sonarr_url"), get_setting(db, "sonarr_api_key")
+            if url and key:
+                from services.sonarr import SonarrService
+                for s in SonarrService(url, key).get_all_series():
+                    if s.get("tmdbId"):
+                        result["series"].add(s["tmdbId"])
+        except Exception as e:
+            logger.debug(f"Sonarr id fetch for requested-badges failed: {e}")
+    finally:
+        db.close()
+
+    _arr_ids_cache["data"] = result
+    _arr_ids_cache["ts"] = now
+    return result
+
+
+def bust_arr_ids_cache():
+    """Called after add-to-arr so new requests badge immediately."""
+    _arr_ids_cache["ts"] = 0
+
+
+def _mark_requested(item: dict):
+    """requested=True when the title is in Radarr/Sonarr but not in the library."""
+    tid = item.get("tmdb_id")
+    if item.get("in_library") or not tid:
+        item["requested"] = False
+        return
+    ids = _get_arr_tmdb_ids()
+    mt = item.get("media_type", "movie")
+    item["requested"] = tid in (ids["series"] if mt == "series" else ids["movie"])
+
+
 def _dedup_and_mark(items: list, known_ids: dict) -> list:
     """Deduplicate by tmdb_id+media_type and annotate in_library status."""
     seen = set()
@@ -64,6 +127,7 @@ def _dedup_and_mark(items: list, known_ids: dict) -> list:
             continue
         seen.add(tid)
         item["in_library"] = _is_in_library(item, known_ids)
+        _mark_requested(item)
         result.append(item)
     return result
 
@@ -236,6 +300,10 @@ def get_discover_detail(
     else:
         db_item = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
         details["in_library"] = bool(db_item)
+
+    # requested: in Radarr/Sonarr but no file yet (searching / no release found)
+    details["media_type"] = details.get("media_type") or media_type
+    _mark_requested(details)
 
     # can_delete: True if downloaded content AND (admin OR user requested it)
     details["can_delete"] = False
@@ -464,6 +532,7 @@ def search_discover(
                 item["in_library"] = _is_in_library(item, known_ids)
             else:
                 item["in_library"] = False
+            _mark_requested(item)
             if tvdb_id:
                 seen_tvdb.add(tvdb_id)
             items.append(item)
@@ -477,6 +546,7 @@ def search_discover(
                 item["in_library"] = _is_in_library(item, known_ids)
             else:
                 item["in_library"] = False
+            _mark_requested(item)
             items.append(item)
 
     # Rewrite TVDB image URLs to go through proxy

@@ -179,6 +179,11 @@
   background: rgba(168, 130, 255, .75);
   color: #fff;
 }
+
+.md-badge-requested {
+  background: rgba(59, 130, 246, .8);
+  color: #fff;
+}
 .md-badge-type {
   background: rgba(15, 13, 26, .7);
   color: rgba(200, 195, 220, 0.6);
@@ -430,6 +435,17 @@
   font-size: 14px;
   font-weight: 500;
 }
+.md-requested-badge {
+  display: inline-block;
+  padding: 6px 16px;
+  border-radius: 0.75em;
+  background: rgba(59, 130, 246, .18);
+  border: 1px solid rgba(59, 130, 246, .4);
+  color: #9cc2ff;
+  font-size: 14px;
+  font-weight: 600;
+}
+
 .md-unreleased-badge {
   display: inline-block;
   padding: 6px 16px;

@@ -4121,6 +4121,8 @@ function renderDiscoverGrid(items) {
       badge = `<span class="badge badge-green" style="font-size:9px;padding:1px 5px">In Library</span>`;
     } else if (ulInfo) {
       badge = `<span class="badge badge-amber" style="font-size:9px;padding:1px 5px">Awaiting Release</span>`;
+    } else if (item.requested) {
+      badge = `<span class="badge badge-blue" style="font-size:9px;padding:1px 5px">In ${item.media_type === 'series' ? 'Sonarr' : 'Radarr'}</span>`;
     } else {
       badge = `<span class="badge" style="font-size:9px;padding:1px 5px;background:var(--bg3);color:var(--text3)">${item.media_type === 'movie' ? 'Movie' : 'Show'}</span>`;
       addBtn = `<button onclick="event.stopPropagation();showAddToArrModal(${tmdbId},'${escapeJS(item.title)}','${escapeJS(item.year||'')}','${escapeJS(item.poster_path||'')}','${item.media_type}',${tvdbId})" class="lib-card-add-btn" title="Add to ${item.media_type === 'series' ? 'Sonarr' : 'Radarr'}">+</button>`;
@@ -4178,6 +4180,8 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
     } else if (ulInfo) {
       const ulLabel = (ulInfo.release_type && ulInfo.release_type !== 'TBA') ? `${ulInfo.release_type} release: ${ulInfo.release_date}` : ulInfo.release_date;
       actionBtn = `<span class="badge badge-amber" style="font-size:12px;padding:4px 10px">⏳ Awaiting Release</span> <span style="font-size:12px;color:var(--text3);margin-left:6px">${escapeAttr(ulLabel)}</span>`;
+    } else if (data.requested) {
+      actionBtn = `<span class="badge badge-blue" style="font-size:12px;padding:4px 10px">In ${isSeries ? 'Sonarr' : 'Radarr'} — searching for release</span>`;
     } else {
       actionBtn = `<button class="btn btn-primary btn-sm" onclick="closeModal('modal-media-detail');showAddToArrModal(${detailTmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}','${mediaType}',${detailTvdbId})">Add to ${arrLabel}</button>`;
     }

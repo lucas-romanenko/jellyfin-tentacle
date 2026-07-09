@@ -700,6 +700,11 @@ def add_to_radarr(body: AddMissingBody, db: Session = Depends(get_db), user: Ten
             logger.error(f"Failed to add tmdb:{tmdb_id} to Radarr: {e}")
             failed += 1
 
+    if added:
+        # New Radarr entries should badge as "requested" in Discover immediately
+        from routers.discover import bust_arr_ids_cache
+        bust_arr_ids_cache()
+
     result = {"added": added, "already_exists": already_exists, "failed": failed}
     if release_date:
         result["release_date"] = release_date
@@ -773,6 +778,9 @@ def add_to_sonarr(body: AddMissingBody, db: Session = Depends(get_db), user: Ten
         else:
             failed += 1
 
+    if added:
+        from routers.discover import bust_arr_ids_cache
+        bust_arr_ids_cache()
     return {"added": added, "already_exists": already_exists, "failed": failed}
 
 
@@ -1128,6 +1136,9 @@ def add_missing_to_radarr(list_id: int, body: AddMissingBody = None, db: Session
             logger.error(f"Failed to add tmdb:{tmdb_id} to Radarr: {e}")
             failed += 1
 
+    if added:
+        from routers.discover import bust_arr_ids_cache
+        bust_arr_ids_cache()
     return {"added": added, "already_exists": already_exists, "failed": failed}
 
 
@@ -1180,4 +1191,7 @@ def add_missing_to_sonarr(list_id: int, body: AddMissingBody = None, db: Session
         else:
             failed += 1
 
+    if added:
+        from routers.discover import bust_arr_ids_cache
+        bust_arr_ids_cache()
     return {"added": added, "already_exists": already_exists, "failed": failed}

@@ -475,6 +475,8 @@
           statusBadge = '<div class="ts-card-badge ts-badge-status ts-badge-downloading">' + statusText + '</div>';
         } else if (item.in_library) {
           statusBadge = '<div class="ts-card-badge ts-badge-status ts-badge-inlib">In Library</div>';
+        } else if (item.requested) {
+          statusBadge = '<div class="ts-card-badge ts-badge-status ts-badge-requested">' + (item.media_type === 'series' ? 'In Sonarr' : 'In Radarr') + '</div>';
         }
 
         var ratingHtml = item.rating

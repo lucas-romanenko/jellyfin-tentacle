@@ -180,6 +180,11 @@ body.tentacle-search-active .tentacle-search-section {
   color: #fff;
 }
 
+.ts-badge-requested {
+  background: rgba(59, 130, 246, .85);
+  color: #fff;
+}
+
 .ts-badge-downloading {
   background: rgba(109, 95, 230, 0.85);
   color: #fff;
