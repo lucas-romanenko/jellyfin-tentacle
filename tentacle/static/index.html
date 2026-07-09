@@ -1745,6 +1745,15 @@ td.primary { color: var(--text); font-weight: 500; }
                 <div class="form-hint">Paste into Sonarr → Settings → Connect → Webhook</div>
               </div>
 
+              <hr class="divider">
+
+              <div class="section-title">Manual Scans</div>
+              <div class="form-hint" style="margin-bottom:10px">Re-import downloaded content from Radarr/Sonarr into Tentacle (runs automatically every night — use these to catch up immediately).</div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap">
+                <button class="btn btn-secondary" id="radarr-scan-btn" onclick="scanRadarr()">⬇ Scan Radarr</button>
+                <button class="btn btn-secondary" id="sonarr-scan-btn" onclick="scanSonarr()">⬇ Scan Sonarr</button>
+              </div>
+
               <div style="margin-top:20px">
                 <button class="btn btn-primary" onclick="saveSettings()">Save Integrations</button>
               </div>
