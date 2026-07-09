@@ -9,7 +9,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
-from models.database import get_db, Series, ListItem, ListSubscription, DownloadRequest, get_setting, log_activity
+from models.database import get_db, Series, ListItem, ListSubscription, DownloadRequest, Duplicate, get_setting, log_activity
 from services.sonarr import scan_sonarr_library, SonarrService
 from services.nfo import update_nfo_tags, write_series_nfo
 from services.logstream import emit_library_event
@@ -222,6 +222,10 @@ def sonarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
                     hybrid.sonarr_path = None
                 deleted = db.query(Series).filter(Series.tmdb_id == tmdb_id, Series.source == "sonarr").delete()
                 db.query(DownloadRequest).filter(DownloadRequest.tmdb_id == tmdb_id, DownloadRequest.media_type == "series").delete()
+                # Clear duplicate tombstones — deleting the downloaded copy is a
+                # clean slate; the title may legitimately re-import from VOD later
+                if deleted:
+                    db.query(Duplicate).filter(Duplicate.tmdb_id == tmdb_id, Duplicate.media_type == "series").delete()
                 db.commit()
             except Exception as e:
                 db.rollback()

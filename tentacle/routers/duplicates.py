@@ -7,9 +7,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from datetime import datetime, timezone
-from pathlib import Path
 from models.database import get_db, get_setting, Duplicate, Movie, Series
 from routers.auth import require_admin
+from services.duplicates import delete_vod_files, convert_record_to_downloaded
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/duplicates", tags=["duplicates"], dependencies=[Depends(require_admin)])
@@ -18,14 +18,19 @@ router = APIRouter(prefix="/api/duplicates", tags=["duplicates"], dependencies=[
 def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
     """
     Act on the resolution decision:
-    keep_radarr = delete VOD .strm + .nfo files, remove VOD DB record
-    keep_vod    = delete from Radarr (API + files), remove Radarr DB record
+    keep_radarr = delete VOD .strm + .nfo files, CONVERT the DB row to a
+                  downloaded-only record (tmdb_id is unique — one row per
+                  title; deleting it would make the nightly VOD sync
+                  re-import the provider copy as brand new)
+    keep_vod    = delete from Radarr (API + files), clear radarr_path
     keep_both   = do nothing
     """
     if resolution == "keep_both":
         return
 
     sources = dup.sources or []
+    model = Movie if dup.media_type == "movie" else Series
+    downloaded_source = "radarr" if dup.media_type == "movie" else "sonarr"
 
     if resolution == "keep_radarr":
         # Delete VOD strm/nfo files
@@ -33,37 +38,32 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
             src = source.get("source", "")
             path = source.get("path", "")
             if src.startswith("provider_") and path:
-                _delete_vod_files(path)
+                delete_vod_files(path)
 
-        # Remove VOD DB record
-        if dup.media_type == "movie":
-            vod = db.query(Movie).filter(
-                Movie.tmdb_id == dup.tmdb_id,
-                Movie.source != "radarr"
-            ).first()
-            if vod:
-                db.delete(vod)
-                logger.info(f"Removed VOD DB record for tmdb:{dup.tmdb_id}")
-        else:
-            vod = db.query(Series).filter(
-                Series.tmdb_id == dup.tmdb_id,
-                Series.source != "radarr"
-            ).first()
-            if vod:
-                db.delete(vod)
-                logger.info(f"Removed VOD DB record for tmdb:{dup.tmdb_id}")
+        # Convert the provider-owned row into a downloaded-only row.
+        # The VOD sync then skips this title forever (source is radarr/sonarr)
+        # and the Radarr/Sonarr scan sees an existing record — not a new movie.
+        record = db.query(model).filter(model.tmdb_id == dup.tmdb_id).first()
+        if record and record.source != downloaded_source:
+            convert_record_to_downloaded(record, dup.media_type)
 
     elif resolution == "keep_vod":
         # Delete from Radarr via API (removes from Radarr + deletes files on disk)
         deleted_ok = _delete_from_radarr(dup.tmdb_id, db)
 
-        # Only remove the Radarr DB record if the API delete actually succeeded —
-        # otherwise the files are still on disk and dropping the record would
-        # orphan them. Keep the record so the resolution can be retried.
+        # Only touch the DB if the API delete actually succeeded — otherwise
+        # the files are still on disk and the resolution should be retryable.
         if not deleted_ok:
             db.rollback()
             raise HTTPException(502, f"Failed to delete tmdb:{dup.tmdb_id} from Radarr — files may still exist")
 
+        # The (single) row is the VOD one — just clear the downloaded-copy path
+        record = db.query(model).filter(model.tmdb_id == dup.tmdb_id).first()
+        if record is not None and getattr(record, "radarr_path", None):
+            record.radarr_path = None
+
+        # Legacy state: a radarr-only row (shouldn't exist alongside VOD due to
+        # the unique constraint, but clean up if the row itself is radarr-owned)
         radarr_movie = db.query(Movie).filter(
             Movie.tmdb_id == dup.tmdb_id,
             Movie.source == "radarr"
@@ -73,29 +73,6 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
             logger.info(f"Removed Radarr DB record for tmdb:{dup.tmdb_id}")
 
     db.commit()
-
-
-def _delete_vod_files(strm_path: str):
-    """Delete a VOD .strm file and its companion .nfo, plus empty parent folder."""
-    try:
-        strm = Path(strm_path)
-        if strm.exists() and strm.suffix == ".strm":
-            strm.unlink()
-            logger.info(f"Deleted VOD strm: {strm_path}")
-
-            # Delete companion .nfo file (same name, different extension)
-            nfo = strm.with_suffix(".nfo")
-            if nfo.exists():
-                nfo.unlink()
-                logger.info(f"Deleted companion NFO: {nfo}")
-
-            # Remove parent folder if empty
-            parent = strm.parent
-            if parent.exists() and not any(parent.iterdir()):
-                parent.rmdir()
-                logger.info(f"Removed empty folder: {parent}")
-    except Exception as e:
-        logger.warning(f"Could not delete VOD files at {strm_path}: {e}")
 
 
 def _delete_from_radarr(tmdb_id: int, db: Session) -> bool:

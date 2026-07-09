@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 from typing import Optional
-from models.database import get_db, get_setting, Movie, Series, ListItem, DownloadRequest, TentacleUser
+from models.database import get_db, get_setting, Movie, Series, ListItem, DownloadRequest, TentacleUser, Duplicate
 from routers.auth import get_user_from_request
 from services.logstream import library_event_generator, emit_library_event
 from services.tmdb import TMDBService
@@ -400,10 +400,15 @@ def delete_library_item(
         db.delete(item)
         deleted = True
 
-    # Also clean up DownloadRequest
+    # Also clean up DownloadRequest + duplicate tombstones (a deliberate full
+    # delete is a clean slate — the title may re-import from VOD later)
     db.query(DownloadRequest).filter(
         DownloadRequest.tmdb_id == tmdb_id,
         DownloadRequest.media_type == media_type,
+    ).delete()
+    db.query(Duplicate).filter(
+        Duplicate.tmdb_id == tmdb_id,
+        Duplicate.media_type == media_type,
     ).delete()
     db.commit()
 
@@ -520,11 +525,16 @@ def delete_download(
     if jf_item_id and jf_url and jf_key:
         jf_deleted = jf.delete_item(jf_item_id)
 
-    # Delete from Tentacle DB
+    # Delete from Tentacle DB (+ duplicate tombstones — deliberate delete is a
+    # clean slate, the title may legitimately re-import from VOD later)
     db.delete(item)
     db.query(DownloadRequest).filter(
         DownloadRequest.tmdb_id == tmdb_id,
         DownloadRequest.media_type == media_type,
+    ).delete()
+    db.query(Duplicate).filter(
+        Duplicate.tmdb_id == tmdb_id,
+        Duplicate.media_type == media_type,
     ).delete()
     db.commit()
 

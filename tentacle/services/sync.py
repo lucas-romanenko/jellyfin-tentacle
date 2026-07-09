@@ -23,6 +23,7 @@ from services.tmdb import TMDBService
 from services.nfo import write_movie_nfo, write_series_nfo, make_folder_name
 from services.cleaner import clean_title
 from services.m3u_parser import episode_from_title, container_from_url
+from services.duplicates import delete_vod_files, convert_record_to_downloaded
 from services.tagger import compute_tags, get_list_tags_for_tmdb_id, apply_tag_rules
 from services.exceptions import ProviderConnectionError, SyncCancelledError, SyncError
 
@@ -403,14 +404,28 @@ def check_and_record_duplicate(
     else:
         existing = db.query(Series).filter(Series.tmdb_id == tmdb_id).first()
 
-    if not existing:
-        return False
-
-    # Record as duplicate
     dup = db.query(Duplicate).filter(
         Duplicate.tmdb_id == tmdb_id,
         Duplicate.media_type == media_type
     ).first()
+
+    if not existing:
+        # Tombstone: this duplicate was resolved as keep-downloaded — the
+        # provider copy was deliberately removed, so never re-import it as
+        # a "new" title just because the provider still offers it.
+        if dup and dup.resolution == "keep_radarr":
+            return True
+        return False
+
+    # Enforce a past keep-downloaded resolution: the provider copy must not
+    # own this title. Also self-heals rows that were re-imported by older
+    # versions, where resolving deleted the row instead of converting it.
+    if dup and dup.resolution == "keep_radarr" and existing.source and existing.source.startswith("provider_"):
+        if existing.strm_path:
+            delete_vod_files(existing.strm_path)
+        convert_record_to_downloaded(existing, media_type)
+        logger.info(f"[Sync] Enforced keep-downloaded resolution for tmdb:{tmdb_id} — provider copy suppressed")
+        return True
 
     new_source = {"source": source, "path": path}
 

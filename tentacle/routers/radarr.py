@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
 
-from models.database import get_db, Provider, Movie, ListItem, ListSubscription, DownloadRequest, get_setting, log_activity
+from models.database import get_db, Provider, Movie, ListItem, ListSubscription, DownloadRequest, Duplicate, get_setting, log_activity
 from services.radarr import scan_radarr_library, RadarrService
 from services.nfo import update_nfo_tags, write_movie_nfo, make_folder_name
 from services.migration import migrate_provider, preview_migration
@@ -244,6 +244,9 @@ def radarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
         try:
             deleted = db.query(Movie).filter(Movie.tmdb_id == tmdb_id, Movie.source == "radarr").delete()
             db.query(DownloadRequest).filter(DownloadRequest.tmdb_id == tmdb_id, DownloadRequest.media_type == "movie").delete()
+            # Clear duplicate tombstones — deleting the downloaded copy is a
+            # clean slate; the title may legitimately re-import from VOD later
+            db.query(Duplicate).filter(Duplicate.tmdb_id == tmdb_id, Duplicate.media_type == "movie").delete()
             db.commit()
         except Exception as e:
             db.rollback()
@@ -262,6 +265,9 @@ def radarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
         try:
             deleted = db.query(Movie).filter(Movie.tmdb_id == tmdb_id, Movie.source == "radarr").delete()
             db.query(DownloadRequest).filter(DownloadRequest.tmdb_id == tmdb_id, DownloadRequest.media_type == "movie").delete()
+            # Clear duplicate tombstones — deleting the downloaded copy is a
+            # clean slate; the title may legitimately re-import from VOD later
+            db.query(Duplicate).filter(Duplicate.tmdb_id == tmdb_id, Duplicate.media_type == "movie").delete()
             db.commit()
         except Exception as e:
             db.rollback()
