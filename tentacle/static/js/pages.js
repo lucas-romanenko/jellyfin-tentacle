@@ -283,6 +283,7 @@ async function loadLibrary() {
     loadLibStats();
     loadLibSyncSummary();
     checkStaleFiles();
+    checkNewContentNotice();
   }
   loadLibDownloads();
   await fetchLibraryPage();
@@ -606,6 +607,44 @@ async function checkStaleFiles() {
       document.getElementById('stale-strm-count').textContent = data.strm_count || 0;
     }
   } catch (e) { /* ignore */ }
+}
+
+// ── New provider content notice (nightly discovery) ──
+async function checkNewContentNotice() {
+  if (!state.currentUser?.is_admin) return;
+  try {
+    const n = await api('/api/sync/new-content-notice');
+    const banner = document.getElementById('new-content-banner');
+    if (!banner) return;
+    if (!n.exists) { banner.style.display = 'none'; return; }
+
+    const parts = [];
+    const vodNames = n.vod || [];
+    const liveNames = n.live || [];
+    const vodTotal = n.vod_total || vodNames.length;
+    const liveTotal = n.live_total || liveNames.length;
+    if (vodTotal) {
+      const shown = vodNames.slice(0, 4).join(', ');
+      const extra = vodTotal > 4 ? ` and ${vodTotal - 4} more` : '';
+      parts.push(`${vodTotal} new VOD categor${vodTotal !== 1 ? 'ies' : 'y'} (${shown}${extra})`);
+    }
+    if (liveTotal) {
+      const shown = liveNames.slice(0, 4).join(', ');
+      const extra = liveTotal > 4 ? ` and ${liveTotal - 4} more` : '';
+      parts.push(`${liveTotal} new Live TV group${liveTotal !== 1 ? 's' : ''} (${shown}${extra})`);
+    }
+    document.getElementById('new-content-msg').textContent =
+      `Your providers added ${parts.join(' and ')}. They're disabled until you enable the ones you want.`;
+    document.getElementById('new-content-vod-btn').style.display = vodTotal ? '' : 'none';
+    document.getElementById('new-content-live-btn').style.display = liveTotal ? '' : 'none';
+    banner.style.display = '';
+  } catch (e) { /* ignore */ }
+}
+
+async function dismissNewContentNotice() {
+  const banner = document.getElementById('new-content-banner');
+  if (banner) banner.style.display = 'none';
+  try { await api('/api/sync/new-content-notice/dismiss', { method: 'POST' }); } catch {}
 }
 
 async function loadLibListPills() {
@@ -5123,7 +5162,7 @@ async function saveMergeContinueWatching(checked) {
     loadJellyfinPage, loadAutoPlaylists, toggleAutoPlaylist, dismissAutoPlaylistBanner,
     showAddTagRule, editTagRule, deleteTagRule, saveTagRule, onContentSourceChange, toggleAdvancedFilters,
     addRuleCondition, updateCondOps, onCollectionNameInput, syncSmartLists, refreshTags, syncPlaylistsToJellyfin, resyncAllPlaylists, setPlaylistSort,
-    pushHomeConfig, updateHeroPick, updateHeroSort, saveRowMaxItems, saveRowMaxItemsByKey, toggleNotificationsFromCheckbox, saveMergeContinueWatching, toggleGenreChip, _scheduleMatchCount, toggleToolbarButton,
+    pushHomeConfig, updateHeroPick, updateHeroSort, saveRowMaxItems, saveRowMaxItemsByKey, toggleNotificationsFromCheckbox, saveMergeContinueWatching, dismissNewContentNotice, toggleGenreChip, _scheduleMatchCount, toggleToolbarButton,
     showAddHomeRow, hideAddHomeRow, confirmAddHomeRow, removeHomeRow, removeHomeRowByKey,
     homeRowDragStart, homeRowDragOver, homeRowDrop, rowKey,
     // Library

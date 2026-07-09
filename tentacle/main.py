@@ -154,6 +154,18 @@ def run_scheduled_sync():
         except Exception as e:
             logger.error(f"TMDB cache cleanup failed: {e}")
 
+        # Discover new provider content: VOD categories + Live TV groups.
+        # New entries are stored disabled/non-whitelisted and the user gets a
+        # persistent dashboard notice + activity feed events.
+        logger.info("Discovering new provider categories and Live TV groups")
+        try:
+            from services.discovery import discover_new_provider_content
+            discovered = discover_new_provider_content(db)
+            if discovered["vod_new"] or discovered["live_new"]:
+                logger.info(f"Discovery: {len(discovered['vod_new'])} new VOD categories, {len(discovered['live_new'])} new Live TV groups")
+        except Exception as e:
+            logger.error(f"Provider content discovery failed: {e}")
+
         # EPG sync for Live TV providers + Jellyfin guide refresh
         logger.info("Syncing Live TV EPG data")
         try:

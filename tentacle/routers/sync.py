@@ -573,6 +573,28 @@ def get_activity(limit: int = 15, db: Session = Depends(get_db)):
     } for e in entries]
 
 
+@router.get("/new-content-notice")
+def get_new_content_notice(db: Session = Depends(get_db)):
+    """Persistent notice about newly discovered provider categories / Live TV
+    groups (written by the nightly discovery step). Accumulates across nights
+    until dismissed."""
+    import json as _json
+    try:
+        notice = _json.loads(get_setting(db, "new_content_notice", "") or "{}")
+    except Exception:
+        notice = {}
+    if not notice.get("vod") and not notice.get("live"):
+        return {"exists": False}
+    return {"exists": True, **notice}
+
+
+@router.post("/new-content-notice/dismiss")
+def dismiss_new_content_notice(db: Session = Depends(get_db)):
+    """Clear the new-content notice (user has seen it)."""
+    set_setting(db, "new_content_notice", "")
+    return {"success": True}
+
+
 @router.get("/summary")
 def get_sync_summary(db: Session = Depends(get_db)):
     """Last nightly sync summary for the Library page card.

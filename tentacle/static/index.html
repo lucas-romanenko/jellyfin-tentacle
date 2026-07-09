@@ -1863,6 +1863,19 @@ td.primary { color: var(--text); font-weight: 500; }
             </div>
           </div>
         </div>
+
+        <!-- New provider content notice (nightly discovery) -->
+        <div class="card" id="new-content-banner" style="display:none;margin-bottom:16px;border-left:3px solid var(--accent)">
+          <div style="padding:16px;font-size:13px;color:var(--text2);line-height:1.5">
+            <strong style="color:var(--accent)">New provider content discovered</strong>
+            <p style="margin:4px 0 10px" id="new-content-msg"></p>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button class="btn btn-secondary btn-sm" id="new-content-vod-btn" style="display:none" onclick="showPage('vod')">View VOD Categories</button>
+              <button class="btn btn-secondary btn-sm" id="new-content-live-btn" style="display:none" onclick="showPage('live-tv')">View Live TV Groups</button>
+              <button class="btn btn-secondary btn-sm" onclick="dismissNewContentNotice()">Dismiss</button>
+            </div>
+          </div>
+        </div>
         <div class="modal-overlay" id="stale-confirm-modal" style="display:none">
           <div class="modal" style="max-width:440px">
             <div class="modal-header">
@@ -3100,8 +3113,8 @@ td.primary { color: var(--text); font-weight: 500; }
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<script src="/static/js/app.js?v=26"></script>
-<script src="/static/js/pages.js?v=26"></script>
+<script src="/static/js/app.js?v=27"></script>
+<script src="/static/js/pages.js?v=27"></script>
 <script>
   // ── Mobile off-canvas sidebar ──
   function toggleSidebar() {
