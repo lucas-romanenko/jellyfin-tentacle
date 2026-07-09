@@ -158,6 +158,10 @@ public class HomeConfig
 
     [JsonPropertyName("toolbar")]
     public List<ToolbarButton>? Toolbar { get; set; }
+
+    /// <summary>Combine Continue Watching + Next Up into a single home row.</summary>
+    [JsonPropertyName("merge_continue_watching")]
+    public bool MergeContinueWatching { get; set; }
 }
 
 /// <summary>

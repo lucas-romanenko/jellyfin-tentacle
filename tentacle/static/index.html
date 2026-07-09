@@ -2140,6 +2140,18 @@ td.primary { color: var(--text); font-weight: 500; }
               <button class="btn btn-secondary btn-sm" onclick="showAddHomeRow()" style="font-size:11px;padding:3px 10px">+ Add Row</button>
             </div>
             <div style="padding:0 16px 16px">
+              <!-- Merge Continue Watching + Next Up -->
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding-bottom:12px;border-bottom:1px solid var(--border);margin-bottom:12px">
+                <div style="flex:1">
+                  <div style="font-size:13px;color:var(--text)">Combine Continue Watching &amp; Next Up</div>
+                  <div style="font-size:11px;color:var(--text3);margin-top:2px">Show one merged row (in-progress items + next episodes, sorted by recency) instead of two separate rows. Applies to both Jellyfin and Android TV.</div>
+                </div>
+                <label style="position:relative;display:inline-block;width:40px;height:22px;flex-shrink:0">
+                  <input type="checkbox" id="merge-continue-checkbox" onchange="saveMergeContinueWatching(this.checked)" style="opacity:0;width:0;height:0">
+                  <span style="position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:var(--bg3);border-radius:11px;transition:.2s"></span>
+                  <span id="merge-continue-slider" style="position:absolute;height:16px;width:16px;left:3px;bottom:3px;background:white;border-radius:50%;transition:.2s"></span>
+                </label>
+              </div>
               <div id="add-row-inline" style="display:none;margin-bottom:8px">
                 <div style="display:flex;gap:8px;align-items:center">
                   <select id="add-row-select" class="form-input" style="flex:1">
@@ -3101,8 +3113,8 @@ td.primary { color: var(--text); font-weight: 500; }
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<script src="/static/js/app.js?v=24"></script>
-<script src="/static/js/pages.js?v=24"></script>
+<script src="/static/js/app.js?v=25"></script>
+<script src="/static/js/pages.js?v=25"></script>
 <script>
   // ── Mobile off-canvas sidebar ──
   function toggleSidebar() {

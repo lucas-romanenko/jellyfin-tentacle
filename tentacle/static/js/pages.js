@@ -2706,6 +2706,14 @@ async function loadHomeScreen() {
       trailerAudioCheckbox.checked = config.hero.trailer_audio !== false;
     }
 
+    // Merge Continue Watching + Next Up toggle
+    const mergeCheckbox = document.getElementById('merge-continue-checkbox');
+    if (mergeCheckbox) {
+      const mergeOn = config.merge_continue_watching === true;
+      mergeCheckbox.checked = mergeOn;
+      updateMergeContinueSlider(mergeOn);
+    }
+
     if (!homeRows.length) {
       listEl.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text3);font-size:13px">No rows configured — the default Jellyfin home screen will be used.</div>';
     } else {
@@ -5092,6 +5100,27 @@ async function toggleNotificationsFromCheckbox(checked) {
   try { await api('/api/notifications/toggle', { method: 'POST' }); } catch {}
 }
 
+// ── Merge Continue Watching + Next Up toggle ──
+function updateMergeContinueSlider(enabled) {
+  const slider = document.getElementById('merge-continue-slider');
+  const track = slider?.previousElementSibling;
+  if (slider) slider.style.transform = enabled ? 'translateX(18px)' : 'translateX(0)';
+  if (track) track.style.background = enabled ? 'var(--accent)' : 'var(--bg3)';
+}
+
+async function saveMergeContinueWatching(checked) {
+  updateMergeContinueSlider(checked);
+  try {
+    await api('/api/smartlists/merge-continue-watching', { method: 'POST', body: { enabled: checked } });
+    showToast(checked ? 'Continue Watching & Next Up combined' : 'Continue Watching & Next Up separated', 'success');
+  } catch (e) {
+    updateMergeContinueSlider(!checked);
+    const cb = document.getElementById('merge-continue-checkbox');
+    if (cb) cb.checked = !checked;
+    showToast('Failed to save setting', 'error');
+  }
+}
+
 (function exposeGlobals() {
   const fns = [
     // Lists page
@@ -5105,7 +5134,7 @@ async function toggleNotificationsFromCheckbox(checked) {
     loadJellyfinPage, loadAutoPlaylists, toggleAutoPlaylist, dismissAutoPlaylistBanner, saveDiscoverInJellyfin,
     showAddTagRule, editTagRule, deleteTagRule, saveTagRule, onContentSourceChange, toggleAdvancedFilters,
     addRuleCondition, updateCondOps, onCollectionNameInput, syncSmartLists, refreshTags, syncPlaylistsToJellyfin, resyncAllPlaylists, setPlaylistSort,
-    pushHomeConfig, updateHeroPick, updateHeroSort, saveRowMaxItems, saveRowMaxItemsByKey, toggleNotificationsFromCheckbox, toggleGenreChip, _scheduleMatchCount, toggleToolbarButton,
+    pushHomeConfig, updateHeroPick, updateHeroSort, saveRowMaxItems, saveRowMaxItemsByKey, toggleNotificationsFromCheckbox, saveMergeContinueWatching, toggleGenreChip, _scheduleMatchCount, toggleToolbarButton,
     showAddHomeRow, hideAddHomeRow, confirmAddHomeRow, removeHomeRow, removeHomeRowByKey,
     homeRowDragStart, homeRowDragOver, homeRowDrop, rowKey,
     // Library

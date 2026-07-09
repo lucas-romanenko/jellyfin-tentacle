@@ -600,20 +600,39 @@ class JellyfinService:
         logger.warning(f"[Jellyfin] Library scan wait timed out after {max_wait}s")
         return False
 
-    def disable_home_sections(self) -> bool:
+    def get_home_sections(self) -> dict:
+        """Read the user's current homesection0-9 display preferences.
+
+        Returns {"homesection0": "resumevideo", ...} ("" for unset slots),
+        or {} when the preferences could not be fetched.
+        """
+        if not self.user_id:
+            return {}
+        data = self._get("/DisplayPreferences/usersettings", params={"userId": self.user_id, "client": "emby"})
+        if not data:
+            return {}
+        prefs = data.get("CustomPrefs", {}) or {}
+        return {f"homesection{i}": prefs.get(f"homesection{i}") or "" for i in range(10)}
+
+    def disable_home_sections(self):
         """Set all Jellyfin home sections to 'none' for the current user.
 
         This prevents overlap between Tentacle's managed home screen
         and Jellyfin's built-in home sections.
+
+        Returns a snapshot dict of the PREVIOUS homesection values when
+        sections were actively disabled (so callers can preserve what the
+        user had configured in Jellyfin), {} if they were already disabled,
+        or None on failure.
         """
         if not self.user_id:
-            return False
+            return None
 
         path = "/DisplayPreferences/usersettings"
         params = {"userId": self.user_id, "client": "emby"}
         data = self._get(path, params=params)
         if not data:
-            return False
+            return None
 
         custom_prefs = data.get("CustomPrefs", {})
 
@@ -623,7 +642,10 @@ class JellyfinService:
             for i in range(10)
         )
         if already_disabled:
-            return True
+            return {}
+
+        # Snapshot the user's configuration before overwriting it
+        snapshot = {f"homesection{i}": custom_prefs.get(f"homesection{i}") or "" for i in range(10)}
 
         # Set all home sections to "none"
         for i in range(10):
@@ -640,11 +662,57 @@ class JellyfinService:
             self._check_401(r, path)
             if r.status_code < 400:
                 logger.info(f"[Jellyfin] Disabled built-in home sections for user {self.user_id}")
-                return True
+                return snapshot
             logger.warning(f"[Jellyfin] Failed to disable home sections: {r.status_code}")
-            return False
+            return None
         except Exception as e:
             logger.warning(f"[Jellyfin] Failed to disable home sections: {e}")
+            return None
+
+    def restore_home_sections(self, snapshot: dict) -> bool:
+        """Write saved homesection values back to Jellyfin.
+
+        Only restores when the current values are all 'none'/empty (i.e. the
+        blank state Tentacle wrote) — never clobbers settings the user has
+        since changed by hand.
+        """
+        if not self.user_id or not snapshot:
+            return False
+
+        path = "/DisplayPreferences/usersettings"
+        params = {"userId": self.user_id, "client": "emby"}
+        data = self._get(path, params=params)
+        if not data:
+            return False
+
+        custom_prefs = data.get("CustomPrefs", {}) or {}
+        currently_blank = all(
+            custom_prefs.get(f"homesection{i}") in ("none", "", None)
+            for i in range(10)
+        )
+        if not currently_blank:
+            logger.info(f"[Jellyfin] Home sections were changed manually for user {self.user_id} — not restoring snapshot")
+            return False
+
+        for i in range(10):
+            custom_prefs[f"homesection{i}"] = snapshot.get(f"homesection{i}") or ""
+        data["CustomPrefs"] = custom_prefs
+
+        try:
+            r = self.session.post(
+                f"{self.url}{path}",
+                params=params,
+                json=data,
+                timeout=15,
+            )
+            self._check_401(r, path)
+            if r.status_code < 400:
+                logger.info(f"[Jellyfin] Restored built-in home sections for user {self.user_id}")
+                return True
+            logger.warning(f"[Jellyfin] Failed to restore home sections: {r.status_code}")
+            return False
+        except Exception as e:
+            logger.warning(f"[Jellyfin] Failed to restore home sections: {e}")
             return False
 
 

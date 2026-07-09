@@ -48,6 +48,68 @@ BUILTIN_SECTIONS = [
 ]
 BUILTIN_MAP = {s["section_id"]: s for s in BUILTIN_SECTIONS}
 
+# Jellyfin homesection values → Tentacle builtin section ids (identity if absent)
+JELLYFIN_SECTION_TO_BUILTIN = {
+    "resume": "resumevideo",
+    "librarybuttons": "smalllibrarytiles_small",
+}
+# Seeded when the user never customized their Jellyfin home (all slots unset)
+DEFAULT_SEED_SECTIONS = ["smalllibrarytiles", "resumevideo", "nextup", "latestmedia"]
+
+
+def _seed_home_config_from_jellyfin(db: Session, user: TentacleUser) -> dict:
+    """First visit with no home config: mirror the user's Jellyfin home-section
+    settings as builtin rows, so Tentacle starts from what they had enabled in
+    Jellyfin instead of a blank slate. Also snapshots the original values so
+    they can be restored if Tentacle home is ever removed."""
+    from services.jellyfin import JellyfinService
+
+    jellyfin_url = get_setting(db, "jellyfin_url", "")
+    jellyfin_key = get_setting(db, "jellyfin_api_key", "")
+    if not jellyfin_url or not jellyfin_key or not user.jellyfin_user_id:
+        return {}
+
+    try:
+        jf = JellyfinService(jellyfin_url, jellyfin_key, user.jellyfin_user_id)
+        sections = jf.get_home_sections()
+        if not sections:
+            return {}
+
+        customized = any(v not in ("", "none") for v in sections.values())
+        section_ids = []
+        if customized:
+            for i in range(10):
+                val = sections.get(f"homesection{i}", "")
+                sid = JELLYFIN_SECTION_TO_BUILTIN.get(val, val)
+                if sid and sid != "none" and sid in BUILTIN_MAP and sid not in section_ids:
+                    section_ids.append(sid)
+        else:
+            section_ids = list(DEFAULT_SEED_SECTIONS)
+
+        if not section_ids:
+            return {}
+
+        rows = [
+            {"type": "builtin", "section_id": sid,
+             "display_name": BUILTIN_MAP[sid]["display_name"], "order": idx + 1}
+            for idx, sid in enumerate(section_ids)
+        ]
+        config = {
+            "hero": {"enabled": False, "playlist_id": "", "display_name": ""},
+            "rows": rows,
+            "jellyfin_sections_snapshot": sections,
+        }
+        with home_config_lock:
+            _write_home_json(user, config)
+        # Blank the native sections immediately so the injected Tentacle home
+        # doesn't double-render above Jellyfin's own rows
+        jf.disable_home_sections()
+        logger.info(f"Seeded home config for {user.display_name} from Jellyfin sections: {section_ids}")
+        return config
+    except Exception as e:
+        logger.warning(f"Could not seed home config from Jellyfin for {user.display_name}: {e}")
+        return {}
+
 
 @router.get("/version")
 def playlist_version():
@@ -337,8 +399,13 @@ def write_home(db: Session = Depends(get_db), user: TentacleUser = Depends(get_u
 
 @router.get("/home-config")
 def read_home(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
-    """Return the current per-user home config contents."""
+    """Return the current per-user home config contents.
+
+    First fetch for a user with no config seeds it from their Jellyfin
+    home-section settings (mirrors what they had enabled in Jellyfin)."""
     config = _read_home_json(user)
+    if not config:
+        config = _seed_home_config_from_jellyfin(db, user)
     if not config:
         return {"exists": False, "config": {}}
     return {"exists": True, "config": config}
@@ -682,6 +749,27 @@ class RowMaxItemsRequest(BaseModel):
     playlist_id: Optional[str] = None
     row_key: Optional[str] = None
     max_items: int
+
+
+class MergeContinueRequest(BaseModel):
+    enabled: bool
+
+
+@router.post("/merge-continue-watching")
+def set_merge_continue_watching(req: MergeContinueRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+    """Toggle combining Continue Watching + Next Up into a single home row.
+
+    Per-user; honored by both the Jellyfin web home (tentacle-home.js) and the
+    Android TV app (builtin section rendering)."""
+    with home_config_lock:
+        config = _read_home_json(user)
+        if not config:
+            config = {"hero": {"enabled": False, "playlist_id": "", "display_name": ""}, "rows": []}
+        config["merge_continue_watching"] = bool(req.enabled)
+        _write_home_json(user, config)
+    bump_playlist_version()
+    _notify_jellyfin_plugin(db)
+    return {"success": True, "merge_continue_watching": bool(req.enabled)}
 
 
 @router.post("/row-max-items")

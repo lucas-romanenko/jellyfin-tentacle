@@ -831,6 +831,13 @@ def write_home_config(db: Session, user_id: int = None) -> dict:
             "rows": rows,
             "toolbar": existing_toolbar,
         }
+        # Preserve auxiliary keys across regenerations (this dict is rebuilt from
+        # scratch on every sync — anything not carried over here gets wiped)
+        if existing_config:
+            if existing_config.get("jellyfin_sections_snapshot"):
+                config["jellyfin_sections_snapshot"] = existing_config["jellyfin_sections_snapshot"]
+            if "merge_continue_watching" in existing_config:
+                config["merge_continue_watching"] = existing_config["merge_continue_watching"]
 
         # Detect whether the generated config actually differs from what's on disk,
         # so we only bump the live-update version (and notify clients) on real
@@ -853,7 +860,9 @@ def write_home_config(db: Session, user_id: int = None) -> dict:
             bump_playlist_version()
 
     # If user has Tentacle home rows, disable Jellyfin's built-in home sections
-    # to prevent overlap between the two home screens
+    # to prevent overlap between the two home screens. Snapshot the user's own
+    # Jellyfin configuration first so it can be restored if Tentacle home is
+    # ever removed.
     if rows:
         try:
             from services.jellyfin import JellyfinService
@@ -862,9 +871,33 @@ def write_home_config(db: Session, user_id: int = None) -> dict:
             jf_user_id = _get_jellyfin_user_id(db, user_id)
             if jellyfin_url and jellyfin_key and jf_user_id:
                 jf = JellyfinService(jellyfin_url, jellyfin_key, jf_user_id)
-                jf.disable_home_sections()
+                snapshot = jf.disable_home_sections()
+                # First takeover: persist what the user had configured in Jellyfin
+                # (only meaningful snapshots — never overwrite an existing one)
+                if snapshot and any(v not in ("none", "") for v in snapshot.values()) \
+                        and not config.get("jellyfin_sections_snapshot"):
+                    with home_config_lock:
+                        config["jellyfin_sections_snapshot"] = snapshot
+                        path = _user_home_config_path(db, user_id)
+                        _atomic_write_json(path, config)
+                        logger.info(f"Saved Jellyfin home sections snapshot for user {user_id}")
         except Exception as e:
             logger.debug(f"Could not disable Jellyfin home sections: {e}")
+    else:
+        # Tentacle home was emptied — give the user their native Jellyfin home
+        # back from the snapshot (no-op if they've since customized it by hand)
+        snapshot = config.get("jellyfin_sections_snapshot")
+        if snapshot:
+            try:
+                from services.jellyfin import JellyfinService
+                jellyfin_url = get_setting(db, "jellyfin_url", "")
+                jellyfin_key = get_setting(db, "jellyfin_api_key", "")
+                jf_user_id = _get_jellyfin_user_id(db, user_id)
+                if jellyfin_url and jellyfin_key and jf_user_id:
+                    jf = JellyfinService(jellyfin_url, jellyfin_key, jf_user_id)
+                    jf.restore_home_sections(snapshot)
+            except Exception as e:
+                logger.debug(f"Could not restore Jellyfin home sections: {e}")
 
     return config
 

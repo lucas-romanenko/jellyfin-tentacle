@@ -213,9 +213,22 @@
           loadHero(heroContainer);
         }
 
+        // Combine Continue Watching + Next Up when the dashboard setting is on:
+        // the resume row renders the merged set and the nextup row is skipped
+        // (if the user only has a nextup row, the merge renders there instead).
+        var mergeCW = !!data.mergeContinueWatching;
+        var hasResumeRow = contentSections.some(function (s) {
+          return s.type === 'builtin' && (s.sectionId === 'resumevideo' || s.sectionId === 'resume');
+        });
+
         contentSections.forEach(function (section) {
           if (section.type === 'builtin') {
-            loadBuiltinSection(rowsContainer, section);
+            if (mergeCW && section.sectionId === 'nextup' && hasResumeRow) return; // folded into resume row
+            var renderMerged = mergeCW && (
+              section.sectionId === 'resumevideo' || section.sectionId === 'resume' ||
+              (section.sectionId === 'nextup' && !hasResumeRow)
+            );
+            loadBuiltinSection(rowsContainer, section, renderMerged);
           } else {
             loadRow(rowsContainer, section);
           }
@@ -426,9 +439,9 @@
   }
 
   // ── Built-in Jellyfin Sections ──────────────────────────────────────
-  function loadBuiltinSection(container, section) {
+  function loadBuiltinSection(container, section, renderMerged) {
     var sectionId = section.sectionId;
-    console.log('[Tentacle] Loading builtin section:', sectionId, section.displayText);
+    console.log('[Tentacle] Loading builtin section:', sectionId, section.displayText, renderMerged ? '(merged CW+NextUp)' : '');
 
     var row = document.createElement('div');
     row.className = 'mh-row';
@@ -462,6 +475,50 @@
     // "My Media" sections use library tiles instead of standard cards
     if (sectionId === 'smalllibrarytiles' || sectionId === 'smalllibrarytiles_small') {
       loadLibraryTiles(row, sectionId === 'smalllibrarytiles_small');
+      return;
+    }
+
+    // Combined Continue Watching + Next Up (dashboard "merge" setting):
+    // fetch both, drop Next Up entries whose series already has an in-progress
+    // episode in resume, render resume first (most recent) then next-up.
+    if (renderMerged) {
+      Promise.all([
+        apiGet(getBuiltinApiPath('resumevideo')).catch(function () { return {}; }),
+        apiGet(getBuiltinApiPath('nextup')).catch(function () { return {}; }),
+      ])
+        .then(function (results) {
+          var itemsEl = row.querySelector('.mh-row-items');
+          itemsEl.classList.remove('mh-loading-row');
+
+          var resumeItems = (results[0] && results[0].Items) || [];
+          var nextupItems = (results[1] && results[1].Items) || [];
+          var seen = {};
+          resumeItems.forEach(function (it) {
+            seen[it.Id] = true;
+            if (it.SeriesId) seen['s:' + it.SeriesId] = true;
+          });
+          var nextupFiltered = nextupItems.filter(function (it) {
+            return !seen[it.Id] && !(it.SeriesId && seen['s:' + it.SeriesId]);
+          });
+
+          if (!resumeItems.length && !nextupFiltered.length) {
+            row.classList.add('mh-row-hidden');
+            return;
+          }
+
+          itemsEl.innerHTML = '';
+          var total = 0;
+          resumeItems.forEach(function (item) {
+            if (total++ < 24) itemsEl.appendChild(createWideCard(item));
+          });
+          nextupFiltered.forEach(function (item) {
+            if (total++ < 24) itemsEl.appendChild(createNextUpCard(item));
+          });
+        })
+        .catch(function (err) {
+          console.error('[Tentacle] Failed to load merged continue watching row:', err);
+          row.classList.add('mh-row-hidden');
+        });
       return;
     }
 

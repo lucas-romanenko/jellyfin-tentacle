@@ -151,7 +151,7 @@ public class TentacleHomeController : ControllerBase
             }
         }
 
-        return Ok(new { enabled = true, sections });
+        return Ok(new { enabled = true, sections, mergeContinueWatching = config.MergeContinueWatching });
     }
 
     /// <summary>
