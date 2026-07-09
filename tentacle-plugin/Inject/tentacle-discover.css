@@ -788,6 +788,11 @@
   backdrop-filter: blur(8px);
   letter-spacing: 0.02em;
 }
+.md-act-cd-ready {
+  background: rgba(76, 175, 80, 0.9);
+  color: #fff;
+}
+
 .md-act-cd-soon {
   background: rgba(109, 95, 230, 0.85);
   color: #fff;

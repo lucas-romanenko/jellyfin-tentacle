@@ -3998,6 +3998,26 @@ function renderActivity(data) {
     html += '</div>';
   }
 
+  const recent = data.recently_downloaded || [];
+  if (recent.length > 0) {
+    html += '<div class="activity-section-title">Recently Downloaded</div><div class="activity-grid">';
+    html += recent.map(item => {
+      const poster = item.poster_path
+        ? `<img src="${_imgUrl(item.poster_path, 'w185')}" loading="lazy" onerror="this.style.display='none'">`
+        : '<div class="activity-poster-placeholder">◫</div>';
+      const hrs = item.hours_remaining != null ? `${item.hours_remaining}h left` : '';
+      return `<div class="activity-card">
+        <div class="activity-poster">${poster}</div>
+        <div class="activity-info">
+          <div class="activity-title">${escapeAttr(item.title)}${item.episode ? ' · ' + escapeAttr(item.episode) : ''}</div>
+          <div class="activity-meta">${item.year || ''} · Ready to watch</div>
+          ${hrs ? `<div class="activity-countdown" style="color:var(--green)">${hrs}</div>` : ''}
+        </div>
+      </div>`;
+    }).join('');
+    html += '</div>';
+  }
+
   if (unreleased.length > 0) {
     html += '<div class="activity-section-title">Upcoming Releases</div><div class="activity-grid">';
     html += unreleased.map(item => {

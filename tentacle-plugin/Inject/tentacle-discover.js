@@ -1289,13 +1289,16 @@
 
     var downloads = data.downloads || [];
     var unreleased = data.unreleased || [];
+    var recent = data.recently_downloaded || [];
     MD._unreleased = unreleased;
+    MD._recent = recent;
 
     // Update summary
     var summary = document.getElementById('mdActSummary');
     if (summary) {
       var parts = [];
       if (downloads.length > 0) parts.push(downloads.length + ' downloading');
+      if (recent.length > 0) parts.push(recent.length + ' ready to watch');
       if (unreleased.length > 0) parts.push(unreleased.length + ' upcoming');
       summary.textContent = parts.length > 0 ? parts.join(' \u00b7 ') : 'All clear';
     }
@@ -1340,6 +1343,33 @@
                 '<div class="md-act-progress-bar"><div class="md-act-progress-fill md-act-fill-' + statusClass + '" style="width:' + progressPct + '%"></div></div>' +
                 '<span class="md-act-progress-text">' + progressPct.toFixed(1) + '%' + (etaLabel ? ' \u00b7 ' + etaLabel : '') + '</span>' +
               '</div>' +
+            '</div>' +
+          '</div>';
+        }).join('') +
+        '</div></div>';
+    }
+
+    if (recent.length > 0) {
+      html += '<div class="md-act-section">' +
+        '<div class="md-act-section-header">' +
+          '<svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>' +
+          '<span>Recently Downloaded</span>' +
+          '<span class="md-act-section-count">' + recent.length + '</span>' +
+        '</div>' +
+        '<div class="md-act-upcoming-grid">' +
+        recent.map(function (item, idx) {
+          var poster = item.poster_path
+            ? '<img src="' + _imgUrl(item.poster_path, 'w185') + '" loading="lazy" onerror="this.parentElement.innerHTML=\'<div class=md-act-upcoming-ph>&#9707;</div>\'">'
+            : '<div class="md-act-upcoming-ph">&#9707;</div>';
+          var hrs = item.hours_remaining;
+          var chip = (hrs != null) ? '<div class="md-act-countdown-badge md-act-cd-ready">' + hrs + 'h</div>' : '';
+          var epLabel = item.episode ? '<div class="md-act-upcoming-type">' + esc(item.episode) + '</div>' : '';
+          return '<div class="md-act-upcoming-card" data-recent-idx="' + idx + '" style="cursor:pointer">' +
+            '<div class="md-act-upcoming-poster">' + poster + chip + '</div>' +
+            '<div class="md-act-upcoming-info">' +
+              '<div class="md-act-upcoming-title">' + esc(item.title) + '</div>' +
+              epLabel +
+              '<div class="md-act-upcoming-date">Ready to watch</div>' +
             '</div>' +
           '</div>';
         }).join('') +
@@ -1394,6 +1424,17 @@
     }
 
     content.innerHTML = html;
+
+    // Click handler for recently-downloaded cards — open the item in the library
+    content.querySelectorAll('.md-act-upcoming-card[data-recent-idx]').forEach(function (card) {
+      card.addEventListener('click', function () {
+        var it = MD._recent && MD._recent[parseInt(card.getAttribute('data-recent-idx'), 10)];
+        if (!it) return;
+        if (it.jellyfin_item_id && window.TentacleDetails && window.TentacleDetails.show) {
+          window.TentacleDetails.show(it.jellyfin_item_id, it.media_type === 'series' ? 'Series' : 'Movie');
+        }
+      });
+    });
 
     // Click handler for upcoming cards
     content.querySelectorAll('.md-act-upcoming-card[data-upcoming-idx]').forEach(function (card) {
