@@ -99,7 +99,16 @@ class SonarrService:
             )
             r.raise_for_status()
             results = r.json()
-            return results[0] if results else None
+            # Skyhook can mis-resolve a tmdb: term as a TVDB id and return a
+            # different show entirely — only trust a result that echoes the
+            # requested tmdbId back.
+            match = next((s for s in results if s.get("tmdbId") == tmdb_id), None)
+            if results and not match:
+                logger.warning(
+                    f"Sonarr lookup for tmdb:{tmdb_id} returned unrelated series "
+                    f"'{results[0].get('title')}' (tvdb:{results[0].get('tvdbId')}) — ignoring"
+                )
+            return match
         except Exception as e:
             logger.error(f"Sonarr lookup failed for tmdb:{tmdb_id}: {e}")
             return None
@@ -113,7 +122,7 @@ class SonarrService:
             )
             r.raise_for_status()
             results = r.json()
-            return results[0] if results else None
+            return next((s for s in results if s.get("tvdbId") == tvdb_id), None)
         except Exception as e:
             logger.error(f"Sonarr lookup failed for tvdb:{tvdb_id}: {e}")
             return None
@@ -138,9 +147,12 @@ class SonarrService:
                    series_path: str = None,
                    monitor_new: bool = False,
                    tvdb_id: int = None) -> Optional[dict]:
-        if tvdb_id and not tmdb_id:
+        # Prefer the exact TVDB lookup — Sonarr/Skyhook is TVDB-native, so it's
+        # immune to the tmdb: term mis-resolution that can return the wrong show.
+        lookup = None
+        if tvdb_id:
             lookup = self.lookup_by_tvdb(tvdb_id)
-        else:
+        if not lookup and tmdb_id:
             lookup = self.lookup_by_tmdb(tmdb_id)
         if not lookup:
             logger.error(f"Sonarr: no lookup result for tmdb:{tmdb_id} tvdb:{tvdb_id}")

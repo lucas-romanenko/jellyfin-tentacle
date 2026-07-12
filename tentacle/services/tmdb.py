@@ -458,6 +458,42 @@ class TMDBService:
         self._cache_set(cache_key, "")
         return None
 
+    def get_tvdb_id(self, tmdb_id: int) -> Optional[int]:
+        """Resolve a TMDB series id to its TheTVDB id via /tv/{id}/external_ids.
+
+        Sonarr is TheTVDB-native — adding by exact tvdb id avoids Skyhook's
+        tmdb: term lookup, which can mis-resolve the number as a TVDB id and
+        return a completely different series (e.g. TMDB 295780 "Life, Larry..."
+        colliding with TVDB 295780 "Code Black").
+        """
+        if not self.enabled or not tmdb_id or tmdb_id <= 0:
+            return None
+
+        cache_key = f"tmdb_to_tvdb:{tmdb_id}"
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            try:
+                return int(cached) if cached else None
+            except (ValueError, TypeError):
+                return None
+
+        # Never let a TMDB outage break the add flow — callers fall back to
+        # the (validated) Sonarr tmdb: lookup when this returns None.
+        try:
+            data = self._request(f"tv/{tmdb_id}/external_ids")
+        except Exception as e:
+            logger.warning(f"TMDB external_ids lookup failed for tv:{tmdb_id}: {e}")
+            return None
+
+        tvdb_id = (data or {}).get("tvdb_id")
+        if tvdb_id:
+            self._cache_set(cache_key, str(tvdb_id))
+        else:
+            # New shows may not have their TVDB mapping on TMDB yet — cache the
+            # miss briefly so it gets re-checked soon
+            self._cache_set(cache_key, "", ttl_seconds=self.NEGATIVE_TTL_SECONDS)
+        return tvdb_id
+
     # ── Trending / Discover ──────────────────────────────────────────────
 
     def get_trending(self, media_type: str = "movie", pages: int = 5) -> list:

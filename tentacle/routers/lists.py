@@ -747,6 +747,8 @@ def add_to_sonarr(body: AddMissingBody, db: Session = Depends(get_db), user: Ten
             vod_root = rf["path"].rstrip("/")
             break
 
+    tmdb = _get_tmdb_service(db)
+
     # Process TMDB IDs
     detail = None
     for tmdb_id in (body.tmdb_ids or []):
@@ -787,7 +789,10 @@ def add_to_sonarr(body: AddMissingBody, db: Session = Depends(get_db), user: Ten
                 logger.warning(f"Blocked hybrid add for tmdb:{tmdb_id} — no VOD root folder in Sonarr")
                 continue
 
-        result = sonarr.add_series(tmdb_id, quality_profile_id, root_folder, monitor=monitor, season_folder=season_folder, selected_episodes=body.selected_episodes, series_path=series_path, monitor_new=body.monitor_new or False)
+        # Resolve the exact TVDB id (Sonarr's native key) so add_series doesn't
+        # have to rely on Skyhook's unreliable tmdb: term lookup
+        tvdb_id = tmdb.get_tvdb_id(tmdb_id) if tmdb else None
+        result = sonarr.add_series(tmdb_id, quality_profile_id, root_folder, monitor=monitor, season_folder=season_folder, selected_episodes=body.selected_episodes, series_path=series_path, monitor_new=body.monitor_new or False, tvdb_id=tvdb_id)
         if result:
             added += 1
             _record_download_request(db, tmdb_id, "series", user.id)
@@ -1217,11 +1222,15 @@ def add_missing_to_sonarr(list_id: int, body: AddMissingBody = None, db: Session
     already_exists = 0
     failed = 0
 
+    tmdb = _get_tmdb_service(db)
     for tmdb_id in target_ids:
         if db.query(Series).filter(Series.tmdb_id == tmdb_id).first():
             already_exists += 1
             continue
-        result = sonarr.add_series(tmdb_id, quality_profile_id, root_folder, monitor=monitor, season_folder=season_folder)
+        # Resolve the exact TVDB id (Sonarr's native key) so add_series doesn't
+        # have to rely on Skyhook's unreliable tmdb: term lookup
+        tvdb_id = tmdb.get_tvdb_id(tmdb_id) if tmdb else None
+        result = sonarr.add_series(tmdb_id, quality_profile_id, root_folder, monitor=monitor, season_folder=season_folder, tvdb_id=tvdb_id)
         if result:
             added += 1
             _record_download_request(db, tmdb_id, "series", user.id)
