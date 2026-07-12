@@ -1452,7 +1452,8 @@ var Details = {
             }
             try {
                 pm.play(opts).catch(function(e) {
-                    console.error('[Moonfin] Details: playback failed', e);
+                    console.error('[Moonfin] Details: playback failed, falling back to session play', e);
+                    self._playViaSession(itemId, startPositionTicks, audioStreamIndex, subtitleStreamIndex, mediaSourceId);
                 });
             } catch(e) {
                 console.error('[Moonfin] Details: playbackManager.play() failed', e);

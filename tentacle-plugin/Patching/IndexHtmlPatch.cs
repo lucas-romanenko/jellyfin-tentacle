@@ -19,8 +19,9 @@ public static class IndexHtmlPatch
     // Stable cache-buster for the plugin process lifetime so browsers cache injected
     // JS/CSS instead of re-downloading them on every page load. Derived from the plugin
     // assembly version (falling back to process start), so it only changes after a
-    // plugin update / Jellyfin restart.
-    private static readonly string CacheBust =
+    // plugin update / Jellyfin restart. Also served at GET /Tentacle/Boot so open tabs
+    // can detect they were loaded under an older generation and reload themselves.
+    internal static readonly string CacheBust =
         (typeof(IndexHtmlPatch).Assembly.GetName().Version?.ToString() ?? "0")
             + "-" + DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 

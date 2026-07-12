@@ -110,6 +110,19 @@ public class TentacleController : ControllerBase
     }
 
     /// <summary>
+    /// Boot stamp of the injected client assets — changes on every plugin update
+    /// or Jellyfin restart. The injected JS compares this against the ?v= stamp
+    /// its own script tag was served with and reloads the page on mismatch, so
+    /// tabs left open across a restart never keep running stale assets.
+    /// Anonymous (like the asset endpoints): it must work from any page state.
+    /// </summary>
+    [HttpGet("Boot")]
+    public ActionResult GetBoot()
+    {
+        return Ok(new { boot = Patching.IndexHtmlPatch.CacheBust });
+    }
+
+    /// <summary>
     /// Returns the current home config for preview/debugging.
     /// </summary>
     [HttpGet("HomeConfig")]

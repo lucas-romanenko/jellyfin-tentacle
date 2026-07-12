@@ -31,6 +31,52 @@
         } catch (e) { /* never break the page over a guard */ }
     })();
 
+    // ── Staleness watchdog ──────────────────────────────────────────────
+    // A tab left open across a plugin update or Jellyfin restart keeps
+    // running the OLD injected JS against the new server — subtle breakage
+    // (e.g. playback commands silently dying) until a manual hard refresh.
+    // The ?v= stamp on our own script tag identifies the server generation
+    // this page booted with; GET /Tentacle/Boot returns the current one.
+    // On mismatch: reload once — loop-guarded, and never during playback.
+    (function stalenessWatchdog() {
+        try {
+            var el = document.querySelector('script[src*="/Tentacle/navbar.js"]');
+            var m = el && el.src ? el.src.match(/[?&]v=([^&]+)/) : null;
+            var bootStamp = m ? decodeURIComponent(m[1]) : null;
+            if (!bootStamp) return;
+
+            var checking = false;
+            var check = function () {
+                if (checking || document.hidden) return;
+                checking = true;
+                var base = (window.ApiClient && window.ApiClient.serverAddress()) || '';
+                fetch(base + '/Tentacle/Boot', { cache: 'no-store' })
+                    .then(function (r) { return r.ok ? r.json() : null; })
+                    .then(function (data) {
+                        checking = false;
+                        if (!data || !data.boot || data.boot === bootStamp) return;
+                        // Never interrupt playback — the next focus/interval retries
+                        if ((location.hash || '').indexOf('#/video') !== -1) return;
+                        var last = 0;
+                        try { last = parseInt(sessionStorage.getItem('tentacleBootReload') || '0', 10) || 0; } catch (e) { }
+                        if (Date.now() - last < 60000) return; // reload-loop guard
+                        try { sessionStorage.setItem('tentacleBootReload', String(Date.now())); } catch (e) { }
+                        console.warn('[Tentacle] Server was updated/restarted since this page loaded — reloading to pick up fresh assets.');
+                        location.reload();
+                    })
+                    .catch(function () { checking = false; });
+            };
+
+            window.addEventListener('focus', check);
+            document.addEventListener('visibilitychange', function () {
+                if (!document.hidden) check();
+            });
+            setInterval(check, 5 * 60 * 1000);
+            // Early check catches tabs restored from bfcache/session restore
+            setTimeout(check, 10000);
+        } catch (e) { /* watchdog must never break the page */ }
+    })();
+
     // Known user-facing routes — everything else is admin
     var USER_ROUTES = [
         'home', 'home.html', 'movies', 'tv', 'tvshows', 'music', 'livetv',
