@@ -16,6 +16,7 @@ from typing import Optional
 import httpx
 from models.database import get_db, get_setting, Movie, Series, ListSubscription, ListItem, DownloadRequest, LiveChannel, TentacleUser
 from routers.auth import get_user_from_request
+from services.cleaner import clean_list_title
 from services.ssrf import is_safe_url
 from services.tmdb import TMDBService
 
@@ -250,10 +251,12 @@ def _get_missing_from_lists(db: Session, known_ids: dict, type_filter: str, user
         if not item.poster_path:
             continue
         seen.add(item.tmdb_id)
+        # Clean pre-fix rows (HTML entities + baked-in year) at serving time
+        clean_name, clean_year = clean_list_title(item.title, item.year)
         result.append({
             "tmdb_id": item.tmdb_id,
-            "title": item.title or "Unknown",
-            "year": item.year or "",
+            "title": clean_name or "Unknown",
+            "year": clean_year or "",
             "overview": "",
             "rating": 0,
             "poster_path": item.poster_path,

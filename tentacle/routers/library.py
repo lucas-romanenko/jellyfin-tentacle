@@ -14,6 +14,7 @@ from sqlalchemy import or_
 from typing import Optional
 from models.database import get_db, get_setting, Movie, Series, ListItem, DownloadRequest, TentacleUser, Duplicate
 from routers.auth import get_user_from_request
+from services.cleaner import clean_list_title
 from services.logstream import library_event_generator, emit_library_event
 from services.tmdb import TMDBService
 
@@ -205,11 +206,13 @@ def _get_list_items(list_id: int, search: Optional[str], sort: Optional[str],
                 "in_library": True,
             })
         else:
+            # Clean pre-fix rows (HTML entities + baked-in year) at serving time
+            clean_name, clean_year = clean_list_title(li.title, li.year)
             items.append({
                 "tmdb_id": li.tmdb_id,
                 "imdb_id": li.imdb_id,
-                "title": li.title or (f"TMDB {li.tmdb_id}" if li.tmdb_id else f"IMDb {li.imdb_id}"),
-                "year": li.year,
+                "title": clean_name or (f"TMDB {li.tmdb_id}" if li.tmdb_id else f"IMDb {li.imdb_id}"),
+                "year": clean_year,
                 "poster_path": li.poster_path,
                 "source": None,
                 "source_tag": None,

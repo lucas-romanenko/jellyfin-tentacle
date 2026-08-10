@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from models.database import get_db, SessionLocal, ListSubscription, ListItem, Movie, Series, TentacleUser, DownloadRequest, get_setting, log_activity
 from routers.auth import get_user_from_request
+from services.cleaner import clean_list_title
 from services.nfo import update_nfo_tags
 from services.tmdb import TMDBService
 from pathlib import Path
@@ -474,13 +475,15 @@ def store_list_items(lst: ListSubscription, items: list, db: Session) -> dict:
             skipped_duplicate += 1
             continue
         seen_tmdb.add(tmdb_id)
+        # Clean HTML entities + trailing " (YYYY)" from list-sourced titles
+        clean_name, clean_year = clean_list_title(item.get("title"), item.get("year"))
         db.add(ListItem(
             list_id=lst.id,
             tmdb_id=tmdb_id,
             imdb_id=imdb_id,
             media_type=item.get("media_type", "movie"),
-            title=item.get("title"),
-            year=item.get("year"),
+            title=clean_name,
+            year=clean_year,
             poster_path=item.get("poster_path"),
         ))
         stored += 1
@@ -1078,12 +1081,13 @@ def get_list_coverage(list_id: int, db: Session = Depends(get_db), user: Tentacl
             else:
                 vod.append(entry)
         else:
-            # Use cached metadata from ListItem
+            # Use cached metadata from ListItem (clean pre-fix rows at serving time)
+            clean_name, clean_year = clean_list_title(item.title, item.year)
             missing.append({
                 "tmdb_id": tid,
                 "imdb_id": item.imdb_id,
-                "title": item.title or (f"TMDB {tid}" if tid else f"IMDb {item.imdb_id}"),
-                "year": item.year,
+                "title": clean_name or (f"TMDB {tid}" if tid else f"IMDb {item.imdb_id}"),
+                "year": clean_year,
                 "poster_path": item.poster_path,
                 "media_type": item.media_type or "movie",
             })

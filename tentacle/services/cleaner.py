@@ -4,6 +4,7 @@ Cleans raw IPTV provider titles for TMDB lookup.
 Ported and improved from xtream_to_jellyfin.py
 """
 
+import html
 import re
 from typing import Tuple, Optional
 
@@ -33,6 +34,31 @@ QUALITY_PATTERNS = [
     r'\[.*?\]',
     r'\((?!(?:19|20)\d{2}\)).*?\)',  # Parens that aren't years
 ]
+
+
+def clean_list_title(title: Optional[str], year: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Clean a list-sourced title (IMDb/Trakt/Letterboxd/Servarr imports).
+
+    Unescapes HTML entities (e.g. "Guess Who&#039;s Coming to Dinner") and
+    strips a trailing " (YYYY)" year suffix (e.g. "Midnight in Paris (2011)").
+    If year is empty/None, it's populated from the stripped suffix.
+    Returns (clean_title, year).
+    """
+    if not title:
+        return title, year
+
+    name = html.unescape(title).strip()
+
+    match = re.search(r'\s*\(((?:19|20)\d{2})\)\s*$', name)
+    if match:
+        stripped = name[:match.start()].strip()
+        if stripped:  # never strip a title down to nothing (e.g. "(2011)")
+            name = stripped
+            if not year:
+                year = match.group(1)
+
+    return name, year
 
 
 def clean_title(raw_name: str) -> Tuple[Optional[str], Optional[str]]:
