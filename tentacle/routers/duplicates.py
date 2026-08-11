@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from datetime import datetime, timezone
-from models.database import get_db, get_setting, Duplicate, Movie, Series
+from models.database import get_db, get_setting, Duplicate, Movie, Series, log_deletion
 from routers.auth import require_admin
 from services.duplicates import delete_vod_files, convert_record_to_downloaded
 
@@ -32,6 +32,11 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
     model = Movie if dup.media_type == "movie" else Series
     downloaded_source = "radarr" if dup.media_type == "movie" else "sonarr"
 
+    title = None
+    record = db.query(model).filter(model.tmdb_id == dup.tmdb_id).first()
+    if record is not None:
+        title = record.title
+
     if resolution == "keep_radarr":
         # Delete VOD strm/nfo files
         for source in sources:
@@ -43,9 +48,11 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
         # Convert the provider-owned row into a downloaded-only row.
         # The VOD sync then skips this title forever (source is radarr/sonarr)
         # and the Radarr/Sonarr scan sees an existing record — not a new movie.
-        record = db.query(model).filter(model.tmdb_id == dup.tmdb_id).first()
         if record and record.source != downloaded_source:
             convert_record_to_downloaded(record, dup.media_type)
+        log_deletion(db, kind="duplicate-resolve", name=title or f"tmdb:{dup.tmdb_id}",
+                     media_type=dup.media_type, reason="manual",
+                     detail="Kept downloaded copy — VOD .strm/.nfo files deleted")
 
     elif resolution == "keep_vod":
         # Delete from Radarr via API (removes from Radarr + deletes files on disk)
@@ -58,7 +65,6 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
             raise HTTPException(502, f"Failed to delete tmdb:{dup.tmdb_id} from Radarr — files may still exist")
 
         # The (single) row is the VOD one — just clear the downloaded-copy path
-        record = db.query(model).filter(model.tmdb_id == dup.tmdb_id).first()
         if record is not None and getattr(record, "radarr_path", None):
             record.radarr_path = None
 
@@ -71,6 +77,9 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
         if radarr_movie:
             db.delete(radarr_movie)
             logger.info(f"Removed Radarr DB record for tmdb:{dup.tmdb_id}")
+        log_deletion(db, kind="duplicate-resolve", name=title or f"tmdb:{dup.tmdb_id}",
+                     media_type=dup.media_type, reason="manual",
+                     detail="Kept VOD copy — downloaded files deleted from Radarr")
 
     db.commit()
 

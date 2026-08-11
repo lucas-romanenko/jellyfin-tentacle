@@ -5173,6 +5173,63 @@ async function saveMergeContinueWatching(checked) {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Health page — housekeeping, downloads & audit trail
+// ═══════════════════════════════════════════════════════════════════════════
+
+function loadHealthPage() {
+  loadHealthDeletions();
+}
+
+function _healthDate(iso) {
+  if (!iso) return null;
+  // Backend timestamps are naive UTC — append Z so they render in local time
+  return new Date(/[Z+]/.test(iso.slice(10)) ? iso : iso + 'Z');
+}
+
+const _DELETION_KIND_META = {
+  'download-delete':   { label: 'Download delete', cls: 'badge-red' },
+  'jellyfin-delete':   { label: 'Jellyfin delete', cls: 'badge-red' },
+  'provider-cascade':  { label: 'Provider delete', cls: 'badge-red' },
+  'duplicate-resolve': { label: 'Duplicate', cls: 'badge-amber' },
+  'orphan-sweep':      { label: 'Orphan sweep', cls: 'badge-accent' },
+  'vod-sweep':         { label: 'VOD sweep', cls: 'badge-accent' },
+  'stale-cleanup':     { label: 'Stale cleanup', cls: 'badge-amber' },
+  'download-fix':      { label: 'Download fix', cls: 'badge-amber' },
+  'stream-health':     { label: 'Stream health', cls: 'badge-amber' },
+};
+
+async function loadHealthDeletions() {
+  const el = document.getElementById('health-deletions');
+  if (!el) return;
+  try {
+    const entries = await api('/api/health/deletions?limit=200');
+    if (!entries.length) {
+      el.innerHTML = '<div class="empty-state"><p>No deletions recorded yet</p></div>';
+      return;
+    }
+    const rows = entries.map(e => {
+      const meta = _DELETION_KIND_META[e.kind] || { label: e.kind, cls: 'badge-accent' };
+      const d = _healthDate(e.created_at);
+      const when = d ? `<span title="${d.toLocaleString()}">${timeAgo(d)}</span>` : '—';
+      const who = e.reason === 'manual' && e.user_name ? escapeHtml(e.user_name) : e.reason;
+      return `<tr>
+        <td style="white-space:nowrap">${when}</td>
+        <td><span class="badge ${meta.cls}" style="font-size:10px">${meta.label}</span></td>
+        <td>${escapeHtml(e.name || '')}</td>
+        <td style="white-space:nowrap;color:var(--text3)">${escapeHtml(who || '')}</td>
+        <td style="color:var(--text3);font-size:12px">${escapeHtml(e.detail || '')}</td>
+      </tr>`;
+    }).join('');
+    el.innerHTML = `<div style="overflow-x:auto"><table>
+      <thead><tr><th>When</th><th>Action</th><th>Item</th><th>By</th><th>Detail</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`;
+  } catch (e) {
+    el.innerHTML = '<div class="empty-state"><p>Failed to load deletion log</p></div>';
+  }
+}
+
 (function exposeGlobals() {
   const fns = [
     // Lists page
@@ -5213,6 +5270,8 @@ async function saveMergeContinueWatching(checked) {
     vodRunSync, vodPreviewSync,
     // Activity
     loadActivity, startActivityPolling, stopActivityPolling,
+    // Health
+    loadHealthPage, loadHealthDeletions,
     // Discover
     loadDiscoverPage, loadDiscover, setDiscoverType, switchDiscoverSection, showDiscoverDetail,
     onDiscoverSearchInput, clearDiscoverSearch,

@@ -13,7 +13,7 @@ import logging
 from datetime import datetime
 
 from models.database import create_tables, SessionLocal, seed_defaults, Setting, Provider, SyncRun, Movie, Series
-from routers import settings, providers, sync as sync_router, library, duplicates, lists as lists_router, widget, radarr as radarr_router, sonarr as sonarr_router, tags as tags_router, collections as collections_router, smartlists as smartlists_router, discover as discover_router, livetv as livetv_router, auth as auth_router, activity as activity_router, notifications as notifications_router
+from routers import settings, providers, sync as sync_router, library, duplicates, lists as lists_router, widget, radarr as radarr_router, sonarr as sonarr_router, tags as tags_router, collections as collections_router, smartlists as smartlists_router, discover as discover_router, livetv as livetv_router, auth as auth_router, activity as activity_router, notifications as notifications_router, health as health_router
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
@@ -233,19 +233,26 @@ def run_scheduled_sync():
         try:
             from pathlib import Path as _Path
             vod_orphans = 0
+            swept_titles = []
             for m in db.query(Movie).filter(Movie.source.like("provider_%"), Movie.strm_path.isnot(None)).all():
                 if not _Path(m.strm_path).exists():
                     logger.info(f"[VOD sweep] Removing orphaned movie: {m.title} (missing: {m.strm_path})")
+                    swept_titles.append(m.title)
                     db.delete(m)
                     vod_orphans += 1
             for s in db.query(Series).filter(Series.source.like("provider_%"), Series.strm_path.isnot(None)).all():
                 if not _Path(s.strm_path).exists():
                     logger.info(f"[VOD sweep] Removing orphaned series: {s.title} (missing: {s.strm_path})")
+                    swept_titles.append(s.title)
                     db.delete(s)
                     vod_orphans += 1
             if vod_orphans:
                 db.commit()
                 log_activity(db, "vod_sweep", f"Removed {vod_orphans} orphaned VOD record(s) with missing files")
+                from models.database import log_deletion
+                log_deletion(db, kind="vod-sweep", name=f"{vod_orphans} VOD record(s)", reason="auto",
+                             detail="DB records removed — .strm files missing on disk: " + ", ".join(swept_titles[:20])
+                                    + ("…" if len(swept_titles) > 20 else ""))
                 logger.info(f"VOD sweep: removed {vod_orphans} orphaned record(s)")
         except Exception as e:
             logger.error(f"VOD sweep failed: {e}")
@@ -534,6 +541,7 @@ app.include_router(discover_router.router)
 app.include_router(activity_router.router)
 app.include_router(livetv_router.router)
 app.include_router(notifications_router.router)
+app.include_router(health_router.router)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 

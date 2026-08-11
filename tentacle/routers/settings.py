@@ -472,6 +472,10 @@ def delete_stale_files(
                     pass
 
     set_setting(db, "stale_files_dismissed", "true")
+    if deleted_strm or deleted_nfo:
+        from models.database import log_deletion
+        log_deletion(db, kind="stale-cleanup", name=f"{deleted_strm} .strm + {deleted_nfo} .nfo file(s)",
+                     reason="manual", detail="Stale VOD files from a previous tool deleted at user request")
     return {"success": True, "deleted_strm": deleted_strm, "deleted_nfo": deleted_nfo}
 
 

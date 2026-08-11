@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 from typing import Optional
-from models.database import get_db, get_setting, Movie, Series, ListItem, DownloadRequest, TentacleUser, Duplicate
+from models.database import get_db, get_setting, Movie, Series, ListItem, DownloadRequest, TentacleUser, Duplicate, log_deletion
 from routers.auth import get_user_from_request
 from services.cleaner import clean_list_title
 from services.logstream import library_event_generator, emit_library_event
@@ -398,6 +398,7 @@ def delete_library_item(
     model = Movie if media_type == "movie" else Series
     item = db.query(model).filter(model.tmdb_id == tmdb_id).first()
     deleted = False
+    title = str(tmdb_id)
     if item:
         title = item.title if hasattr(item, "title") else str(tmdb_id)
         db.delete(item)
@@ -416,6 +417,8 @@ def delete_library_item(
     db.commit()
 
     if deleted:
+        log_deletion(db, kind="jellyfin-delete", name=title, media_type=media_type, reason="webhook",
+                     detail="Deleted via Jellyfin native UI — Tentacle DB record and playlists cleaned up")
         emit_library_event(f"{media_type}_removed", {"tmdb_id": tmdb_id, "media_type": media_type})
 
     # Remove from all users' playlists in background
@@ -540,6 +543,12 @@ def delete_download(
         Duplicate.media_type == media_type,
     ).delete()
     db.commit()
+
+    arr_name = "Radarr" if media_type == "movie" else "Sonarr"
+    log_deletion(db, kind="download-delete", name=title, media_type=media_type, reason="manual",
+                 user_name=user.display_name,
+                 detail=f"{arr_name} delete (files removed): {'yes' if (radarr_deleted or sonarr_deleted) else 'not configured'}; "
+                        f"Jellyfin delete: {'yes' if jf_deleted else 'item not found'}")
 
     emit_library_event(f"{media_type}_removed", {
         "tmdb_id": tmdb_id, "title": title, "media_type": media_type,

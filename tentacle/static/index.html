@@ -1409,6 +1409,9 @@ td.primary { color: var(--text); font-weight: 500; }
         <button class="nav-item" data-page="jellyfin">
           <span class="icon">◈</span> Jellyfin
         </button>
+        <button class="nav-item" data-page="health" data-admin-only>
+          <span class="icon">✚</span> Health
+        </button>
         <button class="nav-item" data-page="settings" data-admin-only>
           <span class="icon">⊙</span> Settings
         </button>
@@ -1446,6 +1449,28 @@ td.primary { color: var(--text); font-weight: 500; }
     <div class="page-content">
 
       <!-- Dashboard page removed — stats and banners moved to Library -->
+
+      <!-- ── Health ── -->
+      <div class="page" id="page-health">
+        <div class="page-header">
+          <div class="page-header-row">
+            <div>
+              <div class="page-title">Health</div>
+              <div class="page-subtitle">Library housekeeping, downloads & audit trail</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-header">
+            <div class="card-title">Deletion Log</div>
+            <button class="btn btn-secondary btn-sm" onclick="loadHealthDeletions()">Refresh</button>
+          </div>
+          <div id="health-deletions">
+            <div class="empty-state"><p>Loading…</p></div>
+          </div>
+        </div>
+      </div>
 
       <!-- ── VOD ── -->
       <div class="page" id="page-vod">

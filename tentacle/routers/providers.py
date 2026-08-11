@@ -377,6 +377,11 @@ def delete_provider(provider_id: int, db: Session = Depends(get_db)):
     db.delete(p)
     db.commit()
 
+    from models.database import log_deletion
+    log_deletion(db, kind="provider-cascade", name=provider_name, reason="manual",
+                 detail=f"Provider deleted — {deleted_movies} movie(s), {deleted_series} series, "
+                        f"{deleted_files} file(s) removed from disk, plus categories/sync history/Live TV data")
+
     # ── Rebuild playlists and home config ────────────────────────────────────
     # Source-tag playlists (e.g. "Netflix Movies") may now be orphaned if all
     # content came from this provider. sync_smartlists removes orphaned playlists

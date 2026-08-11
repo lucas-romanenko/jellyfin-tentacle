@@ -215,7 +215,7 @@ function showPage(name) {
     'live-tv': ['Live TV', 'Channels, groups & EPG'],
     discover: ['Discover', 'Browse, search & add new content'],
     jellyfin: ['Jellyfin', 'Home screen & playlists'],
-
+    health: ['Health', 'Housekeeping, downloads & audit trail'],
     settings: ['Settings', 'Connections, providers & config'],
   };
 
@@ -230,6 +230,7 @@ function showPage(name) {
   if (name === 'discover') loadDiscoverPage();
   if (name === 'jellyfin') loadJellyfinPage();
   if (name === 'live-tv') loadLiveTV();
+  if (name === 'health') loadHealthPage();
 }
 
 // ── Tab switching helpers ──────────────────────────────────────────────────

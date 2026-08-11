@@ -399,6 +399,25 @@ class ActivityLog(Base):
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 
+# ─── Deletion Log ─────────────────────────────────────────────────────────────
+
+class DeletionLog(Base):
+    """Audit trail for every destructive action Tentacle takes — manual deletes,
+    webhook-driven cleanup, nightly sweeps, provider cascades, download fixes.
+    Separate from ActivityLog: structured per-item records with size/reason,
+    not feed messages."""
+    __tablename__ = "deletion_log"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    kind = Column(String, nullable=False)         # download-delete | jellyfin-delete | provider-cascade | duplicate-resolve | orphan-sweep | vod-sweep | stale-cleanup | download-fix | stream-health
+    name = Column(String, nullable=False)          # Title or item label
+    media_type = Column(String, nullable=True)     # movie | series | None
+    size_bytes = Column(Integer, nullable=True)
+    reason = Column(String, nullable=False, default="manual")  # manual | auto | webhook
+    detail = Column(Text, nullable=True)           # What exactly happened
+    user_name = Column(String, nullable=True)      # Display name for manual actions
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
 # ─── Live TV Channels ────────────────────────────────────────────────────────
 
 class LiveChannel(Base):
@@ -469,6 +488,22 @@ def log_activity(db, event: str, message: str, detail: dict = None):
     """Write an activity log entry"""
     db.add(ActivityLog(event=event, message=message, detail=detail))
     db.commit()
+
+
+def log_deletion(db, kind: str, name: str, media_type: str = None,
+                 size_bytes: int = None, reason: str = "manual",
+                 detail: str = None, user_name: str = None):
+    """Write a deletion-audit entry. Never raises — an audit write must not
+    break the delete it's recording."""
+    try:
+        db.add(DeletionLog(
+            kind=kind, name=name, media_type=media_type, size_bytes=size_bytes,
+            reason=reason, detail=detail, user_name=user_name,
+        ))
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.warning(f"Failed to write deletion log entry for {name}", exc_info=True)
 
 
 def create_notification(db, user_id: int, tmdb_id: int, media_type: str,

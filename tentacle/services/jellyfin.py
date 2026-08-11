@@ -726,7 +726,7 @@ def sweep_orphaned_downloads(db) -> int:
     Should run BEFORE the per-user playlist rebuild so rebuilt playlists
     won't reference dead items.
     """
-    from models.database import Movie, Series, DownloadRequest, get_setting
+    from models.database import Movie, Series, DownloadRequest, get_setting, log_deletion
 
     jf_url = get_setting(db, "jellyfin_url")
     jf_key = get_setting(db, "jellyfin_api_key")
@@ -756,12 +756,14 @@ def sweep_orphaned_downloads(db) -> int:
                 pass
 
     orphans_removed = 0
+    swept_titles = []
 
     # Check radarr movies
     radarr_movies = db.query(Movie).filter(Movie.source == "radarr").all()
     for movie in radarr_movies:
         if movie.tmdb_id not in jf_movie_ids:
             logger.info(f"[Orphan sweep] Removing orphaned radarr movie: {movie.title} (tmdb:{movie.tmdb_id})")
+            swept_titles.append(movie.title)
             db.query(DownloadRequest).filter(
                 DownloadRequest.tmdb_id == movie.tmdb_id,
                 DownloadRequest.media_type == "movie",
@@ -774,6 +776,7 @@ def sweep_orphaned_downloads(db) -> int:
     for series in sonarr_series:
         if series.tmdb_id not in jf_series_ids:
             logger.info(f"[Orphan sweep] Removing orphaned sonarr series: {series.title} (tmdb:{series.tmdb_id})")
+            swept_titles.append(series.title)
             db.query(DownloadRequest).filter(
                 DownloadRequest.tmdb_id == series.tmdb_id,
                 DownloadRequest.media_type == "series",
@@ -783,6 +786,9 @@ def sweep_orphaned_downloads(db) -> int:
 
     if orphans_removed:
         db.commit()
+        log_deletion(db, kind="orphan-sweep", name=f"{orphans_removed} download record(s)", reason="auto",
+                     detail="DB records removed — no longer present in Jellyfin: " + ", ".join(swept_titles[:20])
+                            + ("…" if len(swept_titles) > 20 else ""))
         logger.info(f"[Orphan sweep] Removed {orphans_removed} orphaned download(s)")
 
     return orphans_removed
