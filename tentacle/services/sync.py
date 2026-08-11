@@ -4,6 +4,7 @@ Core sync logic for VOD content.
 Replaces xtream_to_jellyfin.py as a proper service.
 """
 
+import os
 import zlib
 import shutil
 import logging
@@ -39,6 +40,68 @@ DISK_CHECK_INTERVAL = 50  # Check every N items
 # the old 10M window). Keep this large enough that stream_id never overflows
 # into the next provider's block.
 NEGATIVE_ID_BLOCK = 1_000_000_000
+
+
+# Ownership for created VOD files/dirs (linuxserver-style PUID/PGID).
+# Tentacle runs as root; on a hybrid show (VOD .strm + Sonarr downloads in one
+# folder) whichever container creates a season folder FIRST owns it. When
+# Tentacle wins that race — a new season hits VOD before Sonarr grabs anything —
+# the folder is root-owned and Sonarr can no longer write into it. Setting
+# PUID/PGID to Sonarr's user hands ownership over at creation time. Unset =
+# current behavior (root-owned, fine for pure-VOD setups).
+VOD_PUID = os.environ.get("PUID")
+VOD_PGID = os.environ.get("PGID")
+
+
+def chown_path(path) -> None:
+    """Best-effort chown of a created VOD path to PUID/PGID. No-op when unset."""
+    if VOD_PUID is None:
+        return
+    try:
+        os.chown(path, int(VOD_PUID), int(VOD_PGID or VOD_PUID))
+    except (OSError, ValueError) as e:
+        logger.debug(f"chown_path failed for {path}: {e}")
+
+
+_VIDEO_EXTS = {".mkv", ".mp4", ".avi", ".m4v", ".ts", ".webm", ".mov", ".wmv"}
+
+
+def repair_hybrid_ownership(db) -> list:
+    """Nightly repair for the ownership race on EXISTING hybrid shows (Series
+    rows with sonarr_path set): chown the show dir, its season dirs, and any
+    real video files not owned by PUID. Narrow on purpose — only hybrid shows
+    are ever written to by Sonarr, so the huge pure-VOD catalog is never
+    walked. No-op when PUID is unset."""
+    if VOD_PUID is None:
+        return []
+    from models.database import Series as _Series
+    uid = int(VOD_PUID)
+    fixed = []
+    hybrids = db.query(_Series).filter(_Series.sonarr_path.isnot(None),
+                                       _Series.strm_path.isnot(None)).all()
+    for s in hybrids:
+        show_dir = Path(s.strm_path)
+        if not show_dir.is_dir():
+            continue
+        targets = [show_dir] + [d for d in show_dir.iterdir() if d.is_dir()]
+        for d in targets:
+            try:
+                changed = False
+                if d.stat().st_uid != uid:
+                    chown_path(d)
+                    changed = True
+                if d.is_dir():
+                    for f in d.iterdir():
+                        if f.suffix.lower() in _VIDEO_EXTS and f.is_file() and f.stat().st_uid != uid:
+                            chown_path(f)
+                            changed = True
+                if changed:
+                    fixed.append(str(d.relative_to(show_dir.parent)))
+            except OSError as e:
+                logger.warning(f"[Ownership repair] could not fix {d}: {e}")
+    if fixed:
+        logger.info(f"[Ownership repair] fixed ownership on: {fixed}")
+    return fixed
 
 
 def check_disk_space(path: Path) -> int:
@@ -321,6 +384,7 @@ def _write_episode_strms(client: "XtreamClient", episodes: dict, show_dir: Path,
 
         season_dir = show_dir / f"Season {season_int:02d}"
         season_dir.mkdir(parents=True, exist_ok=True)
+        chown_path(season_dir)
 
         for ep in eps:
             if not isinstance(ep, dict):
@@ -338,6 +402,7 @@ def _write_episode_strms(client: "XtreamClient", episodes: dict, show_dir: Path,
                     client.episode_stream_url(ep_id, container),
                     encoding='utf-8'
                 )
+                chown_path(strm_file)
                 ep_count += 1
     return ep_count
 
@@ -886,6 +951,7 @@ def _sync_movies(
 
             try:
                 movie_dir.mkdir(parents=True, exist_ok=True)
+                chown_path(movie_dir)
 
                 # Write strm
                 stream_url = client.movie_stream_url(
@@ -893,9 +959,11 @@ def _sync_movies(
                     stream.get("container_extension", "mp4")
                 )
                 strm_file.write_text(stream_url, encoding='utf-8')
+                chown_path(strm_file)
 
                 # Write full NFO with all metadata
                 write_movie_nfo(nfo_file, metadata, tags)
+                chown_path(nfo_file)
 
                 # Record in DB (batched — committed per category)
                 movie_record = Movie(
@@ -1210,10 +1278,12 @@ def _sync_series(
                     continue
 
                 show_dir.mkdir(parents=True, exist_ok=True)
+                chown_path(show_dir)
 
                 # Write show NFO
                 nfo_file = show_dir / "tvshow.nfo"
                 write_series_nfo(nfo_file, metadata, tags)
+                chown_path(nfo_file)
 
                 # Write episode strm files
                 ep_count = _write_episode_strms(client, episodes, show_dir, folder_name)

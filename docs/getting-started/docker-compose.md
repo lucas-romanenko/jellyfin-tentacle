@@ -110,11 +110,17 @@ sonarr:
     - /mnt/media/vod/shows:/data/vod/tv    # Additional mount for hybrid series
 
 tentacle:
+  environment:
+    - PUID=1000    # Match Sonarr's PUID/PGID so it can write into
+    - PGID=1000    # season folders that Tentacle creates
   volumes:
     - /mnt/media/vod/shows:/media/vod/shows
 ```
 
 Then add `/data/vod/tv` as a root folder in Sonarr (Settings → Media Management → Root Folders). This lets Sonarr download new episodes directly into existing VOD series folders, creating a unified view in Jellyfin.
+
+!!! important "Set PUID/PGID for hybrid series"
+    Tentacle runs as root inside its container. On a hybrid show, whichever app creates a new season folder first owns it — and when a new season hits VOD before Sonarr grabs anything, the folder ends up root-owned and Sonarr can't write into it. Set `PUID`/`PGID` on the Tentacle container to the same values as your Sonarr container (usually `1000`) and Tentacle will hand ownership of everything it creates to that user. It also repairs existing hybrid-show folders during the nightly sync. If you don't use hybrid series, you can leave these unset.
 
 ## Network Considerations
 

@@ -257,6 +257,13 @@ def run_scheduled_sync():
         except Exception as e:
             logger.error(f"VOD sweep failed: {e}")
 
+        # Repair season-folder ownership on hybrid shows (no-op unless PUID set)
+        try:
+            from services.sync import repair_hybrid_ownership
+            repair_hybrid_ownership(db)
+        except Exception as e:
+            logger.error(f"Hybrid ownership repair failed: {e}")
+
         # Per-user: sync smartlist configs + write home configs
         logger.info("Syncing per-user playlists and home configs")
         try:
