@@ -5180,8 +5180,138 @@ async function saveMergeContinueWatching(checked) {
 function loadHealthPage() {
   loadHealthDownloadSettings();
   loadHealthDownloads();
+  loadHealthMissing();
   loadHealthDeletions();
   startHealthPolling();
+}
+
+// ── Missing content ─────────────────────────────────────────────────────────
+
+let _healthMissingTab = 'movies';
+
+function showHealthMissingTab(tab) {
+  _healthMissingTab = tab;
+  for (const t of ['movies', 'episodes']) {
+    const btn = document.getElementById(`health-missing-tab-${t}`);
+    if (btn) btn.className = `btn ${t === tab ? 'btn-primary' : 'btn-secondary'} btn-sm`;
+  }
+  loadHealthMissing();
+}
+
+function _fmtBytes(b) {
+  if (!b) return '—';
+  if (b >= 1073741824) return (b / 1073741824).toFixed(1) + ' GB';
+  if (b >= 1048576) return Math.round(b / 1048576) + ' MB';
+  return Math.round(b / 1024) + ' KB';
+}
+
+async function loadHealthMissing() {
+  const el = document.getElementById('health-missing');
+  if (!el) return;
+  el.innerHTML = '<div class="loading-state"><div class="spinner"></div></div>';
+  const kind = _healthMissingTab === 'movies' ? 'movie' : 'episode';
+  try {
+    const items = await api(`/api/health/missing/${_healthMissingTab}`);
+    const countEl = document.getElementById('health-missing-count');
+    if (countEl) countEl.textContent = `(${items.length})`;
+    if (!items.length) {
+      el.innerHTML = '<div class="empty-state"><p>Nothing missing — library is complete</p></div>';
+      return;
+    }
+    const rows = items.map(it => {
+      const name = _healthMissingTab === 'movies'
+        ? `${escapeHtml(it.title)} <span style="color:var(--text3)">${it.year || ''}</span>`
+        : `${escapeHtml(it.series)} <span style="color:var(--text3)">S${String(it.season).padStart(2, '0')}E${String(it.episode).padStart(2, '0')}</span> ${escapeHtml(it.title || '')}`;
+      const aired = _healthMissingTab === 'episodes' && it.air_date
+        ? `<td style="white-space:nowrap;color:var(--text3);font-size:12px">${it.air_date.slice(0, 10)}</td>`
+        : (_healthMissingTab === 'episodes' ? '<td>—</td>' : '');
+      return `<tr id="health-missing-row-${it.id}">
+        <td>${name}</td>
+        ${aired}
+        <td style="white-space:nowrap;text-align:right"><div style="display:flex;gap:6px;justify-content:flex-end">
+          <button class="btn btn-secondary btn-sm" onclick="healthDiagnose('${kind}', ${it.id}, this)">Diagnose</button>
+          <button class="btn btn-secondary btn-sm" onclick="healthSearchMissing('${kind}', ${it.id}, this)">Search</button>
+        </div></td>
+      </tr>`;
+    }).join('');
+    const airedHead = _healthMissingTab === 'episodes' ? '<th>Aired</th>' : '';
+    el.innerHTML = `<div style="overflow-x:auto"><table>
+      <thead><tr><th>Title</th>${airedHead}<th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`;
+  } catch (e) {
+    el.innerHTML = '<div class="empty-state"><p>Failed to load missing content</p></div>';
+  }
+}
+
+async function healthDiagnose(kind, id, btn) {
+  const row = document.getElementById(`health-missing-row-${id}`);
+  if (!row) return;
+  const existing = document.getElementById(`health-diag-${id}`);
+  if (existing) { existing.remove(); return; }
+  if (btn) btn.disabled = true;
+  try {
+    const d = await api(`/api/health/missing/diagnose?kind=${kind}&id=${id}`);
+    const cols = row.children.length;
+    let inner;
+    if (!d.total_found) {
+      inner = '<div style="color:var(--text3);font-size:13px;padding:8px 0">No releases found on any indexer right now.</div>';
+    } else {
+      const reasons = (d.top_reasons || []).map(([r, n]) =>
+        `<span class="badge badge-amber" style="font-size:10px;margin:2px 4px 2px 0">${escapeHtml(r)} ×${n}</span>`).join('');
+      const cands = (d.candidates || [])
+        .sort((a, b) => (a.rejected === b.rejected) ? 0 : (a.rejected ? 1 : -1))
+        .slice(0, 15)
+        .map(c => `<tr>
+          <td style="font-size:12px;max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeAttr(c.title || '')}">${escapeHtml(c.title || '')}</td>
+          <td style="font-size:12px;white-space:nowrap">${escapeHtml(c.quality || '—')}</td>
+          <td style="font-size:12px;white-space:nowrap">${_fmtBytes(c.size_bytes)}</td>
+          <td style="font-size:12px;white-space:nowrap">${c.protocol === 'torrent' ? (c.seeders ?? '?') + ' seeds' : escapeHtml(c.protocol || '')}</td>
+          <td style="font-size:11px;color:var(--text3)">${c.rejected ? escapeHtml((c.rejections || []).join('; ')) : '<span class="badge badge-green" style="font-size:10px">Grabbable</span>'}</td>
+          <td style="text-align:right"><button class="btn ${c.rejected ? 'btn-secondary' : 'btn-primary'} btn-sm" onclick="healthGrabRelease('${kind}', '${escapeAttr(c.guid)}', ${c.indexer_id}, this)">Grab</button></td>
+        </tr>`).join('');
+      inner = `
+        <div style="font-size:12px;color:var(--text2);margin-bottom:6px">
+          ${d.total_found} release(s) found · ${d.grabbable_now} grabbable now
+        </div>
+        ${reasons ? `<div style="margin-bottom:8px">${reasons}</div>` : ''}
+        <div style="overflow-x:auto"><table>
+          <thead><tr><th>Release</th><th>Quality</th><th>Size</th><th>Source</th><th>Rejection</th><th></th></tr></thead>
+          <tbody>${cands}</tbody>
+        </table></div>
+        ${d.candidates.length > 15 ? `<div style="font-size:11px;color:var(--text3);margin-top:4px">Showing 15 of ${d.candidates.length} releases</div>` : ''}`;
+    }
+    row.insertAdjacentHTML('afterend',
+      `<tr id="health-diag-${id}"><td colspan="${cols}" style="background:var(--bg2)">${inner}</td></tr>`);
+  } catch (e) {
+    toast(e.message || 'Diagnose failed', 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function healthGrabRelease(kind, guid, indexerId, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
+  try {
+    await api('/api/health/missing/grab', { method: 'POST', body: { kind, guid, indexer_id: indexerId } });
+    toast('Release sent to download client');
+    if (btn) btn.textContent = 'Sent';
+  } catch (e) {
+    toast(e.message || 'Grab failed', 'error');
+    if (btn) { btn.disabled = false; btn.textContent = 'Grab'; }
+  }
+}
+
+async function healthSearchMissing(kind, id, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    await api('/api/health/missing/search', { method: 'POST', body: { kind, id } });
+    toast('Search triggered — check the Downloads section shortly');
+  } catch (e) {
+    toast(e.message || 'Search failed', 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 // ── Downloads health ────────────────────────────────────────────────────────
@@ -5416,6 +5546,7 @@ async function loadHealthDeletions() {
     // Health
     loadHealthPage, loadHealthDeletions, loadHealthDownloads, stopHealthPolling,
     saveHealthDownloadSettings, healthFixDownload, healthRemoveDownload, healthImportDownload,
+    showHealthMissingTab, loadHealthMissing, healthDiagnose, healthGrabRelease, healthSearchMissing,
     // Discover
     loadDiscoverPage, loadDiscover, setDiscoverType, switchDiscoverSection, showDiscoverDetail,
     onDiscoverSearchInput, clearDiscoverSearch,

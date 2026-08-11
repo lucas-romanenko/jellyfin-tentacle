@@ -1480,6 +1480,19 @@ td.primary { color: var(--text); font-weight: 500; }
 
         <div class="card" style="margin-bottom:16px">
           <div class="card-header">
+            <div class="card-title">Missing Content <span id="health-missing-count" style="color:var(--text3);font-weight:400"></span></div>
+            <div style="display:flex;gap:6px">
+              <button class="btn btn-primary btn-sm" id="health-missing-tab-movies" onclick="showHealthMissingTab('movies')">Movies</button>
+              <button class="btn btn-secondary btn-sm" id="health-missing-tab-episodes" onclick="showHealthMissingTab('episodes')">Episodes</button>
+            </div>
+          </div>
+          <div id="health-missing">
+            <div class="empty-state"><p>Loading…</p></div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-header">
             <div class="card-title">Deletion Log</div>
             <button class="btn btn-secondary btn-sm" onclick="loadHealthDeletions()">Refresh</button>
           </div>
