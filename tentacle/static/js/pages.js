@@ -5181,8 +5181,106 @@ function loadHealthPage() {
   loadHealthDownloadSettings();
   loadHealthDownloads();
   loadHealthMissing();
+  loadHealthStreams();
   loadHealthDeletions();
   startHealthPolling();
+}
+
+// ── Stream health ───────────────────────────────────────────────────────────
+
+async function loadHealthStreams() {
+  const el = document.getElementById('health-streams');
+  const summaryEl = document.getElementById('health-streams-summary');
+  if (!el) return;
+  try {
+    const data = await api('/api/health/streams');
+    const entries = data.entries || [];
+    const countEl = document.getElementById('health-streams-count');
+    if (countEl) countEl.textContent = entries.length ? `(${entries.length} dead)` : '';
+    if (summaryEl) {
+      const lr = data.last_run;
+      summaryEl.textContent = lr
+        ? `Last sweep: ${timeAgo(_healthDate(lr.at))} — ${lr.probed} probed, ${lr.new_bad} new dead, ${lr.cleared} recovered`
+        : 'No sweep has run yet — runs nightly, or trigger one now';
+    }
+    if (!entries.length) {
+      el.innerHTML = '<div class="empty-state"><p>No dead streams detected</p></div>';
+      return;
+    }
+    const rows = entries.map(e => {
+      const name = escapeHtml(e.title) + (e.episode ? ` <span style="color:var(--text3)">${escapeHtml(e.episode)}</span>` : '');
+      const first = _healthDate(e.first_failed_at);
+      const last = _healthDate(e.last_checked_at);
+      return `<tr>
+        <td>${name}</td>
+        <td><span class="badge badge-accent" style="font-size:10px">${e.media_type === 'movie' ? 'Movie' : 'Series'}</span></td>
+        <td style="white-space:nowrap;color:var(--text3);font-size:12px">${first ? timeAgo(first) : '—'}</td>
+        <td style="white-space:nowrap;color:var(--text3);font-size:12px">${last ? timeAgo(last) : '—'} · ×${e.fail_count || 1}</td>
+        <td style="white-space:nowrap;text-align:right"><div style="display:flex;gap:6px;justify-content:flex-end">
+          <button class="btn btn-secondary btn-sm" onclick="healthClearStream(${e.id}, this)" title="Unmark without touching files">Clear</button>
+          <button class="btn btn-danger btn-sm" onclick="healthRemoveStream(${e.id}, this)" title="Delete the dead .strm/.nfo from disk">Remove</button>
+        </div></td>
+      </tr>`;
+    }).join('');
+    el.innerHTML = `<div style="overflow-x:auto"><table>
+      <thead><tr><th>Title</th><th>Type</th><th>First failed</th><th>Last checked</th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`;
+  } catch (e) {
+    el.innerHTML = '<div class="empty-state"><p>Failed to load stream health</p></div>';
+  }
+}
+
+async function healthRecheckStreams(btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Rechecking…'; }
+  try {
+    const r = await api('/api/health/streams/recheck', { method: 'POST' });
+    toast(r.cleared.length ? `${r.cleared.length} stream(s) recovered and cleared` : `${r.rechecked} rechecked — still dead`,
+          r.cleared.length ? 'success' : 'info');
+    loadHealthStreams();
+  } catch (e) {
+    toast(e.message || 'Recheck failed', 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Recheck bad'; }
+  }
+}
+
+async function healthRunStreamSweep(btn) {
+  if (btn) btn.disabled = true;
+  try {
+    await api('/api/health/streams/sweep', { method: 'POST' });
+    toast('Sweep started — results appear here as it progresses', 'info');
+    setTimeout(loadHealthStreams, 15000);
+  } catch (e) {
+    toast(e.message || 'Sweep failed to start', 'error');
+  } finally {
+    if (btn) setTimeout(() => { btn.disabled = false; }, 5000);
+  }
+}
+
+async function healthClearStream(id, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    await api('/api/health/streams/clear', { method: 'POST', body: { id } });
+    loadHealthStreams();
+  } catch (e) {
+    toast(e.message || 'Clear failed', 'error');
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function healthRemoveStream(id, btn) {
+  if (!confirm('Delete this dead stream file from disk? Movies also lose their library record.')) return;
+  if (btn) btn.disabled = true;
+  try {
+    const r = await api('/api/health/streams/remove', { method: 'POST', body: { id } });
+    toast(`Removed: ${r.title}`);
+    loadHealthStreams();
+    loadHealthDeletions();
+  } catch (e) {
+    toast(e.message || 'Remove failed', 'error');
+    if (btn) btn.disabled = false;
+  }
 }
 
 // ── Missing content ─────────────────────────────────────────────────────────
@@ -5547,6 +5645,7 @@ async function loadHealthDeletions() {
     loadHealthPage, loadHealthDeletions, loadHealthDownloads, stopHealthPolling,
     saveHealthDownloadSettings, healthFixDownload, healthRemoveDownload, healthImportDownload,
     showHealthMissingTab, loadHealthMissing, healthDiagnose, healthGrabRelease, healthSearchMissing,
+    loadHealthStreams, healthRecheckStreams, healthRunStreamSweep, healthClearStream, healthRemoveStream,
     // Discover
     loadDiscoverPage, loadDiscover, setDiscoverType, switchDiscoverSection, showDiscoverDetail,
     onDiscoverSearchInput, clearDiscoverSearch,

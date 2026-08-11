@@ -151,6 +151,11 @@ class XtreamClient:
         extra = {"category_id": category_id} if category_id else {}
         return self._get_json(self._api_url("get_vod_streams", **extra))
 
+    def get_vod_info(self, vod_id: int) -> dict:
+        """Details for one VOD movie — authoritative catalog-membership check:
+        a response with an `info` block means the provider still has it."""
+        return self._get_json(self._api_url("get_vod_info", vod_id=vod_id))
+
     # ── series ───────────────────────────────────────────────────────────
 
     def get_series_categories(self) -> list[dict]:

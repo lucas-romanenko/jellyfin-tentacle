@@ -418,6 +418,29 @@ class DeletionLog(Base):
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 
+# ─── Stream Health ────────────────────────────────────────────────────────────
+
+class StreamHealth(Base):
+    """Known-bad registry for VOD .strm files whose streams no longer work.
+    Entries are re-verified periodically and auto-cleared if the stream
+    recovers — a bad mark must never silently become permanent bookkeeping."""
+    __tablename__ = "stream_health"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    media_type = Column(String, nullable=False)     # movie | series
+    tmdb_id = Column(Integer, nullable=False, index=True)
+    title = Column(String, nullable=False)
+    episode = Column(String, nullable=True)          # "S01E02" for series entries
+    strm_path = Column(String, nullable=False)
+    stream_url = Column(String, nullable=True)
+    fail_count = Column(Integer, default=1)
+    first_failed_at = Column(DateTime, default=datetime.utcnow)
+    last_checked_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("strm_path", name="uq_stream_health_path"),
+    )
+
+
 # ─── Live TV Channels ────────────────────────────────────────────────────────
 
 class LiveChannel(Base):

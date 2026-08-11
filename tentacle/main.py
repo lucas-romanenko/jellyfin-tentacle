@@ -428,6 +428,19 @@ def setup_scheduler(db):
     )
     logger.info("Download health check scheduled: every 5 min")
 
+    # Stream health: daily rotating-batch probe of VOD streams + recheck of
+    # known-bad entries (auto-clears recovered streams).
+    from services.stream_health import run_stream_health_sweep
+    scheduler.add_job(
+        run_stream_health_sweep,
+        IntervalTrigger(hours=24),
+        id="stream_health",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    logger.info("Stream health sweep scheduled: every 24 h")
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 

@@ -281,6 +281,94 @@ def search_missing_item(body: MissingSearchRequest, db: Session = Depends(get_db
     return {"success": True}
 
 
+# ─── Stream health ────────────────────────────────────────────────────────────
+
+class StreamCheckRequest(BaseModel):
+    media_type: str  # movie | series
+    tmdb_id: int
+
+
+class StreamEntryRequest(BaseModel):
+    id: int
+
+
+@router.get("/streams")
+def get_stream_health(db: Session = Depends(get_db)):
+    """Known-bad streams + last sweep stats."""
+    import json as _json
+    from models.database import StreamHealth
+    entries = db.query(StreamHealth).order_by(StreamHealth.first_failed_at.desc()).all()
+    try:
+        last_run = _json.loads(get_setting(db, "stream_health_last_run", "") or "null")
+    except (ValueError, TypeError):
+        last_run = None
+    return {
+        "last_run": last_run,
+        "entries": [{
+            "id": e.id,
+            "media_type": e.media_type,
+            "tmdb_id": e.tmdb_id,
+            "title": e.title,
+            "episode": e.episode,
+            "strm_path": e.strm_path,
+            "fail_count": e.fail_count,
+            "first_failed_at": e.first_failed_at.isoformat() if e.first_failed_at else None,
+            "last_checked_at": e.last_checked_at.isoformat() if e.last_checked_at else None,
+        } for e in entries],
+    }
+
+
+@router.post("/streams/check")
+def check_stream_now(body: StreamCheckRequest, db: Session = Depends(get_db)):
+    """On-demand stream check for one library title."""
+    if body.media_type not in ("movie", "series"):
+        raise HTTPException(400, "media_type must be movie or series")
+    from services.stream_health import check_title
+    result = check_title(db, body.media_type, body.tmdb_id)
+    if not result.get("ok"):
+        raise HTTPException(400, result.get("error", "Check failed"))
+    return result
+
+
+@router.post("/streams/recheck")
+def recheck_streams(db: Session = Depends(get_db)):
+    """Re-test all known-bad entries now; recovered ones are cleared."""
+    from services.stream_health import recheck_known_bad
+    return recheck_known_bad(db)
+
+
+@router.post("/streams/sweep")
+def trigger_stream_sweep():
+    """Run the rotating-batch sweep now (background)."""
+    import threading
+    from services.stream_health import run_stream_health_sweep
+    threading.Thread(target=run_stream_health_sweep, daemon=True).start()
+    return {"started": True}
+
+
+@router.post("/streams/clear")
+def clear_stream_entry(body: StreamEntryRequest, db: Session = Depends(get_db)):
+    """Manually unmark an entry (no file changes)."""
+    from models.database import StreamHealth
+    entry = db.query(StreamHealth).filter(StreamHealth.id == body.id).first()
+    if not entry:
+        raise HTTPException(404, "Entry not found")
+    db.delete(entry)
+    db.commit()
+    return {"success": True}
+
+
+@router.post("/streams/remove")
+def remove_stream_entry(body: StreamEntryRequest, db: Session = Depends(get_db),
+                        user=Depends(require_admin)):
+    """Delete the dead .strm/.nfo (and movie library record) from disk."""
+    from services.stream_health import remove_dead_stream
+    result = remove_dead_stream(db, body.id, user_name=user.display_name if user else None)
+    if not result.get("ok"):
+        raise HTTPException(400, result.get("error", "Remove failed"))
+    return result
+
+
 # ─── Deletion audit log ───────────────────────────────────────────────────────
 
 @router.get("/deletions")
