@@ -689,6 +689,14 @@
   background: rgba(234, 179, 8, 0.12);
   color: rgba(250, 200, 50, 0.9);
 }
+.md-act-badge-stuck {
+  background: rgba(239, 68, 68, 0.15);
+  color: rgba(248, 113, 113, 0.95);
+}
+.md-act-badge-blocked {
+  background: rgba(234, 179, 8, 0.15);
+  color: rgba(250, 200, 50, 0.95);
+}
 
 /* Progress bar */
 .md-act-progress-row {
@@ -722,6 +730,13 @@
 .md-act-fill-warning {
   background: linear-gradient(90deg, rgba(234, 179, 8, 0.6), rgba(250, 200, 50, 0.8));
   box-shadow: 0 0 8px rgba(234, 179, 8, 0.2);
+}
+.md-act-fill-stuck {
+  background: linear-gradient(90deg, rgba(239, 68, 68, 0.6), rgba(248, 113, 113, 0.8));
+  box-shadow: 0 0 8px rgba(239, 68, 68, 0.2);
+}
+.md-act-fill-blocked {
+  background: linear-gradient(90deg, rgba(234, 179, 8, 0.5), rgba(250, 200, 50, 0.7));
 }
 .md-act-progress-text {
   font-size: 12px;

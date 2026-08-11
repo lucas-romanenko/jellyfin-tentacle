@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from models.database import get_db, get_setting, Movie, Series, DownloadRequest, TentacleUser
 from routers.auth import get_user_from_request
+from services.download_health import classify_queue_item, get_stall_state
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/activity", tags=["activity"])
@@ -319,6 +320,7 @@ def _build_downloads(db: Session) -> list:
 
     downloads = []
     futures = {}
+    stall_state = get_stall_state(db)
     with ThreadPoolExecutor(max_workers=4) as pool:
         # Fire throttled refresh commands (preps data for next poll cycle)
         if radarr_url and radarr_key:
@@ -338,15 +340,7 @@ def _build_downloads(db: Session) -> list:
                         total = item.get("size", 0) or 0
                         left = item.get("sizeleft", 0) or 0
                         progress = ((total - left) / total * 100) if total > 0 else 0
-                        status = "downloading"
-                        tracked = item.get("trackedDownloadStatus", "")
-                        dl_state = item.get("trackedDownloadState", "")
-                        if tracked == "warning":
-                            status = "warning"
-                        elif dl_state == "importPending":
-                            status = "importing"
-                        elif dl_state == "downloading" and progress == 0:
-                            status = "queued"
+                        cls = classify_queue_item(item, stall_state)
 
                         poster = _get_poster(db, tmdb_id, "movie") or _extract_poster(movie) or _fetch_tmdb_poster(tmdb_id, "movie", db)
                         downloads.append({
@@ -356,7 +350,13 @@ def _build_downloads(db: Session) -> list:
                             "poster_path": poster,
                             "media_type": "movie",
                             "source": "radarr",
-                            "status": status,
+                            "status": cls["status"],
+                            "reason": cls["reason"],
+                            "stalled_minutes": cls["stalled_minutes"],
+                            "queue_id": item.get("id"),
+                            "download_id": item.get("downloadId"),
+                            "protocol": item.get("protocol"),
+                            "indexer": item.get("indexer"),
                             "progress": round(progress, 1),
                             "size_remaining": _format_size(item.get("sizeleft")),
                             "eta": _format_time(item.get("timeleft", "")),
@@ -371,15 +371,7 @@ def _build_downloads(db: Session) -> list:
                         total = item.get("size", 0) or 0
                         left = item.get("sizeleft", 0) or 0
                         progress = ((total - left) / total * 100) if total > 0 else 0
-                        status = "downloading"
-                        tracked = item.get("trackedDownloadStatus", "")
-                        dl_state = item.get("trackedDownloadState", "")
-                        if tracked == "warning":
-                            status = "warning"
-                        elif dl_state == "importPending":
-                            status = "importing"
-                        elif dl_state == "downloading" and progress == 0:
-                            status = "queued"
+                        cls = classify_queue_item(item, stall_state)
 
                         ep_label = ""
                         if episode:
@@ -393,7 +385,13 @@ def _build_downloads(db: Session) -> list:
                             "poster_path": poster,
                             "media_type": "series",
                             "source": "sonarr",
-                            "status": status,
+                            "status": cls["status"],
+                            "reason": cls["reason"],
+                            "stalled_minutes": cls["stalled_minutes"],
+                            "queue_id": item.get("id"),
+                            "download_id": item.get("downloadId"),
+                            "protocol": item.get("protocol"),
+                            "indexer": item.get("indexer"),
                             "progress": round(progress, 1),
                             "size_remaining": _format_size(item.get("sizeleft")),
                             "eta": _format_time(item.get("timeleft", "")),
@@ -403,7 +401,7 @@ def _build_downloads(db: Session) -> list:
             except Exception as e:
                 logger.debug(f"Activity fetch {key} failed: {e}")
 
-    status_order = {"downloading": 0, "importing": 1, "queued": 2, "warning": 3}
+    status_order = {"stuck": 0, "import_blocked": 1, "downloading": 2, "importing": 3, "queued": 4, "warning": 5}
     downloads.sort(key=lambda d: (status_order.get(d["status"], 9), -d["progress"]))
     return downloads
 

@@ -1463,6 +1463,23 @@ td.primary { color: var(--text); font-weight: 500; }
 
         <div class="card" style="margin-bottom:16px">
           <div class="card-header">
+            <div class="card-title">Downloads</div>
+            <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
+              <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2);cursor:pointer" title="Automatically cancel + blocklist stuck downloads and grab an alternative release (opposite protocol preferred)">
+                <input type="checkbox" id="health-auto-fix" onchange="saveHealthDownloadSettings()"> Auto-fix stuck
+              </label>
+              <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2);cursor:pointer" title="Automatically force-import blocked downloads when the match is unambiguous; otherwise dequeue but keep the file">
+                <input type="checkbox" id="health-auto-import" onchange="saveHealthDownloadSettings()"> Auto-resolve blocked imports
+              </label>
+            </div>
+          </div>
+          <div id="health-downloads">
+            <div class="empty-state"><p>Loading…</p></div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-header">
             <div class="card-title">Deletion Log</div>
             <button class="btn btn-secondary btn-sm" onclick="loadHealthDeletions()">Refresh</button>
           </div>

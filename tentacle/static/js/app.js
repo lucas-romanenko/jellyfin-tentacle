@@ -200,6 +200,10 @@ function showPage(name) {
     if (typeof disconnectLibraryStream === 'function') disconnectLibraryStream();
     if (typeof stopDownloadPolling === 'function') stopDownloadPolling();
   }
+  // Stop health downloads polling when leaving health page
+  if (state.currentPage === 'health' && name !== 'health') {
+    if (typeof stopHealthPolling === 'function') stopHealthPolling();
+  }
 
   state.currentPage = name;
 

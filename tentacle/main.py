@@ -415,6 +415,19 @@ def setup_scheduler(db):
     )
     logger.info("Native playlist refresh scheduled: every 15 min")
 
+    # Download health: advance stall tracking every 5 min; auto-fix/auto-import
+    # only act when their toggles are enabled (Health page, default off).
+    from services.download_health import run_download_health_check
+    scheduler.add_job(
+        run_download_health_check,
+        IntervalTrigger(minutes=5),
+        id="download_health",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    logger.info("Download health check scheduled: every 5 min")
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 

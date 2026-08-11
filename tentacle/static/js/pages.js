@@ -5178,7 +5178,150 @@ async function saveMergeContinueWatching(checked) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 function loadHealthPage() {
+  loadHealthDownloadSettings();
+  loadHealthDownloads();
   loadHealthDeletions();
+  startHealthPolling();
+}
+
+// ── Downloads health ────────────────────────────────────────────────────────
+
+let _healthPollTimer = null;
+
+function startHealthPolling() {
+  stopHealthPolling();
+  _healthPollTimer = setInterval(() => {
+    if (state.currentPage !== 'health') { stopHealthPolling(); return; }
+    loadHealthDownloads();
+  }, 5000);
+}
+
+function stopHealthPolling() {
+  if (_healthPollTimer) { clearInterval(_healthPollTimer); _healthPollTimer = null; }
+}
+
+async function loadHealthDownloadSettings() {
+  try {
+    const s = await api('/api/health/downloads/settings');
+    const fix = document.getElementById('health-auto-fix');
+    const imp = document.getElementById('health-auto-import');
+    if (fix) fix.checked = !!s.auto_fix;
+    if (imp) imp.checked = !!s.auto_import;
+  } catch (_) {}
+}
+
+async function saveHealthDownloadSettings() {
+  const fix = document.getElementById('health-auto-fix');
+  const imp = document.getElementById('health-auto-import');
+  try {
+    await api('/api/health/downloads/settings', {
+      method: 'POST',
+      body: { auto_fix: !!fix?.checked, auto_import: !!imp?.checked },
+    });
+    toast('Download automation settings saved');
+  } catch (e) {
+    toast('Failed to save settings', 'error');
+    loadHealthDownloadSettings();
+  }
+}
+
+const _DL_STATUS_META = {
+  stuck:          { label: 'Stuck', cls: 'badge-red' },
+  import_blocked: { label: 'Import blocked', cls: 'badge-amber' },
+  warning:        { label: 'Warning', cls: 'badge-amber' },
+  downloading:    { label: 'Downloading', cls: 'badge-accent' },
+  importing:      { label: 'Importing', cls: 'badge-green' },
+  queued:         { label: 'Queued', cls: 'badge-accent' },
+};
+
+async function loadHealthDownloads() {
+  const el = document.getElementById('health-downloads');
+  if (!el) return;
+  try {
+    const data = await api('/api/activity');
+    const downloads = data.downloads || [];
+    if (!downloads.length) {
+      el.innerHTML = '<div class="empty-state"><p>No active downloads</p></div>';
+      return;
+    }
+    const rows = downloads.map(d => {
+      const meta = _DL_STATUS_META[d.status] || { label: d.status, cls: 'badge-accent' };
+      const name = escapeHtml(d.title) + (d.episode ? ` <span style="color:var(--text3)">${escapeHtml(d.episode)}</span>` : '');
+      const sub = [d.quality, d.protocol, d.indexer].filter(Boolean).map(escapeHtml).join(' · ');
+      const prog = d.progress != null ? `${d.progress}%` : '—';
+      const stallNote = d.status === 'stuck' && d.stalled_minutes > 0
+        ? `<div style="font-size:11px;color:var(--text3)">no progress for ${Math.round(d.stalled_minutes)}m</div>` : '';
+      const reason = d.reason
+        ? `<div style="font-size:12px;color:var(--amber);margin-top:2px">${escapeHtml(d.reason)}</div>` : '';
+      let actions = '';
+      if (d.queue_id != null && d.status === 'stuck') {
+        actions = `<button class="btn btn-primary btn-sm" onclick="healthFixDownload('${d.source}', ${d.queue_id}, this)">Fix</button>
+                   <button class="btn btn-secondary btn-sm" onclick="healthRemoveDownload('${d.source}', ${d.queue_id}, true, this)">Remove</button>`;
+      } else if (d.queue_id != null && d.status === 'import_blocked') {
+        actions = `<button class="btn btn-primary btn-sm" onclick="healthImportDownload('${d.source}', '${escapeAttr(d.download_id || '')}', this)">Import</button>
+                   <button class="btn btn-secondary btn-sm" onclick="healthRemoveDownload('${d.source}', ${d.queue_id}, false, this)">Remove</button>`;
+      }
+      return `<tr>
+        <td><span class="badge ${meta.cls}" style="font-size:10px">${meta.label}</span></td>
+        <td>${name}${reason}${stallNote}</td>
+        <td style="white-space:nowrap;color:var(--text3);font-size:12px">${sub || '—'}</td>
+        <td style="white-space:nowrap">${prog}${d.eta ? ` <span style="color:var(--text3)">· ${escapeHtml(d.eta)}</span>` : ''}</td>
+        <td style="white-space:nowrap;text-align:right"><div style="display:flex;gap:6px;justify-content:flex-end">${actions}</div></td>
+      </tr>`;
+    }).join('');
+    el.innerHTML = `<div style="overflow-x:auto"><table>
+      <thead><tr><th>Status</th><th>Title</th><th>Release</th><th>Progress</th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`;
+  } catch (e) {
+    el.innerHTML = '<div class="empty-state"><p>Failed to load downloads</p></div>';
+  }
+}
+
+async function healthFixDownload(source, queueId, btn) {
+  if (!confirm('Cancel this download, blocklist the release, and grab an alternative?')) return;
+  if (btn) btn.disabled = true;
+  try {
+    const r = await api('/api/health/downloads/fix', { method: 'POST', body: { source, queue_id: queueId } });
+    toast(r.replaced ? `Replaced with ${r.picked_protocol} release` : 'Cancelled — no alternative release found',
+          r.replaced ? 'success' : 'info');
+    loadHealthDownloads();
+    loadHealthDeletions();
+  } catch (e) {
+    toast(e.message || 'Fix failed', 'error');
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function healthRemoveDownload(source, queueId, deleteFile, btn) {
+  if (!confirm(deleteFile ? 'Remove this download and delete the file?' : 'Remove from queue? The file stays on disk.')) return;
+  if (btn) btn.disabled = true;
+  try {
+    const r = await api('/api/health/downloads/remove', { method: 'POST', body: { source, queue_id: queueId, delete_file: deleteFile } });
+    toast(`Removed: ${r.title}`);
+    loadHealthDownloads();
+    loadHealthDeletions();
+  } catch (e) {
+    toast(e.message || 'Remove failed', 'error');
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function healthImportDownload(source, downloadId, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const r = await api('/api/health/downloads/manual-import', { method: 'POST', body: { source, download_id: downloadId } });
+    if (r.ok) {
+      toast(`Imported: ${r.title || 'download'}`);
+    } else {
+      toast(r.reason || 'Could not import automatically', 'info', 6000);
+    }
+    loadHealthDownloads();
+  } catch (e) {
+    toast(e.message || 'Import failed', 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 function _healthDate(iso) {
@@ -5271,7 +5414,8 @@ async function loadHealthDeletions() {
     // Activity
     loadActivity, startActivityPolling, stopActivityPolling,
     // Health
-    loadHealthPage, loadHealthDeletions,
+    loadHealthPage, loadHealthDeletions, loadHealthDownloads, stopHealthPolling,
+    saveHealthDownloadSettings, healthFixDownload, healthRemoveDownload, healthImportDownload,
     // Discover
     loadDiscoverPage, loadDiscover, setDiscoverType, switchDiscoverSection, showDiscoverDetail,
     onDiscoverSearchInput, clearDiscoverSearch,

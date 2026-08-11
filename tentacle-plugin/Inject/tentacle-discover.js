@@ -1319,10 +1319,14 @@
             : '<div class="md-act-poster-ph">&#9707;</div>';
           var statusClass = dl.status === 'importing' ? 'importing' :
             dl.status === 'queued' ? 'queued' :
-            dl.status === 'warning' ? 'warning' : 'downloading';
+            dl.status === 'warning' ? 'warning' :
+            dl.status === 'stuck' ? 'stuck' :
+            dl.status === 'import_blocked' ? 'blocked' : 'downloading';
           var statusLabel = dl.status === 'importing' ? 'Importing' :
             dl.status === 'queued' ? 'Queued' :
-            dl.status === 'warning' ? 'Warning' : 'Downloading';
+            dl.status === 'warning' ? 'Warning' :
+            dl.status === 'stuck' ? 'Stuck' :
+            dl.status === 'import_blocked' ? 'Import blocked' : 'Downloading';
           var progressPct = Math.min(Math.max(dl.progress || 0, 0), 100);
           var epLabel = dl.episode ? ' \u00b7 ' + esc(dl.episode) : '';
           var etaLabel = dl.eta ? esc(dl.eta) : '';
