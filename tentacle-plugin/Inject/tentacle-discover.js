@@ -380,7 +380,7 @@
         var badge, addBtn;
         if (dlInfo) {
           var pct = (dlInfo.progress || 0).toFixed(1);
-          var statusText = dlInfo.status === 'importing' ? 'Importing' : dlInfo.status === 'queued' ? 'Queued' : 'Downloading ' + pct + '%';
+          var statusText = dlInfo.status === 'importing' ? 'Importing' : dlInfo.status === 'queued' ? 'Queued' : dlInfo.status === 'stuck' ? 'Stuck' : dlInfo.status === 'import_blocked' ? 'Import blocked' : 'Downloading ' + pct + '%';
           badge = '<div class="md-card-badge md-badge-downloading">' + statusText + '</div>';
           addBtn = '';
         } else if (item.in_library) {
@@ -508,7 +508,7 @@
     var modalDlInfo = getDownloadInfo(item.tmdb_id);
     if (modalDlInfo) {
       var dlPct = (modalDlInfo.progress || 0).toFixed(1);
-      var dlStatus = modalDlInfo.status === 'importing' ? 'Importing...' : modalDlInfo.status === 'queued' ? 'Queued' : 'Downloading ' + dlPct + '%';
+      var dlStatus = modalDlInfo.status === 'importing' ? 'Importing...' : modalDlInfo.status === 'queued' ? 'Queued' : modalDlInfo.status === 'stuck' ? 'Stuck' : modalDlInfo.status === 'import_blocked' ? 'Import blocked' : 'Downloading ' + dlPct + '%';
       var dlEta = modalDlInfo.eta ? ' \u00b7 ETA ' + modalDlInfo.eta : '';
       var dlSize = modalDlInfo.size_remaining ? ' \u00b7 ' + modalDlInfo.size_remaining + ' left' : '';
       downloadSection =

@@ -471,7 +471,7 @@
 
         if (dlInfo) {
           var pct = (dlInfo.progress || 0).toFixed(1);
-          var statusText = dlInfo.status === 'importing' ? 'Importing' : dlInfo.status === 'queued' ? 'Queued' : 'Downloading ' + pct + '%';
+          var statusText = dlInfo.status === 'importing' ? 'Importing' : dlInfo.status === 'queued' ? 'Queued' : dlInfo.status === 'stuck' ? 'Stuck' : dlInfo.status === 'import_blocked' ? 'Import blocked' : 'Downloading ' + pct + '%';
           statusBadge = '<div class="ts-card-badge ts-badge-status ts-badge-downloading">' + statusText + '</div>';
         } else if (item.in_library) {
           statusBadge = '<div class="ts-card-badge ts-badge-status ts-badge-inlib">In Library</div>';

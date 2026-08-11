@@ -394,8 +394,11 @@ function renderLibDownloads(data) {
   countEl.textContent = `(${dls.length})`;
   body.innerHTML = dls.map(d => {
     const pct = d.progress != null ? Math.round(d.progress) : 0;
-    const status = (d.status || 'downloading').toLowerCase();
-    const statusClass = status.includes('import') ? 'importing' : status.includes('queue') ? 'queued' : 'downloading';
+    const rawStatus = (d.status || 'downloading').toLowerCase();
+    const status = rawStatus === 'import_blocked' ? 'import blocked' : rawStatus;
+    const statusClass = rawStatus === 'stuck' ? 'stuck' :
+      rawStatus === 'import_blocked' ? 'blocked' :
+      rawStatus.includes('import') ? 'importing' : rawStatus.includes('queue') ? 'queued' : 'downloading';
     const eta = d.eta ? ` · ${d.eta}` : '';
     const qual = d.quality ? ` · ${d.quality}` : '';
     const reqBy = d.requested_by ? `<span class="dl-requested-by">${d.requested_by}</span>` : '';
@@ -3975,7 +3978,9 @@ function renderActivity(data) {
       const statusClass = 'dl-' + (dl.status || 'downloading');
       const statusLabel = dl.status === 'importing' ? 'Importing' :
         dl.status === 'queued' ? 'Queued' :
-        dl.status === 'warning' ? 'Warning' : 'Downloading';
+        dl.status === 'warning' ? 'Warning' :
+        dl.status === 'stuck' ? 'Stuck' :
+        dl.status === 'import_blocked' ? 'Import blocked' : 'Downloading';
       const pct = Math.min(Math.max(dl.progress || 0, 0), 100);
       const epLabel = dl.episode ? ' · ' + escapeAttr(dl.episode) : '';
       const etaLabel = dl.eta ? ' · ' + escapeAttr(dl.eta) : '';
@@ -4135,8 +4140,9 @@ function renderDiscoverGrid(items) {
     let badge, addBtn = '';
     if (dlInfo) {
       const pct = (dlInfo.progress || 0).toFixed(0);
-      const st = dlInfo.status === 'importing' ? 'Importing' : dlInfo.status === 'queued' ? 'Queued' : `Downloading ${pct}%`;
-      badge = `<span class="badge badge-accent" style="font-size:9px;padding:1px 5px">${st}</span>`;
+      const st = dlInfo.status === 'importing' ? 'Importing' : dlInfo.status === 'queued' ? 'Queued' :
+        dlInfo.status === 'stuck' ? 'Stuck' : dlInfo.status === 'import_blocked' ? 'Import blocked' : `Downloading ${pct}%`;
+      badge = `<span class="badge ${dlInfo.status === 'stuck' ? 'badge-red' : 'badge-accent'}" style="font-size:9px;padding:1px 5px">${st}</span>`;
     } else if (item.in_library) {
       badge = `<span class="badge badge-green" style="font-size:9px;padding:1px 5px">In Library</span>`;
     } else if (ulInfo) {
@@ -4188,9 +4194,10 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
     let actionBtn;
     if (dlInfo) {
       const pct = (dlInfo.progress || 0).toFixed(0);
-      const st = dlInfo.status === 'importing' ? 'Importing…' : dlInfo.status === 'queued' ? 'Queued' : `Downloading ${pct}%`;
+      const st = dlInfo.status === 'importing' ? 'Importing…' : dlInfo.status === 'queued' ? 'Queued' :
+        dlInfo.status === 'stuck' ? 'Stuck' : dlInfo.status === 'import_blocked' ? 'Import blocked' : `Downloading ${pct}%`;
       const eta = dlInfo.eta ? ` · ETA ${dlInfo.eta}` : '';
-      actionBtn = `<span class="badge badge-accent" style="font-size:12px;padding:4px 10px">${st}${eta}</span>`;
+      actionBtn = `<span class="badge ${dlInfo.status === 'stuck' ? 'badge-red' : 'badge-accent'}" style="font-size:12px;padding:4px 10px">${st}${eta}</span>`;
     } else if (isInLibrary && isSeries && data.library_source === 'sonarr') {
       actionBtn = `<span class="badge badge-green" style="font-size:12px;padding:4px 10px">In Library</span> <button class="btn btn-secondary btn-sm" style="margin-left:6px" onclick="closeModal('modal-media-detail');showManageEpisodesModal(${detailTmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}')">Manage Episodes</button>`;
     } else if (isInLibrary && isSeries && data.library_source && data.library_source.startsWith('provider_')) {
@@ -5164,12 +5171,12 @@ async function saveMergeContinueWatching(checked) {
   updateMergeContinueSlider(checked);
   try {
     await api('/api/smartlists/merge-continue-watching', { method: 'POST', body: { enabled: checked } });
-    showToast(checked ? 'Continue Watching & Next Up combined' : 'Continue Watching & Next Up separated', 'success');
+    toast(checked ? 'Continue Watching & Next Up combined' : 'Continue Watching & Next Up separated', 'success');
   } catch (e) {
     updateMergeContinueSlider(!checked);
     const cb = document.getElementById('merge-continue-checkbox');
     if (cb) cb.checked = !checked;
-    showToast('Failed to save setting', 'error');
+    toast('Failed to save setting', 'error');
   }
 }
 

@@ -1200,6 +1200,8 @@ td.primary { color: var(--text); font-weight: 500; }
 .activity-progress-fill.dl-importing { background: var(--green); }
 .activity-progress-fill.dl-queued { background: var(--text3); }
 .activity-progress-fill.dl-warning { background: var(--amber); }
+.activity-progress-fill.dl-stuck { background: var(--red); }
+.activity-progress-fill.dl-import_blocked { background: var(--amber); }
 .activity-progress-label { font-size: 11px; color: var(--text3); white-space: nowrap; }
 .activity-countdown { font-size: 12px; font-weight: 500; color: rgb(117, 111, 226); }
 .activity-empty { text-align: center; padding: 40px; color: var(--text3); font-size: 13px; }
@@ -1248,6 +1250,8 @@ td.primary { color: var(--text); font-weight: 500; }
 .dl-item-status.downloading { background: var(--accent-dim); color: var(--accent); }
 .dl-item-status.importing { background: var(--green-dim); color: var(--green); }
 .dl-item-status.queued { background: var(--bg3); color: var(--text3); }
+.dl-item-status.stuck { background: var(--red-dim); color: var(--red); }
+.dl-item-status.blocked { background: var(--amber-dim); color: var(--amber); }
 .dl-item-bar { width: 120px; height: 4px; background: var(--bg3); border-radius: 2px; overflow: hidden; }
 .dl-item-bar-fill { height: 100%; border-radius: 2px; background: var(--accent); transition: width 0.5s ease; }
 .dl-item-pct { font-size: 11px; color: var(--text3); font-family: 'DM Mono', monospace; min-width: 36px; text-align: right; }
@@ -3200,8 +3204,8 @@ td.primary { color: var(--text); font-weight: 500; }
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<script src="/static/js/app.js?v=32"></script>
-<script src="/static/js/pages.js?v=32"></script>
+<script src="/static/js/app.js?v=33"></script>
+<script src="/static/js/pages.js?v=33"></script>
 <script>
   // ── Mobile off-canvas sidebar ──
   function toggleSidebar() {
