@@ -1246,7 +1246,7 @@ def _refresh_smartlist_playlists_inner(db: Session, user_id: int = None, only_na
     if not existing:
         return {"error": "No SmartList configs found on disk", "processed": 0}
 
-    stats = {"processed": 0, "created": 0, "updated": 0, "errors": 0, "item_counts": {}}
+    stats = {"processed": 0, "created": 0, "updated": 0, "changed": 0, "errors": 0, "item_counts": {}}
 
     for name, (folder, config) in existing.items():
         if not config.get("Enabled", True) or config.get("Type") != "Playlist":
@@ -1409,9 +1409,15 @@ def _update_episode_playlist(jf, playlist_id: str, name: str, item_ids: list,
     desired_set = set(desired)
     current_set = set(current_series_ordered)
 
-    def _done(message: str):
+    def _done(message: str, changed: bool = False):
         logger.info(f"[SmartLists] '{name}': {message}")
         stats["updated"] += 1
+        # "updated" counts playlists visited; "changed" counts the ones whose
+        # contents actually moved. The periodic refresh notifies clients off
+        # the latter — keying off "updated" pushed a notification every run
+        # even when nothing had changed.
+        if changed:
+            stats["changed"] = stats.get("changed", 0) + 1
         stats["processed"] += 1
         stats["item_counts"][name] = len(item_ids)
 
@@ -1446,8 +1452,8 @@ def _update_episode_playlist(jf, playlist_id: str, name: str, item_ids: list,
             if remove_entry_ids:
                 jf.remove_from_playlist(playlist_id, remove_entry_ids)
         _done(
-            f"incremental series update +{len(to_add)} -{len(to_remove)} "
-            f"({len(desired)} series)"
+            f"incremental series update +{len(to_add)} -{len(to_remove)} ({len(desired)} series)",
+            changed=True,
         )
         return
 
@@ -1461,7 +1467,7 @@ def _update_episode_playlist(jf, playlist_id: str, name: str, item_ids: list,
         logger.error(f"[SmartLists] '{name}': rebuild re-add failed after clear — will repopulate next sync")
         stats["errors"] = stats.get("errors", 0) + 1
         return
-    _done(f"full series rebuild — cleared + re-added {len(desired)} series in order")
+    _done(f"full series rebuild — cleared + re-added {len(desired)} series in order", changed=True)
 
 
 def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats: dict, db: Session = None):
@@ -1633,6 +1639,7 @@ def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats
                     if remove_entry_ids:
                         jf.remove_from_playlist(playlist_id, remove_entry_ids)
                 logger.info(f"[SmartLists] '{name}': incremental update +{len(to_add)} -{len(to_remove)} (total {len(item_ids)})")
+                stats["changed"] = stats.get("changed", 0) + 1
             else:
                 # Order changed — rebuild in the desired order. Jellyfin DEDUPES
                 # playlist adds: re-adding an item already in the playlist is a
@@ -1656,6 +1663,7 @@ def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats
                         stats["errors"] = stats.get("errors", 0) + 1
                         return
                 logger.info(f"[SmartLists] '{name}': full rebuild — cleared + re-added {len(item_ids)} in order (+{len(to_add)} -{len(to_remove)})")
+                stats["changed"] = stats.get("changed", 0) + 1
 
         stats["updated"] += 1
     else:
@@ -1822,7 +1830,7 @@ def sync_single_custom_playlist(db: Session, user_id: int, rule_name: str, condi
 
     # Populate the Jellyfin playlist with matching items
     jf = JellyfinService(jellyfin_url, jellyfin_key, user_id=jf_user_id)
-    stats = {"processed": 0, "created": 0, "updated": 0, "errors": 0, "item_counts": {}}
+    stats = {"processed": 0, "created": 0, "updated": 0, "changed": 0, "errors": 0, "item_counts": {}}
     _process_single_playlist(jf, folder, config, jf_user_id, stats, db=db)
 
     # Sync artwork for this playlist
@@ -1958,7 +1966,7 @@ def toggle_auto_playlist_fast(db: Session, user_id: int, key: str, enabled: bool
         config_file.write_text(json.dumps(config, indent=2), encoding="utf-8")
 
         # Populate
-        stats = {"processed": 0, "created": 0, "updated": 0, "errors": 0, "item_counts": {}}
+        stats = {"processed": 0, "created": 0, "updated": 0, "changed": 0, "errors": 0, "item_counts": {}}
         _process_single_playlist(jf, folder, config, jf_user_id, stats, db=db)
         item_count = stats["item_counts"].get(name, 0)
 

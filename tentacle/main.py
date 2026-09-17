@@ -324,7 +324,11 @@ def run_native_playlist_refresh():
     try:
         from services.smartlists import refresh_native_playlists, _notify_jellyfin_plugin
         result = refresh_native_playlists(db)
-        if result.get("updated", 0) or result.get("created", 0):
+        # "changed" counts playlists whose contents actually moved. "updated"
+        # counts every playlist visited — including the no-change ones — so
+        # keying off it pushed a plugin + WebSocket notification every 15
+        # minutes whether or not anything had happened.
+        if result.get("changed", 0) or result.get("created", 0):
             _notify_jellyfin_plugin(db)
             logger.info(f"[Native refresh] genre/rating playlists updated: {result}")
     except Exception as e:

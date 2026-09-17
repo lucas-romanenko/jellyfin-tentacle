@@ -39,7 +39,7 @@ def episodes_of(series_ids, per_series=3):
 
 
 def new_stats():
-    return {"updated": 0, "processed": 0, "errors": 0, "item_counts": {}}
+    return {"updated": 0, "processed": 0, "changed": 0, "errors": 0, "item_counts": {}}
 
 
 class TestEpisodePlaylistDiff(unittest.TestCase):
@@ -93,3 +93,28 @@ class TestEpisodePlaylistDiff(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestChangeReporting(unittest.TestCase):
+    """The 15-minute native refresh notifies clients off `changed`, not `updated`.
+
+    Every visited playlist counts as "updated", including the ones that needed
+    no work, so keying the notification off it pushed a plugin + WebSocket
+    update every run whether or not anything had happened.
+    """
+
+    def test_no_change_does_not_count_as_changed(self):
+        jf, stats = FakeJellyfin(), new_stats()
+        _update_episode_playlist(jf, "P", "TV", ["s1", "s2"], episodes_of(["s1", "s2"]), stats)
+        self.assertEqual(stats.get("changed", 0), 0)
+        self.assertEqual(stats["updated"], 1)
+
+    def test_real_mutations_count_as_changed(self):
+        jf, stats = FakeJellyfin(), new_stats()
+        _update_episode_playlist(jf, "P", "TV", ["s1", "s2"], episodes_of(["s1"]), stats)
+        self.assertEqual(stats.get("changed", 0), 1)
+
+    def test_reorder_counts_as_changed(self):
+        jf, stats = FakeJellyfin(), new_stats()
+        _update_episode_playlist(jf, "P", "TV", ["s2", "s1"], episodes_of(["s1", "s2"]), stats)
+        self.assertEqual(stats.get("changed", 0), 1)
