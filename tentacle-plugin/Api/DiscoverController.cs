@@ -824,12 +824,20 @@ public class TentacleDiscoverController : ControllerBase
             return NotFound();
         }
 
+        // The backend mints these URLs percent-encoded. Most clients hand them
+        // back encoded exactly once and ASP.NET decodes them for us, but some
+        // re-encode first, so `url` arrives as "https%3A%2F%2Fartworks.thetvdb.com%2F…".
+        // That parses as neither an absolute URI nor a TVDB host, and every
+        // TVDB artwork request was rejected as a disallowed host. Decode
+        // defensively before validating.
+        url = NormalizeProxyUrl(url);
+
         // This endpoint is anonymous (Android TV/web image tags can't send auth headers),
         // so validate the forwarded url and require the cacheKey to be the MD5 of the url.
         // This prevents using the plugin as an open proxy to arbitrary hosts.
         if (!IsAllowedImageHost(url))
         {
-            _logger.LogWarning("[Tentacle Discover] Image proxy rejected disallowed host: {Url}", url);
+            LogRejectedHostOnce(url);
             return NotFound();
         }
 
@@ -956,6 +964,52 @@ public class TentacleDiscoverController : ControllerBase
         {
             _logger.LogWarning("[Tentacle Discover] Failed to toggle notifications: {Error}", ex.Message);
             return StatusCode(500);
+        }
+    }
+
+    /// <summary>
+    /// Undo any extra layer(s) of percent-encoding on a forwarded image URL.
+    /// Clients differ in how many times they encode the query value, so decode
+    /// until the string stops changing (bounded) or parses as an absolute URI.
+    /// </summary>
+    private static string NormalizeProxyUrl(string url)
+    {
+        if (string.IsNullOrEmpty(url))
+        {
+            return url;
+        }
+
+        for (var i = 0; i < 3; i++)
+        {
+            if (Uri.TryCreate(url, UriKind.Absolute, out _))
+            {
+                return url;
+            }
+
+            var decoded = Uri.UnescapeDataString(url);
+            if (string.Equals(decoded, url, StringComparison.Ordinal))
+            {
+                return url;
+            }
+
+            url = decoded;
+        }
+
+        return url;
+    }
+
+    // Rejected hosts are logged once each. A broken host produced a warning per
+    // image, which flooded the Jellyfin server log for as long as the page was open.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _loggedRejectedHosts = new();
+
+    private void LogRejectedHostOnce(string url)
+    {
+        var host = Uri.TryCreate(url, UriKind.Absolute, out var uri) ? uri.Host : "(unparseable)";
+        if (_loggedRejectedHosts.TryAdd(host, 0))
+        {
+            _logger.LogWarning(
+                "[Tentacle Discover] Image proxy rejected disallowed host {Host} (further rejections for this host are not logged)",
+                host);
         }
     }
 

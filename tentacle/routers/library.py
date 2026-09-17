@@ -13,7 +13,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy import or_
 from typing import Optional
 from models.database import get_db, get_setting, Movie, Series, ListItem, DownloadRequest, TentacleUser, Duplicate, log_deletion
-from routers.auth import get_user_from_request
+from routers.auth import get_user_from_request, require_admin
+from services.media_files import delete_movie_files, delete_series_files
 from services.cleaner import clean_list_title
 from services.logstream import library_event_generator, emit_library_event
 from services.tmdb import TMDBService
@@ -299,6 +300,12 @@ def get_item_detail(media_type: str, tmdb_id: int, request: Request, db: Session
         }
     else:
         raise HTTPException(400, "Invalid media type")
+
+    # strm_managed: False when the user has opted this title out of .strm
+    # writing/repair (it stays in the catalog; the sync just leaves its files
+    # alone). Only meaningful for provider-sourced titles.
+    result["strm_managed"] = not bool(item.strm_disabled)
+    result["is_vod"] = bool(item.source and item.source.startswith("provider_"))
 
     # can_delete: True if downloaded content AND (admin OR user requested it)
     result["can_delete"] = False
@@ -634,6 +641,52 @@ def get_following_series(db: Session = Depends(get_db), user: TentacleUser = Dep
         }
         for s in series
     ]
+
+
+class StrmManagedBody(BaseModel):
+    enabled: bool               # False = stop writing/repairing .strm for this title
+    delete_files: bool = False  # also remove the .strm/.nfo Tentacle wrote
+
+
+@router.post("/strm-managed/{media_type}/{tmdb_id}")
+def set_strm_managed(media_type: str, tmdb_id: int, body: StrmManagedBody,
+                     db: Session = Depends(get_db),
+                     user: TentacleUser = Depends(require_admin)):
+    """Turn .strm management on or off for one title.
+
+    Switching it off keeps the title in the catalog (Discover, tags, playlists
+    all behave as before) but stops the sync from writing or repairing its
+    .strm files — for shows the user has deliberately moved to downloaded
+    copies, typically because the provider's stream is broken. Without this the
+    nightly sync regenerates every .strm, and in a merged folder the download
+    and the stream fight each other.
+    """
+    if media_type not in ("movie", "series"):
+        raise HTTPException(400, "media_type must be 'movie' or 'series'")
+    Model = Movie if media_type == "movie" else Series
+    item = db.query(Model).filter(Model.tmdb_id == tmdb_id).first()
+    if not item:
+        raise HTTPException(404, f"No {media_type} with tmdb_id {tmdb_id}")
+
+    item.strm_disabled = not body.enabled
+    deleted = 0
+    if not body.enabled and body.delete_files and item.strm_path:
+        # Removes only the .strm/.nfo Tentacle wrote — downloaded episodes in
+        # the same folder are left alone.
+        deleted = (delete_movie_files(item.strm_path) if media_type == "movie"
+                   else delete_series_files(item.strm_path))
+        log_deletion(db, kind="strm-optout", name=item.title, media_type=media_type,
+                     reason="manual",
+                     user_name=getattr(user, "display_name", None),  # None in bootstrap mode
+                     detail=f"{deleted} .strm/.nfo file(s) removed — .strm management disabled")
+    db.commit()
+
+    logger.info(
+        f"[Library] .strm management {'enabled' if body.enabled else 'disabled'} for "
+        f"{media_type} '{item.title}' (tmdb:{tmdb_id})"
+        + (f", {deleted} file(s) removed" if deleted else "")
+    )
+    return {"success": True, "strm_managed": body.enabled, "files_deleted": deleted}
 
 
 class FollowBody(BaseModel):

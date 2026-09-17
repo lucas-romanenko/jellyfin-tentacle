@@ -949,7 +949,9 @@ async function confirmAddToArr() {
       toast(`Already in ${arrName}`, 'info');
       closeModal('modal-add-to-radarr');
     } else {
-      toast('Failed to add', 'error');
+      // The backend returns a plain-english reason in `detail` whenever it has
+      // one — a bare "Failed to add" leaves the user nothing to act on.
+      toast(r.detail || 'Failed to add', 'error', r.detail ? 8000 : undefined);
       btn.disabled = false;
       btn.textContent = `Add to ${arrName}`;
     }
@@ -1574,6 +1576,10 @@ async function showMediaDetail(tmdbId, mediaType) {
             Source: ${data.source} · Added: ${data.date_added ? new Date(data.date_added).toLocaleDateString() : '—'}
             ${data.strm_path ? `<br>Path: ${data.strm_path}` : ''}
           </div>
+          ${data.is_vod ? `<label class="detail-follow-toggle" style="margin-top:10px" title="Turn this off to keep the title in the catalog but stop Tentacle writing or repairing its .strm files — for shows you have switched to downloaded copies">
+            <input type="checkbox" ${data.strm_managed ? 'checked' : ''} onchange="toggleStrmManaged('${mediaType}', ${tmdbId}, this.checked)">
+            <span class="detail-follow-label">Manage .strm files</span>
+          </label>` : ''}
           <div id="detail-trailer-slot" style="margin-top:10px"></div>
         </div>
       </div>
@@ -1589,6 +1595,32 @@ async function showMediaDetail(tmdbId, mediaType) {
     }).catch(() => {});
   } catch (e) {
     document.getElementById('detail-body').innerHTML = '<div class="empty-state"><p>Failed to load details</p></div>';
+  }
+}
+
+async function toggleStrmManaged(mediaType, tmdbId, enabled) {
+  // Off = keep the title in the catalog but stop writing/repairing its .strm
+  // files. Offer to remove the ones already on disk, since the usual reason to
+  // switch this off is that the provider's stream is broken and the title has
+  // been replaced by downloaded copies.
+  let deleteFiles = false;
+  if (!enabled) {
+    deleteFiles = confirm(
+      'Stop managing .strm files for this title.\n\n' +
+      'OK: also delete the .strm/.nfo files Tentacle wrote (downloaded episodes are left alone).\n' +
+      'Cancel: leave the existing files in place.'
+    );
+  }
+  try {
+    const r = await api(`/api/library/strm-managed/${mediaType}/${tmdbId}`, {
+      method: 'POST',
+      body: { enabled, delete_files: deleteFiles },
+    });
+    toast(enabled
+      ? 'Tentacle will keep .strm files for this title up to date'
+      : `.strm management off${r.files_deleted ? ` — ${r.files_deleted} file(s) removed` : ''}`);
+  } catch (e) {
+    toast(e.message, 'error');
   }
 }
 
@@ -1967,7 +1999,8 @@ async function addAllMissingFromCard(listId, target = 'radarr') {
   const label = target === 'sonarr' ? 'Sonarr' : 'Radarr';
   try {
     const r = await api(`/api/lists/${listId}/add-missing-to-${target}`, { method: 'POST', body: {} });
-    toast(`Added ${r.added} to ${label}${r.already_exists ? `, ${r.already_exists} already existed` : ''}${r.failed ? `, ${r.failed} failed` : ''}`);
+    const summary = `Added ${r.added} to ${label}${r.already_exists ? `, ${r.already_exists} already existed` : ''}${r.failed ? `, ${r.failed} failed` : ''}`;
+    toast(r.detail ? `${summary}. ${r.detail}` : summary, r.failed ? 'error' : 'success', r.detail ? 8000 : undefined);
     loadListCoverageInline(listId);
   } catch (e) {
     toast(e.message, 'error');
@@ -2604,7 +2637,8 @@ async function addAllMissingToArr(target = 'radarr') {
   if (btn) { btn.disabled = true; btn.textContent = 'Adding...'; }
   try {
     const r = await api(`/api/lists/${_coverageListId}/add-missing-to-${target}`, { method: 'POST', body: {} });
-    toast(`Added ${r.added} to ${label}${r.already_exists ? `, ${r.already_exists} already existed` : ''}${r.failed ? `, ${r.failed} failed` : ''}`);
+    const summary = `Added ${r.added} to ${label}${r.already_exists ? `, ${r.already_exists} already existed` : ''}${r.failed ? `, ${r.failed} failed` : ''}`;
+    toast(r.detail ? `${summary}. ${r.detail}` : summary, r.failed ? 'error' : 'success', r.detail ? 8000 : undefined);
     if (btn) btn.textContent = `Done (${r.added} added)`;
   } catch (err) {
     toast(err.message, 'error');
@@ -4191,6 +4225,12 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
     // Live download / unreleased state (from /api/activity) — mirrors the plugin
     const dlInfo = _discoverDownloadInfo(detailTmdbId);
     const ulInfo = !dlInfo ? _discoverUnreleasedInfo(detailTmdbId) : null;
+    // "In Library" has to lead somewhere. VOD (.strm) titles used to show the
+    // badge and offer only download-again actions, with no way to reach the
+    // episodes the user already had.
+    const watchBtn = data.jellyfin_url
+      ? ` <a class="btn btn-primary btn-sm" style="margin-left:6px" href="${escapeAttr(data.jellyfin_url)}" target="_blank" rel="noopener">Watch in Jellyfin</a>`
+      : '';
     let actionBtn;
     if (dlInfo) {
       const pct = (dlInfo.progress || 0).toFixed(0);
@@ -4199,11 +4239,11 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
       const eta = dlInfo.eta ? ` · ETA ${dlInfo.eta}` : '';
       actionBtn = `<span class="badge ${dlInfo.status === 'stuck' ? 'badge-red' : 'badge-accent'}" style="font-size:12px;padding:4px 10px">${st}${eta}</span>`;
     } else if (isInLibrary && isSeries && data.library_source === 'sonarr') {
-      actionBtn = `<span class="badge badge-green" style="font-size:12px;padding:4px 10px">In Library</span> <button class="btn btn-secondary btn-sm" style="margin-left:6px" onclick="closeModal('modal-media-detail');showManageEpisodesModal(${detailTmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}')">Manage Episodes</button>`;
+      actionBtn = `<span class="badge badge-green" style="font-size:12px;padding:4px 10px">In Library</span>${watchBtn} <button class="btn btn-secondary btn-sm" style="margin-left:6px" onclick="closeModal('modal-media-detail');showManageEpisodesModal(${detailTmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}')">Manage Episodes</button>`;
     } else if (isInLibrary && isSeries && data.library_source && data.library_source.startsWith('provider_')) {
-      actionBtn = `<span class="badge badge-green" style="font-size:12px;padding:4px 10px">In Library</span> <button class="btn btn-primary btn-sm" style="margin-left:6px" onclick="closeModal('modal-media-detail');showDownloadMoreModal(${detailTmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}')">Download More Episodes</button>`;
+      actionBtn = `<span class="badge badge-green" style="font-size:12px;padding:4px 10px">In Library</span>${watchBtn} <button class="btn btn-secondary btn-sm" style="margin-left:6px" onclick="closeModal('modal-media-detail');showDownloadMoreModal(${detailTmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}')">Download Remaining Episodes</button>`;
     } else if (isInLibrary) {
-      actionBtn = `<span class="badge badge-green" style="font-size:12px;padding:4px 10px">In Library</span>`;
+      actionBtn = `<span class="badge badge-green" style="font-size:12px;padding:4px 10px">In Library</span>${watchBtn}`;
     } else if (ulInfo) {
       const ulLabel = (ulInfo.release_type && ulInfo.release_type !== 'TBA') ? `${ulInfo.release_type} release: ${ulInfo.release_date}` : ulInfo.release_date;
       actionBtn = `<span class="badge badge-amber" style="font-size:12px;padding:4px 10px">⏳ Awaiting Release</span> <span style="font-size:12px;color:var(--text3);margin-left:6px">${escapeAttr(ulLabel)}</span>`;
@@ -5634,6 +5674,7 @@ async function loadHealthDeletions() {
     showDownloadMoreModal, confirmDownloadMore, detailToggleSeason, toggleFollow,
     // Following
     loadFollowing,
+    toggleStrmManaged,
     // Duplicates
     setDupFilter, resolveDup, resolveAllKeepRadarr,
     // Log viewer

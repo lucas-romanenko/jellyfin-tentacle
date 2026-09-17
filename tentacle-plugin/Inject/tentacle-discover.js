@@ -469,6 +469,9 @@
         item.year = details.year || item.year;
         if (details.trailer_url) item.trailer_url = details.trailer_url;
         if (details.library_source) item.library_source = details.library_source;
+        // Exact Jellyfin item id resolved server-side by TMDB id, so "Watch"
+        // works for VOD titles (whose rows carry no stored id).
+        if (details.jellyfin_item_id) item.jellyfin_item_id = details.jellyfin_item_id;
         if (details.in_library !== undefined) {
           item.in_library = details.in_library;
           // Update the grid card badge if in_library changed
@@ -530,7 +533,9 @@
       downloadSection =
         '<div class="md-inlib-row">' +
           '<div class="md-inlib-badge">\u2713 Already in library</div>' +
-          (isSeries ? '' : '<button id="mdViewInLibrary" class="md-view-library-btn">View in Library</button>') +
+          '<button id="mdViewInLibrary" class="md-view-library-btn">' +
+            (isSeries ? 'Watch' : 'View in Library') +
+          '</button>' +
         '</div>' +
         '<div id="mdManageSection" style="display:none">' +
           '<div class="md-ep-picker">' +
@@ -1003,6 +1008,11 @@
   }
 
   function findJellyfinItem(item) {
+    // The detail endpoint resolves this server-side by TMDB id, which is exact.
+    // The title search below stays as a fallback for items it couldn't resolve.
+    if (item.jellyfin_item_id) {
+      return Promise.resolve(item.jellyfin_item_id);
+    }
     var userId = window.ApiClient.getCurrentUserId();
     var itemType = item.media_type === 'series' ? 'Series' : 'Movie';
     var url = window.ApiClient.getUrl('Users/' + userId + '/Items', {

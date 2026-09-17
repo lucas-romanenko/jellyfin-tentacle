@@ -34,6 +34,30 @@ def _get_tmdb(db: Session) -> Optional[TMDBService]:
     return TMDBService(bearer, data_dir)
 
 
+_jf_server_id_cache: dict = {"id": None, "checked": False}
+
+
+def _jellyfin_web_url(db: Session, item_id: str):
+    """Deep link to an item in Jellyfin's web UI, or None if not configured."""
+    base = (get_setting(db, "jellyfin_url") or "").rstrip("/")
+    if not base or not item_id:
+        return None
+    # serverId is optional in the route but makes the link work from a client
+    # that has more than one server configured. Resolved once per process.
+    if not _jf_server_id_cache["checked"]:
+        _jf_server_id_cache["checked"] = True
+        try:
+            from services.jellyfin import JellyfinService
+            api_key = get_setting(db, "jellyfin_api_key")
+            if api_key:
+                _jf_server_id_cache["id"] = JellyfinService(base, api_key).get_server_id()
+        except Exception as e:
+            logger.debug(f"Could not resolve Jellyfin server id: {e}")
+    server_id = _jf_server_id_cache["id"]
+    suffix = f"&serverId={server_id}" if server_id else ""
+    return f"{base}/web/#/details?id={item_id}{suffix}"
+
+
 def _known_tmdb_ids(db: Session) -> dict:
     """Separate sets of TMDB IDs by media type (TMDB uses separate ID spaces for movies vs series)."""
     movie_ids = {m.tmdb_id for m in db.query(Movie.tmdb_id).all()}
@@ -41,18 +65,83 @@ def _known_tmdb_ids(db: Session) -> dict:
     return {"movie": movie_ids, "series": series_ids}
 
 
+# ── Jellyfin is the authority on "can the user watch this right now" ──
+# Tentacle's Movie/Series tables are essentially the provider VOD catalog, so
+# anything Jellyfin has that Tentacle's scanners never recorded (downloaded
+# content added outside Tentacle, titles that predate a scan) looked addable in
+# Discover — and adding it then reported "already in Radarr/Sonarr". Jellyfin
+# sees both downloaded files and .strm, so it closes that gap for good.
+_jf_ids_cache: dict = {"movie": None, "series": None, "ts": {"movie": 0, "series": 0}}
+JF_IDS_TTL = 300  # 5 minutes, matching ARR_IDS_TTL
+
+
+def _get_jellyfin_tmdb_items(media_type: str) -> dict:
+    """Cached {tmdb_id: jellyfin_item_id} for one media type.
+
+    Fetched lazily per type: browsing movies must not pay for a full series
+    library fetch. An unreachable Jellyfin yields an empty map, so the check
+    degrades to the DB-only behaviour rather than failing the page.
+    """
+    import time as _time
+    key = "series" if media_type == "series" else "movie"
+    now = _time.time()
+    if _jf_ids_cache[key] is not None and now - _jf_ids_cache["ts"][key] < JF_IDS_TTL:
+        return _jf_ids_cache[key]
+
+    from models.database import SessionLocal
+    out = {}
+    db = SessionLocal()
+    try:
+        url = get_setting(db, "jellyfin_url")
+        api_key = get_setting(db, "jellyfin_api_key")
+        jf_user = get_setting(db, "jellyfin_user_id", "")
+        if url and api_key:
+            from services.jellyfin import JellyfinService
+            jf = JellyfinService(url, api_key, jf_user)
+            lookup = jf.get_tmdb_lookup("Series" if key == "series" else "Movie")
+            out = {tid: item.get("Id") for tid, item in lookup.items() if item.get("Id")}
+    except Exception as e:
+        logger.debug(f"Jellyfin id fetch for in-library check failed: {e}")
+    finally:
+        db.close()
+
+    _jf_ids_cache[key] = out
+    _jf_ids_cache["ts"][key] = now
+    return out
+
+
+def _jellyfin_item_id(tmdb_id: int, media_type: str):
+    """Jellyfin item id for a TMDB id, or None. Used to offer Play / Open."""
+    if not tmdb_id:
+        return None
+    return _get_jellyfin_tmdb_items(media_type).get(tmdb_id)
+
+
+def _bust_jellyfin_ids_cache():
+    _jf_ids_cache["ts"] = {"movie": 0, "series": 0}
+
+
 def _is_in_library(item: dict, known_ids: dict) -> bool:
-    """Check if item is in library using the correct media-type-specific ID set."""
+    """Check if item is in library using the correct media-type-specific ID set.
+
+    Tentacle's own tables first (cheap), then Jellyfin as the authority.
+    """
     tid = item.get("tmdb_id")
     if not tid:
         return False
     mt = item.get("media_type", "movie")
     if mt == "series":
-        return tid in known_ids["series"]
+        if tid in known_ids["series"]:
+            return True
+        return tid in _get_jellyfin_tmdb_items("series")
     elif mt == "movie":
-        return tid in known_ids["movie"]
+        if tid in known_ids["movie"]:
+            return True
+        return tid in _get_jellyfin_tmdb_items("movie")
     # Unknown type — check both (backward compat)
-    return tid in known_ids["movie"] or tid in known_ids["series"]
+    if tid in known_ids["movie"] or tid in known_ids["series"]:
+        return True
+    return tid in _get_jellyfin_tmdb_items("movie") or tid in _get_jellyfin_tmdb_items("series")
 
 
 # ── "Requested" annotation: titles known to Radarr/Sonarr with no file yet ──
@@ -105,6 +194,7 @@ def _get_arr_tmdb_ids() -> dict:
 def bust_arr_ids_cache():
     """Called after add-to-arr so new requests badge immediately."""
     _arr_ids_cache["ts"] = 0
+    _bust_jellyfin_ids_cache()
 
 
 def _mark_requested(item: dict):
@@ -303,6 +393,27 @@ def get_discover_detail(
     else:
         db_item = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
         details["in_library"] = bool(db_item)
+
+    # Resolve a Jellyfin item id so an owned title can actually be opened and
+    # played. VOD (.strm) rows essentially never have jellyfin_item_id set, so
+    # "In Library" used to lead nowhere — the modal only offered download-again
+    # actions for episodes the user already had. Prefer the stored id, fall
+    # back to a cached TMDB→item lookup, and backfill the row when we resolve
+    # one so the next open is free.
+    details["jellyfin_item_id"] = None
+    stored_id = getattr(db_item, "jellyfin_item_id", None) if db_item else None
+    resolved_id = stored_id or _jellyfin_item_id(tmdb_id, media_type)
+    if resolved_id:
+        details["jellyfin_item_id"] = resolved_id
+        details["jellyfin_url"] = _jellyfin_web_url(db, resolved_id)
+        if db_item is not None and not stored_id:
+            try:
+                db_item.jellyfin_item_id = resolved_id
+                db.commit()
+            except Exception:
+                db.rollback()
+        # Jellyfin knows about it even if Tentacle's tables don't (issue #5).
+        details["in_library"] = True
 
     # requested: in Radarr/Sonarr but no file yet (searching / no release found)
     details["media_type"] = details.get("media_type") or media_type
@@ -895,9 +1006,29 @@ def _rewrite_item_images(item: dict) -> dict:
     return item
 
 
+def _normalize_proxy_url(url: str) -> str:
+    """Undo extra layers of percent-encoding on a forwarded image URL.
+
+    These URLs are minted percent-encoded; clients differ in how many times
+    they re-encode the query value before handing it back, and a still-encoded
+    value has no scheme or host, so it fails the allowlist check and every
+    image is rejected. Decode until the value stops changing or parses.
+    """
+    from urllib.parse import unquote, urlparse
+    for _ in range(3):
+        if urlparse(url).scheme in ("http", "https"):
+            return url
+        decoded = unquote(url)
+        if decoded == url:
+            return url
+        url = decoded
+    return url
+
+
 @router.get("/image-proxy/{cache_key}")
 async def image_proxy(cache_key: str, url: str = ""):
     """Proxy TVDB images through the server to bypass CDN TLS fingerprinting."""
+    url = _normalize_proxy_url(url)
     # Strict host allowlist + public-IP check (substring matching like
     # "thetvdb.com" in url is trivially bypassed, e.g. ?url=http://169.254.169.254/?x=thetvdb.com).
     if not is_safe_url(url, allowed_hosts={"thetvdb.com"}):
