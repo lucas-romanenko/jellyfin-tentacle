@@ -14,7 +14,9 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install test dependencies
-        run: pip install requests
+        # sqlalchemy: the guard tests exercise the real Movie/Series models
+        # against an in-memory SQLite DB rather than mocking the ORM.
+        run: pip install requests sqlalchemy
       - name: Run unit tests
         working-directory: tentacle
         run: python -m unittest discover -s tests -v
