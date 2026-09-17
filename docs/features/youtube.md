@@ -137,6 +137,12 @@ If nothing is streaming, the channel returns a "not streaming right now"
 response rather than an error, and Jellyfin retries later instead of dropping
 the channel from the lineup.
 
+The channel is served as a continuous MPEG-TS stream, not as HLS. Jellyfin's
+tuner reads the response body as video, so a playlist would be copied as if it
+were video data — which shows up as playback stopping at 0 ms. ffmpeg does the
+muxing (stream copy, no re-encoding), because YouTube's HLS carries video and
+audio as separate renditions.
+
 ## Troubleshooting
 
 **"yt-dlp is not installed in this image"** — pull a current Tentacle image.

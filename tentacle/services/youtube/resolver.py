@@ -105,6 +105,64 @@ def resolve(video_id: str, max_height: int = 1080, force: bool = False) -> Resol
         return resolved
 
 
+def pick_tracks(video_id: str, max_height: int = 1080) -> tuple:
+    """(video_playlist_url, audio_playlist_url, headers) for a live remux.
+
+    YouTube's HLS variants are video-only with audio in a separate rendition.
+    Handing ffmpeg the master leaves it to choose, and it picks the first
+    variant — 240p. Selecting the tracks ourselves is the only way to honour
+    the channel's quality setting.
+    """
+    for player_client in client.PLAYER_CLIENTS:
+        try:
+            info = client.extract(
+                f"https://www.youtube.com/watch?v={video_id}",
+                {"extractor_args": {"youtube": {"player_client": [player_client]}}},
+            )
+        except YouTubeError as e:
+            logger.debug(f"[YouTube] {player_client} failed for {video_id}: {e}")
+            continue
+
+        hls = [f for f in (info.get("formats") or [])
+               if (f.get("protocol") or "").startswith("m3u8") and f.get("url")]
+        if not hls:
+            continue
+
+        # Split on vcodec alone. yt-dlp reports an audio-only HLS rendition with
+        # acodec=None (unknown) rather than a codec name, so testing acodec
+        # excluded every audio track and the stream came out silent.
+        videos = [f for f in hls if (f.get("vcodec") or "none") != "none"]
+        audios = [f for f in hls if (f.get("vcodec") or "none") == "none"]
+
+        # H.264 first — universally decodable — then tallest within the cap.
+        def _rank(f):
+            codec = f.get("vcodec") or ""
+            return (0 if codec.startswith("avc1") else 1, -(f.get("height") or 0))
+
+        eligible = [f for f in videos if (f.get("height") or 0) <= max_height] or videos
+        eligible.sort(key=_rank)
+        if not eligible:
+            continue
+        best_video = eligible[0]
+
+        best_audio = None
+        if audios:
+            audios.sort(key=lambda f: -(f.get("tbr") or f.get("abr") or 0))
+            best_audio = audios[0]
+        # No separate rendition means the video track already carries audio.
+
+        logger.info(
+            f"[YouTube] {video_id}: {player_client} "
+            f"{best_video.get('height')}p {best_video.get('vcodec')}"
+            f"{' + audio ' + str(best_audio.get('format_id')) if best_audio else ' (muxed audio)'}"
+        )
+        return (best_video["url"],
+                best_audio["url"] if best_audio else None,
+                best_video.get("http_headers") or {})
+
+    raise YouTubeError(f"No usable HLS tracks for {video_id}")
+
+
 def invalidate(video_id: str) -> None:
     with _cache_lock:
         _cache.pop(video_id, None)

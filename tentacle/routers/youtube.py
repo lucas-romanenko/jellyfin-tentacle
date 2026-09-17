@@ -142,13 +142,101 @@ def proxied(video_id: str, token: str, request: Request, db: Session = Depends(g
                              headers=passthrough)
 
 
+@router.get("/live/{channel_id}/stream.ts")
+@router.head("/live/{channel_id}/stream.ts")
+def live_stream(channel_id: int, db: Session = Depends(get_db)):
+    """What the HDHomeRun lineup points a YouTube Live TV channel at.
+
+    Serves a continuous MPEG-TS byte stream, NOT an HLS playlist. Jellyfin's
+    tuner opens this with SharedHttpStream, which reads the response body as
+    video — hand it a playlist and it copies the playlist text as if it were
+    video data, which is why playback stopped at 0 ms. The IPTV live path does
+    the same thing for the same reason.
+
+    ffmpeg does the muxing: YouTube's HLS variants are video-only with audio in
+    a separate rendition, so concatenating one variant's segments would produce
+    silent video. Remuxing is stream-copy only — no re-encoding.
+    """
+    import shutil
+    import subprocess
+
+    channel = db.query(YouTubeChannel).filter(YouTubeChannel.id == channel_id).first()
+    if not channel or not channel.live_enabled:
+        raise HTTPException(404, "Not a Live TV channel")
+
+    from services.youtube import livetv as yt_livetv
+    video = yt_livetv.current_live_video(db, channel_id)
+    if not video:
+        raise HTTPException(503, f"{channel.title} is not streaming right now")
+
+    try:
+        video_url, audio_url, headers = resolver.pick_tracks(
+            video.video_id, channel.max_height or 1080)
+    except YouTubeBlocked:
+        raise HTTPException(503, "YouTube is rate-limiting this server; try again shortly")
+    except YouTubeError as e:
+        logger.warning(f"[YouTube] Live resolve failed for '{channel.title}': {e}")
+        raise HTTPException(502, "Could not resolve the live stream")
+
+    ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
+    user_agent = headers.get("User-Agent", "Mozilla/5.0")
+    # ffmpeg runs on this host, so Google's IP-signed URLs are valid for it —
+    # no need to route the segments back through our own proxy.
+    cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin",
+           "-user_agent", user_agent, "-i", video_url]
+    if audio_url:
+        cmd += ["-user_agent", user_agent, "-i", audio_url,
+                "-map", "0:v:0", "-map", "1:a:0"]
+    else:
+        cmd += ["-map", "0:v:0", "-map", "0:a:0?"]
+    cmd += [
+        "-c", "copy",
+        "-f", "mpegts",
+        # Resend headers so a consumer joining mid-stream can still find the
+        # program tables.
+        "-mpegts_flags", "+resend_headers",
+        "-muxdelay", "0", "-muxpreload", "0",
+        "pipe:1",
+    ]
+
+    logger.info(f"[YouTube] Live TS stream for '{channel.title}' ({video.video_id})")
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    def _stream():
+        try:
+            while True:
+                chunk = proc.stdout.read(65536)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            try:
+                err = (proc.stderr.read() or b"").decode("utf-8", "replace").strip()
+                if err:
+                    logger.warning(f"[YouTube] ffmpeg for '{channel.title}': {err[:400]}")
+            except Exception:
+                pass
+            proc.stdout.close()
+            proc.stderr.close()
+            proc.wait(timeout=5)
+            logger.info(f"[YouTube] Live stream ended for '{channel.title}'")
+
+    return StreamingResponse(
+        _stream(),
+        media_type="video/mp2t",
+        headers={"Connection": "close", "Cache-Control": "no-cache, no-store"},
+    )
+
+
 @router.get("/live/{channel_id}/master.m3u8")
 @router.head("/live/{channel_id}/master.m3u8")
 def live_master(channel_id: int, db: Session = Depends(get_db)):
-    """What the HDHomeRun lineup points a YouTube Live TV channel at.
+    """The same live stream as HLS, for players that prefer a playlist.
 
-    The live video changes over the day, so it is resolved per request rather
-    than baked into a stored URL.
+    Not what the tuner uses — see live_stream above. Kept for direct testing
+    and for clients that handle HLS better than a raw TS pipe.
     """
     from services.youtube import livetv as yt_livetv
 

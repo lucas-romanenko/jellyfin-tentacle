@@ -1482,7 +1482,9 @@ def hdhr_lineup(request: Request, db: Session = Depends(get_db)):
         entry = {
             "GuideNumber": yt["guide_number"],
             "GuideName": yt["name"],
-            "URL": f"{base_url}/api/youtube/live/{yt['youtube_channel_id']}/master.m3u8",
+            # Raw MPEG-TS, not HLS: Jellyfin's tuner reads the response body as
+            # video, so a playlist gets copied as if it were video data.
+            "URL": f"{base_url}/api/youtube/live/{yt['youtube_channel_id']}/stream.ts",
         }
         if yt["logo_url"]:
             entry["LogoUrl"] = yt["logo_url"]

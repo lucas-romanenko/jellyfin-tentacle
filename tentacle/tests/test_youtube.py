@@ -375,3 +375,69 @@ class TestLiveStatusRefresh(unittest.TestCase):
         self.assertIsNone(v.live_status)
         # ...and it is now an ordinary library item
         self.assertTrue(indexer.is_library_item(v))
+
+
+class TestTrackSelection(unittest.TestCase):
+    """Picking the video and audio tracks for a live remux.
+
+    Two bugs lived here. Handing ffmpeg the master playlist let it choose, and
+    it chose 240p. And audio-only HLS renditions are reported by yt-dlp with
+    acodec=None (unknown) rather than a codec name, so filtering on acodec
+    dropped every audio track and the stream came out silent.
+    """
+
+    # Shape taken from a real visionos extraction of a live stream.
+    FORMATS = [
+        {"format_id": "233", "vcodec": "none", "acodec": None, "tbr": 64,
+         "protocol": "m3u8_native", "url": "https://x/a233.m3u8"},
+        {"format_id": "234", "vcodec": "none", "acodec": None, "tbr": 128,
+         "protocol": "m3u8_native", "url": "https://x/a234.m3u8"},
+        {"format_id": "269", "height": 144, "vcodec": "avc1.4D400C", "acodec": "none",
+         "protocol": "m3u8_native", "url": "https://x/v144.m3u8"},
+        {"format_id": "311", "height": 720, "vcodec": "avc1.4D4020", "acodec": "none",
+         "protocol": "m3u8_native", "url": "https://x/v720.m3u8"},
+        {"format_id": "312", "height": 1080, "vcodec": "avc1.4D402A", "acodec": "none",
+         "protocol": "m3u8_native", "url": "https://x/v1080.m3u8"},
+    ]
+
+    def _pick(self, max_height):
+        from services.youtube import resolver
+        with mock.patch.object(resolver.client, "extract",
+                               return_value={"formats": self.FORMATS}):
+            return resolver.pick_tracks("v9LArDyyNxw", max_height)
+
+    def test_picks_the_tallest_within_the_cap(self):
+        v, a, _ = self._pick(1080)
+        self.assertEqual(v, "https://x/v1080.m3u8")
+        v, a, _ = self._pick(720)
+        self.assertEqual(v, "https://x/v720.m3u8")
+
+    def test_never_exceeds_the_cap(self):
+        v, _, _ = self._pick(360)
+        self.assertEqual(v, "https://x/v144.m3u8")
+
+    def test_audio_is_found_despite_acodec_being_none(self):
+        # The bug: (acodec or "none") != "none" excluded every rendition, so
+        # Live TV played silent video.
+        _, a, _ = self._pick(1080)
+        self.assertEqual(a, "https://x/a234.m3u8", "audio rendition was dropped")
+
+    def test_highest_bitrate_audio_wins(self):
+        _, a, _ = self._pick(1080)
+        self.assertEqual(a, "https://x/a234.m3u8")   # tbr 128 over 64
+
+    def test_muxed_stream_needs_no_separate_audio(self):
+        from services.youtube import resolver
+        muxed = [{"format_id": "18", "height": 360, "vcodec": "avc1", "acodec": "mp4a",
+                  "protocol": "m3u8_native", "url": "https://x/muxed.m3u8"}]
+        with mock.patch.object(resolver.client, "extract", return_value={"formats": muxed}):
+            v, a, _ = resolver.pick_tracks("x", 1080)
+        self.assertEqual(v, "https://x/muxed.m3u8")
+        self.assertIsNone(a)
+
+    def test_no_usable_tracks_raises(self):
+        from services.youtube import resolver
+        from services.youtube.errors import YouTubeError
+        with mock.patch.object(resolver.client, "extract", return_value={"formats": []}):
+            with self.assertRaises(YouTubeError):
+                resolver.pick_tracks("x", 1080)
