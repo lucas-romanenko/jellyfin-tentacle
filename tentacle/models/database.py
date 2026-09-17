@@ -231,6 +231,90 @@ class Series(Base):
     date_updated = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+# ─── YouTube channels as a source ────────────────────────────────────────────
+# Deliberately separate from Movie/Series. Those tables carry a unique, non-null
+# tmdb_id and the VOD sync runs TMDB matching over them, so a video called
+# "Frozen" would be imported as the real film and share its media folder — and
+# the prune would then delete the IPTV movie. YouTube content also lives under
+# its own media root so nothing else walks it.
+
+class YouTubeChannel(Base):
+    __tablename__ = "youtube_channels"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    input_url = Column(String, nullable=False)          # what the user pasted
+    kind = Column(String, default="channel")            # channel | playlist
+    channel_id = Column(String, nullable=True, index=True)   # UC…
+    handle = Column(String, nullable=True)              # @handle
+    playlist_id = Column(String, nullable=True)
+    title = Column(String, nullable=False)
+    slug = Column(String, unique=True, nullable=False)  # filesystem-safe, used in tags
+    avatar_url = Column(String, nullable=True)
+    banner_url = Column(String, nullable=True)
+
+    # What to index
+    include_videos = Column(Boolean, default=True)
+    include_streams = Column(Boolean, default=False)    # live replays
+    include_shorts = Column(Boolean, default=False)
+    min_duration = Column(Integer, default=60)          # seconds; skips Shorts-like clips
+    backfill = Column(Integer, default=30)              # how many to fetch on first add
+    keep_count = Column(Integer, nullable=True, default=200)
+    keep_days = Column(Integer, nullable=True)
+    max_height = Column(Integer, default=1080)
+
+    # Jellyfin-side metadata
+    rating = Column(String, nullable=True)              # NFO <mpaa>, for parental controls
+    extra_tags = Column(JSON, default=list)             # NFO <tag>, for allowed-tags policies
+
+    enabled = Column(Boolean, default=True)
+    last_checked = Column(DateTime, nullable=True)
+    last_error = Column(String, nullable=True)
+    error_count = Column(Integer, default=0)
+    # Set when YouTube asks us to prove we're not a bot. Indexing backs off
+    # until this passes rather than hammering and making it worse.
+    blocked_until = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    videos = relationship("YouTubeVideo", back_populates="channel", cascade="all, delete-orphan")
+
+
+class YouTubeVideo(Base):
+    __tablename__ = "youtube_videos"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    channel_fk = Column(Integer, ForeignKey("youtube_channels.id"), nullable=False, index=True)
+    video_id = Column(String, unique=True, nullable=False, index=True)  # 11 chars
+    title = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    published_at = Column(DateTime, nullable=True)
+    duration = Column(Integer, nullable=True)           # seconds
+    live_status = Column(String, nullable=True)
+    media_type = Column(String, default="video")        # video | livestream
+    thumbnail_url = Column(String, nullable=True)
+    is_made_for_kids = Column(Boolean, nullable=True)   # unknown until details are fetched
+
+    folder_path = Column(String, nullable=True)
+    strm_path = Column(String, nullable=True)
+
+    first_seen = Column(DateTime, default=datetime.utcnow)
+    last_seen = Column(DateTime, default=datetime.utcnow)
+    removed_at = Column(DateTime, nullable=True)
+
+    channel = relationship("YouTubeChannel", back_populates="videos")
+
+
+class YouTubeRowSubscription(Base):
+    """A per-user home row for one channel."""
+    __tablename__ = "youtube_row_subscriptions"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    channel_fk = Column(Integer, ForeignKey("youtube_channels.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("tentacle_users.id"), nullable=False, index=True)
+    max_items = Column(Integer, default=30)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("channel_fk", "user_id", name="uq_youtube_row_user"),
+    )
+
+
 # ─── Duplicates ───────────────────────────────────────────────────────────────
 
 class Duplicate(Base):
@@ -775,6 +859,11 @@ def create_tables():
 def seed_defaults(db):
     """Seed default settings if not present"""
     defaults = {
+        # YouTube source. Off by default: it needs its own media mount and a
+        # Jellyfin library, so it should never start indexing unasked.
+        "youtube_enabled": "false",
+        "youtube_base_url": "",          # what goes in .strm; must be reachable BY Jellyfin
+        "youtube_index_interval_minutes": "60",
         "tmdb_bearer_token": "",
         "tmdb_api_key": "",
         "radarr_url": "",

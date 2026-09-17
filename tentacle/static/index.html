@@ -1413,6 +1413,9 @@ td.primary { color: var(--text); font-weight: 500; }
         <button class="nav-item" data-page="jellyfin">
           <span class="icon">◈</span> Jellyfin
         </button>
+        <button class="nav-item" data-page="youtube" data-admin-only>
+          <span class="icon">▷</span> YouTube
+        </button>
         <button class="nav-item" data-page="health" data-admin-only>
           <span class="icon">✚</span> Health
         </button>
@@ -1455,6 +1458,57 @@ td.primary { color: var(--text); font-weight: 500; }
       <!-- Dashboard page removed — stats and banners moved to Library -->
 
       <!-- ── Health ── -->
+      <div class="page" id="page-youtube">
+        <div id="yt-unavailable" class="card" style="display:none;margin-bottom:16px">
+          <div class="card-body" style="font-size:13px;color:var(--text2)"></div>
+        </div>
+
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-header"><h3>Add a channel</h3></div>
+          <div class="card-body">
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+              <div style="flex:1;min-width:280px">
+                <label class="form-label">Channel or playlist URL</label>
+                <input type="text" id="yt-url" class="form-input" placeholder="https://www.youtube.com/@channel">
+              </div>
+              <div style="width:120px">
+                <label class="form-label">Backfill</label>
+                <input type="number" id="yt-backfill" class="form-input" value="30" min="1" max="200">
+              </div>
+              <div style="width:120px">
+                <label class="form-label">Keep last</label>
+                <input type="number" id="yt-keep" class="form-input" value="200" min="1">
+              </div>
+              <div style="width:130px">
+                <label class="form-label">Max quality</label>
+                <select id="yt-quality" class="form-input">
+                  <option value="1080">1080p</option>
+                  <option value="720">720p</option>
+                  <option value="480">480p</option>
+                </select>
+              </div>
+              <button class="btn btn-primary" onclick="ytAddChannel()">Add</button>
+            </div>
+            <div style="margin-top:10px;display:flex;gap:16px;flex-wrap:wrap;font-size:13px;color:var(--text2)">
+              <label><input type="checkbox" id="yt-inc-videos" checked> Videos</label>
+              <label><input type="checkbox" id="yt-inc-streams"> Live replays</label>
+              <label><input type="checkbox" id="yt-inc-shorts"> Shorts</label>
+              <label>Min duration <input type="number" id="yt-min-duration" class="form-input" value="60" style="width:70px;display:inline-block"> s</label>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+            <h3>Channels</h3>
+            <button class="btn btn-secondary btn-sm" onclick="ytRefreshNow()">Refresh now</button>
+          </div>
+          <div class="card-body" id="yt-channels">
+            <div class="loading-state"><div class="spinner"></div></div>
+          </div>
+        </div>
+      </div>
+
       <div class="page" id="page-health">
         <div class="page-header">
           <div class="page-header-row">
@@ -3204,8 +3258,8 @@ td.primary { color: var(--text); font-weight: 500; }
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<script src="/static/js/app.js?v=34"></script>
-<script src="/static/js/pages.js?v=34"></script>
+<script src="/static/js/app.js?v=35"></script>
+<script src="/static/js/pages.js?v=35"></script>
 <script>
   // ── Mobile off-canvas sidebar ──
   function toggleSidebar() {

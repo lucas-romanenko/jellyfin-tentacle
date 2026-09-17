@@ -2649,6 +2649,103 @@ async function addAllMissingToArr(target = 'radarr') {
 // Keep old function name for backwards compat
 function addAllMissingToRadarr() { addAllMissingToArr('radarr'); }
 
+// ── YOUTUBE ──────────────────────────────────────────────────────────────
+
+async function loadYouTubePage() {
+  const box = document.getElementById('yt-channels');
+  const warn = document.getElementById('yt-unavailable');
+  try {
+    const st = await api('/api/youtube/status');
+    // The feature needs yt-dlp in the image and a base URL Jellyfin can reach.
+    const problems = [];
+    if (!st.yt_dlp_available) problems.push('yt-dlp is not installed in this image — rebuild or update the container.');
+    if (!st.enabled) problems.push('The YouTube source is turned off. Enable <code>youtube_enabled</code> in Settings.');
+    if (problems.length) {
+      warn.style.display = '';
+      warn.querySelector('.card-body').innerHTML = problems.join('<br>');
+    } else {
+      warn.style.display = 'none';
+    }
+    await loadYouTubeChannels();
+  } catch (e) {
+    box.innerHTML = `<div class="empty-state"><p>Could not load: ${escapeAttr(e.message)}</p></div>`;
+  }
+}
+
+async function loadYouTubeChannels() {
+  const box = document.getElementById('yt-channels');
+  const channels = await api('/api/youtube/channels');
+  if (!channels.length) {
+    box.innerHTML = '<div class="empty-state"><p>No channels yet. Paste a channel URL above to start.</p></div>';
+    return;
+  }
+  box.innerHTML = channels.map(c => {
+    const blocked = c.blocked_until ? `<span class="badge badge-amber">backing off until ${new Date(c.blocked_until).toLocaleTimeString()}</span>` : '';
+    const err = c.last_error ? `<span class="badge badge-red" title="${escapeAttr(c.last_error)}">error</span>` : '';
+    const checked = c.last_checked ? new Date(c.last_checked).toLocaleString() : 'never';
+    return `<div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)">
+      ${c.avatar_url ? `<img src="${escapeAttr(c.avatar_url)}" style="width:40px;height:40px;border-radius:50%;object-fit:cover">` : '<div style="width:40px;height:40px;border-radius:50%;background:var(--bg3)"></div>'}
+      <div style="flex:1">
+        <div style="font-weight:600">${escapeAttr(c.title)} ${blocked} ${err}</div>
+        <div style="font-size:12px;color:var(--text3)">${c.video_count} video${c.video_count === 1 ? '' : 's'} · max ${c.max_height}p · checked ${escapeAttr(checked)}</div>
+      </div>
+      <button class="btn btn-secondary btn-sm" onclick="ytDeleteChannel(${c.id}, '${escapeJS(c.title)}')">Remove</button>
+    </div>`;
+  }).join('');
+}
+
+async function ytAddChannel() {
+  const url = document.getElementById('yt-url').value.trim();
+  if (!url) { toast('Paste a channel or playlist URL', 'error'); return; }
+  const body = {
+    url,
+    backfill: parseInt(document.getElementById('yt-backfill').value) || 30,
+    keep_count: parseInt(document.getElementById('yt-keep').value) || 200,
+    max_height: parseInt(document.getElementById('yt-quality').value) || 1080,
+    include_videos: document.getElementById('yt-inc-videos').checked,
+    include_streams: document.getElementById('yt-inc-streams').checked,
+    include_shorts: document.getElementById('yt-inc-shorts').checked,
+    min_duration: parseInt(document.getElementById('yt-min-duration').value) || 0,
+  };
+  const t = toast('Looking up channel…', 'loading', 0);
+  try {
+    const r = await api('/api/youtube/channels', { method: 'POST', body });
+    t.remove();
+    toast(`Added ${r.title} — videos appear after the next index run`);
+    document.getElementById('yt-url').value = '';
+    loadYouTubeChannels();
+  } catch (e) {
+    t.remove();
+    toast(e.message, 'error', 8000);
+  }
+}
+
+async function ytDeleteChannel(id, title) {
+  // Removing files is opt-in: the catalog entry and the media are separate
+  // decisions, and deleting media is not undoable.
+  const withFiles = confirm(`Remove "${title}".\n\nOK: also delete its video folders from disk.\nCancel: keep the files.`);
+  try {
+    const r = await api(`/api/youtube/channels/${id}?delete_files=${withFiles}`, { method: 'DELETE' });
+    toast(`Removed ${title}${r.files_deleted ? ` — ${r.files_deleted} file(s) deleted` : ''}`);
+    loadYouTubeChannels();
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function ytRefreshNow() {
+  const t = toast('Indexing channels…', 'loading', 0);
+  try {
+    const r = await api('/api/youtube/refresh', { method: 'POST' });
+    t.remove();
+    toast(`Indexed ${r.channels} channel(s) — ${r.new} new video(s)${r.errors ? `, ${r.errors} error(s)` : ''}`);
+    loadYouTubeChannels();
+  } catch (e) {
+    t.remove();
+    toast(e.message, 'error', 8000);
+  }
+}
+
 // ── SMARTLISTS ───────────────────────────────────────────────────────────
 
 async function loadSmartLists() {
@@ -5672,6 +5769,8 @@ async function loadHealthDeletions() {
     onMonitorPresetChange, toggleSeasonAccordion, toggleSeasonAll, updateSeasonCheckbox, epPickerSelectAll, epPickerSelectNone,
     showManageEpisodesModal, confirmManageEpisodes,
     showDownloadMoreModal, confirmDownloadMore, detailToggleSeason, toggleFollow,
+    // YouTube
+    loadYouTubePage, loadYouTubeChannels, ytAddChannel, ytDeleteChannel, ytRefreshNow,
     // Following
     loadFollowing,
     toggleStrmManaged,

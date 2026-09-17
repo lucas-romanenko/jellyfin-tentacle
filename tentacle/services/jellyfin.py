@@ -12,6 +12,9 @@ from services.exceptions import JellyfinConnectionError
 
 logger = logging.getLogger(__name__)
 
+# Written into every YouTube video's NFO by services/youtube/library.py.
+YOUTUBE_TAG = "youtube"
+
 
 class JellyfinService:
     def __init__(self, url: str, api_key: str, user_id: str = ""):
@@ -214,6 +217,13 @@ class JellyfinService:
         tmdb_lookup = {}
         title_lookup = {}
         for item in items:
+            # YouTube videos live in their own Movies library, so they show up
+            # in this listing. They have no TMDB id, which makes them reachable
+            # only through the title fallback — and a video sharing a name with
+            # a real film ("Frozen") would then be tagged as that film and pulled
+            # into its playlists. They are never a valid fallback target.
+            if YOUTUBE_TAG in (item.get("Tags") or []):
+                continue
             tmdb_id = item.get("ProviderIds", {}).get("Tmdb")
             if tmdb_id:
                 try:

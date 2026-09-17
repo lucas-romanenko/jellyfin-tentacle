@@ -8,3 +8,6 @@ python-multipart==0.0.12
 aiofiles==24.1.0
 apscheduler==3.10.4
 Pillow==10.4.0
+# YouTube source. Updated often — YouTube breaks older versions regularly,
+# and the dashboard exposes an in-place update for the gaps between releases.
+yt-dlp==2026.8.19

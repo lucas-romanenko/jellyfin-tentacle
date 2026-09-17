@@ -65,6 +65,7 @@ nav:
     - Docker Compose: getting-started/docker-compose.md
   - Features:
     - VOD Library: features/vod-library.md
+    - YouTube Channels: features/youtube.md
     - Live TV: features/live-tv.md
     - Playlists: features/playlists.md
     - Home Screen: features/home-screen.md

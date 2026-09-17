@@ -13,7 +13,7 @@ import logging
 from datetime import datetime
 
 from models.database import create_tables, SessionLocal, seed_defaults, Setting, Provider, SyncRun
-from routers import settings, providers, sync as sync_router, library, duplicates, lists as lists_router, widget, radarr as radarr_router, sonarr as sonarr_router, tags as tags_router, collections as collections_router, smartlists as smartlists_router, discover as discover_router, livetv as livetv_router, auth as auth_router, activity as activity_router, notifications as notifications_router, health as health_router
+from routers import settings, providers, sync as sync_router, library, duplicates, lists as lists_router, widget, radarr as radarr_router, sonarr as sonarr_router, tags as tags_router, collections as collections_router, smartlists as smartlists_router, discover as discover_router, livetv as livetv_router, auth as auth_router, activity as activity_router, notifications as notifications_router, health as health_router, youtube as youtube_router
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
@@ -445,6 +445,30 @@ def setup_scheduler(db):
     )
     logger.info("Stream health sweep scheduled: every 24 h")
 
+    # YouTube source: index enabled channels and write their .strm/NFO files.
+    # The job checks the youtube_enabled setting itself, so the schedule can
+    # stay in place whether or not the feature is turned on.
+    from services.youtube.sync import run_youtube_sync
+    yt_interval = 60
+    try:
+        from models.database import get_setting as _get_setting
+        db_ = SessionLocal()
+        try:
+            yt_interval = int(_get_setting(db_, "youtube_index_interval_minutes", "60") or "60")
+        finally:
+            db_.close()
+    except Exception:
+        pass
+    scheduler.add_job(
+        run_youtube_sync,
+        IntervalTrigger(minutes=max(15, yt_interval)),
+        id="youtube_index",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    logger.info(f"YouTube channel indexing scheduled: every {max(15, yt_interval)} min")
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -572,6 +596,7 @@ app.include_router(activity_router.router)
 app.include_router(livetv_router.router)
 app.include_router(notifications_router.router)
 app.include_router(health_router.router)
+app.include_router(youtube_router.router)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 

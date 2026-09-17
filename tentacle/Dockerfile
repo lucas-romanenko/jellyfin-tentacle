@@ -22,7 +22,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-dejavu-core \
     fonts-liberation \
     curl \
+    unzip \
     && rm -rf /var/lib/apt/lists/*
+
+# Deno powers yt-dlp's JavaScript challenges for YouTube. Optional: without it
+# the YouTube source still resolves most videos (the visionos player client
+# needs no JS runtime), but some fall back or fail, so it is worth the ~40MB.
+ARG DENO_VERSION=v2.9.6
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+      amd64) deno_arch="x86_64-unknown-linux-gnu" ;; \
+      arm64) deno_arch="aarch64-unknown-linux-gnu" ;; \
+      *) echo "No deno build for $arch — YouTube JS challenges unavailable"; deno_arch="" ;; \
+    esac; \
+    if [ -n "$deno_arch" ]; then \
+      curl -fsSL -o /tmp/deno.zip "https://github.com/denoland/deno/releases/download/${DENO_VERSION}/deno-${deno_arch}.zip"; \
+      unzip -q /tmp/deno.zip -d /usr/local/bin; \
+      chmod +x /usr/local/bin/deno; \
+      rm /tmp/deno.zip; \
+      deno --version; \
+    fi
 
 COPY --from=builder /wheels /wheels
 COPY requirements.txt .
