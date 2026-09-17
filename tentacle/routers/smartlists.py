@@ -1048,6 +1048,38 @@ def _compute_auto_playlists(db: Session, user_id: int = None) -> list:
         b["category"] = "builtin"
     results.extend(builtins)
 
+    # ── YouTube channel playlists ──
+    # One per added channel, containing that channel's uploads (never its live
+    # streams). Listed here so a channel's playlist is visible and manageable
+    # from the Playlists page like any other, rather than existing only behind
+    # the toggle on the YouTube page.
+    from models.database import YouTubeChannel, YouTubeRowSubscription, YouTubeVideo
+    from services.youtube.indexer import is_library_status
+
+    subscribed = set()
+    if user_id is not None:
+        subscribed = {
+            r.channel_fk for r in db.query(YouTubeRowSubscription).filter(
+                YouTubeRowSubscription.user_id == user_id).all()
+        }
+    for ch in db.query(YouTubeChannel).order_by(YouTubeChannel.title).all():
+        count = db.query(func.count(YouTubeVideo.id)).filter(
+            YouTubeVideo.channel_fk == ch.id,
+            YouTubeVideo.removed_at.is_(None),
+            is_library_status(YouTubeVideo.live_status),
+        ).scalar() or 0
+        results.append({
+            "key": f"youtube:{ch.id}",
+            "name": ch.title,
+            "tag": f"yt:{ch.slug}",
+            "category": "youtube",
+            "origin": "YouTube channel",
+            "media_type": ["Movie"],
+            "item_count": count,
+            "youtube_channel_id": ch.id,
+            "youtube_enabled": ch.id in subscribed,
+        })
+
     # ── Resolve enabled state from per-user DB toggles ──
     toggle_query = db.query(AutoPlaylistToggle)
     if user_id is not None:
@@ -1057,6 +1089,9 @@ def _compute_auto_playlists(db: Session, user_id: int = None) -> list:
         if r["category"] == "list":
             # Lists use their own playlist_enabled field
             r["enabled"] = r.pop("playlist_enabled", False)
+        elif r["category"] == "youtube":
+            # YouTube channels use their row subscription, not a toggle row
+            r["enabled"] = r.pop("youtube_enabled", False)
         else:
             r["enabled"] = toggles.get(r["key"], False)
 
@@ -1077,8 +1112,26 @@ class AutoPlaylistToggleRequest(BaseModel):
 @router.post("/auto-playlists/toggle")
 def toggle_auto_playlist(req: AutoPlaylistToggleRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Toggle a per-user auto playlist on/off. Triggers sync to Jellyfin."""
+    # YouTube channels are driven by their row subscription, so toggling one
+    # here is the same action as the toggle on the YouTube page — not an
+    # AutoPlaylistToggle row, which would leave the two views disagreeing.
+    if req.key.startswith("youtube:"):
+        from models.database import YouTubeChannel, YouTubeRowSubscription
+        channel_id = int(req.key.split(":", 1)[1])
+        channel = db.query(YouTubeChannel).filter(YouTubeChannel.id == channel_id).first()
+        if not channel:
+            return {"success": False, "message": "Channel not found"}
+        sub = db.query(YouTubeRowSubscription).filter(
+            YouTubeRowSubscription.channel_fk == channel_id,
+            YouTubeRowSubscription.user_id == user.id,
+        ).first()
+        if req.enabled and not sub:
+            db.add(YouTubeRowSubscription(channel_fk=channel_id, user_id=user.id, max_items=30))
+        elif sub and not req.enabled:
+            db.delete(sub)
+        db.commit()
     # List playlists use ListSubscription.playlist_enabled
-    if req.key.startswith("list:"):
+    elif req.key.startswith("list:"):
         list_id = int(req.key.replace("list:", ""))
         lst = db.query(ListSubscription).filter(
             ListSubscription.id == list_id,

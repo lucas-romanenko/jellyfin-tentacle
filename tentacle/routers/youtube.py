@@ -424,6 +424,27 @@ def diagnose(request: Request, db: Session = Depends(get_db)):
     add(videos, "Videos indexed", f"{videos} video(s)",
         "Press 'Refresh now'. The first index takes a few minutes.")
 
+    # Library items are what a home row is built from. A channel can be
+    # indexed yet contribute nothing, most often because a setting excluded
+    # every upload — which used to be entirely invisible.
+    for ch in channels:
+        lib = db.query(YouTubeVideo).filter(
+            YouTubeVideo.channel_fk == ch.id,
+            YouTubeVideo.removed_at.is_(None),
+            indexer.is_library_status(YouTubeVideo.live_status),
+        ).count()
+        skips = ch.last_skips or {}
+        detail = f"{lib} video(s) available for its home row"
+        if skips:
+            detail += " — skipped: " + "; ".join(f"{v}× {k}" for k, v in skips.items())
+        fix = None
+        if not lib:
+            fix = (f"Nothing from '{ch.title}' can appear in a row. Settings in play: "
+                   f"videos={ch.include_videos}, past live streams={ch.include_streams}, "
+                   f"minimum length={ch.min_duration}s. If uploads were skipped for being "
+                   f"too short, lower the minimum length and press 'Refresh now'.")
+        add(lib, f"'{ch.title}' has videos for a row", detail, fix)
+
     on_disk = 0
     for v in db.query(YouTubeVideo).filter(YouTubeVideo.strm_path.isnot(None)).all():
         if v.strm_path and os.path.isfile(v.strm_path):
@@ -515,6 +536,12 @@ def list_channels(request: Request, db: Session = Depends(get_db)):
             "rating": ch.rating, "extra_tags": ch.extra_tags or [],
             "home_row": ch.id in my_rows,
             "live_enabled": ch.live_enabled,
+            "last_skips": ch.last_skips or {},
+            "library_count": db.query(YouTubeVideo).filter(
+                YouTubeVideo.channel_fk == ch.id,
+                YouTubeVideo.removed_at.is_(None),
+                indexer.is_library_status(YouTubeVideo.live_status),
+            ).count(),
             "live_now": db.query(YouTubeVideo).filter(
                 YouTubeVideo.channel_fk == ch.id,
                 YouTubeVideo.live_status == "is_live",

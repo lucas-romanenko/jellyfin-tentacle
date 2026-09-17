@@ -2738,7 +2738,8 @@ async function loadYouTubeChannels() {
       ${c.avatar_url ? `<img src="${escapeAttr(c.avatar_url)}" style="width:40px;height:40px;border-radius:50%;object-fit:cover">` : '<div style="width:40px;height:40px;border-radius:50%;background:var(--bg3)"></div>'}
       <div style="flex:1">
         <div style="font-weight:600">${escapeAttr(c.title)} ${blocked} ${err}</div>
-        <div style="font-size:12px;color:var(--text3)">${c.video_count} video${c.video_count === 1 ? '' : 's'} · max ${c.max_height}p · checked ${escapeAttr(checked)}</div>
+        <div style="font-size:12px;color:var(--text3)">${c.library_count} in library${c.live_now ? ` · ${c.live_now} live` : ''} · max ${c.max_height}p · checked ${escapeAttr(checked)}</div>
+        ${ytSkipNote(c)}
       </div>
       <label class="detail-follow-toggle" title="Add a row of this channel's videos to your Jellyfin home screen">
         <input type="checkbox" ${c.home_row ? 'checked' : ''} onchange="ytToggleRow(${c.id}, this.checked)">
@@ -2777,6 +2778,21 @@ async function ytAddChannel() {
     t.remove();
     toast(e.message, 'error', 8000);
   }
+}
+
+function ytSkipNote(c) {
+  // Skips used to be silent, so a setting that excluded every upload looked
+  // identical to nothing having been indexed.
+  const skips = c.last_skips || {};
+  const keys = Object.keys(skips);
+  if (!keys.length && c.library_count > 0) return '';
+  const parts = keys.map(k => `${skips[k]}× ${escapeAttr(k)}`).join(' · ');
+  const warn = c.library_count === 0;
+  return `<div style="font-size:11px;margin-top:3px;color:var(--${warn ? 'red' : 'text3'})">`
+    + (warn ? 'Nothing available for a home row. ' : '')
+    + (parts ? `Skipped: ${parts}` : '')
+    + (warn ? ` <a href="#" onclick="ytDiagnose();return false">why?</a>` : '')
+    + '</div>';
 }
 
 function ytLiveState(c) {
@@ -5903,7 +5919,7 @@ async function loadHealthDeletions() {
     showManageEpisodesModal, confirmManageEpisodes,
     showDownloadMoreModal, confirmDownloadMore, detailToggleSeason, toggleFollow,
     // YouTube
-    loadYouTubePage, loadYouTubeChannels, ytAddChannel, ytDeleteChannel, ytRefreshNow, ytSaveSetup, ytStartPolling, ytDiagnose,
+    loadYouTubePage, loadYouTubeChannels, ytAddChannel, ytDeleteChannel, ytRefreshNow, ytSaveSetup, ytStartPolling, ytDiagnose, ytSkipNote,
     ytToggleRow, ytToggleLive,
     // Following
     loadFollowing,

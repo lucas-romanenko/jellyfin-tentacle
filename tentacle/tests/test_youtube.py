@@ -574,3 +574,93 @@ class TestPostLiveStatus(unittest.TestCase):
         v = self.YouTubeVideo(channel_fk=self.channel.id, video_id="aaaaaaaaaaa",
                               title="x", live_status="post_live")
         self.assertTrue(is_library_item(v))
+
+
+class TestPlaylistIsUploadsOnly(unittest.TestCase):
+    """A channel's playlist holds its uploads — never its live streams.
+
+    This is the whole point of the feature: the home row shows what the channel
+    posted, and live broadcasts belong to Live TV.
+    """
+
+    def setUp(self):
+        import tempfile as _tf
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        import models.database as mdb
+        from models.database import (TentacleUser, YouTubeChannel,
+                                     YouTubeRowSubscription, YouTubeVideo)
+        self.mdb = mdb
+        self.YouTubeVideo, self.YouTubeRowSubscription = YouTubeVideo, YouTubeRowSubscription
+        engine = create_engine(f"sqlite:///{_tf.mkdtemp()}/t.db")
+        mdb.Base.metadata.create_all(engine)
+        self.db = sessionmaker(bind=engine)()
+        self.db.add(TentacleUser(jellyfin_user_id="u1", display_name="lucas", is_admin=True))
+        self.channel = YouTubeChannel(
+            input_url="u", kind="channel", channel_id="UC" + "a" * 22,
+            title="TraderTV Live", slug="tradertv-live", enabled=True,
+            include_videos=True, include_streams=False, extra_tags=[])
+        self.db.add(self.channel)
+        self.db.commit()
+        self.db.refresh(self.channel)
+        self.user = self.db.query(TentacleUser).first()
+        # A realistic mix, including a NULL status
+        for vid, st in (("aaaaaaaaaaa", None), ("bbbbbbbbbbb", "not_live"),
+                        ("ccccccccccc", "is_live"), ("ddddddddddd", "is_upcoming"),
+                        ("eeeeeeeeeee", "was_live")):
+            self.db.add(self.YouTubeVideo(channel_fk=self.channel.id, video_id=vid,
+                                          title=vid, live_status=st, duration=300))
+        self.db.commit()
+
+    def test_counts_exclude_pending_broadcasts_but_include_null_status(self):
+        # NULL NOT IN (...) is NULL in SQL, so a bare NOT IN silently dropped
+        # every video whose status was never set.
+        from routers.smartlists import _compute_auto_playlists
+        row = next(r for r in _compute_auto_playlists(self.db, user_id=self.user.id)
+                   if r["category"] == "youtube")
+        self.assertEqual(row["item_count"], 3)   # NULL + not_live + was_live
+
+    def test_the_channel_appears_on_the_playlists_page(self):
+        from routers.smartlists import _compute_auto_playlists
+        rows = [r for r in _compute_auto_playlists(self.db, user_id=self.user.id)
+                if r["category"] == "youtube"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["name"], "TraderTV Live")
+        self.assertEqual(rows[0]["tag"], "yt:tradertv-live")
+        self.assertEqual(rows[0]["origin"], "YouTube channel")
+
+    def test_enabled_state_follows_the_row_subscription(self):
+        from routers.smartlists import _compute_auto_playlists
+        def enabled():
+            return next(r for r in _compute_auto_playlists(self.db, user_id=self.user.id)
+                        if r["category"] == "youtube")["enabled"]
+        self.assertFalse(enabled())
+        self.db.add(self.YouTubeRowSubscription(channel_fk=self.channel.id,
+                                               user_id=self.user.id, max_items=30))
+        self.db.commit()
+        self.assertTrue(enabled())
+
+    def test_the_desired_playlist_is_movies_sorted_newest_first(self):
+        from services.smartlists import get_desired_smartlists
+        self.db.add(self.YouTubeRowSubscription(channel_fk=self.channel.id,
+                                               user_id=self.user.id, max_items=30))
+        self.db.commit()
+        sl = next(s for s in get_desired_smartlists(self.db, user_id=self.user.id)
+                  if s["name"] == "TraderTV Live")
+        self.assertEqual(sl["tag"], "yt:tradertv-live")
+        self.assertEqual(sl["media_type"], ["Movie"])
+        self.assertEqual(sl["default_sort"], "ReleaseDate")
+
+    def test_skip_reasons_are_recorded_for_the_user_to_see(self):
+        from services.youtube import indexer
+        with mock.patch.object(indexer.client, "flat_listing",
+                               return_value={"entries": [{"id": "fffffffffff"}]}), \
+             mock.patch.object(indexer.client, "video_details",
+                               return_value={"live_status": None, "duration": 20,
+                                             "availability": "public"}):
+            self.channel.min_duration = 600
+            r = indexer.index_channel(self.db, self.channel)
+        self.assertEqual(r["new"], 0)
+        self.assertTrue(r["skips"], "a silent skip is why this looked like nothing happened")
+        self.assertTrue(any("minimum" in k for k in r["skips"]), r["skips"])
+        self.assertEqual(self.channel.last_skips, r["skips"])

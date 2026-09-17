@@ -272,6 +272,12 @@ class YouTubeChannel(Base):
     last_checked = Column(DateTime, nullable=True)
     last_error = Column(String, nullable=True)
     error_count = Column(Integer, default=0)
+    # Why videos were passed over on the last index, as {reason: count}. Skips
+    # were silent, so a setting quietly excluding every upload (a min duration
+    # above the channel's typical video length, say) looked like nothing had
+    # been indexed at all.
+    last_skips = Column(JSON, default=dict)
+    last_indexed_count = Column(Integer, default=0)
     # Set when YouTube asks us to prove we're not a bot. Indexing backs off
     # until this passes rather than hammering and making it worse.
     blocked_until = Column(DateTime, nullable=True)

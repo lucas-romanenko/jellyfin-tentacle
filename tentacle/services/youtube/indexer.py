@@ -38,6 +38,17 @@ DETAIL_SPACING_SECONDS = 5.0
 BLOCK_BACKOFF_HOURS = 6
 
 
+
+def is_library_status(column):
+    """SQL filter for "this is a library item, not a pending broadcast".
+
+    Written out rather than a bare NOT IN because SQL evaluates
+    `NULL NOT IN (...)` as NULL, not true — so any video whose live_status was
+    never set would be silently dropped from every count.
+    """
+    from sqlalchemy import or_
+    return or_(column.is_(None), column.notin_(PENDING_LIVE))
+
 def slugify(text: str) -> str:
     """Filesystem- and tag-safe identifier for a channel."""
     slug = re.sub(r"[^A-Za-z0-9]+", "-", (text or "").strip()).strip("-").lower()
@@ -271,12 +282,21 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
             ).update({YouTubeVideo.last_seen: now}, synchronize_session=False)
 
     added, skipped = 0, 0
+    skips: dict = {}
+
+    def _note_skip(reason: str):
+        nonlocal skipped
+        skipped += 1
+        # Keep the reason, drop the specifics, so counts aggregate.
+        key = re.sub(r"\d+", "N", reason)
+        skips[key] = skips.get(key, 0) + 1
+
     for vid, entry in new_videos:
         try:
             details = client.video_details(vid)
         except VideoUnavailable as e:
             logger.debug(f"[YouTube] Skipping {vid}: {e}")
-            skipped += 1
+            _note_skip("unavailable (private, members-only or removed)")
             continue
         except YouTubeBlocked as e:
             channel.blocked_until = datetime.utcnow() + timedelta(hours=BLOCK_BACKOFF_HOURS)
@@ -285,13 +305,13 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
             raise
         except YouTubeError as e:
             logger.debug(f"[YouTube] Details failed for {vid}: {e}")
-            skipped += 1
+            _note_skip("could not read details")
             continue
 
         keep, reason = _should_index(details, channel)
         if not keep:
             logger.debug(f"[YouTube] Skipping {vid}: {reason}")
-            skipped += 1
+            _note_skip(reason)
             continue
 
         db.add(YouTubeVideo(
@@ -327,9 +347,17 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
     channel.last_error = None
     channel.error_count = 0
     channel.blocked_until = None
+    channel.last_skips = skips
+    channel.last_indexed_count = db.query(YouTubeVideo).filter(
+        YouTubeVideo.channel_fk == channel.id,
+        YouTubeVideo.removed_at.is_(None),
+    ).count()
     db.commit()
     logger.info(f"[YouTube] '{channel.title}': {added} new, {len(seen_ids)} listed, {skipped} skipped")
-    return {"skipped": False, "new": added, "seen": len(seen_ids), "filtered": skipped}
+    if skips:
+        logger.info(f"[YouTube] '{channel.title}' skips: {skips}")
+    return {"skipped": False, "new": added, "seen": len(seen_ids),
+            "filtered": skipped, "skips": skips}
 
 
 def _published(details: dict):
