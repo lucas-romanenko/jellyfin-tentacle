@@ -2788,8 +2788,17 @@ function ytSkipNote(c) {
   if (!keys.length && c.library_count > 0) return '';
   const parts = keys.map(k => `${skips[k]}× ${escapeAttr(k)}`).join(' · ');
   const warn = c.library_count === 0;
+  // "Nothing to show" has two opposite causes — YouTube listed no uploads, or
+  // it listed plenty and the channel's settings excluded them all. Name which.
+  const listing = c.last_listing || {};
+  let why = '';
+  if (warn) {
+    if (!c.include_videos) why = 'Videos is turned off, so only live streams are looked at. ';
+    else if (listing.videos === 0) why = 'This channel has no uploads — it only broadcasts live. ';
+    else why = 'Nothing available for a home row. ';
+  }
   return `<div style="font-size:11px;margin-top:3px;color:var(--${warn ? 'red' : 'text3'})">`
-    + (warn ? 'Nothing available for a home row. ' : '')
+    + why
     + (parts ? `Skipped: ${parts}` : '')
     + (warn ? ` <a href="#" onclick="ytDiagnose();return false">why?</a>` : '')
     + '</div>';

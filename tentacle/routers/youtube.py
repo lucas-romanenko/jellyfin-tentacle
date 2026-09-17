@@ -353,7 +353,7 @@ def status(request: Request, db: Session = Depends(get_db)):
         "yt_dlp_available": client.available(),
         "yt_dlp_version": client.version(),
         "channels": db.query(YouTubeChannel).count(),
-        "videos": db.query(YouTubeVideo).count(),
+        "videos": db.query(YouTubeVideo).filter(YouTubeVideo.removed_at.is_(None)).count(),
         "resolver_cache": resolver.cache_size(),
     }
 
@@ -434,15 +434,32 @@ def diagnose(request: Request, db: Session = Depends(get_db)):
             indexer.is_library_status(YouTubeVideo.live_status),
         ).count()
         skips = ch.last_skips or {}
+        listing = ch.last_listing or {}
         detail = f"{lib} video(s) available for its home row"
+        if listing:
+            detail += " — YouTube listed " + ", ".join(
+                f"{n} on /{tab}" for tab, n in listing.items())
         if skips:
-            detail += " — skipped: " + "; ".join(f"{v}× {k}" for k, v in skips.items())
+            detail += "; skipped " + "; ".join(f"{v}× {k}" for k, v in skips.items())
         fix = None
         if not lib:
-            fix = (f"Nothing from '{ch.title}' can appear in a row. Settings in play: "
-                   f"videos={ch.include_videos}, past live streams={ch.include_streams}, "
-                   f"minimum length={ch.min_duration}s. If uploads were skipped for being "
-                   f"too short, lower the minimum length and press 'Refresh now'.")
+            # "Nothing to show" has two opposite causes. Say which one this is
+            # rather than listing every setting and leaving the user to guess.
+            if not ch.include_videos:
+                fix = ("'Videos' is turned off for this channel, so its uploads are never "
+                       "looked at — only its live streams. Turn Videos on and press "
+                       "'Refresh now'.")
+            elif not listing.get("videos"):
+                fix = (f"YouTube's Videos tab for '{ch.title}' returned nothing, so there are "
+                       f"no uploads to show — the channel may only ever broadcast live. Its "
+                       f"live streams still work as a Live TV channel. To keep finished "
+                       f"broadcasts as well, turn on 'Past live streams'.")
+            elif skips:
+                fix = (f"Every upload was skipped. Reason(s) above. The minimum length is "
+                       f"{ch.min_duration}s — if uploads were skipped for being too short, "
+                       f"lower it and press 'Refresh now'.")
+            else:
+                fix = "Press 'Refresh now'. The first index takes a few minutes."
         add(lib, f"'{ch.title}' has videos for a row", detail, fix)
 
     on_disk = 0
@@ -527,7 +544,9 @@ def list_channels(request: Request, db: Session = Depends(get_db)):
             "id": ch.id, "title": ch.title, "slug": ch.slug, "kind": ch.kind,
             "input_url": ch.input_url, "avatar_url": ch.avatar_url,
             "enabled": ch.enabled,
-            "video_count": db.query(YouTubeVideo).filter(YouTubeVideo.channel_fk == ch.id).count(),
+            "video_count": db.query(YouTubeVideo).filter(
+                YouTubeVideo.channel_fk == ch.id,
+                YouTubeVideo.removed_at.is_(None)).count(),
             "last_checked": ch.last_checked, "last_error": ch.last_error,
             "blocked_until": ch.blocked_until,
             "include_videos": ch.include_videos, "include_streams": ch.include_streams,
@@ -537,6 +556,7 @@ def list_channels(request: Request, db: Session = Depends(get_db)):
             "home_row": ch.id in my_rows,
             "live_enabled": ch.live_enabled,
             "last_skips": ch.last_skips or {},
+            "last_listing": ch.last_listing or {},
             "library_count": db.query(YouTubeVideo).filter(
                 YouTubeVideo.channel_fk == ch.id,
                 YouTubeVideo.removed_at.is_(None),

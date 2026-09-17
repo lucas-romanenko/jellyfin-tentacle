@@ -278,6 +278,10 @@ class YouTubeChannel(Base):
     # been indexed at all.
     last_skips = Column(JSON, default=dict)
     last_indexed_count = Column(Integer, default=0)
+    # What each listing tab returned on the last index, e.g. {"videos": 12,
+    # "streams": 6}. Separates "YouTube listed nothing" from "settings excluded
+    # everything" — opposite problems that look identical from outside.
+    last_listing = Column(JSON, default=dict)
     # Set when YouTube asks us to prove we're not a bot. Indexing backs off
     # until this passes rather than hammering and making it worse.
     blocked_until = Column(DateTime, nullable=True)
@@ -306,6 +310,11 @@ class YouTubeVideo(Base):
     first_seen = Column(DateTime, default=datetime.utcnow)
     last_seen = Column(DateTime, default=datetime.utcnow)
     removed_at = Column(DateTime, nullable=True)
+    # Why a video was passed over, recorded on the row so it is never detailed
+    # again. Details are rate-limited to one every few seconds, and without this
+    # a channel's excluded back catalogue was re-fetched on every single
+    # refresh — minutes of work per run, to reach the same answer.
+    skip_reason = Column(String, nullable=True)
 
     channel = relationship("YouTubeChannel", back_populates="videos")
 
@@ -711,6 +720,34 @@ def _sqlite_type_for(column) -> str:
     return base
 
 
+def _backfill_default(cursor, conn, table: str, col) -> None:
+    """Give existing rows the model's default for a newly added column.
+
+    ALTER TABLE ADD COLUMN fills existing rows with NULL. A model default is
+    applied by SQLAlchemy at INSERT time only, so it never reaches rows that
+    were already there — and for a column that defaults to True, NULL is read
+    as False. A boolean like `include_videos` flipping to False on upgrade
+    silently stops work happening at all, with nothing in the logs to say why.
+    Only plain scalar defaults are backfilled; callables (datetime.utcnow,
+    dict) are left to the application.
+    """
+    default = getattr(col.default, "arg", None) if col.default is not None else None
+    if default is None or callable(default):
+        return
+    if not isinstance(default, (bool, int, float, str)):
+        return
+    try:
+        cursor.execute(
+            f"UPDATE {table} SET {col.name} = ? WHERE {col.name} IS NULL", (default,))
+        if cursor.rowcount:
+            logger.info(
+                f"[migrate] Backfilled {cursor.rowcount} row(s) of "
+                f"{table}.{col.name} with {default!r}")
+        conn.commit()
+    except sqlite3.OperationalError as e:
+        logger.error(f"[migrate] Backfill of {table}.{col.name} failed: {e}")
+
+
 def _existing_columns(cursor, table: str) -> set:
     """Return the set of existing column names for a table (empty if no table)."""
     try:
@@ -797,6 +834,8 @@ def _migrate_columns():
                     pass
                 else:
                     logger.error(f"[migrate] ALTER {table_name}.{col.name} failed: {e}")
+                continue
+            _backfill_default(cursor, conn, table_name, col)
 
     # Recreate tables that need PK changes (HomeRowOrder, AutoPlaylistToggle)
     _migrate_home_row_order(cursor, conn)

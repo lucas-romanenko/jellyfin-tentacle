@@ -501,7 +501,7 @@ class TestFinishedStreamsStayOutOfTheLibrary(unittest.TestCase):
                 live_status=status, duration=600))
         self.db.commit()
 
-        removed = indexer._drop_disqualified(self.db, self.channel)
+        removed = indexer._apply_stream_preference(self.db, self.channel)
         self.assertEqual(removed, 1)
         survivors = self.db.query(self.YouTubeVideo).filter(
             self.YouTubeVideo.removed_at.is_(None)).all()
@@ -513,7 +513,7 @@ class TestFinishedStreamsStayOutOfTheLibrary(unittest.TestCase):
         self.db.add(self.YouTubeVideo(channel_fk=self.channel.id, video_id="aaaaaaaaaaa",
                                       title="old stream", live_status="was_live"))
         self.db.commit()
-        self.assertEqual(indexer._drop_disqualified(self.db, self.channel), 0)
+        self.assertEqual(indexer._apply_stream_preference(self.db, self.channel), 0)
 
 
 class TestPostLiveStatus(unittest.TestCase):
@@ -564,7 +564,7 @@ class TestPostLiveStatus(unittest.TestCase):
             self.db.add(self.YouTubeVideo(channel_fk=self.channel.id, video_id=vid,
                                           title=vid, live_status=st, duration=600))
         self.db.commit()
-        self.assertEqual(indexer._drop_disqualified(self.db, self.channel), 2)
+        self.assertEqual(indexer._apply_stream_preference(self.db, self.channel), 2)
         left = self.db.query(self.YouTubeVideo).filter(
             self.YouTubeVideo.removed_at.is_(None)).all()
         self.assertEqual([v.video_id for v in left], ["ccccccccccc"])
@@ -664,3 +664,234 @@ class TestPlaylistIsUploadsOnly(unittest.TestCase):
         self.assertTrue(r["skips"], "a silent skip is why this looked like nothing happened")
         self.assertTrue(any("minimum" in k for k in r["skips"]), r["skips"])
         self.assertEqual(self.channel.last_skips, r["skips"])
+
+
+class TestStreamPreferenceIsReversible(unittest.TestCase):
+    """Turning "Past live streams" back on has to bring them back.
+
+    A video is detailed once, on the run that first sees it; everything already
+    in the table is skipped as "known". So a finished broadcast removed when the
+    preference was off was never reconsidered when it went back on, and the
+    setting was quietly one-way — the user turns it on, presses Refresh, and
+    nothing happens.
+    """
+
+    def setUp(self):
+        import tempfile as _tf
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        import models.database as mdb
+        from models.database import YouTubeChannel, YouTubeVideo
+        self.YouTubeVideo = YouTubeVideo
+        engine = create_engine(f"sqlite:///{_tf.mkdtemp()}/t.db")
+        mdb.Base.metadata.create_all(engine)
+        self.db = sessionmaker(bind=engine)()
+        self.channel = YouTubeChannel(
+            input_url="u", kind="channel", channel_id="UC" + "r" * 22,
+            title="Ch", slug="ch", enabled=True, live_enabled=True,
+            include_videos=True, include_streams=False, min_duration=60,
+            extra_tags=[])
+        self.db.add(self.channel)
+        self.db.commit()
+        self.db.refresh(self.channel)
+        for vid, st in (("aaaaaaaaaaa", "was_live"), ("bbbbbbbbbbb", "post_live"),
+                        ("ccccccccccc", None)):
+            self.db.add(YouTubeVideo(channel_fk=self.channel.id, video_id=vid,
+                                     title=vid, live_status=st, duration=600))
+        self.db.commit()
+
+    def _live(self):
+        return sorted(v.video_id for v in self.db.query(self.YouTubeVideo).filter(
+            self.YouTubeVideo.removed_at.is_(None)).all())
+
+    def test_turning_the_preference_off_then_on_restores_them(self):
+        from services.youtube import indexer
+        self.assertEqual(indexer._apply_stream_preference(self.db, self.channel), 2)
+        self.assertEqual(self._live(), ["ccccccccccc"])
+
+        self.channel.include_streams = True
+        # Negative = restored, so the caller can tell the two directions apart.
+        self.assertEqual(indexer._apply_stream_preference(self.db, self.channel), -2)
+        self.assertEqual(self._live(), ["aaaaaaaaaaa", "bbbbbbbbbbb", "ccccccccccc"])
+
+    def test_restoring_is_idempotent(self):
+        from services.youtube import indexer
+        self.channel.include_streams = True
+        self.assertEqual(indexer._apply_stream_preference(self.db, self.channel), 0)
+        self.assertEqual(len(self._live()), 3)
+
+    def test_an_ordinary_video_is_never_restored_by_it(self):
+        # Retention removes videos the channel no longer lists. That is not a
+        # settings decision and must not be undone here.
+        from services.youtube import indexer
+        gone = self.db.query(self.YouTubeVideo).filter(
+            self.YouTubeVideo.video_id == "ccccccccccc").first()
+        gone.removed_at = datetime.utcnow()
+        self.db.commit()
+        self.channel.include_streams = True
+        indexer._apply_stream_preference(self.db, self.channel)
+        self.assertEqual(self._live(), ["aaaaaaaaaaa", "bbbbbbbbbbb"])
+
+
+class TestColumnDefaultsSurviveUpgrade(unittest.TestCase):
+    """ALTER TABLE ADD COLUMN fills existing rows with NULL.
+
+    A model default is applied by SQLAlchemy at INSERT time, so it never reaches
+    rows that already exist. For a boolean defaulting to True that reads as
+    False on every upgraded row — `include_videos` going False means a channel's
+    uploads are never even looked at, with nothing in the logs to say why.
+    """
+
+    def setUp(self):
+        import sqlite3
+        import tempfile as _tf
+        self.sqlite3 = sqlite3
+        self.path = _tf.mkdtemp() + "/t.db"
+        self.conn = sqlite3.connect(self.path)
+        self.cursor = self.conn.cursor()
+        self.cursor.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
+        self.cursor.execute("INSERT INTO t (id) VALUES (1)")
+        self.conn.commit()
+
+    def _add(self, name, sql_type, column):
+        import models.database as mdb
+        self.cursor.execute(f"ALTER TABLE t ADD COLUMN {name} {sql_type}")
+        self.conn.commit()
+        mdb._backfill_default(self.cursor, self.conn, "t", column)
+        self.cursor.execute(f"SELECT {name} FROM t WHERE id = 1")
+        return self.cursor.fetchone()[0]
+
+    def test_a_true_default_reaches_existing_rows(self):
+        from sqlalchemy import Boolean, Column
+        col = Column("include_videos", Boolean, default=True)
+        col.name = "include_videos"
+        self.assertEqual(self._add("include_videos", "BOOLEAN", col), 1)
+
+    def test_a_false_default_reaches_existing_rows(self):
+        from sqlalchemy import Boolean, Column
+        col = Column("include_streams", Boolean, default=False)
+        col.name = "include_streams"
+        self.assertEqual(self._add("include_streams", "BOOLEAN", col), 0)
+
+    def test_a_numeric_default_reaches_existing_rows(self):
+        from sqlalchemy import Column, Integer
+        col = Column("min_duration", Integer, default=60)
+        col.name = "min_duration"
+        self.assertEqual(self._add("min_duration", "INTEGER", col), 60)
+
+    def test_a_column_with_no_default_is_left_null(self):
+        from sqlalchemy import Column, Integer
+        col = Column("whatever", Integer)
+        col.name = "whatever"
+        self.assertIsNone(self._add("whatever", "INTEGER", col))
+
+    def test_a_callable_default_is_left_to_the_application(self):
+        # datetime.utcnow / dict / list — these are not stable scalars and
+        # writing one value into every row would be wrong.
+        from sqlalchemy import Column, JSON
+        col = Column("last_skips", JSON, default=dict)
+        col.name = "last_skips"
+        self.assertIsNone(self._add("last_skips", "JSON", col))
+
+
+class TestSkippedVideosAreRemembered(unittest.TestCase):
+    """A skipped video has to leave a trace, or it is re-detailed forever.
+
+    Details are fetched one every few seconds to stay under YouTube's rate
+    limit. A skipped video used to be dropped on the floor, so it was "new"
+    again on the next run — a channel whose back catalogue is mostly excluded
+    paid the full detail cost on every single refresh and never settled.
+    """
+
+    def setUp(self):
+        import tempfile as _tf
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        import models.database as mdb
+        from models.database import YouTubeChannel, YouTubeVideo
+        from services.youtube import client, indexer
+        self.YouTubeVideo = YouTubeVideo
+        self.indexer = indexer
+        engine = create_engine(f"sqlite:///{_tf.mkdtemp()}/t.db")
+        mdb.Base.metadata.create_all(engine)
+        self.db = sessionmaker(bind=engine)()
+        self.channel = YouTubeChannel(
+            input_url="u", kind="channel", channel_id="UC" + "s" * 22,
+            title="Ch", slug="ch", enabled=True, include_videos=True,
+            include_streams=False, include_shorts=False, min_duration=60,
+            backfill=10, extra_tags=[])
+        self.db.add(self.channel)
+        self.db.commit()
+        self.db.refresh(self.channel)
+
+        self.entries = [{"id": "a" * 11, "title": "upload"},
+                        {"id": "b" * 11, "title": "old broadcast"},
+                        {"id": "c" * 11, "title": "clip"}]
+        self.details = {
+            "a" * 11: {"title": "upload", "duration": 600, "availability": "public"},
+            "b" * 11: {"title": "old broadcast", "duration": 3600,
+                       "live_status": "was_live", "availability": "public"},
+            "c" * 11: {"title": "clip", "duration": 20, "availability": "public"},
+        }
+        self.detail_calls = []
+        self._real_listing, self._real_details = client.flat_listing, client.video_details
+        self._real_sleep = indexer.time.sleep
+        client.flat_listing = lambda url, limit: {"entries": list(self.entries)}
+        def _details(vid):
+            self.detail_calls.append(vid)
+            return dict(self.details[vid])
+        client.video_details = _details
+        indexer.time.sleep = lambda s: None
+
+    def tearDown(self):
+        from services.youtube import client
+        client.flat_listing, client.video_details = self._real_listing, self._real_details
+        self.indexer.time.sleep = self._real_sleep
+
+    def _index(self):
+        return self.indexer.index_channel(self.db, self.channel)
+
+    def test_a_second_run_re_reads_nothing(self):
+        first = self._index()
+        self.assertEqual(first["new"], 1)
+        self.assertEqual(first["filtered"], 2)
+        self.assertEqual(len(self.detail_calls), 3)
+
+        self.detail_calls.clear()
+        second = self._index()
+        self.assertEqual(self.detail_calls, [], "skipped videos were fetched again")
+        self.assertEqual(second["new"], 0)
+
+    def test_the_skipped_rows_stay_out_of_the_library(self):
+        self._index()
+        live = self.db.query(self.YouTubeVideo).filter(
+            self.YouTubeVideo.removed_at.is_(None)).all()
+        self.assertEqual([v.video_id for v in live], ["a" * 11])
+
+    def test_each_row_records_why_it_was_passed_over(self):
+        self._index()
+        reasons = {v.video_id: v.skip_reason for v in
+                   self.db.query(self.YouTubeVideo).filter(
+                       self.YouTubeVideo.skip_reason.isnot(None)).all()}
+        self.assertEqual(reasons["b" * 11], self.indexer.STREAM_PREFERENCE_REASON)
+        self.assertIn("under minimum", reasons["c" * 11])
+
+    def test_turning_past_live_streams_on_brings_back_only_that_one(self):
+        self._index()
+        self.channel.include_streams = True
+        self.db.commit()
+        self.detail_calls.clear()
+        self._index()
+        live = sorted(v.video_id for v in self.db.query(self.YouTubeVideo).filter(
+            self.YouTubeVideo.removed_at.is_(None)).all())
+        self.assertEqual(live, ["a" * 11, "b" * 11])
+        # The short clip was excluded by the minimum length, which this
+        # preference has no business overriding.
+        self.assertEqual(self.detail_calls, [])
+
+    def test_what_each_tab_returned_is_recorded(self):
+        # "No videos" has two opposite causes — YouTube listed nothing, or it
+        # listed plenty that the settings excluded. Only this tells them apart.
+        result = self._index()
+        self.assertEqual(result["listing"], {"videos": 3})
+        self.assertEqual(self.channel.last_listing, {"videos": 3})

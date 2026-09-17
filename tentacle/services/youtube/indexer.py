@@ -36,6 +36,9 @@ _CHANNEL_ID_RE = re.compile(r"^UC[A-Za-z0-9_-]{22}$")
 DETAIL_SPACING_SECONDS = 5.0
 # How long to stand down after a bot check. Retrying into one makes it worse.
 BLOCK_BACKOFF_HOURS = 6
+# Recorded verbatim on skipped rows so the restore path can find exactly the
+# videos this preference excluded, and not ones excluded for another reason.
+STREAM_PREFERENCE_REASON = "finished live stream and past live streams are not included"
 
 
 
@@ -157,7 +160,7 @@ def _should_index(details: dict, channel: YouTubeChannel) -> tuple:
         # "Past live streams" is a separate, explicit choice. Without this a
         # channel that mostly streams filled the library with old broadcasts
         # instead of its actual uploads.
-        return False, "finished live stream and past live streams are not included"
+        return False, STREAM_PREFERENCE_REASON
 
     duration = details.get("duration") or 0
     if channel.min_duration and duration and duration < channel.min_duration:
@@ -175,18 +178,41 @@ def is_library_item(video) -> bool:
     return video.live_status not in PENDING_LIVE
 
 
-def _drop_disqualified(db: Session, channel: YouTubeChannel) -> int:
-    """Remove library items that no longer match the channel's settings.
+def _apply_stream_preference(db: Session, channel: YouTubeChannel) -> int:
+    """Bring finished broadcasts into line with the "Past live streams" setting.
 
-    Settings change after the fact — most importantly, enabling Live TV used to
-    pull a channel's finished broadcasts into the library. Turning "Past live
-    streams" off should clear them out rather than leaving them stranded, and
-    only the video's own folder is touched.
+    Settings change after the fact, and this has to work in both directions.
+    Turning the preference off clears finished broadcasts out rather than
+    leaving them stranded; turning it back on has to bring them back, which it
+    previously did not. A video is only ever detailed once, on the run that
+    first sees it, so anything already in the table is skipped as "known" — a
+    video removed here would therefore never be reconsidered, and the setting
+    was effectively one-way. Its live_status is already recorded, so restoring
+    it needs no further calls to YouTube.
+
+    Only a video's own folder is ever touched; nothing recurses over a shared
+    parent.
     """
     from services.youtube import library
 
     if channel.include_streams:
-        return 0
+        candidates = db.query(YouTubeVideo).filter(
+            YouTubeVideo.channel_fk == channel.id,
+            YouTubeVideo.live_status.in_(FINISHED_LIVE),
+            YouTubeVideo.removed_at.isnot(None),
+            YouTubeVideo.skip_reason == STREAM_PREFERENCE_REASON,
+        ).all()
+        # The minimum length still applies — this preference only undoes its own
+        # exclusions, never someone else's.
+        restored = [v for v in candidates
+                    if not (channel.min_duration and v.duration
+                            and v.duration < channel.min_duration)]
+        for video in restored:
+            video.removed_at = None
+            video.skip_reason = None
+        if restored:
+            db.commit()
+        return -len(restored)
 
     stale = db.query(YouTubeVideo).filter(
         YouTubeVideo.channel_fk == channel.id,
@@ -197,6 +223,7 @@ def _drop_disqualified(db: Session, channel: YouTubeChannel) -> int:
         library.remove_video(video)
         video.removed_at = datetime.utcnow()
         video.strm_path = None
+        video.skip_reason = STREAM_PREFERENCE_REASON
     if stale:
         db.commit()
     return len(stale)
@@ -218,16 +245,25 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
         YouTubeVideo.channel_fk == channel.id).all()}
 
     seen_ids, new_videos = [], []
+    # What each tab actually returned, kept on the channel afterwards. Without
+    # it, "no videos" is ambiguous: YouTube may have listed nothing, or it may
+    # have listed plenty that the channel's settings then excluded. Those need
+    # opposite fixes, and telling them apart previously meant reading the logs.
+    listing: dict = {}
     try:
         for url in _tab_urls(channel):
             info = client.flat_listing(url, limit)
+            tab = url.rsplit("/", 1)[-1] if "/playlist?" not in url else "playlist"
+            count = 0
             for entry in (info.get("entries") or []):
                 vid = entry.get("id")
                 if not vid or not VIDEO_ID_RE.match(vid):
                     continue
+                count += 1
                 seen_ids.append(vid)
                 if vid not in known:
                     new_videos.append((vid, entry))
+            listing[tab] = count
     except YouTubeBlocked as e:
         channel.blocked_until = datetime.utcnow() + timedelta(hours=BLOCK_BACKOFF_HOURS)
         channel.last_error = "YouTube asked us to prove we're not a bot — backing off"
@@ -312,6 +348,26 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
         if not keep:
             logger.debug(f"[YouTube] Skipping {vid}: {reason}")
             _note_skip(reason)
+            # Recorded, not discarded. Details are fetched one every few
+            # seconds, and a skipped video used to leave no trace — so a
+            # channel whose back catalogue is mostly excluded paid the full
+            # detail cost again on every refresh, and never settled.
+            db.add(YouTubeVideo(
+                channel_fk=channel.id,
+                video_id=vid,
+                title=details.get("title") or entry.get("title") or vid,
+                published_at=_published(details),
+                duration=details.get("duration"),
+                live_status=details.get("live_status"),
+                media_type="livestream" if details.get("live_status") else "video",
+                thumbnail_url=details.get("thumbnail"),
+                first_seen=now,
+                last_seen=now,
+                removed_at=now,
+                skip_reason=reason,
+            ))
+            db.commit()
+            time.sleep(DETAIL_SPACING_SECONDS)
             continue
 
         db.add(YouTubeVideo(
@@ -336,11 +392,15 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
             on_progress(added, len(new_videos))
         time.sleep(DETAIL_SPACING_SECONDS)
 
-    unindexed = _drop_disqualified(db, channel)
-    if unindexed:
+    unindexed = _apply_stream_preference(db, channel)
+    if unindexed > 0:
         logger.info(
             f"[YouTube] Removed {unindexed} item(s) from '{channel.title}' that no longer "
             f"match its settings"
+        )
+    elif unindexed < 0:
+        logger.info(
+            f"[YouTube] Restored {-unindexed} past live stream(s) to '{channel.title}'"
         )
 
     channel.last_checked = now
@@ -348,6 +408,7 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
     channel.error_count = 0
     channel.blocked_until = None
     channel.last_skips = skips
+    channel.last_listing = listing
     channel.last_indexed_count = db.query(YouTubeVideo).filter(
         YouTubeVideo.channel_fk == channel.id,
         YouTubeVideo.removed_at.is_(None),
@@ -357,7 +418,7 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
     if skips:
         logger.info(f"[YouTube] '{channel.title}' skips: {skips}")
     return {"skipped": False, "new": added, "seen": len(seen_ids),
-            "filtered": skipped, "skips": skips}
+            "filtered": skipped, "skips": skips, "listing": listing}
 
 
 def _published(details: dict):
