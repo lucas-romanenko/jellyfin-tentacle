@@ -31,6 +31,19 @@ UPSTREAM_TIMEOUT = httpx.Timeout(connect=15.0, read=60.0, write=10.0, pool=15.0)
 
 # ── Playback (public) ───────────────────────────────────────────────────────
 
+def _proxy_prefix(db: Session, video_id: str) -> str:
+    """Absolute prefix for rewritten playlist URLs.
+
+    Absolute on purpose. Root-relative paths only resolve correctly while the
+    playlist is being read straight off this server — anything that relocates
+    it (writes it to a temp file, hands it to a player with a different base)
+    loses the host and every segment 404s. The .strm already carries an
+    absolute URL for the same reason.
+    """
+    base = (get_setting(db, "youtube_base_url", "") or "").strip().rstrip("/")
+    return f"{base}/api/youtube/v/{video_id}" if base else f"/api/youtube/v/{video_id}"
+
+
 def _known_video(db: Session, video_id: str) -> YouTubeVideo:
     if not indexer.VIDEO_ID_RE.match(video_id or ""):
         raise HTTPException(400, "Invalid video id")
@@ -62,7 +75,7 @@ def master_playlist(video_id: str, db: Session = Depends(get_db)):
         raise HTTPException(502, "Could not resolve this video")
 
     body = playlist.rewrite(text, resolved.master_url,
-                            f"/api/youtube/v/{video_id}", max_height=max_height)
+                            _proxy_prefix(db, video_id), max_height=max_height)
     return Response(content=body, media_type="application/vnd.apple.mpegurl",
                     headers={"Cache-Control": "no-cache"})
 
@@ -110,7 +123,7 @@ def proxied(video_id: str, token: str, request: Request, db: Session = Depends(g
         finally:
             upstream.close()
             client_.close()
-        body = playlist.rewrite(text, target, f"/api/youtube/v/{video_id}")
+        body = playlist.rewrite(text, target, _proxy_prefix(db, video_id))
         return Response(content=body, media_type="application/vnd.apple.mpegurl",
                         headers={"Cache-Control": "no-cache"})
 
@@ -162,7 +175,7 @@ def live_master(channel_id: int, db: Session = Depends(get_db)):
         raise HTTPException(502, "Could not resolve the live stream")
 
     body = playlist.rewrite(text, resolved.master_url,
-                            f"/api/youtube/v/{video.video_id}",
+                            _proxy_prefix(db, video.video_id),
                             max_height=channel.max_height or 1080)
     return Response(content=body, media_type="application/vnd.apple.mpegurl",
                     headers={"Cache-Control": "no-cache"})
