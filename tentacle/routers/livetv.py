@@ -29,6 +29,7 @@ from datetime import datetime
 from typing import Optional, List
 
 from services.epg_categories import infer_category
+from services.youtube import livetv as youtube_livetv
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
@@ -1474,6 +1475,19 @@ def hdhr_lineup(request: Request, db: Session = Depends(get_db)):
             entry["LogoUrl"] = ch.logo_url
         lineup.append(entry)
 
+    # YouTube channels the user exposed to Live TV. They aren't LiveChannel rows
+    # (that table requires a provider_id and a YouTube channel is not an IPTV
+    # provider), so they are unioned in here and play through their own endpoint.
+    for yt in youtube_livetv.live_channels(db):
+        entry = {
+            "GuideNumber": yt["guide_number"],
+            "GuideName": yt["name"],
+            "URL": f"{base_url}/api/youtube/live/{yt['youtube_channel_id']}/master.m3u8",
+        }
+        if yt["logo_url"]:
+            entry["LogoUrl"] = yt["logo_url"]
+        lineup.append(entry)
+
     return lineup
 
 
@@ -1867,6 +1881,17 @@ def hdhr_xmltv(db: Session = Depends(get_db)):
         if ch.epg_channel_id:
             epg_ids.add(ch.epg_channel_id)
             epg_id_to_guide_numbers.setdefault(ch.epg_channel_id, []).append(guide_number)
+
+    # YouTube Live TV channels, with their own guide ids.
+    for yt in youtube_livetv.live_channels(db):
+        xmltv_channels.append({
+            "id": yt["guide_number"],
+            "name": yt["name"],
+            "logo_url": yt["logo_url"],
+        })
+        guide_number_group[yt["guide_number"]] = yt["group_title"]
+        epg_ids.add(yt["epg_channel_id"])
+        epg_id_to_guide_numbers.setdefault(yt["epg_channel_id"], []).append(yt["guide_number"])
 
     # Get programs for enabled channels, remapping channel_id to GuideNumber(s)
     # When multiple channels share an EPG ID, duplicate programs for each

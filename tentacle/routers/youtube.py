@@ -128,6 +128,78 @@ def proxied(video_id: str, token: str, request: Request, db: Session = Depends(g
                              headers=passthrough)
 
 
+@router.get("/live/{channel_id}/master.m3u8")
+@router.head("/live/{channel_id}/master.m3u8")
+def live_master(channel_id: int, db: Session = Depends(get_db)):
+    """What the HDHomeRun lineup points a YouTube Live TV channel at.
+
+    The live video changes over the day, so it is resolved per request rather
+    than baked into a stored URL.
+    """
+    from services.youtube import livetv as yt_livetv
+
+    channel = db.query(YouTubeChannel).filter(YouTubeChannel.id == channel_id).first()
+    if not channel or not channel.live_enabled:
+        raise HTTPException(404, "Not a Live TV channel")
+
+    video = yt_livetv.current_live_video(db, channel_id)
+    if not video:
+        # Nothing is live. 503 rather than 404: the channel exists, it just has
+        # nothing on right now, and Jellyfin retries rather than dropping it.
+        raise HTTPException(503, f"{channel.title} is not streaming right now")
+
+    try:
+        resolved = resolver.resolve(video.video_id, channel.max_height or 1080)
+        with httpx.Client(timeout=UPSTREAM_TIMEOUT, follow_redirects=True) as c:
+            r = c.get(resolved.master_url, headers=resolved.headers)
+            r.raise_for_status()
+            text = r.text
+    except YouTubeBlocked:
+        raise HTTPException(503, "YouTube is rate-limiting this server; try again shortly")
+    except (YouTubeError, httpx.HTTPError) as e:
+        logger.warning(f"[YouTube] Live resolve failed for '{channel.title}': {e}")
+        raise HTTPException(502, "Could not resolve the live stream")
+
+    body = playlist.rewrite(text, resolved.master_url,
+                            f"/api/youtube/v/{video.video_id}",
+                            max_height=channel.max_height or 1080)
+    return Response(content=body, media_type="application/vnd.apple.mpegurl",
+                    headers={"Cache-Control": "no-cache"})
+
+
+class LiveToggle(BaseModel):
+    enabled: bool
+    channel_number: Optional[str] = None
+
+
+@router.post("/channels/{channel_id}/live", dependencies=[Depends(require_admin)])
+def toggle_live(channel_id: int, body: LiveToggle, db: Session = Depends(get_db)):
+    """Expose (or stop exposing) this channel's live streams as a Live TV channel."""
+    from services.youtube import livetv as yt_livetv
+
+    channel = db.query(YouTubeChannel).filter(YouTubeChannel.id == channel_id).first()
+    if not channel:
+        raise HTTPException(404, "Channel not found")
+    channel.live_enabled = body.enabled
+    if body.channel_number:
+        channel.channel_number = body.channel_number
+    db.commit()
+
+    guide = 0
+    if body.enabled:
+        guide = yt_livetv.refresh_guide(db, channel)
+    else:
+        from models.database import EPGProgram
+        db.query(EPGProgram).filter(
+            EPGProgram.channel_id == yt_livetv.epg_channel_id(channel)
+        ).delete(synchronize_session=False)
+        db.commit()
+
+    logger.info(f"[YouTube] Live TV {'enabled' if body.enabled else 'disabled'} for '{channel.title}'")
+    return {"success": True, "live_enabled": body.enabled,
+            "guide_number": yt_livetv.guide_number(channel), "programmes": guide}
+
+
 # ── Admin ───────────────────────────────────────────────────────────────────
 
 class ChannelCreate(BaseModel):
@@ -157,7 +229,17 @@ def status(db: Session = Depends(get_db)):
 
 
 @router.get("/channels", dependencies=[Depends(require_admin)])
-def list_channels(db: Session = Depends(get_db)):
+def list_channels(request: Request, db: Session = Depends(get_db)):
+    from models.database import YouTubeRowSubscription
+    from routers.auth import get_user_from_request
+
+    try:
+        user = get_user_from_request(request, db)
+        my_rows = {r.channel_fk for r in db.query(YouTubeRowSubscription).filter(
+            YouTubeRowSubscription.user_id == user.id).all()}
+    except Exception:
+        my_rows = set()   # bootstrap mode / no session
+
     out = []
     for ch in db.query(YouTubeChannel).order_by(YouTubeChannel.title).all():
         out.append({
@@ -171,6 +253,8 @@ def list_channels(db: Session = Depends(get_db)):
             "include_shorts": ch.include_shorts, "min_duration": ch.min_duration,
             "keep_count": ch.keep_count, "max_height": ch.max_height,
             "rating": ch.rating, "extra_tags": ch.extra_tags or [],
+            "home_row": ch.id in my_rows,
+            "live_enabled": ch.live_enabled,
         })
     return out
 
@@ -241,6 +325,58 @@ def refresh_now(db: Session = Depends(get_db)):
             totals["errors"] += 1
             logger.warning(f"[YouTube] Refresh failed for '{channel.title}': {e}")
     return totals
+
+
+class RowToggle(BaseModel):
+    enabled: bool
+    max_items: int = 30
+
+
+@router.post("/channels/{channel_id}/row")
+def toggle_home_row(channel_id: int, body: RowToggle, request: Request,
+                    db: Session = Depends(get_db)):
+    """Add or remove this channel's home row for the calling user.
+
+    Rows are per-user, like every other Tentacle playlist, so one household
+    member subscribing doesn't put the channel on everyone's home screen.
+    """
+    from models.database import YouTubeRowSubscription
+    from routers.auth import get_user_from_request
+
+    user = get_user_from_request(request, db)
+    channel = db.query(YouTubeChannel).filter(YouTubeChannel.id == channel_id).first()
+    if not channel:
+        raise HTTPException(404, "Channel not found")
+
+    sub = db.query(YouTubeRowSubscription).filter(
+        YouTubeRowSubscription.channel_fk == channel_id,
+        YouTubeRowSubscription.user_id == user.id,
+    ).first()
+
+    if body.enabled and not sub:
+        db.add(YouTubeRowSubscription(channel_fk=channel_id, user_id=user.id,
+                                      max_items=body.max_items))
+    elif body.enabled and sub:
+        sub.max_items = body.max_items
+    elif sub:
+        db.delete(sub)
+    db.commit()
+
+    # Build/remove the playlist straight away rather than waiting for the sync.
+    try:
+        from services.smartlists import (
+            _notify_jellyfin_plugin, bump_playlist_version, refresh_smartlist_playlists,
+            sync_smartlists, write_home_config,
+        )
+        sync_smartlists(db, user_id=user.id)
+        refresh_smartlist_playlists(db, user_id=user.id, only_names=[channel.title])
+        write_home_config(db, user_id=user.id)
+        bump_playlist_version()
+        _notify_jellyfin_plugin(db)
+    except Exception as e:
+        logger.warning(f"[YouTube] Playlist rebuild after row toggle failed: {e}")
+
+    return {"success": True, "enabled": body.enabled, "playlist": channel.title}
 
 
 @router.delete("/channels/{channel_id}", dependencies=[Depends(require_admin)])

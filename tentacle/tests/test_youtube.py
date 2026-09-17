@@ -205,3 +205,99 @@ class TestVideoIdValidation(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestLiveTv(unittest.TestCase):
+    """YouTube live streams surfaced as a Live TV channel."""
+
+    def setUp(self):
+        import tempfile as _tf
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        import models.database as mdb
+        from models.database import EPGProgram, YouTubeChannel, YouTubeVideo
+        self.mdb, self.EPGProgram = mdb, EPGProgram
+        self.YouTubeChannel, self.YouTubeVideo = YouTubeChannel, YouTubeVideo
+        engine = create_engine(f"sqlite:///{_tf.mkdtemp()}/t.db")
+        mdb.Base.metadata.create_all(engine)
+        self.db = sessionmaker(bind=engine)()
+        self.channel = YouTubeChannel(
+            input_url="u", kind="channel", channel_id="UC" + "x" * 22,
+            title="Sports Channel", slug="sports-channel",
+            live_enabled=True, enabled=True, extra_tags=[])
+        self.db.add(self.channel)
+        self.db.commit()
+        self.db.refresh(self.channel)
+
+    def _video(self, vid, status, start, duration=None):
+        v = self.YouTubeVideo(channel_fk=self.channel.id, video_id=vid, title=f"Game {vid}",
+                              live_status=status, published_at=start, duration=duration,
+                              media_type="livestream")
+        self.db.add(v)
+        self.db.commit()
+        return v
+
+    def test_only_opted_in_channels_appear(self):
+        from services.youtube import livetv
+        self.assertEqual(len(livetv.live_channels(self.db)), 1)
+        self.channel.live_enabled = False
+        self.db.commit()
+        self.assertEqual(livetv.live_channels(self.db), [])
+
+    def test_guide_numbers_do_not_collide_with_iptv_stream_ids(self):
+        from services.youtube import livetv
+        self.assertGreaterEqual(int(livetv.guide_number(self.channel)), livetv.GUIDE_NUMBER_BASE)
+
+    def test_live_and_upcoming_streams_become_guide_entries(self):
+        from services.youtube import livetv
+        self._video("aaaaaaaaaaa", "is_live", datetime(2026, 9, 17, 18, 0), 7200)
+        self._video("bbbbbbbbbbb", "is_upcoming", datetime(2026, 9, 18, 20, 0))
+        self.assertEqual(livetv.refresh_guide(self.db, self.channel), 2)
+        rows = self.db.query(self.EPGProgram).filter(
+            self.EPGProgram.channel_id == "yt.sports-channel").all()
+        self.assertEqual(len(rows), 2)
+
+    def test_start_times_are_never_moved(self):
+        # A programme's identity is channel + start, so moving a start orphans
+        # any DVR timer set against it.
+        from services.youtube import livetv
+        start = datetime(2026, 9, 17, 18, 0)
+        self._video("aaaaaaaaaaa", "is_upcoming", start, 3600)
+        livetv.refresh_guide(self.db, self.channel)
+        first = self.db.query(self.EPGProgram).filter_by(channel_id="yt.sports-channel").one()
+        original_start = first.start
+        livetv.refresh_guide(self.db, self.channel)
+        again = self.db.query(self.EPGProgram).filter_by(channel_id="yt.sports-channel").one()
+        self.assertEqual(again.start, original_start)
+
+    def test_a_live_stream_extends_rather_than_duplicating(self):
+        from services.youtube import livetv
+        self._video("aaaaaaaaaaa", "is_live", datetime(2026, 9, 17, 18, 0), 60)
+        livetv.refresh_guide(self.db, self.channel)
+        livetv.refresh_guide(self.db, self.channel)
+        rows = self.db.query(self.EPGProgram).filter_by(channel_id="yt.sports-channel").all()
+        self.assertEqual(len(rows), 1)
+        # Still running, so its end is pushed out past now
+        self.assertGreater(rows[0].stop, datetime.utcnow())
+
+    def test_no_filler_programmes_for_an_idle_channel(self):
+        # Inventing "nothing on" entries floods Jellyfin's "On Now" row.
+        from services.youtube import livetv
+        self.assertEqual(livetv.refresh_guide(self.db, self.channel), 0)
+        self.assertEqual(self.db.query(self.EPGProgram).count(), 0)
+
+    def test_current_live_video_ignores_upcoming_ones(self):
+        from services.youtube import livetv
+        self._video("bbbbbbbbbbb", "is_upcoming", datetime(2026, 9, 18, 20, 0))
+        self.assertIsNone(livetv.current_live_video(self.db, self.channel.id))
+        self._video("aaaaaaaaaaa", "is_live", datetime(2026, 9, 17, 18, 0))
+        live = livetv.current_live_video(self.db, self.channel.id)
+        self.assertEqual(live.video_id, "aaaaaaaaaaa")
+
+    def test_live_streams_are_not_written_as_library_items(self):
+        # A stream has no duration yet; Jellyfin would file it as a 0-length movie.
+        from services.youtube.indexer import is_library_item
+        live = self._video("aaaaaaaaaaa", "is_live", datetime(2026, 9, 17, 18, 0))
+        done = self._video("ccccccccccc", None, datetime(2026, 9, 16, 18, 0), 600)
+        self.assertFalse(is_library_item(live))
+        self.assertTrue(is_library_item(done))

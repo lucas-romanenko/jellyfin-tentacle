@@ -116,13 +116,30 @@ def _should_index(details: dict, channel: YouTubeChannel) -> tuple:
     """(keep, reason). Applied to full details, not the flat listing."""
     if details.get("availability") not in (None, "public"):
         return False, f"availability={details.get('availability')}"
+
     live_status = details.get("live_status")
     if live_status in ("is_upcoming", "is_live"):
+        # Kept only when the channel is exposed as a Live TV channel, where it
+        # becomes a guide entry. It never becomes a library item: a stream has
+        # no duration yet and Jellyfin would file it as a zero-length movie.
+        if channel.live_enabled:
+            return True, ""
         return False, f"live_status={live_status}"
+
     duration = details.get("duration") or 0
     if channel.min_duration and duration and duration < channel.min_duration:
         return False, f"duration {duration}s under minimum {channel.min_duration}s"
     return True, ""
+
+
+def is_library_item(video) -> bool:
+    """Whether this video should get .strm/NFO files.
+
+    Live and upcoming streams are Live TV guide entries, not library items.
+    Once a stream ends its live_status clears and it becomes an ordinary video,
+    at which point the next sync writes its files.
+    """
+    return video.live_status not in ("is_live", "is_upcoming")
 
 
 def index_channel(db: Session, channel: YouTubeChannel, limit: int = None) -> dict:

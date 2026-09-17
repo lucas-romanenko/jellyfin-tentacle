@@ -2689,6 +2689,14 @@ async function loadYouTubeChannels() {
         <div style="font-weight:600">${escapeAttr(c.title)} ${blocked} ${err}</div>
         <div style="font-size:12px;color:var(--text3)">${c.video_count} video${c.video_count === 1 ? '' : 's'} · max ${c.max_height}p · checked ${escapeAttr(checked)}</div>
       </div>
+      <label class="detail-follow-toggle" title="Add a row of this channel's videos to your Jellyfin home screen">
+        <input type="checkbox" ${c.home_row ? 'checked' : ''} onchange="ytToggleRow(${c.id}, this.checked)">
+        <span class="detail-follow-label">Home row</span>
+      </label>
+      <label class="detail-follow-toggle" title="Show this channel's live and upcoming streams as a Live TV channel">
+        <input type="checkbox" ${c.live_enabled ? 'checked' : ''} onchange="ytToggleLive(${c.id}, this.checked)">
+        <span class="detail-follow-label">Live TV</span>
+      </label>
       <button class="btn btn-secondary btn-sm" onclick="ytDeleteChannel(${c.id}, '${escapeJS(c.title)}')">Remove</button>
     </div>`;
   }).join('');
@@ -2717,6 +2725,34 @@ async function ytAddChannel() {
   } catch (e) {
     t.remove();
     toast(e.message, 'error', 8000);
+  }
+}
+
+async function ytToggleRow(id, enabled) {
+  try {
+    const r = await api(`/api/youtube/channels/${id}/row`, {
+      method: 'POST', body: { enabled, max_items: 30 },
+    });
+    toast(enabled
+      ? `"${r.playlist}" added to your home screen`
+      : `"${r.playlist}" removed from your home screen`);
+  } catch (e) {
+    toast(e.message, 'error');
+    loadYouTubeChannels();
+  }
+}
+
+async function ytToggleLive(id, enabled) {
+  try {
+    const r = await api(`/api/youtube/channels/${id}/live`, {
+      method: 'POST', body: { enabled },
+    });
+    toast(enabled
+      ? `Live TV channel ${r.guide_number} created — refresh the guide in Jellyfin`
+      : 'Removed from Live TV');
+  } catch (e) {
+    toast(e.message, 'error');
+    loadYouTubeChannels();
   }
 }
 
@@ -5771,6 +5807,7 @@ async function loadHealthDeletions() {
     showDownloadMoreModal, confirmDownloadMore, detailToggleSeason, toggleFollow,
     // YouTube
     loadYouTubePage, loadYouTubeChannels, ytAddChannel, ytDeleteChannel, ytRefreshNow,
+    ytToggleRow, ytToggleLive,
     // Following
     loadFollowing,
     toggleStrmManaged,

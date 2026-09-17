@@ -305,6 +305,34 @@ def get_desired_smartlists(db: Session, user_id: int = None) -> list:
                     })
                     existing_tags.add(user_tag)
 
+    # ── YouTube channel rows (per-user opt-in) ──
+    # Each subscribed channel becomes a playlist of its videos. The tag is
+    # already in every video's NFO, which Jellyfin reads for .strm files, so no
+    # tagger pass is needed. Being *desired* is also what keeps the orphan
+    # cleanup and write_home_config from dropping the row.
+    if user_id is not None:
+        from models.database import YouTubeChannel, YouTubeRowSubscription
+        subs = db.query(YouTubeRowSubscription, YouTubeChannel).join(
+            YouTubeChannel, YouTubeRowSubscription.channel_fk == YouTubeChannel.id
+        ).filter(YouTubeRowSubscription.user_id == user_id).all()
+        for sub, channel in subs:
+            if channel.title in existing_tags:
+                continue
+            smartlists.append({
+                "name": channel.title,
+                "tag": f"yt:{channel.slug}",
+                # Movies, not Series: Jellyfin expands a series into episodes
+                # inside a playlist, and playlists can't hold Live TV items.
+                "media_type": ["Movie"],
+                "enabled": True,
+                "source": "auto",
+                "max_items": sub.max_items or 30,
+                # ReleaseDate maps to Jellyfin's PremiereDate, which is where
+                # the NFO writes the upload date — so Descending is newest first.
+                "default_sort": "ReleaseDate",
+            })
+            existing_tags.add(channel.title)
+
     # ── List playlists (use ListSubscription.playlist_enabled) ──
     list_query = db.query(ListSubscription).filter(
         ListSubscription.playlist_enabled == True,

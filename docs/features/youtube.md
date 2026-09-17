@@ -93,6 +93,40 @@ Extraction prefers YouTube's `visionos` player client, which returns MPEG-TS
 segments. That matters: jellyfin-ffmpeg cannot seek HLS whose segments are
 fMP4, and produces corrupt output if given them.
 
+## Home rows
+
+Each channel has a **Home row** toggle. Turning it on adds a row of that
+channel's videos to your Jellyfin home screen, newest upload first.
+
+Rows are per-user, like every other Tentacle playlist — one person subscribing
+doesn't put the channel on everyone's home screen. The row is built from the
+`yt:<slug>` tag already in every video's NFO, so no extra tagging pass runs,
+and it appears in both Jellyfin web and the Android TV app.
+
+## Live streams as a Live TV channel
+
+Each channel also has a **Live TV** toggle. With it on, that channel becomes a
+tuner channel: whatever it is streaming right now plays, and its live and
+upcoming streams appear in the Jellyfin guide.
+
+- Channels get guide numbers from **9000** up, clear of IPTV stream ids
+- The guide is built only from real live and upcoming streams — there are no
+  filler "nothing on" entries, which would otherwise flood Jellyfin's *On Now*
+- Programme start times are frozen once written. Jellyfin identifies a
+  programme by channel + start time, so moving a start would delete any DVR
+  timer set against it; a stream that runs long has its end extended instead
+- A live or upcoming stream is a guide entry only, never a library item — it
+  has no duration yet, and Jellyfin would file it as a zero-length movie. Once
+  the stream ends it becomes an ordinary video and gets its files on the next
+  index
+
+After enabling a channel, refresh the guide in Jellyfin (Live TV → Refresh
+Guide) so it picks up the new channel.
+
+If nothing is streaming, the channel returns a "not streaming right now"
+response rather than an error, and Jellyfin retries later instead of dropping
+the channel from the lineup.
+
 ## Troubleshooting
 
 **"yt-dlp is not installed in this image"** — pull a current Tentacle image.
@@ -100,6 +134,9 @@ fMP4, and produces corrupt output if given them.
 **Videos appear but won't play** — `youtube_base_url` is almost certainly set to
 something Jellyfin can't reach. Check it from the Jellyfin host:
 `curl -I <youtube_base_url>/api/youtube/status`.
+
+**A Live TV channel says "not streaming right now"** — that is the expected
+answer when the channel has no live stream. It reappears when one starts.
 
 **A channel shows "backing off"** — YouTube asked Tentacle to prove it isn't a
 bot. Indexing stands down for a few hours rather than making it worse; nothing

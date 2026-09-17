@@ -266,6 +266,9 @@ class YouTubeChannel(Base):
     extra_tags = Column(JSON, default=list)             # NFO <tag>, for allowed-tags policies
 
     enabled = Column(Boolean, default=True)
+    # Expose this channel's live/upcoming streams as a Live TV channel.
+    live_enabled = Column(Boolean, default=False)
+    channel_number = Column(String, nullable=True)
     last_checked = Column(DateTime, nullable=True)
     last_error = Column(String, nullable=True)
     error_count = Column(Integer, default=0)

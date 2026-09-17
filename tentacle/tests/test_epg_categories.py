@@ -47,3 +47,19 @@ class TestInferCategory(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestLivePrefixScoping(unittest.TestCase):
+    def test_live_prefix_means_sport_on_a_tv_listing(self):
+        self.assertEqual(infer_category("Live: Raptors at Celtics"), "Sports")
+
+    def test_but_not_for_youtube_where_everything_is_live_something(self):
+        self.assertIsNone(
+            infer_category("Live: Sourdough Basics", "Bake With Me",
+                           live_prefix_is_sport=False))
+
+    def test_a_real_sport_still_matches_without_the_prefix_rule(self):
+        self.assertEqual(
+            infer_category("Live: NHL Leafs vs Habs", "Sky Sports",
+                           live_prefix_is_sport=False),
+            "Sports")

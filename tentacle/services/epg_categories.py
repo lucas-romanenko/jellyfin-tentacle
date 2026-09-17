@@ -43,10 +43,19 @@ _GROUP_HINTS = (
 )
 
 
-def infer_category(title: str = None, group_title: str = None) -> str | None:
-    """Best-guess XMLTV category, or None when nothing is confident enough."""
+def infer_category(title: str = None, group_title: str = None,
+                   live_prefix_is_sport: bool = True) -> str | None:
+    """Best-guess XMLTV category, or None when nothing is confident enough.
+
+    `live_prefix_is_sport` covers the "Live:" title convention, which on a TV
+    listing almost always means a live sporting event. It is off for YouTube,
+    where a huge number of ordinary streams are titled that way and the guess
+    would mislabel most of them.
+    """
     text = (title or "").strip()
-    if text and (_SPORTS_TITLE.search(text) or _LIVE_PREFIX.match(text)):
+    if text and _SPORTS_TITLE.search(text):
+        return SPORTS
+    if text and live_prefix_is_sport and _LIVE_PREFIX.match(text):
         return SPORTS
 
     group = (group_title or "").upper()

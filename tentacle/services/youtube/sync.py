@@ -32,7 +32,7 @@ def sync_channel(db: Session, channel: YouTubeChannel, base: str) -> dict:
         YouTubeVideo.channel_fk == channel.id,
         YouTubeVideo.removed_at.is_(None),
     ).all():
-        if video.strm_path:
+        if video.strm_path or not indexer.is_library_item(video):
             continue
         try:
             library.write_video(video, channel, base)
@@ -41,8 +41,14 @@ def sync_channel(db: Session, channel: YouTubeChannel, base: str) -> dict:
             logger.warning(f"[YouTube] Could not write files for {video.video_id}: {e}")
     db.commit()
 
+    # Guide entries for live/upcoming streams when the channel is on Live TV.
+    guide = 0
+    if channel.live_enabled:
+        from services.youtube import livetv
+        guide = livetv.refresh_guide(db, channel)
+
     removed = apply_retention(db, channel)
-    result.update({"written": written, "retired": removed})
+    result.update({"written": written, "retired": removed, "guide": guide})
     return result
 
 
