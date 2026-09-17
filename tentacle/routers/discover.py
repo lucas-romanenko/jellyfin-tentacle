@@ -5,6 +5,7 @@ Trending, popular, upcoming content from TMDB + missing from user lists
 
 import hashlib
 import logging
+import threading
 import random
 import re
 from pathlib import Path
@@ -44,13 +45,18 @@ def _jellyfin_web_url(db: Session, item_id: str):
         return None
     # serverId is optional in the route but makes the link work from a client
     # that has more than one server configured. Resolved once per process.
+    # Only latch once a lookup actually succeeds. Marking it checked up front
+    # meant an unreachable Jellyfin on the first call left every deep link
+    # without a serverId until Tentacle restarted.
     if not _jf_server_id_cache["checked"]:
-        _jf_server_id_cache["checked"] = True
         try:
             from services.jellyfin import JellyfinService
             api_key = get_setting(db, "jellyfin_api_key")
             if api_key:
-                _jf_server_id_cache["id"] = JellyfinService(base, api_key).get_server_id()
+                server_id = JellyfinService(base, api_key).get_server_id()
+                if server_id:
+                    _jf_server_id_cache["id"] = server_id
+                    _jf_server_id_cache["checked"] = True
         except Exception as e:
             logger.debug(f"Could not resolve Jellyfin server id: {e}")
     server_id = _jf_server_id_cache["id"]
@@ -72,42 +78,79 @@ def _known_tmdb_ids(db: Session) -> dict:
 # Discover — and adding it then reported "already in Radarr/Sonarr". Jellyfin
 # sees both downloaded files and .strm, so it closes that gap for good.
 _jf_ids_cache: dict = {"movie": None, "series": None, "ts": {"movie": 0, "series": 0}}
+_jf_ids_locks = {"movie": threading.Lock(), "series": threading.Lock()}
 JF_IDS_TTL = 300  # 5 minutes, matching ARR_IDS_TTL
+# A failed or partial fetch is retried soon rather than being trusted for the
+# full TTL — caching "Jellyfin has nothing" made every owned title look
+# addable, and every .strm title lose its Watch link, for five minutes.
+JF_IDS_FAILURE_TTL = 30
 
 
 def _get_jellyfin_tmdb_items(media_type: str) -> dict:
     """Cached {tmdb_id: jellyfin_item_id} for one media type.
 
     Fetched lazily per type: browsing movies must not pay for a full series
-    library fetch. An unreachable Jellyfin yields an empty map, so the check
+    library fetch. Only a COMPLETE fetch is cached for the full TTL; a failure
+    or a partial page keeps the previous map (if any) and is retried in
+    JF_IDS_FAILURE_TTL seconds. An unreachable Jellyfin with no previous map
     degrades to the DB-only behaviour rather than failing the page.
     """
     import time as _time
     key = "series" if media_type == "series" else "movie"
-    now = _time.time()
-    if _jf_ids_cache[key] is not None and now - _jf_ids_cache["ts"][key] < JF_IDS_TTL:
+
+    def _fresh() -> bool:
+        return _jf_ids_cache[key] is not None and _time.time() - _jf_ids_cache["ts"][key] < JF_IDS_TTL
+
+    if _fresh():
         return _jf_ids_cache[key]
 
-    from models.database import SessionLocal
-    out = {}
-    db = SessionLocal()
-    try:
-        url = get_setting(db, "jellyfin_url")
-        api_key = get_setting(db, "jellyfin_api_key")
-        jf_user = get_setting(db, "jellyfin_user_id", "")
-        if url and api_key:
-            from services.jellyfin import JellyfinService
-            jf = JellyfinService(url, api_key, jf_user)
-            lookup = jf.get_tmdb_lookup("Series" if key == "series" else "Movie")
-            out = {tid: item.get("Id") for tid, item in lookup.items() if item.get("Id")}
-    except Exception as e:
-        logger.debug(f"Jellyfin id fetch for in-library check failed: {e}")
-    finally:
-        db.close()
+    # One fetch at a time per media type: several Discover rows resolve in
+    # parallel threads, and without this each one runs its own full library
+    # fetch the moment the cache expires.
+    with _jf_ids_locks[key]:
+        if _fresh():
+            return _jf_ids_cache[key]
 
-    _jf_ids_cache[key] = out
-    _jf_ids_cache["ts"][key] = now
-    return out
+        from models.database import SessionLocal
+        out = None
+        complete = False
+        db = SessionLocal()
+        try:
+            url = get_setting(db, "jellyfin_url")
+            api_key = get_setting(db, "jellyfin_api_key")
+            jf_user = get_setting(db, "jellyfin_user_id", "")
+            if url and api_key:
+                from services.jellyfin import JellyfinService
+                jf = JellyfinService(url, api_key, jf_user)
+                lookup, complete = jf.get_tmdb_lookup_checked("Series" if key == "series" else "Movie")
+                out = {tid: item.get("Id") for tid, item in lookup.items() if item.get("Id")}
+        except Exception as e:
+            logger.warning(f"Jellyfin id fetch for in-library check failed: {e}")
+        finally:
+            db.close()
+
+        now = _time.time()
+        if out is not None and complete:
+            _jf_ids_cache[key] = out
+            _jf_ids_cache["ts"][key] = now
+            return out
+
+        # Incomplete or failed. Keep whatever we had rather than replacing a
+        # good map with a worse one, and come back sooner than the full TTL.
+        previous = _jf_ids_cache[key]
+        if previous is not None:
+            logger.warning(
+                f"Jellyfin {key} listing was incomplete — keeping the previous map "
+                f"({len(previous)} items) and retrying in {JF_IDS_FAILURE_TTL}s"
+            )
+            _jf_ids_cache["ts"][key] = now - JF_IDS_TTL + JF_IDS_FAILURE_TTL
+            return previous
+
+        # Nothing cached yet: serve what we got but don't treat it as the truth.
+        partial = out or {}
+        _jf_ids_cache[key] = partial
+        _jf_ids_cache["ts"][key] = now - JF_IDS_TTL + JF_IDS_FAILURE_TTL
+        return partial
 
 
 def _jellyfin_item_id(tmdb_id: int, media_type: str):
@@ -192,9 +235,14 @@ def _get_arr_tmdb_ids() -> dict:
 
 
 def bust_arr_ids_cache():
-    """Called after add-to-arr so new requests badge immediately."""
+    """Called after add-to-arr so new requests badge immediately.
+
+    Deliberately does NOT clear the Jellyfin map: a title just handed to
+    Radarr/Sonarr has no file yet, so Jellyfin's answer cannot have changed.
+    Clearing it only forced a full library re-fetch after every add — N of them
+    during a bulk "add missing".
+    """
     _arr_ids_cache["ts"] = 0
-    _bust_jellyfin_ids_cache()
 
 
 def _mark_requested(item: dict):
@@ -402,11 +450,21 @@ def get_discover_detail(
     # one so the next open is free.
     details["jellyfin_item_id"] = None
     stored_id = getattr(db_item, "jellyfin_item_id", None) if db_item else None
-    resolved_id = stored_id or _jellyfin_item_id(tmdb_id, media_type)
+    # A stored id goes stale whenever Jellyfin re-creates the item (library
+    # rebuild, folder rename, a .strm folder recreated by a sync), and a stale
+    # id sends Watch to an error page permanently. Trust it only while the
+    # current map still contains it; otherwise re-resolve.
+    live_id = _jellyfin_item_id(tmdb_id, media_type)
+    if stored_id and live_id and stored_id != live_id:
+        logger.info(
+            f"Jellyfin item id for tmdb:{tmdb_id} changed ({stored_id} → {live_id}) — re-resolving"
+        )
+        stored_id = None
+    resolved_id = live_id or stored_id
     if resolved_id:
         details["jellyfin_item_id"] = resolved_id
         details["jellyfin_url"] = _jellyfin_web_url(db, resolved_id)
-        if db_item is not None and not stored_id:
+        if db_item is not None and getattr(db_item, "jellyfin_item_id", None) != resolved_id:
             try:
                 db_item.jellyfin_item_id = resolved_id
                 db.commit()

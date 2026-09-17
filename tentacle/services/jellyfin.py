@@ -81,9 +81,21 @@ class JellyfinService:
     def _fetch_all_items(self, media_type: str = "Movie") -> List[dict]:
         """Fetch all items of a type from Jellyfin with ProviderIds and Tags.
         Paginates automatically for libraries with more than 10,000 items."""
+        items, _complete = self._fetch_all_items_checked(media_type)
+        return items
+
+    def _fetch_all_items_checked(self, media_type: str = "Movie") -> tuple:
+        """Same as _fetch_all_items, plus whether every page actually arrived.
+
+        A page that times out returns None from _get, and silently breaking out
+        of the loop hands back a PARTIAL list that looks complete. Callers that
+        cache the result need to know, or they persist a half-empty library.
+        Returns (items, complete).
+        """
         all_items = []
         start_index = 0
         page_size = 10000
+        complete = True
         while True:
             data = self._get("/Items", params={
                 "IncludeItemTypes": media_type,
@@ -93,6 +105,12 @@ class JellyfinService:
                 "StartIndex": start_index,
             })
             if not data:
+                # Timeout / transport failure mid-pagination.
+                complete = False
+                logger.warning(
+                    f"[Jellyfin] {media_type} listing stopped early at {start_index} items "
+                    f"— the result is incomplete"
+                )
                 break
             items = data.get("Items", [])
             all_items.extend(items)
@@ -100,7 +118,20 @@ class JellyfinService:
             start_index += len(items)
             if start_index >= total or not items:
                 break
-        return all_items
+        return all_items, complete
+
+    def get_tmdb_lookup_checked(self, media_type: str = "Movie") -> tuple:
+        """(tmdb_lookup, complete) — see _fetch_all_items_checked."""
+        items, complete = self._fetch_all_items_checked(media_type)
+        lookup = {}
+        for item in items:
+            tmdb_id = item.get("ProviderIds", {}).get("Tmdb")
+            if tmdb_id:
+                try:
+                    lookup[int(tmdb_id)] = item
+                except ValueError:
+                    pass
+        return lookup, complete
 
     @staticmethod
     def _normalize_title(title: str) -> str:

@@ -19,6 +19,17 @@ public class TentacleDiscoverController : ControllerBase
     private readonly ILogger<TentacleDiscoverController> _logger;
     private static readonly HttpClient HttpClient = new() { Timeout = TimeSpan.FromSeconds(15) };
 
+    /// <summary>
+    /// Client for add-to-*arr calls, which legitimately take minutes.
+    /// </summary>
+    /// <remarks>
+    /// Radarr/Sonarr do a synchronous metadata refresh, artwork download and disk scan before
+    /// answering an add — 127 s has been measured on a busy instance. Tentacle waits up to 90 s
+    /// and then verifies, but the shared 15 s client gave up long before that, so the add was
+    /// reported to Jellyfin users as a timeout even when it went on to succeed.
+    /// </remarks>
+    private static readonly HttpClient AddClient = new() { Timeout = TimeSpan.FromMinutes(4) };
+
     // In-memory cache for discover data (30 min), keyed by type param
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (string Data, DateTime Expiry)> _itemsCache = new();
     private static string? _cachedConfig;
@@ -424,7 +435,7 @@ public class TentacleDiscoverController : ControllerBase
         try
         {
             var content = new StringContent(body.GetRawText(), System.Text.Encoding.UTF8, "application/json");
-            var response = await HttpClient.PostAsync(AppendUserId($"{baseUrl}/api/lists/add-to-radarr"), content);
+            var response = await AddClient.PostAsync(AppendUserId($"{baseUrl}/api/lists/add-to-radarr"), content);
             var result = await response.Content.ReadAsStringAsync();
             return new ContentResult { Content = result, ContentType = "application/json", StatusCode = (int)response.StatusCode };
         }
@@ -451,7 +462,7 @@ public class TentacleDiscoverController : ControllerBase
         try
         {
             var content = new StringContent(body.GetRawText(), System.Text.Encoding.UTF8, "application/json");
-            var response = await HttpClient.PostAsync(AppendUserId($"{baseUrl}/api/lists/add-to-sonarr"), content);
+            var response = await AddClient.PostAsync(AppendUserId($"{baseUrl}/api/lists/add-to-sonarr"), content);
             var result = await response.Content.ReadAsStringAsync();
             return new ContentResult { Content = result, ContentType = "application/json", StatusCode = (int)response.StatusCode };
         }
@@ -1002,9 +1013,18 @@ public class TentacleDiscoverController : ControllerBase
     // image, which flooded the Jellyfin server log for as long as the page was open.
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _loggedRejectedHosts = new();
 
+    // ImageProxy is anonymous, so a caller can invent hosts indefinitely. Past this many distinct
+    // hosts we stop recording new ones rather than growing the set without limit.
+    private const int MaxLoggedRejectedHosts = 64;
+
     private void LogRejectedHostOnce(string url)
     {
         var host = Uri.TryCreate(url, UriKind.Absolute, out var uri) ? uri.Host : "(unparseable)";
+        if (_loggedRejectedHosts.Count >= MaxLoggedRejectedHosts)
+        {
+            return;
+        }
+
         if (_loggedRejectedHosts.TryAdd(host, 0))
         {
             _logger.LogWarning(
