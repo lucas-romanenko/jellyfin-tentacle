@@ -162,6 +162,17 @@ class Movie(Base):
     # Jellyfin
     jellyfin_item_id = Column(String, nullable=True)
 
+    # Set the first time a sweep/prune finds this title gone. Deletion only
+    # happens once a second, independent run agrees it is still gone, so a
+    # transient provider or mount outage can never destroy the library.
+    missing_since = Column(DateTime, nullable=True)
+
+    # "Keep this in the catalog but stop writing/repairing .strm files for it."
+    # For titles the user has deliberately switched to downloaded copies — the
+    # sync would otherwise regenerate the .strm every night and, in a merged
+    # folder, leave two sources competing.
+    strm_disabled = Column(Boolean, default=False)
+
     # Dates
     date_added = Column(DateTime, default=datetime.utcnow)
     date_updated = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -195,6 +206,12 @@ class Series(Base):
     # Jellyfin
     jellyfin_item_id = Column(String, nullable=True)
     last_downloaded_episode = Column(String, nullable=True)  # e.g. "S02E05 · Episode Title"
+
+    # See Movie.missing_since — deletion requires two runs to agree.
+    missing_since = Column(DateTime, nullable=True)
+
+    # See Movie.strm_disabled — opt this title out of .strm writing/repair.
+    strm_disabled = Column(Boolean, default=False)
 
     date_added = Column(DateTime, default=datetime.utcnow)
     date_updated = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

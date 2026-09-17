@@ -134,6 +134,10 @@ def _series_sample_strm(show_dir: str):
 def _check_item(db, item, media_type: str, providers: dict) -> bool | None:
     """Check one Movie/Series row. Returns alive/dead/inconclusive; records
     dead results in the registry."""
+    if getattr(item, "strm_disabled", False):
+        # Not managed by Tentacle any more — its streams are the user's problem
+        # and a "dead stream" result would only produce noise.
+        return None
     if media_type == "movie":
         strm_path = item.strm_path
         episode = None

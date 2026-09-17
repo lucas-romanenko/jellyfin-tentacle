@@ -18,13 +18,14 @@ from sqlalchemy.orm import Session
 
 from models.database import (
     Provider, ProviderCategory, Movie, Series,
-    SyncRun, CategorySnapshot, Duplicate, get_setting
+    SyncRun, CategorySnapshot, Duplicate, get_setting, log_deletion
 )
 from services.tmdb import TMDBService
 from services.nfo import write_movie_nfo, write_series_nfo, make_folder_name
 from services.cleaner import clean_title
 from services.m3u_parser import episode_from_title, container_from_url
 from services.duplicates import delete_vod_files, convert_record_to_downloaded
+from services.media_files import delete_movie_files, delete_series_files
 from services.tagger import compute_tags, get_list_tags_for_tmdb_id, apply_tag_rules
 from services.exceptions import ProviderConnectionError, SyncCancelledError, SyncError
 
@@ -424,6 +425,11 @@ def _backfill_series_episodes(
     record = db.query(Series).filter(Series.tmdb_id == tmdb_id).first()
     if not record or record.provider_id != provider.id:
         return 0
+    if record.strm_disabled:
+        # The user switched this title to downloaded copies. Regenerating its
+        # .strm files every night would put two sources in the same folder.
+        logger.debug(f"[Sync] Skipping .strm repair for '{record.title}' (strm management disabled)")
+        return 0
     show_dir_str = record.strm_path
     if not show_dir_str:
         return 0
@@ -539,40 +545,123 @@ def check_and_record_duplicate(
     return False
 
 
+def _category_went_empty(db: Session, cat: ProviderCategory, returned: int) -> bool:
+    """True when a category returned nothing but is known to hold titles.
+
+    An HTTP 200 carrying an empty list is indistinguishable from a category
+    that genuinely emptied, so the previous title count is the only signal we
+    have. The first empty response is treated as "not fetched" — a transient
+    provider blip must never read as "the provider dropped every title in this
+    category". The count is then zeroed, so a category that really has emptied
+    is accepted on the next run and normal pruning resumes.
+    """
+    if returned:
+        return False
+    if not cat.title_count:
+        return False  # already empty last run — believe it this time
+    cat.title_count = 0
+    cat.last_sync_matched = 0
+    cat.last_sync_skipped = 0
+    db.add(CategorySnapshot(category_id=cat.id, title_count=0, new_count=0))
+    db.commit()
+    return True
+
+
+# A single run may never delete more than this share of a provider's rows.
+# A genuine catalogue removal trickles; a provider outage arrives all at once.
+PRUNE_MAX_FRACTION = 0.05
+PRUNE_MIN_ALLOWANCE = 50
+
+
 def _prune_removed_content(db: Session, provider: Provider, media_type: str, seen_ids: set) -> int:
     """Delete DB rows (and their .strm/.nfo files) for content this provider
     used to offer but didn't return during the latest successful sync.
 
+    Two guards make a transient provider response harmless:
+
+    * **Two strikes.** A title missing for the first time is only marked
+      (``missing_since``); it is deleted on the next run that still doesn't
+      see it. Anything that reappears has the mark cleared.
+    * **Blast radius.** A run refuses to delete more than 5% of the provider's
+      rows (floor 50) and logs loudly instead, so a partial outage that slips
+      past the per-category guard still can't wipe the library.
+
     Strictly scoped to rows owned by this provider. Returns count removed.
     """
     Model = Movie if media_type == "movie" else Series
-    stale = db.query(Model).filter(
+    now = datetime.utcnow()
+
+    # Anything the provider served again is healthy — clear any previous mark.
+    # Filtered in Python: the marked set is small, and an IN clause over a
+    # 26k-id seen set would blow SQLite's bound-variable limit.
+    for record in db.query(Model).filter(
         Model.provider_id == provider.id,
-        Model.tmdb_id.notin_(seen_ids),
-    ).all()
-    if not stale:
+        Model.missing_since.isnot(None),
+    ).all():
+        if record.tmdb_id in seen_ids:
+            record.missing_since = None
+
+    # Diff in Python rather than with a NOT IN over the whole seen set — that
+    # set runs to tens of thousands of ids on a large provider, past SQLite's
+    # bound-variable limit.
+    stale_pks = [
+        pk for pk, tmdb_id in db.query(Model.id, Model.tmdb_id).filter(
+            Model.provider_id == provider.id
+        ).all()
+        if tmdb_id not in seen_ids
+    ]
+    if not stale_pks:
+        db.commit()
+        return 0
+    stale = []
+    for i in range(0, len(stale_pks), 500):
+        stale.extend(db.query(Model).filter(Model.id.in_(stale_pks[i:i + 500])).all())
+
+    # First sighting of an absence is recorded, not acted on.
+    confirmed = [r for r in stale if r.missing_since is not None]
+    newly_missing = [r for r in stale if r.missing_since is None]
+    for record in newly_missing:
+        record.missing_since = now
+    if newly_missing:
+        logger.info(
+            f"[Sync] {len(newly_missing)} {media_type}(s) missing from provider "
+            f"{provider.name} for the first time — marked, will be removed if "
+            f"they are still gone next sync"
+        )
+
+    if not confirmed:
+        db.commit()
+        return 0
+
+    total_rows = db.query(Model).filter(Model.provider_id == provider.id).count()
+    allowance = max(PRUNE_MIN_ALLOWANCE, int(total_rows * PRUNE_MAX_FRACTION))
+    if len(confirmed) > allowance:
+        logger.error(
+            f"[Sync] REFUSING to prune {len(confirmed)} {media_type}(s) from provider "
+            f"{provider.name}: that exceeds the safety limit of {allowance} "
+            f"({int(PRUNE_MAX_FRACTION * 100)}% of {total_rows} rows). This looks like a "
+            f"provider outage rather than a catalogue change — nothing was deleted. "
+            f"If the removal is genuine, delete the titles from the Library page."
+        )
+        db.commit()
+        log_deletion(
+            db, kind="sync-prune-blocked", name=provider.name, media_type=media_type,
+            reason="safety-limit",
+            detail=f"{len(confirmed)} {media_type}(s) were absent from two consecutive syncs "
+                   f"but exceed the {allowance}-row limit; nothing deleted",
+        )
         return 0
 
     removed = 0
-    for record in stale:
-        try:
-            if media_type == "movie":
-                # Movie strm_path points at the .strm file; remove the whole
-                # movie folder (strm + nfo + artwork) for a clean delete.
-                strm = record.strm_path
-                if strm:
-                    movie_dir = Path(strm).parent
-                    if movie_dir.exists() and movie_dir.is_dir():
-                        shutil.rmtree(movie_dir, ignore_errors=True)
-            else:
-                # Series strm_path points at the show directory.
-                show_dir = record.strm_path
-                if show_dir:
-                    show_path = Path(show_dir)
-                    if show_path.exists() and show_path.is_dir():
-                        shutil.rmtree(show_path, ignore_errors=True)
-        except Exception as e:
-            logger.warning(f"[Sync] Failed to remove files for stale {media_type} '{record.title}': {e}")
+    for record in confirmed:
+        if media_type == "movie":
+            # strm_path points at the .strm file itself.
+            delete_movie_files(record.strm_path)
+        else:
+            # strm_path points at the show directory. Only Tentacle's own
+            # .strm/.nfo files are removed — merged setups share this folder
+            # with Sonarr downloads.
+            delete_series_files(record.strm_path)
 
         # Clean up any duplicate records referencing this content
         db.query(Duplicate).filter(
@@ -584,6 +673,116 @@ def _prune_removed_content(db: Session, provider: Provider, media_type: str, see
         removed += 1
 
     db.commit()
+    if removed:
+        log_deletion(
+            db, kind="sync-prune", name=provider.name, media_type=media_type,
+            reason="removed-upstream",
+            detail=f"{removed} {media_type}(s) absent from two consecutive syncs",
+        )
+    return removed
+
+
+
+# ── Orphaned VOD record sweep ──────────────────────────────────────────────
+
+VOD_MOVIES_ROOT = Path("/media/vod/movies")
+VOD_SERIES_ROOT = Path("/media/vod/shows")
+
+
+def _sweep_one_type(db: Session, Model, media_type: str, root: Path, now: datetime):
+    """Sweep one media type. Returns (removed_count, removed_titles)."""
+    rows = db.query(Model).filter(
+        Model.source.like("provider_%"), Model.strm_path.isnot(None)
+    ).all()
+    if not rows:
+        return 0, []
+
+    # A mount that is missing or empty means the storage is unavailable, not
+    # that every title was deleted. mergerfs/NFS/SMB/rclone all report plain
+    # "not found" for every path while a branch is out, which raises nothing.
+    if not root.is_dir() or not any(root.iterdir()):
+        logger.error(
+            f"[VOD sweep] {root} is missing or empty — storage looks unavailable. "
+            f"Skipping the {media_type} sweep rather than deleting "
+            f"{len(rows)} record(s)."
+        )
+        return 0, []
+
+    missing = [r for r in rows if not Path(r.strm_path).exists()]
+    missing_ids = {r.id for r in missing}
+
+    # Files that came back clear their mark.
+    for r in rows:
+        if r.id not in missing_ids and r.missing_since is not None:
+            r.missing_since = None
+
+    # Two strikes: a title must be missing on two separate sweeps to be deleted,
+    # so a transient outage never destroys records.
+    confirmed = [r for r in missing if r.missing_since is not None]
+    for r in missing:
+        if r.missing_since is None:
+            r.missing_since = now
+    if len(missing) != len(confirmed):
+        logger.info(
+            f"[VOD sweep] {len(missing) - len(confirmed)} {media_type}(s) missing "
+            f"for the first time — marked, will be removed if still missing next sweep"
+        )
+    if not confirmed:
+        return 0, []
+
+    allowance = max(PRUNE_MIN_ALLOWANCE, int(len(rows) * PRUNE_MAX_FRACTION))
+    if len(confirmed) > allowance:
+        logger.error(
+            f"[VOD sweep] REFUSING to remove {len(confirmed)} {media_type} record(s): "
+            f"that exceeds the safety limit of {allowance} "
+            f"({int(PRUNE_MAX_FRACTION * 100)}% of {len(rows)}). Files disappearing "
+            f"this fast points at a storage problem, not at content removal — "
+            f"nothing was deleted."
+        )
+        log_deletion(
+            db, kind="vod-sweep-blocked", name=f"{len(confirmed)} {media_type} record(s)",
+            media_type=media_type, reason="safety-limit",
+            detail=f"{len(confirmed)} record(s) had missing files on two consecutive "
+                   f"sweeps but exceed the {allowance}-record limit; nothing deleted",
+        )
+        return 0, []
+
+    titles = []
+    for r in confirmed:
+        logger.info(f"[VOD sweep] Removing orphaned {media_type}: {r.title} (missing: {r.strm_path})")
+        titles.append(r.title)
+        db.delete(r)
+    return len(confirmed), titles
+
+
+def sweep_orphaned_vod_records(db: Session) -> int:
+    """Remove provider-owned Movie/Series rows whose .strm files are gone.
+
+    Guarded three ways, because the cascade downstream of a wrong answer here
+    is severe (the record loss takes auto-playlist toggles, SmartLists and home
+    rows with it): the media root is probed first, a record must be missing on
+    two separate sweeps, and no single sweep may remove more than 5% of the
+    rows for that media type.
+    """
+    now = datetime.utcnow()
+    removed = 0
+    swept_titles = []
+    for Model, media_type, root in (
+        (Movie, "movie", VOD_MOVIES_ROOT),
+        (Series, "series", VOD_SERIES_ROOT),
+    ):
+        count, titles = _sweep_one_type(db, Model, media_type, root, now)
+        removed += count
+        swept_titles.extend(titles)
+    db.commit()
+
+    if removed:
+        log_deletion(
+            db, kind="vod-sweep", name=f"{removed} VOD record(s)", reason="auto",
+            detail="DB records removed — .strm files missing on disk over two sweeps: "
+                   + ", ".join(swept_titles[:20]) + ("…" if len(swept_titles) > 20 else ""),
+        )
+        logger.info(f"VOD sweep: removed {removed} orphaned record(s)")
     return removed
 
 
@@ -789,6 +988,16 @@ def _sync_movies(
         except Exception as e:
             logger.error(f"Failed to fetch streams for {cat.category_name}: {e}")
             fetch_ok = False  # a failed fetch means our "seen" set is incomplete
+            continue
+
+        _prev_count = cat.title_count
+        if _category_went_empty(db, cat, len(streams)):
+            logger.warning(
+                f"Category '{cat.category_name}' returned 0 titles but held "
+                f"{_prev_count} last time — treating as a failed fetch, not as "
+                f"an emptied category. Nothing will be pruned from this sync."
+            )
+            fetch_ok = False
             continue
 
         total_in_cat = len(streams)
@@ -1111,6 +1320,16 @@ def _sync_series(
         except Exception as e:
             logger.error(f"Failed to fetch series for {cat.category_name}: {e}")
             fetch_ok = False  # a failed fetch means our "seen" set is incomplete
+            continue
+
+        _prev_count = cat.title_count
+        if _category_went_empty(db, cat, len(series_list)):
+            logger.warning(
+                f"Category '{cat.category_name}' returned 0 series but held "
+                f"{_prev_count} last time — treating as a failed fetch, not as "
+                f"an emptied category. Nothing will be pruned from this sync."
+            )
+            fetch_ok = False
             continue
 
         total_in_cat = len(series_list)

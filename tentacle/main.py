@@ -12,7 +12,7 @@ import os
 import logging
 from datetime import datetime
 
-from models.database import create_tables, SessionLocal, seed_defaults, Setting, Provider, SyncRun, Movie, Series
+from models.database import create_tables, SessionLocal, seed_defaults, Setting, Provider, SyncRun
 from routers import settings, providers, sync as sync_router, library, duplicates, lists as lists_router, widget, radarr as radarr_router, sonarr as sonarr_router, tags as tags_router, collections as collections_router, smartlists as smartlists_router, discover as discover_router, livetv as livetv_router, auth as auth_router, activity as activity_router, notifications as notifications_router, health as health_router
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -231,29 +231,10 @@ def run_scheduled_sync():
         # Sweep VOD DB records whose .strm files no longer exist on disk
         logger.info("Sweeping orphaned VOD records")
         try:
-            from pathlib import Path as _Path
-            vod_orphans = 0
-            swept_titles = []
-            for m in db.query(Movie).filter(Movie.source.like("provider_%"), Movie.strm_path.isnot(None)).all():
-                if not _Path(m.strm_path).exists():
-                    logger.info(f"[VOD sweep] Removing orphaned movie: {m.title} (missing: {m.strm_path})")
-                    swept_titles.append(m.title)
-                    db.delete(m)
-                    vod_orphans += 1
-            for s in db.query(Series).filter(Series.source.like("provider_%"), Series.strm_path.isnot(None)).all():
-                if not _Path(s.strm_path).exists():
-                    logger.info(f"[VOD sweep] Removing orphaned series: {s.title} (missing: {s.strm_path})")
-                    swept_titles.append(s.title)
-                    db.delete(s)
-                    vod_orphans += 1
+            from services.sync import sweep_orphaned_vod_records
+            vod_orphans = sweep_orphaned_vod_records(db)
             if vod_orphans:
-                db.commit()
                 log_activity(db, "vod_sweep", f"Removed {vod_orphans} orphaned VOD record(s) with missing files")
-                from models.database import log_deletion
-                log_deletion(db, kind="vod-sweep", name=f"{vod_orphans} VOD record(s)", reason="auto",
-                             detail="DB records removed — .strm files missing on disk: " + ", ".join(swept_titles[:20])
-                                    + ("…" if len(swept_titles) > 20 else ""))
-                logger.info(f"VOD sweep: removed {vod_orphans} orphaned record(s)")
         except Exception as e:
             logger.error(f"VOD sweep failed: {e}")
 
@@ -275,6 +256,18 @@ def run_scheduled_sync():
                     migrate_global_smartlists_to_user(db, user.id)
                     sync_smartlists(db, user_id=user.id)
                     stats = refresh_smartlist_playlists(db, user_id=user.id) or {}
+                    # Reap duplicate Jellyfin playlists (same name as a managed
+                    # playlist but not its canonical id). Older builds could
+                    # recreate a playlist whenever the existence check timed
+                    # out, so installs can carry dozens of duplicates that never
+                    # go away on their own.
+                    try:
+                        from services.smartlists import cleanup_orphaned_playlists
+                        dupes = cleanup_orphaned_playlists(db, user.id)
+                        if dupes:
+                            logger.info(f"[Nightly] Removed {dupes} duplicate playlist(s) for user {user.id}")
+                    except Exception as e:
+                        logger.warning(f"[Nightly] Duplicate playlist cleanup failed for user {user.id}: {e}")
                     write_home_config(db, user_id=user.id)
                     logger.info(
                         f"[Nightly] Playlists rebuilt for user {user.id}: "
