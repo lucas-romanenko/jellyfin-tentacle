@@ -301,3 +301,77 @@ class TestLiveTv(unittest.TestCase):
         done = self._video("ccccccccccc", None, datetime(2026, 9, 16, 18, 0), 600)
         self.assertFalse(is_library_item(live))
         self.assertTrue(is_library_item(done))
+
+
+class TestLiveStatusRefresh(unittest.TestCase):
+    """A scheduled stream has to become playable when it actually goes live."""
+
+    def setUp(self):
+        import tempfile as _tf
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        import models.database as mdb
+        from models.database import YouTubeChannel, YouTubeVideo
+        self.YouTubeVideo = YouTubeVideo
+        engine = create_engine(f"sqlite:///{_tf.mkdtemp()}/t.db")
+        mdb.Base.metadata.create_all(engine)
+        self.db = sessionmaker(bind=engine)()
+        self.channel = YouTubeChannel(input_url="u", kind="channel",
+                                      channel_id="UC" + "z" * 22, title="Ch",
+                                      slug="ch", live_enabled=True, enabled=True,
+                                      extra_tags=[], include_videos=True)
+        self.db.add(self.channel)
+        self.db.commit()
+        self.db.refresh(self.channel)
+
+    def test_streams_tab_is_polled_whenever_live_tv_is_on(self):
+        # /streams is where live and scheduled broadcasts live. Without it a
+        # Live TV channel can never find anything to play.
+        from services.youtube.indexer import _tab_urls
+        self.channel.include_streams = False
+        urls = _tab_urls(self.channel)
+        self.assertTrue(any(u.endswith("/streams") for u in urls), urls)
+
+    def test_streams_tab_skipped_when_live_tv_is_off(self):
+        from services.youtube.indexer import _tab_urls
+        self.channel.live_enabled = False
+        self.channel.include_streams = False
+        self.assertFalse(any(u.endswith("/streams") for u in _tab_urls(self.channel)))
+
+    def test_an_upcoming_stream_is_rechecked_and_becomes_live(self):
+        from services.youtube import indexer
+        v = self.YouTubeVideo(channel_fk=self.channel.id, video_id="aaaaaaaaaaa",
+                              title="Match", live_status="is_upcoming",
+                              media_type="livestream", published_at=datetime(2026, 9, 17))
+        self.db.add(v)
+        self.db.commit()
+
+        with mock.patch.object(indexer.client, "flat_listing",
+                               return_value={"entries": [{"id": "aaaaaaaaaaa"}]}), \
+             mock.patch.object(indexer.client, "video_details",
+                               return_value={"live_status": "is_live", "duration": 3600,
+                                             "availability": "public"}):
+            indexer.index_channel(self.db, self.channel)
+
+        self.db.refresh(v)
+        self.assertEqual(v.live_status, "is_live")
+
+    def test_a_finished_stream_stops_being_live(self):
+        from services.youtube import indexer
+        v = self.YouTubeVideo(channel_fk=self.channel.id, video_id="bbbbbbbbbbb",
+                              title="Match", live_status="is_live",
+                              media_type="livestream", published_at=datetime(2026, 9, 17))
+        self.db.add(v)
+        self.db.commit()
+
+        with mock.patch.object(indexer.client, "flat_listing",
+                               return_value={"entries": [{"id": "bbbbbbbbbbb"}]}), \
+             mock.patch.object(indexer.client, "video_details",
+                               return_value={"live_status": None, "duration": 1800,
+                                             "availability": "public"}):
+            indexer.index_channel(self.db, self.channel)
+
+        self.db.refresh(v)
+        self.assertIsNone(v.live_status)
+        # ...and it is now an ordinary library item
+        self.assertTrue(indexer.is_library_item(v))

@@ -7,6 +7,7 @@ are opaque tokens minted by our own playlist rewriter, so an arbitrary host can
 never be requested through them.
 """
 import logging
+import threading
 from datetime import datetime
 
 import httpx
@@ -188,6 +189,18 @@ def toggle_live(channel_id: int, body: LiveToggle, db: Session = Depends(get_db)
     guide = 0
     if body.enabled:
         guide = yt_livetv.refresh_guide(db, channel)
+        # Videos indexed before now were fetched with live streams skipped, so
+        # the guide would be empty until the next scheduled run. Go and look.
+        with _refresh_lock:
+            if not _refresh_state["running"]:
+                _refresh_state.update({
+                    "running": True, "started_at": datetime.utcnow().isoformat(),
+                    "finished_at": None, "channel": None, "channels_done": 0,
+                    "channels_total": 0, "new": 0, "written": 0, "retired": 0,
+                    "errors": 0, "error_detail": None, "channel_total": 0,
+                })
+                threading.Thread(target=_run_refresh, daemon=True,
+                                 name="youtube-refresh").start()
     else:
         from models.database import EPGProgram
         db.query(EPGProgram).filter(
@@ -295,6 +308,14 @@ def list_channels(request: Request, db: Session = Depends(get_db)):
             "rating": ch.rating, "extra_tags": ch.extra_tags or [],
             "home_row": ch.id in my_rows,
             "live_enabled": ch.live_enabled,
+            "live_now": db.query(YouTubeVideo).filter(
+                YouTubeVideo.channel_fk == ch.id,
+                YouTubeVideo.live_status == "is_live",
+                YouTubeVideo.removed_at.is_(None)).count(),
+            "upcoming": db.query(YouTubeVideo).filter(
+                YouTubeVideo.channel_fk == ch.id,
+                YouTubeVideo.live_status == "is_upcoming",
+                YouTubeVideo.removed_at.is_(None)).count(),
         })
     return out
 
@@ -338,33 +359,89 @@ def add_channel(body: ChannelCreate, db: Session = Depends(get_db)):
     return {"id": channel.id, "title": channel.title, "slug": channel.slug}
 
 
-@router.post("/refresh", dependencies=[Depends(require_admin)])
-def refresh_now(db: Session = Depends(get_db)):
-    """Index every enabled channel now, rather than waiting for the interval."""
+# Indexing runs in the background and is polled. It cannot be a plain request:
+# YouTube rate-limits guest extraction, so details are fetched ~5s apart, and a
+# first index of 30 videos takes several minutes — far longer than a browser or
+# a reverse proxy will wait.
+_refresh_state: dict = {
+    "running": False, "started_at": None, "finished_at": None,
+    "channel": None, "channels_done": 0, "channels_total": 0,
+    "new": 0, "written": 0, "retired": 0, "errors": 0, "error_detail": None,
+    "channel_total": 0,
+}
+_refresh_lock = threading.Lock()
+
+
+def _run_refresh():
+    """Index every enabled channel. Runs on its own thread with its own session."""
+    from models.database import SessionLocal
     from services.youtube.sync import base_url, sync_channel
 
+    db = SessionLocal()
+    try:
+        base = base_url(db)
+        channels = db.query(YouTubeChannel).filter(YouTubeChannel.enabled == True).all()  # noqa: E712
+        _refresh_state["channels_total"] = len(channels)
+        for channel in channels:
+            _refresh_state["channel"] = channel.title
+            channel_base = _refresh_state["new"]
+
+            def _progress(added, total, _base=channel_base):
+                _refresh_state["new"] = _base + added
+                _refresh_state["channel_total"] = total
+
+            try:
+                r = sync_channel(db, channel, base, on_progress=_progress)
+                _refresh_state["new"] = channel_base + r.get("new", 0)
+                _refresh_state["written"] += r.get("written", 0)
+                _refresh_state["retired"] += r.get("retired", 0)
+            except YouTubeError as e:
+                _refresh_state["errors"] += 1
+                _refresh_state["error_detail"] = f"{channel.title}: {e}"
+                logger.warning(f"[YouTube] Refresh failed for '{channel.title}': {e}")
+            except Exception as e:
+                _refresh_state["errors"] += 1
+                _refresh_state["error_detail"] = f"{channel.title}: {e}"
+                logger.error(f"[YouTube] Refresh crashed for '{channel.title}': {e}", exc_info=True)
+            _refresh_state["channels_done"] += 1
+    finally:
+        db.close()
+        _refresh_state["channel"] = None
+        _refresh_state["finished_at"] = datetime.utcnow().isoformat()
+        _refresh_state["running"] = False
+        logger.info(f"[YouTube] Refresh finished: {_refresh_state['new']} new video(s)")
+
+
+@router.post("/refresh", dependencies=[Depends(require_admin)])
+def refresh_now(db: Session = Depends(get_db)):
+    """Start indexing in the background. Poll /refresh/status for progress."""
     if not client.available():
         raise HTTPException(400, "yt-dlp is not installed in this image")
-    base = base_url(db)
-    if not base:
+    from services.youtube.sync import base_url
+    if not base_url(db):
         raise HTTPException(
             400,
-            "Set youtube_base_url first — a .strm has to carry an address the "
-            "Jellyfin server itself can reach.",
+            "Turn the YouTube source on first — a .strm has to carry an address "
+            "the Jellyfin server itself can reach.",
         )
 
-    totals = {"channels": 0, "new": 0, "written": 0, "retired": 0, "errors": 0}
-    for channel in db.query(YouTubeChannel).filter(YouTubeChannel.enabled == True).all():  # noqa: E712
-        totals["channels"] += 1
-        try:
-            r = sync_channel(db, channel, base)
-            totals["new"] += r.get("new", 0)
-            totals["written"] += r.get("written", 0)
-            totals["retired"] += r.get("retired", 0)
-        except YouTubeError as e:
-            totals["errors"] += 1
-            logger.warning(f"[YouTube] Refresh failed for '{channel.title}': {e}")
-    return totals
+    with _refresh_lock:
+        if _refresh_state["running"]:
+            raise HTTPException(409, "An index is already running")
+        _refresh_state.update({
+            "running": True, "started_at": datetime.utcnow().isoformat(),
+            "finished_at": None, "channel": None, "channels_done": 0,
+            "channels_total": 0, "new": 0, "written": 0, "retired": 0,
+            "errors": 0, "error_detail": None, "channel_total": 0,
+        })
+
+    threading.Thread(target=_run_refresh, daemon=True, name="youtube-refresh").start()
+    return {"started": True}
+
+
+@router.get("/refresh/status", dependencies=[Depends(require_admin)])
+def refresh_status():
+    return dict(_refresh_state)
 
 
 class RowToggle(BaseModel):
@@ -402,21 +479,70 @@ def toggle_home_row(channel_id: int, body: RowToggle, request: Request,
         db.delete(sub)
     db.commit()
 
-    # Build/remove the playlist straight away rather than waiting for the sync.
+    # Build the playlist, then put it on the home screen. Home rows are never
+    # auto-created by write_home_config ("users add rows manually"), so creating
+    # the playlist alone left the toggle doing nothing visible — which is not
+    # what a control labelled "Home row" promises.
+    row_added = False
     try:
         from services.smartlists import (
-            _notify_jellyfin_plugin, bump_playlist_version, refresh_smartlist_playlists,
-            sync_smartlists, write_home_config,
+            _get_smartlists_with_playlist_ids, _notify_jellyfin_plugin,
+            bump_playlist_version, refresh_smartlist_playlists, sync_smartlists,
+            write_home_config,
         )
         sync_smartlists(db, user_id=user.id)
         refresh_smartlist_playlists(db, user_id=user.id, only_names=[channel.title])
+
+        playlist_id = next(
+            (p["playlist_id"] for p in _get_smartlists_with_playlist_ids(db, user_id=user.id)
+             if p["name"] == channel.title),
+            None,
+        )
+        row_added = _set_home_row(db, user, channel.title, playlist_id, body.enabled)
+
         write_home_config(db, user_id=user.id)
         bump_playlist_version()
         _notify_jellyfin_plugin(db)
     except Exception as e:
-        logger.warning(f"[YouTube] Playlist rebuild after row toggle failed: {e}")
+        logger.warning(f"[YouTube] Playlist/row update after toggle failed: {e}", exc_info=True)
 
-    return {"success": True, "enabled": body.enabled, "playlist": channel.title}
+    return {"success": True, "enabled": body.enabled, "playlist": channel.title,
+            "row_added": row_added}
+
+
+def _set_home_row(db: Session, user, name: str, playlist_id, enabled: bool) -> bool:
+    """Add or remove this channel's row in the user's home config."""
+    from routers.smartlists import _read_home_json, _write_home_json
+    from services.smartlists import home_config_lock
+
+    with home_config_lock:
+        config = _read_home_json(user) or {
+            "hero": {"enabled": False, "playlist_id": "", "display_name": ""}, "rows": [],
+        }
+        config.setdefault("rows", [])
+
+        if enabled:
+            if not playlist_id:
+                logger.warning(f"[YouTube] No Jellyfin playlist for '{name}' yet — row not added")
+                return False
+            if any(r.get("playlist_id") == playlist_id for r in config["rows"]):
+                return True
+            for r in config["rows"]:
+                r["order"] = r.get("order", 0) + 1
+            config["rows"].insert(0, {
+                "type": "playlist",
+                "playlist_id": playlist_id,
+                "display_name": name,
+                "order": 1,
+                "max_items": 30,
+            })
+        else:
+            config["rows"] = [r for r in config["rows"] if r.get("display_name") != name]
+            for i, r in enumerate(config["rows"], start=1):
+                r["order"] = i
+
+        _write_home_json(user, config)
+    return enabled
 
 
 @router.delete("/channels/{channel_id}", dependencies=[Depends(require_admin)])

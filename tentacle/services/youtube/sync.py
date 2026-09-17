@@ -21,9 +21,9 @@ def base_url(db: Session) -> str:
     return configured.rstrip("/")
 
 
-def sync_channel(db: Session, channel: YouTubeChannel, base: str) -> dict:
+def sync_channel(db: Session, channel: YouTubeChannel, base: str, on_progress=None) -> dict:
     """Index one channel, write any new media files, then apply retention."""
-    result = indexer.index_channel(db, channel)
+    result = indexer.index_channel(db, channel, on_progress=on_progress)
     if result.get("skipped"):
         return result
 

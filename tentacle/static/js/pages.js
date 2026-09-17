@@ -2676,6 +2676,12 @@ async function loadYouTubePage() {
     }
 
     await loadYouTubeChannels();
+
+    // An index started earlier may still be running — pick the progress back up.
+    try {
+      const rs = await api('/api/youtube/refresh/status');
+      if (rs.running && !_ytPoll) ytStartPolling();
+    } catch { /* not fatal */ }
   } catch (e) {
     box.innerHTML = `<div class="empty-state"><p>Could not load: ${escapeAttr(e.message)}</p></div>`;
   }
@@ -2715,7 +2721,7 @@ async function loadYouTubeChannels() {
       </label>
       <label class="detail-follow-toggle" title="Show this channel's live and upcoming streams as a Live TV channel">
         <input type="checkbox" ${c.live_enabled ? 'checked' : ''} onchange="ytToggleLive(${c.id}, this.checked)">
-        <span class="detail-follow-label">Live TV</span>
+        <span class="detail-follow-label">Live TV${c.live_enabled ? ytLiveState(c) : ''}</span>
       </label>
       <button class="btn btn-secondary btn-sm" onclick="ytDeleteChannel(${c.id}, '${escapeJS(c.title)}')">Remove</button>
     </div>`;
@@ -2748,14 +2754,27 @@ async function ytAddChannel() {
   }
 }
 
+function ytLiveState(c) {
+  // A Live TV channel with nothing on returns "not streaming" and Jellyfin
+  // shows that as a playback error, so say so here before anyone presses play.
+  if (c.live_now) return ' <span class="badge badge-red">● LIVE</span>';
+  if (c.upcoming) return ` <span class="badge badge-amber">${c.upcoming} upcoming</span>`;
+  return ' <span class="badge badge-gray">nothing on</span>';
+}
+
 async function ytToggleRow(id, enabled) {
   try {
     const r = await api(`/api/youtube/channels/${id}/row`, {
       method: 'POST', body: { enabled, max_items: 30 },
     });
-    toast(enabled
-      ? `"${r.playlist}" added to your home screen`
-      : `"${r.playlist}" removed from your home screen`);
+    if (enabled && !r.row_added) {
+      toast(`"${r.playlist}" has no videos in Jellyfin yet — run Refresh now, then make sure Jellyfin has scanned the YouTube library`, 'info', 10000);
+    } else {
+      toast(enabled
+        ? `"${r.playlist}" added to your home screen`
+        : `"${r.playlist}" removed from your home screen`);
+    }
+    loadYouTubeChannels();
   } catch (e) {
     toast(e.message, 'error');
     loadYouTubeChannels();
@@ -2767,9 +2786,12 @@ async function ytToggleLive(id, enabled) {
     const r = await api(`/api/youtube/channels/${id}/live`, {
       method: 'POST', body: { enabled },
     });
-    toast(enabled
-      ? `Live TV channel ${r.guide_number} created — refresh the guide in Jellyfin`
-      : 'Removed from Live TV');
+    if (enabled) {
+      toast(`Live TV channel ${r.guide_number} created — checking for streams, then refresh the guide in Jellyfin`, 'info', 8000);
+      ytStartPolling();   // the toggle kicks off an index to find live streams
+    } else {
+      toast('Removed from Live TV');
+    }
   } catch (e) {
     toast(e.message, 'error');
     loadYouTubeChannels();
@@ -2789,17 +2811,47 @@ async function ytDeleteChannel(id, title) {
   }
 }
 
+let _ytPoll = null;
+
 async function ytRefreshNow() {
-  const t = toast('Indexing channels…', 'loading', 0);
   try {
-    const r = await api('/api/youtube/refresh', { method: 'POST' });
-    t.remove();
-    toast(`Indexed ${r.channels} channel(s) — ${r.new} new video(s)${r.errors ? `, ${r.errors} error(s)` : ''}`);
-    loadYouTubeChannels();
+    await api('/api/youtube/refresh', { method: 'POST' });
   } catch (e) {
-    t.remove();
     toast(e.message, 'error', 8000);
+    return;
   }
+  // Indexing takes minutes (YouTube rate-limits guest lookups, so videos are
+  // fetched a few seconds apart), so it runs in the background and we poll.
+  ytStartPolling();
+}
+
+function ytStartPolling() {
+  if (_ytPoll) clearInterval(_ytPoll);
+  const t = toast('Indexing…', 'loading', 0);
+  const tick = async () => {
+    let st;
+    try {
+      st = await api('/api/youtube/refresh/status');
+    } catch {
+      return;
+    }
+    if (st.running) {
+      const where = st.channel ? ` ${st.channel}` : '';
+      const chans = st.channels_total > 1 ? ` (${st.channels_done + 1}/${st.channels_total})` : '';
+      const vids = st.channel_total ? `${st.new}/${st.channel_total}` : `${st.new}`;
+      t.innerHTML = `<span class="toast-spinner"></span> Indexing${escapeAttr(where)}${chans} — ${vids} videos`;
+      return;
+    }
+    clearInterval(_ytPoll); _ytPoll = null; t.remove();
+    if (st.errors) {
+      toast(`Indexed with ${st.errors} error(s): ${escapeAttr(st.error_detail || '')}`, 'error', 10000);
+    } else {
+      toast(`Done — ${st.new} new video${st.new === 1 ? '' : 's'} added`);
+    }
+    loadYouTubeChannels();
+  };
+  tick();
+  _ytPoll = setInterval(tick, 2000);
 }
 
 // ── SMARTLISTS ───────────────────────────────────────────────────────────
@@ -5826,7 +5878,7 @@ async function loadHealthDeletions() {
     showManageEpisodesModal, confirmManageEpisodes,
     showDownloadMoreModal, confirmDownloadMore, detailToggleSeason, toggleFollow,
     // YouTube
-    loadYouTubePage, loadYouTubeChannels, ytAddChannel, ytDeleteChannel, ytRefreshNow, ytSaveSetup,
+    loadYouTubePage, loadYouTubeChannels, ytAddChannel, ytDeleteChannel, ytRefreshNow, ytSaveSetup, ytStartPolling,
     ytToggleRow, ytToggleLive,
     // Following
     loadFollowing,

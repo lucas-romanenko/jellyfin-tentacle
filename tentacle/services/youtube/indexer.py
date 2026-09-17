@@ -105,7 +105,11 @@ def _tab_urls(channel: YouTubeChannel) -> list:
     urls = []
     if channel.include_videos:
         urls.append(f"{base}/videos")
-    if channel.include_streams:
+    # /streams carries live and scheduled broadcasts. A Live TV channel has to
+    # poll it whatever the "past live streams" preference says — that preference
+    # is about keeping finished streams in the library, which is a separate
+    # question from knowing what is on air.
+    if channel.include_streams or channel.live_enabled:
         urls.append(f"{base}/streams")
     if channel.include_shorts:
         urls.append(f"{base}/shorts")
@@ -142,7 +146,8 @@ def is_library_item(video) -> bool:
     return video.live_status not in ("is_live", "is_upcoming")
 
 
-def index_channel(db: Session, channel: YouTubeChannel, limit: int = None) -> dict:
+def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
+                  on_progress=None) -> dict:
     """Refresh one channel. Returns counts; raises on a blocked/unavailable listing.
 
     New videos are recorded but NOT given media files here — library.py writes
@@ -183,6 +188,36 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None) -> di
 
     # Anything still listed is alive — refresh last_seen so retention leaves it be.
     now = datetime.utcnow()
+
+    # Re-check anything currently marked live or upcoming. Details are only
+    # fetched for NEW videos, so a stream indexed while scheduled would keep
+    # live_status="is_upcoming" forever and never become playable on its Live TV
+    # channel. The set is small — only pending broadcasts.
+    pending = db.query(YouTubeVideo).filter(
+        YouTubeVideo.channel_fk == channel.id,
+        YouTubeVideo.live_status.in_(("is_live", "is_upcoming")),
+        YouTubeVideo.removed_at.is_(None),
+    ).all()
+    for video in pending:
+        try:
+            details = client.video_details(video.video_id)
+        except YouTubeBlocked:
+            raise
+        except YouTubeError:
+            continue
+        was = video.live_status
+        video.live_status = details.get("live_status")
+        if details.get("duration"):
+            video.duration = details["duration"]
+        published = _published(details)
+        if published and not video.published_at:
+            video.published_at = published
+        if was != video.live_status:
+            logger.info(
+                f"[YouTube] '{video.title}' {was} → {video.live_status or 'ended'}"
+            )
+    if pending:
+        db.commit()
     if seen_ids:
         for i in range(0, len(seen_ids), 500):
             db.query(YouTubeVideo).filter(
@@ -230,6 +265,10 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None) -> di
         ))
         added += 1
         db.commit()
+        # Reported per video: a first index can take minutes, and waiting for
+        # the whole channel to finish leaves the UI with nothing to show.
+        if on_progress:
+            on_progress(added, len(new_videos))
         time.sleep(DETAIL_SPACING_SECONDS)
 
     channel.last_checked = now

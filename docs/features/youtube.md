@@ -123,8 +123,15 @@ upcoming streams appear in the Jellyfin guide.
   the stream ends it becomes an ordinary video and gets its files on the next
   index
 
-After enabling a channel, refresh the guide in Jellyfin (Live TV → Refresh
-Guide) so it picks up the new channel.
+Turning Live TV on also kicks off an index, because videos indexed earlier were
+fetched with live streams skipped. Once that finishes, refresh the guide in
+Jellyfin (Live TV → Refresh Guide) so it picks up the new channel.
+
+!!! note "Not every channel streams"
+    Plenty of channels never go live — they have no `/streams` tab content at
+    all. The channel list shows **● LIVE**, **N upcoming** or **nothing on** so
+    you can tell before pressing play. A channel with nothing on returns "not
+    streaming right now", which Jellyfin surfaces as a playback error.
 
 If nothing is streaming, the channel returns a "not streaming right now"
 response rather than an error, and Jellyfin retries later instead of dropping
