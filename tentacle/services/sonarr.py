@@ -20,6 +20,7 @@ from services.nfo import write_series_nfo
 from services.tagger import apply_tag_rules, get_list_tags_for_tmdb_id, detect_source_tag_from_studios
 from services.exceptions import SonarrConnectionError
 from services.logstream import emit_library_event
+from services.arr_add import ADD_TIMEOUT, READ_TIMEOUT, already_exists_in_body, explain_arr_error
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,11 @@ class SonarrService:
         self.api_key = api_key
         self.session = requests.Session()
         self.session.headers.update({"X-Api-Key": api_key})
+        # Why the last add_series() returned None. add_series() fails for five
+        # materially different reasons and the caller can't tell them apart from
+        # the return value alone, which is how every failure ended up reported
+        # to the user as a bare "Failed to add".
+        self.last_error = None
 
     def test(self) -> Optional[dict]:
         try:
@@ -154,8 +160,14 @@ class SonarrService:
             lookup = self.lookup_by_tvdb(tvdb_id)
         if not lookup and tmdb_id:
             lookup = self.lookup_by_tmdb(tmdb_id)
+        self.last_error = None
         if not lookup:
             logger.error(f"Sonarr: no lookup result for tmdb:{tmdb_id} tvdb:{tvdb_id}")
+            self.last_error = (
+                "Sonarr could not find this show in its TVDB metadata source"
+                + (f" (tmdb:{tmdb_id}, no TVDB id on TMDB)" if tmdb_id and not tvdb_id else "")
+                + ". It may be too new or not on TheTVDB yet."
+            )
             return None
         payload = lookup
         payload["qualityProfileId"] = quality_profile_id
@@ -187,26 +199,58 @@ class SonarrService:
             r = self.session.post(
                 f"{self.url}/api/v3/series",
                 json=payload,
-                timeout=15,
+                timeout=ADD_TIMEOUT,
             )
-            if r.status_code < 400:
-                series_data = r.json()
-
-                if selected_episodes:
-                    # Custom episode selection: monitor + search specific episodes
-                    self._monitor_selected_episodes(series_data["id"], selected_episodes)
-                    if not monitor_new:
-                        self._unmonitor_series(series_data["id"])
-                elif monitor not in ("all", "future"):
-                    # Preset partial monitor: unmonitor series after initial search
-                    self._unmonitor_series(series_data["id"])
-
-                return series_data
-            logger.error(f"Sonarr rejected tmdb:{tmdb_id} — HTTP {r.status_code}: {r.text}")
+        except requests.exceptions.Timeout:
+            # Sonarr commonly finishes the add after we stop waiting (metadata
+            # refresh + artwork + disk scan all happen before it answers), so
+            # verify rather than reporting a failure.
+            logger.warning(f"Sonarr add tmdb:{tmdb_id} tvdb:{tvdb_id} timed out after {ADD_TIMEOUT}s — verifying")
+            existing = None
+            if lookup.get("tvdbId"):
+                existing = self.get_series_by_tvdb(lookup["tvdbId"])
+            if existing:
+                logger.info(f"Sonarr add tmdb:{tmdb_id} completed despite the timeout")
+                return existing
+            self.last_error = (
+                f"Sonarr did not finish adding within {ADD_TIMEOUT}s and the series is not in "
+                f"its library — it may be busy. Please retry in a moment."
+            )
+            return None
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to add tmdb:{tmdb_id} to Sonarr: {e}")
+            self.last_error = ("Could not reach Sonarr. Check it is running and the URL in "
+                               "Settings → Integrations.")
             return None
         except Exception as e:
             logger.error(f"Failed to add tmdb:{tmdb_id} to Sonarr: {e}")
+            self.last_error = f"Unexpected error talking to Sonarr: {e}"
             return None
+
+        if r.status_code < 400:
+            series_data = r.json()
+
+            if selected_episodes:
+                # Custom episode selection: monitor + search specific episodes
+                self._monitor_selected_episodes(series_data["id"], selected_episodes)
+                if not monitor_new:
+                    self._unmonitor_series(series_data["id"])
+            elif monitor not in ("all", "future"):
+                # Preset partial monitor: unmonitor series after initial search
+                self._unmonitor_series(series_data["id"])
+
+            return series_data
+
+        # Sonarr says clearly when it already has the series. That is the
+        # outcome the user wanted, not a failure — hand back a sentinel so the
+        # caller can count it as already_exists.
+        if r.status_code in (400, 409) and already_exists_in_body(r.text):
+            logger.info(f"Sonarr: series already present (tmdb:{tmdb_id} tvdb:{tvdb_id})")
+            return {"alreadyExists": True}
+
+        logger.error(f"Sonarr rejected tmdb:{tmdb_id} tvdb:{tvdb_id} — HTTP {r.status_code}: {r.text}")
+        self.last_error = explain_arr_error(r.status_code, r.text, "Sonarr")
+        return None
 
     def _monitor_selected_episodes(self, series_id: int, selected_episodes: list):
         """Monitor and search specific episodes after adding a series."""
@@ -342,13 +386,25 @@ class SonarrService:
             logger.warning(f"Sonarr: failed to set follow for tmdb:{tmdb_id}: {e}")
             return False
 
-    def get_root_folders(self) -> list:
+    def get_root_folders(self, required: bool = False) -> list:
+        """Sonarr's root folders.
+
+        With required=True a read failure raises instead of returning [] — the
+        add paths must not fall back to a guessed path, because a guess is
+        almost never a configured root and turns a transient blip into a
+        guaranteed rejection the user can't diagnose.
+        """
         try:
-            r = self.session.get(f"{self.url}/api/v3/rootfolder", timeout=10)
+            r = self.session.get(f"{self.url}/api/v3/rootfolder", timeout=READ_TIMEOUT)
             r.raise_for_status()
             return r.json()
         except Exception as e:
             logger.error(f"Failed to fetch Sonarr root folders: {e}")
+            if required:
+                raise RuntimeError(
+                    "Could not read Sonarr's root folders (Sonarr may be busy or down). "
+                    "Nothing was added — please retry in a moment."
+                ) from e
             return []
 
 
