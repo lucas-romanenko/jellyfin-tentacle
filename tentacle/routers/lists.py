@@ -719,7 +719,10 @@ def add_to_radarr(body: AddMissingBody, db: Session = Depends(get_db), user: Ten
         report.record(outcome, reason)
         if outcome == ADDED:
             _record_download_request(db, tmdb_id, "movie", user.id)
-            if not release_date:
+            # Only for the first added title, and only for a single-title add:
+            # this is an extra round trip purely for UI feedback, and doing it
+            # per item made a bulk add outlast most reverse-proxy timeouts.
+            if not release_date and len(body.tmdb_ids) == 1:
                 release_date = _radarr_upcoming_release(radarr_url, radarr_key, tmdb_id)
 
     if report.added:

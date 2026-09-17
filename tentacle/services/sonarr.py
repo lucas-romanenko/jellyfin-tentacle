@@ -20,7 +20,9 @@ from services.nfo import write_series_nfo
 from services.tagger import apply_tag_rules, get_list_tags_for_tmdb_id, detect_source_tag_from_studios
 from services.exceptions import SonarrConnectionError
 from services.logstream import emit_library_event
-from services.arr_add import ADD_TIMEOUT, READ_TIMEOUT, already_exists_in_body, explain_arr_error
+from services.arr_add import (
+    ADD_TIMEOUT, READ_TIMEOUT, _poll_until_present, already_exists_in_body, explain_arr_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -120,15 +122,27 @@ class SonarrService:
             return None
 
     def lookup_by_tvdb(self, tvdb_id: int) -> Optional[dict]:
+        """Look a series up by TVDB id. Sets last_error when Sonarr is unreachable.
+
+        A swallowed transport error used to be indistinguishable from "no such
+        series", so a Sonarr outage was reported to the user as "not on
+        TheTVDB yet" — sending them to look for a metadata problem that didn't
+        exist.
+        """
         try:
             r = self.session.get(
                 f"{self.url}/api/v3/series/lookup",
                 params={"term": f"tvdb:{tvdb_id}"},
-                timeout=15,
+                timeout=READ_TIMEOUT,
             )
             r.raise_for_status()
             results = r.json()
             return next((s for s in results if s.get("tvdbId") == tvdb_id), None)
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Sonarr lookup failed for tvdb:{tvdb_id}: {e}")
+            self.last_error = ("Could not reach Sonarr to look this series up. Check it is "
+                               "running and the URL in Settings → Integrations.")
+            return None
         except Exception as e:
             logger.error(f"Sonarr lookup failed for tvdb:{tvdb_id}: {e}")
             return None
@@ -155,12 +169,15 @@ class SonarrService:
                    tvdb_id: int = None) -> Optional[dict]:
         # Prefer the exact TVDB lookup — Sonarr/Skyhook is TVDB-native, so it's
         # immune to the tmdb: term mis-resolution that can return the wrong show.
+        self.last_error = None
         lookup = None
         if tvdb_id:
             lookup = self.lookup_by_tvdb(tvdb_id)
         if not lookup and tmdb_id:
             lookup = self.lookup_by_tmdb(tmdb_id)
-        self.last_error = None
+        if not lookup and self.last_error:
+            # Sonarr was unreachable — keep that reason rather than blaming TVDB.
+            return None
         if not lookup:
             logger.error(f"Sonarr: no lookup result for tmdb:{tmdb_id} tvdb:{tvdb_id}")
             self.last_error = (
@@ -204,13 +221,15 @@ class SonarrService:
         except requests.exceptions.Timeout:
             # Sonarr commonly finishes the add after we stop waiting (metadata
             # refresh + artwork + disk scan all happen before it answers), so
-            # verify rather than reporting a failure.
+            # poll rather than reporting a failure.
             logger.warning(f"Sonarr add tmdb:{tmdb_id} tvdb:{tvdb_id} timed out after {ADD_TIMEOUT}s — verifying")
-            existing = None
-            if lookup.get("tvdbId"):
-                existing = self.get_series_by_tvdb(lookup["tvdbId"])
+            existing = self._await_added_series(lookup.get("tvdbId"))
             if existing:
                 logger.info(f"Sonarr add tmdb:{tmdb_id} completed despite the timeout")
+                # The 2xx path below applies the episode selection; reaching the
+                # series this way skipped it, so the user was told "downloading
+                # N episodes" with nothing monitored or searched.
+                self._apply_monitoring(existing, monitor, selected_episodes, monitor_new)
                 return existing
             self.last_error = (
                 f"Sonarr did not finish adding within {ADD_TIMEOUT}s and the series is not in "
@@ -228,17 +247,18 @@ class SonarrService:
             return None
 
         if r.status_code < 400:
-            series_data = r.json()
+            try:
+                series_data = r.json()
+            except ValueError:
+                # A 2xx carrying a non-JSON body (a reverse proxy's HTML page,
+                # say). Raising here surfaced as a 500 from the handler; report
+                # it as a normal failure with a reason instead.
+                logger.error(f"Sonarr returned a non-JSON {r.status_code} for tmdb:{tmdb_id}: {r.text[:200]}")
+                self.last_error = ("Sonarr returned a response Tentacle could not read. "
+                                   "Check whether a proxy sits in front of it.")
+                return None
 
-            if selected_episodes:
-                # Custom episode selection: monitor + search specific episodes
-                self._monitor_selected_episodes(series_data["id"], selected_episodes)
-                if not monitor_new:
-                    self._unmonitor_series(series_data["id"])
-            elif monitor not in ("all", "future"):
-                # Preset partial monitor: unmonitor series after initial search
-                self._unmonitor_series(series_data["id"])
-
+            self._apply_monitoring(series_data, monitor, selected_episodes, monitor_new)
             return series_data
 
         # Sonarr says clearly when it already has the series. That is the
@@ -250,6 +270,50 @@ class SonarrService:
 
         logger.error(f"Sonarr rejected tmdb:{tmdb_id} tvdb:{tvdb_id} — HTTP {r.status_code}: {r.text}")
         self.last_error = explain_arr_error(r.status_code, r.text, "Sonarr")
+        return None
+
+    def _apply_monitoring(self, series_data: dict, monitor: str,
+                          selected_episodes: list, monitor_new: bool) -> None:
+        """Apply the requested episode monitoring to a freshly added series."""
+        series_id = series_data.get("id")
+        if not series_id:
+            return
+        if selected_episodes:
+            # Custom episode selection: monitor + search specific episodes
+            self._monitor_selected_episodes(series_id, selected_episodes)
+            if not monitor_new:
+                self._unmonitor_series(series_id)
+        elif monitor not in ("all", "future"):
+            # Preset partial monitor: unmonitor series after initial search
+            self._unmonitor_series(series_id)
+
+    def _await_added_series(self, tvdb_id) -> Optional[dict]:
+        """Poll for a series after an add timed out.
+
+        Uses the targeted tvdbId filter rather than get_series_by_tvdb(), which
+        pulls the ENTIRE series list — on a busy Sonarr that is the call most
+        likely to time out itself, so it read as "not added".
+        """
+        if not tvdb_id:
+            return None
+        found = {}
+
+        def _probe() -> bool:
+            r = self.session.get(
+                f"{self.url}/api/v3/series",
+                params={"tvdbId": tvdb_id},
+                timeout=READ_TIMEOUT,
+            )
+            r.raise_for_status()
+            data = r.json()
+            match = next((s for s in data if s.get("tvdbId") == tvdb_id), None) if isinstance(data, list) else None
+            if match:
+                found["series"] = match
+                return True
+            return False
+
+        if _poll_until_present(_probe, f"sonarr tvdb:{tvdb_id}"):
+            return found.get("series")
         return None
 
     def _monitor_selected_episodes(self, series_id: int, selected_episodes: list):

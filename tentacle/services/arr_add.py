@@ -31,6 +31,9 @@ ADD_TIMEOUT = 90
 # Reads (root folders, quality profiles, lookups). /rootfolder computes free
 # space per root, so it is not free either.
 READ_TIMEOUT = 30
+# How long to keep checking whether a timed-out add actually landed. Radarr has
+# been measured answering an add after 127s, so this has to outlast that.
+VERIFY_TOTAL_SECONDS = 150
 
 # added | exists | failed
 ADDED = "added"
@@ -89,13 +92,19 @@ def explain_arr_error(status_code: int, body: str, service: str) -> str:
 
 
 def already_exists_in_body(body: str) -> bool:
-    """True when an *arr rejection means "you already have this"."""
+    """True when an *arr rejection means "you already have this".
+
+    Matches the validator codes and the exact phrase the *arrs use. A bare
+    "already exists" substring was too loose — it matches unrelated messages
+    (a folder or a root path already existing, say) and would report a real
+    failure as a success.
+    """
     low = (body or "").lower()
     return (
         "already been added" in low
         or "movieexistsvalidator" in low
         or "seriesexistsvalidator" in low
-        or "already exists" in low
+        or "artistexistsvalidator" in low
     )
 
 
@@ -199,11 +208,41 @@ def add_movie_to_radarr(radarr_url: str, radarr_key: str, tmdb_id: int,
     return FAILED, explain_arr_error(r.status_code, r.text, "Radarr")
 
 
+def verify_backoff_delays(total_seconds: int = VERIFY_TOTAL_SECONDS) -> list:
+    """Delays for the post-timeout poll: 2s, 4s, 8s, then every 15s."""
+    delays = []
+    elapsed = 0.0
+    wait = 2.0
+    while elapsed < total_seconds:
+        delays.append(wait)
+        elapsed += wait
+        wait = min(wait * 2, 15.0)
+    return delays
+
+
+def _poll_until_present(check, label: str, total_seconds: int = VERIFY_TOTAL_SECONDS) -> bool:
+    """Poll `check` until it returns truthy or the budget runs out.
+
+    A single sample taken two seconds after the timeout is not enough: the add
+    that prompted this was answered by Radarr after 127 seconds, so a 90s
+    timeout plus one immediate check still called a success a failure — and the
+    user's retry then hit "already exists". Each probe is a targeted id filter,
+    which is cheap enough to repeat.
+    """
+    import time
+    for delay in verify_backoff_delays(total_seconds):
+        time.sleep(delay)
+        try:
+            if check():
+                return True
+        except Exception as e:
+            logger.debug(f"Verification probe for {label} failed: {e}")
+    return False
+
+
 def _radarr_has_movie(radarr_url: str, radarr_key: str, tmdb_id: int) -> bool:
-    """Check whether Radarr ended up with this movie (post-timeout verification)."""
-    try:
-        import time
-        time.sleep(2)  # let the add settle
+    """Whether Radarr ended up with this movie, polled (post-timeout verification)."""
+    def _probe() -> bool:
         r = requests.get(
             f"{radarr_url.rstrip('/')}/api/v3/movie",
             headers={"X-Api-Key": radarr_key},
@@ -212,8 +251,6 @@ def _radarr_has_movie(radarr_url: str, radarr_key: str, tmdb_id: int) -> bool:
         )
         r.raise_for_status()
         movies = r.json()
-        if isinstance(movies, list):
-            return any(m.get("tmdbId") == tmdb_id for m in movies)
-    except Exception as e:
-        logger.warning(f"Could not verify Radarr add for tmdb:{tmdb_id}: {e}")
-    return False
+        return isinstance(movies, list) and any(m.get("tmdbId") == tmdb_id for m in movies)
+
+    return _poll_until_present(_probe, f"radarr tmdb:{tmdb_id}")

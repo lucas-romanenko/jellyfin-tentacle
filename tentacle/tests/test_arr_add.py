@@ -47,6 +47,14 @@ class TestErrorTranslation(unittest.TestCase):
         self.assertTrue(already_exists_in_body(SERIES_EXISTS))
         self.assertFalse(already_exists_in_body(NOT_FOUND))
 
+    def test_already_exists_does_not_match_unrelated_messages(self):
+        # A bare "already exists" substring matched failures that have nothing
+        # to do with the title being present, turning them into false successes.
+        self.assertFalse(already_exists_in_body(
+            '[{"errorMessage":"A folder with that name already exists","errorCode":"PathValidator"}]'))
+        self.assertFalse(already_exists_in_body(
+            '[{"errorMessage":"Root folder already exists","errorCode":"RootFolderValidator"}]'))
+
 
 class TestAddReport(unittest.TestCase):
     def test_identical_reasons_are_reported_once(self):
@@ -82,6 +90,31 @@ class TestAddMovieToRadarr(unittest.TestCase):
             outcome, reason = add_movie_to_radarr("http://r", "k", 1204680, 1, "/movies")
         self.assertEqual(outcome, FAILED)
         self.assertIn("retry", reason.lower())
+
+    def test_verification_polls_rather_than_sampling_once(self):
+        # Radarr has been measured answering an add after 127s, so a single
+        # check moments after the timeout reported a success as a failure.
+        attempts = {"n": 0}
+
+        def _get(url, **kwargs):
+            attempts["n"] += 1
+            r = mock.Mock()
+            r.raise_for_status.return_value = None
+            r.json.return_value = [{"tmdbId": 1204680}] if attempts["n"] >= 4 else []
+            return r
+
+        with mock.patch("time.sleep"), \
+             mock.patch("requests.post", side_effect=requests.exceptions.Timeout), \
+             mock.patch("requests.get", side_effect=_get):
+            outcome, _ = add_movie_to_radarr("http://r", "k", 1204680, 1, "/movies")
+        self.assertEqual(outcome, ADDED)
+        self.assertGreaterEqual(attempts["n"], 4)
+
+    def test_verification_budget_outlasts_a_slow_arr(self):
+        from services.arr_add import VERIFY_TOTAL_SECONDS, verify_backoff_delays
+        self.assertGreaterEqual(sum(verify_backoff_delays()), 127,
+                                "budget is shorter than a measured real add")
+        self.assertGreaterEqual(VERIFY_TOTAL_SECONDS, 150)
 
     def test_rejection_reason_is_returned(self):
         with mock.patch("requests.post", return_value=_response(400, NOT_FOUND)):
