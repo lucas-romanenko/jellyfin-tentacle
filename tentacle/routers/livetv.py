@@ -28,6 +28,8 @@ import threading
 from datetime import datetime
 from typing import Optional, List
 
+from services.epg_categories import infer_category
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
@@ -1616,23 +1618,32 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
     ) as client:
         url = stream_url
         for _ in range(10):  # max redirects
+            # Headers only. httpx's get() buffers the WHOLE body first, which
+            # never ends for a channel serving a continuous MPEG-TS stream — the
+            # coroutine hung here forever, so the raw-TS branch below was
+            # unreachable and Jellyfin's tuner got no response at all.
             try:
-                resp = await client.get(url, headers={"User-Agent": user_agent})
+                req = client.build_request("GET", url, headers={"User-Agent": user_agent})
+                resp = await client.send(req, stream=True)
             except httpx.HTTPError as e:
                 logger.error(f"[LiveTV] Stream failed for channel {channel_id}: {e}")
                 raise HTTPException(502, f"Failed to connect to stream: {e}")
 
-            if resp.status_code in (301, 302, 303, 307, 308):
-                location = resp.headers.get("location")
-                if not location:
-                    raise HTTPException(502, "Redirect without Location header")
-                url = urljoin(url, location)
-                if not is_safe_url(url):
-                    logger.warning(f"[LiveTV] Blocked redirect to non-public host for channel {channel_id}: {url}")
-                    raise HTTPException(502, "Stream redirect points to a non-public host")
-                logger.info(f"[LiveTV] Following redirect → {url}")
-                continue
-            break
+            try:
+                if resp.status_code in (301, 302, 303, 307, 308):
+                    location = resp.headers.get("location")
+                    if not location:
+                        raise HTTPException(502, "Redirect without Location header")
+                    url = urljoin(url, location)
+                    if not is_safe_url(url):
+                        logger.warning(f"[LiveTV] Blocked redirect to non-public host for channel {channel_id}: {url}")
+                        raise HTTPException(502, "Stream redirect points to a non-public host")
+                    logger.info(f"[LiveTV] Following redirect → {url}")
+                    continue
+                break
+            finally:
+                # Always release the connection — we never read this body.
+                await resp.aclose()
 
     tokenized_url = url
     logger.info(f"[LiveTV] Resolved tokenized URL for channel {channel_id}: {tokenized_url}")
@@ -1842,6 +1853,7 @@ def hdhr_xmltv(db: Session = Depends(get_db)):
     epg_ids = set()
     # One EPG ID can map to multiple channels (e.g. CP24 HD + CP24 HD BACKUP)
     epg_id_to_guide_numbers: dict[str, list[str]] = {}
+    guide_number_group: dict[str, str] = {}
     for ch in channels:
         guide_number = str(ch.stream_id or ch.id)
         xmltv_channels.append({
@@ -1849,6 +1861,9 @@ def hdhr_xmltv(db: Session = Depends(get_db)):
             "name": ch.name,
             "logo_url": ch.logo_url,
         })
+        # Channel group feeds the category inference below when a programme
+        # title says nothing about its genre.
+        guide_number_group[guide_number] = ch.group_title
         if ch.epg_channel_id:
             epg_ids.add(ch.epg_channel_id)
             epg_id_to_guide_numbers.setdefault(ch.epg_channel_id, []).append(guide_number)
@@ -1856,6 +1871,7 @@ def hdhr_xmltv(db: Session = Depends(get_db)):
     # Get programs for enabled channels, remapping channel_id to GuideNumber(s)
     # When multiple channels share an EPG ID, duplicate programs for each
     programs = []
+    inferred_categories = 0
     if epg_ids:
         db_programs = (
             db.query(EPGProgram)
@@ -1866,14 +1882,29 @@ def hdhr_xmltv(db: Session = Depends(get_db)):
         for p in db_programs:
             guide_numbers = epg_id_to_guide_numbers.get(p.channel_id, [])
             for gn in guide_numbers:
+                # Xtream providers commonly send no category, and without one
+                # Jellyfin never sets IsSports/IsNews/IsKids/IsMovie — so no
+                # sports badge, empty genre filters, and the sports DVR padding
+                # defaults never apply.
+                category = p.category
+                if not category:
+                    category = infer_category(p.title, guide_number_group.get(gn))
+                    if category:
+                        inferred_categories += 1
                 programs.append({
                     "channel_id": gn,
                     "title": p.title,
                     "description": p.description,
                     "start": p.start,
                     "stop": p.stop,
-                    "category": p.category,
+                    "category": category,
                 })
+
+    if inferred_categories:
+        logger.info(
+            f"[LiveTV] XMLTV: inferred a category for {inferred_categories} programme(s) "
+            f"the provider sent none for"
+        )
 
     xml_content = generate_xmltv(xmltv_channels, programs)
     return Response(content=xml_content, media_type="application/xml")
