@@ -68,6 +68,16 @@ class JellyfinService:
             logger.error(f"[Jellyfin] Connection failed: {e}")
             return False
 
+    def get_server_id(self) -> Optional[str]:
+        """Jellyfin's server id, used to build web deep links. None if unreachable."""
+        try:
+            r = self.session.get(f"{self.url}/System/Info", timeout=10)
+            r.raise_for_status()
+            return r.json().get("Id")
+        except Exception as e:
+            logger.debug(f"[Jellyfin] Could not read server id: {e}")
+            return None
+
     def _fetch_all_items(self, media_type: str = "Movie") -> List[dict]:
         """Fetch all items of a type from Jellyfin with ProviderIds and Tags.
         Paginates automatically for libraries with more than 10,000 items."""
@@ -557,6 +567,34 @@ class JellyfinService:
     def get_item_by_id(self, item_id: str) -> Optional[dict]:
         """Check if an item exists by ID."""
         return self._get(self._item_path(item_id))
+
+    def item_exists(self, item_id: str) -> Optional[bool]:
+        """Tri-state existence probe: True = present, False = definitely gone
+        (Jellyfin answered 404), None = unknown (timeout / transport failure).
+
+        `get_item_by_id()` conflates the last two — it returns None for a
+        timeout and *raises* on a real 404 — which read as "deleted, recreate
+        it" and produced runaway duplicate playlists. Callers must only act on
+        an explicit False. The timeout is generous because the user-scoped item
+        endpoint is slow for playlist-sized items on a large library.
+        """
+        path = self._item_path(item_id)
+        try:
+            r = self.session.get(f"{self.url}{path}", timeout=45)
+            self._check_401(r, path)
+            if r.status_code == 404:
+                return False
+            r.raise_for_status()
+            return True
+        except requests.HTTPError as e:
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            if status == 404:
+                return False
+            logger.warning(f"[Jellyfin] Existence check for {item_id} failed: HTTP {status}")
+            return None
+        except Exception as e:
+            logger.warning(f"[Jellyfin] Existence check for {item_id} could not complete: {e}")
+            return None
 
     def wait_for_library_scan(self, expected_count: int = 0, media_type: str = "Movie",
                               max_wait: int = 120, poll_interval: int = 10) -> bool:

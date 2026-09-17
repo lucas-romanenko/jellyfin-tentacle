@@ -11,6 +11,7 @@ import shutil
 import logging
 import threading
 import requests
+from datetime import datetime
 from pathlib import Path
 from sqlalchemy.orm import Session
 
@@ -473,6 +474,43 @@ def migrate_global_smartlists_to_user(db: Session, user_id: int):
         logger.info(f"Migrated {moved} global SmartList configs to user dir {user_path}")
 
 
+def _enabled_toggle_names(db: Session, user_id: int) -> set:
+    """Playlist names the user has switched ON, regardless of current content.
+
+    Mirrors the name derivation in get_desired_smartlists(): a source toggle
+    key `source:<tag>:movies` maps to the playlist "<tag> Movies". Used to
+    protect a user's choices from content that is temporarily missing.
+    """
+    from models.database import AutoPlaylistToggle
+    builtin_names = {
+        "builtin:recently_added_movies": "Recently Added Movies",
+        "builtin:recently_added_tv": "Recently Added TV",
+        "builtin:downloaded_movies": "Downloaded Movies",
+        "builtin:downloaded_tv": "Downloaded TV",
+    }
+    names = set()
+    toggles = db.query(AutoPlaylistToggle).filter(
+        AutoPlaylistToggle.user_id == user_id,
+        AutoPlaylistToggle.enabled == True,  # noqa: E712 — SQLAlchemy needs ==
+    ).all()
+    for t in toggles:
+        key = t.key or ""
+        if key in builtin_names:
+            names.add(builtin_names[key])
+        elif key.startswith("source:"):
+            parts = key.split(":")
+            # source:<tag>:movies — rejoin the middle so a tag containing
+            # a colon (e.g. "Sky: Cinema") still resolves correctly
+            if len(parts) >= 3:
+                tag = ":".join(parts[1:-1])
+                kind = parts[-1]
+                if kind == "movies":
+                    names.add(f"{tag} Movies")
+                elif kind == "series":
+                    names.add(f"{tag} TV")
+    return names
+
+
 def sync_smartlists(db: Session, user_id: int = None) -> dict:
     """Sync per-user SmartList config files to disk. Returns {created, updated, total}.
 
@@ -599,7 +637,26 @@ def sync_smartlists(db: Session, user_id: int = None) -> dict:
 
     # Clean up orphaned SmartList folders (deleted tag rules, disabled toggles, removed providers)
     desired_names = {sl["name"] for sl in desired}
-    orphaned = {name: (folder, data) for name, (folder, data) in existing.items() if name not in desired_names}
+
+    # Playlists the user has explicitly enabled are protected even when they
+    # aren't in `desired` right now. `desired` is derived from current content,
+    # so a source with no rows this run (provider blip, partial sync, orphan
+    # sweep) drops out of it — and deleting the Jellyfin playlist + folder on
+    # that basis is irreversible and takes the user's home row with it.
+    protected_names = _enabled_toggle_names(db, user_id)
+    orphaned = {
+        name: (folder, data) for name, (folder, data) in existing.items()
+        if name not in desired_names and name not in protected_names
+    }
+    skipped_protected = [
+        name for name in existing
+        if name not in desired_names and name in protected_names
+    ]
+    if skipped_protected:
+        logger.warning(
+            f"SmartLists for user {user_id} have no matching content right now but are "
+            f"enabled — keeping them instead of deleting: {skipped_protected}"
+        )
     removed = 0
 
     # Safety check: only skip if ALL existing playlists would be removed and none are desired
@@ -631,6 +688,13 @@ def sync_smartlists(db: Session, user_id: int = None) -> dict:
                 shutil.rmtree(folder)
                 logger.info(f"Removed orphaned SmartList folder: {name}")
                 removed += 1
+                # Both deletions above are irreversible — leave an audit trail.
+                from models.database import log_deletion
+                log_deletion(
+                    db, kind="smartlist-orphan", name=name, reason="auto",
+                    detail=f"SmartList no longer desired for user {user_id} — folder removed"
+                           + (f", Jellyfin playlist {playlist_id} deleted" if playlist_id else ""),
+                )
             except Exception as e:
                 logger.warning(f"Could not remove folder for '{name}': {e}")
 
@@ -658,6 +722,21 @@ def sync_smartlists(db: Session, user_id: int = None) -> dict:
             ~AutoPlaylistToggle.key.in_(valid_keys),
             ~AutoPlaylistToggle.key.like("list:%"),  # Lists use ListSubscription, not toggles
         ).all()
+
+        # An ENABLED toggle is the user saying "I want this row whenever there's
+        # content for it". Content being absent right now — a provider blip, a
+        # category briefly un-whitelisted, a partial sync — is not the user
+        # changing their mind, and deleting the row cascades into SmartList +
+        # Jellyfin playlist + home row deletion that never comes back. Only ever
+        # prune toggles the user has switched OFF.
+        keep_enabled = [t for t in stale_toggles if t.enabled]
+        stale_toggles = [t for t in stale_toggles if not t.enabled]
+        if keep_enabled:
+            logger.warning(
+                f"Auto playlist toggles for user {user_id} have no matching content right now "
+                f"but are enabled — keeping them: {[t.key for t in keep_enabled]}"
+            )
+
         if stale_toggles:
             stale_keys = [t.key for t in stale_toggles]
             for t in stale_toggles:
@@ -728,6 +807,44 @@ def _user_home_config_path(db: Session, user_id: int = None) -> Path:
     return Path(get_setting(db, "home_config_path", "/data/tentacle-home.json"))
 
 
+# Home rows are hand-configured and never re-added automatically, so an
+# unresolvable row is kept rather than dropped until it has been unresolvable
+# this long — long enough to outlast any transient sync failure, short enough
+# that a genuinely deleted playlist doesn't leave a dead row forever.
+UNRESOLVED_ROW_GRACE_DAYS = 7
+HOME_CONFIG_BACKUPS = 10
+
+
+def _unresolved_for_days(since_iso: str) -> float:
+    """Days since an ISO timestamp. Unparseable values count as 0 (keep the row)."""
+    try:
+        return (datetime.utcnow() - datetime.fromisoformat(since_iso)).total_seconds() / 86400
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _backup_home_config(path: Path) -> None:
+    """Copy the current home config aside before it is overwritten.
+
+    The home layout is the only Tentacle state with no other snapshot, so a bad
+    regeneration is otherwise unrecoverable. Keeps the last
+    HOME_CONFIG_BACKUPS copies (the file is ~2 KB). Never raises — a failed
+    backup must not block the write.
+    """
+    try:
+        if not path.exists():
+            return
+        backups = path.parent / "backups"
+        backups.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.utcnow().strftime("%Y%m%dT%H%M%S")
+        shutil.copy2(path, backups / f"{path.stem}-{stamp}.json")
+        old = sorted(backups.glob(f"{path.stem}-*.json"))
+        for stale in old[:-HOME_CONFIG_BACKUPS]:
+            stale.unlink(missing_ok=True)
+    except Exception as e:
+        logger.warning(f"Could not back up home config {path}: {e}")
+
+
 def write_home_config(db: Session, user_id: int = None) -> dict:
     """Generate and write per-user home config based on current SmartLists.
 
@@ -761,7 +878,12 @@ def write_home_config(db: Session, user_id: int = None) -> dict:
         # Sort info lookup by playlist_id
         sort_by_id = {sl["playlist_id"]: (sl.get("sort_by", "releasedate"), sl.get("sort_order", "Descending")) for sl in smartlists}
 
+        # Names that exist on disk but map to more than one playlist — the row
+        # can't be remapped safely, but it must not be thrown away either.
+        ambiguous_names = {n for n, c in name_counts.items() if c > 1}
+
         # Start with existing rows (in their saved order)
+        now_iso = datetime.utcnow().isoformat()
         rows = []
         for r in existing_rows:
             if r.get("type") == "builtin":
@@ -771,6 +893,7 @@ def write_home_config(db: Session, user_id: int = None) -> dict:
                 # Keep playlist rows that still exist on disk, ensure type field
                 r["type"] = "playlist"
                 r["display_name"] = name_by_id.get(r["playlist_id"], r["display_name"])
+                r.pop("unresolved_since", None)
                 rows.append(r)
             elif r.get("display_name") and r["display_name"] in id_by_name:
                 # Playlist was recreated with a new ID — remap the reference
@@ -779,14 +902,47 @@ def write_home_config(db: Session, user_id: int = None) -> dict:
                 logger.info(f"Home config: remapping '{r['display_name']}' from {r.get('playlist_id')} to {new_id}")
                 r["playlist_id"] = new_id
                 r["type"] = "playlist"
+                r.pop("unresolved_since", None)
+                rows.append(r)
+            else:
+                # Unresolvable this run. Home rows are hand-configured and are
+                # never re-added automatically, so dropping one on a transient
+                # failure (a playlist momentarily between IDs, a failed
+                # create, a duplicate making the name ambiguous) loses user
+                # configuration permanently. Keep the row with its stale id and
+                # a first-unresolved timestamp; it renders empty until the
+                # playlist is back, and is only dropped once it has been
+                # unresolvable for UNRESOLVED_ROW_GRACE_DAYS.
+                name = r.get("display_name") or "(unnamed)"
+                if name in ambiguous_names:
+                    reason = f"stale playlist_id and '{name}' matches {name_counts[name]} playlists"
+                else:
+                    reason = f"no SmartList named '{name}' has a Jellyfin playlist id right now"
+                since = r.get("unresolved_since") or now_iso
+                if _unresolved_for_days(since) >= UNRESOLVED_ROW_GRACE_DAYS:
+                    logger.warning(
+                        f"Home config: dropping row '{name}' — unresolvable since {since} "
+                        f"({reason})"
+                    )
+                    continue
+                r["unresolved_since"] = since
+                r.setdefault("type", "playlist")
+                logger.warning(
+                    f"Home config: keeping unresolvable row '{name}' ({reason}) — "
+                    f"it will be dropped if it stays unresolvable for "
+                    f"{UNRESOLVED_ROW_GRACE_DAYS} days"
+                )
                 rows.append(r)
 
-        # Safety check: if we'd drop more than half the playlist rows, something is wrong
+        # Safety check: if we'd drop more than half the playlist rows, something
+        # is wrong. Compare like with like — built-in rows are never dropped, so
+        # counting them in made this guard far weaker than it reads.
         existing_playlist_rows = [r for r in existing_rows if r.get("type") != "builtin"]
-        if existing_playlist_rows and len(rows) < len(existing_rows) / 2:
+        kept_playlist_rows = [r for r in rows if r.get("type") != "builtin"]
+        if existing_playlist_rows and len(kept_playlist_rows) < len(existing_playlist_rows) / 2:
             logger.warning(
-                f"Home config safety: would drop from {len(existing_rows)} to {len(rows)} rows "
-                f"— keeping existing config to prevent data loss"
+                f"Home config safety: would drop from {len(existing_playlist_rows)} to "
+                f"{len(kept_playlist_rows)} playlist rows — keeping existing config to prevent data loss"
             )
             return existing_config
 
@@ -848,6 +1004,8 @@ def write_home_config(db: Session, user_id: int = None) -> dict:
         try:
             path = _user_home_config_path(db, user_id)
             path.parent.mkdir(parents=True, exist_ok=True)
+            if config_changed:
+                _backup_home_config(path)
             _atomic_write_json(path, config)
             logger.info(f"Wrote home config with {len(rows)} rows to {path}")
         except Exception as e:
@@ -1206,7 +1364,6 @@ def _resort_by_db_date(items: list, config: dict, db: Session = None) -> list:
             if s.tmdb_id and s.date_added:
                 tmdb_date_map[str(s.tmdb_id)] = s.date_added
 
-    from datetime import datetime
     fallback = datetime.min
 
     def get_date(item):
@@ -1221,6 +1378,90 @@ def _resort_by_db_date(items: list, config: dict, db: Session = None) -> list:
     reverse = sort_order == "Descending"
     items.sort(key=get_date, reverse=reverse)
     return items
+
+
+def _update_episode_playlist(jf, playlist_id: str, name: str, item_ids: list,
+                             current_entries: list, stats: dict) -> None:
+    """Update a playlist whose stored entries are episodes of the desired series.
+
+    Both sides of the diff are mapped into series space first: current episode
+    entries are grouped back to their SeriesId, and removals are then translated
+    back into the episode entries that belong to the series being dropped.
+
+    The previous code compared episode ids against series ids directly. Those
+    sets never intersect, so `to_add` was every series and `to_remove` was every
+    episode currently present — including the episodes Jellyfin had just
+    recreated from the adds — and the playlist drained to a handful of entries.
+    """
+    # Group entries by the series they belong to, preserving playlist order.
+    entries_by_series = {}
+    current_series_ordered = []
+    for e in current_entries:
+        sid = e.get("SeriesId") if e.get("Type") == "Episode" else e.get("Id")
+        if not sid:
+            continue
+        if sid not in entries_by_series:
+            entries_by_series[sid] = []
+            current_series_ordered.append(sid)
+        entries_by_series[sid].append(e.get("PlaylistItemId", e["Id"]))
+
+    desired = list(dict.fromkeys(item_ids))  # de-dupe, keep order
+    desired_set = set(desired)
+    current_set = set(current_series_ordered)
+
+    def _done(message: str):
+        logger.info(f"[SmartLists] '{name}': {message}")
+        stats["updated"] += 1
+        stats["processed"] += 1
+        stats["item_counts"][name] = len(item_ids)
+
+    if current_series_ordered == desired:
+        _done(f"no changes needed ({len(desired)} series → {len(current_entries)} episodes)")
+        return
+
+    to_add = [s for s in desired if s not in current_set]
+    to_remove = [s for s in current_series_ordered if s not in desired_set]
+
+    # Jellyfin playlists only support append, so an incremental update is only
+    # safe when the series that stay keep their relative order and every new
+    # series belongs at the end.
+    kept_current = [s for s in current_series_ordered if s in desired_set]
+    kept_desired = [s for s in desired if s in current_set]
+    order_preserved = kept_current == kept_desired
+    if to_add:
+        add_set = set(to_add)
+        last_kept_pos = max((i for i, sid in enumerate(desired) if sid in current_set), default=-1)
+        first_add_pos = min((i for i, sid in enumerate(desired) if sid in add_set), default=len(desired))
+        adds_at_end = first_add_pos > last_kept_pos
+    else:
+        adds_at_end = True
+
+    if order_preserved and adds_at_end:
+        if to_add and not jf.add_to_playlist(playlist_id, to_add):
+            logger.error(f"[SmartLists] '{name}': add failed — leaving playlist unchanged")
+            stats["errors"] = stats.get("errors", 0) + 1
+            return
+        if to_remove:
+            remove_entry_ids = [eid for sid in to_remove for eid in entries_by_series.get(sid, [])]
+            if remove_entry_ids:
+                jf.remove_from_playlist(playlist_id, remove_entry_ids)
+        _done(
+            f"incremental series update +{len(to_add)} -{len(to_remove)} "
+            f"({len(desired)} series)"
+        )
+        return
+
+    # Order changed — clear and re-add the series in the desired order.
+    all_entry_ids = [e.get("PlaylistItemId", e["Id"]) for e in current_entries]
+    if all_entry_ids and not jf.remove_from_playlist(playlist_id, all_entry_ids):
+        logger.error(f"[SmartLists] '{name}': rebuild clear failed — leaving playlist unchanged")
+        stats["errors"] = stats.get("errors", 0) + 1
+        return
+    if desired and not jf.add_to_playlist(playlist_id, desired):
+        logger.error(f"[SmartLists] '{name}': rebuild re-add failed after clear — will repopulate next sync")
+        stats["errors"] = stats.get("errors", 0) + 1
+        return
+    _done(f"full series rebuild — cleared + re-added {len(desired)} series in order")
 
 
 def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats: dict, db: Session = None):
@@ -1292,11 +1533,22 @@ def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats
     if not playlist_id:
         playlist_id = config.get("JellyfinPlaylistId")
 
-    # Verify the playlist still exists in Jellyfin
+    # Verify the playlist still exists in Jellyfin. "Jellyfin didn't answer in
+    # time" is NOT "the playlist was deleted": recreating on a timeout leaves
+    # the original playlist in place and adds a duplicate every time, and each
+    # duplicate slows Jellyfin down enough to make the next timeout likelier.
+    # Only an explicit 404 justifies creating a replacement.
     if playlist_id:
-        existing_item = jf.get_item_by_id(playlist_id)
-        if not existing_item:
-            logger.warning(f"[SmartLists] Playlist {playlist_id} for '{name}' no longer exists, will create new")
+        exists = jf.item_exists(playlist_id)
+        if exists is None:
+            logger.warning(
+                f"[SmartLists] '{name}': could not verify playlist {playlist_id} "
+                f"(timeout or transport error, not a deletion) — leaving it unchanged"
+            )
+            stats["errors"] = stats.get("errors", 0) + 1
+            return
+        if exists is False:
+            logger.warning(f"[SmartLists] Playlist {playlist_id} for '{name}' no longer exists (404), will create new")
             playlist_id = None
 
     if playlist_id:
@@ -1322,27 +1574,13 @@ def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats
 
         # Jellyfin expands series into their episodes inside playlists, so a
         # "series" playlist stores episode entries, not the series themselves.
-        # Comparing episode IDs to the desired series IDs never matches, which
-        # rebuilt the playlist EVERY sync (clear all episodes → re-add series →
-        # re-expand) — perpetual churn and huge episode counts. Group current
-        # episodes back to their SeriesId; if that set already equals the desired
-        # series, the playlist holds exactly the right series (as episodes), so
-        # skip the rebuild entirely.
+        # Episode ids and series ids are disjoint, so the id-space diff below
+        # cannot be used here at all — it would see every desired series as new
+        # and every stored episode as stale, and the removal pass would delete
+        # the entries the add pass had just created. Diff in series space.
         if any(e.get("Type") == "Episode" for e in current_entries):
-            current_series = set()
-            for e in current_entries:
-                sid = e.get("SeriesId") if e.get("Type") == "Episode" else e.get("Id")
-                if sid:
-                    current_series.add(sid)
-            if current_series == set(item_ids):
-                logger.info(
-                    f"[SmartLists] '{name}': no changes needed "
-                    f"({len(item_ids)} series → {len(current_entries)} episodes)"
-                )
-                stats["updated"] += 1
-                stats["processed"] += 1
-                stats["item_counts"][name] = len(item_ids)
-                return
+            _update_episode_playlist(jf, playlist_id, name, item_ids, current_entries, stats)
+            return
 
         if current_ordered_ids == item_ids:
             # No changes needed — same items in same order
@@ -1655,6 +1893,7 @@ def toggle_auto_playlist_fast(db: Session, user_id: int, key: str, enabled: bool
                 tag = source_tag
             name = tag
     elif key.startswith("list:"):
+        from models.database import ListSubscription
         list_id = int(key.replace("list:", ""))
         lst = db.query(ListSubscription).filter(ListSubscription.id == list_id).first()
         if lst:
