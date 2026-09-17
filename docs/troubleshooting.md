@@ -157,11 +157,30 @@ If titles appear without posters or proper names:
 
 ### "Add to Radarr/Sonarr" fails from Jellyfin Discover tab
 
-The plugin passes the Jellyfin user ID for admin verification:
+The failure message says why — read it first, it names the actual cause
+("Radarr refused it: …", "Sonarr could not find this show in its TVDB metadata
+source", "Could not read Radarr's root folders…"). The common ones:
+
+| Message | What to do |
+|---------|-----------|
+| Could not read Radarr's/Sonarr's root folders | The *arr was busy or down. Nothing was added — retry in a moment. |
+| Sonarr could not find this show in its TVDB metadata source | The show isn't on TheTVDB yet (usually very new). Nothing you can fix in Tentacle. |
+| the root folder Tentacle used does not exist | Add a root folder in the *arr (Settings → Media Management). |
+| the selected quality profile no longer exists | Pick a different quality profile. |
+| another series/movie is already using that folder | A folder collision in the *arr — rename or remove the existing one. |
+
+If it's an authorization problem instead, the plugin passes the Jellyfin user ID
+for admin verification:
 
 1. Make sure you're logged in as an admin user in Jellyfin
 2. Check that the user has admin permissions in Tentacle (Settings → Users)
 3. Verify Radarr/Sonarr connections in Tentacle Settings
+
+!!! tip "A slow *arr is no longer reported as a failure"
+    Radarr and Sonarr do a metadata refresh, artwork download and disk scan
+    before answering an add, which on a large library can take well over a
+    minute. Tentacle waits up to 90 seconds and, if it still times out, checks
+    whether the title landed anyway before reporting anything.
 
 ### Plugin shows old version
 

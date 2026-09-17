@@ -148,12 +148,47 @@ Tentacle runs a full sync automatically every night at 3 AM. This:
 
 When you delete a provider, Tentacle:
 
-1. Removes all `.strm` and `.nfo` files from disk
+1. Removes the `.strm` and `.nfo` files it wrote from disk
 2. Deletes all database records (movies, series, categories)
 3. Automatically rebuilds playlists (orphaned source playlists are removed)
 4. Updates home screen configs (validates hero spotlight still exists)
 
-This is a clean operation — nothing is left behind.
+Only files Tentacle created are removed. If you run a merged setup — the VOD
+folder and your Radarr/Sonarr downloads folder pointing at the same place —
+downloaded episodes, subtitles and artwork in those folders are left untouched,
+and empty folders are tidied up afterwards.
+
+## Safety Guards on Removal
+
+Content disappearing from a provider's catalog, or files disappearing from
+disk, is treated as suspicious rather than authoritative — a provider glitch or
+a storage hiccup must never be able to wipe a library:
+
+- **A category that returns nothing** but held titles last time is treated as a
+  failed fetch. Nothing is pruned from that sync, and the count is reset so a
+  category that genuinely emptied is accepted on the next run.
+- **Two runs must agree.** A title missing for the first time is only marked;
+  it is removed on the next run that still doesn't see it. Anything that
+  reappears has the mark cleared.
+- **Blast radius is capped.** No single run removes more than 5% of a
+  provider's titles (minimum 50). Anything larger is logged loudly and skipped
+  — check the provider before assuming the catalog really shrank.
+- **The nightly orphan sweep probes the mount first.** If `/media/vod/movies`
+  or `/media/vod/shows` is missing or empty, the sweep is skipped entirely
+  rather than concluding that every title was deleted. This matters on
+  mergerfs, unionfs, NFS, SMB and rclone, where a branch dropping out makes
+  every file report as missing while the mount itself stays up.
+
+Blocked removals are recorded in the deletion log (Settings → Deletion Log).
+
+## Opting a Title Out of `.strm` Management
+
+Sometimes a provider's stream for one title is broken and you switch that title
+to downloaded copies. Open the title from the Library page and turn off
+**Manage .strm files**: it stays in the catalog, playlists and Discover, but
+the sync stops writing or repairing its `.strm` files. You can also delete the
+existing ones at the same time — downloaded episodes in the same folder are
+left alone.
 
 ## Stale File Detection
 
