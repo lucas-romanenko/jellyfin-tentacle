@@ -8,10 +8,8 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
-from pathlib import Path
 import requests
 import re
-import shutil
 import logging
 
 logger = logging.getLogger(__name__)
@@ -21,6 +19,7 @@ from models.database import (
     Movie, Series, Duplicate, SyncRun, LiveChannel, LiveChannelGroup, EPGProgram,
 )
 from routers.auth import require_admin
+from services.media_files import delete_movie_files, delete_series_files
 
 router = APIRouter(prefix="/api/providers", tags=["providers"], dependencies=[Depends(require_admin)])
 
@@ -317,34 +316,14 @@ def delete_provider(provider_id: int, db: Session = Depends(get_db)):
     # Movies: strm_path points to .strm file, delete file + .nfo + parent folder
     movies = db.query(Movie).filter(Movie.provider_id == provider_id).all()
     for m in movies:
-        if m.strm_path:
-            try:
-                strm = Path(m.strm_path)
-                if strm.exists() and strm.suffix == ".strm":
-                    strm.unlink()
-                    deleted_files += 1
-                    nfo = strm.with_suffix(".nfo")
-                    if nfo.exists():
-                        nfo.unlink()
-                        deleted_files += 1
-                    # Remove parent folder if empty
-                    if strm.parent.exists() and not any(strm.parent.iterdir()):
-                        strm.parent.rmdir()
-            except Exception as e:
-                logger.warning(f"Failed to delete movie files at {m.strm_path}: {e}")
+        deleted_files += delete_movie_files(m.strm_path)
 
-    # Series: strm_path points to show directory, delete entire directory tree
+    # Series: strm_path points to the show directory. Only the .strm/.nfo files
+    # Tentacle wrote are removed — merged setups share this folder with Sonarr's
+    # downloads, and a recursive delete would destroy those too.
     series = db.query(Series).filter(Series.provider_id == provider_id).all()
     for s in series:
-        if s.strm_path:
-            try:
-                show_dir = Path(s.strm_path)
-                if show_dir.exists() and show_dir.is_dir():
-                    file_count = sum(1 for _ in show_dir.rglob("*") if _.is_file())
-                    shutil.rmtree(show_dir)
-                    deleted_files += file_count
-            except Exception as e:
-                logger.warning(f"Failed to delete series files at {s.strm_path}: {e}")
+        deleted_files += delete_series_files(s.strm_path)
 
     logger.info(f"Deleted {deleted_files} VOD files from disk for provider {p.name}")
 
