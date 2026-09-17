@@ -441,3 +441,76 @@ class TestTrackSelection(unittest.TestCase):
         with mock.patch.object(resolver.client, "extract", return_value={"formats": []}):
             with self.assertRaises(YouTubeError):
                 resolver.pick_tracks("x", 1080)
+
+
+class TestFinishedStreamsStayOutOfTheLibrary(unittest.TestCase):
+    """A Live TV channel's back catalogue must not become library items.
+
+    /streams is polled for any Live TV channel so we can tell what is on air.
+    Letting finished broadcasts (live_status="was_live") through filled the
+    library with old streams instead of the channel's actual uploads, even with
+    "Past live streams" unchecked.
+    """
+
+    def setUp(self):
+        import tempfile as _tf
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        import models.database as mdb
+        from models.database import YouTubeChannel, YouTubeVideo
+        self.YouTubeVideo = YouTubeVideo
+        engine = create_engine(f"sqlite:///{_tf.mkdtemp()}/t.db")
+        mdb.Base.metadata.create_all(engine)
+        self.db = sessionmaker(bind=engine)()
+        self.channel = YouTubeChannel(
+            input_url="u", kind="channel", channel_id="UC" + "q" * 22,
+            title="TraderTV Live", slug="tradertv-live", enabled=True,
+            live_enabled=True, include_videos=True, include_streams=False,
+            min_duration=60, extra_tags=[])
+        self.db.add(self.channel)
+        self.db.commit()
+        self.db.refresh(self.channel)
+
+    def _should(self, live_status, duration=600):
+        from services.youtube.indexer import _should_index
+        return _should_index({"live_status": live_status, "duration": duration,
+                              "availability": "public"}, self.channel)
+
+    def test_a_real_upload_is_indexed(self):
+        keep, _ = self._should(None)
+        self.assertTrue(keep)
+
+    def test_a_finished_stream_is_not(self):
+        keep, reason = self._should("was_live")
+        self.assertFalse(keep, reason)
+
+    def test_unless_past_live_streams_is_ticked(self):
+        self.channel.include_streams = True
+        keep, _ = self._should("was_live")
+        self.assertTrue(keep)
+
+    def test_a_live_stream_is_still_kept_for_the_guide(self):
+        keep, _ = self._should("is_live", duration=None)
+        self.assertTrue(keep)
+
+    def test_already_indexed_finished_streams_are_cleaned_up(self):
+        from services.youtube import indexer
+        for vid, status in (("aaaaaaaaaaa", "was_live"), ("bbbbbbbbbbb", None)):
+            self.db.add(self.YouTubeVideo(
+                channel_fk=self.channel.id, video_id=vid, title=vid,
+                live_status=status, duration=600))
+        self.db.commit()
+
+        removed = indexer._drop_disqualified(self.db, self.channel)
+        self.assertEqual(removed, 1)
+        survivors = self.db.query(self.YouTubeVideo).filter(
+            self.YouTubeVideo.removed_at.is_(None)).all()
+        self.assertEqual([v.video_id for v in survivors], ["bbbbbbbbbbb"])
+
+    def test_cleanup_leaves_them_alone_when_the_user_wants_them(self):
+        from services.youtube import indexer
+        self.channel.include_streams = True
+        self.db.add(self.YouTubeVideo(channel_fk=self.channel.id, video_id="aaaaaaaaaaa",
+                                      title="old stream", live_status="was_live"))
+        self.db.commit()
+        self.assertEqual(indexer._drop_disqualified(self.db, self.channel), 0)

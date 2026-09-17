@@ -130,6 +130,15 @@ def _should_index(details: dict, channel: YouTubeChannel) -> tuple:
             return True, ""
         return False, f"live_status={live_status}"
 
+    if live_status == "was_live" and not channel.include_streams:
+        # A finished broadcast. The /streams tab is polled for any Live TV
+        # channel so we can tell what is on air, but that must not drag the
+        # channel's back catalogue of finished streams into the library —
+        # "Past live streams" is a separate, explicit choice. Without this a
+        # channel that mostly streams filled the library with old broadcasts
+        # instead of its actual uploads.
+        return False, "finished live stream and past live streams are not included"
+
     duration = details.get("duration") or 0
     if channel.min_duration and duration and duration < channel.min_duration:
         return False, f"duration {duration}s under minimum {channel.min_duration}s"
@@ -144,6 +153,33 @@ def is_library_item(video) -> bool:
     at which point the next sync writes its files.
     """
     return video.live_status not in ("is_live", "is_upcoming")
+
+
+def _drop_disqualified(db: Session, channel: YouTubeChannel) -> int:
+    """Remove library items that no longer match the channel's settings.
+
+    Settings change after the fact — most importantly, enabling Live TV used to
+    pull a channel's finished broadcasts into the library. Turning "Past live
+    streams" off should clear them out rather than leaving them stranded, and
+    only the video's own folder is touched.
+    """
+    from services.youtube import library
+
+    if channel.include_streams:
+        return 0
+
+    stale = db.query(YouTubeVideo).filter(
+        YouTubeVideo.channel_fk == channel.id,
+        YouTubeVideo.live_status == "was_live",
+        YouTubeVideo.removed_at.is_(None),
+    ).all()
+    for video in stale:
+        library.remove_video(video)
+        video.removed_at = datetime.utcnow()
+        video.strm_path = None
+    if stale:
+        db.commit()
+    return len(stale)
 
 
 def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
@@ -270,6 +306,13 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
         if on_progress:
             on_progress(added, len(new_videos))
         time.sleep(DETAIL_SPACING_SECONDS)
+
+    unindexed = _drop_disqualified(db, channel)
+    if unindexed:
+        logger.info(
+            f"[YouTube] Removed {unindexed} item(s) from '{channel.title}' that no longer "
+            f"match its settings"
+        )
 
     channel.last_checked = now
     channel.last_error = None

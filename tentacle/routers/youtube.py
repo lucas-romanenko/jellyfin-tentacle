@@ -589,6 +589,7 @@ def _run_refresh():
         base = base_url(db)
         channels = db.query(YouTubeChannel).filter(YouTubeChannel.enabled == True).all()  # noqa: E712
         _refresh_state["channels_total"] = len(channels)
+        changed = []
         for channel in channels:
             _refresh_state["channel"] = channel.title
             channel_base = _refresh_state["new"]
@@ -597,11 +598,13 @@ def _run_refresh():
                 _refresh_state["new"] = _base + added
                 _refresh_state["channel_total"] = total
 
+            r_written = 0
             try:
                 r = sync_channel(db, channel, base, on_progress=_progress)
                 _refresh_state["new"] = channel_base + r.get("new", 0)
                 _refresh_state["written"] += r.get("written", 0)
                 _refresh_state["retired"] += r.get("retired", 0)
+                r_written = r.get("written", 0) + r.get("retired", 0)
             except YouTubeError as e:
                 _refresh_state["errors"] += 1
                 _refresh_state["error_detail"] = f"{channel.title}: {e}"
@@ -610,7 +613,19 @@ def _run_refresh():
                 _refresh_state["errors"] += 1
                 _refresh_state["error_detail"] = f"{channel.title}: {e}"
                 logger.error(f"[YouTube] Refresh crashed for '{channel.title}': {e}", exc_info=True)
+            if r_written:
+                changed.append(channel.title)
             _refresh_state["channels_done"] += 1
+
+        # Same publish step the scheduled sync does: get Jellyfin to ingest the
+        # new files, then rebuild the playlists that depend on them.
+        if changed:
+            try:
+                from services.youtube.sync import publish_to_jellyfin
+                _refresh_state["channel"] = "publishing to Jellyfin"
+                publish_to_jellyfin(db, changed)
+            except Exception as e:
+                logger.warning(f"[YouTube] Publish to Jellyfin failed: {e}")
     finally:
         db.close()
         _refresh_state["channel"] = None

@@ -10,6 +10,11 @@ from services.youtube.errors import YouTubeError
 
 logger = logging.getLogger(__name__)
 
+# How long to let Jellyfin index newly written files before querying for their
+# tags. Jellyfin reads NFO tags at scan time, so querying too early returns
+# nothing and the playlist is built empty.
+SCAN_SETTLE_SECONDS = 20
+
 
 def base_url(db: Session) -> str:
     """The address written into .strm files.
@@ -82,6 +87,51 @@ def apply_retention(db: Session, channel: YouTubeChannel) -> int:
     return len(doomed)
 
 
+def publish_to_jellyfin(db: Session, changed_playlists: list) -> None:
+    """Get Jellyfin to ingest new files, then rebuild the affected playlists.
+
+    Without this nothing appears until Jellyfin's own scheduled scan: Tentacle
+    writes the .strm and NFO, but Jellyfin reads the tags at scan time, so the
+    playlists stay empty and their home rows are filtered out as empty — which
+    looks exactly like the row toggle having done nothing.
+    """
+    import time
+
+    from models.database import TentacleUser
+    from services.jellyfin import JellyfinService
+
+    url = get_setting(db, "jellyfin_url", "")
+    key = get_setting(db, "jellyfin_api_key", "")
+    if not (url and key):
+        return
+
+    try:
+        jf = JellyfinService(url, key, get_setting(db, "jellyfin_user_id", ""))
+        jf.trigger_library_scan()
+        logger.info("[YouTube] Triggered a Jellyfin library scan")
+    except Exception as e:
+        logger.warning(f"[YouTube] Could not trigger a Jellyfin scan: {e}")
+        return
+
+    if not changed_playlists:
+        return
+
+    # Give Jellyfin a moment to index the new files before querying for them.
+    time.sleep(SCAN_SETTLE_SECONDS)
+    try:
+        from services.smartlists import (
+            _notify_jellyfin_plugin, bump_playlist_version,
+            refresh_smartlist_playlists, write_home_config,
+        )
+        for user in db.query(TentacleUser).all():
+            refresh_smartlist_playlists(db, user_id=user.id, only_names=changed_playlists)
+            write_home_config(db, user_id=user.id)
+        bump_playlist_version()
+        _notify_jellyfin_plugin(db)
+    except Exception as e:
+        logger.warning(f"[YouTube] Playlist rebuild after scan failed: {e}")
+
+
 def run_youtube_sync() -> dict:
     """Scheduler entry point."""
     from models.database import SessionLocal
@@ -95,6 +145,7 @@ def run_youtube_sync() -> dict:
             return {"enabled": True, "error": "youtube_base_url not set"}
 
         totals = {"channels": 0, "new": 0, "written": 0, "retired": 0, "errors": 0}
+        changed = []
         for channel in db.query(YouTubeChannel).filter(YouTubeChannel.enabled == True).all():  # noqa: E712
             totals["channels"] += 1
             try:
@@ -102,9 +153,13 @@ def run_youtube_sync() -> dict:
                 totals["new"] += r.get("new", 0)
                 totals["written"] += r.get("written", 0)
                 totals["retired"] += r.get("retired", 0)
+                if r.get("written") or r.get("retired"):
+                    changed.append(channel.title)
             except YouTubeError as e:
                 totals["errors"] += 1
                 logger.warning(f"[YouTube] '{channel.title}' failed: {e}")
+        if changed:
+            publish_to_jellyfin(db, changed)
         if totals["new"] or totals["written"]:
             logger.info(f"[YouTube] Sync complete: {totals}")
         return totals

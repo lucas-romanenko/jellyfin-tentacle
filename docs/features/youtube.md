@@ -63,6 +63,18 @@ presses play.
 | Option | Default | What it does |
 |--------|---------|--------------|
 | Videos / Past live streams / Shorts | Videos only | Which of the channel's tabs to look at |
+
+!!! tip "Channels that mostly livestream"
+    A channel's `/videos` tab holds its real uploads; `/streams` holds its live
+    and finished broadcasts. **Past live streams** controls whether finished
+    broadcasts join the library — it is off by default, so a channel that
+    mostly streams shows only its actual uploads in its home row while its live
+    broadcasts appear under Live TV. Turn it on if you want the back catalogue
+    of past streams in the library too.
+
+    A Live TV channel always polls `/streams` regardless, since that is how
+    Tentacle knows what is on air — but that alone never adds finished
+    broadcasts to the library.
 | Skip shorter than | 60s | Ignores Shorts-length clips |
 | Start with | 30 | How many existing videos to pick up when you add the channel |
 | Show newest | 200 | How many stay listed; older ones drop off the library |
