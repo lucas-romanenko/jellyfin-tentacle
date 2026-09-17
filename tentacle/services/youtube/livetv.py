@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from models.database import EPGProgram, YouTubeChannel, YouTubeVideo
 from services.epg_categories import infer_category
+from services.youtube.indexer import PENDING_LIVE
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +78,7 @@ def refresh_guide(db: Session, channel: YouTubeChannel) -> int:
     cid = epg_channel_id(channel)
     videos = db.query(YouTubeVideo).filter(
         YouTubeVideo.channel_fk == channel.id,
-        YouTubeVideo.live_status.in_(("is_live", "is_upcoming")),
+        YouTubeVideo.live_status.in_(PENDING_LIVE),
         YouTubeVideo.removed_at.is_(None),
     ).all()
 

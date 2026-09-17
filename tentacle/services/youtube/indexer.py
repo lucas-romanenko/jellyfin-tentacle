@@ -20,6 +20,15 @@ from services.youtube.errors import VideoUnavailable, YouTubeBlocked, YouTubeErr
 logger = logging.getLogger(__name__)
 
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+
+# A broadcast that is on air, or about to be. Guide material, never a library
+# item — it has no final duration, so Jellyfin would file it as a zero-length
+# movie.
+PENDING_LIVE = ("is_live", "is_upcoming")
+# A broadcast that has ended. yt-dlp reports BOTH of these: post_live for one
+# that just finished (YouTube is still processing it) and was_live once it
+# settles. Handling only was_live let just-ended streams into the library.
+FINISHED_LIVE = ("was_live", "post_live")
 _CHANNEL_ID_RE = re.compile(r"^UC[A-Za-z0-9_-]{22}$")
 
 # Guest extraction is rate-limited at roughly 300 videos/hour, so details are
@@ -122,7 +131,7 @@ def _should_index(details: dict, channel: YouTubeChannel) -> tuple:
         return False, f"availability={details.get('availability')}"
 
     live_status = details.get("live_status")
-    if live_status in ("is_upcoming", "is_live"):
+    if live_status in PENDING_LIVE:
         # Kept only when the channel is exposed as a Live TV channel, where it
         # becomes a guide entry. It never becomes a library item: a stream has
         # no duration yet and Jellyfin would file it as a zero-length movie.
@@ -130,7 +139,7 @@ def _should_index(details: dict, channel: YouTubeChannel) -> tuple:
             return True, ""
         return False, f"live_status={live_status}"
 
-    if live_status == "was_live" and not channel.include_streams:
+    if live_status in FINISHED_LIVE and not channel.include_streams:
         # A finished broadcast. The /streams tab is polled for any Live TV
         # channel so we can tell what is on air, but that must not drag the
         # channel's back catalogue of finished streams into the library —
@@ -152,7 +161,7 @@ def is_library_item(video) -> bool:
     Once a stream ends its live_status clears and it becomes an ordinary video,
     at which point the next sync writes its files.
     """
-    return video.live_status not in ("is_live", "is_upcoming")
+    return video.live_status not in PENDING_LIVE
 
 
 def _drop_disqualified(db: Session, channel: YouTubeChannel) -> int:
@@ -170,7 +179,7 @@ def _drop_disqualified(db: Session, channel: YouTubeChannel) -> int:
 
     stale = db.query(YouTubeVideo).filter(
         YouTubeVideo.channel_fk == channel.id,
-        YouTubeVideo.live_status == "was_live",
+        YouTubeVideo.live_status.in_(FINISHED_LIVE),
         YouTubeVideo.removed_at.is_(None),
     ).all()
     for video in stale:
@@ -231,7 +240,7 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
     # channel. The set is small — only pending broadcasts.
     pending = db.query(YouTubeVideo).filter(
         YouTubeVideo.channel_fk == channel.id,
-        YouTubeVideo.live_status.in_(("is_live", "is_upcoming")),
+        YouTubeVideo.live_status.in_(PENDING_LIVE),
         YouTubeVideo.removed_at.is_(None),
     ).all()
     for video in pending:

@@ -514,3 +514,63 @@ class TestFinishedStreamsStayOutOfTheLibrary(unittest.TestCase):
                                       title="old stream", live_status="was_live"))
         self.db.commit()
         self.assertEqual(indexer._drop_disqualified(self.db, self.channel), 0)
+
+
+class TestPostLiveStatus(unittest.TestCase):
+    """yt-dlp reports a just-ended broadcast as post_live, not was_live.
+
+    Handling only was_live let recently finished streams into the library even
+    with "Past live streams" unchecked — and a channel that streams constantly
+    always has one in that state.
+    """
+
+    def setUp(self):
+        import tempfile as _tf
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        import models.database as mdb
+        from models.database import YouTubeChannel, YouTubeVideo
+        self.YouTubeVideo = YouTubeVideo
+        engine = create_engine(f"sqlite:///{_tf.mkdtemp()}/t.db")
+        mdb.Base.metadata.create_all(engine)
+        self.db = sessionmaker(bind=engine)()
+        self.channel = YouTubeChannel(
+            input_url="u", kind="channel", channel_id="UC" + "p" * 22,
+            title="Ch", slug="ch", enabled=True, live_enabled=True,
+            include_videos=True, include_streams=False, min_duration=60,
+            extra_tags=[])
+        self.db.add(self.channel)
+        self.db.commit()
+        self.db.refresh(self.channel)
+
+    def _should(self, status):
+        from services.youtube.indexer import _should_index
+        return _should_index({"live_status": status, "duration": 600,
+                              "availability": "public"}, self.channel)[0]
+
+    def test_both_finished_states_are_excluded(self):
+        self.assertFalse(self._should("was_live"))
+        self.assertFalse(self._should("post_live"))
+
+    def test_both_are_included_when_asked_for(self):
+        self.channel.include_streams = True
+        self.assertTrue(self._should("was_live"))
+        self.assertTrue(self._should("post_live"))
+
+    def test_cleanup_covers_post_live_too(self):
+        from services.youtube import indexer
+        for vid, st in (("aaaaaaaaaaa", "was_live"), ("bbbbbbbbbbb", "post_live"),
+                        ("ccccccccccc", None)):
+            self.db.add(self.YouTubeVideo(channel_fk=self.channel.id, video_id=vid,
+                                          title=vid, live_status=st, duration=600))
+        self.db.commit()
+        self.assertEqual(indexer._drop_disqualified(self.db, self.channel), 2)
+        left = self.db.query(self.YouTubeVideo).filter(
+            self.YouTubeVideo.removed_at.is_(None)).all()
+        self.assertEqual([v.video_id for v in left], ["ccccccccccc"])
+
+    def test_a_finished_broadcast_is_a_library_item_not_a_guide_entry(self):
+        from services.youtube.indexer import is_library_item
+        v = self.YouTubeVideo(channel_fk=self.channel.id, video_id="aaaaaaaaaaa",
+                              title="x", live_status="post_live")
+        self.assertTrue(is_library_item(v))
