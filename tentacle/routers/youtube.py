@@ -281,6 +281,112 @@ def save_setup(body: SetupBody, db: Session = Depends(get_db)):
     return {"success": True, "enabled": body.enabled, "base_url": base}
 
 
+@router.get("/diagnose", dependencies=[Depends(require_admin)])
+def diagnose(request: Request, db: Session = Depends(get_db)):
+    """Walk the whole chain and report the first thing that is actually wrong.
+
+    Playback and home rows depend on a long chain — image, mount, settings,
+    index, files, Jellyfin library, Jellyfin scan, playlist, home row — and a
+    break anywhere shows up to the user as "nothing happened" or a bare
+    playback error. This names the link.
+    """
+    import os
+    from models.database import YouTubeRowSubscription
+    from routers.auth import get_user_from_request
+
+    checks = []
+
+    def add(ok, name, detail, fix=None):
+        checks.append({"ok": bool(ok), "name": name, "detail": detail, "fix": fix})
+
+    add(client.available(), "yt-dlp installed",
+        client.version() or "missing",
+        "Pull a newer Tentacle image.")
+
+    root = str(library.YOUTUBE_MEDIA_ROOT)
+    mounted = os.path.isdir(root)
+    writable = mounted and os.access(root, os.W_OK)
+    add(writable, "Media folder mounted and writable", root,
+        f"Add '- /your/host/path:{root}' to Tentacle's volumes and recreate the container.")
+
+    base = (get_setting(db, "youtube_base_url", "") or "").strip()
+    enabled = get_setting(db, "youtube_enabled", "false") == "true"
+    add(enabled, "YouTube source turned on", "on" if enabled else "off",
+        "Turn it on at the top of this page.")
+    add(bool(base), "Tentacle address set", base or "not set",
+        "Set it at the top of this page. It must be reachable BY the Jellyfin server.")
+
+    channels = db.query(YouTubeChannel).all()
+    add(channels, "Channels added", f"{len(channels)} channel(s)", "Paste a channel URL above.")
+
+    videos = db.query(YouTubeVideo).filter(YouTubeVideo.removed_at.is_(None)).count()
+    add(videos, "Videos indexed", f"{videos} video(s)",
+        "Press 'Refresh now'. The first index takes a few minutes.")
+
+    on_disk = 0
+    for v in db.query(YouTubeVideo).filter(YouTubeVideo.strm_path.isnot(None)).all():
+        if v.strm_path and os.path.isfile(v.strm_path):
+            on_disk += 1
+    add(on_disk, "Pointer files written to disk", f"{on_disk} .strm file(s) under {root}",
+        "Press 'Refresh now'.")
+
+    # ── Jellyfin's side ──
+    jf_url = get_setting(db, "jellyfin_url", "")
+    jf_key = get_setting(db, "jellyfin_api_key", "")
+    jf_items = {}
+    if jf_url and jf_key:
+        try:
+            from services.jellyfin import JellyfinService
+            jf = JellyfinService(jf_url, jf_key, get_setting(db, "jellyfin_user_id", ""))
+            for ch in channels:
+                tag = f"yt:{ch.slug}"
+                found = jf.query_items(include_types=["Movie"], tags=[tag]) or []
+                jf_items[ch.title] = len(found)
+            total = sum(jf_items.values())
+            add(total, "Jellyfin can see the videos",
+                ", ".join(f"{k}: {v}" for k, v in jf_items.items()) or "none",
+                "Add a Jellyfin library of type Movies pointing at the same host folder "
+                f"you mounted at {root} (metadata fetchers OFF), then scan it. Jellyfin "
+                "reads the tags from the NFO files, so nothing appears until it has scanned.")
+        except Exception as e:
+            add(False, "Jellyfin reachable", str(e)[:200], "Check Jellyfin's URL and API key in Settings.")
+    else:
+        add(False, "Jellyfin configured", "URL or API key missing", "Set them in Settings.")
+
+    # ── Live TV ──
+    live_channels = [c for c in channels if c.live_enabled]
+    if live_channels:
+        live_now = db.query(YouTubeVideo).filter(
+            YouTubeVideo.live_status == "is_live",
+            YouTubeVideo.removed_at.is_(None)).count()
+        add(live_now, "A stream is live right now", f"{live_now} live",
+            "Nothing is streaming, so the Live TV channel has nothing to play — Jellyfin "
+            "shows that as a playback error. Press 'Refresh now' to re-check, and note "
+            "that many channels never stream at all.")
+
+    # ── Home rows ──
+    try:
+        user = get_user_from_request(request, db)
+        subs = db.query(YouTubeRowSubscription).filter(
+            YouTubeRowSubscription.user_id == user.id).all()
+        if subs:
+            from routers.smartlists import _read_home_json
+            config = _read_home_json(user) or {}
+            names = {c.title for c in channels
+                     if c.id in {sub.channel_fk for sub in subs}}
+            rows = {r.get("display_name") for r in (config.get("rows") or [])}
+            missing = names - rows
+            add(not missing, "Home rows present in your config",
+                f"{len(names & rows)}/{len(names)} in place"
+                + (f" (missing: {', '.join(sorted(missing))})" if missing else ""),
+                "Toggle 'Home row' off and on again.")
+    except Exception:
+        pass
+
+    first_bad = next((c for c in checks if not c["ok"]), None)
+    return {"checks": checks, "blocking": first_bad}
+
+
 @router.get("/channels", dependencies=[Depends(require_admin)])
 def list_channels(request: Request, db: Session = Depends(get_db)):
     from models.database import YouTubeRowSubscription

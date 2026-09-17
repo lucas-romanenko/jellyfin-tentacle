@@ -1530,10 +1530,21 @@ td.primary { color: var(--text); font-weight: 500; }
           </div>
         </div>
 
+        <div class="card" id="yt-diag-card" style="margin-bottom:16px;display:none">
+          <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+            <h3>Setup check</h3>
+            <button class="btn btn-secondary btn-sm" onclick="ytDiagnose()">Re-run</button>
+          </div>
+          <div class="card-body" id="yt-diag"></div>
+        </div>
+
         <div class="card">
           <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
             <h3>Channels</h3>
-            <button class="btn btn-secondary btn-sm" onclick="ytRefreshNow()">Refresh now</button>
+            <div style="display:flex;gap:8px">
+              <button class="btn btn-secondary btn-sm" onclick="ytDiagnose()">Why isn&rsquo;t it working?</button>
+              <button class="btn btn-secondary btn-sm" onclick="ytRefreshNow()">Refresh now</button>
+            </div>
           </div>
           <div class="card-body" id="yt-channels">
             <div class="loading-state"><div class="spinner"></div></div>
@@ -3290,8 +3301,8 @@ td.primary { color: var(--text); font-weight: 500; }
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<script src="/static/js/app.js?v=39"></script>
-<script src="/static/js/pages.js?v=39"></script>
+<script src="/static/js/app.js?v=40"></script>
+<script src="/static/js/pages.js?v=40"></script>
 <script>
   // ── Mobile off-canvas sidebar ──
   function toggleSidebar() {

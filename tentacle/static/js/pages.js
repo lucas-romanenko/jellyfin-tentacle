@@ -2687,6 +2687,31 @@ async function loadYouTubePage() {
   }
 }
 
+async function ytDiagnose() {
+  const card = document.getElementById('yt-diag-card');
+  const box = document.getElementById('yt-diag');
+  card.style.display = '';
+  box.innerHTML = '<div class="loading-state"><div class="spinner"></div></div>';
+  try {
+    const d = await api('/api/youtube/diagnose');
+    const rows = d.checks.map(c => `
+      <div style="display:flex;gap:10px;padding:7px 0;border-bottom:1px solid var(--border);align-items:flex-start">
+        <span style="color:var(--${c.ok ? 'green' : 'red'});font-weight:700;width:16px;flex-shrink:0">${c.ok ? '✓' : '✕'}</span>
+        <div style="flex:1">
+          <div style="font-size:13px;font-weight:${c.ok ? '400' : '600'}">${escapeAttr(c.name)}</div>
+          <div style="font-size:12px;color:var(--text3);font-family:'DM Mono',monospace;word-break:break-all">${escapeAttr(String(c.detail))}</div>
+          ${!c.ok && c.fix ? `<div style="font-size:12px;color:var(--text2);margin-top:4px">→ ${escapeAttr(c.fix)}</div>` : ''}
+        </div>
+      </div>`).join('');
+    const head = d.blocking
+      ? `<div style="font-size:13px;margin-bottom:10px">First thing to fix: <strong>${escapeAttr(d.blocking.name)}</strong></div>`
+      : '<div style="font-size:13px;margin-bottom:10px;color:var(--green)">Everything checks out. If a video still won&rsquo;t play, check that the Tentacle address works <em>from the Jellyfin server</em>.</div>';
+    box.innerHTML = head + rows;
+  } catch (e) {
+    box.innerHTML = `<div class="empty-state"><p>${escapeAttr(e.message)}</p></div>`;
+  }
+}
+
 async function ytSaveSetup(enabled) {
   const base = document.getElementById('yt-base-url').value.trim();
   try {
@@ -5878,7 +5903,7 @@ async function loadHealthDeletions() {
     showManageEpisodesModal, confirmManageEpisodes,
     showDownloadMoreModal, confirmDownloadMore, detailToggleSeason, toggleFollow,
     // YouTube
-    loadYouTubePage, loadYouTubeChannels, ytAddChannel, ytDeleteChannel, ytRefreshNow, ytSaveSetup, ytStartPolling,
+    loadYouTubePage, loadYouTubeChannels, ytAddChannel, ytDeleteChannel, ytRefreshNow, ytSaveSetup, ytStartPolling, ytDiagnose,
     ytToggleRow, ytToggleLive,
     // Following
     loadFollowing,
