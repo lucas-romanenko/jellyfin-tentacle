@@ -15,6 +15,12 @@ logger = logging.getLogger(__name__)
 # Extensions Tentacle writes, and is therefore allowed to delete.
 OWNED_SUFFIXES = {".strm", ".nfo"}
 
+# Real media. Their presence means another tool owns files in this folder, so
+# shared metadata (tvshow.nfo) must be left alone.
+MEDIA_SUFFIXES = {
+    ".mkv", ".mp4", ".avi", ".m4v", ".ts", ".webm", ".mov", ".wmv", ".mpg", ".mpeg", ".m2ts",
+}
+
 
 def _prune_empty_dirs(root: Path) -> None:
     """Remove empty directories under (and including) root, deepest first."""
@@ -60,12 +66,19 @@ def delete_movie_files(strm_path) -> int:
 
 
 def delete_series_files(show_dir) -> int:
-    """Delete every .strm/.nfo under a show directory, leaving anything else.
+    """Delete the .strm files under a show directory, and only their own NFOs.
 
     Downloaded episodes, subtitles and artwork in the same folder (merged
-    setups) are untouched. Empty season folders — and the show folder itself —
-    are pruned only once nothing else is left in them. Returns the number of
-    files deleted.
+    setups) are untouched. Crucially, so are *other tools'* NFOs: Sonarr's
+    metadata option and Jellyfin's NFO saver write per-episode `SxxEyy.nfo` and
+    `season.nfo` next to the downloaded `.mkv`s, and deleting every `.nfo` in
+    the tree stripped the metadata off episodes Tentacle never touched. Only an
+    NFO sharing its stem with a `.strm` we are removing is ours.
+
+    `tvshow.nfo` is shared by both sources (Tentacle writes it for VOD and for
+    Sonarr series), so it is removed only when no real media is left anywhere in
+    the tree. Empty folders are pruned last. Returns the number of files
+    deleted.
     """
     if not show_dir:
         return 0
@@ -74,14 +87,40 @@ def delete_series_files(show_dir) -> int:
         root = Path(show_dir)
         if not (root.exists() and root.is_dir()):
             return 0
-        for f in list(root.rglob("*")):
+
+        for strm in list(root.rglob("*.strm")):
             try:
-                if f.is_file() and f.suffix.lower() in OWNED_SUFFIXES:
-                    f.unlink()
+                nfo = strm.with_suffix(".nfo")
+                strm.unlink()
+                deleted += 1
+                if nfo.exists():
+                    nfo.unlink()
                     deleted += 1
             except OSError as e:
-                logger.warning(f"Failed to delete {f}: {e}")
+                logger.warning(f"Failed to delete {strm}: {e}")
+
+        # Shared show-level metadata: only ours to remove once nothing else lives here.
+        if not _has_media_files(root):
+            for shared in (root / "tvshow.nfo", root / "season.nfo"):
+                try:
+                    if shared.exists():
+                        shared.unlink()
+                        deleted += 1
+                except OSError as e:
+                    logger.warning(f"Failed to delete {shared}: {e}")
+
         _prune_empty_dirs(root)
     except OSError as e:
         logger.warning(f"Failed to delete series files at {show_dir}: {e}")
     return deleted
+
+
+def _has_media_files(root: Path) -> bool:
+    """True when any real video file remains under root (someone else's content)."""
+    try:
+        return any(
+            f.is_file() and f.suffix.lower() in MEDIA_SUFFIXES
+            for f in root.rglob("*")
+        )
+    except OSError:
+        return True  # can't tell — assume occupied and leave shared files alone

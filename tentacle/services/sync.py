@@ -408,6 +408,40 @@ def _write_episode_strms(client: "XtreamClient", episodes: dict, show_dir: Path,
     return ep_count
 
 
+def _repair_movie_strm(client, stream: dict, tmdb_id: int, provider: Provider, db: Session) -> bool:
+    """Rewrite an existing movie's .strm when it has gone missing from disk.
+
+    Series already self-heal via _backfill_series_episodes; movies did not, so a
+    deleted .strm was never restored — which also meant re-enabling the .strm
+    opt-out on a movie did nothing, despite the UI saying the files would be
+    kept up to date. Opted-out titles are skipped, since not writing their files
+    is the point. Best-effort: any error is swallowed so one bad title can't
+    break the category batch.
+    """
+    record = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
+    if not record or record.provider_id != provider.id or record.strm_disabled:
+        return False
+    if not record.strm_path:
+        return False
+    try:
+        strm = Path(record.strm_path)
+        if strm.exists():
+            return False
+        strm.parent.mkdir(parents=True, exist_ok=True)
+        chown_path(strm.parent)
+        strm.write_text(
+            client.movie_stream_url(stream.get("stream_id"), stream.get("container_extension", "mp4")),
+            encoding="utf-8",
+        )
+        chown_path(strm)
+        record.date_updated = datetime.utcnow()
+        logger.info(f"[Sync] Restored missing .strm for existing movie '{record.title}'")
+        return True
+    except Exception as e:
+        logger.debug(f"[Sync] .strm repair failed for tmdb_id={tmdb_id}: {e}")
+        return False
+
+
 def _backfill_series_episodes(
     client: "XtreamClient",
     series: dict,
@@ -545,25 +579,43 @@ def check_and_record_duplicate(
     return False
 
 
+# A category must return nothing this many syncs in a row before we believe it
+# genuinely emptied. Zeroing the count after a single empty response meant a
+# two-night provider outage was accepted as real on the second night.
+EMPTY_CATEGORY_STRIKES = 3
+
+
 def _category_went_empty(db: Session, cat: ProviderCategory, returned: int) -> bool:
     """True when a category returned nothing but is known to hold titles.
 
     An HTTP 200 carrying an empty list is indistinguishable from a category
     that genuinely emptied, so the previous title count is the only signal we
-    have. The first empty response is treated as "not fetched" — a transient
-    provider blip must never read as "the provider dropped every title in this
-    category". The count is then zeroed, so a category that really has emptied
-    is accepted on the next run and normal pruning resumes.
+    have — and it is kept at its last non-zero value the whole time, so the
+    signal doesn't erase itself. Empty responses are counted instead, and only
+    after EMPTY_CATEGORY_STRIKES in a row is the category believed and normal
+    pruning allowed to resume.
     """
     if returned:
+        if cat.consecutive_empty_syncs:
+            cat.consecutive_empty_syncs = 0
+            db.commit()
         return False
+
     if not cat.title_count:
-        return False  # already empty last run — believe it this time
-    cat.title_count = 0
-    cat.last_sync_matched = 0
-    cat.last_sync_skipped = 0
+        return False  # never held anything — nothing to protect
+
+    cat.consecutive_empty_syncs = (cat.consecutive_empty_syncs or 0) + 1
     db.add(CategorySnapshot(category_id=cat.id, title_count=0, new_count=0))
     db.commit()
+
+    if cat.consecutive_empty_syncs >= EMPTY_CATEGORY_STRIKES:
+        logger.warning(
+            f"Category '{cat.category_name}' has returned 0 titles "
+            f"{cat.consecutive_empty_syncs} syncs in a row (it held {cat.title_count}) "
+            f"— treating it as genuinely empty from now on"
+        )
+        return False
+
     return True
 
 
@@ -580,7 +632,7 @@ def _prune_removed_content(db: Session, provider: Provider, media_type: str, see
     Two guards make a transient provider response harmless:
 
     * **Two strikes.** A title missing for the first time is only marked
-      (``missing_since``); it is deleted on the next run that still doesn't
+      (``provider_missing_since``); it is deleted on the next run that still doesn't
       see it. Anything that reappears has the mark cleared.
     * **Blast radius.** A run refuses to delete more than 5% of the provider's
       rows (floor 50) and logs loudly instead, so a partial outage that slips
@@ -591,15 +643,15 @@ def _prune_removed_content(db: Session, provider: Provider, media_type: str, see
     Model = Movie if media_type == "movie" else Series
     now = datetime.utcnow()
 
-    # Anything the provider served again is healthy — clear any previous mark.
+    # Anything the provider served again is healthy — clear our own mark only.
     # Filtered in Python: the marked set is small, and an IN clause over a
     # 26k-id seen set would blow SQLite's bound-variable limit.
     for record in db.query(Model).filter(
         Model.provider_id == provider.id,
-        Model.missing_since.isnot(None),
+        Model.provider_missing_since.isnot(None),
     ).all():
         if record.tmdb_id in seen_ids:
-            record.missing_since = None
+            record.provider_missing_since = None
 
     # Diff in Python rather than with a NOT IN over the whole seen set — that
     # set runs to tens of thousands of ids on a large provider, past SQLite's
@@ -617,11 +669,13 @@ def _prune_removed_content(db: Session, provider: Provider, media_type: str, see
     for i in range(0, len(stale_pks), 500):
         stale.extend(db.query(Model).filter(Model.id.in_(stale_pks[i:i + 500])).all())
 
-    # First sighting of an absence is recorded, not acted on.
-    confirmed = [r for r in stale if r.missing_since is not None]
-    newly_missing = [r for r in stale if r.missing_since is None]
+    # First sighting of an absence is recorded, not acted on. Only this guard's
+    # own mark counts as a first strike — a file that went missing on disk says
+    # nothing about whether the provider still lists the title.
+    confirmed = [r for r in stale if r.provider_missing_since is not None]
+    newly_missing = [r for r in stale if r.provider_missing_since is None]
     for record in newly_missing:
-        record.missing_since = now
+        record.provider_missing_since = now
     if newly_missing:
         logger.info(
             f"[Sync] {len(newly_missing)} {media_type}(s) missing from provider "
@@ -692,7 +746,13 @@ VOD_SERIES_ROOT = Path("/media/vod/shows")
 def _sweep_one_type(db: Session, Model, media_type: str, root: Path, now: datetime):
     """Sweep one media type. Returns (removed_count, removed_titles)."""
     rows = db.query(Model).filter(
-        Model.source.like("provider_%"), Model.strm_path.isnot(None)
+        Model.source.like("provider_%"),
+        Model.strm_path.isnot(None),
+        # Titles the user opted out of .strm management are expected to have no
+        # .strm on disk — that is the whole point. Sweeping them would delete
+        # the row and the next sync would re-import the title and rewrite the
+        # file, silently undoing the opt-out.
+        Model.strm_disabled.isnot(True),
     ).all()
     if not rows:
         return 0, []
@@ -711,17 +771,19 @@ def _sweep_one_type(db: Session, Model, media_type: str, root: Path, now: dateti
     missing = [r for r in rows if not Path(r.strm_path).exists()]
     missing_ids = {r.id for r in missing}
 
-    # Files that came back clear their mark.
+    # Files that came back clear this guard's own mark.
     for r in rows:
-        if r.id not in missing_ids and r.missing_since is not None:
-            r.missing_since = None
+        if r.id not in missing_ids and r.file_missing_since is not None:
+            r.file_missing_since = None
 
     # Two strikes: a title must be missing on two separate sweeps to be deleted,
-    # so a transient outage never destroys records.
-    confirmed = [r for r in missing if r.missing_since is not None]
+    # so a transient outage never destroys records. Only a mark this guard set
+    # counts — the prune's mark means the provider dropped the title, which says
+    # nothing about whether its file is on disk.
+    confirmed = [r for r in missing if r.file_missing_since is not None]
     for r in missing:
-        if r.missing_since is None:
-            r.missing_since = now
+        if r.file_missing_since is None:
+            r.file_missing_since = now
     if len(missing) != len(confirmed):
         logger.info(
             f"[VOD sweep] {len(missing) - len(confirmed)} {media_type}(s) missing "
@@ -1112,6 +1174,8 @@ def _sync_movies(
             # Skip if already seen this run or in library from this provider — merge tags
             if tmdb_id in seen_tmdb_ids or tmdb_id in existing_provider_tmdb_ids:
                 _merge_source_tag(tmdb_id, "movie", cat.source_tag, provider.id, db)
+                # Existing VOD movie — restore its .strm if it vanished from disk
+                _repair_movie_strm(client, stream, tmdb_id, provider, db)
                 cat_existing += 1
                 stats["existing"] += 1
                 if item_idx % 10 == 0 or item_idx == total_in_cat:
@@ -1124,6 +1188,8 @@ def _sync_movies(
             if db.query(Movie).filter(Movie.tmdb_id == tmdb_id, Movie.provider_id == provider.id).first():
                 existing_provider_tmdb_ids.add(tmdb_id)
                 _merge_source_tag(tmdb_id, "movie", cat.source_tag, provider.id, db)
+                # Existing VOD movie — restore its .strm if it vanished from disk
+                _repair_movie_strm(client, stream, tmdb_id, provider, db)
                 cat_existing += 1
                 stats["existing"] += 1
                 if item_idx % 10 == 0 or item_idx == total_in_cat:

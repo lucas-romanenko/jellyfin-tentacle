@@ -110,6 +110,10 @@ class ProviderCategory(Base):
     last_seen = Column(DateTime, default=datetime.utcnow)
     last_sync_matched = Column(Integer, nullable=True)  # Items matched TMDB last sync
     last_sync_skipped = Column(Integer, nullable=True)  # Items with no TMDB match last sync
+    # Consecutive syncs where this category returned nothing while it was known
+    # to hold titles. title_count keeps its last non-zero value throughout, so a
+    # multi-night outage can't be mistaken for a genuinely emptied category.
+    consecutive_empty_syncs = Column(Integer, default=0)
 
     provider = relationship("Provider", back_populates="categories")
     snapshots = relationship("CategorySnapshot", back_populates="category", cascade="all, delete-orphan")
@@ -162,10 +166,18 @@ class Movie(Base):
     # Jellyfin
     jellyfin_item_id = Column(String, nullable=True)
 
-    # Set the first time a sweep/prune finds this title gone. Deletion only
-    # happens once a second, independent run agrees it is still gone, so a
+    # First time each guard found this title gone. Deletion only happens once a
+    # second, independent run of the SAME guard agrees it is still gone, so a
     # transient provider or mount outage can never destroy the library.
-    missing_since = Column(DateTime, nullable=True)
+    #
+    # The two are deliberately separate. They mean different things — "the
+    # provider stopped listing it" vs "its .strm is not on disk" — and sharing
+    # one column made them corrupt each other: the sweep cleared the prune's
+    # mark every night (so a genuinely removed title was never pruned), and a
+    # mark from one guard satisfied the other's second strike (so a title could
+    # be deleted after a single night).
+    provider_missing_since = Column(DateTime, nullable=True)
+    file_missing_since = Column(DateTime, nullable=True)
 
     # "Keep this in the catalog but stop writing/repairing .strm files for it."
     # For titles the user has deliberately switched to downloaded copies — the
@@ -207,8 +219,10 @@ class Series(Base):
     jellyfin_item_id = Column(String, nullable=True)
     last_downloaded_episode = Column(String, nullable=True)  # e.g. "S02E05 · Episode Title"
 
-    # See Movie.missing_since — deletion requires two runs to agree.
-    missing_since = Column(DateTime, nullable=True)
+    # See Movie.provider_missing_since / file_missing_since — each guard keeps
+    # its own mark and deletion requires two runs of that guard to agree.
+    provider_missing_since = Column(DateTime, nullable=True)
+    file_missing_since = Column(DateTime, nullable=True)
 
     # See Movie.strm_disabled — opt this title out of .strm writing/repair.
     strm_disabled = Column(Boolean, default=False)

@@ -27,18 +27,30 @@ class TestDeleteSeriesFiles(unittest.TestCase):
 
     def test_downloaded_content_survives(self):
         deleted = delete_series_files(self.show)
-        self.assertEqual(deleted, 3)  # 2 .strm/.nfo in the season + tvshow.nfo
+        self.assertEqual(deleted, 2)  # the .strm and its own .nfo
         self.assertTrue((self.show / "Season 01" / "Community S01E02.mkv").exists())
         self.assertTrue((self.show / "Season 01" / "Community S01E02.en.srt").exists())
         self.assertFalse((self.show / "Season 01" / "Community S01E01.strm").exists())
-        self.assertFalse((self.show / "tvshow.nfo").exists())
+        # tvshow.nfo is shared metadata and downloaded episodes remain
+        self.assertTrue((self.show / "tvshow.nfo").exists())
         # Folder kept because foreign files remain
         self.assertTrue(self.show.is_dir())
+
+    def test_other_tools_nfos_are_left_alone(self):
+        # Sonarr / Jellyfin NFO saver output next to downloaded episodes
+        (self.show / "Season 01" / "Community S01E02.nfo").write_text("sonarr")
+        (self.show / "Season 01" / "season.nfo").write_text("sonarr")
+        delete_series_files(self.show)
+        self.assertTrue((self.show / "Season 01" / "Community S01E02.nfo").exists())
+        self.assertTrue((self.show / "Season 01" / "season.nfo").exists())
+        self.assertTrue((self.show / "tvshow.nfo").exists())
 
     def test_empty_folders_pruned_when_nothing_foreign_remains(self):
         (self.show / "Season 01" / "Community S01E02.mkv").unlink()
         (self.show / "Season 01" / "Community S01E02.en.srt").unlink()
         delete_series_files(self.show)
+        # With no real media left, the shared tvshow.nfo goes too and the tree
+        # prunes away entirely.
         self.assertFalse(self.show.exists())
 
     def test_missing_path_is_a_no_op(self):
