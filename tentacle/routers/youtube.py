@@ -216,16 +216,56 @@ class ChannelCreate(BaseModel):
 
 
 @router.get("/status", dependencies=[Depends(require_admin)])
-def status(db: Session = Depends(get_db)):
+def status(request: Request, db: Session = Depends(get_db)):
     """Whether the feature can run at all, plus a summary."""
+    import os
+
+    base = (get_setting(db, "youtube_base_url", "") or "").strip()
+    # Suggest the address this request came in on, which is almost always the
+    # one Jellyfin can reach too. Only a suggestion — the user confirms it.
+    suggested = base
+    if not suggested:
+        host = request.headers.get("x-forwarded-host") or request.headers.get("host")
+        scheme = request.headers.get("x-forwarded-proto", "http")
+        if host:
+            suggested = f"{scheme}://{host}"
+
     return {
         "enabled": get_setting(db, "youtube_enabled", "false") == "true",
+        "base_url": base,
+        "suggested_base_url": suggested,
+        "media_root_mounted": os.path.isdir(str(library.YOUTUBE_MEDIA_ROOT)),
+        "media_root": str(library.YOUTUBE_MEDIA_ROOT),
         "yt_dlp_available": client.available(),
         "yt_dlp_version": client.version(),
         "channels": db.query(YouTubeChannel).count(),
         "videos": db.query(YouTubeVideo).count(),
         "resolver_cache": resolver.cache_size(),
     }
+
+
+class SetupBody(BaseModel):
+    enabled: bool
+    base_url: str = ""
+
+
+@router.post("/setup", dependencies=[Depends(require_admin)])
+def save_setup(body: SetupBody, db: Session = Depends(get_db)):
+    """Turn the feature on and set the address written into .strm files."""
+    from models.database import set_setting
+
+    base = (body.base_url or "").strip().rstrip("/")
+    if body.enabled and not base:
+        raise HTTPException(
+            400,
+            "A base URL is required: every .strm carries this address, and the "
+            "Jellyfin server is what fetches it.",
+        )
+    set_setting(db, "youtube_enabled", "true" if body.enabled else "false")
+    if base:
+        set_setting(db, "youtube_base_url", base)
+    logger.info(f"[YouTube] Source {'enabled' if body.enabled else 'disabled'} (base {base or 'unset'})")
+    return {"success": True, "enabled": body.enabled, "base_url": base}
 
 
 @router.get("/channels", dependencies=[Depends(require_admin)])

@@ -2654,21 +2654,41 @@ function addAllMissingToRadarr() { addAllMissingToArr('radarr'); }
 async function loadYouTubePage() {
   const box = document.getElementById('yt-channels');
   const warn = document.getElementById('yt-unavailable');
+  const setup = document.getElementById('yt-setup');
+  const addCard = document.getElementById('yt-add-card');
   try {
     const st = await api('/api/youtube/status');
-    // The feature needs yt-dlp in the image and a base URL Jellyfin can reach.
-    const problems = [];
-    if (!st.yt_dlp_available) problems.push('yt-dlp is not installed in this image — rebuild or update the container.');
-    if (!st.enabled) problems.push('The YouTube source is turned off. Enable <code>youtube_enabled</code> in Settings.');
-    if (problems.length) {
-      warn.style.display = '';
-      warn.querySelector('.card-body').innerHTML = problems.join('<br>');
-    } else {
-      warn.style.display = 'none';
+
+    // Blockers the user can't fix from here.
+    const blockers = [];
+    if (!st.yt_dlp_available) blockers.push('This Tentacle image has no yt-dlp — pull a newer image.');
+    if (!st.media_root_mounted) blockers.push(`<code>${escapeAttr(st.media_root)}</code> is not mounted. Add it to Tentacle&rsquo;s volumes and recreate the container.`);
+    warn.style.display = blockers.length ? '' : 'none';
+    if (blockers.length) warn.querySelector('.card-body').innerHTML = blockers.join('<br>');
+
+    // Not turned on yet: show setup, hide the add form until it is.
+    setup.style.display = st.enabled ? 'none' : '';
+    addCard.style.display = st.enabled ? '' : 'none';
+    if (!st.enabled) {
+      document.getElementById('yt-base-url').value = st.base_url || st.suggested_base_url || '';
+      document.getElementById('yt-setup-hints').innerHTML =
+        'Jellyfin&rsquo;s own player fetches this address, so it has to work from the Jellyfin server — a LAN address, not <code>localhost</code>.';
     }
+
     await loadYouTubeChannels();
   } catch (e) {
     box.innerHTML = `<div class="empty-state"><p>Could not load: ${escapeAttr(e.message)}</p></div>`;
+  }
+}
+
+async function ytSaveSetup(enabled) {
+  const base = document.getElementById('yt-base-url').value.trim();
+  try {
+    await api('/api/youtube/setup', { method: 'POST', body: { enabled, base_url: base } });
+    toast(enabled ? 'YouTube source turned on' : 'YouTube source turned off');
+    loadYouTubePage();
+  } catch (e) {
+    toast(e.message, 'error', 8000);
   }
 }
 
@@ -2676,7 +2696,7 @@ async function loadYouTubeChannels() {
   const box = document.getElementById('yt-channels');
   const channels = await api('/api/youtube/channels');
   if (!channels.length) {
-    box.innerHTML = '<div class="empty-state"><p>No channels yet. Paste a channel URL above to start.</p></div>';
+    box.innerHTML = '<div class="empty-state"><p>No channels yet. Paste a channel URL above — its videos appear in Jellyfin and stream on demand.</p></div>';
     return;
   }
   box.innerHTML = channels.map(c => {
@@ -5806,7 +5826,7 @@ async function loadHealthDeletions() {
     showManageEpisodesModal, confirmManageEpisodes,
     showDownloadMoreModal, confirmDownloadMore, detailToggleSeason, toggleFollow,
     // YouTube
-    loadYouTubePage, loadYouTubeChannels, ytAddChannel, ytDeleteChannel, ytRefreshNow,
+    loadYouTubePage, loadYouTubeChannels, ytAddChannel, ytDeleteChannel, ytRefreshNow, ytSaveSetup,
     ytToggleRow, ytToggleLive,
     // Following
     loadFollowing,

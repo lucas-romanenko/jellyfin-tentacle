@@ -33,13 +33,12 @@ real film and share its folder.
   NFO and there is nothing on TMDB to match
 - Turn off real-time monitoring; Tentacle triggers the refresh
 
-**3. Configure Tentacle** in Settings:
+**3. Turn it on** from the YouTube page. It asks for one thing — the address
+your Jellyfin server can reach Tentacle on — and suggests the address you
+opened the dashboard with.
 
-| Setting | What it does |
-|---------|--------------|
-| `youtube_enabled` | Turns the feature on |
-| `youtube_base_url` | The address written into every `.strm` |
-| `youtube_index_interval_minutes` | How often channels are re-indexed (default 60, minimum 15) |
+`youtube_index_interval_minutes` (default 60, minimum 15) controls how often
+channels are re-indexed and can be set in Settings.
 
 !!! danger "youtube_base_url must be reachable by Jellyfin"
     Jellyfin's ffmpeg is what fetches the `.strm`'s contents, not your browser.
@@ -57,13 +56,17 @@ https://www.youtube.com/playlist?list=PLxxxxxxxx
 
 ## Per-channel options
 
-| Option | Default | Notes |
-|--------|---------|-------|
-| Videos / Live replays / Shorts | Videos only | Which channel tabs to index |
-| Min duration | 60s | Skips Shorts-length clips |
-| Backfill | 30 | How many existing videos to pick up on first add |
-| Keep last | 200 | Older videos are retired and their folders removed |
-| Max quality | 1080p | Caps the HLS ladder handed to clients |
+Nothing here downloads anything. Each video becomes a small pointer file
+(`.strm`) plus an NFO; the video itself streams from YouTube when someone
+presses play.
+
+| Option | Default | What it does |
+|--------|---------|--------------|
+| Videos / Past live streams / Shorts | Videos only | Which of the channel's tabs to look at |
+| Skip shorter than | 60s | Ignores Shorts-length clips |
+| Start with | 30 | How many existing videos to pick up when you add the channel |
+| Show newest | 200 | How many stay listed; older ones drop off the library |
+| Stream up to | 1080p | Caps playback quality — nothing is stored either way |
 
 ## Parental controls
 
