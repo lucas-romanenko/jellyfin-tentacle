@@ -1515,6 +1515,11 @@ td.primary { color: var(--text); font-weight: 500; }
           </div>
           <div class="card-body" id="yt-diag"></div>
           <div style="padding:0 16px 14px;font-size:12px;color:var(--text3)">
+            Playlist empty although Jellyfin has the videos?
+            <a href="#" onclick="ytRefill();return false">Refill playlists now</a>
+            &mdash; it happens when Jellyfin takes longer to import than the add step waits; the refill also runs on its own in the background.
+          </div>
+          <div style="padding:0 16px 14px;font-size:12px;color:var(--text3)">
             Everything checks out but a video still won&rsquo;t play?
             <a href="#" onclick="ytReprobe();return false">Ask Jellyfin to re-read the videos</a>
             &mdash; it keeps the first thing it learned about each one, and this makes it look again.

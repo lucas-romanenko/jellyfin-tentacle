@@ -676,6 +676,38 @@ def diagnose(request: Request, db: Session = Depends(get_db)):
                 "above pass, press 'Check for new videos' and wait for it to finish; if "
                 "one fails, fix that first — a playlist Jellyfin refuses to create is "
                 "logged as 'Could not create Jellyfin playlist' with the reason.")
+            # ...and whether each one actually holds the videos. Empty with
+            # Jellyfin showing the videos means the publish step's wait ran out
+            # before Jellyfin had imported them; the top-up fills it in, and
+            # the link under this panel does it right now.
+            if jf_url and jf_key:
+                try:
+                    from services.jellyfin import JellyfinService
+                    jfc = JellyfinService(jf_url, jf_key, get_setting(db, "jellyfin_user_id", ""))
+                    ids = {p["name"]: p["playlist_id"]
+                           for p in _get_smartlists_with_playlist_ids(db, user_id=user.id)}
+                    for c in channels:
+                        pid = ids.get(c.title)
+                        if not pid:
+                            continue
+                        held = len(jfc.get_playlist_items(pid) or [])
+                        want = db.query(YouTubeVideo).filter(
+                            YouTubeVideo.channel_fk == c.id,
+                            YouTubeVideo.removed_at.is_(None),
+                            indexer.is_library_status(YouTubeVideo.live_status),
+                        ).count()
+                        seen = jf_items.get(c.title, 0)
+                        add(held >= want or want == 0,
+                            f"'{c.title}' playlist holds its videos",
+                            f"{held} of {want} in the playlist; Jellyfin has {seen}",
+                            ("Jellyfin has the videos but the playlist was filled before they "
+                             "arrived. Press 'Refill playlists now' under this panel."
+                             if seen >= want else
+                             "Jellyfin has not imported all of them yet. Give it a minute, then "
+                             "press 'Refill playlists now' under this panel."))
+                except Exception as e:
+                    add(False, "Channel playlists hold their videos", str(e)[:200], None)
+
             config = _read_home_json(user) or {}
             rows = {r.get("display_name") for r in (config.get("rows") or [])}
             on_home = names & rows
@@ -990,6 +1022,21 @@ def _run_refresh_once(channel_ids=None):
             logger.warning(f"[YouTube] Playlist check failed: {e}")
     finally:
         db.close()
+
+
+@router.post("/refill", dependencies=[Depends(require_admin)])
+def refill(db: Session = Depends(get_db)):
+    """Fill any channel playlist that holds fewer videos than the library.
+
+    The state this fixes: Jellyfin took longer to import the videos than the
+    publish step waited, so the playlist was filled with nothing and is being
+    topped up in the background. That top-up runs on its own, but "it will
+    fill in eventually" is not an answer anyone should have to accept when
+    Jellyfin already has the videos — this fills it now.
+    """
+    from services.youtube.sync import reconcile_playlists
+    fixed, behind = reconcile_playlists(db, report=True)
+    return {"refilled": fixed, "still_behind": behind}
 
 
 @router.post("/reprobe", dependencies=[Depends(require_admin)])

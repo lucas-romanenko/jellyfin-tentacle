@@ -4,7 +4,7 @@ Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -258,8 +258,8 @@ class TestLiveTv(unittest.TestCase):
 
     def test_live_and_upcoming_streams_become_guide_entries(self):
         from services.youtube import livetv
-        self._video("aaaaaaaaaaa", "is_live", datetime(2026, 9, 17, 18, 0), 7200)
-        self._video("bbbbbbbbbbb", "is_upcoming", datetime(2026, 9, 18, 20, 0))
+        self._video("aaaaaaaaaaa", "is_live", datetime.utcnow() - timedelta(hours=1), 7200)
+        self._video("bbbbbbbbbbb", "is_upcoming", datetime.utcnow() + timedelta(hours=2))
         self.assertEqual(livetv.refresh_guide(self.db, self.channel), 2)
         rows = self.db.query(self.EPGProgram).filter(
             self.EPGProgram.channel_id == "yt.sports-channel").all()
@@ -269,7 +269,7 @@ class TestLiveTv(unittest.TestCase):
         # A programme's identity is channel + start, so moving a start orphans
         # any DVR timer set against it.
         from services.youtube import livetv
-        start = datetime(2026, 9, 17, 18, 0)
+        start = datetime.utcnow() - timedelta(hours=1)
         self._video("aaaaaaaaaaa", "is_upcoming", start, 3600)
         livetv.refresh_guide(self.db, self.channel)
         first = self.db.query(self.EPGProgram).filter_by(channel_id="yt.sports-channel").one()
@@ -280,7 +280,7 @@ class TestLiveTv(unittest.TestCase):
 
     def test_a_live_stream_extends_rather_than_duplicating(self):
         from services.youtube import livetv
-        self._video("aaaaaaaaaaa", "is_live", datetime(2026, 9, 17, 18, 0), 60)
+        self._video("aaaaaaaaaaa", "is_live", datetime.utcnow() - timedelta(hours=1), 60)
         livetv.refresh_guide(self.db, self.channel)
         livetv.refresh_guide(self.db, self.channel)
         rows = self.db.query(self.EPGProgram).filter_by(channel_id="yt.sports-channel").all()
@@ -296,16 +296,16 @@ class TestLiveTv(unittest.TestCase):
 
     def test_current_live_video_ignores_upcoming_ones(self):
         from services.youtube import livetv
-        self._video("bbbbbbbbbbb", "is_upcoming", datetime(2026, 9, 18, 20, 0))
+        self._video("bbbbbbbbbbb", "is_upcoming", datetime.utcnow() + timedelta(hours=2))
         self.assertIsNone(livetv.current_live_video(self.db, self.channel.id))
-        self._video("aaaaaaaaaaa", "is_live", datetime(2026, 9, 17, 18, 0))
+        self._video("aaaaaaaaaaa", "is_live", datetime.utcnow() - timedelta(hours=1))
         live = livetv.current_live_video(self.db, self.channel.id)
         self.assertEqual(live.video_id, "aaaaaaaaaaa")
 
     def test_live_streams_are_not_written_as_library_items(self):
         # A stream has no duration yet; Jellyfin would file it as a 0-length movie.
         from services.youtube.indexer import is_library_item
-        live = self._video("aaaaaaaaaaa", "is_live", datetime(2026, 9, 17, 18, 0))
+        live = self._video("aaaaaaaaaaa", "is_live", datetime.utcnow() - timedelta(hours=1))
         done = self._video("ccccccccccc", None, datetime(2026, 9, 16, 18, 0), 600)
         self.assertFalse(is_library_item(live))
         self.assertTrue(is_library_item(done))

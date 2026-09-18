@@ -2829,6 +2829,23 @@ async function loadYouTubeChannels() {
   }).join('');
 }
 
+async function ytRefill() {
+  const t = toast('Filling playlists…', 'loading', 0);
+  try {
+    const r = await api('/api/youtube/refill', { method: 'POST' });
+    t.remove();
+    toast(r.refilled
+      ? `Refilled ${r.refilled} playlist${r.refilled === 1 ? '' : 's'}.`
+      : (r.still_behind ? 'Jellyfin has not imported all the videos yet — give it a minute and try again.'
+                        : 'Every playlist already holds its videos.'),
+      r.refilled ? 'success' : 'info', 7000);
+    ytDiagnose();
+  } catch (e) {
+    t.remove();
+    toast(e.message, 'error');
+  }
+}
+
 async function ytReprobe() {
   // Jellyfin probes a .strm once and keeps the answer. When what Tentacle
   // serves changes, an already-scanned item plays by the old description and
@@ -6085,7 +6102,7 @@ async function loadHealthDeletions() {
     showManageEpisodesModal, confirmManageEpisodes,
     showDownloadMoreModal, confirmDownloadMore, detailToggleSeason, toggleFollow,
     // YouTube
-    loadYouTubePage, loadYouTubeChannels, ytAddChannel, ytDeleteChannel, ytRefreshNow, ytStartPolling, ytDiagnose, ytSkipNote, ytReprobe, loadLiveYouTubeChannels, toggleLiveYouTube, ytSaveAddress, ytShowAddress, loadTentacleAddress, ytUseAddress, ytDetectAddress,
+    loadYouTubePage, loadYouTubeChannels, ytAddChannel, ytDeleteChannel, ytRefreshNow, ytStartPolling, ytDiagnose, ytSkipNote, ytReprobe, ytRefill, loadLiveYouTubeChannels, toggleLiveYouTube, ytSaveAddress, ytShowAddress, loadTentacleAddress, ytUseAddress, ytDetectAddress,
     // Following
     loadFollowing,
     toggleStrmManaged,
