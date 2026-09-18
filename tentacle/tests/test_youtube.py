@@ -1217,9 +1217,32 @@ class TestBaseUrlIsChecked(unittest.TestCase):
         self.sync._probe = _probe
 
     def test_a_working_address_passes(self):
-        self._answer(body={"yt_dlp_available": True})
+        self._answer(body={"tentacle": True, "youtube": True})
         r = self.sync.check_base_url("http://192.168.1.10:8888")
         self.assertTrue(r["ok"])
+
+    def test_it_probes_an_endpoint_that_needs_no_login(self):
+        # A .strm is fetched with no session, so the probe has to be too.
+        # Probing an admin route reported every correctly configured instance
+        # as needing a login, ffmpeg having no session either.
+        seen = []
+
+        def _probe(url):
+            seen.append(url)
+
+            class _R:
+                status_code = 200
+                headers = {}
+                def json(self_): return {"tentacle": True}
+            return _R()
+        self.sync._probe = _probe
+        self.sync.check_base_url("http://192.168.1.10:8888")
+        self.assertEqual(seen, ["http://192.168.1.10:8888/api/youtube/ping"])
+
+        from routers import youtube
+        route = next(r for r in youtube.router.routes
+                     if getattr(r, "path", "") == "/api/youtube/ping")
+        self.assertEqual(list(route.dependencies), [])
 
     def test_cloudflare_access_is_named_specifically(self):
         self._answer(status=302, headers={

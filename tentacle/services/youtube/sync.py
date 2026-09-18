@@ -43,9 +43,13 @@ def check_base_url(base: str) -> dict:
     a login, or simply the wrong host answers a media request with an HTML login
     page, and ffmpeg reports that as "Invalid data found when processing input".
     Nothing in Tentacle or Jellyfin points at the address.
+
+    The probe is deliberately an unauthenticated endpoint, because that is what
+    a .strm is: checking an admin route instead would report every correctly
+    configured instance as needing a login, ffmpeg having no session either.
     """
     try:
-        r = _probe(f"{base.rstrip('/')}/api/youtube/status")
+        r = _probe(f"{base.rstrip('/')}/api/youtube/ping")
     except Exception as e:
         return {"ok": False, "detail": f"Could not reach {base}: {e}"}
 
@@ -71,7 +75,7 @@ def check_base_url(base: str) -> dict:
         return {"ok": False, "detail":
                 "This address answered with something other than Tentacle. Check it "
                 "points at Tentacle itself and not a proxy or another service."}
-    if "yt_dlp_available" not in body:
+    if not body.get("tentacle"):
         return {"ok": False, "detail": "This address is answering, but it is not Tentacle."}
     return {"ok": True, "detail": f"{base} serves Tentacle directly."}
 

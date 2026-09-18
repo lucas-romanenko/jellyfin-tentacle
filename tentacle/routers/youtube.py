@@ -330,6 +330,20 @@ class ChannelCreate(BaseModel):
     extra_tags: list = []
 
 
+@router.get("/ping")
+def ping():
+    """Unauthenticated liveness marker, deliberately.
+
+    This is what check_base_url probes, and it has to sit behind exactly the
+    same (absence of) auth as the .strm endpoints — otherwise the check proves
+    nothing about whether ffmpeg can fetch a video. Probing an admin route
+    instead reported every correctly configured instance as needing a login,
+    since ffmpeg has no session either. Carries no data beyond "Tentacle is
+    here".
+    """
+    return {"tentacle": True, "youtube": True}
+
+
 @router.get("/status", dependencies=[Depends(require_admin)])
 def status(request: Request, db: Session = Depends(get_db)):
     """Whether the feature can run at all, plus a summary."""
