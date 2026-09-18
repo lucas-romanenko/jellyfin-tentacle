@@ -768,6 +768,10 @@
     var row = document.createElement('div');
     row.className = 'mh-row';
     row.setAttribute('data-playlist-id', section.playlistId);
+    // The shape the row was drawn with, on the row itself, so a live update
+    // can tell whether it changed by looking at the DOM rather than at
+    // whatever was remembered about the sections.
+    row.setAttribute('data-shape', section.shape === 'wide' ? 'wide' : 'poster');
 
     row.innerHTML =
       '<div class="mh-row-header">' +
@@ -1028,8 +1032,11 @@
           return;
         }
 
-        // Structure unchanged — refresh items in-place for playlist rows
-        var sections = MH.activeSections.filter(function (s) { return s.type === 'row' && s.playlistId; });
+        // Structure unchanged — refresh items in-place for playlist rows.
+        // Use the fresh sections, not the remembered ones: a row's shape can
+        // change with nothing else about it changing.
+        MH.activeSections = newSections;
+        var sections = newSections.filter(function (s) { return s.type === 'row' && s.playlistId; });
         sections.forEach(function (section) {
           apiGet('TentacleHome/Section/' + section.playlistId + '?userId=' + MH.userId)
             .then(function (itemData) {
@@ -1044,20 +1051,24 @@
                 return;
               }
 
+              var wide = section.shape === 'wide';
+              var drawnWide = row.getAttribute('data-shape') === 'wide';
               var currentIds = [];
               itemsEl.querySelectorAll('.mh-card[data-item-id]').forEach(function (c) {
                 currentIds.push(c.getAttribute('data-item-id'));
               });
               var newIds = itemData.Items.map(function (i) { return i.Id; });
 
-              if (currentIds.length === newIds.length && currentIds.every(function (id, idx) { return id === newIds[idx]; })) {
+              // Same items AND same shape: nothing to do. Same items in a
+              // different shape is a change — the one that used to be missed.
+              if (wide === drawnWide && currentIds.length === newIds.length && currentIds.every(function (id, idx) { return id === newIds[idx]; })) {
                 return;
               }
 
-              console.log('[TH] Updating row "' + section.displayText + '": ' + currentIds.length + ' → ' + newIds.length + ' items');
+              console.log('[TH] Updating row "' + section.displayText + '": ' + currentIds.length + ' → ' + newIds.length + ' items' + (wide !== drawnWide ? ', shape → ' + (wide ? 'wide' : 'poster') : ''));
               row.classList.remove('mh-row-hidden');
+              row.setAttribute('data-shape', wide ? 'wide' : 'poster');
               itemsEl.innerHTML = '';
-              var wide = section.shape === 'wide';
               itemData.Items.forEach(function (item) {
                 itemsEl.appendChild(createCard(item, wide));
               });
