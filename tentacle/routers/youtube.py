@@ -626,8 +626,29 @@ _refresh_state: dict = {
 _refresh_lock = threading.Lock()
 
 
+def _note_channel_error(db: Session, channel: YouTubeChannel, exc: Exception) -> None:
+    """Record a failed sync on the channel as well as on the run.
+
+    The run's copy lives in a toast that is gone a few seconds later, and only
+    listing failures inside index_channel ever reached the channel itself — so a
+    crash anywhere after indexing (writing files, the guide, retention) left
+    "indexed with 1 error" on screen and nothing anywhere to say what it was.
+    """
+    detail = f"{type(exc).__name__}: {exc}" if not str(exc) else str(exc)
+    _refresh_state["errors"] += 1
+    _refresh_state["error_detail"] = f"{channel.title}: {detail}"
+    try:
+        db.rollback()
+        channel.last_error = detail[:400]
+        channel.error_count = (channel.error_count or 0) + 1
+        db.commit()
+    except Exception:                       # never let bookkeeping mask the real error
+        logger.debug("[YouTube] Could not record the channel error", exc_info=True)
+
+
 def _run_refresh():
     """Index every enabled channel. Runs on its own thread with its own session."""
+
     from models.database import SessionLocal
     from services.youtube.sync import base_url, sync_channel
 
@@ -653,12 +674,10 @@ def _run_refresh():
                 _refresh_state["retired"] += r.get("retired", 0)
                 r_written = r.get("written", 0) + r.get("retired", 0)
             except YouTubeError as e:
-                _refresh_state["errors"] += 1
-                _refresh_state["error_detail"] = f"{channel.title}: {e}"
+                _note_channel_error(db, channel, e)
                 logger.warning(f"[YouTube] Refresh failed for '{channel.title}': {e}")
             except Exception as e:
-                _refresh_state["errors"] += 1
-                _refresh_state["error_detail"] = f"{channel.title}: {e}"
+                _note_channel_error(db, channel, e)
                 logger.error(f"[YouTube] Refresh crashed for '{channel.title}': {e}", exc_info=True)
             if r_written:
                 changed.append(channel.title)

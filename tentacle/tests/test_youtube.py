@@ -1039,7 +1039,7 @@ class TestArtwork(unittest.TestCase):
 
         def _fake(url):
             self.fetched.append(url)
-            return b"\xff\xd8\xff-jpeg-bytes"
+            return b"\xff\xd8\xff" + b"j" * 2000
         self._real = library._download
         library._download = _fake
 
@@ -1054,16 +1054,50 @@ class TestArtwork(unittest.TestCase):
         self.assertTrue((folder / "fanart.jpg").exists())
         self.assertEqual(info["artwork"], 2)
 
-    def test_the_well_known_url_is_used_when_none_was_indexed(self):
+    def test_youtubes_own_jpeg_is_tried_first(self):
         self.library.write_video(self.video, self.channel, "http://t", root=self.root)
-        # maxresdefault is absent for many uploads and would 404, leaving no
-        # artwork at all.
-        self.assertEqual(self.fetched, ["https://i.ytimg.com/vi/kQA2wNKxy_8/hqdefault.jpg"])
+        self.assertEqual(self.fetched,
+                         ["https://i.ytimg.com/vi/kQA2wNKxy_8/maxresdefault.jpg"])
 
-    def test_an_indexed_thumbnail_is_preferred(self):
-        self.video.thumbnail_url = "https://i.ytimg.com/vi/x/maxresdefault.jpg"
+    def test_it_falls_back_when_maxres_does_not_exist(self):
+        # maxresdefault is absent for plenty of uploads; hqdefault always is.
+        misses = {"https://i.ytimg.com/vi/kQA2wNKxy_8/maxresdefault.jpg"}
+
+        def _fake(url):
+            self.fetched.append(url)
+            return b"" if url in misses else b"\xff\xd8\xff" + b"j" * 2000
+        library._download = _fake
+        info = self.library.write_video(self.video, self.channel, "http://t", root=self.root)
+        self.assertEqual(self.fetched[-1], "https://i.ytimg.com/vi/kQA2wNKxy_8/hqdefault.jpg")
+        self.assertEqual(info["artwork"], 2)
+
+    def test_yt_dlps_choice_is_the_last_resort_not_the_first(self):
+        # yt-dlp reports a WebP for most videos; a plain JPEG is handled
+        # without question by every client, so YouTube's own path wins.
+        self.video.thumbnail_url = "https://i.ytimg.com/vi_webp/x/maxresdefault.webp"
         self.library.write_video(self.video, self.channel, "http://t", root=self.root)
-        self.assertEqual(self.fetched, ["https://i.ytimg.com/vi/x/maxresdefault.jpg"])
+        self.assertEqual(self.fetched[0],
+                         "https://i.ytimg.com/vi/kQA2wNKxy_8/maxresdefault.jpg")
+        self.assertIn("https://i.ytimg.com/vi_webp/x/maxresdefault.webp",
+                      self.library.artwork_candidates(self.video))
+
+    def test_a_webp_is_not_written_into_a_file_called_jpg(self):
+        from pathlib import Path
+        webp = b"RIFF" + b"\x00" * 4 + b"WEBP" + b"w" * 2000
+        library._download = lambda url: webp
+        info = self.library.write_video(self.video, self.channel, "http://t", root=self.root)
+        folder = Path(info["folder"])
+        self.assertTrue((folder / "poster.webp").exists())
+        self.assertFalse((folder / "poster.jpg").exists())
+
+    def test_something_that_is_not_an_image_is_not_saved(self):
+        from pathlib import Path
+        library._download = lambda url: b"<html>404 not found</html>" * 100
+        info = self.library.write_video(self.video, self.channel, "http://t", root=self.root)
+        self.assertEqual(info["artwork"], 0)
+        self.assertEqual(
+            [f.name for f in Path(info["folder"]).iterdir() if f.suffix in (".jpg", ".webp")],
+            [])
 
     def test_it_is_not_downloaded_again_on_every_sync(self):
         from pathlib import Path
@@ -1071,6 +1105,14 @@ class TestArtwork(unittest.TestCase):
         self.fetched.clear()
         again = self.library.fetch_artwork(self.video, Path(info["folder"]))
         self.assertEqual((again, self.fetched), (0, []))
+
+    def test_an_existing_webp_poster_also_counts_as_done(self):
+        from pathlib import Path
+        webp = b"RIFF" + b"\x00" * 4 + b"WEBP" + b"w" * 2000
+        library._download = lambda url: webp
+        info = self.library.write_video(self.video, self.channel, "http://t", root=self.root)
+        self.fetched.clear()
+        self.assertEqual(self.library.fetch_artwork(self.video, Path(info["folder"])), 0)
 
     def test_the_nfo_names_the_image_too(self):
         # So Jellyfin still has artwork if the local fetch failed.

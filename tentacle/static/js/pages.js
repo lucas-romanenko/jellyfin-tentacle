@@ -2732,13 +2732,18 @@ async function loadYouTubeChannels() {
   }
   box.innerHTML = channels.map(c => {
     const blocked = c.blocked_until ? `<span class="badge badge-amber">backing off until ${new Date(c.blocked_until).toLocaleTimeString()}</span>` : '';
-    const err = c.last_error ? `<span class="badge badge-red" title="${escapeAttr(c.last_error)}">error</span>` : '';
+    // Spelled out rather than hidden behind a hover: "indexed with 1 error"
+    // with the reason only in a tooltip meant nobody ever saw the reason.
+    const err = c.last_error
+      ? `<div style="font-size:11px;margin-top:3px;color:var(--red)">Last run failed: ${escapeAttr(c.last_error)}</div>`
+      : '';
     const checked = c.last_checked ? new Date(c.last_checked).toLocaleString() : 'never';
     return `<div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)">
       ${c.avatar_url ? `<img src="${escapeAttr(c.avatar_url)}" style="width:40px;height:40px;border-radius:50%;object-fit:cover">` : '<div style="width:40px;height:40px;border-radius:50%;background:var(--bg3)"></div>'}
       <div style="flex:1">
-        <div style="font-weight:600">${escapeAttr(c.title)} ${blocked} ${err}</div>
+        <div style="font-weight:600">${escapeAttr(c.title)} ${blocked}</div>
         <div style="font-size:12px;color:var(--text3)">${c.library_count} in library${c.live_now ? ` · ${c.live_now} live` : ''} · max ${c.max_height}p · checked ${escapeAttr(checked)}</div>
+        ${err}
         ${ytSkipNote(c)}
       </div>
       <label class="detail-follow-toggle" title="Add a row of this channel's videos to your Jellyfin home screen">

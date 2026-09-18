@@ -77,19 +77,50 @@ def build_nfo(video, channel, base_url: str) -> str:
     return "\n".join(parts)
 
 
-def thumbnail_url(video) -> str:
-    """Best artwork URL for a video.
+# Magic bytes → extension. The URL cannot be trusted for this: yt-dlp usually
+# reports a WebP thumbnail, and writing those bytes into a file called
+# poster.jpg produced artwork that was a lie about its own format.
+_IMAGE_KINDS = (
+    (b"\xff\xd8\xff", ".jpg"),
+    (b"\x89PNG\r\n\x1a\n", ".png"),
+    (b"RIFF", ".webp"),          # RIFF....WEBP
+    (b"GIF8", ".gif"),
+)
 
-    yt-dlp's chosen thumbnail when we have one; otherwise the well-known path,
-    which YouTube generates for every video that exists. maxresdefault is
-    deliberately not used as the fallback — it is absent for a lot of uploads
-    and 404s, which would leave no artwork at all.
-    """
-    if video.thumbnail_url:
-        return video.thumbnail_url
-    if video.video_id:
-        return f"https://i.ytimg.com/vi/{video.video_id}/hqdefault.jpg"
+
+def image_extension(data: bytes) -> str:
+    """The extension these bytes actually deserve, or empty if unrecognised."""
+    for magic, ext in _IMAGE_KINDS:
+        if data.startswith(magic):
+            if ext == ".webp" and data[8:12] != b"WEBP":
+                continue
+            return ext
     return ""
+
+
+def artwork_candidates(video) -> list:
+    """Artwork URLs to try, best first.
+
+    YouTube's own JPEG paths come first and yt-dlp's choice last. Both are
+    valid, but yt-dlp reports a WebP for most videos, and a plain JPEG is the
+    format every Jellyfin client and image pipeline handles without question.
+    maxresdefault is tried before hqdefault for the resolution, and is not
+    trusted on its own: it is absent for a lot of uploads and 404s, which would
+    otherwise leave no artwork at all.
+    """
+    urls = []
+    if video.video_id:
+        urls.append(f"https://i.ytimg.com/vi/{video.video_id}/maxresdefault.jpg")
+        urls.append(f"https://i.ytimg.com/vi/{video.video_id}/hqdefault.jpg")
+    if video.thumbnail_url and video.thumbnail_url not in urls:
+        urls.append(video.thumbnail_url)
+    return urls
+
+
+def thumbnail_url(video) -> str:
+    """The artwork URL to name in the NFO."""
+    candidates = artwork_candidates(video)
+    return candidates[0] if candidates else ""
 
 
 def _download(url: str) -> bytes:
@@ -103,7 +134,9 @@ def _download(url: str) -> bytes:
         with httpx.Client(timeout=15, follow_redirects=True) as c:
             r = c.get(url)
             r.raise_for_status()
-            return r.content
+            # A 404 page or a placeholder is not artwork. maxresdefault is
+            # missing for plenty of uploads, and the next candidate handles it.
+            return r.content if len(r.content) > 1024 else b""
     except Exception as e:                      # network, DNS, HTTP, anything
         logger.debug(f"[YouTube] Could not fetch {url}: {e}")
         return b""
@@ -116,19 +149,25 @@ def fetch_artwork(video, folder: Path) -> int:
     being taken down, and so Jellyfin never has to reach the internet during a
     scan. Failure is not an error: the NFO still names the remote URL.
     """
-    url = thumbnail_url(video)
-    if not url:
+    if any((folder / f"poster{e}").exists() for _, e in _IMAGE_KINDS):
         return 0
-    poster, fanart = folder / "poster.jpg", folder / "fanart.jpg"
-    if poster.exists() and fanart.exists():
+
+    data = b""
+    for url in artwork_candidates(video):
+        data = _download(url)
+        if data:
+            break
+    ext = image_extension(data)
+    if not ext:
+        if data:
+            logger.debug(f"[YouTube] Artwork for {video.video_id} was not an image")
         return 0
-    data = _download(url)
-    if not data:
-        return 0
+
     written = 0
     # YouTube artwork is 16:9. It stands in for both images: as the poster it
     # is what a row shows, and as the backdrop it fills the detail page.
-    for path in (poster, fanart):
+    for name in ("poster", "fanart"):
+        path = folder / f"{name}{ext}"
         if not path.exists():
             try:
                 path.write_bytes(data)
