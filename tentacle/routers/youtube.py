@@ -826,7 +826,10 @@ def _run_refresh_once(channel_ids=None):
             try:
                 _refresh_state["channel"] = "publishing to Jellyfin"
                 _refresh_state["keep"] = None
-                publish_to_jellyfin(db, changed or list(channels))
+                # The stage is shown in the toast, so a wait says what it is
+                # waiting for rather than sitting on "publishing".
+                publish_to_jellyfin(db, changed or list(channels),
+                                    on_stage=lambda msg: _refresh_state.__setitem__("channel", msg))
             except Exception as e:
                 logger.warning(f"[YouTube] Publish to Jellyfin failed: {e}")
 

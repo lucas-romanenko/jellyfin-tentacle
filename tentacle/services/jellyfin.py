@@ -312,6 +312,19 @@ class JellyfinService:
             return True  # Already tagged
         return self.set_item_tags(item_id, current + [tag])
 
+    def notify_media_updated(self, paths: List[str], update_type: str = "Created") -> bool:
+        """Tell Jellyfin specific paths just appeared, so it imports only them.
+
+        This is what Radarr and Sonarr's own Jellyfin connection does, and why
+        a download shows up in seconds: no library scan at all, just the new
+        folders. Paths must be as Jellyfin sees them, not as Tentacle does.
+        """
+        if not paths:
+            return False
+        return self._post("/Library/Media/Updated", {
+            "Updates": [{"Path": p, "UpdateType": update_type} for p in paths]
+        })
+
     def trigger_library_scan(self, library_id: Optional[str] = None) -> bool:
         """Trigger a library refresh scan"""
         path = "/Library/Refresh"

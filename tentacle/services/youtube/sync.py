@@ -21,8 +21,11 @@ logger = logging.getLogger(__name__)
 # existed in Jellyfin, came up empty, and stayed empty — the library then
 # filled in on its own and the row never appeared. The wait is now for the
 # channel's own videos to show up, polled, with this as the ceiling.
-SCAN_MAX_WAIT_SECONDS = 600
-SCAN_POLL_SECONDS = 5
+SCAN_MAX_WAIT_SECONDS = 90
+SCAN_POLL_SECONDS = 3
+# If a playlist is still short when publishing ends, look again this soon —
+# rather than blocking the run, and rather than waiting for the hourly sync.
+REFILL_AFTER_SECONDS = (120, 600)
 
 
 def base_url(db: Session) -> str:
@@ -169,26 +172,52 @@ def _library_count(db: Session, channel: YouTubeChannel) -> int:
     ).count()
 
 
-def youtube_library_id(jf):
-    """The Jellyfin library that holds the YouTube folder, if it can be told.
+def youtube_library(jf) -> tuple:
+    """(library id, the folder as Jellyfin sees it) for the YouTube library.
 
-    Lets the scan be targeted at one library instead of all of them — the
-    difference between seconds and minutes on a large server. Matched on the
-    library's path or name; None means "scan everything", which still works.
+    Matched on the library's path or name. The path is what makes the fast
+    import possible: Tentacle writes under its own mount, Jellyfin reads the
+    same folder under whatever path it was given, and a "this path appeared"
+    notice has to use Jellyfin's. (None, None) means it could not be told
+    apart, in which case a scan is the only option left.
     """
     try:
         for lib in jf.get_libraries() or []:
-            locations = [str(loc).lower().rstrip("/") for loc in (lib.get("Locations") or [])]
-            if any(loc.endswith("youtube") for loc in locations) \
-                    or "youtube" in str(lib.get("Name") or "").lower():
-                return lib.get("ItemId") or lib.get("Id")
+            locations = [str(loc) for loc in (lib.get("Locations") or [])]
+            hit = next((loc for loc in locations if loc.lower().rstrip("/").endswith("youtube")), None)
+            if hit is None and "youtube" in str(lib.get("Name") or "").lower() and locations:
+                hit = locations[0]
+            if hit is not None:
+                return lib.get("ItemId") or lib.get("Id"), hit
     except Exception as e:
         logger.debug(f"[YouTube] Could not list Jellyfin libraries: {e}")
-    return None
+    return None, None
+
+
+def youtube_library_id(jf):
+    return youtube_library(jf)[0]
+
+
+def _jellyfin_paths(db: Session, channel: YouTubeChannel, jellyfin_root: str) -> list:
+    """This channel's video folders, translated to Jellyfin's view of the mount."""
+    from pathlib import PurePosixPath
+    root = library.YOUTUBE_MEDIA_ROOT
+    out = []
+    for video in db.query(YouTubeVideo).filter(
+        YouTubeVideo.channel_fk == channel.id,
+        YouTubeVideo.removed_at.is_(None),
+        YouTubeVideo.folder_path.isnot(None),
+    ).all():
+        try:
+            rel = PurePosixPath(video.folder_path).relative_to(PurePosixPath(str(root)))
+        except ValueError:
+            continue
+        out.append(str(PurePosixPath(jellyfin_root.rstrip("/")) / rel))
+    return out
 
 
 def _wait_for_channel_items(jf, channel: YouTubeChannel, expected: int,
-                            max_wait: int = None) -> int:
+                            max_wait: int = None, on_stage=None) -> int:
     """Poll until Jellyfin has the channel's videos. Returns how many it has.
 
     Asks for exactly the items a playlist refresh will ask for — this
@@ -209,14 +238,16 @@ def _wait_for_channel_items(jf, channel: YouTubeChannel, expected: int,
         if have >= expected:
             return have
         if have != last:
-            logger.info(f"[YouTube] Jellyfin has {have}/{expected} of '{channel.title}' — waiting for its scan")
+            logger.info(f"[YouTube] Jellyfin has {have}/{expected} of '{channel.title}' — waiting")
+            if on_stage:
+                on_stage(f"waiting for Jellyfin to see {channel.title} ({have} of {expected})")
             last = have
         if time.monotonic() >= deadline:
             return have
         time.sleep(SCAN_POLL_SECONDS)
 
 
-def publish_to_jellyfin(db: Session, channels: list) -> None:
+def publish_to_jellyfin(db: Session, channels: list, on_stage=None) -> None:
     """Get the channels' videos into Jellyfin and their playlists filled.
 
     Without this nothing appears until Jellyfin's own scheduled scan: Tentacle
@@ -224,10 +255,16 @@ def publish_to_jellyfin(db: Session, channels: list) -> None:
     playlists stay empty and their home rows are filtered out as empty — which
     looks exactly like the feature having done nothing.
 
-    The order matters and each step waits for the one before it: scan the
-    library that holds the files, wait until Jellyfin actually has each
-    channel's videos, then create and fill the playlists, then check they
-    filled. A playlist filled before the scan finished stays empty.
+    Done the way a Radarr download reaches Jellyfin, which is why that is
+    fast: Jellyfin is told which folders just appeared and imports only
+    those, in seconds. No library is scanned. A scan is the fallback for the
+    one case it cannot work — the YouTube library could not be told apart
+    from the others, so the paths cannot be translated.
+
+    Then wait, briefly, until Jellyfin actually reports the channel's videos,
+    fill the playlists, and if any is still short, look again a couple of
+    minutes later rather than block. A playlist filled before its videos
+    exist stays empty, which is the failure this replaces.
     """
     from models.database import TentacleUser
     from services.jellyfin import JellyfinService
@@ -240,26 +277,49 @@ def publish_to_jellyfin(db: Session, channels: list) -> None:
     if not channels:
         return
 
+    jf = JellyfinService(url, key, get_setting(db, "jellyfin_user_id", ""))
+    library_id, jellyfin_root = youtube_library(jf)
+    if on_stage:
+        on_stage("telling Jellyfin about the new videos")
     try:
-        jf = JellyfinService(url, key, get_setting(db, "jellyfin_user_id", ""))
-        library_id = youtube_library_id(jf)
-        jf.trigger_library_scan(library_id)
-        logger.info("[YouTube] Triggered a Jellyfin scan"
-                    + (f" of library {library_id}" if library_id else " (all libraries)"))
+        if jellyfin_root:
+            paths = [p for ch in channels for p in _jellyfin_paths(db, ch, jellyfin_root)][:500]
+            jf.notify_media_updated(paths)
+            logger.info(f"[YouTube] Told Jellyfin about {len(paths)} folder(s) under {jellyfin_root}")
+        else:
+            # Cannot translate paths, so the slow way it is. Say which
+            # libraries were seen so the fix (a library named or located
+            # 'youtube') is obvious.
+            names = [str(lib.get("Name")) for lib in (jf.get_libraries() or [])]
+            logger.warning(f"[YouTube] No Jellyfin library looks like the YouTube one (saw {names}) — "
+                           f"scanning every library instead, which is slow. Name the library "
+                           f"'YouTube' or point it at a folder called youtube.")
+            jf.trigger_library_scan(None)
     except Exception as e:
-        logger.warning(f"[YouTube] Could not trigger a Jellyfin scan: {e}")
+        logger.warning(f"[YouTube] Could not tell Jellyfin about the new videos: {e}")
         return
 
     expected = {ch.id: _library_count(db, ch) for ch in channels}
+    short = False
     for ch in channels:
         if expected[ch.id]:
-            have = _wait_for_channel_items(jf, ch, expected[ch.id])
+            have = _wait_for_channel_items(jf, ch, expected[ch.id], on_stage=on_stage)
             if have < expected[ch.id]:
+                short = True
                 logger.warning(
                     f"[YouTube] Jellyfin has {have} of {expected[ch.id]} videos for '{ch.title}' "
-                    f"after {SCAN_MAX_WAIT_SECONDS}s — filling the playlist with what is there; "
-                    f"the hourly check will finish it")
+                    f"after {SCAN_MAX_WAIT_SECONDS}s — filling the playlist with what is there "
+                    f"and looking again in {REFILL_AFTER_SECONDS[0]}s")
+                if library_id:
+                    # The notice did not land everything; a targeted scan of
+                    # that one library is cheap and covers it in the background.
+                    try:
+                        jf.trigger_library_scan(library_id)
+                    except Exception:
+                        pass
 
+    if on_stage:
+        on_stage("filling the playlists")
     names = [ch.title for ch in channels]
     try:
         from services.smartlists import (
@@ -291,12 +351,37 @@ def publish_to_jellyfin(db: Session, channels: list) -> None:
                 except Exception:
                     continue
                 if have < expected[ch.id]:
+                    short = True
                     logger.warning(f"[YouTube] Playlist '{ch.title}' for user {user.id} holds {have} of "
                                    f"{expected[ch.id]} videos after publishing")
                 else:
                     logger.info(f"[YouTube] Playlist '{ch.title}' for user {user.id}: {have} video(s)")
     except Exception as e:
         logger.warning(f"[YouTube] Playlist rebuild after scan failed: {e}")
+
+    if short:
+        _schedule_refill()
+
+
+def _schedule_refill() -> None:
+    """Look again soon, in the background, at any playlist still behind."""
+    import threading
+
+    def _run():
+        from models.database import SessionLocal
+        db = SessionLocal()
+        try:
+            fixed = reconcile_playlists(db)
+            logger.info(f"[YouTube] Follow-up check refilled {fixed} playlist(s)")
+        except Exception as e:
+            logger.warning(f"[YouTube] Follow-up refill failed: {e}")
+        finally:
+            db.close()
+
+    for delay in REFILL_AFTER_SECONDS:
+        t = threading.Timer(delay, _run)
+        t.daemon = True
+        t.start()
 
 
 def reconcile_playlists(db: Session) -> int:

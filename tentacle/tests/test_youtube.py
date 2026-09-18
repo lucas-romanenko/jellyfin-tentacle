@@ -1711,9 +1711,15 @@ class _FakeJellyfin:
         self._playlist_items = playlist_items or {}
         self._playlists = playlists or []
 
+    libraries = [{"Name": "YouTube", "Locations": ["/mnt/media/youtube"], "ItemId": "lib-yt"},
+                 {"Name": "Movies", "Locations": ["/mnt/media/movies"], "ItemId": "lib-mov"}]
+
     def get_libraries(self):
-        return [{"Name": "YouTube", "Locations": ["/mnt/media/youtube"], "ItemId": "lib-yt"},
-                {"Name": "Movies", "Locations": ["/mnt/media/movies"], "ItemId": "lib-mov"}]
+        return list(self.libraries)
+
+    def notify_media_updated(self, paths, update_type="Created"):
+        self.calls.append(("notify", tuple(paths)))
+        return bool(paths)
 
     def trigger_library_scan(self, library_id=None):
         self.calls.append(("scan", library_id))
@@ -1764,7 +1770,8 @@ class _PublishFixture(unittest.TestCase):
         self.db.refresh(self.channel)
         for i in range(3):
             self.db.add(YouTubeVideo(channel_fk=self.channel.id, video_id=str(i) * 11,
-                                     title=str(i), live_status="not_live"))
+                                     title=str(i), live_status="not_live",
+                                     folder_path=f"/media/youtube/TraderTV Live/v{i}"))
         self.db.add(YouTubeVideo(channel_fk=self.channel.id, video_id="l" * 11,
                                  title="live", live_status="is_live"))
         self.db.commit()
@@ -1815,10 +1822,48 @@ class TestPublishWaitsForJellyfin(_PublishFixture):
     the library then filled in on its own and the row never appeared.
     """
 
-    def test_the_scan_is_aimed_at_the_youtube_library(self):
+    def test_jellyfin_is_told_which_folders_appeared_not_asked_to_scan(self):
+        # The Radarr way, and why that is fast: the new folders, translated to
+        # the path Jellyfin has the same mount under, and no library scan.
         self.jf._tagged = [3]
         self.ysync.publish_to_jellyfin(self.db, [self.channel])
-        self.assertEqual(self.jf.calls[0], ("scan", "lib-yt"))
+        self.assertEqual(self.jf.calls[0], ("notify", (
+            "/mnt/media/youtube/TraderTV Live/v0",
+            "/mnt/media/youtube/TraderTV Live/v1",
+            "/mnt/media/youtube/TraderTV Live/v2")))
+        self.assertNotIn("scan", [c[0] for c in self.jf.calls])
+
+    def test_a_full_scan_is_the_fallback_only_when_the_library_cannot_be_told(self):
+        self.jf.libraries = [{"Name": "Videos", "Locations": ["/mnt/media/misc"], "ItemId": "x"}]
+        self.jf._tagged = [3]
+        self.ysync.publish_to_jellyfin(self.db, [self.channel])
+        self.assertIn(("scan", None), self.jf.calls)
+        self.assertNotIn("notify", [c[0] for c in self.jf.calls])
+
+    def test_a_short_result_schedules_a_follow_up_instead_of_blocking(self):
+        import threading
+        scheduled = []
+        real = threading.Timer
+        threading.Timer = lambda delay, fn: scheduled.append(delay) or real(0, lambda: None)
+        try:
+            self.jf._tagged = [1]
+            self.ysync.SCAN_MAX_WAIT_SECONDS, saved = 0, self.ysync.SCAN_MAX_WAIT_SECONDS
+            try:
+                self.ysync.publish_to_jellyfin(self.db, [self.channel])
+            finally:
+                self.ysync.SCAN_MAX_WAIT_SECONDS = saved
+        finally:
+            threading.Timer = real
+        self.assertEqual(scheduled, list(self.ysync.REFILL_AFTER_SECONDS))
+        # ...and the one library was given a targeted scan to catch the rest.
+        self.assertIn(("scan", "lib-yt"), self.jf.calls)
+
+    def test_the_toast_is_told_what_is_being_waited_for(self):
+        stages = []
+        self.jf._tagged = [0, 3]
+        self.ysync.publish_to_jellyfin(self.db, [self.channel], on_stage=stages.append)
+        self.assertTrue(any("waiting for Jellyfin to see TraderTV Live (0 of 3)" in st for st in stages), stages)
+        self.assertIn("filling the playlists", stages)
 
     def test_it_waits_until_the_channels_videos_are_there_then_fills(self):
         # Jellyfin reports 0, then 1, then 3 of the 3 library videos (the live
