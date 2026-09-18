@@ -326,10 +326,18 @@ class JellyfinService:
         })
 
     def trigger_library_scan(self, library_id: Optional[str] = None) -> bool:
-        """Trigger a library refresh scan"""
+        """Scan for new files — everywhere, or in one library.
+
+        For one library this has to say Recursive=true. Without it, Jellyfin
+        refreshes the library folder's own metadata and never looks inside,
+        so nothing new is found: a targeted "scan" that did nothing, which is
+        what this was. Default refresh modes, so existing tags survive.
+        """
         path = "/Library/Refresh"
         if library_id:
-            path = f"/Items/{library_id}/Refresh"
+            path = (f"/Items/{library_id}/Refresh?Recursive=true"
+                    f"&MetadataRefreshMode=Default&ImageRefreshMode=Default"
+                    f"&ReplaceAllMetadata=false&ReplaceAllImages=false")
         return self._post(path)
 
     def refresh_item_metadata(self, item_id: str) -> bool:

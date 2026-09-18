@@ -1835,16 +1835,18 @@ class TestPublishWaitsForJellyfin(_PublishFixture):
     the library then filled in on its own and the row never appeared.
     """
 
-    def test_jellyfin_is_told_which_folders_appeared_not_asked_to_scan(self):
-        # The Radarr way, and why that is fast: the new folders, translated to
-        # the path Jellyfin has the same mount under, and no library scan.
+    def test_jellyfin_is_told_which_folders_appeared_and_that_one_library_is_scanned(self):
+        # Both, at once: the notice (what Radarr does) goes through Jellyfin's
+        # file monitor, which waits about a minute before acting; a direct
+        # refresh of the one small library runs now. Never a scan of everything.
         self.jf._tagged = [3]
         self.ysync.publish_to_jellyfin(self.db, [self.channel])
         self.assertEqual(self.jf.calls[0], ("notify", (
             "/mnt/media/youtube/TraderTV Live/v0",
             "/mnt/media/youtube/TraderTV Live/v1",
             "/mnt/media/youtube/TraderTV Live/v2")))
-        self.assertNotIn("scan", [c[0] for c in self.jf.calls])
+        self.assertEqual(self.jf.calls[1], ("scan", "lib-yt"))
+        self.assertNotIn(("scan", None), self.jf.calls)
 
     def test_a_full_scan_is_the_fallback_only_when_the_library_cannot_be_told(self):
         self.jf.libraries = [{"Name": "Videos", "Locations": ["/mnt/media/misc"], "ItemId": "x"}]
@@ -2056,3 +2058,32 @@ class TestRemovingAChannelRemovesItsFolder(unittest.TestCase):
 
     def test_a_missing_folder_is_fine(self):
         self.assertFalse(library.remove_channel_folder("Never Added", root=self.root))
+
+
+class TestTargetedScanLooksInside(unittest.TestCase):
+    """A refresh of one library has to say Recursive=true.
+
+    Without it Jellyfin refreshes the library folder's own metadata and never
+    looks inside, so nothing new is found — a targeted "scan" that did
+    nothing, which is what every one of them had been.
+    """
+
+    def test_one_library_refresh_is_recursive_and_keeps_tags(self):
+        from services.jellyfin import JellyfinService
+        jf = JellyfinService("http://jf", "k", "u")
+        posted = []
+        jf._post = lambda path, data=None: posted.append(path) or True
+        jf.trigger_library_scan("lib-yt")
+        self.assertEqual(len(posted), 1)
+        self.assertTrue(posted[0].startswith("/Items/lib-yt/Refresh?"), posted[0])
+        self.assertIn("Recursive=true", posted[0])
+        # Default modes: a full replace would wipe the tags the NFO set.
+        self.assertIn("ReplaceAllMetadata=false", posted[0])
+
+    def test_a_scan_of_everything_is_unchanged(self):
+        from services.jellyfin import JellyfinService
+        jf = JellyfinService("http://jf", "k", "u")
+        posted = []
+        jf._post = lambda path, data=None: posted.append(path) or True
+        jf.trigger_library_scan()
+        self.assertEqual(posted, ["/Library/Refresh"])

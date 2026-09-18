@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 # before handing off. Kept short on purpose: a Radarr add does not block on
 # Jellyfin either. Whatever has not landed by then is topped up in the
 # background as it arrives.
-SCAN_MAX_WAIT_SECONDS = 15
+SCAN_MAX_WAIT_SECONDS = 30
 SCAN_POLL_SECONDS = 3
 # The background top-up: seconds between looks, quick at first while Jellyfin
 # is importing, then sparser, about fifteen minutes in all. The hourly sync
@@ -353,7 +353,16 @@ def publish_to_jellyfin(db: Session, channels: list, on_stage=None) -> None:
         if jellyfin_root:
             paths = [p for ch in channels for p in _jellyfin_paths(db, ch, jellyfin_root)][:500]
             jf.notify_media_updated(paths)
-            logger.info(f"[YouTube] Told Jellyfin about {len(paths)} folder(s) under {jellyfin_root}")
+            # The notice goes through Jellyfin's file monitor, which waits
+            # about a minute before acting on changed paths (Radarr adds take
+            # that long to appear too; nobody is watching a toast for those).
+            # A direct refresh of the one library runs immediately and is
+            # seconds for a folder this size — so do both, and whichever
+            # lands first wins.
+            if library_id:
+                jf.trigger_library_scan(library_id)
+            logger.info(f"[YouTube] Told Jellyfin about {len(paths)} folder(s) under {jellyfin_root}"
+                        + (f" and asked it to scan library {library_id} now" if library_id else ""))
         else:
             # Cannot translate paths, so the slow way it is. Say which
             # libraries were seen so the fix (a library named or located
@@ -378,13 +387,6 @@ def publish_to_jellyfin(db: Session, channels: list, on_stage=None) -> None:
                     f"[YouTube] Jellyfin has {have} of {expected[ch.id]} videos for '{ch.title}' "
                     f"after {SCAN_MAX_WAIT_SECONDS}s — filling the playlist with what is there; "
                     f"the rest is topped up in the background as it lands")
-                if library_id:
-                    # The notice did not land everything; a targeted scan of
-                    # that one library is cheap and covers it in the background.
-                    try:
-                        jf.trigger_library_scan(library_id)
-                    except Exception:
-                        pass
 
     if on_stage:
         on_stage("filling the playlists")
