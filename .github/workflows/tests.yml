@@ -13,12 +13,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install test dependencies
-        # sqlalchemy: the guard tests exercise the real Movie/Series models
-        # against an in-memory SQLite DB rather than mocking the ORM.
-        # fastapi, httpx: some tests call router-level functions directly and
-        # assert on route definitions, so importing the router module has to work.
-        run: pip install requests sqlalchemy fastapi httpx
+      - name: Install dependencies
+        # The real requirements, not a hand-picked subset: the suite now starts
+        # the app to test its routing, so anything main.py imports has to be
+        # here. Picking packages one at a time meant a test that exercised more
+        # of the app failed in CI while passing locally.
+        run: pip install -r tentacle/requirements.txt
       - name: Run unit tests
         working-directory: tentacle
         run: python -m unittest discover -s tests -v

@@ -3,7 +3,7 @@ Tentacle - Main Application
 FastAPI app with all routers
 """
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -633,6 +633,28 @@ async def no_cache_static(request: Request, call_next):
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
+
+
+@app.api_route("/api/{full_path:path}",
+               methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"])
+async def api_not_found(full_path: str, request: Request):
+    """Answer unknown /api paths properly instead of letting the SPA catch them.
+
+    The catch-all below serves index.html and is GET-only, so an unknown API
+    path used to answer a GET with the HTML page and anything else with
+    "Method Not Allowed" — which is what a browser showed when the dashboard
+    called an endpoint its backend did not have yet. The method was never the
+    problem, and the message sent people looking in the wrong place entirely.
+
+    Declared after every router, so real routes still win; only paths nothing
+    claimed reach here.
+    """
+    raise HTTPException(
+        status_code=404,
+        detail=(f"No such endpoint: {request.method} /api/{full_path}. "
+                f"If this page is newer than the Tentacle it is talking to, "
+                f"pull the latest image and restart the container."),
+    )
 
 
 @app.get("/{full_path:path}")
