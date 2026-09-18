@@ -1046,13 +1046,25 @@ class TestArtwork(unittest.TestCase):
     def tearDown(self):
         library._download = self._real
 
-    def test_a_poster_and_a_backdrop_are_written(self):
+    def test_every_image_type_a_row_might_ask_for_is_written(self):
+        # poster -> Primary, fanart -> Backdrop, landscape -> Thumb. A wide row
+        # draws from Thumb; without it the client falls back to the portrait
+        # Primary and crops a strip out of the middle.
         from pathlib import Path
         info = self.library.write_video(self.video, self.channel, "http://t", root=self.root)
         folder = Path(info["folder"])
-        self.assertTrue((folder / "poster.jpg").exists())
-        self.assertTrue((folder / "fanart.jpg").exists())
-        self.assertEqual(info["artwork"], 2)
+        for name in ("poster.jpg", "fanart.jpg", "landscape.jpg"):
+            self.assertTrue((folder / name).exists(), name)
+        self.assertEqual(info["artwork"], 3)
+
+    def test_a_folder_written_before_thumbs_existed_gets_one(self):
+        from pathlib import Path
+        info = self.library.write_video(self.video, self.channel, "http://t", root=self.root)
+        folder = Path(info["folder"])
+        (folder / "landscape.jpg").unlink()
+        self.fetched.clear()
+        self.assertEqual(self.library.fetch_artwork(self.video, folder), 1)
+        self.assertTrue((folder / "landscape.jpg").exists())
 
     def test_youtubes_own_jpeg_is_tried_first(self):
         self.library.write_video(self.video, self.channel, "http://t", root=self.root)
@@ -1069,7 +1081,7 @@ class TestArtwork(unittest.TestCase):
         library._download = _fake
         info = self.library.write_video(self.video, self.channel, "http://t", root=self.root)
         self.assertEqual(self.fetched[-1], "https://i.ytimg.com/vi/kQA2wNKxy_8/hqdefault.jpg")
-        self.assertEqual(info["artwork"], 2)
+        self.assertEqual(info["artwork"], 3)
 
     def test_yt_dlps_choice_is_the_last_resort_not_the_first(self):
         # yt-dlp reports a WebP for most videos; a plain JPEG is handled

@@ -808,8 +808,9 @@
         }
 
         itemsEl.innerHTML = '';
+        var wide = section.shape === 'wide';
         data.Items.forEach(function (item) {
-          itemsEl.appendChild(createCard(item));
+          itemsEl.appendChild(createCard(item, wide));
         });
       })
       .catch(function () {
@@ -850,17 +851,37 @@
     return card;
   }
 
-  function createCard(item) {
+  // `wide` draws 16:9 cards instead of 2:3. Some content has no portrait
+  // artwork at all — a YouTube thumbnail in a poster slot is cropped to a strip
+  // of its middle — so the row says which shape it wants.
+  function createCard(item, wide) {
     var card = document.createElement('div');
-    card.className = 'mh-card';
+    card.className = wide ? 'mh-card mh-card-wide' : 'mh-card';
     card.setAttribute('data-item-id', item.Id);
     card.onclick = function () {
       if (window.TentacleDetails) { window.TentacleDetails.show(item.Id); return; }
       window.location.hash = '#/details?id=' + item.Id;
     };
 
-    var posterTag = item.ImageTags && item.ImageTags.Primary ? item.ImageTags.Primary : '';
-    var posterUrl = posterTag ? getImageUrl(item.Id, 'Primary', posterTag, 300) : '';
+    var posterTag = '';
+    var posterType = 'Primary';
+    if (wide) {
+      // Thumb is the only one of the three that is meant to be 16:9; Backdrop
+      // is a reasonable stand-in. Primary is the last resort and will be
+      // cropped, which is still better than an empty card.
+      if (item.ImageTags && item.ImageTags.Thumb) {
+        posterTag = item.ImageTags.Thumb;
+        posterType = 'Thumb';
+      } else if (item.BackdropImageTags && item.BackdropImageTags.length) {
+        posterTag = item.BackdropImageTags[0];
+        posterType = 'Backdrop';
+      }
+    }
+    if (!posterTag && item.ImageTags && item.ImageTags.Primary) {
+      posterTag = item.ImageTags.Primary;
+      posterType = 'Primary';
+    }
+    var posterUrl = posterTag ? getImageUrl(item.Id, posterType, posterTag, wide ? 500 : 300) : '';
 
     // Indicators (watched, favorite)
     var indicatorsHtml = '';
@@ -893,7 +914,7 @@
     var metaHtml = metaParts.join(' <span class="mh-card-meta-dot">·</span> ');
 
     card.innerHTML =
-      '<div class="mh-card-poster">' +
+      '<div class="' + (wide ? 'mh-card-poster mh-card-poster-wide' : 'mh-card-poster') + '">' +
         (posterUrl
           ? '<img src="' + posterUrl + '" alt="" loading="lazy">'
           : '<div class="mh-card-no-poster">🎬</div>') +
@@ -1029,8 +1050,9 @@
               console.log('[TH] Updating row "' + section.displayText + '": ' + currentIds.length + ' → ' + newIds.length + ' items');
               row.classList.remove('mh-row-hidden');
               itemsEl.innerHTML = '';
+              var wide = section.shape === 'wide';
               itemData.Items.forEach(function (item) {
-                itemsEl.appendChild(createCard(item));
+                itemsEl.appendChild(createCard(item, wide));
               });
             })
             .catch(function () {});

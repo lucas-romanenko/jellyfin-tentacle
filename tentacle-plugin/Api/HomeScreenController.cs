@@ -146,6 +146,7 @@ public class TentacleHomeController : ControllerBase
                         sectionId = (string?)null,
                         displayText = row.DisplayName,
                         playlistId = row.PlaylistId,
+                        shape = string.IsNullOrEmpty(row.Shape) ? "poster" : row.Shape,
                     });
                 }
             }

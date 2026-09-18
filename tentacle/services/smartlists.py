@@ -813,6 +813,15 @@ def _get_smartlists_with_playlist_ids(db: Session, user_id: int = None) -> list:
             sort_by = SORT_BY_DISPLAY.get(raw_sort, "releasedate")
             sort_order = sort_options[0].get("SortOrder", "Descending")
 
+        # YouTube artwork is 16:9 and has no portrait form, so those rows
+        # default to wide cards. Detected from the tag the playlist queries
+        # rather than its name, which the user can change.
+        expr_sets = data.get("ExpressionSets") or []
+        is_youtube = any(
+            str(e.get("TargetValue") or "").startswith("yt:")
+            for es in expr_sets for e in (es.get("Expressions") or [])
+        )
+
         result.append({
             "name": name,
             "playlist_id": playlist_id,
@@ -820,6 +829,7 @@ def _get_smartlists_with_playlist_ids(db: Session, user_id: int = None) -> list:
             "enabled": data.get("Enabled", True),
             "sort_by": sort_by,
             "sort_order": sort_order,
+            "is_youtube": is_youtube,
         })
     return result
 
@@ -905,6 +915,7 @@ def write_home_config(db: Session, user_id: int = None) -> dict:
         id_by_name = {sl["name"]: sl["playlist_id"] for sl in smartlists if name_counts[sl["name"]] == 1}
         # Sort info lookup by playlist_id
         sort_by_id = {sl["playlist_id"]: (sl.get("sort_by", "releasedate"), sl.get("sort_order", "Descending")) for sl in smartlists}
+        youtube_ids = {sl["playlist_id"] for sl in smartlists if sl.get("is_youtube")}
 
         # Names that exist on disk but map to more than one playlist — the row
         # can't be remapped safely, but it must not be thrown away either.
@@ -984,6 +995,9 @@ def write_home_config(db: Session, user_id: int = None) -> dict:
                 pid = r.get("playlist_id", "")
                 if pid in sort_by_id:
                     r["sort_by"], r["sort_order"] = sort_by_id[pid]
+                # setdefault, so a row the user has explicitly shaped keeps its
+                # choice — this only picks the starting point.
+                r.setdefault("shape", "wide" if pid in youtube_ids else "poster")
 
         # Hero: preserve existing pick, remap if playlist was recreated, disable if gone
         if existing_hero and existing_hero.get("playlist_id") in current_ids:

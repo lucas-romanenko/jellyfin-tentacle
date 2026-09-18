@@ -149,8 +149,13 @@ def fetch_artwork(video, folder: Path) -> int:
     being taken down, and so Jellyfin never has to reach the internet during a
     scan. Failure is not an error: the NFO still names the remote URL.
     """
-    if any((folder / f"poster{e}").exists() for _, e in _IMAGE_KINDS):
-        return 0
+    if any((folder / f"{n}{e}").exists()
+           for n in ("poster", "landscape") for _, e in _IMAGE_KINDS):
+        # Both are checked: a folder written before landscape existed has a
+        # poster and no thumb, and must still get one.
+        if all(any((folder / f"{n}{e}").exists() for _, e in _IMAGE_KINDS)
+               for n in ("poster", "fanart", "landscape")):
+            return 0
 
     data = b""
     for url in artwork_candidates(video):
@@ -164,9 +169,12 @@ def fetch_artwork(video, folder: Path) -> int:
         return 0
 
     written = 0
-    # YouTube artwork is 16:9. It stands in for both images: as the poster it
-    # is what a row shows, and as the backdrop it fills the detail page.
-    for name in ("poster", "fanart"):
+    # One 16:9 image, written under each name Jellyfin reads a different image
+    # type from: poster -> Primary, fanart -> Backdrop, landscape -> Thumb.
+    # Thumb is the one a wide row draws from, and is the only one of the three
+    # that is actually meant to be 16:9 — without it a client asking for Thumb
+    # falls back to the Primary and crops a strip out of the middle.
+    for name in ("poster", "fanart", "landscape"):
         path = folder / f"{name}{ext}"
         if not path.exists():
             try:

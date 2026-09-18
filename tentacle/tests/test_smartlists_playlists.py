@@ -118,3 +118,62 @@ class TestChangeReporting(unittest.TestCase):
         jf, stats = FakeJellyfin(), new_stats()
         _update_episode_playlist(jf, "P", "TV", ["s2", "s1"], episodes_of(["s1", "s2"]), stats)
         self.assertEqual(stats.get("changed", 0), 1)
+
+
+class TestRowShape(unittest.TestCase):
+    """Rows say how their cards are drawn: poster (2:3) or wide (16:9).
+
+    Some content has no portrait artwork at all — a YouTube thumbnail forced
+    into a poster slot is cropped to a strip of its middle — so the shape is per
+    row, and YouTube rows start wide.
+    """
+
+    def test_a_youtube_playlist_is_recognised_by_its_tag(self):
+        # By tag, not by name: the user can rename a playlist.
+        from services.smartlists import _get_smartlists_with_playlist_ids
+        import services.smartlists as sm
+
+        configs = {
+            "TraderTV Live": (None, {
+                "UserPlaylists": [{"JellyfinPlaylistId": "yt-pl"}],
+                "ExpressionSets": [{"Expressions": [
+                    {"MemberName": "Tags", "Operator": "Contains",
+                     "TargetValue": "yt:tradertv-live"}]}],
+            }),
+            "Netflix Movies": (None, {
+                "UserPlaylists": [{"JellyfinPlaylistId": "nf-pl"}],
+                "ExpressionSets": [{"Expressions": [
+                    {"MemberName": "Tags", "Operator": "Contains",
+                     "TargetValue": "Netflix Movies"}]}],
+            }),
+        }
+        real = sm._scan_existing
+        sm._scan_existing = lambda path: configs
+        try:
+            out = {r["name"]: r["is_youtube"]
+                   for r in _get_smartlists_with_playlist_ids(_FakeDb(), user_id=None)}
+        finally:
+            sm._scan_existing = real
+        self.assertEqual(out, {"TraderTV Live": True, "Netflix Movies": False})
+
+    def test_the_endpoint_refuses_a_shape_it_does_not_know(self):
+        from fastapi import HTTPException
+        from routers.smartlists import ROW_SHAPES, RowShapeRequest, set_row_shape
+        self.assertEqual(ROW_SHAPES, ("poster", "wide"))
+        with self.assertRaises(HTTPException) as cm:
+            set_row_shape(RowShapeRequest(row_key="playlist:x", shape="square"),
+                          db=None, user=None)
+        self.assertEqual(cm.exception.status_code, 400)
+
+
+class _FakeDb:
+    """Stands in for a Session — _get_smartlists_with_playlist_ids only reads a setting."""
+
+    def query(self, *a, **k):
+        return self
+
+    def filter(self, *a, **k):
+        return self
+
+    def first(self):
+        return None

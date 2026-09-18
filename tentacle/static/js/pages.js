@@ -3177,6 +3177,16 @@ function renderHomeRows() {
         onchange="saveRowMaxItemsByKey('${key}', this.value)"
         style="width:52px;padding:3px 4px;font-size:11px;text-align:center;background:var(--bg1);border:1px solid var(--border);border-radius:4px;color:var(--text);cursor:text"
         title="Max items in this row" draggable="false">`;
+    // Card shape. Some content has no portrait artwork — a YouTube thumbnail
+    // in a poster slot is cropped to a strip of its middle — so each row picks.
+    const shapeSelect = isBuiltin ? '' : `
+      <select onclick="event.stopPropagation()" onmousedown="event.stopPropagation()"
+        onchange="saveRowShapeByKey('${key}', this.value)"
+        style="padding:3px 4px;font-size:11px;background:var(--bg1);border:1px solid var(--border);border-radius:4px;color:var(--text);cursor:pointer"
+        title="Card shape for this row" draggable="false">
+        <option value="poster" ${row.shape !== 'wide' ? 'selected' : ''}>Poster</option>
+        <option value="wide" ${row.shape === 'wide' ? 'selected' : ''}>Wide</option>
+      </select>`;
     return `
     <div class="home-row-item" draggable="true" data-idx="${i}"
       ondragstart="homeRowDragStart(event)" ondragover="homeRowDragOver(event)" ondrop="homeRowDrop(event)"
@@ -3184,6 +3194,7 @@ function renderHomeRows() {
       <span style="color:var(--text3);font-size:11px;width:24px;text-align:center">${i + 1}</span>
       <span style="color:var(--text3);font-size:16px;cursor:grab">&#x2630;</span>
       <span style="flex:1;font-size:13px;color:var(--text)">${row.display_name}</span>
+      ${shapeSelect}
       ${maxItemsInput}
       ${badge}
       <button onclick="event.stopPropagation();removeHomeRowByKey('${key}')"
@@ -3299,6 +3310,21 @@ async function saveRowMaxItemsByKey(key, val) {
     const row = homeRows.find(r => rowKey(r) === key);
     if (row) row.max_items = v;
     toast(`Row limit set to ${v}`);
+  } catch (e) {
+    toast('Failed to save: ' + e.message, 'error');
+  }
+}
+
+async function saveRowShapeByKey(key, shape) {
+  try {
+    await api('/api/smartlists/row-shape', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ row_key: key, shape }),
+    });
+    const row = homeRows.find(r => rowKey(r) === key);
+    if (row) row.shape = shape;
+    toast(shape === 'wide' ? 'Row now uses wide cards' : 'Row now uses poster cards');
   } catch (e) {
     toast('Failed to save: ' + e.message, 'error');
   }
@@ -5939,7 +5965,7 @@ async function loadHealthDeletions() {
     loadJellyfinPage, loadAutoPlaylists, toggleAutoPlaylist, dismissAutoPlaylistBanner,
     showAddTagRule, editTagRule, deleteTagRule, saveTagRule, onContentSourceChange, toggleAdvancedFilters,
     addRuleCondition, updateCondOps, onCollectionNameInput, syncSmartLists, refreshTags, syncPlaylistsToJellyfin, resyncAllPlaylists, setPlaylistSort,
-    pushHomeConfig, updateHeroPick, updateHeroSort, saveRowMaxItems, saveRowMaxItemsByKey, toggleNotificationsFromCheckbox, saveMergeContinueWatching, dismissNewContentNotice, toggleGenreChip, _scheduleMatchCount, toggleToolbarButton,
+    pushHomeConfig, updateHeroPick, updateHeroSort, saveRowMaxItems, saveRowMaxItemsByKey, saveRowShapeByKey, toggleNotificationsFromCheckbox, saveMergeContinueWatching, dismissNewContentNotice, toggleGenreChip, _scheduleMatchCount, toggleToolbarButton,
     showAddHomeRow, hideAddHomeRow, confirmAddHomeRow, removeHomeRow, removeHomeRowByKey,
     homeRowDragStart, homeRowDragOver, homeRowDrop, rowKey,
     // Library

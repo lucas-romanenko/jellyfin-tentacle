@@ -240,6 +240,14 @@ public class RowConfig
     public string? SortOrder { get; set; }
 
     /// <summary>
+    /// How this row's cards are drawn: "poster" (2:3) or "wide" (16:9).
+    /// YouTube rows default to wide, since YouTube artwork has no portrait form
+    /// and a thumbnail in a poster slot is cropped to a strip of its middle.
+    /// </summary>
+    [JsonPropertyName("shape")]
+    public string? Shape { get; set; }
+
+    /// <summary>
     /// Returns true if this is a built-in Jellyfin section (not a Tentacle playlist).
     /// </summary>
     [JsonIgnore]

@@ -751,6 +751,18 @@ class RowMaxItemsRequest(BaseModel):
     max_items: int
 
 
+class RowShapeRequest(BaseModel):
+    playlist_id: Optional[str] = None
+    row_key: Optional[str] = None
+    shape: str
+
+
+# How a row's cards are drawn. "poster" is the 2:3 artwork most library content
+# has; "wide" is 16:9, which is the only shape YouTube artwork comes in — a
+# thumbnail forced into a poster slot is cropped to a strip of its middle.
+ROW_SHAPES = ("poster", "wide")
+
+
 class MergeContinueRequest(BaseModel):
     enabled: bool
 
@@ -797,6 +809,37 @@ def set_row_max_items(req: RowMaxItemsRequest, db: Session = Depends(get_db), us
     bump_playlist_version()
     _notify_jellyfin_plugin(db)
     return {"success": True, "max_items": val}
+
+
+@router.post("/row-shape")
+def set_row_shape(req: RowShapeRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+    """Choose whether a row draws poster (2:3) or wide (16:9) cards.
+
+    Per-user and per-row, honoured by both the Jellyfin web home and the Android
+    TV app. Stored on the row itself so write_home_config carries it across
+    rebuilds like the rest of the row's settings.
+    """
+    shape = (req.shape or "").strip().lower()
+    if shape not in ROW_SHAPES:
+        raise HTTPException(400, f"shape must be one of {', '.join(ROW_SHAPES)}")
+
+    with home_config_lock:
+        config = _read_home_json(user)
+        if not config or "rows" not in config:
+            return {"success": False, "message": "No home config found"}
+
+        for row in config["rows"]:
+            if ((req.row_key and _row_key(row) == req.row_key)
+                    or (req.playlist_id and row.get("playlist_id") == req.playlist_id)):
+                row["shape"] = shape
+                break
+        else:
+            return {"success": False, "message": "Row not found"}
+
+        _write_home_json(user, config)
+    bump_playlist_version()
+    _notify_jellyfin_plugin(db)
+    return {"success": True, "shape": shape}
 
 
 @router.post("/hero")
