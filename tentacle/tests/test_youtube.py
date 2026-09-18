@@ -2115,3 +2115,56 @@ class TestTargetedScanLooksInside(unittest.TestCase):
         jf._post = lambda path, data=None: posted.append(path) or True
         jf.trigger_library_scan()
         self.assertEqual(posted, ["/Library/Refresh"])
+
+
+class TestTentacleAddressIsCheckedOnSave(unittest.TestCase):
+    """The setup box wants Tentacle's own address, and accepted anything.
+
+    Someone pasted a YouTube channel link into it. Every .strm then pointed at
+    YouTube, nothing ever played, and the only sign was a line in a setup
+    check they had no reason to open. What is definitely wrong is refused;
+    what merely cannot be reached from inside the container is allowed,
+    since the container's view of the network can differ from Jellyfin's.
+    """
+
+    def setUp(self):
+        from routers import youtube
+        from services.youtube import sync as ysync
+        self.youtube, self.ysync = youtube, ysync
+        self._real = youtube.check_base_url
+
+    def tearDown(self):
+        self.youtube.check_base_url = self._real
+
+    def test_a_youtube_link_is_refused_with_the_reason(self):
+        why = self.youtube.wrong_base_url("https://www.youtube.com/@KakėMakė-q7m")
+        self.assertIn("YouTube link", why)
+        self.assertIn("Tentacle's own address", why)
+
+    def test_something_that_is_not_a_url_is_refused(self):
+        self.assertIn("not a web address", self.youtube.wrong_base_url("tentacle"))
+
+    def test_an_address_answering_as_something_else_is_refused(self):
+        self.youtube.check_base_url = lambda b: {"ok": False, "detail": "This address answered with something other than Tentacle."}
+        self.assertIsNotNone(self.youtube.wrong_base_url("http://192.168.1.10:8096"))
+
+    def test_an_address_that_cannot_be_reached_is_allowed(self):
+        # Maybe wrong, maybe a network quirk of the container — not refused.
+        self.youtube.check_base_url = lambda b: {"ok": False, "detail": "Could not reach http://192.168.1.10:8888: refused"}
+        self.assertIsNone(self.youtube.wrong_base_url("http://192.168.1.10:8888"))
+
+    def test_a_working_address_is_allowed(self):
+        self.youtube.check_base_url = lambda b: {"ok": True, "detail": "serves Tentacle directly."}
+        self.assertIsNone(self.youtube.wrong_base_url("http://192.168.1.10:8888"))
+
+
+class TestSyncStoppingEarlyIsReported(_PublishFixture):
+    def test_a_sync_that_bails_out_is_a_warning_not_a_success(self):
+        # sync_smartlists can return {"error": ...} instead of raising — a
+        # user it cannot resolve, a folder it cannot make. Reconcile used to
+        # read that as success.
+        self.sm._get_smartlists_with_playlist_ids = lambda db, user_id=None: []
+        self.sm.sync_smartlists = lambda db, user_id=None: {"created": 0, "error": "no smartlists path for user"}
+        with self.assertLogs("services.youtube.sync", level="WARNING") as cm:
+            self.ysync.reconcile_playlists(self.db)
+        self.assertTrue(any("stopped early: no smartlists path" in line for line in cm.output), cm.output)

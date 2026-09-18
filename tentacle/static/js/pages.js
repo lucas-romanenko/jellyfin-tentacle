@@ -2676,7 +2676,7 @@ async function loadYouTubePage() {
     if (!st.enabled) {
       document.getElementById('yt-base-url').value = st.base_url || st.suggested_base_url || '';
       document.getElementById('yt-setup-hints').innerHTML =
-        'Jellyfin&rsquo;s own player fetches this address, so it has to work from the Jellyfin server — a LAN address, not <code>localhost</code>.';
+        'Every video&rsquo;s pointer file carries this address and Jellyfin&rsquo;s own player fetches it, so it has to be Tentacle as seen from the Jellyfin server — a LAN address like <code>http://192.168.1.10:8888</code>, not <code>localhost</code> and not a YouTube link.';
     }
 
     await loadYouTubeChannels();

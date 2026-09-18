@@ -1472,8 +1472,8 @@ td.primary { color: var(--text); font-weight: 500; }
             </p>
             <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
               <div style="flex:1;min-width:320px">
-                <label class="form-label">Tentacle address <span style="font-weight:400;color:var(--text3)">— must be reachable by your Jellyfin server</span></label>
-                <input type="text" id="yt-base-url" class="form-input" placeholder="http://192.168.2.75:8888">
+                <label class="form-label">Tentacle&rsquo;s own address <span style="font-weight:400;color:var(--text3)">&mdash; this page&rsquo;s address as your Jellyfin server reaches it. Not a YouTube link; channels go below.</span></label>
+                <input type="text" id="yt-base-url" class="form-input" placeholder="http://192.168.1.10:8888">
               </div>
               <button class="btn btn-primary" onclick="ytSaveSetup(true)">Turn on</button>
             </div>

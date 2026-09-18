@@ -373,6 +373,33 @@ class SetupBody(BaseModel):
     base_url: str = ""
 
 
+def wrong_base_url(base: str):
+    """Why this cannot be Tentacle's own address, or None if it might be.
+
+    Refuses only what is definitely wrong: a YouTube link (someone pasted the
+    channel URL into the wrong box — every .strm then points at YouTube and
+    nothing ever plays), something that is not an http(s) URL, or an address
+    that answers and is plainly not Tentacle. An address that merely cannot
+    be reached from inside this container is allowed with a warning, because
+    the container's view of the network can differ from Jellyfin's.
+    """
+    from urllib.parse import urlparse
+    parsed = urlparse(base)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return (f"'{base}' is not a web address. This is Tentacle's own address as the Jellyfin "
+                f"server reaches it — for example http://192.168.1.10:8888.")
+    host = (parsed.hostname or "").lower()
+    if host.endswith("youtube.com") or host.endswith("youtu.be") or host.endswith("googlevideo.com"):
+        return ("That is a YouTube link. This box wants Tentacle's own address — the one you "
+                "opened this page at, as the Jellyfin server reaches it (for example "
+                "http://192.168.1.10:8888). Channel links go in 'Add a channel' below.")
+    probe = check_base_url(base)
+    if not probe["ok"] and ("something other than Tentacle" in probe["detail"]
+                            or "is not Tentacle" in probe["detail"]):
+        return probe["detail"] + " Tentacle's own address is the one this page is open at."
+    return None
+
+
 @router.post("/setup", dependencies=[Depends(require_admin)])
 def save_setup(body: SetupBody, db: Session = Depends(get_db)):
     """Turn the feature on and set the address written into .strm files."""
@@ -385,6 +412,10 @@ def save_setup(body: SetupBody, db: Session = Depends(get_db)):
             "A base URL is required: every .strm carries this address, and the "
             "Jellyfin server is what fetches it.",
         )
+    if base:
+        problem = wrong_base_url(base)
+        if problem:
+            raise HTTPException(400, problem)
     previous = (get_setting(db, "youtube_base_url", "") or "").strip().rstrip("/")
     set_setting(db, "youtube_enabled", "true" if body.enabled else "false")
     if base:
@@ -575,9 +606,28 @@ def diagnose(request: Request, db: Session = Depends(get_db)):
         user = get_user_from_request(request, db)
         if user and channels:
             from routers.smartlists import _read_home_json
-            from services.smartlists import _get_smartlists_with_playlist_ids
-            have = {p["name"] for p in _get_smartlists_with_playlist_ids(db, user_id=user.id)}
+            from services.smartlists import _get_smartlists_with_playlist_ids, get_desired_smartlists
             names = {c.title for c in channels}
+
+            # Before "does it exist": is it even on the list to be created?
+            # The list is built from everything that makes a playlist, and a
+            # channel can drop off it — by sharing a name with another
+            # playlist, most plausibly — without any error anywhere.
+            try:
+                wanted = get_desired_smartlists(db, user_id=user.id)
+                wanted_names = {w["name"] for w in wanted}
+                not_listed = names - wanted_names
+                add(not not_listed, "Channel playlists are on the list to be created",
+                    f"{len(names & wanted_names)}/{len(names)} listed"
+                    + (f" (not listed: {', '.join(sorted(not_listed))})" if not_listed else ""),
+                    "A channel is left off the list only when another playlist already has "
+                    "its exact name (a custom playlist, a list, a provider source). Rename or "
+                    "remove that other playlist, then press 'Check for new videos'.")
+            except Exception as e:
+                add(False, "Channel playlists are on the list to be created", str(e)[:200],
+                    "Building the playlist list failed; that is a Tentacle bug — report the text above.")
+
+            have = {p["name"] for p in _get_smartlists_with_playlist_ids(db, user_id=user.id)}
             missing = names - have
             add(not missing, "Channel playlists exist in Jellyfin",
                 f"{len(names & have)}/{len(names)} created"

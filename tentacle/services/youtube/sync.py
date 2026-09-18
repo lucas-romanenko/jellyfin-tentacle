@@ -515,7 +515,12 @@ def reconcile_playlists(db: Session, report: bool = False):
         missing = [title for title in want if title not in {p["name"] for p in have_playlists}]
         if missing:
             try:
-                sync_smartlists(db, user_id=user.id)
+                outcome = sync_smartlists(db, user_id=user.id) or {}
+                # The sync can bail out before writing anything and say so only
+                # in its return value — a user it cannot resolve, a folder it
+                # cannot make. Left unread, that looked exactly like success.
+                if outcome.get("error"):
+                    logger.warning(f"[YouTube] Playlist sync for user {user.id} stopped early: {outcome['error']}")
             except Exception as e:
                 logger.warning(f"[YouTube] Could not create playlists for user {user.id}: {e}")
             have_playlists = _get_smartlists_with_playlist_ids(db, user_id=user.id)
