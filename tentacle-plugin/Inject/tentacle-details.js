@@ -560,13 +560,20 @@ var Details = {
         
         var posterId = item.Id;
         var posterTag = item.ImageTags ? item.ImageTags.Primary : null;
-        var isEpisodeThumb = (item.Type === 'Episode');
         var thumbTag = item.ImageTags ? item.ImageTags.Thumb : null;
+        // Landscape artwork belongs in a landscape frame. Episodes always are.
+        // Anything else is judged by the artwork itself rather than by what
+        // kind of item it is, so 16:9 content — a YouTube video, a home video —
+        // is framed correctly without the detail view having to know where it
+        // came from. A 16:9 image in a 2:3 frame is letterboxed into a strip
+        // with dead space above and below it.
+        var aspect = item.PrimaryImageAspectRatio || 0;
+        var isLandscape = (item.Type === 'Episode') || aspect > 1.2 || (!posterTag && !!thumbTag);
         var posterUrl;
-        if (isEpisodeThumb && thumbTag) {
+        if (isLandscape && thumbTag) {
             posterUrl = serverUrl + '/Items/' + posterId + '/Images/Thumb?maxWidth=500&quality=90';
-        } else if (isEpisodeThumb && posterTag) {
-            // Episode without Thumb — use Primary but it'll display in landscape container
+        } else if (isLandscape && posterTag) {
+            // No Thumb — the Primary is already landscape, so size it by width.
             posterUrl = serverUrl + '/Items/' + posterId + '/Images/Primary?maxWidth=500&quality=90';
         } else {
             posterUrl = posterTag ? serverUrl + '/Items/' + posterId + '/Images/Primary?maxHeight=500&quality=90' : '';
@@ -994,7 +1001,7 @@ var Details = {
                         (item.Overview ? '<p class="moonfin-overview">' + this.esc(item.Overview) + '</p>' : '') +
                     '</div>' +
                     
-                    '<div class="moonfin-poster-section' + (item.Type === 'Episode' ? ' moonfin-poster-landscape' : '') + '">' +
+                    '<div class="moonfin-poster-section' + (isLandscape ? ' moonfin-poster-landscape' : '') + '">' +
                         '<div class="moonfin-poster">' +
                             (posterUrl ? '<img src="' + posterUrl + '" alt="" loading="lazy">' : '') +
                         '</div>' +
