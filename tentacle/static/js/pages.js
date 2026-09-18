@@ -2759,6 +2759,24 @@ async function loadYouTubeChannels() {
   }).join('');
 }
 
+async function ytReprobe() {
+  // Jellyfin probes a .strm once and keeps the answer. When what Tentacle
+  // serves changes, an already-scanned item plays by the old description and
+  // fails, with nothing visibly wrong on either side.
+  const t = toast('Asking Jellyfin to re-check…', 'loading', 0);
+  try {
+    const r = await api('/api/youtube/reprobe', { method: 'POST' });
+    t.remove();
+    toast(r.scan_triggered
+      ? `Marked ${r.touched} video${r.touched === 1 ? '' : 's'} — Jellyfin is re-scanning. Give it a minute, then try playing again.`
+      : `Marked ${r.touched} video${r.touched === 1 ? '' : 's'}, but Jellyfin could not be reached. Check the Jellyfin settings.`,
+      r.scan_triggered ? 'success' : 'error', 8000);
+  } catch (e) {
+    t.remove();
+    toast(`Could not re-check: ${e.message || e}`, 'error');
+  }
+}
+
 async function ytAddChannel() {
   const url = document.getElementById('yt-url').value.trim();
   if (!url) { toast('Paste a channel or playlist URL', 'error'); return; }
@@ -5933,7 +5951,7 @@ async function loadHealthDeletions() {
     showManageEpisodesModal, confirmManageEpisodes,
     showDownloadMoreModal, confirmDownloadMore, detailToggleSeason, toggleFollow,
     // YouTube
-    loadYouTubePage, loadYouTubeChannels, ytAddChannel, ytDeleteChannel, ytRefreshNow, ytSaveSetup, ytStartPolling, ytDiagnose, ytSkipNote,
+    loadYouTubePage, loadYouTubeChannels, ytAddChannel, ytDeleteChannel, ytRefreshNow, ytSaveSetup, ytStartPolling, ytDiagnose, ytSkipNote, ytReprobe,
     ytToggleRow, ytToggleLive,
     // Following
     loadFollowing,

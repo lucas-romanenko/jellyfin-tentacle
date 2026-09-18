@@ -1544,6 +1544,7 @@ td.primary { color: var(--text); font-weight: 500; }
             <div style="display:flex;gap:8px">
               <button class="btn btn-secondary btn-sm" onclick="ytDiagnose()">Why isn&rsquo;t it working?</button>
               <button class="btn btn-secondary btn-sm" onclick="ytRefreshNow()">Refresh now</button>
+              <button class="btn btn-secondary btn-sm" onclick="ytReprobe()" title="Ask Jellyfin to re-read every YouTube video's audio and video streams. Use this if a video that should play gives a playback error.">Re-check in Jellyfin</button>
             </div>
           </div>
           <div class="card-body" id="yt-channels">

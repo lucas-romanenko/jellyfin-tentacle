@@ -1128,3 +1128,53 @@ class TestArtwork(unittest.TestCase):
         self.assertEqual(info["artwork"], 0)
         self.assertTrue(any(f.suffix == ".strm" for f in folder.iterdir()))
         self.assertTrue((folder / "movie.nfo").exists())
+
+
+class TestReprobe(unittest.TestCase):
+    """Jellyfin probes a .strm once and reuses the answer.
+
+    A later scan skips any file whose size and modified time are unchanged, so
+    a change in what the resolver serves is invisible to an item Jellyfin has
+    already seen — it keeps building playback around streams that are no longer
+    there, which surfaces as a playback error with nothing wrong on either side.
+    """
+
+    def setUp(self):
+        import tempfile as _tf
+        from pathlib import Path
+        self.root = Path(_tf.mkdtemp())
+        self.strm = self.root / "v.strm"
+        self.strm.write_text("http://t/api/youtube/v/x/master.m3u8")
+
+    def test_touching_changes_the_modified_time(self):
+        import os
+        old = 1_600_000_000
+        os.utime(self.strm, (old, old))
+
+        class V:
+            strm_path = str(self.strm)
+        self.assertTrue(library.touch_strm(V()))
+        self.assertGreater(self.strm.stat().st_mtime, old)
+
+    def test_the_url_inside_is_left_exactly_as_it_was(self):
+        # Only the timestamp may change. Rewriting the file would be pointless
+        # churn, and the .strm's contents are a stable Tentacle URL.
+        before = self.strm.read_text()
+
+        class V:
+            strm_path = str(self.strm)
+        library.touch_strm(V())
+        self.assertEqual(self.strm.read_text(), before)
+
+    def test_a_video_with_no_file_is_skipped(self):
+        class V:
+            strm_path = None
+        self.assertFalse(library.touch_strm(V()))
+
+    def test_a_missing_file_is_not_created(self):
+        from pathlib import Path
+
+        class V:
+            strm_path = str(Path(self.root) / "gone" / "v.strm")
+        self.assertFalse(library.touch_strm(V()))
+        self.assertFalse(Path(V.strm_path).exists())

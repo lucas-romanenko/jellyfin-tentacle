@@ -208,6 +208,27 @@ def write_video(video, channel, base_url: str, root: Path = None) -> dict:
     return {"folder": str(folder), "strm_written": wrote_strm, "artwork": art}
 
 
+def touch_strm(video) -> bool:
+    """Mark a video's .strm as changed so Jellyfin probes it again.
+
+    Jellyfin probes a .strm once, at scan time, and stores the streams it found;
+    a later scan skips any file whose size and modified time are unchanged. That
+    is usually what we want — hence never rewriting a .strm — but it also means
+    a change in what the resolver serves is invisible to an item Jellyfin has
+    already seen, and it keeps building playback around streams that no longer
+    exist. Bumping the modified time is the supported way to say "look again".
+    """
+    if not video.strm_path:
+        return False
+    path = Path(video.strm_path)
+    try:
+        path.touch()
+        return True
+    except OSError as e:
+        logger.warning(f"[YouTube] Could not touch {path}: {e}")
+        return False
+
+
 def remove_video(video) -> int:
     """Delete one video's own folder. Never touches a shared parent."""
     deleted = 0

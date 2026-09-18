@@ -700,6 +700,40 @@ def _run_refresh():
         logger.info(f"[YouTube] Refresh finished: {_refresh_state['new']} new video(s)")
 
 
+@router.post("/reprobe", dependencies=[Depends(require_admin)])
+def reprobe(db: Session = Depends(get_db)):
+    """Make Jellyfin re-read every YouTube video's streams.
+
+    Jellyfin probes a .strm once and reuses the result, so an item scanned while
+    Tentacle was serving something different keeps playing by the old
+    description — which surfaces as a playback error with nothing wrong on
+    either side now. This bumps each file's modified time and asks for a scan,
+    which is what makes Jellyfin probe it again.
+    """
+    from services.jellyfin import JellyfinService
+
+    touched = 0
+    for video in db.query(YouTubeVideo).filter(
+        YouTubeVideo.removed_at.is_(None),
+        YouTubeVideo.strm_path.isnot(None),
+    ).all():
+        if library.touch_strm(video):
+            touched += 1
+
+    scanned = False
+    url = get_setting(db, "jellyfin_url", "")
+    key = get_setting(db, "jellyfin_api_key", "")
+    if url and key:
+        try:
+            JellyfinService(url, key, get_setting(db, "jellyfin_user_id", "")).trigger_library_scan()
+            scanned = True
+        except Exception as e:
+            logger.warning(f"[YouTube] Could not trigger a Jellyfin scan: {e}")
+
+    logger.info(f"[YouTube] Marked {touched} video(s) for re-probe; scan={scanned}")
+    return {"touched": touched, "scan_triggered": scanned}
+
+
 @router.post("/refresh", dependencies=[Depends(require_admin)])
 def refresh_now(db: Session = Depends(get_db)):
     """Start indexing in the background. Poll /refresh/status for progress."""
