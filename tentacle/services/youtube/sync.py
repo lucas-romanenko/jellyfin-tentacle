@@ -44,14 +44,14 @@ def base_url(db: Session) -> str:
     return configured.rstrip("/")
 
 
-def _probe(url):
+def _probe(url, timeout: float = 10):
     """One GET, redirects not followed. A seam so this is testable offline."""
     import httpx
-    with httpx.Client(timeout=10, follow_redirects=False) as c:
+    with httpx.Client(timeout=timeout, follow_redirects=False) as c:
         return c.get(url)
 
 
-def check_base_url(base: str) -> dict:
+def check_base_url(base: str, timeout: float = 10) -> dict:
     """Fetch the address a .strm will carry and say whether it serves Tentacle.
 
     The setting only ever said the Jellyfin server must be able to reach it,
@@ -66,7 +66,7 @@ def check_base_url(base: str) -> dict:
     configured instance as needing a login, ffmpeg having no session either.
     """
     try:
-        r = _probe(f"{base.rstrip('/')}/api/youtube/ping")
+        r = _probe(f"{base.rstrip('/')}/api/youtube/ping", timeout)
     except Exception as e:
         return {"ok": False, "detail": f"Could not reach {base}: {e}"}
 
@@ -95,6 +95,61 @@ def check_base_url(base: str) -> dict:
     if not body.get("tentacle"):
         return {"ok": False, "detail": "This address is answering, but it is not Tentacle."}
     return {"ok": True, "detail": f"{base} serves Tentacle directly."}
+
+
+TENTACLE_PORT = 8888
+
+
+def candidate_base_urls(db: Session, request_host: str = None, request_scheme: str = "http") -> list:
+    """Addresses this Tentacle might be reachable at by Jellyfin, best first.
+
+    Nobody should have to know their LAN address to use this. Two facts are
+    already in hand: where Jellyfin is (its URL is configured here), and how
+    the dashboard was just opened. Tentacle usually runs on the same box as
+    Jellyfin — a LAN address, or a Tailscale one if that is how Jellyfin is
+    reached — so Jellyfin's host on Tentacle's port comes first. The address
+    the dashboard was opened on comes next; it is right on a LAN and wrong
+    behind a login proxy, which the check that follows tells apart.
+    """
+    from urllib.parse import urlparse
+    out = []
+
+    def add(url):
+        url = url.rstrip("/")
+        if url and url not in out:
+            out.append(url)
+
+    port = TENTACLE_PORT
+    if request_host and ":" in request_host.rsplit("]", 1)[-1]:
+        try:
+            port = int(request_host.rsplit(":", 1)[1])
+        except ValueError:
+            pass
+
+    jf = urlparse(get_setting(db, "jellyfin_url", "") or "")
+    if jf.hostname and jf.hostname not in ("localhost", "127.0.0.1", "jellyfin"):
+        add(f"http://{jf.hostname}:{port}")
+        if port != TENTACLE_PORT:
+            add(f"http://{jf.hostname}:{TENTACLE_PORT}")
+    if request_host:
+        add(f"{request_scheme or 'http'}://{request_host}")
+    return out
+
+
+def detect_base_url(db: Session, request_host: str = None, request_scheme: str = "http") -> dict:
+    """The first candidate that answers as Tentacle, with what was tried.
+
+    Each candidate is fetched from inside this container, which is not quite
+    Jellyfin's view of the network — but an address that answers as Tentacle
+    here is Tentacle, and that is what a wrong paste gets wrong.
+    """
+    tried = []
+    for url in candidate_base_urls(db, request_host, request_scheme):
+        probe = check_base_url(url, timeout=3)
+        tried.append({"url": url, "ok": probe["ok"], "detail": probe["detail"]})
+        if probe["ok"]:
+            return {"url": url, "tried": tried}
+    return {"url": None, "tried": tried}
 
 
 def sync_channel(db: Session, channel: YouTubeChannel, base: str, on_progress=None) -> dict:

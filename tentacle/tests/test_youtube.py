@@ -1237,7 +1237,7 @@ class TestBaseUrlIsChecked(unittest.TestCase):
                     raise ValueError("not json")
                 return body
 
-        def _probe(url):
+        def _probe(url, timeout=10):
             if raises:
                 raise raises
             return _R()
@@ -1254,7 +1254,7 @@ class TestBaseUrlIsChecked(unittest.TestCase):
         # as needing a login, ffmpeg having no session either.
         seen = []
 
-        def _probe(url):
+        def _probe(url, timeout=10):
             seen.append(url)
 
             class _R:
@@ -2168,3 +2168,114 @@ class TestSyncStoppingEarlyIsReported(_PublishFixture):
         with self.assertLogs("services.youtube.sync", level="WARNING") as cm:
             self.ysync.reconcile_playlists(self.db)
         self.assertTrue(any("stopped early: no smartlists path" in line for line in cm.output), cm.output)
+
+
+class TestTentacleAddressIsWorkedOut(unittest.TestCase):
+    """Nobody should have to know their LAN address for this to work.
+
+    Two facts are already in hand: where Jellyfin is, and how the dashboard
+    was just opened. Tentacle usually runs on the same box as Jellyfin, so
+    Jellyfin's host on Tentacle's port comes first; the address the page was
+    opened on comes next. Whichever answers as Tentacle is the one.
+    """
+
+    def setUp(self):
+        import tempfile as _tf
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        import models.database as mdb
+        from models.database import set_setting
+        from services.youtube import sync as ysync
+        self.ysync = ysync
+        engine = create_engine(f"sqlite:///{_tf.mkdtemp()}/t.db")
+        mdb.Base.metadata.create_all(engine)
+        self.db = sessionmaker(bind=engine)()
+        set_setting(self.db, "jellyfin_url", "http://192.168.2.52:8096")
+        self._real = ysync.check_base_url
+
+    def tearDown(self):
+        self.ysync.check_base_url = self._real
+
+    def test_jellyfins_host_on_tentacles_port_comes_first(self):
+        c = self.ysync.candidate_base_urls(self.db, "192.168.2.10:8888", "http")
+        self.assertEqual(c[0], "http://192.168.2.52:8888")
+        self.assertIn("http://192.168.2.10:8888", c)
+
+    def test_the_port_the_dashboard_was_opened_on_is_tried_too(self):
+        # Someone mapped Tentacle to a different host port.
+        c = self.ysync.candidate_base_urls(self.db, "192.168.2.10:9999", "http")
+        self.assertEqual(c[:2], ["http://192.168.2.52:9999", "http://192.168.2.52:8888"])
+
+    def test_a_tailscale_jellyfin_gives_a_tailscale_tentacle(self):
+        from models.database import set_setting
+        set_setting(self.db, "jellyfin_url", "http://100.101.102.103:8096")
+        c = self.ysync.candidate_base_urls(self.db)
+        self.assertEqual(c, ["http://100.101.102.103:8888"])
+
+    def test_localhost_jellyfin_is_no_help_and_is_skipped(self):
+        from models.database import set_setting
+        set_setting(self.db, "jellyfin_url", "http://localhost:8096")
+        self.assertEqual(self.ysync.candidate_base_urls(self.db, "192.168.2.10:8888"),
+                         ["http://192.168.2.10:8888"])
+
+    def test_the_first_candidate_that_answers_as_tentacle_wins(self):
+        answers = {"http://192.168.2.52:8888": False, "http://192.168.2.10:8888": True}
+        self.ysync.check_base_url = lambda url, timeout=10: {"ok": answers.get(url, False), "detail": url}
+        found = self.ysync.detect_base_url(self.db, "192.168.2.10:8888", "http")
+        self.assertEqual(found["url"], "http://192.168.2.10:8888")
+        self.assertEqual([t["url"] for t in found["tried"]],
+                         ["http://192.168.2.52:8888", "http://192.168.2.10:8888"])
+
+    def test_nothing_answering_is_reported_with_what_was_tried(self):
+        self.ysync.check_base_url = lambda url, timeout=10: {"ok": False, "detail": "no"}
+        found = self.ysync.detect_base_url(self.db, "192.168.2.10:8888", "http")
+        self.assertIsNone(found["url"])
+        self.assertEqual(len(found["tried"]), 2)
+
+
+class TestEnablingWithABlankAddress(unittest.TestCase):
+    def setUp(self):
+        import tempfile as _tf
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        import models.database as mdb
+        from routers import youtube
+        self.youtube = youtube
+        engine = create_engine(f"sqlite:///{_tf.mkdtemp()}/t.db")
+        mdb.Base.metadata.create_all(engine)
+        self.db = sessionmaker(bind=engine)()
+        self._real = (youtube.detect_base_url, youtube.check_base_url)
+        youtube.check_base_url = lambda base, timeout=10: {"ok": True, "detail": "serves Tentacle directly."}
+
+    def tearDown(self):
+        self.youtube.detect_base_url, self.youtube.check_base_url = self._real
+
+    class _Req:
+        headers = {"host": "192.168.2.10:8888"}
+
+    def test_it_uses_what_was_worked_out(self):
+        from models.database import get_setting
+        self.youtube.detect_base_url = lambda db, host=None, scheme="http": {
+            "url": "http://192.168.2.10:8888", "tried": []}
+        r = self.youtube.save_setup(self.youtube.SetupBody(enabled=True, base_url=""),
+                                    request=self._Req(), db=self.db)
+        self.assertTrue(r["detected"])
+        self.assertEqual(r["base_url"], "http://192.168.2.10:8888")
+        self.assertEqual(get_setting(self.db, "youtube_base_url", ""), "http://192.168.2.10:8888")
+
+    def test_it_says_what_it_tried_when_nothing_answers(self):
+        from fastapi import HTTPException
+        self.youtube.detect_base_url = lambda db, host=None, scheme="http": {
+            "url": None, "tried": [{"url": "http://192.168.2.52:8888", "ok": False, "detail": "Could not reach it"}]}
+        with self.assertRaises(HTTPException) as cm:
+            self.youtube.save_setup(self.youtube.SetupBody(enabled=True, base_url=""),
+                                    request=self._Req(), db=self.db)
+        self.assertEqual(cm.exception.status_code, 400)
+        self.assertIn("192.168.2.52:8888", cm.exception.detail)
+
+    def test_a_typed_address_is_still_honoured(self):
+        from models.database import get_setting
+        r = self.youtube.save_setup(self.youtube.SetupBody(enabled=True, base_url="http://192.168.2.77:8888"),
+                                    request=self._Req(), db=self.db)
+        self.assertFalse(r["detected"])
+        self.assertEqual(get_setting(self.db, "youtube_base_url", ""), "http://192.168.2.77:8888")

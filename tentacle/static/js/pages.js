@@ -2673,6 +2673,13 @@ async function loadYouTubePage() {
     // Not turned on yet: show setup, hide the add form until it is.
     setup.style.display = st.enabled ? 'none' : '';
     addCard.style.display = st.enabled ? '' : 'none';
+    // Turned on: the address stays visible and changeable, with whether it
+    // actually answers as Tentacle right next to it.
+    const addrCard = document.getElementById('yt-address-card');
+    if (addrCard) {
+      addrCard.style.display = st.enabled ? '' : 'none';
+      if (st.enabled) ytShowAddress('yt-address', st);
+    }
     if (!st.enabled) {
       document.getElementById('yt-base-url').value = st.base_url || st.suggested_base_url || '';
       document.getElementById('yt-setup-hints').innerHTML =
@@ -2716,11 +2723,91 @@ async function ytDiagnose() {
   }
 }
 
+function ytShowAddress(inputId, st) {
+  const input = document.getElementById(inputId);
+  const status = document.getElementById(inputId + '-status');
+  if (!input) return;
+  if (document.activeElement !== input) input.value = st.base_url || '';
+  if (!status) return;
+  const r = st.reachable;
+  const found = st.detected && st.detected.url;
+  // Offer what was worked out whenever the saved address is missing or does
+  // not answer — one click, no LAN address to know.
+  const offer = found && (!st.base_url || (r && !r.ok))
+    ? ` Detected <code>${escapeAttr(found)}</code> <a href="#" onclick="ytUseAddress('${inputId}', '${escapeJS(found)}');return false">use it</a>`
+    : '';
+  if (!st.base_url) {
+    status.innerHTML = 'Not set.' + offer;
+    status.style.color = found ? 'var(--text2)' : 'var(--red)';
+    return;
+  }
+  if (!r) { status.textContent = ''; return; }
+  status.innerHTML = (r.ok ? '✓ ' : '✕ ') + escapeAttr(r.detail) + offer;
+  status.style.color = r.ok ? 'var(--green)' : 'var(--red)';
+}
+
+async function ytUseAddress(inputId, url) {
+  const input = document.getElementById(inputId);
+  if (input) input.value = url;
+  await ytSaveAddress(inputId);
+}
+
+async function ytDetectAddress(inputId) {
+  const status = document.getElementById(inputId + '-status');
+  if (status) { status.textContent = 'Working it out…'; status.style.color = 'var(--text3)'; }
+  try {
+    const st = await api('/api/youtube/status');
+    const found = st.detected && st.detected.url;
+    if (found) {
+      const input = document.getElementById(inputId);
+      if (input) input.value = found;
+      if (status) { status.innerHTML = `Detected <code>${escapeAttr(found)}</code> — press Save to use it.`; status.style.color = 'var(--green)'; }
+    } else if (st.reachable && st.reachable.ok) {
+      if (status) { status.innerHTML = '✓ The saved address already answers as Tentacle.'; status.style.color = 'var(--green)'; }
+    } else {
+      const tried = ((st.detected && st.detected.tried) || []).map(t => `${escapeAttr(t.url)}: ${escapeAttr(t.detail)}`).join('<br>');
+      if (status) { status.innerHTML = 'Nothing answered as Tentacle.' + (tried ? '<br>' + tried : ''); status.style.color = 'var(--red)'; }
+    }
+  } catch (e) {
+    if (status) { status.textContent = e.message; status.style.color = 'var(--red)'; }
+  }
+}
+
+async function ytSaveAddress(inputId) {
+  // Same endpoint the setup card uses: it validates the address, refuses
+  // one that cannot be Tentacle, and repoints every existing video. The
+  // on/off state is left exactly as it was.
+  const base = (document.getElementById(inputId)?.value || '').trim();
+  if (!base) { toast('Enter Tentacle\'s own address', 'error'); return; }
+  try {
+    const st = await api('/api/youtube/status');
+    const r = await api('/api/youtube/setup', { method: 'POST', body: { enabled: !!st.enabled, base_url: base } });
+    toast(r.rewritten
+      ? `Address saved — ${r.rewritten} video${r.rewritten === 1 ? '' : 's'} repointed at it`
+      : 'Address saved', r.reachable && !r.reachable.ok ? 'info' : 'success', 6000);
+    const fresh = await api('/api/youtube/status');
+    ytShowAddress('yt-address', fresh);
+    ytShowAddress('settings-tentacle-address', fresh);
+  } catch (e) {
+    toast(e.message, 'error', 10000);
+  }
+}
+
+async function loadTentacleAddress() {
+  // Settings → Integrations: populate from the same source of truth.
+  try {
+    const st = await api('/api/youtube/status');
+    ytShowAddress('settings-tentacle-address', st);
+  } catch { /* the YouTube page shows the same thing */ }
+}
+
 async function ytSaveSetup(enabled) {
   const base = document.getElementById('yt-base-url').value.trim();
   try {
-    await api('/api/youtube/setup', { method: 'POST', body: { enabled, base_url: base } });
-    toast(enabled ? 'YouTube source turned on' : 'YouTube source turned off');
+    const r = await api('/api/youtube/setup', { method: 'POST', body: { enabled, base_url: base } });
+    toast(enabled
+      ? (r.detected ? `YouTube source turned on — Tentacle's address worked out as ${r.base_url}` : 'YouTube source turned on')
+      : 'YouTube source turned off', 'success', 7000);
     loadYouTubePage();
   } catch (e) {
     toast(e.message, 'error', 8000);
@@ -6014,7 +6101,7 @@ async function loadHealthDeletions() {
     showManageEpisodesModal, confirmManageEpisodes,
     showDownloadMoreModal, confirmDownloadMore, detailToggleSeason, toggleFollow,
     // YouTube
-    loadYouTubePage, loadYouTubeChannels, ytAddChannel, ytDeleteChannel, ytRefreshNow, ytSaveSetup, ytStartPolling, ytDiagnose, ytSkipNote, ytReprobe, loadLiveYouTubeChannels, toggleLiveYouTube,
+    loadYouTubePage, loadYouTubeChannels, ytAddChannel, ytDeleteChannel, ytRefreshNow, ytSaveSetup, ytStartPolling, ytDiagnose, ytSkipNote, ytReprobe, loadLiveYouTubeChannels, toggleLiveYouTube, ytSaveAddress, ytShowAddress, loadTentacleAddress, ytUseAddress, ytDetectAddress,
     // Following
     loadFollowing,
     toggleStrmManaged,

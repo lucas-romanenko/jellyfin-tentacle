@@ -20,7 +20,7 @@ from typing import Optional
 from models.database import YouTubeChannel, YouTubeVideo, get_db, get_setting
 from routers.auth import require_admin
 from services.youtube import client, indexer, library, playlist, resolver
-from services.youtube.sync import check_base_url
+from services.youtube.sync import check_base_url, detect_base_url
 from services.youtube.errors import YouTubeBlocked, YouTubeError
 
 logger = logging.getLogger(__name__)
@@ -345,18 +345,25 @@ def status(request: Request, db: Session = Depends(get_db)):
     import os
 
     base = (get_setting(db, "youtube_base_url", "") or "").strip()
-    # Suggest the address this request came in on, which is almost always the
-    # one Jellyfin can reach too. Only a suggestion — the user confirms it.
-    suggested = base
-    if not suggested:
+    # Whether the saved address actually answers as Tentacle, so any page
+    # showing it can show a ✓ or the reason — not only the setup check.
+    reachable = check_base_url(base, timeout=3) if base else None
+    # When there is no address, or the saved one does not answer, work out
+    # what it should be: Jellyfin's host on Tentacle's port, or the address
+    # this request came in on — whichever answers as Tentacle. The page offers
+    # it; enabling with an empty box uses it without asking.
+    detected = None
+    if not base or not reachable["ok"]:
         host = request.headers.get("x-forwarded-host") or request.headers.get("host")
         scheme = request.headers.get("x-forwarded-proto", "http")
-        if host:
-            suggested = f"{scheme}://{host}"
+        detected = detect_base_url(db, host, scheme)
+    suggested = base or (detected or {}).get("url") or ""
 
     return {
         "enabled": get_setting(db, "youtube_enabled", "false") == "true",
         "base_url": base,
+        "reachable": reachable,
+        "detected": detected,
         "suggested_base_url": suggested,
         "media_root_mounted": os.path.isdir(str(library.YOUTUBE_MEDIA_ROOT)),
         "media_root": str(library.YOUTUBE_MEDIA_ROOT),
@@ -401,17 +408,30 @@ def wrong_base_url(base: str):
 
 
 @router.post("/setup", dependencies=[Depends(require_admin)])
-def save_setup(body: SetupBody, db: Session = Depends(get_db)):
-    """Turn the feature on and set the address written into .strm files."""
+def save_setup(body: SetupBody, request: Request, db: Session = Depends(get_db)):
+    """Turn the feature on and set the address written into .strm files.
+
+    An empty address with the feature being turned on means "work it out":
+    the first candidate that answers as Tentacle is used. Nobody should have
+    to know their LAN address for this to work.
+    """
     from models.database import set_setting
 
     base = (body.base_url or "").strip().rstrip("/")
+    detected = False
     if body.enabled and not base:
-        raise HTTPException(
-            400,
-            "A base URL is required: every .strm carries this address, and the "
-            "Jellyfin server is what fetches it.",
-        )
+        host = request.headers.get("x-forwarded-host") or request.headers.get("host")
+        found = detect_base_url(db, host, request.headers.get("x-forwarded-proto", "http"))
+        if not found["url"]:
+            tried = "; ".join(f"{t['url']} — {t['detail']}" for t in found["tried"]) or "nothing to try"
+            raise HTTPException(
+                400,
+                "Could not work out Tentacle's address on its own. Tried: " + tried +
+                ". Enter it: this dashboard's address as your Jellyfin server reaches it, "
+                "for example http://192.168.1.10:8888.",
+            )
+        base, detected = found["url"], True
+        logger.info(f"[YouTube] Detected Tentacle's address: {base}")
     if base:
         problem = wrong_base_url(base)
         if problem:
@@ -448,7 +468,7 @@ def save_setup(body: SetupBody, db: Session = Depends(get_db)):
     logger.info(f"[YouTube] Source {'enabled' if body.enabled else 'disabled'} (base {base or 'unset'})")
     reachable = check_base_url(base) if base else None
     return {"success": True, "enabled": body.enabled, "base_url": base,
-            "rewritten": rewritten, "reachable": reachable}
+            "rewritten": rewritten, "reachable": reachable, "detected": detected}
 
 
 @router.get("/diagnose", dependencies=[Depends(require_admin)])

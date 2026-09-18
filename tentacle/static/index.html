@@ -1472,12 +1472,28 @@ td.primary { color: var(--text); font-weight: 500; }
             </p>
             <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
               <div style="flex:1;min-width:320px">
-                <label class="form-label">Tentacle&rsquo;s own address <span style="font-weight:400;color:var(--text3)">&mdash; this page&rsquo;s address as your Jellyfin server reaches it. Not a YouTube link; channels go below.</span></label>
-                <input type="text" id="yt-base-url" class="form-input" placeholder="http://192.168.1.10:8888">
+                <label class="form-label">Tentacle&rsquo;s own address <span style="font-weight:400;color:var(--text3)">&mdash; leave blank and it is worked out for you. Not a YouTube link; channels go below.</span></label>
+                <input type="text" id="yt-base-url" class="form-input" placeholder="detected automatically — or http://192.168.1.10:8888">
               </div>
               <button class="btn btn-primary" onclick="ytSaveSetup(true)">Turn on</button>
             </div>
             <div id="yt-setup-hints" style="margin-top:10px;font-size:12px;color:var(--text3)"></div>
+          </div>
+        </div>
+
+        <!-- Shown once the source is on. Every video's pointer file carries this
+             address, and it used to be settable exactly once — on the setup card,
+             which disappears the moment the source is turned on — so a wrong
+             paste was permanent. -->
+        <div class="card" id="yt-address-card" style="margin-bottom:16px;display:none">
+          <div class="card-body" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+            <div style="flex:1;min-width:320px">
+              <label class="form-label">Tentacle&rsquo;s own address <span style="font-weight:400;color:var(--text3)">&mdash; as your Jellyfin server reaches it</span></label>
+              <input type="text" id="yt-address" class="form-input" placeholder="http://192.168.1.10:8888">
+              <div id="yt-address-status" style="font-size:12px;margin-top:4px;color:var(--text3)"></div>
+            </div>
+            <button class="btn btn-secondary" onclick="ytDetectAddress('yt-address')" title="Work out the address from where Jellyfin is and how this page was opened">Detect</button>
+            <button class="btn btn-secondary" onclick="ytSaveAddress('yt-address')">Save address</button>
           </div>
         </div>
 
@@ -1809,6 +1825,20 @@ td.primary { color: var(--text); font-weight: 500; }
 
               <div style="margin-top:20px">
                 <button class="btn btn-primary" onclick="saveSettings()">Save Connections</button>
+              </div>
+
+              <hr class="divider">
+
+              <div class="form-row">
+                <div class="form-group">
+                  <div class="form-label">Tentacle&rsquo;s own address <span style="font-weight:400;color:var(--text3)">&mdash; used by YouTube pointer files; as your Jellyfin server reaches this dashboard</span></div>
+                  <div style="display:flex;gap:8px">
+                    <input class="form-input" id="settings-tentacle-address" placeholder="http://192.168.1.10:8888">
+                    <button class="btn btn-secondary" onclick="ytDetectAddress('settings-tentacle-address')">Detect</button>
+                    <button class="btn btn-secondary" onclick="ytSaveAddress('settings-tentacle-address')">Save</button>
+                  </div>
+                  <div id="settings-tentacle-address-status" style="font-size:12px;margin-top:4px;color:var(--text3)"></div>
+                </div>
               </div>
             </div>
 

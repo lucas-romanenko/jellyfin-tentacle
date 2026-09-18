@@ -1049,6 +1049,7 @@ async function previewSync(providerId) {
 async function loadSettings() {
   try {
     const settings = await api('/api/settings/raw');
+    if (typeof loadTentacleAddress === 'function') loadTentacleAddress();
     const fields = [
       'tmdb_bearer_token', 'mdblist_api_key', 'radarr_url', 'radarr_api_key',
       'sonarr_url', 'sonarr_api_key',
