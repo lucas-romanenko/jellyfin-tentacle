@@ -148,3 +148,66 @@ class TestVersionEndpoint(unittest.TestCase):
         h = self.client.get("/api/health").json()
         v = self.client.get("/api/version").json()
         self.assertEqual(h["commit"], v["commit"])
+
+
+class TestRunningCodeMatchesTheImage(unittest.TestCase):
+    """An install can report the right version and run the wrong code.
+
+    A bind mount of a modified checkout over /app leaves the image's version
+    stamp intact while every page executes the mounted files. One install
+    reported the current build for a day while running an older, patched
+    services module underneath, and nothing on any page could say so. The
+    image now carries a fingerprint of its own code, and this compares the
+    files being executed against it.
+    """
+
+    def setUp(self):
+        import hashlib
+        import os
+        import tempfile as _tf
+        self.dir = _tf.mkdtemp()
+        self.cwd = os.getcwd()
+        os.chdir(self.dir)
+        os.makedirs("services")
+        open("services/a.py", "w").write("print(1)\n")
+        open("main.py", "w").write("app\n")
+        lines = []
+        for name in ("./services/a.py", "./main.py"):
+            lines.append(f"{hashlib.sha256(open(name, 'rb').read()).hexdigest()}  {name}")
+        open(".build-manifest", "w").write("\n".join(lines) + "\n")
+
+    def tearDown(self):
+        import os
+        os.chdir(self.cwd)
+
+    def _drift(self):
+        from main import code_drift
+        return code_drift(".build-manifest")
+
+    def test_untouched_files_match(self):
+        self.assertEqual(self._drift(), {"matches": True, "modified": [], "missing": []})
+
+    def test_a_modified_file_is_named(self):
+        open("services/a.py", "a").write("# patched locally\n")
+        d = self._drift()
+        self.assertFalse(d["matches"])
+        self.assertEqual(d["modified"], ["./services/a.py"])
+
+    def test_a_missing_file_is_named(self):
+        import os
+        os.remove("main.py")
+        d = self._drift()
+        self.assertFalse(d["matches"])
+        self.assertEqual(d["missing"], ["./main.py"])
+
+    def test_no_manifest_means_unknown_not_an_error(self):
+        # A development checkout has no image and no manifest.
+        import os
+        os.remove(".build-manifest")
+        self.assertIsNone(self._drift())
+
+    def test_version_carries_the_answer(self):
+        from fastapi.testclient import TestClient
+        import main
+        body = TestClient(main.app).get("/api/version").json()
+        self.assertIn("code", body)

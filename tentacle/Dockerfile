@@ -51,6 +51,14 @@ RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.t
 
 COPY . .
 
+# A fingerprint of the code as built, so a running container can tell when
+# the files it is actually executing are not the image's — a bind mount of a
+# modified checkout over /app, most likely. An install reported the current
+# version while running an older, locally patched services module underneath,
+# and the difference was invisible from every page for a day.
+RUN find . -type f \( -name '*.py' -o -name '*.js' -o -name '*.html' -o -name '*.css' \) \
+      -not -path './tests/*' -not -path './.git/*' | sort | xargs sha256sum > /app/.build-manifest
+
 # Stamped by CI so a running container can say what it is (/api/version).
 # After COPY, so changing these does not invalidate the layers above.
 ARG TENTACLE_COMMIT=unknown

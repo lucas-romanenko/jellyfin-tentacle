@@ -645,6 +645,33 @@ def health():
     return {"status": "ok", "commit": BUILD_COMMIT, "built": BUILD_DATE}
 
 
+def code_drift(manifest_path: str = ".build-manifest") -> dict:
+    """Compare the files being executed against the image's own fingerprint.
+
+    None when there is no manifest (a dev checkout). Otherwise which files
+    differ from the build and which are missing — the signature of a bind
+    mount of a modified checkout over /app. An install can report the right
+    version and run the wrong code at the same time; this is how it says so.
+    """
+    import hashlib
+    path = Path(manifest_path)
+    if not path.exists():
+        return None
+    modified, missing = [], []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            continue
+        digest, name = parts[0], parts[1].strip()
+        f = Path(name)
+        if not f.exists():
+            missing.append(name)
+            continue
+        if hashlib.sha256(f.read_bytes()).hexdigest() != digest:
+            modified.append(name)
+    return {"matches": not modified and not missing, "modified": modified, "missing": missing}
+
+
 @app.get("/api/version")
 def version():
     """What this container is. Unauthenticated on purpose: it is the first
@@ -655,6 +682,8 @@ def version():
         "commit": BUILD_COMMIT,
         "built": BUILD_DATE,
         "assets": _asset_version(),
+        # Whether the code running is the code the image was built with.
+        "code": code_drift(),
         "endpoints": sorted({
             r.path for r in app.routes
             if getattr(r, "path", "").startswith("/api/") and "{" not in getattr(r, "path", "")

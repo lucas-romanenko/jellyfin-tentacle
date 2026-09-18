@@ -488,6 +488,24 @@ def diagnose(request: Request, db: Session = Depends(get_db)):
     def add(ok, name, detail, fix=None):
         checks.append({"ok": bool(ok), "name": name, "detail": detail, "fix": fix})
 
+    # First of all: is this even the code the image was built with? A bind
+    # mount of a modified checkout over /app makes every page report the new
+    # version while running old files, and nothing else here can tell.
+    try:
+        from main import code_drift
+        drift = code_drift()
+    except Exception:
+        drift = None
+    if drift is not None:
+        changed = drift["modified"] + drift["missing"]
+        add(drift["matches"], "Running code matches the image",
+            "yes" if drift["matches"] else f"{len(changed)} file(s) differ: {', '.join(changed[:6])}"
+            + (" …" if len(changed) > 6 else ""),
+            "Something is layering other files over this container's /app — usually a "
+            "bind mount of a modified checkout in docker-compose. Remove that mount (or "
+            "re-apply your changes on top of the current files) and recreate the container. "
+            "Until then, pulling a new image changes the version number and nothing else.")
+
     add(client.available(), "yt-dlp installed",
         client.version() or "missing",
         "Pull a newer Tentacle image.")
