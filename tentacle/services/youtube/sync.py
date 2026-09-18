@@ -1,5 +1,6 @@
 """Periodic refresh: index every enabled channel, write files, apply retention."""
 import logging
+import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -21,11 +22,16 @@ logger = logging.getLogger(__name__)
 # existed in Jellyfin, came up empty, and stayed empty — the library then
 # filled in on its own and the row never appeared. The wait is now for the
 # channel's own videos to show up, polled, with this as the ceiling.
-SCAN_MAX_WAIT_SECONDS = 90
+# How long publishing waits in the foreground for Jellyfin to show the videos
+# before handing off. Kept short on purpose: a Radarr add does not block on
+# Jellyfin either. Whatever has not landed by then is topped up in the
+# background as it arrives.
+SCAN_MAX_WAIT_SECONDS = 15
 SCAN_POLL_SECONDS = 3
-# If a playlist is still short when publishing ends, look again this soon —
-# rather than blocking the run, and rather than waiting for the hourly sync.
-REFILL_AFTER_SECONDS = (120, 600)
+# The background top-up: seconds between looks, quick at first while Jellyfin
+# is importing, then sparser, about fifteen minutes in all. The hourly sync
+# covers anything beyond that.
+REFILL_SCHEDULE = (3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 10, 10, 10, 10, 10, 10, 30, 30, 30, 30, 120, 600)
 
 
 def base_url(db: Session) -> str:
@@ -212,7 +218,10 @@ def _jellyfin_paths(db: Session, channel: YouTubeChannel, jellyfin_root: str) ->
             rel = PurePosixPath(video.folder_path).relative_to(PurePosixPath(str(root)))
         except ValueError:
             continue
-        out.append(str(PurePosixPath(jellyfin_root.rstrip("/")) / rel))
+        folder = PurePosixPath(jellyfin_root.rstrip("/")) / rel
+        out.append(str(folder))
+        if video.strm_path:
+            out.append(str(folder / PurePosixPath(video.strm_path).name))
     return out
 
 
@@ -247,6 +256,57 @@ def _wait_for_channel_items(jf, channel: YouTubeChannel, expected: int,
         time.sleep(SCAN_POLL_SECONDS)
 
 
+WARM_WORKERS = 4
+
+
+def _warm_streams(db: Session, channels: list, on_stage=None) -> int:
+    """Resolve each channel's library videos ahead of Jellyfin's probes.
+
+    Skips anything already cached, so a re-publish costs nothing. Stops at the
+    first bot check: warming is an optimisation, and hammering on through a
+    block would turn it into an outage. Returns how many were resolved.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    from services.youtube import resolver
+    from services.youtube.errors import YouTubeBlocked
+
+    todo = []
+    for ch in channels:
+        for video in db.query(YouTubeVideo).filter(
+            YouTubeVideo.channel_fk == ch.id,
+            YouTubeVideo.removed_at.is_(None),
+            indexer.is_library_status(YouTubeVideo.live_status),
+        ).all():
+            if not resolver.is_cached(video.video_id):
+                todo.append((video.video_id, ch.max_height or 1080))
+    if not todo:
+        return 0
+    if on_stage:
+        on_stage(f"preparing {len(todo)} stream(s) so Jellyfin imports quickly")
+
+    blocked = threading.Event()
+    done = 0
+
+    def _one(item):
+        vid, height = item
+        if blocked.is_set():
+            return False
+        try:
+            resolver.resolve(vid, height)
+            return True
+        except YouTubeBlocked as e:
+            logger.warning(f"[YouTube] Bot-checked while preparing streams — stopping: {e}")
+            blocked.set()
+        except Exception as e:
+            logger.debug(f"[YouTube] Could not prepare {vid}: {e}")
+        return False
+
+    with ThreadPoolExecutor(max_workers=WARM_WORKERS) as pool:
+        done = sum(1 for ok in pool.map(_one, todo) if ok)
+    logger.info(f"[YouTube] Prepared {done} of {len(todo)} stream(s) for Jellyfin's import")
+    return done
+
+
 def publish_to_jellyfin(db: Session, channels: list, on_stage=None) -> None:
     """Get the channels' videos into Jellyfin and their playlists filled.
 
@@ -279,6 +339,14 @@ def publish_to_jellyfin(db: Session, channels: list, on_stage=None) -> None:
 
     jf = JellyfinService(url, key, get_setting(db, "jellyfin_user_id", ""))
     library_id, jellyfin_root = youtube_library(jf)
+
+    # Jellyfin probes every .strm it imports, and each probe reaches Tentacle's
+    # resolver, which asks YouTube — seconds per video, and the reason ten
+    # videos took minutes to land while a Radarr file lands at once. Resolve
+    # them first, in parallel, so the probes hit a warm cache and take under a
+    # second each.
+    _warm_streams(db, channels, on_stage)
+
     if on_stage:
         on_stage("telling Jellyfin about the new videos")
     try:
@@ -306,10 +374,10 @@ def publish_to_jellyfin(db: Session, channels: list, on_stage=None) -> None:
             have = _wait_for_channel_items(jf, ch, expected[ch.id], on_stage=on_stage)
             if have < expected[ch.id]:
                 short = True
-                logger.warning(
+                logger.info(
                     f"[YouTube] Jellyfin has {have} of {expected[ch.id]} videos for '{ch.title}' "
-                    f"after {SCAN_MAX_WAIT_SECONDS}s — filling the playlist with what is there "
-                    f"and looking again in {REFILL_AFTER_SECONDS[0]}s")
+                    f"after {SCAN_MAX_WAIT_SECONDS}s — filling the playlist with what is there; "
+                    f"the rest is topped up in the background as it lands")
                 if library_id:
                     # The notice did not land everything; a targeted scan of
                     # that one library is cheap and covers it in the background.
@@ -360,37 +428,67 @@ def publish_to_jellyfin(db: Session, channels: list, on_stage=None) -> None:
         logger.warning(f"[YouTube] Playlist rebuild after scan failed: {e}")
 
     if short:
-        _schedule_refill()
+        if on_stage:
+            on_stage("Jellyfin is picking the videos up — the row fills in as they land")
+        start_background_refill()
+    return {"short": short}
 
 
-def _schedule_refill() -> None:
-    """Look again soon, in the background, at any playlist still behind."""
-    import threading
-
-    def _run():
-        from models.database import SessionLocal
-        db = SessionLocal()
-        try:
-            fixed = reconcile_playlists(db)
-            logger.info(f"[YouTube] Follow-up check refilled {fixed} playlist(s)")
-        except Exception as e:
-            logger.warning(f"[YouTube] Follow-up refill failed: {e}")
-        finally:
-            db.close()
-
-    for delay in REFILL_AFTER_SECONDS:
-        t = threading.Timer(delay, _run)
-        t.daemon = True
-        t.start()
+_refill_lock = threading.Lock()
+_refill_running = False
 
 
-def reconcile_playlists(db: Session) -> int:
+def start_background_refill() -> bool:
+    """Keep topping up short playlists as Jellyfin imports, without blocking.
+
+    One loop at a time: it checks every channel's playlist, so a second one
+    would only duplicate the work. Returns False if one is already running.
+    """
+    global _refill_running
+    with _refill_lock:
+        if _refill_running:
+            return False
+        _refill_running = True
+    threading.Thread(target=_background_refill, daemon=True, name="youtube-refill").start()
+    return True
+
+
+def _background_refill() -> None:
+    global _refill_running
+    from models.database import SessionLocal
+    try:
+        for delay in REFILL_SCHEDULE:
+            time.sleep(delay)
+            db = SessionLocal()
+            try:
+                fixed, behind = reconcile_playlists(db, report=True)
+            except Exception as e:
+                logger.warning(f"[YouTube] Background top-up failed: {e}")
+                continue
+            finally:
+                db.close()
+            if fixed:
+                logger.info(f"[YouTube] Topped up {fixed} playlist(s) as videos landed")
+            if not behind:
+                logger.info("[YouTube] Every channel playlist matches its library")
+                return
+        logger.warning("[YouTube] Some channel playlists are still behind their library after the "
+                       "background top-ups; the hourly sync keeps checking. If this persists, Jellyfin "
+                       "may not be scanning the YouTube folder — check the library's path and that "
+                       "real-time monitoring is on.")
+    finally:
+        with _refill_lock:
+            _refill_running = False
+
+
+def reconcile_playlists(db: Session, report: bool = False):
     """Refill any channel playlist that holds fewer videos than the library.
 
     The safety net under publish_to_jellyfin: however a playlist came to be
-    behind — a scan that outlasted the wait, a Jellyfin restart mid-way — the
-    next hourly run catches it up without anyone noticing it was ever wrong.
-    Returns how many playlists were refreshed.
+    behind — an import still in progress, a Jellyfin restart mid-way — the
+    next look catches it up without anyone noticing it was ever wrong.
+    Returns how many playlists were refreshed; with report=True, a tuple of
+    (refreshed, still_behind) so a caller can tell when there is nothing left.
     """
     from models.database import TentacleUser
     from services.jellyfin import JellyfinService
@@ -402,11 +500,11 @@ def reconcile_playlists(db: Session) -> int:
     url = get_setting(db, "jellyfin_url", "")
     key = get_setting(db, "jellyfin_api_key", "")
     if not (url and key):
-        return 0
+        return (0, False) if report else 0
     jf = JellyfinService(url, key, get_setting(db, "jellyfin_user_id", ""))
     want = {ch.title: _library_count(db, ch)
             for ch in db.query(YouTubeChannel).filter(YouTubeChannel.enabled == True).all()}  # noqa: E712
-    fixed = 0
+    fixed, still_behind = 0, False
     for user in db.query(TentacleUser).all():
         short = []
         for p in _get_smartlists_with_playlist_ids(db, user_id=user.id):
@@ -417,18 +515,34 @@ def reconcile_playlists(db: Session) -> int:
             except Exception:
                 continue
             if have < want[p["name"]]:
-                short.append(p["name"])
-        if short:
-            logger.info(f"[YouTube] Playlist(s) behind the library for user {user.id}: {short} — refilling")
+                short.append((p["name"], p["playlist_id"], have, want[p["name"]]))
+        if not short:
+            continue
+        names = [n for n, _, _, _ in short]
+        # Only worth a refresh if Jellyfin has more than the playlist does;
+        # otherwise the videos have not landed yet and there is nothing to add.
+        can_grow = []
+        for name, pid, have, want_n in short:
             try:
-                refresh_smartlist_playlists(db, user_id=user.id, only_names=short)
-                fixed += len(short)
+                slug = next(ch.slug for ch in db.query(YouTubeChannel).all() if ch.title == name)
+                in_jf = len(jf.query_items(include_types=["Movie"], tags=[f"yt:{slug}"]) or [])
+            except Exception:
+                in_jf = 0
+            if in_jf > have:
+                can_grow.append(name)
+            if max(in_jf, have) < want_n:
+                still_behind = True
+        if can_grow:
+            logger.info(f"[YouTube] Playlist(s) behind the library for user {user.id}: {can_grow} — refilling")
+            try:
+                refresh_smartlist_playlists(db, user_id=user.id, only_names=can_grow)
+                fixed += len(can_grow)
             except Exception as e:
                 logger.warning(f"[YouTube] Refill failed for user {user.id}: {e}")
     if fixed:
         bump_playlist_version()
         _notify_jellyfin_plugin(db)
-    return fixed
+    return (fixed, still_behind) if report else fixed
 
 
 def run_youtube_sync() -> dict:

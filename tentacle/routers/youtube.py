@@ -695,6 +695,10 @@ _refresh_state: dict = {
     # The current channel's "keep newest N", so progress can say what the
     # entries being looked at are for.
     "keep": None, "kept": 0,
+    # True when the run ended with a playlist still shorter than its library:
+    # Jellyfin is still importing, and a background loop tops the playlist up
+    # as the videos land. The finish toast says so instead of "done".
+    "filling": False,
     # Work asked for while a run was in progress. A run that is already
     # under way has its channel list fixed, so a channel added during it is
     # queued and picked up the moment it finishes — never dropped.
@@ -728,7 +732,7 @@ def _start_refresh(channel_ids=None, guide: bool = False) -> bool:
             "finished_at": None, "channel": None, "channels_done": 0,
             "channels_total": 0, "new": 0, "written": 0, "retired": 0,
             "errors": 0, "error_detail": None, "channel_total": 0,
-            "keep": None, "kept": 0,
+            "keep": None, "kept": 0, "filling": False,
             "pending": [], "pending_all": False,
         })
     threading.Thread(target=_run_refresh, args=(channel_ids,), daemon=True,
@@ -828,8 +832,10 @@ def _run_refresh_once(channel_ids=None):
                 _refresh_state["keep"] = None
                 # The stage is shown in the toast, so a wait says what it is
                 # waiting for rather than sitting on "publishing".
-                publish_to_jellyfin(db, changed or list(channels),
-                                    on_stage=lambda msg: _refresh_state.__setitem__("channel", msg))
+                result = publish_to_jellyfin(
+                    db, changed or list(channels),
+                    on_stage=lambda msg: _refresh_state.__setitem__("channel", msg))
+                _refresh_state["filling"] = bool((result or {}).get("short"))
             except Exception as e:
                 logger.warning(f"[YouTube] Publish to Jellyfin failed: {e}")
 
@@ -917,6 +923,8 @@ def delete_channel(channel_id: int, db: Session = Depends(get_db)):
     removed = 0
     for video in db.query(YouTubeVideo).filter(YouTubeVideo.channel_fk == channel.id).all():
         removed += library.remove_video(video)
+    # ...and the channel's own folder, which the per-video removals leave empty.
+    library.remove_channel_folder(channel.title)
     title, was_live = channel.title, bool(channel.live_enabled)
     if was_live:
         from models.database import EPGProgram

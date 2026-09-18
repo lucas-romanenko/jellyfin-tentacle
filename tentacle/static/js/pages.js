@@ -2893,9 +2893,13 @@ function ytStartPolling() {
     if (st.errors) {
       toast(`Indexed with ${st.errors} error(s): ${escapeAttr(st.error_detail || '')}`, 'error', 10000);
     } else {
-      toast(st.new
-        ? `Done — ${st.new} new video${st.new === 1 ? '' : 's'} added. Playlist is ready; add it as a row on the Home Screen tab.`
-        : 'Done — nothing new since last time.', 'success', 8000);
+      // "filling" means Jellyfin is still importing: the playlist is topped
+      // up in the background as videos land, and the row appears on its own.
+      const added = st.new ? `${st.new} new video${st.new === 1 ? '' : 's'} added.` : 'Nothing new since last time.';
+      toast(st.filling
+        ? `${added} Jellyfin is still picking them up — the playlist fills in on its own over the next minute or two.`
+        : `${added}${st.new ? ' Playlist is ready; add it as a row on the Home Screen tab.' : ''}`,
+        'success', 10000);
     }
     loadYouTubeChannels();
   };

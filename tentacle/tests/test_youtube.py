@@ -1754,8 +1754,8 @@ class _PublishFixture(unittest.TestCase):
         from models.database import TentacleUser, YouTubeChannel, YouTubeVideo
         import services.jellyfin as jfmod
         import services.smartlists as sm
-        from services.youtube import sync as ysync
-        self.sm, self.ysync = sm, ysync
+        from services.youtube import resolver, sync as ysync
+        self.sm, self.ysync, self.resolver = sm, ysync, resolver
         engine = create_engine(f"sqlite:///{_tf.mkdtemp()}/t.db")
         mdb.Base.metadata.create_all(engine)
         self.Session = sessionmaker(bind=engine)
@@ -1790,11 +1790,22 @@ class _PublishFixture(unittest.TestCase):
             "_notify_jellyfin_plugin": sm._notify_jellyfin_plugin,
             "_get_smartlists_with_playlist_ids": sm._get_smartlists_with_playlist_ids,
             "sleep": ysync.time.sleep,
+            "resolve": resolver.resolve,
+            "is_cached": resolver.is_cached,
+            "refill": ysync.start_background_refill,
         }
+        self.resolved = []
+        resolver.resolve = lambda vid, height=1080, force=False: self.resolved.append(vid)
+        resolver.is_cached = lambda vid: False
+        ysync.start_background_refill = lambda: self.log.append(("refill",)) or True
         jfmod.JellyfinService = lambda *a, **k: self.jf
         sm.sync_smartlists = lambda db, user_id=None: self.log.append(("sync", user_id))
-        sm.refresh_smartlist_playlists = lambda db, user_id=None, only_names=None: (
-            self.log.append(("refresh", user_id, tuple(only_names or ()))) or {})
+        def _refresh(db, user_id=None, only_names=None):
+            self.log.append(("refresh", user_id, tuple(only_names or ())))
+            # As the real one does: the playlist ends up holding what Jellyfin has.
+            self.jf._playlist_items["pl-1"] = self.jf._tagged[0] if self.jf._tagged else 0
+            return {}
+        sm.refresh_smartlist_playlists = _refresh
         sm.write_home_config = lambda db, user_id=None: self.log.append(("home", user_id))
         sm.bump_playlist_version = lambda: self.log.append(("bump",))
         sm._notify_jellyfin_plugin = lambda db: self.log.append(("notify",))
@@ -1811,6 +1822,8 @@ class _PublishFixture(unittest.TestCase):
                   "_get_smartlists_with_playlist_ids"):
             setattr(self.sm, k, s[k])
         self.ysync.time.sleep = s["sleep"]
+        self.resolver.resolve, self.resolver.is_cached = s["resolve"], s["is_cached"]
+        self.ysync.start_background_refill = s["refill"]
 
 
 class TestPublishWaitsForJellyfin(_PublishFixture):
@@ -1840,23 +1853,46 @@ class TestPublishWaitsForJellyfin(_PublishFixture):
         self.assertIn(("scan", None), self.jf.calls)
         self.assertNotIn("notify", [c[0] for c in self.jf.calls])
 
-    def test_a_short_result_schedules_a_follow_up_instead_of_blocking(self):
-        import threading
-        scheduled = []
-        real = threading.Timer
-        threading.Timer = lambda delay, fn: scheduled.append(delay) or real(0, lambda: None)
+    def test_a_short_result_hands_off_instead_of_blocking(self):
+        # Like a Radarr add: fill what is there, report "still filling", and
+        # let the background loop top the playlist up as the videos land.
+        self.jf._tagged = [1]
+        self.ysync.SCAN_MAX_WAIT_SECONDS, saved = 0, self.ysync.SCAN_MAX_WAIT_SECONDS
         try:
-            self.jf._tagged = [1]
-            self.ysync.SCAN_MAX_WAIT_SECONDS, saved = 0, self.ysync.SCAN_MAX_WAIT_SECONDS
-            try:
-                self.ysync.publish_to_jellyfin(self.db, [self.channel])
-            finally:
-                self.ysync.SCAN_MAX_WAIT_SECONDS = saved
+            result = self.ysync.publish_to_jellyfin(self.db, [self.channel])
         finally:
-            threading.Timer = real
-        self.assertEqual(scheduled, list(self.ysync.REFILL_AFTER_SECONDS))
+            self.ysync.SCAN_MAX_WAIT_SECONDS = saved
+        self.assertTrue(result["short"])
+        self.assertIn(("refill",), self.log)
+        self.assertIn("refresh", [e[0] for e in self.log])
         # ...and the one library was given a targeted scan to catch the rest.
         self.assertIn(("scan", "lib-yt"), self.jf.calls)
+
+    def test_a_full_result_reports_done(self):
+        self.jf._tagged = [3]
+        result = self.ysync.publish_to_jellyfin(self.db, [self.channel])
+        self.assertFalse(result["short"])
+        self.assertNotIn(("refill",), self.log)
+
+    def test_streams_are_resolved_before_jellyfin_is_told(self):
+        # Jellyfin probes every .strm it imports, and each probe reaches the
+        # resolver. Warm it first so the probes are instant — and only for the
+        # library videos, not the live stream, which is not a .strm.
+        self.jf._tagged = [3]
+        order = []
+        real_notify = self.jf.notify_media_updated
+        self.jf.notify_media_updated = lambda paths, update_type="Created": order.append("notify") or real_notify(paths)
+        self.resolver.resolve = lambda vid, height=1080, force=False: order.append(("resolve", vid))
+        self.ysync.publish_to_jellyfin(self.db, [self.channel])
+        resolved = [o[1] for o in order if o != "notify"]
+        self.assertEqual(sorted(resolved), ["0" * 11, "1" * 11, "2" * 11])
+        self.assertEqual(order[-1], "notify")
+
+    def test_already_cached_streams_are_not_resolved_again(self):
+        self.jf._tagged = [3]
+        self.resolver.is_cached = lambda vid: True
+        self.ysync.publish_to_jellyfin(self.db, [self.channel])
+        self.assertEqual(self.resolved, [])
 
     def test_the_toast_is_told_what_is_being_waited_for(self):
         stages = []
@@ -1893,16 +1929,27 @@ class TestPublishWaitsForJellyfin(_PublishFixture):
 class TestPlaylistsAreRefilledHourly(_PublishFixture):
     """However a playlist fell behind the library, the next run catches it up."""
 
-    def test_a_short_playlist_is_refilled(self):
+    def test_a_short_playlist_is_refilled_once_jellyfin_has_more(self):
         self.jf._playlist_items = {"pl-1": 1}      # 1 in the playlist, 3 in the library
+        self.jf._tagged = [3]                      # ...and Jellyfin has all 3
         fixed = self.ysync.reconcile_playlists(self.db)
         self.assertEqual(fixed, 1)
         self.assertIn(("refresh", self.user.id, ("TraderTV Live",)), self.log)
         self.assertIn(("notify",), self.log)
 
-    def test_a_full_playlist_is_left_alone(self):
+    def test_nothing_to_add_yet_means_no_pointless_refresh(self):
+        # Jellyfin has no more than the playlist does: the videos have not
+        # landed. Refreshing would churn the playlist for nothing.
+        self.jf._playlist_items = {"pl-1": 1}
+        self.jf._tagged = [1]
+        fixed, behind = self.ysync.reconcile_playlists(self.db, report=True)
+        self.assertEqual(fixed, 0)
+        self.assertTrue(behind)
+        self.assertNotIn("refresh", [e[0] for e in self.log])
+
+    def test_a_full_playlist_is_left_alone_and_reported_as_caught_up(self):
         self.jf._playlist_items = {"pl-1": 3}
-        self.assertEqual(self.ysync.reconcile_playlists(self.db), 0)
+        self.assertEqual(self.ysync.reconcile_playlists(self.db, report=True), (0, False))
         self.assertNotIn("refresh", [e[0] for e in self.log])
 
 
@@ -1971,3 +2018,41 @@ class TestRemovingAChannelRemovesEverything(_PublishFixture):
     def test_no_guide_refresh_for_a_channel_that_was_not_on_live_tv(self):
         self._remove(was_live=False)
         self.assertNotIn(("guide",), self.log)
+
+
+class TestRemovingAChannelRemovesItsFolder(unittest.TestCase):
+    """The channel's own folder goes with it — not just the video folders in it.
+
+    Each video lives in its own folder under <root>/<Channel>/. Removing the
+    videos removed those and left an empty channel folder on the drive, which
+    then had to be cleaned up by hand.
+    """
+
+    def setUp(self):
+        import tempfile as _tf
+        from pathlib import Path
+        self.root = Path(_tf.mkdtemp())
+
+    def test_an_emptied_channel_folder_is_removed(self):
+        from pathlib import Path
+        folder = self.root / "TraderTV Live"
+        (folder / "2026-01-01 A [aaaaaaaaaaa]").mkdir(parents=True)
+        (folder / "2026-01-01 A [aaaaaaaaaaa]" / "a.strm").write_text("x")
+
+        class V:
+            folder_path = str(folder / "2026-01-01 A [aaaaaaaaaaa]")
+        library.remove_video(V())
+        self.assertTrue(library.remove_channel_folder("TraderTV Live", root=self.root))
+        self.assertFalse(folder.exists())
+
+    def test_a_folder_holding_someone_elses_files_is_left_alone(self):
+        # Only what Tentacle made is Tentacle's to delete. A file it did not
+        # write means the folder is shared, and it stays, with a log line.
+        folder = self.root / "TraderTV Live"
+        folder.mkdir(parents=True)
+        (folder / "notes.txt").write_text("mine")
+        self.assertFalse(library.remove_channel_folder("TraderTV Live", root=self.root))
+        self.assertTrue((folder / "notes.txt").exists())
+
+    def test_a_missing_folder_is_fine(self):
+        self.assertFalse(library.remove_channel_folder("Never Added", root=self.root))

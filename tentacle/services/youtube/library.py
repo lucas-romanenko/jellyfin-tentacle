@@ -239,6 +239,39 @@ def rewrite_strm(video, base_url: str) -> bool:
         return False
 
 
+def remove_channel_folder(channel_title: str, root: Path = None) -> bool:
+    """Remove <root>/<Channel>/ once its video folders are gone.
+
+    Only an empty folder is removed. Anything left inside that Tentacle did not
+    put there means the folder is shared with something else, and it is not
+    Tentacle's to delete — the same rule as everywhere else here. Returns
+    True if the folder was removed.
+    """
+    root = root or YOUTUBE_MEDIA_ROOT
+    folder = root / safe_name(channel_title)
+    if not folder.is_dir():
+        return False
+    # Video folders are removed one by one before this; sweep any that were
+    # left empty (an interrupted earlier removal, say) so the parent can go.
+    for sub in sorted(folder.iterdir()):
+        if sub.is_dir() and not any(sub.iterdir()):
+            try:
+                sub.rmdir()
+            except OSError:
+                pass
+    leftovers = [p.name for p in folder.iterdir()]
+    if leftovers:
+        logger.info(f"[YouTube] Leaving {folder}: it still holds {leftovers[:5]}"
+                    + (" …" if len(leftovers) > 5 else ""))
+        return False
+    try:
+        folder.rmdir()
+        return True
+    except OSError as e:
+        logger.warning(f"[YouTube] Could not remove {folder}: {e}")
+        return False
+
+
 def touch_strm(video) -> bool:
     """Mark a video's .strm as changed so Jellyfin probes it again.
 

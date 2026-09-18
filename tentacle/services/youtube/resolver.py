@@ -163,6 +163,13 @@ def pick_tracks(video_id: str, max_height: int = 1080) -> tuple:
     raise YouTubeError(f"No usable HLS tracks for {video_id}")
 
 
+def is_cached(video_id: str) -> bool:
+    """Whether a resolve for this video would return without calling YouTube."""
+    with _cache_lock:
+        hit = _cache.get(video_id)
+        return bool(hit and not hit.expired)
+
+
 def invalidate(video_id: str) -> None:
     with _cache_lock:
         _cache.pop(video_id, None)
