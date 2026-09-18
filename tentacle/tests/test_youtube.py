@@ -23,6 +23,7 @@ class FakeVideo:
         self.published_at = datetime(2026, 9, 15)
         self.first_seen = datetime(2026, 9, 15)
         self.duration = 484
+        self.thumbnail_url = None
         self.folder_path = None
         self.strm_path = None
 
@@ -73,6 +74,13 @@ class TestErrorClassification(unittest.TestCase):
 class TestLibraryWriter(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp())
+        # These tests are about the .strm and the NFO. Artwork is fetched over
+        # the network, which a test must never do — TestArtwork covers it.
+        self._real_download = library._download
+        library._download = lambda url: b""
+
+    def tearDown(self):
+        library._download = self._real_download
 
     def test_strm_points_at_tentacle_never_at_google(self):
         # Google's URLs expire in ~6h and are signed to the extracting IP, so a
@@ -895,3 +903,186 @@ class TestSkippedVideosAreRemembered(unittest.TestCase):
         result = self._index()
         self.assertEqual(result["listing"], {"videos": 3})
         self.assertEqual(self.channel.last_listing, {"videos": 3})
+
+
+class TestMasterOffersOneVariant(unittest.TestCase):
+    """A master must expose one video track and one audio track.
+
+    YouTube's master offers the whole ladder in two codecs, each variant
+    pointing at an audio group holding the original soundtrack plus every
+    machine-generated dub. Passed through, ffmpeg opens all of them at once —
+    400 streams for a five-minute video — and reports corrupt packets, which
+    Jellyfin shows as a fatal playback error.
+    """
+
+    MASTER = "\n".join([
+        "#EXTM3U",
+        "#EXT-X-INDEPENDENT-SEGMENTS",
+        '#EXT-X-MEDIA:URI="https://y/es.m3u8",TYPE=AUDIO,GROUP-ID="234",'
+        'LANGUAGE="es",NAME="es - dubbed-auto",'
+        'YT-EXT-XTAGS="ChQKBWFjb250EgtkdWJiZWQtYXV0bwoKCgRsYW5nEgJlcw",DEFAULT=NO',
+        '#EXT-X-MEDIA:URI="https://y/en.m3u8",TYPE=AUDIO,GROUP-ID="234",'
+        'LANGUAGE="en-US",NAME="American English - original",'
+        'YT-EXT-XTAGS="ChEKBWFjb250EghvcmlnaW5hbAoNCgRsYW5nEgVlbi1VUw",DEFAULT=NO',
+        '#EXT-X-STREAM-INF:BANDWIDTH=300000,CODECS="avc1.4D4015,mp4a.40.2",'
+        'RESOLUTION=426x240,AUDIO="234"',
+        "https://y/240.m3u8",
+        '#EXT-X-STREAM-INF:BANDWIDTH=3657065,CODECS="avc1.64002A,mp4a.40.2",'
+        'RESOLUTION=1920x1080,AUDIO="234"',
+        "https://y/1080.m3u8",
+        '#EXT-X-STREAM-INF:BANDWIDTH=2100863,CODECS="vp09.00.41.08,mp4a.40.2",'
+        'RESOLUTION=1920x1080,AUDIO="234"',
+        "https://y/1080vp9.m3u8",
+    ]) + "\n"
+
+    def _rewrite(self, max_height=None, text=None):
+        from services.youtube import playlist
+        return playlist.rewrite(text if text is not None else self.MASTER,
+                                "https://y/master.m3u8", "/p", max_height=max_height)
+
+    def test_only_one_video_variant_survives(self):
+        out = self._rewrite()
+        self.assertEqual(out.count("#EXT-X-STREAM-INF"), 1)
+
+    def test_only_one_audio_rendition_survives(self):
+        out = self._rewrite()
+        self.assertEqual(out.count("#EXT-X-MEDIA"), 1)
+
+    def test_the_surviving_audio_is_the_original_not_a_dub(self):
+        out = self._rewrite()
+        self.assertIn("American English - original", out)
+        self.assertNotIn("dubbed-auto", out)
+
+    def test_audio_is_kept_at_all(self):
+        # The CODECS attribute advertises muxed video+audio, but the variant is
+        # served video-only — dropping the group entirely plays it silent.
+        out = self._rewrite()
+        self.assertIn("TYPE=AUDIO", out)
+        self.assertIn('AUDIO="234"', out)
+
+    def test_h264_wins_over_vp9_at_the_same_height(self):
+        out = self._rewrite()
+        self.assertIn("avc1.64002A", out)
+        self.assertNotIn("vp09", out)
+
+    def test_the_height_cap_is_honoured(self):
+        out = self._rewrite(max_height=480)
+        self.assertIn("RESOLUTION=426x240", out)
+        self.assertNotIn("1920x1080", out)
+
+    def test_a_cap_below_everything_still_plays_something(self):
+        # Returning an empty master would be a playback error, which is worse
+        # than exceeding the cap the user asked for.
+        out = self._rewrite(max_height=100)
+        self.assertEqual(out.count("#EXT-X-STREAM-INF"), 1)
+        self.assertIn("426x240", out)
+
+    def test_a_media_playlist_is_untouched_by_variant_selection(self):
+        media = "\n".join([
+            "#EXTM3U", "#EXT-X-TARGETDURATION:5",
+            "#EXTINF:5.0,", "https://y/seg1.ts",
+            "#EXTINF:5.0,", "https://y/seg2.ts",
+            "#EXT-X-ENDLIST",
+        ]) + "\n"
+        out = self._rewrite(text=media)
+        self.assertEqual(out.count("/p/r/"), 2)
+        self.assertIn("#EXT-X-ENDLIST", out)
+        # ffmpeg checks every segment URL against allowed_segment_extensions.
+        self.assertEqual(out.count(".ts"), 2)
+
+    def test_a_master_with_no_audio_group_still_plays(self):
+        text = "\n".join([
+            "#EXTM3U",
+            '#EXT-X-STREAM-INF:BANDWIDTH=300000,CODECS="avc1.4D4015",RESOLUTION=426x240',
+            "https://y/240.m3u8",
+        ]) + "\n"
+        out = self._rewrite(text=text)
+        self.assertEqual(out.count("#EXT-X-STREAM-INF"), 1)
+        self.assertNotIn("AUDIO=", out)
+
+    def test_the_variant_url_is_proxied(self):
+        out = self._rewrite()
+        self.assertNotIn("https://y/1080.m3u8", out)
+        self.assertIn("/p/r/", out)
+        self.assertTrue(any(l.startswith("/p/r/") and l.endswith(".m3u8")
+                            for l in out.splitlines()))
+
+
+class TestArtwork(unittest.TestCase):
+    """Videos arrived in Jellyfin with no images at all."""
+
+    class _Video:
+        video_id = "kQA2wNKxy_8"
+        thumbnail_url = None
+        title = "A video"
+        description = "d"
+        published_at = None
+        first_seen = None
+        duration = 390
+        folder_path = None
+        strm_path = None
+
+    class _Channel:
+        title = "Ch"
+        slug = "ch"
+        extra_tags = []
+        rating = None
+
+    def setUp(self):
+        import tempfile as _tf
+        from pathlib import Path
+        from services.youtube import library
+        self.library = library
+        self.root = Path(_tf.mkdtemp())
+        self.video, self.channel = self._Video(), self._Channel()
+        self.fetched = []
+
+        def _fake(url):
+            self.fetched.append(url)
+            return b"\xff\xd8\xff-jpeg-bytes"
+        self._real = library._download
+        library._download = _fake
+
+    def tearDown(self):
+        library._download = self._real
+
+    def test_a_poster_and_a_backdrop_are_written(self):
+        from pathlib import Path
+        info = self.library.write_video(self.video, self.channel, "http://t", root=self.root)
+        folder = Path(info["folder"])
+        self.assertTrue((folder / "poster.jpg").exists())
+        self.assertTrue((folder / "fanart.jpg").exists())
+        self.assertEqual(info["artwork"], 2)
+
+    def test_the_well_known_url_is_used_when_none_was_indexed(self):
+        self.library.write_video(self.video, self.channel, "http://t", root=self.root)
+        # maxresdefault is absent for many uploads and would 404, leaving no
+        # artwork at all.
+        self.assertEqual(self.fetched, ["https://i.ytimg.com/vi/kQA2wNKxy_8/hqdefault.jpg"])
+
+    def test_an_indexed_thumbnail_is_preferred(self):
+        self.video.thumbnail_url = "https://i.ytimg.com/vi/x/maxresdefault.jpg"
+        self.library.write_video(self.video, self.channel, "http://t", root=self.root)
+        self.assertEqual(self.fetched, ["https://i.ytimg.com/vi/x/maxresdefault.jpg"])
+
+    def test_it_is_not_downloaded_again_on_every_sync(self):
+        from pathlib import Path
+        info = self.library.write_video(self.video, self.channel, "http://t", root=self.root)
+        self.fetched.clear()
+        again = self.library.fetch_artwork(self.video, Path(info["folder"]))
+        self.assertEqual((again, self.fetched), (0, []))
+
+    def test_the_nfo_names_the_image_too(self):
+        # So Jellyfin still has artwork if the local fetch failed.
+        nfo = self.library.build_nfo(self.video, self.channel, "http://t")
+        self.assertIn("<thumb aspect=\"poster\">", nfo)
+        self.assertIn("<fanart>", nfo)
+
+    def test_a_failed_download_does_not_fail_the_write(self):
+        from pathlib import Path
+        library._download = lambda url: b""
+        info = self.library.write_video(self.video, self.channel, "http://t", root=self.root)
+        folder = Path(info["folder"])
+        self.assertEqual(info["artwork"], 0)
+        self.assertTrue(any(f.suffix == ".strm" for f in folder.iterdir()))
+        self.assertTrue((folder / "movie.nfo").exists())

@@ -1,6 +1,7 @@
 """Periodic refresh: index every enabled channel, write files, apply retention."""
 import logging
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from sqlalchemy.orm import Session
 
@@ -32,15 +33,22 @@ def sync_channel(db: Session, channel: YouTubeChannel, base: str, on_progress=No
     if result.get("skipped"):
         return result
 
-    written = 0
+    written, art = 0, 0
     for video in db.query(YouTubeVideo).filter(
         YouTubeVideo.channel_fk == channel.id,
         YouTubeVideo.removed_at.is_(None),
     ).all():
-        if video.strm_path or not indexer.is_library_item(video):
+        if not indexer.is_library_item(video):
+            continue
+        if video.strm_path:
+            # Already written. Artwork arrived later than the writer did, so
+            # videos indexed before it exist with no images — pick those up
+            # instead of leaving them blank until something rewrites them.
+            if video.folder_path:
+                art += library.fetch_artwork(video, Path(video.folder_path))
             continue
         try:
-            library.write_video(video, channel, base)
+            art += library.write_video(video, channel, base).get("artwork", 0)
             written += 1
         except OSError as e:
             logger.warning(f"[YouTube] Could not write files for {video.video_id}: {e}")
@@ -53,7 +61,8 @@ def sync_channel(db: Session, channel: YouTubeChannel, base: str, on_progress=No
         guide = livetv.refresh_guide(db, channel)
 
     removed = apply_retention(db, channel)
-    result.update({"written": written, "retired": removed, "guide": guide})
+    result.update({"written": written, "retired": removed, "guide": guide,
+                   "artwork": art})
     return result
 
 

@@ -60,6 +60,12 @@ def build_nfo(video, channel, base_url: str) -> str:
         f"  <set><name>{escape(channel.title or '')}</name></set>",
         "  <genre>YouTube</genre>",
     ]
+    thumb = thumbnail_url(video)
+    if thumb:
+        # Also named in the NFO so Jellyfin still has artwork if the local
+        # fetch failed, or the folder was populated before it was added.
+        parts.append(f'  <thumb aspect="poster">{escape(thumb)}</thumb>')
+        parts.append(f"  <fanart><thumb>{escape(thumb)}</thumb></fanart>")
     if channel.rating:
         parts.append(f"  <mpaa>{escape(channel.rating)}</mpaa>")
     parts += [f"  <tag>{escape(t)}</tag>" for t in tags]
@@ -69,6 +75,67 @@ def build_nfo(video, channel, base_url: str) -> str:
         "</movie>",
     ]
     return "\n".join(parts)
+
+
+def thumbnail_url(video) -> str:
+    """Best artwork URL for a video.
+
+    yt-dlp's chosen thumbnail when we have one; otherwise the well-known path,
+    which YouTube generates for every video that exists. maxresdefault is
+    deliberately not used as the fallback — it is absent for a lot of uploads
+    and 404s, which would leave no artwork at all.
+    """
+    if video.thumbnail_url:
+        return video.thumbnail_url
+    if video.video_id:
+        return f"https://i.ytimg.com/vi/{video.video_id}/hqdefault.jpg"
+    return ""
+
+
+def _download(url: str) -> bytes:
+    """Fetch one image. Returns empty on any failure — artwork is never fatal.
+
+    Kept as its own function so callers (and tests) have a seam for the network
+    without having to reach into the HTTP client.
+    """
+    try:
+        import httpx
+        with httpx.Client(timeout=15, follow_redirects=True) as c:
+            r = c.get(url)
+            r.raise_for_status()
+            return r.content
+    except Exception as e:                      # network, DNS, HTTP, anything
+        logger.debug(f"[YouTube] Could not fetch {url}: {e}")
+        return b""
+
+
+def fetch_artwork(video, folder: Path) -> int:
+    """Save the video's thumbnail beside its .strm. Best effort.
+
+    Written locally rather than left as a URL so artwork survives the video
+    being taken down, and so Jellyfin never has to reach the internet during a
+    scan. Failure is not an error: the NFO still names the remote URL.
+    """
+    url = thumbnail_url(video)
+    if not url:
+        return 0
+    poster, fanart = folder / "poster.jpg", folder / "fanart.jpg"
+    if poster.exists() and fanart.exists():
+        return 0
+    data = _download(url)
+    if not data:
+        return 0
+    written = 0
+    # YouTube artwork is 16:9. It stands in for both images: as the poster it
+    # is what a row shows, and as the backdrop it fills the detail page.
+    for path in (poster, fanart):
+        if not path.exists():
+            try:
+                path.write_bytes(data)
+                written += 1
+            except OSError as e:
+                logger.warning(f"[YouTube] Could not write {path.name}: {e}")
+    return written
 
 
 def strm_url(base_url: str, video_id: str) -> str:
@@ -95,10 +162,11 @@ def write_video(video, channel, base_url: str, root: Path = None) -> dict:
 
     # The NFO is safe to refresh — only the .strm's mtime matters for segments.
     nfo.write_text(build_nfo(video, channel, base_url), encoding="utf-8")
+    art = fetch_artwork(video, folder)
 
     video.folder_path = str(folder)
     video.strm_path = str(strm)
-    return {"folder": str(folder), "strm_written": wrote_strm}
+    return {"folder": str(folder), "strm_written": wrote_strm, "artwork": art}
 
 
 def remove_video(video) -> int:
