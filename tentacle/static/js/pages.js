@@ -2878,14 +2878,15 @@ function ytStartPolling() {
       return;
     }
     if (st.running) {
-      const where = st.channel ? ` ${st.channel}` : '';
       const chans = st.channels_total > 1 ? ` (${st.channels_done + 1}/${st.channels_total})` : '';
-      // channel_total is entries being looked at — a little past N, plus a
-      // peek at the streams tab — not videos kept. Say so, or "keep newest
-      // 10" reading "indexing 30 videos" looks like the setting was ignored.
-      const keep = st.keep ? `, keeping the newest ${st.keep}` : '';
-      const vids = st.channel_total ? `checked ${st.new} of ${st.channel_total}${keep}` : `${st.new} checked`;
-      t.innerHTML = `<span class="toast-spinner"></span> Indexing${escapeAttr(where)}${chans} — ${vids}`;
+      // Progress in the user's terms — how many of the newest N are in hand —
+      // matching the channel card's "Fetching its newest N videos…". What is
+      // being looked at internally (a margin past N, a peek at the streams
+      // tab) is not a number anyone asked for.
+      const line = st.keep
+        ? `Fetching newest videos for ${escapeAttr(st.channel || 'channel')}${chans} — ${Math.min(st.kept || 0, st.keep)} of ${st.keep}`
+        : `${escapeAttr(st.channel || 'Working')}${chans}…`;
+      t.innerHTML = `<span class="toast-spinner"></span> ${line}`;
       return;
     }
     clearInterval(_ytPoll); _ytPoll = null; t.remove();

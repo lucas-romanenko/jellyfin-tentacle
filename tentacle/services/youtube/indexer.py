@@ -279,8 +279,20 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
     limit = limit or listing_limit(channel)
     known = {v.video_id for v in db.query(YouTubeVideo.video_id).filter(
         YouTubeVideo.channel_fk == channel.id).all()}
+    # Library items already in hand. Walking the listing newest-first, these
+    # count towards "the newest N" exactly as a freshly fetched one does.
+    kept_ids = {v.video_id for v in db.query(YouTubeVideo.video_id).filter(
+        YouTubeVideo.channel_fk == channel.id,
+        YouTubeVideo.removed_at.is_(None),
+        is_library_status(YouTubeVideo.live_status),
+    ).all()}
+    keep = channel.keep_count or 10
 
-    seen_ids, new_videos = [], []
+    # Every listed entry in listing order, tagged with whether its tab feeds
+    # the library. The streams tab does only when finished broadcasts are
+    # kept; otherwise it is read for what is on air and nothing on it counts
+    # towards N.
+    seen_ids, new_videos, ordered = [], [], []
     # What each tab actually returned, kept on the channel afterwards. Without
     # it, "no videos" is ambiguous: YouTube may have listed nothing, or it may
     # have listed plenty that the channel's settings then excluded. Those need
@@ -290,6 +302,7 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
         for url in _tab_urls(channel):
             info = client.flat_listing(url, min(limit, tab_limit(channel, url)))
             tab = url.rsplit("/", 1)[-1] if "/playlist?" not in url else "playlist"
+            library_tab = not (tab == "streams" and not channel.include_streams)
             count = 0
             for entry in (info.get("entries") or []):
                 vid = entry.get("id")
@@ -297,8 +310,9 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
                     continue
                 count += 1
                 seen_ids.append(vid)
+                ordered.append((vid, entry, library_tab))
                 if vid not in known:
-                    new_videos.append((vid, entry))
+                    new_videos.append(vid)
             listing[tab] = count
     except YouTubeBlocked as e:
         channel.blocked_until = datetime.utcnow() + timedelta(hours=BLOCK_BACKOFF_HOURS)
@@ -355,6 +369,13 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
 
     added, skipped = 0, 0
     skips: dict = {}
+    # Library items passed so far in listing order — the ones already kept and
+    # the ones just fetched. Once it reaches N, everything further down a
+    # library tab is older than "the newest N" and would only be retired by
+    # retention; it is left unfetched. Each fetch is rate-limited and slow, so
+    # this is also what keeps a first index short. Skipped entries do not
+    # count, which is what the listing margin past N is for.
+    seen_kept, beyond = 0, 0
 
     def _note_skip(reason: str):
         nonlocal skipped
@@ -363,7 +384,19 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
         key = re.sub(r"\d+", "N", reason)
         skips[key] = skips.get(key, 0) + 1
 
-    for vid, entry in new_videos:
+    def _report():
+        if on_progress:
+            on_progress(min(seen_kept, keep), keep)
+
+    for vid, entry, library_tab in ordered:
+        if vid in known:
+            if library_tab and vid in kept_ids:
+                seen_kept += 1
+                _report()
+            continue
+        if library_tab and seen_kept >= keep:
+            beyond += 1
+            continue
         try:
             details = client.video_details(vid)
         except VideoUnavailable as e:
@@ -380,8 +413,8 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
             _note_skip("could not read details")
             continue
 
-        keep, reason = _should_index(details, channel)
-        if not keep:
+        wanted, reason = _should_index(details, channel)
+        if not wanted:
             logger.debug(f"[YouTube] Skipping {vid}: {reason}")
             _note_skip(reason)
             # Recorded, not discarded. Details are fetched one every few
@@ -422,10 +455,11 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
         ))
         added += 1
         db.commit()
+        if library_tab and details.get("live_status") not in PENDING_LIVE:
+            seen_kept += 1
         # Reported per video: a first index can take minutes, and waiting for
         # the whole channel to finish leaves the UI with nothing to show.
-        if on_progress:
-            on_progress(added, len(new_videos))
+        _report()
         time.sleep(DETAIL_SPACING_SECONDS)
 
     unindexed = _apply_stream_preference(db, channel)
@@ -450,11 +484,12 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
         YouTubeVideo.removed_at.is_(None),
     ).count()
     db.commit()
-    logger.info(f"[YouTube] '{channel.title}': {added} new, {len(seen_ids)} listed, {skipped} skipped")
+    logger.info(f"[YouTube] '{channel.title}': {added} new, {len(seen_ids)} listed, {skipped} skipped"
+                + (f", {beyond} past the newest {keep} not fetched" if beyond else ""))
     if skips:
         logger.info(f"[YouTube] '{channel.title}' skips: {skips}")
     return {"skipped": False, "new": added, "seen": len(seen_ids),
-            "filtered": skipped, "skips": skips, "listing": listing}
+            "filtered": skipped, "skips": skips, "listing": listing, "beyond": beyond}
 
 
 def _published(details: dict):

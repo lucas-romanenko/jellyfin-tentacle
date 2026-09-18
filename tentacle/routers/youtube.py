@@ -694,7 +694,7 @@ _refresh_state: dict = {
     "channel_total": 0,
     # The current channel's "keep newest N", so progress can say what the
     # entries being looked at are for.
-    "keep": None,
+    "keep": None, "kept": 0,
     # Work asked for while a run was in progress. A run that is already
     # under way has its channel list fixed, so a channel added during it is
     # queued and picked up the moment it finishes — never dropped.
@@ -728,6 +728,7 @@ def _start_refresh(channel_ids=None, guide: bool = False) -> bool:
             "finished_at": None, "channel": None, "channels_done": 0,
             "channels_total": 0, "new": 0, "written": 0, "retired": 0,
             "errors": 0, "error_detail": None, "channel_total": 0,
+            "keep": None, "kept": 0,
             "pending": [], "pending_all": False,
         })
     threading.Thread(target=_run_refresh, args=(channel_ids,), daemon=True,
@@ -793,11 +794,13 @@ def _run_refresh_once(channel_ids=None):
         for channel in channels:
             _refresh_state["channel"] = channel.title
             _refresh_state["keep"] = channel.keep_count or 10
+            _refresh_state["kept"] = 0
             channel_base = _refresh_state["new"]
 
-            def _progress(added, total, _base=channel_base):
-                _refresh_state["new"] = _base + added
-                _refresh_state["channel_total"] = total
+            def _progress(kept, keep):
+                # In the user's terms: how many of the newest N are in hand.
+                _refresh_state["kept"] = kept
+                _refresh_state["keep"] = keep
 
             r_written = 0
             try:
@@ -822,6 +825,7 @@ def _run_refresh_once(channel_ids=None):
         if changed or channel_ids:
             try:
                 _refresh_state["channel"] = "publishing to Jellyfin"
+                _refresh_state["keep"] = None
                 publish_to_jellyfin(db, changed or [c.title for c in channels])
             except Exception as e:
                 logger.warning(f"[YouTube] Publish to Jellyfin failed: {e}")
@@ -831,6 +835,7 @@ def _run_refresh_once(channel_ids=None):
             _refresh_state["guide_after"] = False
         if guide:
             _refresh_state["channel"] = "refreshing the Jellyfin guide"
+            _refresh_state["keep"] = None
             yt_livetv.refresh_jellyfin_guide(db)
     finally:
         db.close()

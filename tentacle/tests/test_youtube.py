@@ -1591,3 +1591,112 @@ class TestStreamsTabIsOnlyPeekedAt(unittest.TestCase):
         ch = self._channel(include_streams=True)
         limits = {url.rsplit("/", 1)[-1]: tab_limit(ch, url) for url in _tab_urls(ch)}
         self.assertEqual(limits["streams"], 15)
+
+
+class TestKeepNewestStopsFetching(unittest.TestCase):
+    """Once the newest N are in hand, nothing further down is fetched.
+
+    The listing is read a little past N so that private or unavailable
+    entries among the newest do not leave the library short. But every entry
+    fetched costs a rate-limited detail call, and anything below the N-th kept
+    item is older than "the newest N" — it would only be retired by retention.
+    Fetching it anyway is what made "keep newest 10" report thirty entries.
+    """
+
+    def setUp(self):
+        import tempfile as _tf
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        import models.database as mdb
+        from models.database import YouTubeChannel, YouTubeVideo
+        from services.youtube import client, indexer
+        from services.youtube.errors import VideoUnavailable
+        self.YouTubeVideo, self.indexer, self.Unavailable = YouTubeVideo, indexer, VideoUnavailable
+        engine = create_engine(f"sqlite:///{_tf.mkdtemp()}/t.db")
+        mdb.Base.metadata.create_all(engine)
+        self.db = sessionmaker(bind=engine)()
+        self.channel = YouTubeChannel(
+            input_url="u", kind="channel", channel_id="UC" + "k" * 22, title="Ch",
+            slug="ch", enabled=True, include_videos=True, include_streams=False,
+            include_shorts=False, min_duration=0, keep_count=3, live_enabled=False,
+            extra_tags=[])
+        self.db.add(self.channel)
+        self.db.commit()
+        self.db.refresh(self.channel)
+
+        self.tabs = {"videos": [], "streams": []}
+        self.details = {}
+        self.calls, self.progress = [], []
+        self._real = (client.flat_listing, client.video_details, indexer.time.sleep)
+        client.flat_listing = lambda url, limit: {
+            "entries": [{"id": v, "title": v} for v in self.tabs[url.rsplit("/", 1)[-1]][:limit]]}
+
+        def _details(vid):
+            self.calls.append(vid)
+            d = self.details.get(vid, {"duration": 600, "availability": "public"})
+            if d == "gone":
+                raise self.Unavailable(vid)
+            return dict(d)
+        client.video_details = _details
+        indexer.time.sleep = lambda s: None
+
+    def tearDown(self):
+        from services.youtube import client
+        client.flat_listing, client.video_details, self.indexer.time.sleep = self._real
+
+    def _index(self):
+        self.calls.clear()
+        return self.indexer.index_channel(self.db, self.channel,
+                                          on_progress=lambda k, n: self.progress.append((k, n)))
+
+    def _library(self):
+        return sorted(v.video_id for v in self.db.query(self.YouTubeVideo).filter(
+            self.YouTubeVideo.removed_at.is_(None)).all())
+
+    def test_fetching_stops_at_the_nth_kept(self):
+        self.tabs["videos"] = [c * 11 for c in "abcdef"]
+        r = self._index()
+        self.assertEqual(self.calls, ["a" * 11, "b" * 11, "c" * 11])
+        self.assertEqual(r["beyond"], 3)
+        self.assertEqual(self._library(), ["a" * 11, "b" * 11, "c" * 11])
+
+    def test_a_skipped_entry_does_not_count_so_the_margin_still_helps(self):
+        self.tabs["videos"] = [c * 11 for c in "abcdef"]
+        self.details["b" * 11] = "gone"
+        r = self._index()
+        self.assertEqual(self.calls, [c * 11 for c in "abcd"])
+        self.assertEqual(self._library(), [c * 11 for c in "acd"])
+        self.assertEqual(r["beyond"], 2)
+
+    def test_a_new_upload_later_is_still_fetched_when_the_library_is_full(self):
+        self.tabs["videos"] = [c * 11 for c in "abcdef"]
+        self._index()
+        self.tabs["videos"] = ["z" * 11] + [c * 11 for c in "abcdef"]
+        r = self._index()
+        # Only the newcomer costs a fetch. The three kept ones are known and
+        # count towards N as they are passed; d, e, f are beyond it.
+        self.assertEqual(self.calls, ["z" * 11])
+        self.assertEqual(r["beyond"], 3)
+        self.assertIn("z" * 11, self._library())
+
+    def test_the_streams_tab_is_not_subject_to_it(self):
+        # Read for what is on air, and nothing on it counts towards N.
+        self.channel.live_enabled = True
+        self.channel.keep_count = 1
+        self.db.commit()
+        self.tabs["videos"] = ["a" * 11, "b" * 11]
+        self.tabs["streams"] = ["s" * 11, "t" * 11]
+        self.details["s" * 11] = {"live_status": "is_live", "availability": "public"}
+        self.details["t" * 11] = {"live_status": "was_live", "duration": 3600, "availability": "public"}
+        r = self._index()
+        self.assertEqual(self.calls, ["a" * 11, "s" * 11, "t" * 11])
+        self.assertEqual(r["beyond"], 1)
+        live = [v.video_id for v in self.db.query(self.YouTubeVideo).filter(
+            self.YouTubeVideo.live_status == "is_live").all()]
+        self.assertEqual(live, ["s" * 11])
+
+    def test_progress_is_reported_in_the_users_terms(self):
+        self.tabs["videos"] = [c * 11 for c in "abcdef"]
+        self._index()
+        self.assertEqual(self.progress[-1], (3, 3))
+        self.assertTrue(all(k <= n for k, n in self.progress))
