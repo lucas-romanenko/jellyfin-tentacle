@@ -183,9 +183,16 @@ def publish_to_jellyfin(db: Session, changed_playlists: list) -> None:
     try:
         from services.smartlists import (
             _notify_jellyfin_plugin, bump_playlist_version,
-            refresh_smartlist_playlists, write_home_config,
+            refresh_smartlist_playlists, sync_smartlists, write_home_config,
         )
         for user in db.query(TentacleUser).all():
+            # sync_smartlists is what creates a playlist that is newly desired;
+            # refresh only fills ones that already exist. Without it a channel
+            # subscribed before its first index had no playlist until the
+            # nightly sync — the videos arrived in the library and there was
+            # nothing to put on a home screen, which reads as the feature
+            # having quietly not worked.
+            sync_smartlists(db, user_id=user.id)
             refresh_smartlist_playlists(db, user_id=user.id, only_names=changed_playlists)
             write_home_config(db, user_id=user.id)
         bump_playlist_version()

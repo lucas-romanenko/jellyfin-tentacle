@@ -1337,3 +1337,82 @@ class TestStrmFollowsTheAddress(unittest.TestCase):
         before = self.strm.read_text()
         self.assertFalse(library.rewrite_strm(self.video, ""))
         self.assertEqual(self.strm.read_text(), before)
+
+
+class TestAddingAChannelSubscribesTheAdder(unittest.TestCase):
+    """Adding a channel used to leave nothing to put on a home screen.
+
+    Rows are per-user, so a channel's playlist only exists for users who have a
+    row subscription. Adding one created none, so the videos arrived in the
+    library and there was no playlist and no row — for no visible reason, and
+    with a second toggle elsewhere as the only way to find out.
+    """
+
+    def setUp(self):
+        import tempfile as _tf
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        import models.database as mdb
+        from models.database import TentacleUser, YouTubeRowSubscription
+        from routers import youtube
+        self.youtube = youtube
+        self.YouTubeRowSubscription = YouTubeRowSubscription
+        engine = create_engine(f"sqlite:///{_tf.mkdtemp()}/t.db")
+        mdb.Base.metadata.create_all(engine)
+        self.db = sessionmaker(bind=engine)()
+        self.user = TentacleUser(jellyfin_user_id="a" * 32, display_name="u", is_admin=True)
+        self.db.add(self.user)
+        self.db.commit()
+        self.db.refresh(self.user)
+
+        self._real_available = youtube.client.available
+        self._real_resolve = youtube.indexer.resolve_channel
+        youtube.client.available = lambda: True
+        youtube.indexer.resolve_channel = lambda url: {
+            "kind": "channel", "channel_id": "UC" + "a" * 22, "handle": None,
+            "playlist_id": None, "title": "A Channel", "avatar_url": None,
+            "banner_url": None, "canonical": url,
+        }
+
+    def tearDown(self):
+        self.youtube.client.available = self._real_available
+        self.youtube.indexer.resolve_channel = self._real_resolve
+
+    def _add(self, user):
+        from routers import auth
+        real = auth.get_user_from_request
+        auth.get_user_from_request = lambda request, db: user
+        try:
+            body = self.youtube.ChannelCreate(url="https://youtube.com/@x")
+            return self.youtube.add_channel(body, request=None, db=self.db)
+        finally:
+            auth.get_user_from_request = real
+
+    def _subs(self):
+        return self.db.query(self.YouTubeRowSubscription).all()
+
+    def test_the_adder_gets_a_row_subscription(self):
+        result = self._add(self.user)
+        self.assertTrue(result["home_row"])
+        subs = self._subs()
+        self.assertEqual(len(subs), 1)
+        self.assertEqual(subs[0].user_id, self.user.id)
+
+    def test_nobody_else_is_subscribed(self):
+        # Rows stay per-user: one household member adding a channel must not
+        # put it on everyone's home screen.
+        from models.database import TentacleUser
+        other = TentacleUser(jellyfin_user_id="b" * 32, display_name="other")
+        self.db.add(other)
+        self.db.commit()
+        self._add(self.user)
+        self.assertEqual([s.user_id for s in self._subs()], [self.user.id])
+
+    def test_the_channel_is_still_added_when_there_is_no_user(self):
+        # Bootstrap: the very first setup has no TentacleUser yet, and failing
+        # the add over a row subscription would be absurd.
+        result = self._add(None)
+        self.assertFalse(result["home_row"])
+        self.assertEqual(self._subs(), [])
+        from models.database import YouTubeChannel
+        self.assertEqual(self.db.query(YouTubeChannel).count(), 1)

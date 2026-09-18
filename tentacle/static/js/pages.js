@@ -2794,7 +2794,9 @@ async function ytAddChannel() {
   try {
     const r = await api('/api/youtube/channels', { method: 'POST', body });
     t.remove();
-    toast(`Added ${r.title} — videos appear after the next index run`);
+    toast(r.home_row
+      ? `Added ${r.title} — press Refresh now, then it appears as a home row`
+      : `Added ${r.title} — turn on Home row to put it on your home screen`);
     document.getElementById('yt-url').value = '';
     loadYouTubeChannels();
   } catch (e) {

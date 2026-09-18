@@ -627,7 +627,7 @@ def list_channels(request: Request, db: Session = Depends(get_db)):
 
 
 @router.post("/channels", dependencies=[Depends(require_admin)])
-def add_channel(body: ChannelCreate, db: Session = Depends(get_db)):
+def add_channel(body: ChannelCreate, request: Request, db: Session = Depends(get_db)):
     if not client.available():
         raise HTTPException(400, "yt-dlp is not installed in this image")
     try:
@@ -661,8 +661,29 @@ def add_channel(body: ChannelCreate, db: Session = Depends(get_db)):
     db.add(channel)
     db.commit()
     db.refresh(channel)
+
+    # Subscribe the person who added it. Rows stay per-user — nobody else gets
+    # the channel on their home screen — but pasting a channel URL is already a
+    # statement of wanting to see it, and requiring a second toggle elsewhere
+    # meant the videos appeared in the library with no playlist and no row, for
+    # no visible reason.
+    row_added = False
+    try:
+        from models.database import YouTubeRowSubscription
+        from routers.auth import get_user_from_request
+
+        user = get_user_from_request(request, db)
+        if user:
+            db.add(YouTubeRowSubscription(channel_fk=channel.id, user_id=user.id))
+            db.commit()
+            row_added = True
+    except Exception as e:
+        # Never fail the add over this; the toggle on the card still works.
+        logger.warning(f"[YouTube] Could not subscribe the adding user to '{channel.title}': {e}")
+
     logger.info(f"[YouTube] Added channel '{channel.title}' ({channel.slug})")
-    return {"id": channel.id, "title": channel.title, "slug": channel.slug}
+    return {"id": channel.id, "title": channel.title, "slug": channel.slug,
+            "home_row": row_added}
 
 
 # Indexing runs in the background and is polled. It cannot be a plain request:
