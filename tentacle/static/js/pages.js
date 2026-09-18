@@ -2880,8 +2880,12 @@ function ytStartPolling() {
     if (st.running) {
       const where = st.channel ? ` ${st.channel}` : '';
       const chans = st.channels_total > 1 ? ` (${st.channels_done + 1}/${st.channels_total})` : '';
-      const vids = st.channel_total ? `${st.new}/${st.channel_total}` : `${st.new}`;
-      t.innerHTML = `<span class="toast-spinner"></span> Indexing${escapeAttr(where)}${chans} — ${vids} videos`;
+      // channel_total is entries being looked at — a little past N, plus a
+      // peek at the streams tab — not videos kept. Say so, or "keep newest
+      // 10" reading "indexing 30 videos" looks like the setting was ignored.
+      const keep = st.keep ? `, keeping the newest ${st.keep}` : '';
+      const vids = st.channel_total ? `checked ${st.new} of ${st.channel_total}${keep}` : `${st.new} checked`;
+      t.innerHTML = `<span class="toast-spinner"></span> Indexing${escapeAttr(where)}${chans} — ${vids}`;
       return;
     }
     clearInterval(_ytPoll); _ytPoll = null; t.remove();

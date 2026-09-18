@@ -128,6 +128,21 @@ def resolve_channel(url: str) -> dict:
 MAX_KEEP = 100
 
 
+# How far into the streams tab to look when the channel only needs it for
+# what is on air. Live and upcoming broadcasts sit at the top; everything
+# below is a finished stream that will be recorded as skipped after a
+# rate-limited detail fetch each. Reading fifteen of those to find two live
+# ones is what made "keep newest 10" report thirty entries being indexed.
+LIVE_PEEK = 5
+
+
+def tab_limit(channel: YouTubeChannel, url: str) -> int:
+    """How far to read one tab: the streams tab only as far as needed."""
+    if url.endswith("/streams") and not channel.include_streams:
+        return LIVE_PEEK
+    return listing_limit(channel)
+
+
 def listing_limit(channel: YouTubeChannel) -> int:
     """How far down a tab to read, derived from the one setting the user has.
 
@@ -273,7 +288,7 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
     listing: dict = {}
     try:
         for url in _tab_urls(channel):
-            info = client.flat_listing(url, limit)
+            info = client.flat_listing(url, min(limit, tab_limit(channel, url)))
             tab = url.rsplit("/", 1)[-1] if "/playlist?" not in url else "playlist"
             count = 0
             for entry in (info.get("entries") or []):

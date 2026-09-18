@@ -692,6 +692,9 @@ _refresh_state: dict = {
     "channel": None, "channels_done": 0, "channels_total": 0,
     "new": 0, "written": 0, "retired": 0, "errors": 0, "error_detail": None,
     "channel_total": 0,
+    # The current channel's "keep newest N", so progress can say what the
+    # entries being looked at are for.
+    "keep": None,
     # Work asked for while a run was in progress. A run that is already
     # under way has its channel list fixed, so a channel added during it is
     # queued and picked up the moment it finishes — never dropped.
@@ -789,6 +792,7 @@ def _run_refresh_once(channel_ids=None):
         changed = []
         for channel in channels:
             _refresh_state["channel"] = channel.title
+            _refresh_state["keep"] = channel.keep_count or 10
             channel_base = _refresh_state["new"]
 
             def _progress(added, total, _base=channel_base):

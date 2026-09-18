@@ -1556,3 +1556,38 @@ class TestChannelListForLiveTv(unittest.TestCase):
         self.assertEqual(rows["On"]["guide_programmes"], 3)
         # Off Live TV: nothing to count, and nothing counted.
         self.assertEqual(rows["Off"]["guide_programmes"], 0)
+
+
+class TestStreamsTabIsOnlyPeekedAt(unittest.TestCase):
+    """A Live TV channel reads its streams tab to find what is on air.
+
+    Live and upcoming broadcasts sit at the top of that tab; below them is the
+    channel's whole history of finished streams, each of which costs a
+    rate-limited detail fetch just to be recorded as skipped. Reading fifteen
+    of those to find two live ones is what made "keep newest 10" report thirty
+    entries being indexed — and doubled the first index's running time.
+    """
+
+    def _channel(self, **kw):
+        class C:
+            kind = "channel"; channel_id = "UC" + "x" * 22; handle = None
+            playlist_id = None; include_videos = True; include_shorts = False
+            keep_count = 10; include_streams = False; live_enabled = True
+        c = C()
+        for k, v in kw.items():
+            setattr(c, k, v)
+        return c
+
+    def test_uploads_read_past_n_but_streams_only_peeked(self):
+        from services.youtube.indexer import LIVE_PEEK, _tab_urls, tab_limit
+        ch = self._channel()
+        limits = {url.rsplit("/", 1)[-1]: tab_limit(ch, url) for url in _tab_urls(ch)}
+        self.assertEqual(limits["videos"], 15)
+        self.assertEqual(limits["streams"], LIVE_PEEK)
+
+    def test_a_channel_that_keeps_past_streams_reads_them_fully(self):
+        # Its library IS the streams tab, so the peek would starve it.
+        from services.youtube.indexer import _tab_urls, tab_limit
+        ch = self._channel(include_streams=True)
+        limits = {url.rsplit("/", 1)[-1]: tab_limit(ch, url) for url in _tab_urls(ch)}
+        self.assertEqual(limits["streams"], 15)
