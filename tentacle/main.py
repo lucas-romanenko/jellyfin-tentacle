@@ -5,11 +5,13 @@ FastAPI app with all routers
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import os
 import logging
+import re
+from pathlib import Path
 from datetime import datetime
 
 from models.database import create_tables, SessionLocal, seed_defaults, Setting, Provider, SyncRun
@@ -657,10 +659,52 @@ async def api_not_found(full_path: str, request: Request):
     )
 
 
+# The dashboard's JS is referenced as app.js?v=N, and browsers cache it on that
+# URL. The number used to be edited by hand, which meant remembering on every
+# change — and forgetting sent users a mix of new HTML and months-old
+# JavaScript, where the page simply lacks whatever was added. Derived from the
+# files now, so it cannot fall out of step with them.
+_ASSET_FILES = ("static/js/app.js", "static/js/pages.js")
+_index_cache: dict = {"key": None, "html": None}
+
+
+def _asset_version() -> str:
+    """Short digest of the front-end scripts, plus their sizes as a cheap key."""
+    import hashlib
+    h = hashlib.sha256()
+    for name in _ASSET_FILES:
+        try:
+            h.update(Path(name).read_bytes())
+        except OSError:
+            h.update(name.encode())
+    return h.hexdigest()[:12]
+
+
+def _index_html() -> str:
+    """index.html with ?v= rewritten to match what the scripts actually contain.
+
+    Recomputed when a script's modified time or size changes, so editing one
+    during development takes effect without a restart.
+    """
+    key = []
+    for name in _ASSET_FILES:
+        try:
+            st = Path(name).stat()
+            key.append((st.st_mtime_ns, st.st_size))
+        except OSError:
+            key.append(None)
+    key = tuple(key)
+    if _index_cache["key"] != key:
+        html = Path("static/index.html").read_text(encoding="utf-8")
+        _index_cache["html"] = re.sub(r"\?v=[\w.]+", f"?v={_asset_version()}", html)
+        _index_cache["key"] = key
+    return _index_cache["html"]
+
+
 @app.get("/{full_path:path}")
 async def serve_frontend(full_path: str):
-    return FileResponse(
-        "static/index.html",
+    return HTMLResponse(
+        _index_html(),
         headers={
             "Cache-Control": "no-cache, no-store, must-revalidate",
             "Pragma": "no-cache",
