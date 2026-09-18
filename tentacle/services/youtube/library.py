@@ -208,6 +208,29 @@ def write_video(video, channel, base_url: str, root: Path = None) -> dict:
     return {"folder": str(folder), "strm_written": wrote_strm, "artwork": art}
 
 
+def rewrite_strm(video, base_url: str) -> bool:
+    """Point an existing .strm at a new base URL. Returns True if it changed.
+
+    A .strm is otherwise never rewritten, because changing it makes Jellyfin
+    discard what it has probed. Here that is the point: the old address is
+    baked into the file, so changing the setting alone leaves every existing
+    video still pointing at somewhere that no longer serves it — and the
+    re-probe is needed anyway once the URL changes.
+    """
+    if not (video.strm_path and base_url):
+        return False
+    path = Path(video.strm_path)
+    wanted = strm_url(base_url, video.video_id)
+    try:
+        if path.read_text(encoding="utf-8").strip() == wanted:
+            return False
+        path.write_text(wanted, encoding="utf-8")
+        return True
+    except OSError as e:
+        logger.warning(f"[YouTube] Could not rewrite {path}: {e}")
+        return False
+
+
 def touch_strm(video) -> bool:
     """Mark a video's .strm as changed so Jellyfin probes it again.
 

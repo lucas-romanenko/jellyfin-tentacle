@@ -27,6 +27,55 @@ def base_url(db: Session) -> str:
     return configured.rstrip("/")
 
 
+def _probe(url):
+    """One GET, redirects not followed. A seam so this is testable offline."""
+    import httpx
+    with httpx.Client(timeout=10, follow_redirects=False) as c:
+        return c.get(url)
+
+
+def check_base_url(base: str) -> dict:
+    """Fetch the address a .strm will carry and say whether it serves Tentacle.
+
+    The setting only ever said the Jellyfin server must be able to reach it,
+    which is true but unverified — and the failure is silent and badly
+    misleading. An address behind Cloudflare Access, a reverse proxy asking for
+    a login, or simply the wrong host answers a media request with an HTML login
+    page, and ffmpeg reports that as "Invalid data found when processing input".
+    Nothing in Tentacle or Jellyfin points at the address.
+    """
+    try:
+        r = _probe(f"{base.rstrip('/')}/api/youtube/status")
+    except Exception as e:
+        return {"ok": False, "detail": f"Could not reach {base}: {e}"}
+
+    if r.status_code in (301, 302, 303, 307, 308):
+        where = r.headers.get("location", "")
+        if "cloudflareaccess.com" in where or "/cdn-cgi/access/" in where:
+            return {"ok": False, "detail":
+                    "Cloudflare Access is protecting this address — it answers with a "
+                    "login page, not media. Use the address on your own network "
+                    "instead (for example http://192.168.1.10:8888)."}
+        return {"ok": False, "detail":
+                f"This address redirects to {where or 'somewhere else'}. A .strm has to "
+                f"be served directly, with no login in front of it."}
+    if r.status_code in (401, 403):
+        return {"ok": False, "detail":
+                f"This address asks for authentication (HTTP {r.status_code}). Jellyfin's "
+                f"ffmpeg cannot log in — use an address with no login in front of it."}
+    if r.status_code != 200:
+        return {"ok": False, "detail": f"This address answered HTTP {r.status_code}."}
+    try:
+        body = r.json()
+    except ValueError:
+        return {"ok": False, "detail":
+                "This address answered with something other than Tentacle. Check it "
+                "points at Tentacle itself and not a proxy or another service."}
+    if "yt_dlp_available" not in body:
+        return {"ok": False, "detail": "This address is answering, but it is not Tentacle."}
+    return {"ok": True, "detail": f"{base} serves Tentacle directly."}
+
+
 def sync_channel(db: Session, channel: YouTubeChannel, base: str, on_progress=None) -> dict:
     """Index one channel, write any new media files, then apply retention."""
     result = indexer.index_channel(db, channel, on_progress=on_progress)

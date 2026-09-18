@@ -1178,3 +1178,127 @@ class TestReprobe(unittest.TestCase):
             strm_path = str(Path(self.root) / "gone" / "v.strm")
         self.assertFalse(library.touch_strm(V()))
         self.assertFalse(Path(V.strm_path).exists())
+
+
+class TestBaseUrlIsChecked(unittest.TestCase):
+    """The address a .strm carries is fetched by ffmpeg, which cannot log in.
+
+    An address behind Cloudflare Access, a reverse proxy asking for a login, or
+    simply the wrong host answers a media request with an HTML login page.
+    ffmpeg reports that as "Invalid data found when processing input" and
+    nothing anywhere points at the address — the setting page only ever said it
+    had to be reachable, and never checked.
+    """
+
+    def setUp(self):
+        from services.youtube import sync as ysync
+        self.sync = ysync
+        self._real = ysync._probe
+
+    def tearDown(self):
+        self.sync._probe = self._real
+
+    def _answer(self, status=200, body=None, headers=None, raises=None):
+        class _R:
+            status_code = status
+
+            def __init__(self_):
+                self_.headers = headers or {}
+
+            def json(self_):
+                if body is None:
+                    raise ValueError("not json")
+                return body
+
+        def _probe(url):
+            if raises:
+                raise raises
+            return _R()
+        self.sync._probe = _probe
+
+    def test_a_working_address_passes(self):
+        self._answer(body={"yt_dlp_available": True})
+        r = self.sync.check_base_url("http://192.168.1.10:8888")
+        self.assertTrue(r["ok"])
+
+    def test_cloudflare_access_is_named_specifically(self):
+        self._answer(status=302, headers={
+            "location": "https://x.cloudflareaccess.com/cdn-cgi/access/login/t"})
+        r = self.sync.check_base_url("https://t.example.com")
+        self.assertFalse(r["ok"])
+        self.assertIn("Cloudflare Access", r["detail"])
+
+    def test_any_other_redirect_is_rejected_too(self):
+        self._answer(status=302, headers={"location": "https://elsewhere/login"})
+        r = self.sync.check_base_url("https://t.example.com")
+        self.assertFalse(r["ok"])
+        self.assertIn("elsewhere", r["detail"])
+
+    def test_an_address_asking_for_a_login_is_rejected(self):
+        self._answer(status=401)
+        self.assertFalse(self.sync.check_base_url("https://t.example.com")["ok"])
+
+    def test_html_instead_of_json_is_rejected(self):
+        # This is exactly what ffmpeg chokes on, reported as invalid data.
+        self._answer(status=200, body=None)
+        r = self.sync.check_base_url("https://t.example.com")
+        self.assertFalse(r["ok"])
+
+    def test_some_other_service_answering_is_rejected(self):
+        self._answer(status=200, body={"hello": "i am not tentacle"})
+        r = self.sync.check_base_url("http://192.168.1.10:9999")
+        self.assertFalse(r["ok"])
+        self.assertIn("not Tentacle", r["detail"])
+
+    def test_an_unreachable_address_is_reported_not_raised(self):
+        self._answer(raises=OSError("connection refused"))
+        r = self.sync.check_base_url("http://192.168.1.99:8888")
+        self.assertFalse(r["ok"])
+        self.assertIn("Could not reach", r["detail"])
+
+
+class TestStrmFollowsTheAddress(unittest.TestCase):
+    """Changing the address has to repoint the videos that carry it.
+
+    Every existing .strm has the old address written inside it, so changing the
+    setting alone appears to do nothing: the videos keep pointing somewhere that
+    no longer serves them and playback keeps failing for the reason the setting
+    page claims to have fixed.
+    """
+
+    def setUp(self):
+        import tempfile as _tf
+        from pathlib import Path
+        self.root = Path(_tf.mkdtemp())
+        self.strm = self.root / "v.strm"
+        self.strm.write_text("https://old.example.com/api/youtube/v/kQA2wNKxy_8/master.m3u8")
+
+        class V:
+            video_id = "kQA2wNKxy_8"
+        self.video = V()
+        self.video.strm_path = str(self.strm)
+
+    def test_the_address_is_replaced(self):
+        self.assertTrue(library.rewrite_strm(self.video, "http://192.168.1.10:8888"))
+        self.assertEqual(self.strm.read_text(),
+                         "http://192.168.1.10:8888/api/youtube/v/kQA2wNKxy_8/master.m3u8")
+
+    def test_the_video_id_is_preserved(self):
+        library.rewrite_strm(self.video, "http://192.168.1.10:8888")
+        self.assertIn("kQA2wNKxy_8", self.strm.read_text())
+
+    def test_rewriting_to_the_same_address_is_a_no_op(self):
+        # Rewriting makes Jellyfin discard what it has probed, so it must
+        # happen only when the address actually changed.
+        library.rewrite_strm(self.video, "http://192.168.1.10:8888")
+        self.assertFalse(library.rewrite_strm(self.video, "http://192.168.1.10:8888"))
+        self.assertFalse(library.rewrite_strm(self.video, "http://192.168.1.10:8888/"))
+
+    def test_a_video_with_no_file_is_skipped(self):
+        self.video.strm_path = None
+        self.assertFalse(library.rewrite_strm(self.video, "http://192.168.1.10:8888"))
+
+    def test_an_empty_address_never_blanks_a_file(self):
+        before = self.strm.read_text()
+        self.assertFalse(library.rewrite_strm(self.video, ""))
+        self.assertEqual(self.strm.read_text(), before)

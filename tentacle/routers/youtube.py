@@ -20,6 +20,7 @@ from typing import Optional
 from models.database import YouTubeChannel, YouTubeVideo, get_db, get_setting
 from routers.auth import require_admin
 from services.youtube import client, indexer, library, playlist, resolver
+from services.youtube.sync import check_base_url
 from services.youtube.errors import YouTubeBlocked, YouTubeError
 
 logger = logging.getLogger(__name__)
@@ -375,11 +376,39 @@ def save_setup(body: SetupBody, db: Session = Depends(get_db)):
             "A base URL is required: every .strm carries this address, and the "
             "Jellyfin server is what fetches it.",
         )
+    previous = (get_setting(db, "youtube_base_url", "") or "").strip().rstrip("/")
     set_setting(db, "youtube_enabled", "true" if body.enabled else "false")
     if base:
         set_setting(db, "youtube_base_url", base)
+
+    # Every existing .strm carries the old address. Leaving them alone means
+    # changing this setting appears to do nothing — the videos keep pointing at
+    # somewhere that no longer serves them, and playback keeps failing for a
+    # reason the setting page claims to have fixed.
+    rewritten = 0
+    if base and previous and base != previous:
+        for video in db.query(YouTubeVideo).filter(
+            YouTubeVideo.removed_at.is_(None),
+            YouTubeVideo.strm_path.isnot(None),
+        ).all():
+            if library.rewrite_strm(video, base):
+                rewritten += 1
+        if rewritten:
+            logger.info(f"[YouTube] Repointed {rewritten} .strm file(s) at {base}")
+            try:
+                from services.jellyfin import JellyfinService
+                url = get_setting(db, "jellyfin_url", "")
+                key = get_setting(db, "jellyfin_api_key", "")
+                if url and key:
+                    JellyfinService(url, key,
+                                    get_setting(db, "jellyfin_user_id", "")).trigger_library_scan()
+            except Exception as e:
+                logger.warning(f"[YouTube] Could not trigger a Jellyfin scan: {e}")
+
     logger.info(f"[YouTube] Source {'enabled' if body.enabled else 'disabled'} (base {base or 'unset'})")
-    return {"success": True, "enabled": body.enabled, "base_url": base}
+    reachable = check_base_url(base) if base else None
+    return {"success": True, "enabled": body.enabled, "base_url": base,
+            "rewritten": rewritten, "reachable": reachable}
 
 
 @router.get("/diagnose", dependencies=[Depends(require_admin)])
@@ -416,6 +445,15 @@ def diagnose(request: Request, db: Session = Depends(get_db)):
         "Turn it on at the top of this page.")
     add(bool(base), "Tentacle address set", base or "not set",
         "Set it at the top of this page. It must be reachable BY the Jellyfin server.")
+    if base:
+        # The single most common way playback fails, and the least visible: the
+        # address answers a browser fine and answers ffmpeg with a login page.
+        probe = check_base_url(base)
+        add(probe["ok"], "Tentacle address serves media directly", probe["detail"],
+            None if probe["ok"] else
+            "A .strm is fetched by Jellyfin's ffmpeg, which cannot log in. Use the "
+            "address Jellyfin reaches on your own network, with no proxy login in "
+            "front of it. Changing it here repoints every existing video.")
 
     channels = db.query(YouTubeChannel).all()
     add(channels, "Channels added", f"{len(channels)} channel(s)", "Paste a channel URL above.")
