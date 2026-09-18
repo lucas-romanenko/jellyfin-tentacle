@@ -1383,19 +1383,45 @@ class TestAddingAChannel(unittest.TestCase):
             "banner_url": None, "canonical": "u", "has_uploads": True,
         }
         self.started = []
+        from services.youtube import sync as ysync
+        self.ysync = ysync
         self._real = (youtube.client.available, youtube.indexer.resolve_channel,
-                      youtube._start_refresh)
+                      youtube._start_refresh, ysync.detect_base_url)
         youtube.client.available = lambda: True
         youtube.indexer.resolve_channel = lambda url: dict(self.info)
         youtube._start_refresh = lambda **kw: self.started.append(kw) or True
+        # Tentacle's address is worked out on add; here it "is" this one.
+        ysync.detect_base_url = lambda db, host=None, scheme="http": {
+            "url": "http://192.168.2.10:8888", "tried": []}
 
     def tearDown(self):
         (self.youtube.client.available, self.youtube.indexer.resolve_channel,
-         self.youtube._start_refresh) = self._real
+         self.youtube._start_refresh, self.ysync.detect_base_url) = self._real
+
+    class _Req:
+        headers = {"host": "192.168.2.10:8888"}
 
     def _add(self, **fields):
         body = self.youtube.ChannelCreate(url="https://youtube.com/@x", **fields)
-        return self.youtube.add_channel(body, db=self.db)
+        return self.youtube.add_channel(body, request=self._Req(), db=self.db)
+
+    def test_adding_turns_the_source_on_and_settles_the_address(self):
+        # No "turn on" step and nothing to type: adding is the decision.
+        from models.database import get_setting
+        self._add()
+        self.assertEqual(get_setting(self.db, "youtube_enabled", "false"), "true")
+        self.assertEqual(get_setting(self.db, "youtube_base_url", ""), "http://192.168.2.10:8888")
+
+    def test_add_is_refused_only_when_no_address_can_be_worked_out(self):
+        from fastapi import HTTPException
+        from models.database import get_setting
+        self.ysync.detect_base_url = lambda db, host=None, scheme="http": {"url": None, "tried": []}
+        with self.assertRaises(HTTPException) as cm:
+            self._add()
+        self.assertEqual(cm.exception.status_code, 400)
+        self.assertIn("Settings → Integrations", cm.exception.detail)
+        self.assertEqual(self.db.query(self.YouTubeChannel).count(), 0)
+        self.assertNotEqual(get_setting(self.db, "youtube_enabled", "false"), "true")
 
     def _channel(self):
         return self.db.query(self.YouTubeChannel).first()
@@ -1449,7 +1475,7 @@ class TestAddingAChannel(unittest.TestCase):
         # A client built against the previous form still works.
         body = self.youtube.ChannelCreate(url="u", backfill=30, min_duration=60,
                                           include_streams=True)
-        self.youtube.add_channel(body, db=self.db)
+        self.youtube.add_channel(body, request=self._Req(), db=self.db)
         ch = self._channel()
         self.assertEqual(ch.min_duration, 0)
         self.assertFalse(ch.include_streams)
@@ -2289,3 +2315,44 @@ class TestEnablingWithABlankAddress(unittest.TestCase):
                                     request=self._Req(), db=self.db)
         self.assertFalse(r["detected"])
         self.assertEqual(get_setting(self.db, "youtube_base_url", ""), "http://192.168.2.77:8888")
+
+
+class TestTheAddressResolvesItself(unittest.TestCase):
+    """base_url() works the address out and keeps it when nothing is saved."""
+
+    def setUp(self):
+        import tempfile as _tf
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        import models.database as mdb
+        from services.youtube import sync as ysync
+        self.ysync = ysync
+        engine = create_engine(f"sqlite:///{_tf.mkdtemp()}/t.db")
+        mdb.Base.metadata.create_all(engine)
+        self.db = sessionmaker(bind=engine)()
+        self._real = ysync.detect_base_url
+
+    def tearDown(self):
+        self.ysync.detect_base_url = self._real
+
+    def test_it_is_worked_out_once_and_then_saved(self):
+        from models.database import get_setting
+        calls = []
+        self.ysync.detect_base_url = lambda db, host=None, scheme="http": (
+            calls.append(1) or {"url": "http://192.168.2.52:8888", "tried": []})
+        self.assertEqual(self.ysync.base_url(self.db), "http://192.168.2.52:8888")
+        self.assertEqual(get_setting(self.db, "youtube_base_url", ""), "http://192.168.2.52:8888")
+        # Saved, so the second call does not work it out again — every file
+        # carries the same address and the page can show it.
+        self.assertEqual(self.ysync.base_url(self.db), "http://192.168.2.52:8888")
+        self.assertEqual(len(calls), 1)
+
+    def test_a_saved_address_is_used_as_is(self):
+        from models.database import set_setting
+        set_setting(self.db, "youtube_base_url", "http://10.0.0.5:8888/")
+        self.ysync.detect_base_url = lambda db, host=None, scheme="http": (_ for _ in ()).throw(AssertionError("must not detect"))
+        self.assertEqual(self.ysync.base_url(self.db), "http://10.0.0.5:8888")
+
+    def test_nothing_worked_out_means_empty_not_a_crash(self):
+        self.ysync.detect_base_url = lambda db, host=None, scheme="http": {"url": None, "tried": []}
+        self.assertEqual(self.ysync.base_url(self.db), "")

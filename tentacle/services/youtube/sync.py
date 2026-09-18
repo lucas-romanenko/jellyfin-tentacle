@@ -34,14 +34,25 @@ SCAN_POLL_SECONDS = 3
 REFILL_SCHEDULE = (3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 10, 10, 10, 10, 10, 10, 30, 30, 30, 30, 120, 600)
 
 
-def base_url(db: Session) -> str:
+def base_url(db: Session, request_host: str = None, request_scheme: str = "http") -> str:
     """The address written into .strm files.
 
     Must be reachable by the Jellyfin server, not just by a browser — Jellyfin's
-    ffmpeg is what fetches it.
+    ffmpeg is what fetches it. Nobody has to supply it: when nothing is saved
+    it is worked out (the plugin's own TentacleUrl first) and then saved, so
+    every file carries the same one and the page can show it. Empty only when
+    nothing could be worked out.
     """
-    configured = (get_setting(db, "youtube_base_url", "") or "").strip()
-    return configured.rstrip("/")
+    configured = (get_setting(db, "youtube_base_url", "") or "").strip().rstrip("/")
+    if configured:
+        return configured
+    found = detect_base_url(db, request_host, request_scheme)
+    if found["url"]:
+        from models.database import set_setting
+        set_setting(db, "youtube_base_url", found["url"])
+        logger.info(f"[YouTube] Worked out Tentacle's address: {found['url']}")
+        return found["url"]
+    return ""
 
 
 def _probe(url, timeout: float = 10):
@@ -671,8 +682,9 @@ def run_youtube_sync() -> dict:
             return {"enabled": False}
         base = base_url(db)
         if not base:
-            logger.warning("[YouTube] youtube_base_url is not set — skipping (a .strm needs an address Jellyfin can reach)")
-            return {"enabled": True, "error": "youtube_base_url not set"}
+            logger.warning("[YouTube] Could not work out Tentacle's address — skipping. Point the "
+                           "Jellyfin plugin at Tentacle, or set the address in Settings → Integrations.")
+            return {"enabled": True, "error": "Tentacle's address could not be worked out"}
 
         totals = {"channels": 0, "new": 0, "written": 0, "retired": 0, "errors": 0}
         changed = []

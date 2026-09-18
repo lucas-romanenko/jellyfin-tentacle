@@ -2658,7 +2658,6 @@ function addAllMissingToRadarr() { addAllMissingToArr('radarr'); }
 async function loadYouTubePage() {
   const box = document.getElementById('yt-channels');
   const warn = document.getElementById('yt-unavailable');
-  const setup = document.getElementById('yt-setup');
   const addCard = document.getElementById('yt-add-card');
   try {
     const st = await api('/api/youtube/status');
@@ -2670,20 +2669,18 @@ async function loadYouTubePage() {
     warn.style.display = blockers.length ? '' : 'none';
     if (blockers.length) warn.querySelector('.card-body').innerHTML = blockers.join('<br>');
 
-    // Not turned on yet: show setup, hide the add form until it is.
-    setup.style.display = st.enabled ? 'none' : '';
-    addCard.style.display = st.enabled ? '' : 'none';
-    // Turned on: the address stays visible and changeable, with whether it
-    // actually answers as Tentacle right next to it.
-    const addrCard = document.getElementById('yt-address-card');
-    if (addrCard) {
-      addrCard.style.display = st.enabled ? '' : 'none';
-      if (st.enabled) ytShowAddress('yt-address', st);
-    }
-    if (!st.enabled) {
-      document.getElementById('yt-base-url').value = st.base_url || st.suggested_base_url || '';
-      document.getElementById('yt-setup-hints').innerHTML =
-        'Every video&rsquo;s pointer file carries this address and Jellyfin&rsquo;s own player fetches it, so it has to be Tentacle as seen from the Jellyfin server — a LAN address like <code>http://192.168.1.10:8888</code>, not <code>localhost</code> and not a YouTube link.';
+    // There is no turn-on step: adding a channel is the decision, and the
+    // address every pointer file carries is worked out then. The advanced
+    // block shows what was worked out, and lets it be overridden.
+    addCard.style.display = '';
+    ytShowAddress('yt-address', st);
+    const summary = document.getElementById('yt-address-summary');
+    if (summary) {
+      const r = st.reachable;
+      summary.textContent = st.base_url
+        ? `— ${st.base_url}${r ? (r.ok ? ' ✓' : ' ✕') : ''}`
+        : (st.detected && st.detected.url ? `— will use ${st.detected.url}` : '— not worked out yet');
+      summary.style.color = (r && !r.ok) ? 'var(--red)' : 'var(--text3)';
     }
 
     await loadYouTubeChannels();
@@ -2799,19 +2796,6 @@ async function loadTentacleAddress() {
     const st = await api('/api/youtube/status');
     ytShowAddress('settings-tentacle-address', st);
   } catch { /* the YouTube page shows the same thing */ }
-}
-
-async function ytSaveSetup(enabled) {
-  const base = document.getElementById('yt-base-url').value.trim();
-  try {
-    const r = await api('/api/youtube/setup', { method: 'POST', body: { enabled, base_url: base } });
-    toast(enabled
-      ? (r.detected ? `YouTube source turned on — Tentacle's address worked out as ${r.base_url}` : 'YouTube source turned on')
-      : 'YouTube source turned off', 'success', 7000);
-    loadYouTubePage();
-  } catch (e) {
-    toast(e.message, 'error', 8000);
-  }
 }
 
 async function loadYouTubeChannels() {
@@ -6101,7 +6085,7 @@ async function loadHealthDeletions() {
     showManageEpisodesModal, confirmManageEpisodes,
     showDownloadMoreModal, confirmDownloadMore, detailToggleSeason, toggleFollow,
     // YouTube
-    loadYouTubePage, loadYouTubeChannels, ytAddChannel, ytDeleteChannel, ytRefreshNow, ytSaveSetup, ytStartPolling, ytDiagnose, ytSkipNote, ytReprobe, loadLiveYouTubeChannels, toggleLiveYouTube, ytSaveAddress, ytShowAddress, loadTentacleAddress, ytUseAddress, ytDetectAddress,
+    loadYouTubePage, loadYouTubeChannels, ytAddChannel, ytDeleteChannel, ytRefreshNow, ytStartPolling, ytDiagnose, ytSkipNote, ytReprobe, loadLiveYouTubeChannels, toggleLiveYouTube, ytSaveAddress, ytShowAddress, loadTentacleAddress, ytUseAddress, ytDetectAddress,
     // Following
     loadFollowing,
     toggleStrmManaged,

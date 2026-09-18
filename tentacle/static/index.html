@@ -1463,38 +1463,22 @@ td.primary { color: var(--text); font-weight: 500; }
           <div class="card-body" style="font-size:13px;color:var(--text2)"></div>
         </div>
 
-        <div class="card" id="yt-setup" style="margin-bottom:16px;display:none">
-          <div class="card-header"><h3>Set up</h3></div>
-          <div class="card-body">
-            <p style="font-size:13px;color:var(--text2);margin:0 0 12px">
-              Videos are <strong>never downloaded</strong>. Tentacle adds a small pointer file for each
-              one; playback streams from YouTube on demand, through this server.
-            </p>
-            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+        <!-- Every video's pointer file carries Tentacle's address as the Jellyfin
+             server reaches it. It is worked out on its own — from the plugin's
+             own configuration first — so this is an override, not a step. -->
+        <div class="card" id="yt-address-card" style="margin-bottom:16px">
+          <details>
+            <summary style="cursor:pointer;padding:12px 16px;font-size:13px;color:var(--text2)">Advanced: Tentacle&rsquo;s address <span id="yt-address-summary" style="color:var(--text3)"></span></summary>
+            <div class="card-body" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;padding-top:0">
               <div style="flex:1;min-width:320px">
-                <label class="form-label">Tentacle&rsquo;s own address <span style="font-weight:400;color:var(--text3)">&mdash; leave blank and it is worked out for you. Not a YouTube link; channels go below.</span></label>
-                <input type="text" id="yt-base-url" class="form-input" placeholder="detected automatically — or http://192.168.1.10:8888">
+                <label class="form-label">As your Jellyfin server reaches this dashboard <span style="font-weight:400;color:var(--text3)">&mdash; worked out automatically; change it only if a video will not play</span></label>
+                <input type="text" id="yt-address" class="form-input" placeholder="http://192.168.1.10:8888">
+                <div id="yt-address-status" style="font-size:12px;margin-top:4px;color:var(--text3)"></div>
               </div>
-              <button class="btn btn-primary" onclick="ytSaveSetup(true)">Turn on</button>
+              <button class="btn btn-secondary" onclick="ytDetectAddress('yt-address')" title="Work it out again">Detect</button>
+              <button class="btn btn-secondary" onclick="ytSaveAddress('yt-address')">Save</button>
             </div>
-            <div id="yt-setup-hints" style="margin-top:10px;font-size:12px;color:var(--text3)"></div>
-          </div>
-        </div>
-
-        <!-- Shown once the source is on. Every video's pointer file carries this
-             address, and it used to be settable exactly once — on the setup card,
-             which disappears the moment the source is turned on — so a wrong
-             paste was permanent. -->
-        <div class="card" id="yt-address-card" style="margin-bottom:16px;display:none">
-          <div class="card-body" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
-            <div style="flex:1;min-width:320px">
-              <label class="form-label">Tentacle&rsquo;s own address <span style="font-weight:400;color:var(--text3)">&mdash; as your Jellyfin server reaches it</span></label>
-              <input type="text" id="yt-address" class="form-input" placeholder="http://192.168.1.10:8888">
-              <div id="yt-address-status" style="font-size:12px;margin-top:4px;color:var(--text3)"></div>
-            </div>
-            <button class="btn btn-secondary" onclick="ytDetectAddress('yt-address')" title="Work out the address from where Jellyfin is and how this page was opened">Detect</button>
-            <button class="btn btn-secondary" onclick="ytSaveAddress('yt-address')">Save address</button>
-          </div>
+          </details>
         </div>
 
         <div class="card" id="yt-add-card" style="margin-bottom:16px">

@@ -501,9 +501,11 @@ def diagnose(request: Request, db: Session = Depends(get_db)):
     base = (get_setting(db, "youtube_base_url", "") or "").strip()
     enabled = get_setting(db, "youtube_enabled", "false") == "true"
     add(enabled, "YouTube source turned on", "on" if enabled else "off",
-        "Turn it on at the top of this page.")
+        "It turns on by itself the moment a channel is added. Add one above.")
     add(bool(base), "Tentacle address set", base or "not set",
-        "Set it at the top of this page. It must be reachable BY the Jellyfin server.")
+        "It is worked out when a channel is added — from the Jellyfin plugin's own "
+        "configuration first. If it is still empty, point the plugin at Tentacle, or set "
+        "it under Advanced on this page or in Settings → Integrations.")
     if base:
         # The single most common way playback fails, and the least visible: the
         # address answers a browser fine and answers ffmpeg with a login page.
@@ -715,7 +717,7 @@ def list_channels(db: Session = Depends(get_db)):
 
 
 @router.post("/channels", dependencies=[Depends(require_admin)])
-def add_channel(body: ChannelCreate, db: Session = Depends(get_db)):
+def add_channel(body: ChannelCreate, request: Request, db: Session = Depends(get_db)):
     """Add a channel. This is the only step; the rest is automatic.
 
     Indexing starts immediately in the background, the videos are written and
@@ -725,6 +727,27 @@ def add_channel(body: ChannelCreate, db: Session = Depends(get_db)):
     """
     if not client.available():
         raise HTTPException(400, "yt-dlp is not installed in this image")
+
+    # No separate "turn on" step. Adding a channel is the decision, so the
+    # source comes on here, and Tentacle's address — what every .strm will
+    # carry — is worked out here too: the plugin's own TentacleUrl first,
+    # then Jellyfin's host, then how this page was opened. Only if none of
+    # those answers as Tentacle does anyone have to type anything.
+    from models.database import set_setting
+    from services.youtube.sync import base_url
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host")
+    if not base_url(db, host, request.headers.get("x-forwarded-proto", "http")):
+        raise HTTPException(
+            400,
+            "Could not work out Tentacle's address — the one your Jellyfin server reaches "
+            "it at, which every video's pointer file has to carry. Point the Jellyfin "
+            "plugin at Tentacle (Dashboard → Plugins → Tentacle), or set the address in "
+            "Settings → Integrations.",
+        )
+    if get_setting(db, "youtube_enabled", "false") != "true":
+        set_setting(db, "youtube_enabled", "true")
+        logger.info("[YouTube] Source turned on by adding a channel")
+
     try:
         info = indexer.resolve_channel(body.url)
     except YouTubeBlocked:
@@ -994,8 +1017,8 @@ def refresh_now(db: Session = Depends(get_db)):
     if not base_url(db):
         raise HTTPException(
             400,
-            "Turn the YouTube source on first — a .strm has to carry an address "
-            "the Jellyfin server itself can reach.",
+            "Could not work out Tentacle's address. Point the Jellyfin plugin at Tentacle, "
+            "or set the address in Settings → Integrations.",
         )
 
     started = _start_refresh()
