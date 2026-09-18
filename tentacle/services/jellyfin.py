@@ -484,7 +484,9 @@ class JellyfinService:
         except requests.HTTPError:
             raise
         except Exception as e:
-            logger.debug(f"Failed to create playlist '{name}': {e}")
+            # A warning, not debug: a playlist that silently fails to exist is
+            # the hardest kind of missing to diagnose from outside.
+            logger.warning(f"Failed to create playlist '{name}': {e}")
             return None
 
     def get_playlist_items(self, playlist_id: str, limit: int = 50000) -> List[dict]:

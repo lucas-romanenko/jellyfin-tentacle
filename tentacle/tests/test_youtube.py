@@ -1965,6 +1965,18 @@ class TestPlaylistsAreRefilledHourly(_PublishFixture):
         self.assertEqual(fixed, 1)
         self.assertIn(("refresh", self.user.id, ("TraderTV Live",)), self.log)
 
+    def test_a_playlist_jellyfin_refuses_to_create_is_reported_not_claimed(self):
+        # Creation failed silently for a second install: the sync ran, no
+        # Jellyfin id ever appeared, and the log said "created" anyway.
+        self.sm._get_smartlists_with_playlist_ids = lambda db, user_id=None: []
+        self.sm.sync_smartlists = lambda db, user_id=None: None
+        with self.assertLogs("services.youtube.sync", level="WARNING") as cm:
+            fixed, behind = self.ysync.reconcile_playlists(self.db, report=True)
+        self.assertEqual(fixed, 0)
+        self.assertTrue(behind)
+        self.assertTrue(any("did not create the playlist" in line for line in cm.output), cm.output)
+        self.assertFalse(any("Created playlist" in line for line in cm.output))
+
     def test_a_full_playlist_is_left_alone_and_reported_as_caught_up(self):
         self.jf._playlist_items = {"pl-1": 3}
         self.assertEqual(self.ysync.reconcile_playlists(self.db, report=True), (0, False))

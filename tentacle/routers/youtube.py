@@ -523,6 +523,24 @@ def diagnose(request: Request, db: Session = Depends(get_db)):
         try:
             from services.jellyfin import JellyfinService
             jf = JellyfinService(jf_url, jf_key, get_setting(db, "jellyfin_user_id", ""))
+
+            # The two things creating a playlist needs, checked outright. A
+            # bad key or an unknown account failed silently before: the
+            # playlist simply never existed, with nothing on screen to say why.
+            add(jf.test_connection(), "Jellyfin answers with this API key",
+                jf_url, "Check Jellyfin's URL and API key in Settings.")
+            try:
+                me = get_user_from_request(request, db)
+            except Exception:
+                me = None
+            if me is not None:
+                jf_me = jf._get(f"/Users/{me.jellyfin_user_id}") if me.jellyfin_user_id else None
+                add(bool(jf_me), "Your Jellyfin account is known to Tentacle",
+                    (jf_me or {}).get("Name") or (me.jellyfin_user_id or "no account id"),
+                    "Playlists are created in Jellyfin as your account, and Jellyfin does not "
+                    "recognise the account Tentacle has for you. Log out of Tentacle and log "
+                    "back in with your Jellyfin account.")
+
             for ch in channels:
                 tag = f"yt:{ch.slug}"
                 found = jf.query_items(include_types=["Movie"], tags=[tag]) or []
@@ -564,8 +582,10 @@ def diagnose(request: Request, db: Session = Depends(get_db)):
             add(not missing, "Channel playlists exist in Jellyfin",
                 f"{len(names & have)}/{len(names)} created"
                 + (f" (missing: {', '.join(sorted(missing))})" if missing else ""),
-                "They are created when the channel's first index finishes. Press "
-                "'Check for new videos' and wait for it to complete.")
+                "They are created in Jellyfin as your account. If the two Jellyfin checks "
+                "above pass, press 'Check for new videos' and wait for it to finish; if "
+                "one fails, fix that first — a playlist Jellyfin refuses to create is "
+                "logged as 'Could not create Jellyfin playlist' with the reason.")
             config = _read_home_json(user) or {}
             rows = {r.get("display_name") for r in (config.get("rows") or [])}
             on_home = names & rows

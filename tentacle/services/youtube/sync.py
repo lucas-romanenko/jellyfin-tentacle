@@ -512,13 +512,27 @@ def reconcile_playlists(db: Session, report: bool = False):
         # A user with no playlist for an enabled channel at all — created after
         # the channel was published, most likely — gets one made first.
         # Refilling can only top up a playlist that exists.
-        if any(title not in {p["name"] for p in have_playlists} for title in want):
+        missing = [title for title in want if title not in {p["name"] for p in have_playlists}]
+        if missing:
             try:
                 sync_smartlists(db, user_id=user.id)
-                have_playlists = _get_smartlists_with_playlist_ids(db, user_id=user.id)
-                logger.info(f"[YouTube] Created missing channel playlist(s) for user {user.id}")
             except Exception as e:
                 logger.warning(f"[YouTube] Could not create playlists for user {user.id}: {e}")
+            have_playlists = _get_smartlists_with_playlist_ids(db, user_id=user.id)
+            still = [t for t in missing if t not in {p["name"] for p in have_playlists}]
+            # Say what actually happened. This used to report success whether
+            # or not Jellyfin had made the playlist, and a creation that failed
+            # was logged under another name — so a channel with no playlist
+            # looked, in the log, like one that had just been given one.
+            for title in [t for t in missing if t not in still]:
+                logger.info(f"[YouTube] Created playlist '{title}' for user {user.id}")
+            if still:
+                still_behind = True
+                logger.warning(
+                    f"[YouTube] Jellyfin did not create the playlist(s) {still} for user {user.id}. "
+                    f"The reason is logged just above as 'Could not create Jellyfin playlist'. "
+                    f"Usually: Settings → Jellyfin URL or API key is wrong, or this user's "
+                    f"Jellyfin account is not what Tentacle thinks it is.")
         short = []
         for p in have_playlists:
             if not p.get("is_youtube") or not want.get(p["name"]):
