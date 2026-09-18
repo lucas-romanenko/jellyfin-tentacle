@@ -126,9 +126,12 @@ def apply_retention(db: Session, channel: YouTubeChannel) -> int:
     so this is never reached with a partial picture. Each removal touches a
     single video's own folder.
     """
+    # Library items only. A live or upcoming stream is a guide entry, not one
+    # of the "newest N videos", and counting it would push a real upload out.
     videos = db.query(YouTubeVideo).filter(
         YouTubeVideo.channel_fk == channel.id,
         YouTubeVideo.removed_at.is_(None),
+        indexer.is_library_status(YouTubeVideo.live_status),
     ).order_by(YouTubeVideo.published_at.desc().nullslast()).all()
 
     doomed = []
@@ -165,6 +168,7 @@ def publish_to_jellyfin(db: Session, changed_playlists: list) -> None:
     url = get_setting(db, "jellyfin_url", "")
     key = get_setting(db, "jellyfin_api_key", "")
     if not (url and key):
+        logger.info("[YouTube] Jellyfin is not configured — files written, nothing published")
         return
 
     try:

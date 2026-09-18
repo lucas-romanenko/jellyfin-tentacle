@@ -1489,44 +1489,22 @@ td.primary { color: var(--text); font-weight: 500; }
                 <label class="form-label">Channel or playlist URL</label>
                 <input type="text" id="yt-url" class="form-input" placeholder="https://www.youtube.com/@channel">
               </div>
+              <div style="width:120px">
+                <label class="form-label">Keep newest</label>
+                <input type="number" id="yt-keep" class="form-input" value="10" min="1" max="100">
+              </div>
               <button class="btn btn-primary" onclick="ytAddChannel()">Add</button>
             </div>
-
-            <details style="margin-top:12px">
-              <summary style="cursor:pointer;font-size:13px;color:var(--text2)">Options</summary>
-              <div style="margin-top:12px;display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end">
-                <div style="width:170px">
-                  <label class="form-label">Show newest</label>
-                  <input type="number" id="yt-keep" class="form-input" value="200" min="1">
-                  <div style="font-size:11px;color:var(--text3);margin-top:3px">videos kept in the library</div>
-                </div>
-                <div style="width:170px">
-                  <label class="form-label">Start with</label>
-                  <input type="number" id="yt-backfill" class="form-input" value="30" min="1" max="200">
-                  <div style="font-size:11px;color:var(--text3);margin-top:3px">existing videos to pick up now</div>
-                </div>
-                <div style="width:170px">
-                  <label class="form-label">Stream up to</label>
-                  <select id="yt-quality" class="form-input">
-                    <option value="1080">1080p</option>
-                    <option value="720">720p</option>
-                    <option value="480">480p</option>
-                  </select>
-                  <div style="font-size:11px;color:var(--text3);margin-top:3px">playback quality cap</div>
-                </div>
-                <div style="width:170px">
-                  <label class="form-label">Skip shorter than</label>
-                  <input type="number" id="yt-min-duration" class="form-input" value="60" min="0">
-                  <div style="font-size:11px;color:var(--text3);margin-top:3px">seconds — skips Shorts</div>
-                </div>
-              </div>
-              <div style="margin-top:14px;font-size:13px;color:var(--text2)">
-                <div style="margin-bottom:6px;color:var(--text3);font-size:12px">Which of the channel&rsquo;s tabs to include</div>
-                <label style="margin-right:16px"><input type="checkbox" id="yt-inc-videos" checked> Videos</label>
-                <label style="margin-right:16px"><input type="checkbox" id="yt-inc-streams"> Past live streams</label>
-                <label><input type="checkbox" id="yt-inc-shorts"> Shorts</label>
-              </div>
-            </details>
+            <div style="margin-top:12px;font-size:13px;color:var(--text2);display:flex;gap:24px;flex-wrap:wrap">
+              <label><input type="checkbox" id="yt-inc-shorts"> Include Shorts</label>
+              <label><input type="checkbox" id="yt-live"> Live TV channel <span style="color:var(--text3)">&mdash; its live and upcoming streams appear in Jellyfin&rsquo;s Live TV</span></label>
+            </div>
+            <p style="font-size:12px;color:var(--text3);margin:12px 0 0">
+              That&rsquo;s it. The channel&rsquo;s newest videos are added to your library and its playlist
+              is created; from then on it is checked every hour and always holds the newest ones.
+              Put it on your home screen from the <strong>Home Screen</strong> tab. Nothing is downloaded &mdash;
+              videos stream from YouTube when played.
+            </p>
           </div>
         </div>
 
@@ -1536,6 +1514,11 @@ td.primary { color: var(--text); font-weight: 500; }
             <button class="btn btn-secondary btn-sm" onclick="ytDiagnose()">Re-run</button>
           </div>
           <div class="card-body" id="yt-diag"></div>
+          <div style="padding:0 16px 14px;font-size:12px;color:var(--text3)">
+            Everything checks out but a video still won&rsquo;t play?
+            <a href="#" onclick="ytReprobe();return false">Ask Jellyfin to re-read the videos</a>
+            &mdash; it keeps the first thing it learned about each one, and this makes it look again.
+          </div>
         </div>
 
         <div class="card">
@@ -1543,8 +1526,7 @@ td.primary { color: var(--text); font-weight: 500; }
             <h3>Channels</h3>
             <div style="display:flex;gap:8px">
               <button class="btn btn-secondary btn-sm" onclick="ytDiagnose()">Why isn&rsquo;t it working?</button>
-              <button class="btn btn-secondary btn-sm" onclick="ytRefreshNow()">Refresh now</button>
-              <button class="btn btn-secondary btn-sm" onclick="ytReprobe()" title="Ask Jellyfin to re-read every YouTube video's audio and video streams. Use this if a video that should play gives a playback error.">Re-check in Jellyfin</button>
+              <button class="btn btn-secondary btn-sm" onclick="ytRefreshNow()" title="Runs every hour on its own. Press this to look for new videos right now.">Check for new videos</button>
             </div>
           </div>
           <div class="card-body" id="yt-channels">
@@ -2502,6 +2484,17 @@ td.primary { color: var(--text); font-weight: 500; }
 
         <!-- Tab: Channels -->
         <div class="live-tab-panel" id="live-panel-channels">
+          <!-- YouTube channels are Live TV channels too. They come from the
+               YouTube page, where Live TV is chosen when the channel is added;
+               this is where they sit alongside everything else in the lineup,
+               and where Live TV can be switched on or off for one later. -->
+          <div class="card" id="live-youtube-card" style="display:none;margin-bottom:16px">
+            <div class="card-header">
+              <div class="card-title">YouTube Channels <span id="live-youtube-count" style="color:var(--text3);font-weight:400"></span></div>
+              <span style="font-size:12px;color:var(--text3)">Live and upcoming streams appear in Jellyfin&rsquo;s guide on their own. Add channels on the YouTube page.</span>
+            </div>
+            <div id="live-youtube-list"></div>
+          </div>
           <div class="card">
             <div class="card-header">
               <div class="card-title">Channels <span id="live-ch-count" style="color:var(--text3);font-weight:400"></span></div>

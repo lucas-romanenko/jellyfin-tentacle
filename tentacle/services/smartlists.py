@@ -305,17 +305,19 @@ def get_desired_smartlists(db: Session, user_id: int = None) -> list:
                     })
                     existing_tags.add(user_tag)
 
-    # ── YouTube channel rows (per-user opt-in) ──
-    # Each subscribed channel becomes a playlist of its videos. The tag is
-    # already in every video's NFO, which Jellyfin reads for .strm files, so no
-    # tagger pass is needed. Being *desired* is also what keeps the orphan
-    # cleanup and write_home_config from dropping the row.
+    # ── YouTube channel playlists ──
+    # Every added channel becomes a playlist of its uploads, for every user.
+    # Adding the channel is the decision; the per-user choice is whether it
+    # goes on a home screen, made on the Home Screen tab like any other row.
+    # The tag is already in every video's NFO, which Jellyfin reads for .strm
+    # files, so no tagger pass is needed. Being *desired* is also what keeps
+    # the orphan cleanup and write_home_config from dropping the row.
     if user_id is not None:
-        from models.database import YouTubeChannel, YouTubeRowSubscription
-        subs = db.query(YouTubeRowSubscription, YouTubeChannel).join(
-            YouTubeChannel, YouTubeRowSubscription.channel_fk == YouTubeChannel.id
-        ).filter(YouTubeRowSubscription.user_id == user_id).all()
-        for sub, channel in subs:
+        from models.database import YouTubeChannel
+        from services.youtube.indexer import MAX_KEEP
+        channels = db.query(YouTubeChannel).filter(
+            YouTubeChannel.enabled == True).order_by(YouTubeChannel.title).all()  # noqa: E712
+        for channel in channels:
             if channel.title in existing_tags:
                 continue
             smartlists.append({
@@ -326,7 +328,7 @@ def get_desired_smartlists(db: Session, user_id: int = None) -> list:
                 "media_type": ["Movie"],
                 "enabled": True,
                 "source": "auto",
-                "max_items": sub.max_items or 30,
+                "max_items": MAX_KEEP,
                 # ReleaseDate maps to Jellyfin's PremiereDate, which is where
                 # the NFO writes the upload date — so Descending is newest first.
                 "default_sort": "ReleaseDate",

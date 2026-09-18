@@ -2149,8 +2149,8 @@ function dismissAutoPlaylistBanner() {
 
 // ── Auto Playlists ──────────────────────────────────────────────────────
 
-const _autoCategoryLabels = { source: 'Sources', list: 'Lists', builtin: 'Built-in' };
-const _autoCategoryOrder = ['source', 'list', 'builtin'];
+const _autoCategoryLabels = { source: 'Sources', youtube: 'YouTube Channels', list: 'Lists', builtin: 'Built-in' };
+const _autoCategoryOrder = ['source', 'youtube', 'list', 'builtin'];
 
 async function loadAutoPlaylists() {
   const el = document.getElementById('auto-playlists-list');
@@ -2184,14 +2184,19 @@ async function loadAutoPlaylists() {
         const togglePos = p.enabled ? '18px' : '2px';
         const countBadge = p.item_count ? `<span style="font-size:11px;color:var(--text3);font-family:'DM Mono',monospace">${p.item_count}</span>` : '';
         const sortDrop = p.enabled ? _sortDropdown(p.name) : '';
-        html += `
-          <div style="display:flex;align-items:center;gap:12px;padding:8px 16px;border-bottom:1px solid var(--border)">
-            <label style="position:relative;display:inline-block;width:36px;height:20px;flex-shrink:0;cursor:pointer">
+        // A locked playlist is always on: the thing that created it (a YouTube
+        // channel) is the decision, and taking it away means removing that.
+        const control = p.locked
+          ? `<span title="Always on — remove the channel from the YouTube page to remove this" style="display:inline-block;width:36px;text-align:center;color:var(--green);font-size:14px;flex-shrink:0">&#10003;</span>`
+          : `<label style="position:relative;display:inline-block;width:36px;height:20px;flex-shrink:0;cursor:pointer">
               <input type="checkbox" ${checked} onchange="toggleAutoPlaylist('${escapeAttr(p.key)}')"
                 style="opacity:0;width:0;height:0;position:absolute">
               <span style="position:absolute;top:0;left:0;right:0;bottom:0;background:${toggleBg};border-radius:10px;transition:0.2s"></span>
               <span style="position:absolute;top:2px;left:${togglePos};width:16px;height:16px;background:white;border-radius:50%;transition:0.2s"></span>
-            </label>
+            </label>`;
+        html += `
+          <div style="display:flex;align-items:center;gap:12px;padding:8px 16px;border-bottom:1px solid var(--border)">
+            ${control}
             <div style="flex:1;min-width:0">
               <div style="font-size:13px;font-weight:500">${p.name}</div>
               <div style="font-size:11px;color:var(--text3)">${p.origin}</div>
@@ -2727,33 +2732,28 @@ async function loadYouTubeChannels() {
   const box = document.getElementById('yt-channels');
   const channels = await api('/api/youtube/channels');
   if (!channels.length) {
-    box.innerHTML = '<div class="empty-state"><p>No channels yet. Paste a channel URL above — its videos appear in Jellyfin and stream on demand.</p></div>';
+    box.innerHTML = '<div class="empty-state"><p>No channels yet. Paste a channel URL above — its newest videos appear in Jellyfin and stream on demand.</p></div>';
     return;
   }
   box.innerHTML = channels.map(c => {
     const blocked = c.blocked_until ? `<span class="badge badge-amber">backing off until ${new Date(c.blocked_until).toLocaleTimeString()}</span>` : '';
+    const live = c.live_enabled ? `<span class="badge badge-blue">Live TV</span>${ytLiveState(c)}` : '';
+    const shorts = c.include_shorts ? ' · Shorts' : '';
+    const replays = c.include_streams ? ' · past live streams' : '';
     // Spelled out rather than hidden behind a hover: "indexed with 1 error"
     // with the reason only in a tooltip meant nobody ever saw the reason.
     const err = c.last_error
       ? `<div style="font-size:11px;margin-top:3px;color:var(--red)">Last run failed: ${escapeAttr(c.last_error)}</div>`
       : '';
-    const checked = c.last_checked ? new Date(c.last_checked).toLocaleString() : 'never';
+    const checked = c.last_checked ? new Date(c.last_checked).toLocaleString() : 'not yet';
     return `<div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)">
       ${c.avatar_url ? `<img src="${escapeAttr(c.avatar_url)}" style="width:40px;height:40px;border-radius:50%;object-fit:cover">` : '<div style="width:40px;height:40px;border-radius:50%;background:var(--bg3)"></div>'}
       <div style="flex:1">
-        <div style="font-weight:600">${escapeAttr(c.title)} ${blocked}</div>
-        <div style="font-size:12px;color:var(--text3)">${c.library_count} in library${c.live_now ? ` · ${c.live_now} live` : ''} · max ${c.max_height}p · checked ${escapeAttr(checked)}</div>
+        <div style="font-weight:600">${escapeAttr(c.title)} ${live} ${blocked}</div>
+        <div style="font-size:12px;color:var(--text3)">${c.library_count} in library · keeps newest ${c.keep_count}${shorts}${replays} · checked ${escapeAttr(checked)}</div>
         ${err}
         ${ytSkipNote(c)}
       </div>
-      <label class="detail-follow-toggle" title="Add a row of this channel's videos to your Jellyfin home screen">
-        <input type="checkbox" ${c.home_row ? 'checked' : ''} onchange="ytToggleRow(${c.id}, this.checked)">
-        <span class="detail-follow-label">Home row</span>
-      </label>
-      <label class="detail-follow-toggle" title="Show this channel's live and upcoming streams as a Live TV channel">
-        <input type="checkbox" ${c.live_enabled ? 'checked' : ''} onchange="ytToggleLive(${c.id}, this.checked)">
-        <span class="detail-follow-label">Live TV${c.live_enabled ? ytLiveState(c) : ''}</span>
-      </label>
       <button class="btn btn-secondary btn-sm" onclick="ytDeleteChannel(${c.id}, '${escapeJS(c.title)}')">Remove</button>
     </div>`;
   }).join('');
@@ -2782,23 +2782,19 @@ async function ytAddChannel() {
   if (!url) { toast('Paste a channel or playlist URL', 'error'); return; }
   const body = {
     url,
-    backfill: parseInt(document.getElementById('yt-backfill').value) || 30,
-    keep_count: parseInt(document.getElementById('yt-keep').value) || 200,
-    max_height: parseInt(document.getElementById('yt-quality').value) || 1080,
-    include_videos: document.getElementById('yt-inc-videos').checked,
-    include_streams: document.getElementById('yt-inc-streams').checked,
+    keep_count: Math.max(1, Math.min(100, parseInt(document.getElementById('yt-keep').value) || 10)),
     include_shorts: document.getElementById('yt-inc-shorts').checked,
-    min_duration: parseInt(document.getElementById('yt-min-duration').value) || 0,
+    live: document.getElementById('yt-live').checked,
   };
   const t = toast('Looking up channel…', 'loading', 0);
   try {
     const r = await api('/api/youtube/channels', { method: 'POST', body });
     t.remove();
-    toast(r.home_row
-      ? `Added ${r.title} — press Refresh now, then it appears as a home row`
-      : `Added ${r.title} — turn on Home row to put it on your home screen`);
     document.getElementById('yt-url').value = '';
     loadYouTubeChannels();
+    // Indexing started on its own; the poll shows progress and says what to
+    // do when it finishes. Nothing else is required of the user.
+    ytStartPolling();
   } catch (e) {
     t.remove();
     toast(e.message, 'error', 8000);
@@ -2819,7 +2815,9 @@ function ytSkipNote(c) {
   let why = '';
   if (warn) {
     if (!c.include_videos) why = 'Videos is turned off, so only live streams are looked at. ';
-    else if (listing.videos === 0) why = 'This channel has no uploads — it only broadcasts live. ';
+    else if (listing.videos === 0) why = c.include_streams
+      ? 'This channel has no uploads, so its past live streams are kept instead. '
+      : 'This channel has no uploads or past live streams yet. ';
     else why = 'Nothing available for a home row. ';
   }
   return `<div style="font-size:11px;margin-top:3px;color:var(--${warn ? 'red' : 'text3'})">`
@@ -2837,56 +2835,19 @@ function ytLiveState(c) {
   return ' <span class="badge badge-gray">nothing on</span>';
 }
 
-async function ytToggleRow(id, enabled) {
-  try {
-    const r = await api(`/api/youtube/channels/${id}/row`, {
-      method: 'POST', body: { enabled, max_items: 30 },
-    });
-    if (enabled && !r.row_added) {
-      toast(`"${r.playlist}" has no videos in Jellyfin yet — run Refresh now, then make sure Jellyfin has scanned the YouTube library`, 'info', 10000);
-    } else {
-      toast(enabled
-        ? `"${r.playlist}" added to your home screen`
-        : `"${r.playlist}" removed from your home screen`);
-    }
-    loadYouTubeChannels();
-  } catch (e) {
-    toast(e.message, 'error');
-    loadYouTubeChannels();
-  }
-}
-
-async function ytToggleLive(id, enabled) {
-  try {
-    const r = await api(`/api/youtube/channels/${id}/live`, {
-      method: 'POST', body: { enabled },
-    });
-    if (enabled) {
-      toast(`Live TV channel ${r.guide_number} created — checking for streams, then refresh the guide in Jellyfin`, 'info', 8000);
-      ytStartPolling();   // the toggle kicks off an index to find live streams
-    } else {
-      toast('Removed from Live TV');
-    }
-  } catch (e) {
-    toast(e.message, 'error');
-    loadYouTubeChannels();
-  }
-}
-
 async function ytDeleteChannel(id, title) {
-  // Removing files is opt-in: the catalog entry and the media are separate
-  // decisions, and deleting media is not undoable.
-  const withFiles = confirm(`Remove "${title}".\n\nOK: also delete its video folders from disk.\nCancel: keep the files.`);
+  // One action, and it does the whole thing: the channel, its videos, its
+  // playlist and its home rows all go. A channel half-removed — gone from the
+  // list but still in Jellyfin — is the state that used to need explaining.
+  if (!confirm(`Remove "${title}"?\n\nIts videos, playlist and home row are removed from Jellyfin too.`)) return;
   try {
-    const r = await api(`/api/youtube/channels/${id}?delete_files=${withFiles}`, { method: 'DELETE' });
-    toast(`Removed ${title}${r.files_deleted ? ` — ${r.files_deleted} file(s) deleted` : ''}`);
+    const r = await api(`/api/youtube/channels/${id}`, { method: 'DELETE' });
+    toast(`Removed ${title}${r.files_deleted ? ` — ${r.files_deleted} file(s) cleaned up` : ''}`);
     loadYouTubeChannels();
   } catch (e) {
     toast(e.message, 'error');
   }
 }
-
-let _ytPoll = null;
 
 async function ytRefreshNow() {
   try {
@@ -2921,7 +2882,9 @@ function ytStartPolling() {
     if (st.errors) {
       toast(`Indexed with ${st.errors} error(s): ${escapeAttr(st.error_detail || '')}`, 'error', 10000);
     } else {
-      toast(`Done — ${st.new} new video${st.new === 1 ? '' : 's'} added`);
+      toast(st.new
+        ? `Done — ${st.new} new video${st.new === 1 ? '' : 's'} added. Playlist is ready; add it as a row on the Home Screen tab.`
+        : 'Done — nothing new since last time.', 'success', 8000);
     }
     loadYouTubeChannels();
   };
@@ -3355,9 +3318,18 @@ async function showAddHomeRow() {
       }
       select.innerHTML += '</optgroup>';
     }
-    if (playlists.length) {
+    const youtube = playlists.filter(p => p.is_youtube);
+    const others = playlists.filter(p => !p.is_youtube);
+    if (youtube.length) {
+      select.innerHTML += '<optgroup label="YouTube Channels">';
+      for (const p of youtube) {
+        select.innerHTML += `<option value="playlist:${p.playlist_id}">${p.name}</option>`;
+      }
+      select.innerHTML += '</optgroup>';
+    }
+    if (others.length) {
       select.innerHTML += '<optgroup label="Tentacle Playlists">';
-      for (const p of playlists) {
+      for (const p of others) {
         select.innerHTML += `<option value="playlist:${p.playlist_id}">${p.name}</option>`;
       }
       select.innerHTML += '</optgroup>';
@@ -4687,6 +4659,14 @@ async function loadLiveTV() {
       if (statsEl) statsEl.style.display = 'none';
       if (tabsEl) tabsEl.style.display = 'none';
       panels.forEach(p => p.style.display = 'none');
+      // No IPTV provider, but YouTube channels can still be Live TV channels:
+      // show the Channels tab so they are not invisible on this page.
+      if (await loadLiveYouTubeChannels()) {
+        if (tabsEl) tabsEl.style.display = 'flex';
+        const chPanel = document.getElementById('live-panel-channels');
+        if (chPanel) chPanel.style.display = '';
+        showLiveTab('channels');
+      }
     }
   } catch (e) {
     if (statsEl) statsEl.innerHTML =
@@ -4967,6 +4947,7 @@ function populateGroupFilter(groups) {
 // ── Channels ──────────────────────────────────────────────────────────────
 
 async function loadLiveChannels() {
+  loadLiveYouTubeChannels();
   if (!liveState.providerId) return;
   const params = new URLSearchParams({
     provider_id: liveState.providerId,
@@ -4992,6 +4973,45 @@ async function loadLiveChannels() {
   } catch (e) {
     document.getElementById('live-channels').innerHTML =
       `<div style="padding:20px;color:var(--text3);font-size:13px">No channels. Enable groups and click "Sync Channels".</div>`;
+  }
+}
+
+// ── YouTube channels on the Live TV page ──────────────────────────────────
+// Added on the YouTube page; listed here because that is where every other
+// Live TV channel is, and where one can be switched on or off later. Returns
+// how many are currently on Live TV.
+async function loadLiveYouTubeChannels() {
+  const card = document.getElementById('live-youtube-card');
+  const el = document.getElementById('live-youtube-list');
+  if (!card || !el) return 0;
+  let channels = [];
+  try { channels = await api('/api/youtube/channels'); } catch { channels = []; }
+  if (!channels.length) { card.style.display = 'none'; return 0; }
+
+  const on = channels.filter(c => c.live_enabled);
+  const off = channels.filter(c => !c.live_enabled);
+  card.style.display = '';
+  document.getElementById('live-youtube-count').textContent = `(${on.length} on Live TV)`;
+  el.innerHTML = [...on, ...off].map(c => `
+    <div class="live-ch-row">
+      ${c.avatar_url ? `<img class="live-ch-logo" src="${escapeAttr(c.avatar_url)}" loading="lazy" onerror="this.style.display='none'">` : '<div class="live-ch-logo"></div>'}
+      <span class="live-ch-name">${escapeAttr(c.title)}${c.live_enabled ? ytLiveState(c) : ''}</span>
+      <span class="live-ch-group">${c.live_enabled ? `Channel ${escapeAttr(String(c.guide_number || ''))}` : 'not on Live TV'}</span>
+      <span class="live-ch-epg-badge ${c.guide_programmes ? 'has-epg' : 'no-epg'}">${c.guide_programmes ? `${c.guide_programmes} in guide` : 'No guide entries'}</span>
+      <button class="live-toggle ${c.live_enabled ? 'on' : ''}" onclick="toggleLiveYouTube(${c.id}, ${!c.live_enabled})" style="flex-shrink:0"></button>
+    </div>`).join('');
+  return on.length;
+}
+
+async function toggleLiveYouTube(id, enabled) {
+  try {
+    await api(`/api/youtube/channels/${id}/live`, { method: 'POST', body: { enabled } });
+    toast(enabled
+      ? 'Added to Live TV — looking for its streams, then Jellyfin\'s guide is refreshed'
+      : 'Removed from Live TV — Jellyfin\'s guide is being refreshed', 'info', 6000);
+    loadLiveYouTubeChannels();
+  } catch (e) {
+    toast(e.message, 'error');
   }
 }
 
@@ -5979,8 +5999,7 @@ async function loadHealthDeletions() {
     showManageEpisodesModal, confirmManageEpisodes,
     showDownloadMoreModal, confirmDownloadMore, detailToggleSeason, toggleFollow,
     // YouTube
-    loadYouTubePage, loadYouTubeChannels, ytAddChannel, ytDeleteChannel, ytRefreshNow, ytSaveSetup, ytStartPolling, ytDiagnose, ytSkipNote, ytReprobe,
-    ytToggleRow, ytToggleLive,
+    loadYouTubePage, loadYouTubeChannels, ytAddChannel, ytDeleteChannel, ytRefreshNow, ytSaveSetup, ytStartPolling, ytDiagnose, ytSkipNote, ytReprobe, loadLiveYouTubeChannels, toggleLiveYouTube,
     // Following
     loadFollowing,
     toggleStrmManaged,

@@ -251,13 +251,16 @@ class YouTubeChannel(Base):
     avatar_url = Column(String, nullable=True)
     banner_url = Column(String, nullable=True)
 
-    # What to index
+    # What to index. The one setting a user chooses is keep_count — "keep the
+    # newest N" — which drives both how far back the listing is read and how
+    # many videos survive retention. The rest are derived or advanced.
     include_videos = Column(Boolean, default=True)
-    include_streams = Column(Boolean, default=False)    # live replays
+    # Finished broadcasts. Set automatically on add: on for a channel with no
+    # uploads (it only ever streams), off otherwise. Not a user-facing choice.
+    include_streams = Column(Boolean, default=False)
     include_shorts = Column(Boolean, default=False)
-    min_duration = Column(Integer, default=60)          # seconds; skips Shorts-like clips
-    backfill = Column(Integer, default=30)              # how many to fetch on first add
-    keep_count = Column(Integer, nullable=True, default=200)
+    min_duration = Column(Integer, default=0)           # seconds; 0 = no length filter
+    keep_count = Column(Integer, nullable=True, default=10)
     keep_days = Column(Integer, nullable=True)
     max_height = Column(Integer, default=1080)
 
@@ -317,20 +320,6 @@ class YouTubeVideo(Base):
     skip_reason = Column(String, nullable=True)
 
     channel = relationship("YouTubeChannel", back_populates="videos")
-
-
-class YouTubeRowSubscription(Base):
-    """A per-user home row for one channel."""
-    __tablename__ = "youtube_row_subscriptions"
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    channel_fk = Column(Integer, ForeignKey("youtube_channels.id"), nullable=False, index=True)
-    user_id = Column(Integer, ForeignKey("tentacle_users.id"), nullable=False, index=True)
-    max_items = Column(Integer, default=30)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-    __table_args__ = (
-        UniqueConstraint("channel_fk", "user_id", name="uq_youtube_row_user"),
-    )
 
 
 # ─── Duplicates ───────────────────────────────────────────────────────────────
@@ -840,7 +829,24 @@ def _migrate_columns():
     # Recreate tables that need PK changes (HomeRowOrder, AutoPlaylistToggle)
     _migrate_home_row_order(cursor, conn)
     _migrate_auto_playlist_toggles(cursor, conn)
+    _drop_retired_tables(cursor, conn)
     conn.close()
+
+
+def _drop_retired_tables(cursor, conn):
+    """Remove tables whose concept no longer exists.
+
+    youtube_row_subscriptions held a per-user opt-in to a channel's playlist.
+    A channel's playlist now exists for every user and the per-user choice is
+    the home row itself, so the table is meaningless; leaving it would only
+    invite something to read it again.
+    """
+    import sqlite3
+    try:
+        cursor.execute("DROP TABLE IF EXISTS youtube_row_subscriptions")
+        conn.commit()
+    except sqlite3.OperationalError as e:
+        logger.error(f"[migrate] Could not drop youtube_row_subscriptions: {e}")
 
 
 def _migrate_home_row_order(cursor, conn):

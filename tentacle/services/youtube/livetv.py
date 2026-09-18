@@ -69,6 +69,27 @@ def current_live_video(db: Session, channel_id: int):
     )
 
 
+def refresh_jellyfin_guide(db: Session) -> bool:
+    """Tell Jellyfin the lineup changed. Never raises: a guide refresh that
+    fails is logged and the next scheduled one catches up, but a channel that
+    was added should not fail over it."""
+    from models.database import get_setting
+    from services.jellyfin_guide import refresh_jellyfin_guide as _refresh
+
+    url = get_setting(db, "jellyfin_url", "")
+    key = get_setting(db, "jellyfin_api_key", "")
+    if not (url and key):
+        logger.info("[YouTube] Jellyfin is not configured — guide refresh skipped")
+        return False
+    try:
+        _refresh(url, key)
+        logger.info("[YouTube] Asked Jellyfin to refresh its Live TV guide")
+        return True
+    except Exception as e:
+        logger.warning(f"[YouTube] Jellyfin guide refresh failed: {e}")
+        return False
+
+
 def refresh_guide(db: Session, channel: YouTubeChannel) -> int:
     """Write guide entries for this channel's live and upcoming streams.
 

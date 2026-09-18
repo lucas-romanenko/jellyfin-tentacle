@@ -1345,49 +1345,15 @@ def refresh_jellyfin_guide(db: Session = Depends(get_db)):
                 epg_resynced = True
 
     try:
-        # Step 1: Re-create the *Tentacle* XMLTV listing provider to force a full
-        # channel remap. Re-POSTing with the same Id doesn't remap new channels;
-        # we must recreate. Two safeguards vs. the old "delete every xmltv provider"
-        # behaviour:
-        #   1. Only touch listing providers whose Path points at Tentacle's own
-        #      xmltv.xml endpoint — never other (unrelated) xmltv providers.
-        #   2. Recreate FIRST and verify success before deleting the old one, so a
-        #      failed recreate can't leave Jellyfin with no listing provider.
-        livetv_cfg = req.get(f"{jf_url}/System/Configuration/livetv", headers=headers, timeout=10).json()
-        for lp in livetv_cfg.get("ListingProviders", []):
-            if lp.get("Type") != "xmltv":
-                continue
-            lp_path = (lp.get("Path") or "")
-            if "xmltv.xml" not in lp_path.lower():
-                # Not Tentacle's listing provider — leave it untouched.
-                logger.info(f"[LiveTV] Skipping non-Tentacle xmltv listing provider (Path={lp_path})")
-                continue
-            lp_id = lp.get("Id")
-            # Recreate without an Id so Jellyfin treats it as new — and only delete
-            # the old entry once the new one is confirmed created.
-            lp_new = {k: v for k, v in lp.items() if k != "Id"}
-            resp = req.post(f"{jf_url}/LiveTv/ListingProviders", headers=headers, json=lp_new, timeout=15)
-            resp.raise_for_status()
-            new_id = resp.json().get("Id", "?")
-            logger.info(f"[LiveTV] Re-created Tentacle XMLTV listing provider as {new_id}")
-            if lp_id and new_id and new_id != "?" and new_id != lp_id:
-                req.delete(f"{jf_url}/LiveTv/ListingProviders?Id={lp_id}", headers=headers, timeout=10)
-                logger.info(f"[LiveTV] Deleted old Tentacle XMLTV listing provider {lp_id}")
-
-        # Step 2: Trigger RefreshGuide task — fetches new lineup from tuner + refreshes EPG data
-        tasks = req.get(f"{jf_url}/ScheduledTasks", headers=headers, timeout=10).json()
-        guide_task = next((t for t in tasks if t.get("Key") == "RefreshGuide"), None)
-        if not guide_task:
-            raise HTTPException(404, "RefreshGuide task not found in Jellyfin")
-        task_id = guide_task["Id"]
-        resp = req.post(f"{jf_url}/ScheduledTasks/Running/{task_id}", headers=headers, timeout=10)
-        resp.raise_for_status()
-
+        from services.jellyfin_guide import GuideRefreshError, refresh_jellyfin_guide
+        refresh_jellyfin_guide(jf_url, jf_key)
         msg = "Jellyfin guide refresh triggered"
         if epg_resynced:
             msg = "EPG data synced for new channels + Jellyfin guide refresh triggered"
         logger.info(f"[LiveTV] {msg}")
         return {"success": True, "message": msg}
+    except GuideRefreshError as e:
+        raise HTTPException(404, str(e))
     except req.RequestException as e:
         logger.error(f"[LiveTV] Failed to trigger Jellyfin guide refresh: {e}")
         raise HTTPException(502, f"Failed to connect to Jellyfin: {e}")

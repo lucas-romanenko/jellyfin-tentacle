@@ -292,23 +292,17 @@ def toggle_live(channel_id: int, body: LiveToggle, db: Session = Depends(get_db)
     if body.enabled:
         guide = yt_livetv.refresh_guide(db, channel)
         # Videos indexed before now were fetched with live streams skipped, so
-        # the guide would be empty until the next scheduled run. Go and look.
-        with _refresh_lock:
-            if not _refresh_state["running"]:
-                _refresh_state.update({
-                    "running": True, "started_at": datetime.utcnow().isoformat(),
-                    "finished_at": None, "channel": None, "channels_done": 0,
-                    "channels_total": 0, "new": 0, "written": 0, "retired": 0,
-                    "errors": 0, "error_detail": None, "channel_total": 0,
-                })
-                threading.Thread(target=_run_refresh, daemon=True,
-                                 name="youtube-refresh").start()
+        # go and look — and refresh Jellyfin's guide once that is done, since
+        # the channel just joined the lineup.
+        _start_refresh(channel_ids=[channel.id], guide=True)
     else:
         from models.database import EPGProgram
         db.query(EPGProgram).filter(
             EPGProgram.channel_id == yt_livetv.epg_channel_id(channel)
         ).delete(synchronize_session=False)
         db.commit()
+        # It left the lineup; Jellyfin should stop listing it.
+        yt_livetv.refresh_jellyfin_guide(db)
 
     logger.info(f"[YouTube] Live TV {'enabled' if body.enabled else 'disabled'} for '{channel.title}'")
     return {"success": True, "live_enabled": body.enabled,
@@ -318,13 +312,14 @@ def toggle_live(channel_id: int, body: LiveToggle, db: Session = Depends(get_db)
 # ── Admin ───────────────────────────────────────────────────────────────────
 
 class ChannelCreate(BaseModel):
+    """What the form sends: a URL, how many of the newest videos to keep, and
+    two choices. Everything else is derived. Fields from the previous form
+    (backfill, min_duration, include_videos, include_streams) are dropped on
+    the floor rather than rejected, so an older client still works."""
     url: str
-    include_videos: bool = True
-    include_streams: bool = False
+    keep_count: int = 10
     include_shorts: bool = False
-    min_duration: int = 60
-    backfill: int = 30
-    keep_count: Optional[int] = 200
+    live: bool = False
     max_height: int = 1080
     rating: Optional[str] = None
     extra_tags: list = []
@@ -435,7 +430,6 @@ def diagnose(request: Request, db: Session = Depends(get_db)):
     playback error. This names the link.
     """
     import os
-    from models.database import YouTubeRowSubscription
     from routers.auth import get_user_from_request
 
     checks = []
@@ -502,10 +496,10 @@ def diagnose(request: Request, db: Session = Depends(get_db)):
                        "looked at — only its live streams. Turn Videos on and press "
                        "'Refresh now'.")
             elif not listing.get("videos"):
-                fix = (f"YouTube's Videos tab for '{ch.title}' returned nothing, so there are "
-                       f"no uploads to show — the channel may only ever broadcast live. Its "
-                       f"live streams still work as a Live TV channel. To keep finished "
-                       f"broadcasts as well, turn on 'Past live streams'.")
+                fix = (f"YouTube's Videos tab for '{ch.title}' returned nothing — the channel "
+                       f"may only ever broadcast live. Its finished streams are kept instead "
+                       f"when that is the case; if none have been found yet, press "
+                       f"'Check for new videos'.")
             elif skips:
                 fix = (f"Every upload was skipped. Reason(s) above. The minimum length is "
                        f"{ch.min_duration}s — if uploads were skipped for being too short, "
@@ -552,25 +546,32 @@ def diagnose(request: Request, db: Session = Depends(get_db)):
             YouTubeVideo.removed_at.is_(None)).count()
         add(live_now, "A stream is live right now", f"{live_now} live",
             "Nothing is streaming, so the Live TV channel has nothing to play — Jellyfin "
-            "shows that as a playback error. Press 'Refresh now' to re-check, and note "
-            "that many channels never stream at all.")
+            "shows that as a playback error. Press 'Check for new videos' to re-check, "
+            "and note that many channels never stream at all.")
 
-    # ── Home rows ──
+    # ── Playlists and home rows, for whoever is asking ──
+    # A channel's playlist exists for every user; putting it on the home screen
+    # is the one per-user choice, so "it isn't on my home screen" is usually
+    # just that it was never added there — not a fault.
     try:
         user = get_user_from_request(request, db)
-        subs = db.query(YouTubeRowSubscription).filter(
-            YouTubeRowSubscription.user_id == user.id).all()
-        if subs:
+        if user and channels:
             from routers.smartlists import _read_home_json
-            config = _read_home_json(user) or {}
-            names = {c.title for c in channels
-                     if c.id in {sub.channel_fk for sub in subs}}
-            rows = {r.get("display_name") for r in (config.get("rows") or [])}
-            missing = names - rows
-            add(not missing, "Home rows present in your config",
-                f"{len(names & rows)}/{len(names)} in place"
+            from services.smartlists import _get_smartlists_with_playlist_ids
+            have = {p["name"] for p in _get_smartlists_with_playlist_ids(db, user_id=user.id)}
+            names = {c.title for c in channels}
+            missing = names - have
+            add(not missing, "Channel playlists exist in Jellyfin",
+                f"{len(names & have)}/{len(names)} created"
                 + (f" (missing: {', '.join(sorted(missing))})" if missing else ""),
-                "Toggle 'Home row' off and on again.")
+                "They are created when the channel's first index finishes. Press "
+                "'Check for new videos' and wait for it to complete.")
+            config = _read_home_json(user) or {}
+            rows = {r.get("display_name") for r in (config.get("rows") or [])}
+            on_home = names & rows
+            add(True, "On your home screen",
+                (", ".join(sorted(on_home)) if on_home else "none yet")
+                + " — add or remove rows on the Home Screen tab, under YouTube Channels")
     except Exception:
         pass
 
@@ -579,20 +580,19 @@ def diagnose(request: Request, db: Session = Depends(get_db)):
 
 
 @router.get("/channels", dependencies=[Depends(require_admin)])
-def list_channels(request: Request, db: Session = Depends(get_db)):
-    from models.database import YouTubeRowSubscription
-    from routers.auth import get_user_from_request
-
-    try:
-        user = get_user_from_request(request, db)
-        my_rows = {r.channel_fk for r in db.query(YouTubeRowSubscription).filter(
-            YouTubeRowSubscription.user_id == user.id).all()}
-    except Exception:
-        my_rows = set()   # bootstrap mode / no session
+def list_channels(db: Session = Depends(get_db)):
+    from models.database import EPGProgram
+    from services.youtube import livetv as yt_livetv
 
     out = []
     for ch in db.query(YouTubeChannel).order_by(YouTubeChannel.title).all():
+        # Guide entries this channel has in Tentacle's own EPG — what the
+        # Live TV page shows next to it, and what Jellyfin's guide is built from.
+        guide_programmes = db.query(EPGProgram).filter(
+            EPGProgram.channel_id == yt_livetv.epg_channel_id(ch)).count() if ch.live_enabled else 0
         out.append({
+            "guide_number": yt_livetv.guide_number(ch),
+            "guide_programmes": guide_programmes,
             "id": ch.id, "title": ch.title, "slug": ch.slug, "kind": ch.kind,
             "input_url": ch.input_url, "avatar_url": ch.avatar_url,
             "enabled": ch.enabled,
@@ -601,11 +601,9 @@ def list_channels(request: Request, db: Session = Depends(get_db)):
                 YouTubeVideo.removed_at.is_(None)).count(),
             "last_checked": ch.last_checked, "last_error": ch.last_error,
             "blocked_until": ch.blocked_until,
-            "include_videos": ch.include_videos, "include_streams": ch.include_streams,
-            "include_shorts": ch.include_shorts, "min_duration": ch.min_duration,
+            "include_streams": ch.include_streams, "include_shorts": ch.include_shorts,
             "keep_count": ch.keep_count, "max_height": ch.max_height,
             "rating": ch.rating, "extra_tags": ch.extra_tags or [],
-            "home_row": ch.id in my_rows,
             "live_enabled": ch.live_enabled,
             "last_skips": ch.last_skips or {},
             "last_listing": ch.last_listing or {},
@@ -627,7 +625,14 @@ def list_channels(request: Request, db: Session = Depends(get_db)):
 
 
 @router.post("/channels", dependencies=[Depends(require_admin)])
-def add_channel(body: ChannelCreate, request: Request, db: Session = Depends(get_db)):
+def add_channel(body: ChannelCreate, db: Session = Depends(get_db)):
+    """Add a channel. This is the only step; the rest is automatic.
+
+    Indexing starts immediately in the background, the videos are written and
+    Jellyfin is asked to scan, the playlist is created for every user, and if
+    Live TV was chosen the guide is refreshed — so by the time the progress
+    toast finishes there is a row to add on the Home Screen tab.
+    """
     if not client.available():
         raise HTTPException(400, "yt-dlp is not installed in this image")
     try:
@@ -648,42 +653,34 @@ def add_channel(body: ChannelCreate, request: Request, db: Session = Depends(get
     if db.query(YouTubeChannel).filter(YouTubeChannel.slug == slug).first():
         slug = f"{slug}-{int(datetime.utcnow().timestamp()) % 10000}"
 
+    # Clamped, not rejected: a stray 0 or 5000 means "the fewest" or "the most",
+    # and bouncing the whole add over it would be pedantic.
+    keep = max(1, min(int(body.keep_count), indexer.MAX_KEEP))
     channel = YouTubeChannel(
         input_url=body.url, kind=info["kind"], channel_id=info.get("channel_id"),
         handle=info.get("handle"), playlist_id=info.get("playlist_id"),
         title=info["title"], slug=slug,
         avatar_url=info.get("avatar_url"), banner_url=info.get("banner_url"),
-        include_videos=body.include_videos, include_streams=body.include_streams,
-        include_shorts=body.include_shorts, min_duration=body.min_duration,
-        backfill=body.backfill, keep_count=body.keep_count,
-        max_height=body.max_height, rating=body.rating, extra_tags=body.extra_tags,
+        include_videos=True,
+        # A channel that only ever broadcasts live has an empty uploads tab;
+        # keeping its finished streams is the only way it has a library at all.
+        # Decided here so nobody has to know such channels exist.
+        include_streams=not info.get("has_uploads", True),
+        include_shorts=body.include_shorts,
+        min_duration=0,
+        keep_count=keep, max_height=body.max_height,
+        rating=body.rating, extra_tags=body.extra_tags,
+        live_enabled=body.live,
     )
     db.add(channel)
     db.commit()
     db.refresh(channel)
+    logger.info(f"[YouTube] Added channel '{channel.title}' ({channel.slug}), keeping newest {keep}"
+                f"{', Live TV' if body.live else ''}")
 
-    # Subscribe the person who added it. Rows stay per-user — nobody else gets
-    # the channel on their home screen — but pasting a channel URL is already a
-    # statement of wanting to see it, and requiring a second toggle elsewhere
-    # meant the videos appeared in the library with no playlist and no row, for
-    # no visible reason.
-    row_added = False
-    try:
-        from models.database import YouTubeRowSubscription
-        from routers.auth import get_user_from_request
-
-        user = get_user_from_request(request, db)
-        if user:
-            db.add(YouTubeRowSubscription(channel_fk=channel.id, user_id=user.id))
-            db.commit()
-            row_added = True
-    except Exception as e:
-        # Never fail the add over this; the toggle on the card still works.
-        logger.warning(f"[YouTube] Could not subscribe the adding user to '{channel.title}': {e}")
-
-    logger.info(f"[YouTube] Added channel '{channel.title}' ({channel.slug})")
+    indexing = _start_refresh(channel_ids=[channel.id], guide=body.live)
     return {"id": channel.id, "title": channel.title, "slug": channel.slug,
-            "home_row": row_added}
+            "keep_count": keep, "live_enabled": body.live, "indexing": indexing}
 
 
 # Indexing runs in the background and is polled. It cannot be a plain request:
@@ -695,8 +692,44 @@ _refresh_state: dict = {
     "channel": None, "channels_done": 0, "channels_total": 0,
     "new": 0, "written": 0, "retired": 0, "errors": 0, "error_detail": None,
     "channel_total": 0,
+    # Work asked for while a run was in progress. A run that is already
+    # under way has its channel list fixed, so a channel added during it is
+    # queued and picked up the moment it finishes — never dropped.
+    "pending": [], "pending_all": False,
+    # Ask Jellyfin to refresh its Live TV guide once the run is done. Set when
+    # a channel joined or left the lineup; the streams themselves are found by
+    # the index, so the refresh has to come after it.
+    "guide_after": False,
 }
 _refresh_lock = threading.Lock()
+
+
+def _start_refresh(channel_ids=None, guide: bool = False) -> bool:
+    """Index in the background. Returns True if started now, False if queued.
+
+    Either way the work happens: if a run is in progress the request is
+    recorded and served as soon as it ends. Callers never have to retry.
+    """
+    with _refresh_lock:
+        if guide:
+            _refresh_state["guide_after"] = True
+        if _refresh_state["running"]:
+            if channel_ids:
+                _refresh_state["pending"] = list(
+                    set(_refresh_state["pending"]) | set(channel_ids))
+            else:
+                _refresh_state["pending_all"] = True
+            return False
+        _refresh_state.update({
+            "running": True, "started_at": datetime.utcnow().isoformat(),
+            "finished_at": None, "channel": None, "channels_done": 0,
+            "channels_total": 0, "new": 0, "written": 0, "retired": 0,
+            "errors": 0, "error_detail": None, "channel_total": 0,
+            "pending": [], "pending_all": False,
+        })
+    threading.Thread(target=_run_refresh, args=(channel_ids,), daemon=True,
+                     name="youtube-refresh").start()
+    return True
 
 
 def _note_channel_error(db: Session, channel: YouTubeChannel, exc: Exception) -> None:
@@ -719,16 +752,39 @@ def _note_channel_error(db: Session, channel: YouTubeChannel, exc: Exception) ->
         logger.debug("[YouTube] Could not record the channel error", exc_info=True)
 
 
-def _run_refresh():
-    """Index every enabled channel. Runs on its own thread with its own session."""
+def _run_refresh(channel_ids=None):
+    """The background runner. Keeps going while work was queued behind it."""
+    while True:
+        try:
+            _run_refresh_once(channel_ids)
+        except Exception as e:                  # the loop's state must always be reset
+            logger.error(f"[YouTube] Refresh run crashed: {e}", exc_info=True)
+        with _refresh_lock:
+            pending, pending_all = _refresh_state["pending"], _refresh_state["pending_all"]
+            _refresh_state["pending"], _refresh_state["pending_all"] = [], False
+            if not pending and not pending_all:
+                _refresh_state["channel"] = None
+                _refresh_state["finished_at"] = datetime.utcnow().isoformat()
+                _refresh_state["running"] = False
+                logger.info(f"[YouTube] Refresh finished: {_refresh_state['new']} new video(s)")
+                return
+            _refresh_state.update({"channels_done": 0, "channels_total": 0, "channel_total": 0})
+        channel_ids = None if pending_all else pending
 
+
+def _run_refresh_once(channel_ids=None):
+    """Index the given channels (or every enabled one) with its own session."""
     from models.database import SessionLocal
-    from services.youtube.sync import base_url, sync_channel
+    from services.youtube import livetv as yt_livetv
+    from services.youtube.sync import base_url, publish_to_jellyfin, sync_channel
 
     db = SessionLocal()
     try:
         base = base_url(db)
-        channels = db.query(YouTubeChannel).filter(YouTubeChannel.enabled == True).all()  # noqa: E712
+        query = db.query(YouTubeChannel).filter(YouTubeChannel.enabled == True)  # noqa: E712
+        if channel_ids:
+            query = query.filter(YouTubeChannel.id.in_(channel_ids))
+        channels = query.all()
         _refresh_state["channels_total"] = len(channels)
         changed = []
         for channel in channels:
@@ -756,21 +812,24 @@ def _run_refresh():
                 changed.append(channel.title)
             _refresh_state["channels_done"] += 1
 
-        # Same publish step the scheduled sync does: get Jellyfin to ingest the
-        # new files, then rebuild the playlists that depend on them.
-        if changed:
+        # Publish when something changed — or whenever specific channels were
+        # asked for, which is what a newly added one is: its playlist has to
+        # exist even if every video it listed turned out to be excluded.
+        if changed or channel_ids:
             try:
-                from services.youtube.sync import publish_to_jellyfin
                 _refresh_state["channel"] = "publishing to Jellyfin"
-                publish_to_jellyfin(db, changed)
+                publish_to_jellyfin(db, changed or [c.title for c in channels])
             except Exception as e:
                 logger.warning(f"[YouTube] Publish to Jellyfin failed: {e}")
+
+        with _refresh_lock:
+            guide = _refresh_state["guide_after"]
+            _refresh_state["guide_after"] = False
+        if guide:
+            _refresh_state["channel"] = "refreshing the Jellyfin guide"
+            yt_livetv.refresh_jellyfin_guide(db)
     finally:
         db.close()
-        _refresh_state["channel"] = None
-        _refresh_state["finished_at"] = datetime.utcnow().isoformat()
-        _refresh_state["running"] = False
-        logger.info(f"[YouTube] Refresh finished: {_refresh_state['new']} new video(s)")
 
 
 @router.post("/reprobe", dependencies=[Depends(require_admin)])
@@ -820,137 +879,75 @@ def refresh_now(db: Session = Depends(get_db)):
             "the Jellyfin server itself can reach.",
         )
 
-    with _refresh_lock:
-        if _refresh_state["running"]:
-            raise HTTPException(409, "An index is already running")
-        _refresh_state.update({
-            "running": True, "started_at": datetime.utcnow().isoformat(),
-            "finished_at": None, "channel": None, "channels_done": 0,
-            "channels_total": 0, "new": 0, "written": 0, "retired": 0,
-            "errors": 0, "error_detail": None, "channel_total": 0,
-        })
-
-    threading.Thread(target=_run_refresh, daemon=True, name="youtube-refresh").start()
-    return {"started": True}
+    started = _start_refresh()
+    return {"started": started, "queued": not started}
 
 
 @router.get("/refresh/status", dependencies=[Depends(require_admin)])
 def refresh_status():
-    return dict(_refresh_state)
-
-
-class RowToggle(BaseModel):
-    enabled: bool
-    max_items: int = 30
-
-
-@router.post("/channels/{channel_id}/row")
-def toggle_home_row(channel_id: int, body: RowToggle, request: Request,
-                    db: Session = Depends(get_db)):
-    """Add or remove this channel's home row for the calling user.
-
-    Rows are per-user, like every other Tentacle playlist, so one household
-    member subscribing doesn't put the channel on everyone's home screen.
-    """
-    from models.database import YouTubeRowSubscription
-    from routers.auth import get_user_from_request
-
-    user = get_user_from_request(request, db)
-    channel = db.query(YouTubeChannel).filter(YouTubeChannel.id == channel_id).first()
-    if not channel:
-        raise HTTPException(404, "Channel not found")
-
-    sub = db.query(YouTubeRowSubscription).filter(
-        YouTubeRowSubscription.channel_fk == channel_id,
-        YouTubeRowSubscription.user_id == user.id,
-    ).first()
-
-    if body.enabled and not sub:
-        db.add(YouTubeRowSubscription(channel_fk=channel_id, user_id=user.id,
-                                      max_items=body.max_items))
-    elif body.enabled and sub:
-        sub.max_items = body.max_items
-    elif sub:
-        db.delete(sub)
-    db.commit()
-
-    # Build the playlist, then put it on the home screen. Home rows are never
-    # auto-created by write_home_config ("users add rows manually"), so creating
-    # the playlist alone left the toggle doing nothing visible — which is not
-    # what a control labelled "Home row" promises.
-    row_added = False
-    try:
-        from services.smartlists import (
-            _get_smartlists_with_playlist_ids, _notify_jellyfin_plugin,
-            bump_playlist_version, refresh_smartlist_playlists, sync_smartlists,
-            write_home_config,
-        )
-        sync_smartlists(db, user_id=user.id)
-        refresh_smartlist_playlists(db, user_id=user.id, only_names=[channel.title])
-
-        playlist_id = next(
-            (p["playlist_id"] for p in _get_smartlists_with_playlist_ids(db, user_id=user.id)
-             if p["name"] == channel.title),
-            None,
-        )
-        row_added = _set_home_row(db, user, channel.title, playlist_id, body.enabled)
-
-        write_home_config(db, user_id=user.id)
-        bump_playlist_version()
-        _notify_jellyfin_plugin(db)
-    except Exception as e:
-        logger.warning(f"[YouTube] Playlist/row update after toggle failed: {e}", exc_info=True)
-
-    return {"success": True, "enabled": body.enabled, "playlist": channel.title,
-            "row_added": row_added}
-
-
-def _set_home_row(db: Session, user, name: str, playlist_id, enabled: bool) -> bool:
-    """Add or remove this channel's row in the user's home config."""
-    from routers.smartlists import _read_home_json, _write_home_json
-    from services.smartlists import home_config_lock
-
-    with home_config_lock:
-        config = _read_home_json(user) or {
-            "hero": {"enabled": False, "playlist_id": "", "display_name": ""}, "rows": [],
-        }
-        config.setdefault("rows", [])
-
-        if enabled:
-            if not playlist_id:
-                logger.warning(f"[YouTube] No Jellyfin playlist for '{name}' yet — row not added")
-                return False
-            if any(r.get("playlist_id") == playlist_id for r in config["rows"]):
-                return True
-            for r in config["rows"]:
-                r["order"] = r.get("order", 0) + 1
-            config["rows"].insert(0, {
-                "type": "playlist",
-                "playlist_id": playlist_id,
-                "display_name": name,
-                "order": 1,
-                "max_items": 30,
-            })
-        else:
-            config["rows"] = [r for r in config["rows"] if r.get("display_name") != name]
-            for i, r in enumerate(config["rows"], start=1):
-                r["order"] = i
-
-        _write_home_json(user, config)
-    return enabled
+    state = {k: v for k, v in _refresh_state.items() if k not in ("pending", "pending_all")}
+    state["queued"] = len(_refresh_state["pending"]) + (1 if _refresh_state["pending_all"] else 0)
+    return state
 
 
 @router.delete("/channels/{channel_id}", dependencies=[Depends(require_admin)])
-def delete_channel(channel_id: int, delete_files: bool = False, db: Session = Depends(get_db)):
+def delete_channel(channel_id: int, db: Session = Depends(get_db)):
+    """Remove a channel and everything that came from it.
+
+    The files go, so Jellyfin's scan drops the items; the playlist stops being
+    desired, so the next sync removes it and its home rows. Leaving any of that
+    behind — the old opt-in "also delete files?" — meant a channel that was
+    gone from this page but still all over Jellyfin.
+    """
     channel = db.query(YouTubeChannel).filter(YouTubeChannel.id == channel_id).first()
     if not channel:
         raise HTTPException(404, "Channel not found")
     removed = 0
-    if delete_files:
-        for video in db.query(YouTubeVideo).filter(YouTubeVideo.channel_fk == channel.id).all():
-            removed += library.remove_video(video)
-    title = channel.title
-    db.delete(channel)   # cascades to videos and row subscriptions
+    for video in db.query(YouTubeVideo).filter(YouTubeVideo.channel_fk == channel.id).all():
+        removed += library.remove_video(video)
+    title, was_live = channel.title, bool(channel.live_enabled)
+    if was_live:
+        from models.database import EPGProgram
+        from services.youtube import livetv as yt_livetv
+        db.query(EPGProgram).filter(
+            EPGProgram.channel_id == yt_livetv.epg_channel_id(channel)
+        ).delete(synchronize_session=False)
+    db.delete(channel)   # cascades to videos
     db.commit()
     logger.info(f"[YouTube] Removed channel '{title}' ({removed} file(s) deleted)")
+
+    threading.Thread(target=_cleanup_after_remove, args=(was_live,), daemon=True,
+                     name="youtube-remove-cleanup").start()
     return {"success": True, "files_deleted": removed}
+
+
+def _cleanup_after_remove(was_live: bool) -> None:
+    """Take a removed channel out of Jellyfin: scan, playlists, rows, guide."""
+    from models.database import SessionLocal, TentacleUser
+    from services.jellyfin import JellyfinService
+    from services.smartlists import (
+        _notify_jellyfin_plugin, bump_playlist_version, sync_smartlists, write_home_config,
+    )
+
+    db = SessionLocal()
+    try:
+        url = get_setting(db, "jellyfin_url", "")
+        key = get_setting(db, "jellyfin_api_key", "")
+        if url and key:
+            try:
+                JellyfinService(url, key, get_setting(db, "jellyfin_user_id", "")).trigger_library_scan()
+            except Exception as e:
+                logger.warning(f"[YouTube] Could not trigger a Jellyfin scan: {e}")
+        for user in db.query(TentacleUser).all():
+            try:
+                sync_smartlists(db, user_id=user.id)      # orphan cleanup drops the playlist
+                write_home_config(db, user_id=user.id)   # ...and its row
+            except Exception as e:
+                logger.warning(f"[YouTube] Cleanup for user {user.id} failed: {e}")
+        bump_playlist_version()
+        _notify_jellyfin_plugin(db)
+        if was_live:
+            from services.youtube import livetv as yt_livetv
+            yt_livetv.refresh_jellyfin_guide(db)
+    finally:
+        db.close()

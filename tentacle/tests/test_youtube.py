@@ -596,10 +596,9 @@ class TestPlaylistIsUploadsOnly(unittest.TestCase):
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
         import models.database as mdb
-        from models.database import (TentacleUser, YouTubeChannel,
-                                     YouTubeRowSubscription, YouTubeVideo)
+        from models.database import TentacleUser, YouTubeChannel, YouTubeVideo
         self.mdb = mdb
-        self.YouTubeVideo, self.YouTubeRowSubscription = YouTubeVideo, YouTubeRowSubscription
+        self.YouTubeVideo = YouTubeVideo
         engine = create_engine(f"sqlite:///{_tf.mkdtemp()}/t.db")
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()
@@ -635,24 +634,40 @@ class TestPlaylistIsUploadsOnly(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["name"], "TraderTV Live")
         self.assertEqual(rows[0]["tag"], "yt:tradertv-live")
-        self.assertEqual(rows[0]["origin"], "YouTube channel")
+        self.assertTrue(rows[0]["origin"].startswith("YouTube channel"))
 
-    def test_enabled_state_follows_the_row_subscription(self):
-        from routers.smartlists import _compute_auto_playlists
-        def enabled():
-            return next(r for r in _compute_auto_playlists(self.db, user_id=self.user.id)
-                        if r["category"] == "youtube")["enabled"]
-        self.assertFalse(enabled())
-        self.db.add(self.YouTubeRowSubscription(channel_fk=self.channel.id,
-                                               user_id=self.user.id, max_items=30))
+    def test_it_is_always_on_and_says_so(self):
+        # Adding the channel is the decision. A switch here that could turn the
+        # playlist off while the channel stayed was one more thing to explain.
+        from routers.smartlists import _compute_auto_playlists, toggle_auto_playlist, AutoPlaylistToggleRequest
+        row = next(r for r in _compute_auto_playlists(self.db, user_id=self.user.id)
+                   if r["category"] == "youtube")
+        self.assertTrue(row["enabled"])
+        self.assertTrue(row["locked"])
+        r = toggle_auto_playlist(AutoPlaylistToggleRequest(key=row["key"], enabled=False),
+                                 db=self.db, user=self.user)
+        self.assertFalse(r["success"])
+        self.assertIn("remove the channel", r["message"])
+
+    def test_every_user_gets_the_playlist_not_just_whoever_added_it(self):
+        from models.database import TentacleUser
+        from services.smartlists import get_desired_smartlists
+        other = TentacleUser(jellyfin_user_id="u2", display_name="guest")
+        self.db.add(other)
         self.db.commit()
-        self.assertTrue(enabled())
+        for u in (self.user, other):
+            names = [x["name"] for x in get_desired_smartlists(self.db, user_id=u.id)]
+            self.assertIn("TraderTV Live", names, u.display_name)
+
+    def test_a_disabled_channel_has_no_playlist(self):
+        from services.smartlists import get_desired_smartlists
+        self.channel.enabled = False
+        self.db.commit()
+        names = [x["name"] for x in get_desired_smartlists(self.db, user_id=self.user.id)]
+        self.assertNotIn("TraderTV Live", names)
 
     def test_the_desired_playlist_is_movies_sorted_newest_first(self):
         from services.smartlists import get_desired_smartlists
-        self.db.add(self.YouTubeRowSubscription(channel_fk=self.channel.id,
-                                               user_id=self.user.id, max_items=30))
-        self.db.commit()
         sl = next(s for s in get_desired_smartlists(self.db, user_id=self.user.id)
                   if s["name"] == "TraderTV Live")
         self.assertEqual(sl["tag"], "yt:tradertv-live")
@@ -827,7 +842,7 @@ class TestSkippedVideosAreRemembered(unittest.TestCase):
             input_url="u", kind="channel", channel_id="UC" + "s" * 22,
             title="Ch", slug="ch", enabled=True, include_videos=True,
             include_streams=False, include_shorts=False, min_duration=60,
-            backfill=10, extra_tags=[])
+            keep_count=10, extra_tags=[])
         self.db.add(self.channel)
         self.db.commit()
         self.db.refresh(self.channel)
@@ -1339,13 +1354,13 @@ class TestStrmFollowsTheAddress(unittest.TestCase):
         self.assertEqual(self.strm.read_text(), before)
 
 
-class TestAddingAChannelSubscribesTheAdder(unittest.TestCase):
-    """Adding a channel used to leave nothing to put on a home screen.
+class TestAddingAChannel(unittest.TestCase):
+    """Add is the only step. Everything after it happens on its own.
 
-    Rows are per-user, so a channel's playlist only exists for users who have a
-    row subscription. Adding one created none, so the videos arrived in the
-    library and there was no playlist and no row — for no visible reason, and
-    with a second toggle elsewhere as the only way to find out.
+    The form is a URL, how many of the newest videos to keep, and two
+    checkboxes. Adding starts the index straight away; the playlist exists for
+    every user; putting it on a home screen is done on the Home Screen tab like
+    any other row.
     """
 
     def setUp(self):
@@ -1353,66 +1368,191 @@ class TestAddingAChannelSubscribesTheAdder(unittest.TestCase):
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
         import models.database as mdb
-        from models.database import TentacleUser, YouTubeRowSubscription
+        from models.database import TentacleUser, YouTubeChannel
         from routers import youtube
-        self.youtube = youtube
-        self.YouTubeRowSubscription = YouTubeRowSubscription
+        self.youtube, self.YouTubeChannel = youtube, YouTubeChannel
         engine = create_engine(f"sqlite:///{_tf.mkdtemp()}/t.db")
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()
-        self.user = TentacleUser(jellyfin_user_id="a" * 32, display_name="u", is_admin=True)
-        self.db.add(self.user)
+        self.db.add(TentacleUser(jellyfin_user_id="a" * 32, display_name="u", is_admin=True))
         self.db.commit()
-        self.db.refresh(self.user)
 
-        self._real_available = youtube.client.available
-        self._real_resolve = youtube.indexer.resolve_channel
-        youtube.client.available = lambda: True
-        youtube.indexer.resolve_channel = lambda url: {
+        self.info = {
             "kind": "channel", "channel_id": "UC" + "a" * 22, "handle": None,
             "playlist_id": None, "title": "A Channel", "avatar_url": None,
-            "banner_url": None, "canonical": url,
+            "banner_url": None, "canonical": "u", "has_uploads": True,
         }
+        self.started = []
+        self._real = (youtube.client.available, youtube.indexer.resolve_channel,
+                      youtube._start_refresh)
+        youtube.client.available = lambda: True
+        youtube.indexer.resolve_channel = lambda url: dict(self.info)
+        youtube._start_refresh = lambda **kw: self.started.append(kw) or True
 
     def tearDown(self):
-        self.youtube.client.available = self._real_available
-        self.youtube.indexer.resolve_channel = self._real_resolve
+        (self.youtube.client.available, self.youtube.indexer.resolve_channel,
+         self.youtube._start_refresh) = self._real
 
-    def _add(self, user):
-        from routers import auth
-        real = auth.get_user_from_request
-        auth.get_user_from_request = lambda request, db: user
-        try:
-            body = self.youtube.ChannelCreate(url="https://youtube.com/@x")
-            return self.youtube.add_channel(body, request=None, db=self.db)
-        finally:
-            auth.get_user_from_request = real
+    def _add(self, **fields):
+        body = self.youtube.ChannelCreate(url="https://youtube.com/@x", **fields)
+        return self.youtube.add_channel(body, db=self.db)
 
-    def _subs(self):
-        return self.db.query(self.YouTubeRowSubscription).all()
+    def _channel(self):
+        return self.db.query(self.YouTubeChannel).first()
 
-    def test_the_adder_gets_a_row_subscription(self):
-        result = self._add(self.user)
-        self.assertTrue(result["home_row"])
-        subs = self._subs()
-        self.assertEqual(len(subs), 1)
-        self.assertEqual(subs[0].user_id, self.user.id)
+    def test_indexing_starts_on_its_own(self):
+        r = self._add()
+        self.assertTrue(r["indexing"])
+        self.assertEqual(len(self.started), 1)
+        self.assertEqual(self.started[0]["channel_ids"], [r["id"]])
 
-    def test_nobody_else_is_subscribed(self):
-        # Rows stay per-user: one household member adding a channel must not
-        # put it on everyone's home screen.
-        from models.database import TentacleUser
-        other = TentacleUser(jellyfin_user_id="b" * 32, display_name="other")
-        self.db.add(other)
+    def test_keep_newest_is_the_one_setting(self):
+        self._add(keep_count=25)
+        ch = self._channel()
+        self.assertEqual(ch.keep_count, 25)
+        # Derived, not asked for: no length filter, uploads always on.
+        self.assertEqual(ch.min_duration, 0)
+        self.assertTrue(ch.include_videos)
+
+    def test_keep_newest_is_clamped_to_something_sane(self):
+        self._add(keep_count=5000)
+        self.assertEqual(self._channel().keep_count, self.youtube.indexer.MAX_KEEP)
+        self.db.delete(self._channel())
         self.db.commit()
-        self._add(self.user)
-        self.assertEqual([s.user_id for s in self._subs()], [self.user.id])
+        self.info["channel_id"] = "UC" + "b" * 22
+        self.info["title"] = "B"
+        self._add(keep_count=0)
+        self.assertEqual(self._channel().keep_count, 1)
 
-    def test_the_channel_is_still_added_when_there_is_no_user(self):
-        # Bootstrap: the very first setup has no TentacleUser yet, and failing
-        # the add over a row subscription would be absurd.
-        result = self._add(None)
-        self.assertFalse(result["home_row"])
-        self.assertEqual(self._subs(), [])
-        from models.database import YouTubeChannel
-        self.assertEqual(self.db.query(YouTubeChannel).count(), 1)
+    def test_live_tv_is_chosen_at_add(self):
+        self._add(live=True)
+        self.assertTrue(self._channel().live_enabled)
+        # ...and the guide is refreshed once the index has found its streams.
+        self.assertTrue(self.started[0]["guide"])
+
+    def test_live_tv_off_asks_for_no_guide_refresh(self):
+        self._add(live=False)
+        self.assertFalse(self._channel().live_enabled)
+        self.assertFalse(self.started[0]["guide"])
+
+    def test_a_channel_with_no_uploads_keeps_its_past_streams_instead(self):
+        # Decided here so nobody has to know that such channels exist.
+        self.info["has_uploads"] = False
+        self._add()
+        self.assertTrue(self._channel().include_streams)
+
+    def test_a_channel_with_uploads_does_not(self):
+        self._add()
+        self.assertFalse(self._channel().include_streams)
+
+    def test_old_fields_are_ignored_not_rejected(self):
+        # A client built against the previous form still works.
+        body = self.youtube.ChannelCreate(url="u", backfill=30, min_duration=60,
+                                          include_streams=True)
+        self.youtube.add_channel(body, db=self.db)
+        ch = self._channel()
+        self.assertEqual(ch.min_duration, 0)
+        self.assertFalse(ch.include_streams)
+
+
+class TestKeepNewest(unittest.TestCase):
+    """"Keep the newest N" is one number driving two things."""
+
+    def _channel(self, keep):
+        class C:
+            keep_count = keep
+        return C()
+
+    def test_the_listing_reads_a_little_past_n(self):
+        # A few of the newest may be private or members-only; reading exactly N
+        # would leave the library short.
+        from services.youtube.indexer import listing_limit
+        self.assertEqual(listing_limit(self._channel(10)), 15)
+
+    def test_the_listing_is_bounded(self):
+        from services.youtube.indexer import MAX_KEEP, listing_limit
+        self.assertEqual(listing_limit(self._channel(10_000)), MAX_KEEP + 5)
+
+    def test_a_missing_value_still_reads_something(self):
+        from services.youtube.indexer import listing_limit
+        self.assertGreater(listing_limit(self._channel(None)), 0)
+
+    def test_retention_counts_videos_not_broadcasts(self):
+        import tempfile as _tf
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        import models.database as mdb
+        from models.database import YouTubeChannel, YouTubeVideo
+        from services.youtube import library, sync
+        engine = create_engine(f"sqlite:///{_tf.mkdtemp()}/t.db")
+        mdb.Base.metadata.create_all(engine)
+        db = sessionmaker(bind=engine)()
+        ch = YouTubeChannel(input_url="u", kind="channel", title="C", slug="c",
+                            enabled=True, keep_count=2, live_enabled=True, extra_tags=[])
+        db.add(ch)
+        db.commit()
+        db.refresh(ch)
+        for i, st in enumerate(("is_live", "is_upcoming", None, None)):
+            db.add(YouTubeVideo(channel_fk=ch.id, video_id=str(i) * 11, title=str(i),
+                                live_status=st, published_at=datetime(2026, 1, 10 - i)))
+        db.commit()
+        real = library.remove_video
+        library.remove_video = lambda v: 0
+        try:
+            retired = sync.apply_retention(db, ch)
+        finally:
+            library.remove_video = real
+        # Two uploads within a keep of 2: nothing retired. The two broadcasts
+        # are guide entries and must not have counted against the two uploads.
+        self.assertEqual(retired, 0)
+
+
+class TestRetiredSubscriptionTable(unittest.TestCase):
+    def test_the_old_table_is_dropped_and_dropping_twice_is_fine(self):
+        import sqlite3
+        import tempfile as _tf
+        import models.database as mdb
+        conn = sqlite3.connect(_tf.mkdtemp() + "/t.db")
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE youtube_row_subscriptions (id INTEGER PRIMARY KEY)")
+        conn.commit()
+        mdb._drop_retired_tables(cur, conn)
+        mdb._drop_retired_tables(cur, conn)
+        cur.execute("SELECT name FROM sqlite_master WHERE name='youtube_row_subscriptions'")
+        self.assertIsNone(cur.fetchone())
+
+
+class TestChannelListForLiveTv(unittest.TestCase):
+    """The Live TV page lists YouTube channels next to everything else in
+    the lineup, so the channel list has to say what the guide knows."""
+
+    def setUp(self):
+        import tempfile as _tf
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        import models.database as mdb
+        from models.database import EPGProgram, YouTubeChannel
+        from services.youtube import livetv
+        engine = create_engine(f"sqlite:///{_tf.mkdtemp()}/t.db")
+        mdb.Base.metadata.create_all(engine)
+        self.db = sessionmaker(bind=engine)()
+        self.on = YouTubeChannel(input_url="u", kind="channel", title="On", slug="on",
+                                 enabled=True, live_enabled=True, extra_tags=[])
+        self.off = YouTubeChannel(input_url="u", kind="channel", title="Off", slug="off",
+                                  enabled=True, live_enabled=False, extra_tags=[])
+        self.db.add_all([self.on, self.off])
+        self.db.commit()
+        for i in range(3):
+            self.db.add(EPGProgram(channel_id=livetv.epg_channel_id(self.on),
+                                   title=f"p{i}", start=datetime(2026, 1, 1, i),
+                                   stop=datetime(2026, 1, 1, i + 1)))
+        self.db.commit()
+
+    def test_guide_number_and_entry_count_are_reported(self):
+        from routers.youtube import list_channels
+        from services.youtube import livetv
+        rows = {r["title"]: r for r in list_channels(db=self.db)}
+        self.assertEqual(rows["On"]["guide_number"], livetv.guide_number(self.on))
+        self.assertEqual(rows["On"]["guide_programmes"], 3)
+        # Off Live TV: nothing to count, and nothing counted.
+        self.assertEqual(rows["Off"]["guide_programmes"], 0)

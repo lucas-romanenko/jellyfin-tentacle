@@ -108,6 +108,10 @@ def resolve_channel(url: str) -> dict:
 
     return {
         "kind": parsed["kind"],
+        # Whether the uploads tab has anything in it. A channel that only ever
+        # broadcasts live has an empty one, and needs its finished streams kept
+        # instead or its library is empty — decided here so nobody has to know.
+        "has_uploads": bool(info.get("entries")),
         "channel_id": info.get("channel_id") or parsed.get("channel_id"),
         "handle": parsed.get("handle"),
         "playlist_id": parsed.get("playlist_id"),
@@ -116,6 +120,23 @@ def resolve_channel(url: str) -> dict:
         "banner_url": _pick("banner"),
         "canonical": parsed["canonical"],
     }
+
+
+# The most that will ever be read from one tab. Keeping more than this in a
+# "latest videos" row is not what the feature is for, and each new video costs
+# a rate-limited detail fetch, so the cap bounds the first index to minutes.
+MAX_KEEP = 100
+
+
+def listing_limit(channel: YouTubeChannel) -> int:
+    """How far down a tab to read, derived from the one setting the user has.
+
+    "Keep the newest N" means reading a little past N: a few of the newest may
+    be private, members-only or otherwise unavailable, and reading exactly N
+    would leave the library short. Retention trims back to N afterwards.
+    """
+    keep = channel.keep_count or 10
+    return min(max(keep + 5, 5), MAX_KEEP + 5)
 
 
 def _tab_urls(channel: YouTubeChannel) -> list:
@@ -240,7 +261,7 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
         logger.info(f"[YouTube] '{channel.title}' is backed off until {channel.blocked_until} — skipping")
         return {"skipped": True, "new": 0, "seen": 0}
 
-    limit = limit or channel.backfill or 30
+    limit = limit or listing_limit(channel)
     known = {v.video_id for v in db.query(YouTubeVideo.video_id).filter(
         YouTubeVideo.channel_fk == channel.id).all()}
 

@@ -1093,19 +1093,14 @@ def _compute_auto_playlists(db: Session, user_id: int = None) -> list:
 
     # ── YouTube channel playlists ──
     # One per added channel, containing that channel's uploads (never its live
-    # streams). Listed here so a channel's playlist is visible and manageable
-    # from the Playlists page like any other, rather than existing only behind
-    # the toggle on the YouTube page.
-    from models.database import YouTubeChannel, YouTubeRowSubscription, YouTubeVideo
+    # streams). Always on: adding the channel is the decision, and the per-user
+    # choice is whether it goes on a home screen, made on the Home Screen tab
+    # like every other row. Listed here so it is visible with its count.
+    from models.database import YouTubeChannel, YouTubeVideo
     from services.youtube.indexer import is_library_status
 
-    subscribed = set()
-    if user_id is not None:
-        subscribed = {
-            r.channel_fk for r in db.query(YouTubeRowSubscription).filter(
-                YouTubeRowSubscription.user_id == user_id).all()
-        }
-    for ch in db.query(YouTubeChannel).order_by(YouTubeChannel.title).all():
+    for ch in db.query(YouTubeChannel).filter(
+            YouTubeChannel.enabled == True).order_by(YouTubeChannel.title).all():  # noqa: E712
         count = db.query(func.count(YouTubeVideo.id)).filter(
             YouTubeVideo.channel_fk == ch.id,
             YouTubeVideo.removed_at.is_(None),
@@ -1116,11 +1111,12 @@ def _compute_auto_playlists(db: Session, user_id: int = None) -> list:
             "name": ch.title,
             "tag": f"yt:{ch.slug}",
             "category": "youtube",
-            "origin": "YouTube channel",
+            "origin": "YouTube channel · always on — remove it from the YouTube page",
             "media_type": ["Movie"],
             "item_count": count,
             "youtube_channel_id": ch.id,
-            "youtube_enabled": ch.id in subscribed,
+            "enabled": True,
+            "locked": True,
         })
 
     # ── Resolve enabled state from per-user DB toggles ──
@@ -1133,8 +1129,7 @@ def _compute_auto_playlists(db: Session, user_id: int = None) -> list:
             # Lists use their own playlist_enabled field
             r["enabled"] = r.pop("playlist_enabled", False)
         elif r["category"] == "youtube":
-            # YouTube channels use their row subscription, not a toggle row
-            r["enabled"] = r.pop("youtube_enabled", False)
+            pass   # always on; set where the entry is built, and not a toggle's to change
         else:
             r["enabled"] = toggles.get(r["key"], False)
 
@@ -1155,24 +1150,12 @@ class AutoPlaylistToggleRequest(BaseModel):
 @router.post("/auto-playlists/toggle")
 def toggle_auto_playlist(req: AutoPlaylistToggleRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Toggle a per-user auto playlist on/off. Triggers sync to Jellyfin."""
-    # YouTube channels are driven by their row subscription, so toggling one
-    # here is the same action as the toggle on the YouTube page — not an
-    # AutoPlaylistToggle row, which would leave the two views disagreeing.
+    # A YouTube channel's playlist has no off switch: the channel being added
+    # is the decision. Taking it away is done by removing the channel.
     if req.key.startswith("youtube:"):
-        from models.database import YouTubeChannel, YouTubeRowSubscription
-        channel_id = int(req.key.split(":", 1)[1])
-        channel = db.query(YouTubeChannel).filter(YouTubeChannel.id == channel_id).first()
-        if not channel:
-            return {"success": False, "message": "Channel not found"}
-        sub = db.query(YouTubeRowSubscription).filter(
-            YouTubeRowSubscription.channel_fk == channel_id,
-            YouTubeRowSubscription.user_id == user.id,
-        ).first()
-        if req.enabled and not sub:
-            db.add(YouTubeRowSubscription(channel_fk=channel_id, user_id=user.id, max_items=30))
-        elif sub and not req.enabled:
-            db.delete(sub)
-        db.commit()
+        return {"success": False,
+                "message": "YouTube channel playlists are always on. To remove one, "
+                           "remove the channel from the YouTube page."}
     # List playlists use ListSubscription.playlist_enabled
     elif req.key.startswith("list:"):
         list_id = int(req.key.replace("list:", ""))
