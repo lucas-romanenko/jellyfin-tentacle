@@ -51,6 +51,13 @@ RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.t
 
 COPY . .
 
+# Stamped by CI so a running container can say what it is (/api/version).
+# After COPY, so changing these does not invalidate the layers above.
+ARG TENTACLE_COMMIT=unknown
+ARG TENTACLE_BUILD_DATE=unknown
+ENV TENTACLE_COMMIT=$TENTACLE_COMMIT
+ENV TENTACLE_BUILD_DATE=$TENTACLE_BUILD_DATE
+
 # Ensure the data dir exists. Runs as root so writes to bind-mounted /data and
 # /media/* volumes work without the operator having to chown host directories —
 # important for an easy-to-deploy, freely-distributed app.

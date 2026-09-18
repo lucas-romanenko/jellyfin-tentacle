@@ -32,6 +32,32 @@ _TOKEN_CACHE_TTL = 300  # 5 minutes
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
+def _build_playlists_for_new_user(user_id: int) -> None:
+    """Create a just-created user's playlists in the background."""
+    import threading
+
+    def _run():
+        from models.database import SessionLocal
+        from services.smartlists import (
+            _notify_jellyfin_plugin, bump_playlist_version, refresh_smartlist_playlists,
+            sync_smartlists, write_home_config,
+        )
+        db = SessionLocal()
+        try:
+            sync_smartlists(db, user_id=user_id)
+            refresh_smartlist_playlists(db, user_id=user_id)
+            write_home_config(db, user_id=user_id)
+            bump_playlist_version()
+            _notify_jellyfin_plugin(db)
+            logger.info(f"Built playlists for new user {user_id}")
+        except Exception as e:
+            logger.warning(f"Could not build playlists for new user {user_id}: {e}")
+        finally:
+            db.close()
+
+    threading.Thread(target=_run, daemon=True, name=f"new-user-playlists-{user_id}").start()
+
+
 def _get_session_secret(db: Session) -> str:
     return get_setting(db, "session_secret", "fallback-secret-change-me")
 
@@ -283,12 +309,22 @@ def login(body: LoginRequest, response: Response, request: Request, db: Session 
             set_setting(db, "jellyfin_user_id", jf_user_id)
             set_setting(db, "jellyfin_user_name", jf_user_name)
             logger.info(f"First user '{jf_user_name}' set as admin, orphaned data migrated")
+        created = True
     else:
         user.display_name = jf_user_name
         user.profile_image_tag = jf_image_tag
         user.is_admin = jf_is_admin  # Sync admin status on every login
+        created = False
 
     db.commit()
+
+    if created:
+        # Give the new user their playlists now. Playlists are per-user and are
+        # created for the users that exist when something publishes; a user who
+        # logs in afterwards used to have none until the nightly sync — a day
+        # with an empty "add row" list on a fresh install, where the channel
+        # was typically added before anyone had logged in at all.
+        _build_playlists_for_new_user(user.id)
 
     # Set session cookie. Mark Secure when the request reached us over HTTPS
     # (Cloudflare tunnel sets X-Forwarded-Proto) so the session token is not sent

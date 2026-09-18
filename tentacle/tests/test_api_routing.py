@@ -109,3 +109,42 @@ class TestAssetCacheBusting(unittest.TestCase):
         # and they can never be served as a mismatched pair.
         found = dict(self._versions())
         self.assertEqual(found["app"], found["pages"])
+
+
+class TestVersionEndpoint(unittest.TestCase):
+    """"Which version am I running?" has to have a one-line answer.
+
+    A container that looks up to date but is not is indistinguishable from a
+    bug — both present as a feature simply not being there — and comparing
+    two installs used to mean reading Docker image digests by hand.
+    """
+
+    def setUp(self):
+        from fastapi.testclient import TestClient
+        import main
+        self.main = main
+        self.client = TestClient(main.app, raise_server_exceptions=False)
+
+    def test_it_needs_no_login(self):
+        r = self.client.get("/api/version")
+        self.assertEqual(r.status_code, 200)
+
+    def test_it_says_what_the_build_is_and_what_it_can_do(self):
+        body = self.client.get("/api/version").json()
+        for key in ("commit", "built", "assets", "endpoints"):
+            self.assertIn(key, body)
+        self.assertEqual(body["assets"], self.main._asset_version())
+        # The endpoint list is how two installs are compared feature by feature.
+        self.assertIn("/api/youtube/ping", body["endpoints"])
+        self.assertIn("/api/version", body["endpoints"])
+
+    def test_it_reports_nothing_configured(self):
+        body = self.client.get("/api/version").json()
+        text = str(body).lower()
+        for secret in ("api_key", "password", "jellyfin_url", "token"):
+            self.assertNotIn(secret, text)
+
+    def test_health_carries_the_same_stamp(self):
+        h = self.client.get("/api/health").json()
+        v = self.client.get("/api/version").json()
+        self.assertEqual(h["commit"], v["commit"])

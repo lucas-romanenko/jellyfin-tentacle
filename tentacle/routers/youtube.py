@@ -846,6 +846,17 @@ def _run_refresh_once(channel_ids=None):
             _refresh_state["channel"] = "refreshing the Jellyfin guide"
             _refresh_state["keep"] = None
             yt_livetv.refresh_jellyfin_guide(db)
+
+        # Whatever else happened, make sure every user has every channel's
+        # playlist and that none is behind its library. This is what "Check
+        # for new videos" is for when something looks missing.
+        try:
+            from services.youtube.sync import reconcile_playlists
+            _refresh_state["channel"] = "checking playlists"
+            _refresh_state["keep"] = None
+            reconcile_playlists(db)
+        except Exception as e:
+            logger.warning(f"[YouTube] Playlist check failed: {e}")
     finally:
         db.close()
 

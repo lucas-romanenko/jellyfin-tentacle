@@ -632,9 +632,34 @@ async def no_cache_static(request: Request, call_next):
     return response
 
 
+# Stamped into the image by CI. Without it "which version am I running?" had
+# no answer at all — a container that looks up to date but is not is
+# indistinguishable from a bug, and both present as a feature simply not
+# being there.
+BUILD_COMMIT = (os.environ.get("TENTACLE_COMMIT") or "").strip() or "unknown"
+BUILD_DATE = (os.environ.get("TENTACLE_BUILD_DATE") or "").strip() or "unknown"
+
+
 @app.get("/api/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "commit": BUILD_COMMIT, "built": BUILD_DATE}
+
+
+@app.get("/api/version")
+def version():
+    """What this container is. Unauthenticated on purpose: it is the first
+    thing to check when something is missing, and needing to log in to find
+    out you are on an old build is the wrong way round. Reports no
+    configuration and no data — a commit, a date, and which API paths exist."""
+    return {
+        "commit": BUILD_COMMIT,
+        "built": BUILD_DATE,
+        "assets": _asset_version(),
+        "endpoints": sorted({
+            r.path for r in app.routes
+            if getattr(r, "path", "").startswith("/api/") and "{" not in getattr(r, "path", "")
+        }),
+    }
 
 
 @app.api_route("/api/{full_path:path}",

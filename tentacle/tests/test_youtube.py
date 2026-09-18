@@ -1949,6 +1949,22 @@ class TestPlaylistsAreRefilledHourly(_PublishFixture):
         self.assertTrue(behind)
         self.assertNotIn("refresh", [e[0] for e in self.log])
 
+    def test_a_user_with_no_playlist_at_all_gets_one_created_first(self):
+        # A fresh install: the channel was added before anyone had logged in,
+        # so publishing created playlists for nobody. Refilling can only top
+        # up a playlist that exists, so the reconcile has to make it first.
+        calls = []
+        self.sm._get_smartlists_with_playlist_ids = lambda db, user_id=None: (
+            [{"name": "TraderTV Live", "playlist_id": "pl-1", "is_youtube": True}]
+            if calls else [])
+        self.sm.sync_smartlists = lambda db, user_id=None: calls.append(("sync", user_id))
+        self.jf._playlist_items = {"pl-1": 0}
+        self.jf._tagged = [3]
+        fixed = self.ysync.reconcile_playlists(self.db)
+        self.assertEqual(calls, [("sync", self.user.id)])
+        self.assertEqual(fixed, 1)
+        self.assertIn(("refresh", self.user.id, ("TraderTV Live",)), self.log)
+
     def test_a_full_playlist_is_left_alone_and_reported_as_caught_up(self):
         self.jf._playlist_items = {"pl-1": 3}
         self.assertEqual(self.ysync.reconcile_playlists(self.db, report=True), (0, False))

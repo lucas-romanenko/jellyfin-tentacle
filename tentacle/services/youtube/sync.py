@@ -496,7 +496,7 @@ def reconcile_playlists(db: Session, report: bool = False):
     from services.jellyfin import JellyfinService
     from services.smartlists import (
         _get_smartlists_with_playlist_ids, _notify_jellyfin_plugin,
-        bump_playlist_version, refresh_smartlist_playlists,
+        bump_playlist_version, refresh_smartlist_playlists, sync_smartlists,
     )
 
     url = get_setting(db, "jellyfin_url", "")
@@ -508,8 +508,19 @@ def reconcile_playlists(db: Session, report: bool = False):
             for ch in db.query(YouTubeChannel).filter(YouTubeChannel.enabled == True).all()}  # noqa: E712
     fixed, still_behind = 0, False
     for user in db.query(TentacleUser).all():
+        have_playlists = _get_smartlists_with_playlist_ids(db, user_id=user.id)
+        # A user with no playlist for an enabled channel at all — created after
+        # the channel was published, most likely — gets one made first.
+        # Refilling can only top up a playlist that exists.
+        if any(title not in {p["name"] for p in have_playlists} for title in want):
+            try:
+                sync_smartlists(db, user_id=user.id)
+                have_playlists = _get_smartlists_with_playlist_ids(db, user_id=user.id)
+                logger.info(f"[YouTube] Created missing channel playlist(s) for user {user.id}")
+            except Exception as e:
+                logger.warning(f"[YouTube] Could not create playlists for user {user.id}: {e}")
         short = []
-        for p in _get_smartlists_with_playlist_ids(db, user_id=user.id):
+        for p in have_playlists:
             if not p.get("is_youtube") or not want.get(p["name"]):
                 continue
             try:
