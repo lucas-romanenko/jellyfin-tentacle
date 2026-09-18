@@ -1001,8 +1001,15 @@
         if (!data.sections) return;
 
         var newSections = data.sections.filter(function (s) { return s.type === 'row' || s.type === 'builtin'; });
-        var oldKeys = MH.activeSections.map(function (s) { return (s.type === 'row' ? s.playlistId : s.sectionId) || ''; }).join(',');
-        var newKeys = newSections.map(function (s) { return (s.type === 'row' ? s.playlistId : s.sectionId) || ''; }).join(',');
+        // The key includes each row's shape: a poster/wide change is a change
+        // to the row's structure, not to its items, and comparing IDs alone
+        // left it invisible until a full page reload — unlike a reorder, which
+        // the same backend push made appear at once.
+        var keyOf = function (s) {
+          return ((s.type === 'row' ? s.playlistId : s.sectionId) || '') + ':' + (s.shape || '');
+        };
+        var oldKeys = MH.activeSections.map(keyOf).join(',');
+        var newKeys = newSections.map(keyOf).join(',');
 
         if (oldKeys !== newKeys) {
           // Structure changed — rebuild rows container
