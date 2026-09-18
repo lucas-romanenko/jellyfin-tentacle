@@ -816,7 +816,7 @@ def _run_refresh_once(channel_ids=None):
                 _note_channel_error(db, channel, e)
                 logger.error(f"[YouTube] Refresh crashed for '{channel.title}': {e}", exc_info=True)
             if r_written:
-                changed.append(channel.title)
+                changed.append(channel)
             _refresh_state["channels_done"] += 1
 
         # Publish when something changed — or whenever specific channels were
@@ -826,7 +826,7 @@ def _run_refresh_once(channel_ids=None):
             try:
                 _refresh_state["channel"] = "publishing to Jellyfin"
                 _refresh_state["keep"] = None
-                publish_to_jellyfin(db, changed or [c.title for c in channels])
+                publish_to_jellyfin(db, changed or list(channels))
             except Exception as e:
                 logger.warning(f"[YouTube] Publish to Jellyfin failed: {e}")
 
@@ -925,38 +925,100 @@ def delete_channel(channel_id: int, db: Session = Depends(get_db)):
     db.commit()
     logger.info(f"[YouTube] Removed channel '{title}' ({removed} file(s) deleted)")
 
-    threading.Thread(target=_cleanup_after_remove, args=(was_live,), daemon=True,
+    threading.Thread(target=_cleanup_after_remove, args=(title, was_live), daemon=True,
                      name="youtube-remove-cleanup").start()
     return {"success": True, "files_deleted": removed}
 
 
-def _cleanup_after_remove(was_live: bool) -> None:
-    """Take a removed channel out of Jellyfin: scan, playlists, rows, guide."""
+def _cleanup_after_remove(title: str, was_live: bool) -> None:
+    """Take a removed channel out of Jellyfin entirely: rows, playlist, items, guide.
+
+    Every step stands on its own and is logged, because a removal that stops
+    halfway is the worst outcome — gone from this page, still all over
+    Jellyfin. Two of these steps are deliberate rather than left to the
+    regular sync: a home row whose playlist vanishes is normally kept for
+    days (right for a blip, wrong for a removal), and the playlist is deleted
+    by the id Tentacle recorded for it, never by name, so a user's own
+    playlist that happens to share the channel's name is never touched.
+    """
     from models.database import SessionLocal, TentacleUser
+    from routers.smartlists import _read_home_json, _write_home_json
     from services.jellyfin import JellyfinService
     from services.smartlists import (
-        _notify_jellyfin_plugin, bump_playlist_version, sync_smartlists, write_home_config,
+        _get_smartlists_with_playlist_ids, _notify_jellyfin_plugin,
+        bump_playlist_version, home_config_lock, sync_smartlists, write_home_config,
     )
+    from services.youtube import livetv as yt_livetv
+    from services.youtube.sync import youtube_library_id
 
     db = SessionLocal()
     try:
         url = get_setting(db, "jellyfin_url", "")
         key = get_setting(db, "jellyfin_api_key", "")
-        if url and key:
+        jf = JellyfinService(url, key, get_setting(db, "jellyfin_user_id", "")) if url and key else None
+
+        for user in db.query(TentacleUser).all():
+            # The playlist id Tentacle recorded, captured before the sync below
+            # removes the folder that holds it.
+            recorded = next((p["playlist_id"] for p in _get_smartlists_with_playlist_ids(db, user_id=user.id)
+                             if p["name"] == title), None)
+
+            # 1. The home row and, if it pointed here, the hero — explicitly.
             try:
-                JellyfinService(url, key, get_setting(db, "jellyfin_user_id", "")).trigger_library_scan()
+                with home_config_lock:
+                    config = _read_home_json(user) or {}
+                    rows = config.get("rows") or []
+                    kept = [r for r in rows if r.get("display_name") != title]
+                    hero = config.get("hero") or {}
+                    hero_hit = hero.get("display_name") == title
+                    if len(kept) != len(rows) or hero_hit:
+                        for i, r in enumerate(kept, start=1):
+                            r["order"] = i
+                        config["rows"] = kept
+                        if hero_hit:
+                            config["hero"] = {"enabled": False, "playlist_id": "", "display_name": ""}
+                        _write_home_json(user, config)
+                        logger.info(f"[YouTube] Removed '{title}' from user {user.id}'s home screen")
+            except Exception as e:
+                logger.warning(f"[YouTube] Could not remove '{title}' row for user {user.id}: {e}")
+
+            # 2. The playlist: no longer desired, so the sync's orphan cleanup
+            #    deletes it and its folder.
+            try:
+                sync_smartlists(db, user_id=user.id)
+            except Exception as e:
+                logger.warning(f"[YouTube] Playlist cleanup for user {user.id} failed: {e}")
+
+            # 3. If Jellyfin still has the playlist Tentacle recorded, delete it.
+            if jf and recorded:
+                try:
+                    if any(p.get("Id") == recorded for p in jf.get_playlists(user.jellyfin_user_id) or []):
+                        jf.delete_item(recorded)
+                        logger.info(f"[YouTube] Deleted leftover Jellyfin playlist {recorded} ('{title}')")
+                except Exception as e:
+                    logger.warning(f"[YouTube] Could not check Jellyfin playlists for user {user.id}: {e}")
+
+            try:
+                write_home_config(db, user_id=user.id)
+            except Exception as e:
+                logger.warning(f"[YouTube] Home config rewrite for user {user.id} failed: {e}")
+
+        try:
+            bump_playlist_version()
+            _notify_jellyfin_plugin(db)
+        except Exception as e:
+            logger.warning(f"[YouTube] Could not notify clients: {e}")
+
+        # 4. The items: their files are gone, so a scan drops them from the library.
+        if jf:
+            try:
+                jf.trigger_library_scan(youtube_library_id(jf))
             except Exception as e:
                 logger.warning(f"[YouTube] Could not trigger a Jellyfin scan: {e}")
-        for user in db.query(TentacleUser).all():
-            try:
-                sync_smartlists(db, user_id=user.id)      # orphan cleanup drops the playlist
-                write_home_config(db, user_id=user.id)   # ...and its row
-            except Exception as e:
-                logger.warning(f"[YouTube] Cleanup for user {user.id} failed: {e}")
-        bump_playlist_version()
-        _notify_jellyfin_plugin(db)
+
+        # 5. The Live TV channel: it left the lineup, so the guide has to be re-read.
         if was_live:
-            from services.youtube import livetv as yt_livetv
             yt_livetv.refresh_jellyfin_guide(db)
+        logger.info(f"[YouTube] Cleanup after removing '{title}' finished")
     finally:
         db.close()

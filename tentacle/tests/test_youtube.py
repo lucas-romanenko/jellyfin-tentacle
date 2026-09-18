@@ -1700,3 +1700,229 @@ class TestKeepNewestStopsFetching(unittest.TestCase):
         self._index()
         self.assertEqual(self.progress[-1], (3, 3))
         self.assertTrue(all(k <= n for k, n in self.progress))
+
+
+class _FakeJellyfin:
+    """Stands in for JellyfinService: records calls, answers from a script."""
+
+    def __init__(self, tagged_counts=(), playlist_items=None, playlists=None):
+        self.calls = []
+        self._tagged = list(tagged_counts)     # successive answers to query_items
+        self._playlist_items = playlist_items or {}
+        self._playlists = playlists or []
+
+    def get_libraries(self):
+        return [{"Name": "YouTube", "Locations": ["/mnt/media/youtube"], "ItemId": "lib-yt"},
+                {"Name": "Movies", "Locations": ["/mnt/media/movies"], "ItemId": "lib-mov"}]
+
+    def trigger_library_scan(self, library_id=None):
+        self.calls.append(("scan", library_id))
+
+    def query_items(self, include_types, tags=None, **kw):
+        n = self._tagged.pop(0) if len(self._tagged) > 1 else (self._tagged[0] if self._tagged else 0)
+        self.calls.append(("query", tuple(tags or ()), n))
+        return [{"Id": str(i)} for i in range(n)]
+
+    def get_playlist_items(self, playlist_id, limit=50000):
+        return [{"Id": str(i)} for i in range(self._playlist_items.get(playlist_id, 0))]
+
+    def get_playlists(self, user_id=None):
+        return list(self._playlists)
+
+    def delete_item(self, item_id):
+        self.calls.append(("delete", item_id))
+        # As Jellyfin does: once deleted, it is no longer listed.
+        self._playlists = [p for p in self._playlists if p.get("Id") != item_id]
+        return True
+
+
+class _PublishFixture(unittest.TestCase):
+    """A channel with three library videos, one user, and every Jellyfin and
+    playlist call replaced by a recorder."""
+
+    def setUp(self):
+        import tempfile as _tf
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        import models.database as mdb
+        from models.database import TentacleUser, YouTubeChannel, YouTubeVideo
+        import services.jellyfin as jfmod
+        import services.smartlists as sm
+        from services.youtube import sync as ysync
+        self.sm, self.ysync = sm, ysync
+        engine = create_engine(f"sqlite:///{_tf.mkdtemp()}/t.db")
+        mdb.Base.metadata.create_all(engine)
+        self.Session = sessionmaker(bind=engine)
+        self.db = self.Session()
+        self.user = TentacleUser(jellyfin_user_id="u" * 32, display_name="u", is_admin=True)
+        self.db.add(self.user)
+        self.channel = YouTubeChannel(input_url="u", kind="channel", title="TraderTV Live",
+                                      slug="tradertv-live", enabled=True, keep_count=10,
+                                      extra_tags=[])
+        self.db.add(self.channel)
+        self.db.commit()
+        self.db.refresh(self.channel)
+        for i in range(3):
+            self.db.add(YouTubeVideo(channel_fk=self.channel.id, video_id=str(i) * 11,
+                                     title=str(i), live_status="not_live"))
+        self.db.add(YouTubeVideo(channel_fk=self.channel.id, video_id="l" * 11,
+                                 title="live", live_status="is_live"))
+        self.db.commit()
+        mdb_set = __import__("models.database", fromlist=["set_setting"]).set_setting
+        mdb_set(self.db, "jellyfin_url", "http://jf")
+        mdb_set(self.db, "jellyfin_api_key", "k")
+
+        self.log = []
+        self.jf = _FakeJellyfin()
+        self._saved = {
+            "JellyfinService": jfmod.JellyfinService,
+            "sync_smartlists": sm.sync_smartlists,
+            "refresh_smartlist_playlists": sm.refresh_smartlist_playlists,
+            "write_home_config": sm.write_home_config,
+            "bump_playlist_version": sm.bump_playlist_version,
+            "_notify_jellyfin_plugin": sm._notify_jellyfin_plugin,
+            "_get_smartlists_with_playlist_ids": sm._get_smartlists_with_playlist_ids,
+            "sleep": ysync.time.sleep,
+        }
+        jfmod.JellyfinService = lambda *a, **k: self.jf
+        sm.sync_smartlists = lambda db, user_id=None: self.log.append(("sync", user_id))
+        sm.refresh_smartlist_playlists = lambda db, user_id=None, only_names=None: (
+            self.log.append(("refresh", user_id, tuple(only_names or ()))) or {})
+        sm.write_home_config = lambda db, user_id=None: self.log.append(("home", user_id))
+        sm.bump_playlist_version = lambda: self.log.append(("bump",))
+        sm._notify_jellyfin_plugin = lambda db: self.log.append(("notify",))
+        sm._get_smartlists_with_playlist_ids = lambda db, user_id=None: [
+            {"name": "TraderTV Live", "playlist_id": "pl-1", "is_youtube": True}]
+        ysync.time.sleep = lambda s: self.log.append(("sleep", s))
+
+    def tearDown(self):
+        import services.jellyfin as jfmod
+        s = self._saved
+        jfmod.JellyfinService = s["JellyfinService"]
+        for k in ("sync_smartlists", "refresh_smartlist_playlists", "write_home_config",
+                  "bump_playlist_version", "_notify_jellyfin_plugin",
+                  "_get_smartlists_with_playlist_ids"):
+            setattr(self.sm, k, s[k])
+        self.ysync.time.sleep = s["sleep"]
+
+
+class TestPublishWaitsForJellyfin(_PublishFixture):
+    """The playlist is filled only once Jellyfin actually has the videos.
+
+    A fixed 20-second sleep stood between the scan and the fill. Against a
+    full scan of a large library that takes minutes, the playlist was filled
+    before the videos existed in Jellyfin, came up empty, and stayed empty —
+    the library then filled in on its own and the row never appeared.
+    """
+
+    def test_the_scan_is_aimed_at_the_youtube_library(self):
+        self.jf._tagged = [3]
+        self.ysync.publish_to_jellyfin(self.db, [self.channel])
+        self.assertEqual(self.jf.calls[0], ("scan", "lib-yt"))
+
+    def test_it_waits_until_the_channels_videos_are_there_then_fills(self):
+        # Jellyfin reports 0, then 1, then 3 of the 3 library videos (the live
+        # stream is not a library item and is not waited for).
+        self.jf._tagged = [0, 1, 3]
+        self.ysync.publish_to_jellyfin(self.db, [self.channel])
+        queries = [c for c in self.jf.calls if c[0] == "query"]
+        self.assertEqual([q[2] for q in queries], [0, 1, 3])
+        self.assertEqual(queries[0][1], ("yt:tradertv-live",))
+        # ...and only then were the playlists created, filled and pushed.
+        kinds = [e[0] for e in self.log if e[0] != "sleep"]
+        self.assertEqual(kinds, ["sync", "refresh", "home", "bump", "notify"])
+        self.assertEqual(next(e for e in self.log if e[0] == "refresh")[2], ("TraderTV Live",))
+
+    def test_it_gives_up_waiting_eventually_but_still_fills(self):
+        # A scan that never delivers must not hang the run, nor skip the fill:
+        # the hourly check refills later.
+        self.jf._tagged = [1]
+        self.ysync.SCAN_MAX_WAIT_SECONDS, saved = 0, self.ysync.SCAN_MAX_WAIT_SECONDS
+        try:
+            self.ysync.publish_to_jellyfin(self.db, [self.channel])
+        finally:
+            self.ysync.SCAN_MAX_WAIT_SECONDS = saved
+        self.assertIn("refresh", [e[0] for e in self.log])
+
+
+class TestPlaylistsAreRefilledHourly(_PublishFixture):
+    """However a playlist fell behind the library, the next run catches it up."""
+
+    def test_a_short_playlist_is_refilled(self):
+        self.jf._playlist_items = {"pl-1": 1}      # 1 in the playlist, 3 in the library
+        fixed = self.ysync.reconcile_playlists(self.db)
+        self.assertEqual(fixed, 1)
+        self.assertIn(("refresh", self.user.id, ("TraderTV Live",)), self.log)
+        self.assertIn(("notify",), self.log)
+
+    def test_a_full_playlist_is_left_alone(self):
+        self.jf._playlist_items = {"pl-1": 3}
+        self.assertEqual(self.ysync.reconcile_playlists(self.db), 0)
+        self.assertNotIn("refresh", [e[0] for e in self.log])
+
+
+class TestRemovingAChannelRemovesEverything(_PublishFixture):
+    """Gone from the page means gone from Jellyfin: row, hero, playlist, guide."""
+
+    def setUp(self):
+        super().setUp()
+        from models.database import TentacleUser
+        self.other = TentacleUser(jellyfin_user_id="o" * 32, display_name="o")
+        self.db.add(self.other)
+        self.db.commit()
+        import models.database as mdb
+        import routers.smartlists as rs
+        from services.youtube import livetv
+        self._more = {"SessionLocal": mdb.SessionLocal, "read": rs._read_home_json,
+                      "write": rs._write_home_json, "guide": livetv.refresh_jellyfin_guide}
+        mdb.SessionLocal = self.Session
+        self.configs = {
+            self.user.id: {"hero": {"enabled": True, "playlist_id": "pl-1", "display_name": "TraderTV Live"},
+                           "rows": [{"type": "playlist", "playlist_id": "pl-1", "display_name": "TraderTV Live", "order": 1},
+                                    {"type": "playlist", "playlist_id": "pl-2", "display_name": "Netflix Movies", "order": 2}]},
+            self.other.id: {"hero": {"enabled": False}, "rows": [
+                {"type": "playlist", "playlist_id": "pl-9", "display_name": "TraderTV Live", "order": 1}]},
+        }
+        self.written = {}
+        rs._read_home_json = lambda user: dict(self.configs.get(user.id) or {})
+        rs._write_home_json = lambda user, cfg: self.written.__setitem__(user.id, cfg)
+        livetv.refresh_jellyfin_guide = lambda db: self.log.append(("guide",)) or True
+        self.jf._playlists = [{"Id": "pl-1", "Name": "TraderTV Live"}]
+
+    def tearDown(self):
+        import models.database as mdb
+        import routers.smartlists as rs
+        from services.youtube import livetv
+        mdb.SessionLocal = self._more["SessionLocal"]
+        rs._read_home_json, rs._write_home_json = self._more["read"], self._more["write"]
+        livetv.refresh_jellyfin_guide = self._more["guide"]
+        super().tearDown()
+
+    def _remove(self, was_live=True):
+        from routers.youtube import _cleanup_after_remove
+        _cleanup_after_remove("TraderTV Live", was_live)
+
+    def test_the_row_is_removed_from_every_user_not_kept_for_a_grace_period(self):
+        self._remove()
+        names = lambda uid: [r["display_name"] for r in self.written[uid]["rows"]]
+        self.assertEqual(names(self.user.id), ["Netflix Movies"])
+        self.assertEqual(names(self.other.id), [])
+
+    def test_a_hero_that_pointed_at_it_is_turned_off(self):
+        self._remove()
+        self.assertFalse(self.written[self.user.id]["hero"]["enabled"])
+
+    def test_the_recorded_playlist_is_deleted_by_id_never_by_name(self):
+        # Orphan cleanup normally deletes it; this covers the case it did not.
+        self._remove()
+        self.assertIn(("delete", "pl-1"), self.jf.calls)
+        self.assertEqual([c for c in self.jf.calls if c[0] == "delete"], [("delete", "pl-1")])
+
+    def test_jellyfin_rescans_and_the_guide_is_refreshed(self):
+        self._remove(was_live=True)
+        self.assertIn(("scan", "lib-yt"), self.jf.calls)
+        self.assertIn(("guide",), self.log)
+
+    def test_no_guide_refresh_for_a_channel_that_was_not_on_live_tv(self):
+        self._remove(was_live=False)
+        self.assertNotIn(("guide",), self.log)

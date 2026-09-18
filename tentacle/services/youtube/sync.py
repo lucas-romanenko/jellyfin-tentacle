@@ -1,5 +1,6 @@
 """Periodic refresh: index every enabled channel, write files, apply retention."""
 import logging
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -14,7 +15,14 @@ logger = logging.getLogger(__name__)
 # How long to let Jellyfin index newly written files before querying for their
 # tags. Jellyfin reads NFO tags at scan time, so querying too early returns
 # nothing and the playlist is built empty.
-SCAN_SETTLE_SECONDS = 20
+# How long to give Jellyfin to scan in the new files before the playlist is
+# filled. A fixed 20-second sleep was here: against a full scan of a large
+# library that takes minutes, the playlist was filled before the videos
+# existed in Jellyfin, came up empty, and stayed empty — the library then
+# filled in on its own and the row never appeared. The wait is now for the
+# channel's own videos to show up, polled, with this as the ceiling.
+SCAN_MAX_WAIT_SECONDS = 600
+SCAN_POLL_SECONDS = 5
 
 
 def base_url(db: Session) -> str:
@@ -152,16 +160,75 @@ def apply_retention(db: Session, channel: YouTubeChannel) -> int:
     return len(doomed)
 
 
-def publish_to_jellyfin(db: Session, changed_playlists: list) -> None:
-    """Get Jellyfin to ingest new files, then rebuild the affected playlists.
+def _library_count(db: Session, channel: YouTubeChannel) -> int:
+    """How many of this channel's videos are library items (not live)."""
+    return db.query(YouTubeVideo).filter(
+        YouTubeVideo.channel_fk == channel.id,
+        YouTubeVideo.removed_at.is_(None),
+        indexer.is_library_status(YouTubeVideo.live_status),
+    ).count()
+
+
+def youtube_library_id(jf):
+    """The Jellyfin library that holds the YouTube folder, if it can be told.
+
+    Lets the scan be targeted at one library instead of all of them — the
+    difference between seconds and minutes on a large server. Matched on the
+    library's path or name; None means "scan everything", which still works.
+    """
+    try:
+        for lib in jf.get_libraries() or []:
+            locations = [str(loc).lower().rstrip("/") for loc in (lib.get("Locations") or [])]
+            if any(loc.endswith("youtube") for loc in locations) \
+                    or "youtube" in str(lib.get("Name") or "").lower():
+                return lib.get("ItemId") or lib.get("Id")
+    except Exception as e:
+        logger.debug(f"[YouTube] Could not list Jellyfin libraries: {e}")
+    return None
+
+
+def _wait_for_channel_items(jf, channel: YouTubeChannel, expected: int,
+                            max_wait: int = None) -> int:
+    """Poll until Jellyfin has the channel's videos. Returns how many it has.
+
+    Asks for exactly the items a playlist refresh will ask for — this
+    channel's tag — so "the scan is done" means done for this channel, not
+    for the whole server. The ceiling is read at call time, not bound as a
+    default, so it can be adjusted without a restart.
+    """
+    if max_wait is None:
+        max_wait = SCAN_MAX_WAIT_SECONDS
+    deadline = time.monotonic() + max_wait
+    last = -1
+    while True:
+        try:
+            have = len(jf.query_items(include_types=["Movie"], tags=[f"yt:{channel.slug}"]) or [])
+        except Exception as e:
+            logger.debug(f"[YouTube] Count query failed for '{channel.title}': {e}")
+            have = 0
+        if have >= expected:
+            return have
+        if have != last:
+            logger.info(f"[YouTube] Jellyfin has {have}/{expected} of '{channel.title}' — waiting for its scan")
+            last = have
+        if time.monotonic() >= deadline:
+            return have
+        time.sleep(SCAN_POLL_SECONDS)
+
+
+def publish_to_jellyfin(db: Session, channels: list) -> None:
+    """Get the channels' videos into Jellyfin and their playlists filled.
 
     Without this nothing appears until Jellyfin's own scheduled scan: Tentacle
     writes the .strm and NFO, but Jellyfin reads the tags at scan time, so the
     playlists stay empty and their home rows are filtered out as empty — which
-    looks exactly like the row toggle having done nothing.
-    """
-    import time
+    looks exactly like the feature having done nothing.
 
+    The order matters and each step waits for the one before it: scan the
+    library that holds the files, wait until Jellyfin actually has each
+    channel's videos, then create and fill the playlists, then check they
+    filled. A playlist filled before the scan finished stays empty.
+    """
     from models.database import TentacleUser
     from services.jellyfin import JellyfinService
 
@@ -170,39 +237,113 @@ def publish_to_jellyfin(db: Session, changed_playlists: list) -> None:
     if not (url and key):
         logger.info("[YouTube] Jellyfin is not configured — files written, nothing published")
         return
+    if not channels:
+        return
 
     try:
         jf = JellyfinService(url, key, get_setting(db, "jellyfin_user_id", ""))
-        jf.trigger_library_scan()
-        logger.info("[YouTube] Triggered a Jellyfin library scan")
+        library_id = youtube_library_id(jf)
+        jf.trigger_library_scan(library_id)
+        logger.info("[YouTube] Triggered a Jellyfin scan"
+                    + (f" of library {library_id}" if library_id else " (all libraries)"))
     except Exception as e:
         logger.warning(f"[YouTube] Could not trigger a Jellyfin scan: {e}")
         return
 
-    if not changed_playlists:
-        return
+    expected = {ch.id: _library_count(db, ch) for ch in channels}
+    for ch in channels:
+        if expected[ch.id]:
+            have = _wait_for_channel_items(jf, ch, expected[ch.id])
+            if have < expected[ch.id]:
+                logger.warning(
+                    f"[YouTube] Jellyfin has {have} of {expected[ch.id]} videos for '{ch.title}' "
+                    f"after {SCAN_MAX_WAIT_SECONDS}s — filling the playlist with what is there; "
+                    f"the hourly check will finish it")
 
-    # Give Jellyfin a moment to index the new files before querying for them.
-    time.sleep(SCAN_SETTLE_SECONDS)
+    names = [ch.title for ch in channels]
     try:
         from services.smartlists import (
-            _notify_jellyfin_plugin, bump_playlist_version,
-            refresh_smartlist_playlists, sync_smartlists, write_home_config,
+            _get_smartlists_with_playlist_ids, _notify_jellyfin_plugin,
+            bump_playlist_version, refresh_smartlist_playlists, sync_smartlists,
+            write_home_config,
         )
-        for user in db.query(TentacleUser).all():
+        users = db.query(TentacleUser).all()
+        for user in users:
             # sync_smartlists is what creates a playlist that is newly desired;
-            # refresh only fills ones that already exist. Without it a channel
-            # subscribed before its first index had no playlist until the
-            # nightly sync — the videos arrived in the library and there was
-            # nothing to put on a home screen, which reads as the feature
-            # having quietly not worked.
+            # refresh only fills ones that already exist.
             sync_smartlists(db, user_id=user.id)
-            refresh_smartlist_playlists(db, user_id=user.id, only_names=changed_playlists)
+            refresh_smartlist_playlists(db, user_id=user.id, only_names=names)
             write_home_config(db, user_id=user.id)
         bump_playlist_version()
         _notify_jellyfin_plugin(db)
+
+        # Say so if a playlist is still short. Silence here is what made an
+        # empty row a mystery.
+        for user in users:
+            ids = {p["name"]: p["playlist_id"]
+                   for p in _get_smartlists_with_playlist_ids(db, user_id=user.id)}
+            for ch in channels:
+                pid = ids.get(ch.title)
+                if not pid or not expected[ch.id]:
+                    continue
+                try:
+                    have = len(jf.get_playlist_items(pid) or [])
+                except Exception:
+                    continue
+                if have < expected[ch.id]:
+                    logger.warning(f"[YouTube] Playlist '{ch.title}' for user {user.id} holds {have} of "
+                                   f"{expected[ch.id]} videos after publishing")
+                else:
+                    logger.info(f"[YouTube] Playlist '{ch.title}' for user {user.id}: {have} video(s)")
     except Exception as e:
         logger.warning(f"[YouTube] Playlist rebuild after scan failed: {e}")
+
+
+def reconcile_playlists(db: Session) -> int:
+    """Refill any channel playlist that holds fewer videos than the library.
+
+    The safety net under publish_to_jellyfin: however a playlist came to be
+    behind — a scan that outlasted the wait, a Jellyfin restart mid-way — the
+    next hourly run catches it up without anyone noticing it was ever wrong.
+    Returns how many playlists were refreshed.
+    """
+    from models.database import TentacleUser
+    from services.jellyfin import JellyfinService
+    from services.smartlists import (
+        _get_smartlists_with_playlist_ids, _notify_jellyfin_plugin,
+        bump_playlist_version, refresh_smartlist_playlists,
+    )
+
+    url = get_setting(db, "jellyfin_url", "")
+    key = get_setting(db, "jellyfin_api_key", "")
+    if not (url and key):
+        return 0
+    jf = JellyfinService(url, key, get_setting(db, "jellyfin_user_id", ""))
+    want = {ch.title: _library_count(db, ch)
+            for ch in db.query(YouTubeChannel).filter(YouTubeChannel.enabled == True).all()}  # noqa: E712
+    fixed = 0
+    for user in db.query(TentacleUser).all():
+        short = []
+        for p in _get_smartlists_with_playlist_ids(db, user_id=user.id):
+            if not p.get("is_youtube") or not want.get(p["name"]):
+                continue
+            try:
+                have = len(jf.get_playlist_items(p["playlist_id"]) or [])
+            except Exception:
+                continue
+            if have < want[p["name"]]:
+                short.append(p["name"])
+        if short:
+            logger.info(f"[YouTube] Playlist(s) behind the library for user {user.id}: {short} — refilling")
+            try:
+                refresh_smartlist_playlists(db, user_id=user.id, only_names=short)
+                fixed += len(short)
+            except Exception as e:
+                logger.warning(f"[YouTube] Refill failed for user {user.id}: {e}")
+    if fixed:
+        bump_playlist_version()
+        _notify_jellyfin_plugin(db)
+    return fixed
 
 
 def run_youtube_sync() -> dict:
@@ -227,12 +368,16 @@ def run_youtube_sync() -> dict:
                 totals["written"] += r.get("written", 0)
                 totals["retired"] += r.get("retired", 0)
                 if r.get("written") or r.get("retired"):
-                    changed.append(channel.title)
+                    changed.append(channel)
             except YouTubeError as e:
                 totals["errors"] += 1
                 logger.warning(f"[YouTube] '{channel.title}' failed: {e}")
         if changed:
             publish_to_jellyfin(db, changed)
+        try:
+            totals["refilled"] = reconcile_playlists(db)
+        except Exception as e:
+            logger.warning(f"[YouTube] Playlist check failed: {e}")
         if totals["new"] or totals["written"]:
             logger.info(f"[YouTube] Sync complete: {totals}")
         return totals
