@@ -2196,7 +2196,17 @@ class TestTentacleAddressIsWorkedOut(unittest.TestCase):
     def tearDown(self):
         self.ysync.check_base_url = self._real
 
-    def test_jellyfins_host_on_tentacles_port_comes_first(self):
+    def test_what_the_plugin_already_uses_comes_first(self):
+        # Jellyfin's plugin is configured with Tentacle's address from
+        # Jellyfin's own point of view — if the home screen works, so does it.
+        self.ysync.plugin_tentacle_url = lambda db: "http://tentacle.lan:8888"
+        try:
+            c = self.ysync.candidate_base_urls(self.db, "192.168.2.10:8888", "http")
+        finally:
+            del self.ysync.plugin_tentacle_url
+        self.assertEqual(c[0], "http://tentacle.lan:8888")
+
+    def test_jellyfins_host_on_tentacles_port_comes_next(self):
         c = self.ysync.candidate_base_urls(self.db, "192.168.2.10:8888", "http")
         self.assertEqual(c[0], "http://192.168.2.52:8888")
         self.assertIn("http://192.168.2.10:8888", c)

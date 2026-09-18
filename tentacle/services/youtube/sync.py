@@ -98,14 +98,40 @@ def check_base_url(base: str, timeout: float = 10) -> dict:
 
 
 TENTACLE_PORT = 8888
+# The Jellyfin plugin's id: its configuration holds TentacleUrl, the address
+# Jellyfin already uses to reach this Tentacle.
+PLUGIN_ID = "b7e3f1a9-2c4d-4856-9a1b-8def23456789"
+
+
+def plugin_tentacle_url(db: Session):
+    """The address Jellyfin's Tentacle plugin is configured to reach us at.
+
+    This is the best answer there is: it is Tentacle's address from Jellyfin's
+    own point of view, and if the home screen works, it is proven to work.
+    None if Jellyfin, the plugin, or its configuration is not there.
+    """
+    from services.jellyfin import JellyfinService
+    url = get_setting(db, "jellyfin_url", "")
+    key = get_setting(db, "jellyfin_api_key", "")
+    if not (url and key):
+        return None
+    try:
+        cfg = JellyfinService(url, key, "")._get(f"/Plugins/{PLUGIN_ID}/Configuration") or {}
+        value = (cfg.get("TentacleUrl") or "").strip().rstrip("/")
+        return value or None
+    except Exception as e:
+        logger.debug(f"[YouTube] Could not read the plugin's TentacleUrl: {e}")
+        return None
 
 
 def candidate_base_urls(db: Session, request_host: str = None, request_scheme: str = "http") -> list:
     """Addresses this Tentacle might be reachable at by Jellyfin, best first.
 
-    Nobody should have to know their LAN address to use this. Two facts are
-    already in hand: where Jellyfin is (its URL is configured here), and how
-    the dashboard was just opened. Tentacle usually runs on the same box as
+    Nobody should have to know their LAN address to use this. Three facts are
+    already in hand: the address Jellyfin's plugin is configured to reach us
+    at (the best one — it is our address from Jellyfin's point of view), where
+    Jellyfin is (its URL is configured here), and how the dashboard was just
+    opened. Tentacle usually runs on the same box as
     Jellyfin — a LAN address, or a Tailscale one if that is how Jellyfin is
     reached — so Jellyfin's host on Tentacle's port comes first. The address
     the dashboard was opened on comes next; it is right on a LAN and wrong
@@ -118,6 +144,10 @@ def candidate_base_urls(db: Session, request_host: str = None, request_scheme: s
         url = url.rstrip("/")
         if url and url not in out:
             out.append(url)
+
+    # First: what Jellyfin's plugin already uses to reach us. Proven to work
+    # from Jellyfin's side whenever the home screen does.
+    add(plugin_tentacle_url(db) or "")
 
     port = TENTACLE_PORT
     if request_host and ":" in request_host.rsplit("]", 1)[-1]:
