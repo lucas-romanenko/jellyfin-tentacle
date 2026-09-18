@@ -605,7 +605,6 @@ async function checkStaleFiles() {
   try {
     const data = await api('/api/settings/stale-files');
     if (data.show || data.has_stale) {
-      _staleData = data;
       document.getElementById('stale-files-banner').style.display = '';
       document.getElementById('stale-strm-count').textContent = data.strm_count || 0;
     }
@@ -2804,18 +2803,23 @@ async function ytAddChannel() {
 function ytSkipNote(c) {
   // Skips used to be silent, so a setting that excluded every upload looked
   // identical to nothing having been indexed.
+  // Not looked at yet: the first index is running (or queued). An empty
+  // library is expected for the next couple of minutes, not a problem.
+  if (!c.last_checked) {
+    return `<div style="font-size:11px;margin-top:3px;color:var(--text3)">Fetching its newest ${c.keep_count} videos…</div>`;
+  }
   const skips = c.last_skips || {};
   const keys = Object.keys(skips);
   if (!keys.length && c.library_count > 0) return '';
   const parts = keys.map(k => `${skips[k]}× ${escapeAttr(k)}`).join(' · ');
   const warn = c.library_count === 0;
   // "Nothing to show" has two opposite causes — YouTube listed no uploads, or
-  // it listed plenty and the channel's settings excluded them all. Name which.
+  // it listed plenty and something excluded them all. Name which. Uploads are
+  // always looked at, so "videos turned off" is not a case any more.
   const listing = c.last_listing || {};
   let why = '';
   if (warn) {
-    if (!c.include_videos) why = 'Videos is turned off, so only live streams are looked at. ';
-    else if (listing.videos === 0) why = c.include_streams
+    if (listing.videos === 0) why = c.include_streams
       ? 'This channel has no uploads, so its past live streams are kept instead. '
       : 'This channel has no uploads or past live streams yet. ';
     else why = 'Nothing available for a home row. ';
@@ -2860,6 +2864,8 @@ async function ytRefreshNow() {
   // fetched a few seconds apart), so it runs in the background and we poll.
   ytStartPolling();
 }
+
+let _ytPoll = null;   // the progress poll's interval handle, while an index runs
 
 function ytStartPolling() {
   if (_ytPoll) clearInterval(_ytPoll);
