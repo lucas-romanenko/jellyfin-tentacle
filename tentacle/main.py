@@ -138,10 +138,14 @@ def run_scheduled_sync():
         logger.info("Running Jellyfin pipeline (scan, tags, playlists)")
         try:
             from services.jellyfin import run_full_jellyfin_pipeline
-            pipeline_stats = run_full_jellyfin_pipeline(db, log_prefix="Nightly sync")
+            # The per-user pass below refreshes every playlist for every user;
+            # letting the pipeline do it too meant each nightly run rebuilt the
+            # same playlists twice.
+            pipeline_stats = run_full_jellyfin_pipeline(db, log_prefix="Nightly sync",
+                                                        refresh_playlists=False)
             tags_pushed = pipeline_stats.get("tags_pushed", 0)
             if tags_pushed:
-                log_activity(db, "jellyfin_push", f"Jellyfin pipeline — {tags_pushed} tag(s) pushed, playlists refreshed")
+                log_activity(db, "jellyfin_push", f"Jellyfin pipeline — {tags_pushed} tag(s) pushed")
             logger.info(f"Jellyfin pipeline complete: {pipeline_stats}")
         except Exception as e:
             logger.error(f"Jellyfin pipeline failed: {e}")

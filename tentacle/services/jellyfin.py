@@ -973,13 +973,16 @@ def push_tags_to_jellyfin(db, log_prefix: str = "Pipeline") -> int:
     return jf_tagged
 
 
-def run_full_jellyfin_pipeline(db, log_prefix: str = "Pipeline") -> dict:
+def run_full_jellyfin_pipeline(db, log_prefix: str = "Pipeline", refresh_playlists: bool = True) -> dict:
     """Run the complete Jellyfin integration pipeline after content changes.
 
     1. Trigger Jellyfin library scan (so new .strm files are indexed)
     2. Wait for scan to complete
     3. Push tags via API
-    4. Refresh SmartList playlists
+    4. Refresh SmartList playlists (skipped with refresh_playlists=False, for
+       callers that run the per-user playlist pass themselves — refreshing
+       every playlist twice in one job doubles the Jellyfin write traffic and,
+       on any playlist that rebuilds, clears and re-adds it a second time)
     5. Write home config
 
     Returns stats dict.
@@ -1018,6 +1021,9 @@ def run_full_jellyfin_pipeline(db, log_prefix: str = "Pipeline") -> dict:
         logger.error(f"[{log_prefix}] Tag push failed: {e}")
 
     # Step 4: Refresh playlist contents only (don't rebuild configs or home layout)
+    if not refresh_playlists:
+        logger.info(f"[{log_prefix}] Playlist refresh left to the caller")
+        return stats
     try:
         from services.smartlists import refresh_smartlist_playlists
         refresh_smartlist_playlists(db)
