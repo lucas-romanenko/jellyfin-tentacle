@@ -106,6 +106,11 @@ async def _send_checked(client, url: str, headers: dict, guard=None):
             raise HTTPException(502, "Stream redirect points to a non-public host")
     raise HTTPException(502, "Too many redirects")
 
+# Opening a stream: statuses worth waiting out, and for how long. Kept well under
+# a tuner client's patience; the running worker has its own, longer budget.
+_OPEN_RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504, 509}
+_OPEN_RETRY_BUDGET = 20.0   # seconds
+
 _stream_semaphore: "asyncio.Semaphore | None" = None
 
 
@@ -1875,12 +1880,45 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
         follow_redirects=False,
         timeout=httpx.Timeout(connect=15.0, read=120.0, write=10.0, pool=15.0),
     ) as client:
-        try:
-            resp = await _send_checked(client, tokenized_url, {"User-Agent": user_agent}, guard)
-            resp.raise_for_status()
-        except httpx.HTTPError as e:
-            logger.error(f"[LiveTV] Tokenized URL failed for channel {channel_id}: {e}")
-            raise HTTPException(502, f"Failed to connect to stream: {e}")
+        # Same regime as the running HLS worker (#86), on a much shorter leash: a
+        # 429/509 here usually clears within seconds, but refusing the tuner costs
+        # far more than those seconds -- Jellyfin re-tries a failed open only once
+        # a minute, so a recording starts a minute late or not at all. A tuner
+        # client is blocked on this response though, so the budget is small, and a
+        # status that will never fix itself still fails at once.
+        import asyncio
+        import random
+        loop = asyncio.get_running_loop()
+        open_started = loop.time()
+        open_backoff = 1.0
+        open_slept = 0.0
+        while True:
+            resp = None
+            try:
+                resp = await _send_checked(client, tokenized_url, {"User-Agent": user_agent}, guard)
+                resp.raise_for_status()
+                break
+            except httpx.HTTPError as e:
+                if resp is not None:
+                    await resp.aclose()
+                retryable = (
+                    e.response.status_code in _OPEN_RETRYABLE_STATUS
+                    if isinstance(e, httpx.HTTPStatusError)
+                    else isinstance(e, httpx.TransportError)
+                )
+                # Whichever is larger: wall clock (slow connects count) or the waits
+                # we chose (so the bound holds even if the clock is not advancing).
+                waited = max(loop.time() - open_started, open_slept)
+                if not retryable or waited + open_backoff > _OPEN_RETRY_BUDGET:
+                    logger.error(f"[LiveTV] Tokenized URL failed for channel {channel_id}"
+                                 f"{f' after {waited:.0f}s of retries' if waited >= 1 else ''}: {e}")
+                    raise HTTPException(502, f"Failed to connect to stream: {e}")
+                logger.warning(f"[LiveTV] Opening channel {channel_id} refused "
+                               f"(retry in {open_backoff:.0f}s, {waited:.0f}s so far): {e}")
+                delay = open_backoff * (0.8 + random.random() * 0.4)
+                open_slept += delay
+                await asyncio.sleep(delay)
+                open_backoff = min(open_backoff * 2, 5.0)
 
         content_type = resp.headers.get("content-type", "")
         is_hls = "mpegurl" in content_type.lower()
