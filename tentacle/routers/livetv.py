@@ -24,6 +24,7 @@ Channel management:
 
 import asyncio
 import logging
+import re
 import threading
 from datetime import datetime
 from typing import Optional, List
@@ -1554,6 +1555,43 @@ def hdhr_lineup_post():
     return Response(status_code=200)
 
 
+# An HLS "master" playlist lists variant PLAYLISTS, not media segments. Our
+# tuner response body is read by Jellyfin as raw video, so a variant URI has to
+# be resolved here — piping the variant playlist's text through sends ASCII
+# where MPEG-TS is expected, and the master (which never carries
+# #EXT-X-ENDLIST) then loops for ever yielding nothing.
+_STREAM_INF_RE = re.compile(r"^#EXT-X-STREAM-INF", re.IGNORECASE)
+_BANDWIDTH_RE = re.compile(r"BANDWIDTH=(\d+)", re.IGNORECASE)
+_MAX_VARIANT_HOPS = 3
+
+
+def _select_hls_variant(playlist_text: str, base_url: str):
+    """Highest-bandwidth variant URI of an HLS master playlist.
+
+    Returns None when `playlist_text` is already a media playlist (no
+    #EXT-X-STREAM-INF tags), which is the common case.
+    """
+    from urllib.parse import urljoin
+
+    lines = playlist_text.splitlines()
+    best = None
+    best_bw = -1
+    for idx, line in enumerate(lines):
+        if not _STREAM_INF_RE.match(line.strip()):
+            continue
+        m = _BANDWIDTH_RE.search(line)
+        bw = int(m.group(1)) if m else 0
+        for nxt in lines[idx + 1:]:
+            nxt = nxt.strip()
+            if not nxt or nxt.startswith("#"):
+                continue
+            if bw >= best_bw:
+                best_bw = bw
+                best = urljoin(base_url, nxt)
+            break
+    return best
+
+
 @router.head("/api/live/stream/{channel_id}")
 async def stream_head(channel_id: int, db: Session = Depends(get_db)):
     """HEAD handler for stream URLs — Jellyfin sends HEAD to validate before playing."""
@@ -1740,6 +1778,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
         import asyncio
         seen_chunks: set[str] = set()
         current_playlist = playlist_text
+        current_base = playlist_base
         ua_headers = {"User-Agent": user_agent}
         consecutive_errors = 0
 
@@ -1748,6 +1787,36 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
             timeout=httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0),
         ) as hls_client:
             while True:
+                # Master playlist? Follow the best variant before treating any
+                # line as a media segment. Each hop goes through the same
+                # checked sender as everything else (#73): a variant behind a
+                # CDN redirect is normal, and every hop is re-validated.
+                for hop in range(_MAX_VARIANT_HOPS + 1):
+                    variant = _select_hls_variant(current_playlist, current_base)
+                    if not variant:
+                        break
+                    if hop == _MAX_VARIANT_HOPS:
+                        logger.error(f"[LiveTV] Too many HLS variant hops for channel {channel_id}")
+                        return
+                    if not is_safe_url(variant):
+                        logger.warning(
+                            f"[LiveTV] Blocked HLS variant on non-public host for "
+                            f"channel {channel_id}: {variant}")
+                        return
+                    logger.info(f"[LiveTV] Master playlist for channel {channel_id} — following variant")
+                    try:
+                        v_resp = await _send_checked(hls_client, variant, ua_headers)
+                        try:
+                            v_resp.raise_for_status()
+                            variant_text = (await v_resp.aread()).decode("utf-8", errors="replace")
+                        finally:
+                            await v_resp.aclose()
+                    except Exception as e:
+                        logger.error(f"[LiveTV] Variant playlist fetch failed for channel {channel_id}: {e}")
+                        return
+                    current_base = variant
+                    current_playlist = variant_text
+
                 # Parse chunk URLs from playlist
                 lines = current_playlist.splitlines()
                 chunk_urls = []
@@ -1762,7 +1831,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         except (ValueError, IndexError):
                             pass
                     elif stripped and not stripped.startswith("#"):
-                        chunk_url = urljoin(playlist_base, stripped)
+                        chunk_url = urljoin(current_base, stripped)
                         if not is_safe_url(chunk_url):
                             logger.warning(f"[LiveTV] Skipping HLS chunk on non-public host for channel {channel_id}: {chunk_url}")
                             continue
@@ -1795,7 +1864,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 # Live stream: wait and re-fetch playlist for new chunks
                 await asyncio.sleep(target_duration / 2)
                 try:
-                    pl_resp = await _send_checked(hls_client, playlist_base, ua_headers)
+                    pl_resp = await _send_checked(hls_client, current_base, ua_headers)
                     try:
                         pl_resp.raise_for_status()
                         current_playlist = (await pl_resp.aread()).decode("utf-8", errors="replace")
