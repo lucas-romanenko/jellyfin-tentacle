@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Jellyfin.Plugin.Tentacle.Services;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 
@@ -59,6 +60,7 @@ public class TentacleTmdbController : ControllerBase
     /// <param name="seasonNumber">Season number.</param>
     /// <param name="episodeNumber">Episode number.</param>
     [HttpGet("EpisodeRating")]
+    [Authorize]
     public async Task<ActionResult> GetEpisodeRating(
         [FromQuery] string tmdbId,
         [FromQuery] int season,
@@ -133,6 +135,7 @@ public class TentacleTmdbController : ControllerBase
     /// <param name="seriesId">TMDB series ID.</param>
     /// <param name="seasonNumber">Season number.</param>
     [HttpGet("SeasonRatings")]
+    [Authorize]
     public async Task<ActionResult> GetSeasonRatings(
         [FromQuery] string tmdbId,
         [FromQuery] int season)
