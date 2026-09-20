@@ -1791,11 +1791,62 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
     async def _hls_worker():
         """Continuously fetch the HLS playlist and pipe chunk data as raw MPEG-TS."""
         import asyncio
+        import random
         seen_chunks: set[str] = set()
         current_playlist = playlist_text
         current_base = playlist_base
         ua_headers = {"User-Agent": user_agent}
-        consecutive_errors = 0
+        # An Xtream provider answers 429/509 while the account's connection
+        # allowance is momentarily saturated -- two recordings whose short HLS
+        # requests collide, say -- and is fine again a second later. Counting
+        # those toward a six-strike limit ended the stream after well under a
+        # minute of squeeze, and Jellyfin turned that into a truncated
+        # recording plus a new file. So wait transient failures out on a
+        # growing delay and give up only after an unbroken run of them; a
+        # status that will never fix itself still stops the stream at once.
+        RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504, 509}
+        FAILURE_BUDGET = 120.0   # seconds of unbroken failure before giving up
+        BACKOFF_START = 1.0
+        BACKOFF_CAP = 5.0        # short: the tuner reader is waiting on us
+        failing_since = None
+        backoff = BACKOFF_START
+
+        def _is_retryable(exc) -> bool:
+            if isinstance(exc, httpx.HTTPStatusError):
+                return exc.response.status_code in RETRYABLE_STATUS
+            # Timeouts, resets and refused connections are all worth another go.
+            return isinstance(exc, httpx.TransportError)
+
+        def _note_success():
+            nonlocal failing_since, backoff
+            failing_since = None
+            backoff = BACKOFF_START
+
+        def _note_failure(exc, what: str) -> bool:
+            """Record a failure. True means the stream should stop."""
+            nonlocal failing_since
+            if not _is_retryable(exc):
+                logger.error(f"[LiveTV] {what} failed fatally for channel "
+                             f"{channel_id}, stopping: {exc}")
+                return True
+            now = asyncio.get_running_loop().time()
+            if failing_since is None:
+                failing_since = now
+            waited = now - failing_since
+            if waited > FAILURE_BUDGET:
+                logger.error(f"[LiveTV] {what} still failing after {waited:.0f}s "
+                             f"for channel {channel_id}, stopping: {exc}")
+                return True
+            logger.warning(f"[LiveTV] {what} failed for channel {channel_id} "
+                           f"(retry in {backoff:.0f}s, {waited:.0f}s so far): {exc}")
+            return False
+
+        async def _backoff_sleep():
+            nonlocal backoff
+            # Jitter so several streams that were squeezed at the same moment
+            # don't all come back at the same moment and squeeze it again.
+            await asyncio.sleep(backoff * (0.8 + random.random() * 0.4))
+            backoff = min(backoff * 2, BACKOFF_CAP)
 
         async with httpx.AsyncClient(
             follow_redirects=False,
@@ -1806,6 +1857,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 # line as a media segment. Each hop goes through the same
                 # checked sender as everything else (#73): a variant behind a
                 # CDN redirect is normal, and every hop is re-validated.
+                variant_retry = False
                 for hop in range(_MAX_VARIANT_HOPS + 1):
                     variant = _select_hls_variant(current_playlist, current_base)
                     if not variant:
@@ -1827,10 +1879,23 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         finally:
                             await v_resp.aclose()
                     except Exception as e:
-                        logger.error(f"[LiveTV] Variant playlist fetch failed for channel {channel_id}: {e}")
-                        return
+                        # Same retry regime as chunks and refreshes (#86): a 509
+                        # here is the provider being momentarily busy, not a
+                        # reason to end a recording.
+                        if _note_failure(e, "Variant playlist fetch"):
+                            return
+                        await _backoff_sleep()
+                        variant_retry = True
+                        break
+                    _note_success()
                     current_base = variant
                     current_playlist = variant_text
+
+                if variant_retry:
+                    # Still holding a master playlist: its lines are variant
+                    # URIs, not segments, so re-read it rather than falling
+                    # through and piping playlist text out as video (#68).
+                    continue
 
                 # Parse chunk URLs from playlist
                 lines = current_playlist.splitlines()
@@ -1856,21 +1921,26 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 for chunk_url in chunk_urls:
                     if chunk_url in seen_chunks:
                         continue
-                    seen_chunks.add(chunk_url)
                     try:
                         chunk_resp = await _send_checked(hls_client, chunk_url, ua_headers, guard)
                         try:
                             chunk_resp.raise_for_status()
-                            yield await chunk_resp.aread()
+                            payload = await chunk_resp.aread()
                         finally:
                             await chunk_resp.aclose()
-                        consecutive_errors = 0
                     except Exception as e:
-                        consecutive_errors += 1
-                        logger.warning(f"[LiveTV] Chunk fetch failed ({consecutive_errors}): {e}")
-                        if consecutive_errors > 5:
-                            logger.error(f"[LiveTV] Too many chunk errors for channel {channel_id}, stopping")
+                        if _note_failure(e, "Chunk fetch"):
                             return
+                        # Deliberately NOT marked seen: a chunk lost to a
+                        # transient error is still in the next playlist, and
+                        # dropping it silently puts a hole in the recording.
+                        # Stop here so chunks stay in order, wait, re-read the
+                        # playlist and try this one again.
+                        await _backoff_sleep()
+                        break
+                    seen_chunks.add(chunk_url)
+                    yield payload
+                    _note_success()
 
                 if not is_live:
                     # VOD-style playlist — we're done after all chunks
@@ -1882,14 +1952,16 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     pl_resp = await _send_checked(hls_client, current_base, ua_headers, guard)
                     try:
                         pl_resp.raise_for_status()
-                        current_playlist = (await pl_resp.aread()).decode("utf-8", errors="replace")
+                        refreshed = (await pl_resp.aread()).decode("utf-8", errors="replace")
                     finally:
                         await pl_resp.aclose()
                 except Exception as e:
-                    logger.warning(f"[LiveTV] Playlist refresh failed for channel {channel_id}: {e}")
-                    consecutive_errors += 1
-                    if consecutive_errors > 5:
+                    if _note_failure(e, "Playlist refresh"):
                         return
+                    await _backoff_sleep()
+                    continue
+                current_playlist = refreshed
+                _note_success()
 
     return StreamingResponse(
         hls_to_mpegts(),
