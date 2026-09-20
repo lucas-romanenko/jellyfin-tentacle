@@ -68,7 +68,11 @@ async function showLoginOverlay() {
     }
     const users = await resp.json();
     if (!users.length) {
-      grid.innerHTML = '<div style="color:var(--text2)">No users found. Check Jellyfin connection.</div>';
+      // Jellyfin only lists users that are NOT "hidden from login screens", and
+      // hidden is its default for new accounts -- an empty list is normal, not a
+      // connection problem. Without a way to type a name nobody could sign in.
+      grid.innerHTML = '<div style="color:var(--text2)">No users are shown on Jellyfin\'s login screen. Sign in with your Jellyfin username.</div>';
+      loginShowManual();
       return;
     }
     grid.innerHTML = users.map(u => {
@@ -92,6 +96,8 @@ async function showLoginOverlay() {
 
 function selectLoginUser(user, el) {
   state._loginSelectedUser = user;
+  state._loginManual = false;
+  document.getElementById('login-username').style.display = 'none';
   document.querySelectorAll('.user-card').forEach(c => c.classList.remove('selected'));
   el.classList.add('selected');
 
@@ -112,9 +118,36 @@ function selectLoginUser(user, el) {
 }
 
 async function submitLogin() {
-  if (!state._loginSelectedUser) return;
   const pw = document.getElementById('login-password').value;
+  if (state._loginManual) {
+    const name = document.getElementById('login-username').value.trim();
+    if (!name) {
+      document.getElementById('login-error').textContent = 'Enter your Jellyfin username';
+      return;
+    }
+    await doLogin(name, pw);
+    return;
+  }
+  if (!state._loginSelectedUser) return;
   await doLogin(state._loginSelectedUser.name, pw);
+}
+
+// Type a username instead of picking a card: for accounts Jellyfin hides from
+// its login screen, which /Users/Public (rightly) does not list.
+function loginShowManual() {
+  state._loginManual = true;
+  state._loginSelectedUser = null;
+  document.querySelectorAll('.user-card').forEach(c => c.classList.remove('selected'));
+  document.getElementById('login-password-form').style.display = 'flex';
+  document.getElementById('login-error').textContent = '';
+  const name = document.getElementById('login-username');
+  name.style.display = '';
+  name.value = '';
+  const pw = document.getElementById('login-password');
+  pw.value = '';
+  name.onkeydown = (e) => { if (e.key === 'Enter') pw.focus(); };
+  pw.onkeydown = (e) => { if (e.key === 'Enter') submitLogin(); };
+  setTimeout(() => name.focus(), 50);
 }
 
 async function doLogin(username, password) {
@@ -144,6 +177,8 @@ async function doLogin(username, password) {
 
 function loginBackToUsers() {
   state._loginSelectedUser = null;
+  state._loginManual = false;
+  document.getElementById('login-username').style.display = 'none';
   document.getElementById('login-password-form').style.display = 'none';
   document.querySelectorAll('.user-card').forEach(c => c.classList.remove('selected'));
 }

@@ -3092,7 +3092,9 @@ td.primary { color: var(--text); font-weight: 500; }
   </div>
   <p class="login-subtitle">Who's watching?</p>
   <div class="user-grid" id="login-user-grid"></div>
+  <a class="login-back" id="login-manual-link" onclick="loginShowManual()">Sign in with a username</a>
   <div class="login-password-form" id="login-password-form" style="display:none">
+    <input type="text" class="form-input" id="login-username" placeholder="Jellyfin username" autocomplete="username" style="display:none">
     <input type="password" class="form-input" id="login-password" placeholder="Enter password" autocomplete="current-password">
     <button class="btn btn-primary" style="width:100%;justify-content:center" id="login-submit-btn" onclick="submitLogin()">Sign In</button>
     <div class="login-error" id="login-error"></div>
