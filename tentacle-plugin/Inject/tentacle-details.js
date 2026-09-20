@@ -3360,6 +3360,7 @@ var Details = {
 // is available to all scripts without race conditions.
 (function() {
     function boot() {
+        if (window.TentacleStandAside && window.TentacleStandAside()) return; // TV layout — native details page
         if (window.ApiClient) {
             console.log('[Tentacle] Details overlay initializing');
             if (typeof MdbList !== 'undefined') MdbList.init();

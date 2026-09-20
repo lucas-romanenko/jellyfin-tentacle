@@ -52,6 +52,7 @@
   // ── Activate / Deactivate ──────────────────────────────────────────
 
   function activate() {
+    if (window.TentacleStandAside && window.TentacleStandAside()) return; // TV layout — native page renders
     if (FAV.active) { refresh(); return; }
     FAV.active = true;
     document.body.classList.add('tentacle-favorites-active');

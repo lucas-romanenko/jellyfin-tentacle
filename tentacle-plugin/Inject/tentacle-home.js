@@ -107,6 +107,7 @@
   // stale or fresh). Tentacle renders into a stable mount point that
   // Jellyfin's view transitions can never touch.
   function onHomePage() {
+    if (window.TentacleStandAside && window.TentacleStandAside()) return; // TV layout — native home renders
     // Detect user switch — if userId changed, tear down and re-render
     var currentUserId = MH.apiClient && MH.apiClient.getCurrentUserId();
     if (currentUserId && currentUserId !== MH.userId) {
