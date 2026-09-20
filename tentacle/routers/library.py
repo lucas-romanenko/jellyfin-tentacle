@@ -39,8 +39,9 @@ def _validate_jellyfin_item_id(item_id: str) -> str:
 
 
 @router.get("/stream")
-async def stream_library_events():
-    """SSE endpoint for real-time library change events"""
+async def stream_library_events(user: TentacleUser = Depends(get_user_from_request)):
+    """SSE endpoint for real-time library change events. Requires a session —
+    the event stream narrates the whole library as it changes."""
     return StreamingResponse(
         library_event_generator(),
         media_type="text/event-stream",
@@ -63,7 +64,8 @@ def get_library_items(
     list_status: Optional[str] = None,
     limit: int = 48,
     offset: int = 0,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: TentacleUser = Depends(get_user_from_request),
 ):
     # List mode: return all items from the list with in_library status
     if list_id is not None:
@@ -616,8 +618,16 @@ def delete_download(
 
 
 @router.get("/tmdb/{media_type}/{tmdb_id}")
-def get_tmdb_detail(media_type: str, tmdb_id: int, db: Session = Depends(get_db)):
-    """Fetch item details from TMDB (for items not in library)"""
+def get_tmdb_detail(
+    media_type: str,
+    tmdb_id: int,
+    db: Session = Depends(get_db),
+    user: TentacleUser = Depends(get_user_from_request),
+):
+    """Fetch item details from TMDB (for items not in library).
+
+    Requires a session: this spends the server's TMDB token on behalf of the
+    caller, so leaving it open turns Tentacle into a free TMDB proxy."""
     from services.tmdb import get_tmdb_token
     bearer = get_tmdb_token(db)
     data_dir = get_setting(db, "data_dir", "/data")
