@@ -66,9 +66,10 @@ def _script(open_failures, status=509):
     done = _playlist("c1.ts", end=True)
     ok = _resp(200, BASE, done.encode(), PLAYLIST_CT)
     return {
-        # hop 1 is the redirect-follow (status ignored unless 3xx); the probe
-        # comes next and is the request whose failure refuses the tuner.
-        BASE: [ok] + [_resp(status, BASE) for _ in range(open_failures)] + [ok, ok],
+        # The stream is opened with a single checked GET (L2: there used to be a
+        # separate redirect-follow hop in front of it, whose status was ignored);
+        # it is the request whose failure refuses the tuner.
+        BASE: [_resp(status, BASE) for _ in range(open_failures)] + [ok, ok],
         CHUNK1: [_resp(200, CHUNK1, b"CHUNK1")],
     }
 
@@ -101,7 +102,7 @@ class TestTransientErrorsWhileOpening(unittest.IsolatedAsyncioTestCase):
         result, log, slept = await _open(_script(open_failures=10_000, status=404))
         self.assertIsInstance(result, HTTPException)
         self.assertEqual([], slept, "waited on a status that will never clear")
-        self.assertEqual(2, len(log))
+        self.assertEqual(1, len(log))
 
 
 if __name__ == "__main__":

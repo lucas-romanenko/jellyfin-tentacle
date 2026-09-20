@@ -1907,50 +1907,23 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
     guard = guard or is_safe_url
     import httpx
 
-    # Step 1: Follow the provider's redirect chain with the required UA
-    # to get the tokenized URL on the real streaming server
-    async with httpx.AsyncClient(
-        follow_redirects=False,
-        timeout=httpx.Timeout(connect=15.0, read=30.0, write=10.0, pool=15.0),
-    ) as client:
-        url = stream_url
-        for _ in range(10):  # max redirects
-            # Headers only. httpx's get() buffers the WHOLE body first, which
-            # never ends for a channel serving a continuous MPEG-TS stream — the
-            # coroutine hung here forever, so the raw-TS branch below was
-            # unreachable and Jellyfin's tuner got no response at all.
-            try:
-                req = client.build_request("GET", url, headers={"User-Agent": user_agent})
-                resp = await client.send(req, stream=True)
-            except httpx.HTTPError as e:
-                logger.error(f"[LiveTV] Stream failed for channel {channel_id}: {e}")
-                raise HTTPException(502, f"Failed to connect to stream: {e}")
-
-            try:
-                if resp.status_code in (301, 302, 303, 307, 308):
-                    location = resp.headers.get("location")
-                    if not location:
-                        raise HTTPException(502, "Redirect without Location header")
-                    url = urljoin(url, location)
-                    if not guard(url):
-                        logger.warning(f"[LiveTV] Blocked redirect to non-public host for channel {channel_id}: {url}")
-                        raise HTTPException(502, "Stream redirect points to a non-public host")
-                    logger.info(f"[LiveTV] Following redirect → {url}")
-                    continue
-                break
-            finally:
-                # Always release the connection — we never read this body.
-                await resp.aclose()
-
-    tokenized_url = url
-    logger.info(f"[LiveTV] Resolved tokenized URL for channel {channel_id}: {tokenized_url}")
-
-    # Step 2: Try the tokenized URL to see what it serves
-    # Probe with a streaming GET — check content type
-    async with httpx.AsyncClient(
+    # One GET opens the stream. _send_checked walks the provider's redirect chain
+    # with the required UA, re-validating every hop (#73), and hands back the
+    # open response from the tokenized URL on the real streaming server -- whose
+    # headers say what it serves, and whose body is the stream (raw TS) or the
+    # first playlist (HLS). This used to be up to three GETs of the tokenized
+    # URL: one to resolve redirects (body discarded), one to probe the content
+    # type, and for raw TS a third to actually stream. Each is a connection in
+    # the provider's accounting at the very moment it is most likely to say 509.
+    #
+    # Streaming GETs only, never client.get(): that buffers the WHOLE body
+    # first, which never ends for a channel serving continuous MPEG-TS.
+    client = httpx.AsyncClient(
         follow_redirects=False,
         timeout=httpx.Timeout(connect=15.0, read=120.0, write=10.0, pool=15.0),
-    ) as client:
+    )
+    resp = None
+    try:
         # Same regime as the running HLS worker (#86), on a much shorter leash: a
         # 429/509 here usually clears within seconds, but refusing the tuner costs
         # far more than those seconds -- Jellyfin re-tries a failed open only once
@@ -1963,15 +1936,21 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
         open_started = loop.time()
         open_backoff = 1.0
         open_slept = 0.0
+        open_url = stream_url
         while True:
             resp = None
             try:
-                resp = await _send_checked(client, tokenized_url, {"User-Agent": user_agent}, guard)
+                resp = await _send_checked(client, open_url, {"User-Agent": user_agent}, guard)
                 resp.raise_for_status()
                 break
             except httpx.HTTPError as e:
                 if resp is not None:
+                    # Retry the server that refused, not the whole chain: that
+                    # URL has already passed the guard, and re-walking the
+                    # redirects would cost the provider an extra request per try.
+                    open_url = str(resp.url)
                     await resp.aclose()
+                    resp = None
                 retryable = (
                     e.response.status_code in _OPEN_RETRYABLE_STATUS
                     if isinstance(e, httpx.HTTPStatusError)
@@ -1991,37 +1970,39 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 await asyncio.sleep(delay)
                 open_backoff = min(open_backoff * 2, 5.0)
 
+        tokenized_url = str(resp.url)
+        logger.info(f"[LiveTV] Resolved tokenized URL for channel {channel_id}: {tokenized_url}")
+
         content_type = resp.headers.get("content-type", "")
         is_hls = "mpegurl" in content_type.lower()
 
-        if not is_hls:
-            # Raw TS or other binary stream — pipe it directly
-            # We need to keep the client alive for the duration of the stream,
-            # so we transfer ownership to the generator and exit the context manager.
-            pass
-        else:
+        if is_hls:
             # HLS playlist — read the playlist text, then we're done with this client
             playlist_text = (await resp.aread()).decode("utf-8", errors="replace")
+    except BaseException:
+        if resp is not None:
             await resp.aclose()
+        await client.aclose()
+        raise
 
-    if not is_hls:
-        # Raw TS — open a dedicated client that the generator owns and cleans up
+    if is_hls:
+        await resp.aclose()
+        await client.aclose()
+    else:
+        # Raw TS or other binary stream — pipe THIS response. The generator takes
+        # ownership of it and of the client and cleans both up.
         logger.info(f"[LiveTV] Raw stream (CT: {content_type}) — proxying bytes for channel {channel_id}")
         upstream_ct = content_type or "video/mp2t"
-        raw_client = httpx.AsyncClient(
-            follow_redirects=False,
-            timeout=httpx.Timeout(connect=15.0, read=120.0, write=10.0, pool=15.0),
-        )
+        raw_client, raw_resp = client, resp
 
         async def stream_generator():
             try:
-                raw_resp = await _send_checked(raw_client, tokenized_url, {"User-Agent": user_agent}, guard)
-                raw_resp.raise_for_status()
                 async for chunk in raw_resp.aiter_bytes(chunk_size=131072):
                     yield chunk
             except Exception as e:
                 logger.warning(f"[LiveTV] Stream interrupted for channel {channel_id}: {e}")
             finally:
+                await raw_resp.aclose()
                 await raw_client.aclose()
                 _release_sem()
                 logger.info(f"[LiveTV] Stream ended for channel {channel_id}")
