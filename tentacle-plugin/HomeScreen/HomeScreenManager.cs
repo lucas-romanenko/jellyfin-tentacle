@@ -47,11 +47,20 @@ public class HomeScreenManager
             }
         }
 
-        var config = FetchFromApi(plugin.Configuration.TentacleUrl, userId, apiKey);
+        var config = FetchFromApi(plugin.Configuration.TentacleUrl, userId, apiKey, out var callerRefused);
 
-        lock (_cacheLock)
+        // The cache is keyed by user, but a 401/403 is about THIS caller's token,
+        // not about the user's config: caching it would hand the refusal to the
+        // user's other, validly-authenticated requests (blank toolbar, rows with
+        // no sort settings) until the entry expires. Other failures stay cached
+        // briefly -- this is a blocking call, and an unreachable backend must not
+        // cost every home request its full timeout.
+        if (!callerRefused)
         {
-            _userCache[cacheKey] = (config, DateTime.UtcNow.Add(CacheDuration));
+            lock (_cacheLock)
+            {
+                _userCache[cacheKey] = (config, DateTime.UtcNow.Add(CacheDuration));
+            }
         }
 
         return config;
@@ -70,8 +79,9 @@ public class HomeScreenManager
         _logger.LogInformation("[Tentacle] Home config cache cleared");
     }
 
-    private HomeConfig? FetchFromApi(string tentacleUrl, Guid userId = default, string apiKey = "")
+    private HomeConfig? FetchFromApi(string tentacleUrl, Guid userId, string apiKey, out bool callerRefused)
     {
+        callerRefused = false;
         if (string.IsNullOrEmpty(tentacleUrl))
         {
             _logger.LogDebug("Tentacle URL not configured");
@@ -104,6 +114,8 @@ public class HomeScreenManager
             if (!response.IsSuccessStatusCode)
             {
                 _logger.LogWarning("Tentacle API returned {Status} for home-config", response.StatusCode);
+                callerRefused = response.StatusCode is System.Net.HttpStatusCode.Unauthorized
+                    or System.Net.HttpStatusCode.Forbidden;
                 return null;
             }
 
