@@ -118,6 +118,13 @@ class ManualUsernameMarkup(unittest.TestCase):
         self.assertIn('id="login-username"', html)
         self.assertIn("loginShowManual()", html)
 
+    def test_the_link_can_be_reached_and_pressed_from_the_keyboard(self):
+        import re
+        html = INDEX.read_text(encoding="utf-8")
+        link = re.search(r'<a[^>]*id="login-manual-link"[^>]*>', html).group(0)
+        self.assertIn('tabindex="0"', link, "an <a> without href is skipped by Tab")
+        self.assertIn("onkeydown", link)
+
     def test_an_empty_user_list_opens_the_manual_form(self):
         src = APP_JS.read_text(encoding="utf-8")
         empty = src[src.index("if (!users.length)"):]

@@ -3092,7 +3092,7 @@ td.primary { color: var(--text); font-weight: 500; }
   </div>
   <p class="login-subtitle">Who's watching?</p>
   <div class="user-grid" id="login-user-grid"></div>
-  <a class="login-back" id="login-manual-link" onclick="loginShowManual()">Sign in with a username</a>
+  <a class="login-back" id="login-manual-link" tabindex="0" role="button" onclick="loginShowManual()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click()}">Sign in with a username</a>
   <div class="login-password-form" id="login-password-form" style="display:none">
     <input type="text" class="form-input" id="login-username" placeholder="Jellyfin username" autocomplete="username" style="display:none">
     <input type="password" class="form-input" id="login-password" placeholder="Enter password" autocomplete="current-password">
