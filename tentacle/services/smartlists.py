@@ -1248,11 +1248,13 @@ def refresh_smartlist_playlists(db: Session, user_id: int = None, only_names: li
 
     If user_id is None, refreshes for all users.
     If only_names is provided, only processes playlists with matching names.
-    Returns {processed, created, updated, errors}.
+    Returns {processed, created, updated, changed, errors}.
     """
     with _playlist_refresh_lock:
         result = _refresh_smartlist_playlists_inner(db, user_id, only_names=only_names)
-        if result.get("updated", 0) > 0 or result.get("created", 0) > 0:
+        # "updated" counts every playlist visited; only a real change (or a new
+        # playlist) should make clients live-reload their home rows.
+        if result.get("changed", 0) > 0 or result.get("created", 0) > 0:
             bump_playlist_version()
         return result
 
@@ -1261,11 +1263,11 @@ def _refresh_smartlist_playlists_inner(db: Session, user_id: int = None, only_na
     if user_id is None:
         users = db.query(TentacleUser).all()
         if not users:
-            return {"processed": 0, "created": 0, "updated": 0, "errors": 0}
-        combined = {"processed": 0, "created": 0, "updated": 0, "errors": 0}
+            return {"processed": 0, "created": 0, "updated": 0, "changed": 0, "errors": 0}
+        combined = {"processed": 0, "created": 0, "updated": 0, "changed": 0, "errors": 0}
         for u in users:
             result = _refresh_smartlist_playlists_inner(db, user_id=u.id, only_names=only_names)
-            for key in ("processed", "created", "updated", "errors"):
+            for key in ("processed", "created", "updated", "changed", "errors"):
                 combined[key] += result.get(key, 0)
         return combined
 
@@ -1334,8 +1336,8 @@ def refresh_native_playlists(db: Session, user_id: int = None) -> dict:
     add-before-remove _process_single_playlist path (no-op when unchanged, never
     clears on a transient failure). Tag-based playlists are intentionally excluded:
     they stay on the webhook + nightly path to avoid the tag-indexing race.
-    Returns combined {processed, created, updated, errors}."""
-    combined = {"processed": 0, "created": 0, "updated": 0, "errors": 0}
+    Returns combined {processed, created, updated, changed, errors}."""
+    combined = {"processed": 0, "created": 0, "updated": 0, "changed": 0, "errors": 0}
     users = ([db.query(TentacleUser).filter(TentacleUser.id == user_id).first()]
              if user_id else db.query(TentacleUser).all())
     for u in users:
@@ -1353,7 +1355,7 @@ def refresh_native_playlists(db: Session, user_id: int = None) -> dict:
         if not native_names:
             continue
         result = refresh_smartlist_playlists(db, user_id=u.id, only_names=native_names)
-        for key in ("processed", "created", "updated", "errors"):
+        for key in ("processed", "created", "updated", "changed", "errors"):
             combined[key] += result.get(key, 0)
     return combined
 
