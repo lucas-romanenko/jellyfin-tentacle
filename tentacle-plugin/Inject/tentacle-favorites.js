@@ -11,6 +11,8 @@
 (function () {
   'use strict';
 
+  var EMPTY_HTML = '<div class="tfav-empty">No favorites yet. Mark movies, shows, episodes or channels with the ♥ heart and they’ll show up here.</div>';
+
   var FAV = {
     active: false,
     container: null,
@@ -150,7 +152,7 @@
       '</div>';
 
     if (!total) {
-      html += '<div class="tfav-empty">No favorites yet. Mark movies, shows, episodes or channels with the ♥ heart and they’ll show up here.</div>';
+      html += EMPTY_HTML;
       FAV.container.innerHTML = html;
       return;
     }
@@ -331,6 +333,11 @@
       if (page) {
         var all = root.querySelectorAll('.tfav-card, .tltv-card').length;
         page.textContent = all + ' item' + (all !== 1 ? 's' : '');
+        // Removing the last one left "0 items" over a blank page; the message a
+        // fresh load shows for an empty list only appeared after a reload.
+        if (all === 0 && FAV.container && !FAV.container.querySelector('.tfav-empty')) {
+          FAV.container.insertAdjacentHTML('beforeend', EMPTY_HTML);
+        }
       }
     };
     try {

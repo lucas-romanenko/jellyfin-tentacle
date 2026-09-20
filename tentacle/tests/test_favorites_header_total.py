@@ -47,5 +47,13 @@ class HeaderTotal(unittest.TestCase):
         self.assertRegex(self.fn, r"' item' \+ \(all !== 1 \? 's' : ''\)")
 
 
+    def test_removing_the_last_favorite_shows_the_empty_message(self):
+        """Seen in a browser: "0 items" over a blank page until a reload."""
+        self.assertRegex(self.fn, r"all === 0")
+        self.assertIn("EMPTY_HTML", self.fn)
+        self.assertEqual(1, self.src.count("No favorites yet"),
+                         "the empty message must have one source, or the two copies drift")
+
+
 if __name__ == "__main__":
     unittest.main()
