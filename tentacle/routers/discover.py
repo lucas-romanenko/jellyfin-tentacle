@@ -1015,11 +1015,20 @@ def manage_episodes(
 
     from services.sonarr import SonarrService
     sonarr = SonarrService(sonarr_url, sonarr_key)
-    series = sonarr.get_series_by_tmdb(body.tmdb_id)
+    # "Sonarr is down" must not read as "series not found", and an empty
+    # episode list from a failed read must not be applied as a selection.
+    try:
+        series = sonarr.get_series_by_tmdb(body.tmdb_id, raise_errors=True)
+    except Exception:
+        raise HTTPException(503, "Could not read Sonarr's series list (Sonarr may be busy or down). "
+                                 "Nothing was changed — please retry in a moment.")
     if not series:
         raise HTTPException(404, "Series not found in Sonarr")
-
-    episodes = sonarr.get_episodes(series["id"])
+    try:
+        episodes = sonarr.get_episodes(series["id"], raise_errors=True)
+    except Exception:
+        raise HTTPException(503, "Could not read the series' episodes from Sonarr. "
+                                 "Nothing was changed — please retry in a moment.")
     ep_lookup = {(ep["seasonNumber"], ep["episodeNumber"]): ep for ep in episodes}
 
     # Map selected episodes to Sonarr episode IDs
@@ -1032,12 +1041,15 @@ def manage_episodes(
     # Track which are newly monitored (for search)
     currently_monitored = {ep["id"] for ep in episodes if ep.get("monitored")}
 
-    # Unmonitor all, then monitor selected
-    all_ids = [ep["id"] for ep in episodes]
-    if all_ids:
-        sonarr.set_episode_monitoring(all_ids, False)
-    if selected_ids:
-        sonarr.set_episode_monitoring(selected_ids, True)
+    # Monitor the selection FIRST, then unmonitor the rest: if the second call
+    # fails the user keeps a superset of what they asked for, never nothing.
+    selected_set = set(selected_ids)
+    to_unmonitor = [ep["id"] for ep in episodes if ep["id"] not in selected_set]
+    if selected_ids and not sonarr.set_episode_monitoring(selected_ids, True):
+        raise HTTPException(502, "Sonarr did not accept monitoring the selected episodes. Please retry.")
+    if to_unmonitor and not sonarr.set_episode_monitoring(to_unmonitor, False):
+        raise HTTPException(502, "Sonarr monitored the selected episodes but did not accept unmonitoring the "
+                                 "others. Please retry.")
 
     # Search for newly monitored episodes that don't have files
     need_search = []

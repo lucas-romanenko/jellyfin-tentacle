@@ -52,21 +52,26 @@ class SonarrService:
             logger.error(f"Sonarr connection failed: {e}")
             return None
 
-    def get_all_series(self) -> list:
+    def get_all_series(self, raise_errors: bool = False) -> list:
+        """Every series in Sonarr. With raise_errors=True a failed read raises
+        instead of returning [] (which callers can't tell from "none")."""
         try:
             r = self.session.get(f"{self.url}/api/v3/series", timeout=30)
             r.raise_for_status()
             return r.json()
         except Exception as e:
             logger.error(f"Failed to fetch Sonarr series: {e}")
+            if raise_errors:
+                raise
             return []
 
     def get_series_by_tvdb(self, tvdb_id: int) -> Optional[dict]:
         series = self.get_all_series()
         return next((s for s in series if s.get("tvdbId") == tvdb_id), None)
 
-    def get_series_by_tmdb(self, tmdb_id: int) -> Optional[dict]:
-        series = self.get_all_series()
+    def get_series_by_tmdb(self, tmdb_id: int, raise_errors: bool = False) -> Optional[dict]:
+        # Sonarr ignores ?tmdbId= (it returns every series), so filter locally.
+        series = self.get_all_series(raise_errors=raise_errors)
         return next((s for s in series if s.get("tmdbId") == tmdb_id), None)
 
     def delete_series(self, tmdb_id: int, delete_files: bool = True) -> bool:
@@ -367,7 +372,7 @@ class SonarrService:
         else:
             logger.warning(f"Sonarr: no episodes matched for series {series_id}")
 
-    def get_episodes(self, series_id: int) -> list:
+    def get_episodes(self, series_id: int, raise_errors: bool = False) -> list:
         """Fetch all episodes for a series from Sonarr."""
         try:
             r = self.session.get(
@@ -375,6 +380,8 @@ class SonarrService:
                 params={"seriesId": series_id},
                 timeout=10,
             )
+            if raise_errors:
+                r.raise_for_status()
             if r.status_code < 400:
                 return [
                     {
@@ -391,6 +398,8 @@ class SonarrService:
             return []
         except Exception as e:
             logger.warning(f"Sonarr: failed to fetch episodes for series {series_id}: {e}")
+            if raise_errors:
+                raise
             return []
 
     def set_episode_monitoring(self, episode_ids: list, monitored: bool) -> bool:
