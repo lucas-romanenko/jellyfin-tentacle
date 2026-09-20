@@ -105,6 +105,20 @@ def resolve(video_id: str, max_height: int = 1080, force: bool = False) -> Resol
         return resolved
 
 
+# Video codecs ffmpeg's mpegts muxer can carry in a stream copy. VP9 and AV1
+# are absent from MPEG-TS, so a rendition in either cannot be remuxed at all.
+_TS_VCODECS = ("avc1", "avc3", "h264", "hev1", "hvc1", "h265")
+
+
+def _ts_muxable(fmt: dict) -> bool:
+    return (fmt.get("vcodec") or "").lower().startswith(_TS_VCODECS)
+
+
+def _codec_rank(fmt: dict) -> int:
+    """H.264 ahead of HEVC at the same height."""
+    return 0 if (fmt.get("vcodec") or "").lower().startswith(("avc", "h264")) else 1
+
+
 def pick_tracks(video_id: str, max_height: int = 1080) -> tuple:
     """(video_playlist_url, audio_playlist_url, headers) for a live remux.
 
@@ -134,16 +148,20 @@ def pick_tracks(video_id: str, max_height: int = 1080) -> tuple:
         videos = [f for f in hls if (f.get("vcodec") or "none") != "none"]
         audios = [f for f in hls if (f.get("vcodec") or "none") == "none"]
 
-        # H.264 first — universally decodable — then tallest within the cap.
-        def _rank(f):
-            codec = f.get("vcodec") or ""
-            return (0 if codec.startswith("avc1") else 1, -(f.get("height") or 0))
-
-        eligible = [f for f in videos if (f.get("height") or 0) <= max_height] or videos
-        eligible.sort(key=_rank)
-        if not eligible:
+        # The live endpoint remuxes with `-c copy -f mpegts`, which cannot carry
+        # VP9 or AV1, so those are not candidates at all.
+        videos = [f for f in videos if _ts_muxable(f)]
+        within = [f for f in videos if (f.get("height") or 0) <= max_height]
+        if within:
+            within.sort(key=lambda f: (-(f.get("height") or 0), _codec_rank(f)))
+            best_video = within[0]
+        elif videos:
+            # Nothing fits the cap: the smallest overshoots it least. Sorting the
+            # whole ladder by -height made a 480p channel stream 2160p.
+            videos.sort(key=lambda f: ((f.get("height") or 0), _codec_rank(f)))
+            best_video = videos[0]
+        else:
             continue
-        best_video = eligible[0]
 
         best_audio = None
         if audios:

@@ -2146,6 +2146,16 @@ def live_playlist_m3u(request: Request, db: Session = Depends(get_db)):
         )
         lines.append(f"{base_url}/api/live/stream/{ch.id}")
 
+    # The same YouTube channels the HDHomeRun lineup carries — a user who set
+    # Tentacle up as an M3U tuner gets the same channel list either way.
+    for yt in youtube_livetv.live_channels(db):
+        logo = f' tvg-logo="{yt["logo_url"]}"' if yt["logo_url"] else ""
+        lines.append(
+            f'#EXTINF:-1 tvg-id="{yt["guide_number"]}" tvg-chno="{yt["guide_number"]}"'
+            f'{logo} group-title="{yt["group_title"]}",{yt["name"]}'
+        )
+        lines.append(f"{base_url}/api/youtube/live/{yt['youtube_channel_id']}/stream.ts")
+
     content = "\n".join(lines) + "\n"
     return Response(
         content=content,

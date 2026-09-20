@@ -187,6 +187,11 @@ def live_stream(channel_id: int, db: Session = Depends(get_db)):
     if not video:
         raise HTTPException(503, f"{channel.title} is not streaming right now")
 
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        logger.error("[YouTube] ffmpeg is not installed; YouTube Live TV cannot stream")
+        raise HTTPException(503, "ffmpeg is not available on the Tentacle server")
+
     try:
         video_url, audio_url, headers = resolver.pick_tracks(
             video.video_id, channel.max_height or 1080)
@@ -196,7 +201,6 @@ def live_stream(channel_id: int, db: Session = Depends(get_db)):
         logger.warning(f"[YouTube] Live resolve failed for '{channel.title}': {e}")
         raise HTTPException(502, "Could not resolve the live stream")
 
-    ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
     user_agent = headers.get("User-Agent", "Mozilla/5.0")
     # ffmpeg runs on this host, so Google's IP-signed URLs are valid for it —
     # no need to route the segments back through our own proxy.
@@ -220,6 +224,18 @@ def live_stream(channel_id: int, db: Session = Depends(get_db)):
     logger.info(f"[YouTube] Live TS stream for '{channel.title}' ({video.video_id})")
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
+    # Drain stderr concurrently. Read only after stdout ends, a chatty ffmpeg
+    # fills the 64 KiB pipe, blocks on its next stderr write, stops producing
+    # stdout, and the stream hangs with nothing logged. Keep the tail for the log.
+    import collections
+    err_tail = collections.deque(maxlen=20)
+
+    def _drain_stderr():
+        for line in iter(proc.stderr.readline, b""):
+            err_tail.append(line)
+
+    threading.Thread(target=_drain_stderr, daemon=True).start()
+
     stopping = threading.Lock()
 
     def _stop():
@@ -232,21 +248,20 @@ def live_stream(channel_id: int, db: Session = Depends(get_db)):
             return
         if proc.poll() is None:
             proc.kill()
-        try:
-            err = (proc.stderr.read() or b"").decode("utf-8", "replace").strip()
-            if err:
-                logger.warning(f"[YouTube] ffmpeg for '{channel.title}': {err[:400]}")
-        except Exception:
-            pass
         proc.stdout.close()
-        proc.stderr.close()
         proc.wait(timeout=5)
+        # The drain thread ends with the pipe; whatever it collected is the
+        # tail of ffmpeg's complaints.
+        proc.stderr.close()
+        err = b"".join(err_tail).decode("utf-8", "replace").strip()
+        if err:
+            logger.warning(f"[YouTube] ffmpeg for '{channel.title}': {err[-400:]}")
         logger.info(f"[YouTube] Live stream ended for '{channel.title}'")
 
     def _stream():
         try:
             while True:
-                chunk = proc.stdout.read(65536)
+                chunk = proc.stdout.read1(65536)
                 if not chunk:
                     break
                 yield chunk
