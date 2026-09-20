@@ -324,7 +324,10 @@
     };
     try {
       if (window.ApiClient.updateFavoriteStatus) {
-        window.ApiClient.updateFavoriteStatus(itemId, false).then(done).catch(function () {});
+        // jellyfin-apiclient's signature is (userId, itemId, isFavorite). Called as
+        // (itemId, false) it threw "null itemId" before any request was made, the
+        // catch below swallowed it, and the heart did nothing at all.
+        window.ApiClient.updateFavoriteStatus(uid, itemId, false).then(done).catch(function () {});
       } else {
         window.ApiClient.ajax({
           type: 'DELETE',
