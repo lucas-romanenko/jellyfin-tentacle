@@ -171,17 +171,18 @@ def _max_concurrent_streams(db) -> int:
 
 # One upstream pull per channel, fanned out to every client watching it.
 #
-# An IPTV account caps simultaneous connections (Xtream's max_connections;
-# commonly 1 or 2). Jellyfin opens a separate tuner stream per recording and
-# per viewer, so recording a channel while watching that same channel used to
-# spend the allowance twice on byte-identical data -- and the provider answers
-# 509, which is what truncates recordings. Identical requests are now served
-# from a single upstream pull.
+# Jellyfin opens a separate tuner stream per recording and per viewer, so
+# recording a channel while watching that same channel used to pull
+# byte-identical data from the provider twice: double the bandwidth, double the
+# playlist and segment requests, and double the footprint in whatever
+# connection accounting the provider keeps -- the accounting that answers 509,
+# which is what truncates recordings. Identical requests are now served from a
+# single upstream pull.
 #
-# Only the SAME channel shares. Different channels genuinely need their own
-# upstream connection, so an account with max_connections=1 still cannot record
-# two different channels at once; that needs either a bigger allowance or a
-# local re-streamer (#76).
+# Only the SAME channel shares; different channels each get their own upstream
+# connection. How many of those an account will carry is not something the
+# advertised max_connections settles (#87) -- the ceiling is
+# livetv_max_concurrent_streams, above.
 _shared_streams: "dict[int, _SharedUpstream] = {}"
 _shared_streams = {}
 _shared_lock: "asyncio.Lock | None" = None
@@ -2070,6 +2071,8 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
         CHUNK_RETRIES_IN_PLACE = 3
         failing_since = None
         backoff = BACKOFF_START
+        # When the playlist now in hand was read; reloads are timed from here.
+        playlist_loaded_at = asyncio.get_running_loop().time()
 
         def _is_retryable(exc) -> bool:
             if isinstance(exc, httpx.HTTPStatusError):
@@ -2150,6 +2153,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     _note_success()
                     current_base = variant
                     current_playlist = variant_text
+                    playlist_loaded_at = asyncio.get_running_loop().time()
 
                 if variant_retry:
                     # Still holding a master playlist: its lines are variant
@@ -2178,12 +2182,14 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         chunk_urls.append(chunk_url)
 
                 # Fetch new chunks
+                got_new = False
+                chunk_pending = False
                 for chunk_url in chunk_urls:
                     if chunk_url in seen_chunks:
                         continue
                     # A live playlist is a short sliding window. Going back to it
-                    # after a refused chunk costs the backoff, the regular
-                    # half-segment wait AND a playlist refresh that can be refused
+                    # after a refused chunk costs the backoff, what is left of the
+                    # reload wait AND a playlist refresh that can be refused
                     # too -- long enough for the chunk to roll out of the window
                     # and leave a hole. Its URL is still good, so try it again in
                     # place a few times first.
@@ -2213,8 +2219,10 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         # Stop here so chunks stay in order, wait, re-read the
                         # playlist and try this one again.
                         await _backoff_sleep()
+                        chunk_pending = True
                         break
                     seen_chunks.add(chunk_url)
+                    got_new = True
                     yield payload
                     _note_success()
 
@@ -2222,8 +2230,22 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     # VOD-style playlist — we're done after all chunks
                     return
 
-                # Live stream: wait and re-fetch playlist for new chunks
-                await asyncio.sleep(target_duration / 2)
+                # Live stream: wait and re-fetch playlist for new chunks.
+                #
+                # One reload per segment, as RFC 8216 6.3.4 has it: a playlist
+                # that brought something new is good for a whole target
+                # duration; only one that brought nothing (or left a chunk
+                # still owed) is asked for again after half of one. Reloading
+                # every half segment regardless doubled this stream's request
+                # rate against the provider's connection accounting for no
+                # gain -- every other reload is unchanged by construction.
+                # The wait is timed from when the playlist was READ, so time
+                # spent downloading chunks or backing off is not added on top
+                # and a slow pass cannot let segments roll out of the window.
+                reload_after = target_duration if (got_new and not chunk_pending) else target_duration / 2
+                remaining = playlist_loaded_at + reload_after - asyncio.get_running_loop().time()
+                if remaining > 0:
+                    await asyncio.sleep(remaining)
                 try:
                     pl_resp = await _send_checked(hls_client, current_base, ua_headers, guard)
                     try:
@@ -2237,6 +2259,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     await _backoff_sleep()
                     continue
                 current_playlist = refreshed
+                playlist_loaded_at = asyncio.get_running_loop().time()
                 _note_success()
 
     return StreamingResponse(
