@@ -2132,7 +2132,7 @@ td.primary { color: var(--text); font-weight: 500; }
         <div style="display:flex;gap:0;border-bottom:1px solid var(--border2);margin-bottom:16px">
           <button class="live-tab active" data-libtab="browse" onclick="showLibTab('browse')">Browse</button>
           <button class="live-tab" data-libtab="following" onclick="showLibTab('following')">Following <span class="nav-badge" id="lib-follow-badge" style="display:none;margin-left:6px">0</span></button>
-          <button class="live-tab" data-libtab="duplicates" onclick="showLibTab('duplicates')">Duplicates <span class="nav-badge" id="lib-dup-badge" style="display:none;margin-left:6px">0</span></button>
+          <button class="live-tab" data-libtab="duplicates" data-admin-only onclick="showLibTab('duplicates')">Duplicates <span class="nav-badge" id="lib-dup-badge" style="display:none;margin-left:6px">0</span></button>
         </div>
 
         <div id="lib-tab-browse">
