@@ -49,6 +49,11 @@ async function postLoginInit() {
 async function showLoginOverlay() {
   const overlay = document.getElementById('login-overlay');
   overlay.style.display = 'flex';
+  // The dashboard is still in the document underneath. Without this, Tab walked
+  // through ~20 of its covered controls before reaching the first user card, and
+  // Space/Enter acted on them unseen. (A successful sign-in reloads the page.)
+  const shell = document.querySelector('.app');
+  if (shell) shell.setAttribute('inert', '');
   const grid = document.getElementById('login-user-grid');
   grid.innerHTML = '<div style="color:var(--text3)">Loading users...</div>';
   document.getElementById('login-password-form').style.display = 'none';
@@ -59,6 +64,7 @@ async function showLoginOverlay() {
       if (resp.status === 400) {
         // Jellyfin URL not configured — go to setup wizard
         overlay.style.display = 'none';
+        if (shell) shell.removeAttribute('inert');
         document.getElementById('setup-overlay').style.display = 'flex';
       } else {
         // Connection error (bad API key, unreachable, etc.)
