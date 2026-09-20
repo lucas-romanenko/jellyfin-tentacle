@@ -26,7 +26,7 @@ from services.smartlists import (
     _get_smartlists_with_playlist_ids, update_playlist_sort, SORT_BY_DISPLAY,
     _user_smartlists_path, get_playlist_version, bump_playlist_version,
     sync_single_custom_playlist, toggle_auto_playlist_fast,
-    home_config_lock, _atomic_write_json,
+    home_config_lock, write_home_json,
 )
 
 logger = logging.getLogger(__name__)
@@ -162,9 +162,11 @@ def _read_home_json(user: TentacleUser) -> dict:
 
 
 def _write_home_json(user: TentacleUser, config: dict):
-    """Write per-user home config to disk atomically (temp file + os.replace)."""
+    """Write per-user home config to disk atomically (temp file + os.replace),
+    keeping a backup of the config it replaces — these are hand-made layouts and
+    a removed row is otherwise gone for good."""
     p = _home_config_path(user)
-    _atomic_write_json(p, config)
+    write_home_json(p, config)
 
 
 @router.get("")

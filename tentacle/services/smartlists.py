@@ -958,6 +958,24 @@ def _backup_home_config(path: Path) -> None:
         logger.warning(f"Could not back up home config {path}: {e}")
 
 
+def write_home_json(path: Path, config: dict) -> None:
+    """Write a home config, keeping a copy of what it replaces.
+
+    The home layout is the only Tentacle state with no other snapshot, and the
+    Home Screen page rewrites this file on every edit (reorder, remove row,
+    hero, toolbar). Those writes used to go straight to _atomic_write_json, so
+    a mistaken removal was unrecoverable. Identical rewrites are not backed up,
+    so polling/no-op saves can't push real history out of the capped set.
+    """
+    try:
+        current = json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+    except Exception:
+        current = None
+    if current != config:
+        _backup_home_config(path)
+    _atomic_write_json(path, config)
+
+
 def write_home_config(db: Session, user_id: int = None) -> dict:
     """Generate and write per-user home config based on current SmartLists.
 
