@@ -321,6 +321,14 @@
           if (count) count.textContent = left;
         }
       }
+      // The page header's total is the same kind of count and went stale: it
+      // kept the old number until a reload. Recount it from the cards, like the
+      // section counts, so the two cannot disagree.
+      var page = document.querySelector('.tfav-count');
+      if (page) {
+        var all = document.querySelectorAll('.tfav-card, .tltv-card').length;
+        page.textContent = all + ' item' + (all !== 1 ? 's' : '');
+      }
     };
     try {
       if (window.ApiClient.updateFavoriteStatus) {
