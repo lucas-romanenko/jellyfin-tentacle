@@ -1610,6 +1610,27 @@ def _process_single_playlist_locked(jf, folder: Path, config: dict, user_id: str
         stats["errors"] = stats.get("errors", 0) + 1
         return
 
+    # YouTube videos (services/youtube) are ordinary Movie items. A native rule
+    # (genre/rating/year) only matches them by accident — "Year > 2020" matches
+    # every recent upload — so leave them out. A tag rule selects them on
+    # purpose and keeps them.
+    if _is_native_playlist_config(config):
+        from services.jellyfin import is_youtube_video
+
+        filtered = [i for i in items if not is_youtube_video(i)]
+        if len(filtered) < len(items) and query.get("limit"):
+            # The Jellyfin-side limit counted the videos too; fetch the full
+            # match so real items fill those slots, then re-cap.
+            query["limit"] = None
+            try:
+                filtered = [i for i in jf.query_items(**query) if not is_youtube_video(i)]
+            except Exception as e:
+                logger.warning(f"[SmartLists] '{name}': query failed ({e}) — leaving playlist unchanged")
+                stats["errors"] = stats.get("errors", 0) + 1
+                return
+            filtered = filtered[:saved_limit]
+        items = filtered
+
     if needs_genre_filter:
         required_lower = [g.lower() for g in required_genres]
         items = [

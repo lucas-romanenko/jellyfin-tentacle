@@ -568,6 +568,16 @@ def preview_count(body: PreviewRequest, db: Session = Depends(get_db), user: Ten
             )
         ]
 
+    # Match _process_single_playlist: a native (non-tag) rule leaves YouTube
+    # videos out of the playlist, so the preview must not count them either,
+    # or the rule builder promises more items than the playlist will hold (#34).
+    from services.smartlists import _is_native_playlist_config
+
+    if _is_native_playlist_config(config):
+        from services.jellyfin import is_youtube_video
+
+        items = [item for item in items if not is_youtube_video(item)]
+
     return {"count": len(items)}
 
 

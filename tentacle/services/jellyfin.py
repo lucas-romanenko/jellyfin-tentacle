@@ -16,6 +16,18 @@ logger = logging.getLogger(__name__)
 YOUTUBE_TAG = "youtube"
 
 
+def is_youtube_video(item: dict) -> bool:
+    """True for a video written by services/youtube, identified by the
+    <uniqueid type="youtube"> its NFO carries (services/youtube/library.py),
+    which Jellyfin exposes as ProviderIds["youtube"].
+
+    Deliberately NOT tag-based: Jellyfin imports TMDB keywords as tags, and
+    real films carry a "youtube" keyword ("Bo Burnham: Inside", "The Deep
+    House", "The Sidemen Story"), so the tag alone matches genuine library
+    content. Both callers already request ProviderIds."""
+    return any(k.lower() == YOUTUBE_TAG for k in (item.get("ProviderIds") or {}))
+
+
 class JellyfinService:
     def __init__(self, url: str, api_key: str, user_id: str = ""):
         self.url = url.rstrip("/")
@@ -222,7 +234,9 @@ class JellyfinService:
             # only through the title fallback — and a video sharing a name with
             # a real film ("Frozen") would then be tagged as that film and pulled
             # into its playlists. They are never a valid fallback target.
-            if YOUTUBE_TAG in (item.get("Tags") or []):
+            # Match the video itself, not the tag: a real film with the TMDB
+            # keyword "youtube" must stay reachable.
+            if is_youtube_video(item):
                 continue
             tmdb_id = item.get("ProviderIds", {}).get("Tmdb")
             if tmdb_id:
