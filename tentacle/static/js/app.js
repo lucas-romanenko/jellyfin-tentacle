@@ -76,11 +76,13 @@ async function showLoginOverlay() {
         ? `${u.jellyfin_url}/Users/${u.id}/Images/Primary?tag=${u.image_tag}&quality=90&maxWidth=150`
         : '';
       const avatarContent = avatarUrl
-        ? `<img src="${avatarUrl}" alt="${u.name}">`
-        : u.name.charAt(0).toUpperCase();
-      return `<div class="user-card" tabindex="0" onclick="selectLoginUser(${JSON.stringify(u).replace(/"/g, '&quot;')},this)" onkeydown="if(event.key==='Enter')this.click()">
+        ? `<img src="${escHtml(avatarUrl)}" alt="${escHtml(u.name)}">`
+        : escHtml(u.name.charAt(0).toUpperCase());
+      // The payload is escaped after JSON encoding, so a name containing the
+      // literal "&quot;" cannot decode back into a quote and break out.
+      return `<div class="user-card" tabindex="0" onclick="selectLoginUser(${escHtml(JSON.stringify(u))},this)" onkeydown="if(event.key==='Enter')this.click()">
         <div class="user-avatar">${avatarContent}</div>
-        <div class="user-card-name">${u.name}</div>
+        <div class="user-card-name">${escHtml(u.name)}</div>
       </div>`;
     }).join('');
   } catch (e) {
@@ -285,6 +287,16 @@ function showSettingsSection(name) {
   if (name === 'users') loadUsers();
 }
 
+// Escape text before it is interpolated into an innerHTML string. Jellyfin
+// display names are attacker-settable and reach the *unauthenticated* login
+// picker, so this must run on every such value.
+function escHtml(str) {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 async function loadUsers() {
   const el = document.getElementById('users-list');
   try {
@@ -299,8 +311,8 @@ async function loadUsers() {
         ? `${jfUrl}/Users/${u.id}/Images/Primary?tag=${u.image_tag}&quality=90&maxWidth=80`
         : '';
       const avatar = avatarUrl
-        ? `<img src="${avatarUrl}" style="width:36px;height:36px;border-radius:50%;object-fit:cover">`
-        : `<div style="width:36px;height:36px;border-radius:50%;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:600;color:var(--text2)">${u.name.charAt(0).toUpperCase()}</div>`;
+        ? `<img src="${escHtml(avatarUrl)}" style="width:36px;height:36px;border-radius:50%;object-fit:cover">`
+        : `<div style="width:36px;height:36px;border-radius:50%;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:600;color:var(--text2)">${escHtml(u.name.charAt(0).toUpperCase())}</div>`;
       const ownerBadge = u.is_owner ? ' <span style="font-size:10px;padding:2px 6px;background:var(--accent-dim);color:var(--accent);border-radius:4px;font-weight:500">OWNER</span>' : '';
       const badge = u.is_admin
         ? '<span style="font-size:10px;padding:2px 6px;background:var(--green-dim);color:var(--green);border-radius:4px;font-weight:500">ADMIN</span>' + ownerBadge
@@ -317,12 +329,12 @@ async function loadUsers() {
       return `<div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)">
         ${avatar}
         <div style="flex:1;min-width:0">
-          <div style="font-size:13px;font-weight:500">${u.name}${loginStatus}</div>
+          <div style="font-size:13px;font-weight:500">${escHtml(u.name)}${loginStatus}</div>
           <div style="margin-top:2px">${badge}</div>
         </div>
         <label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text3);cursor:pointer">
           Admin
-          <input type="checkbox"${toggleChecked}${toggleDisabled} onchange="toggleUserAdmin('${u.id}', this.checked)">
+          <input type="checkbox"${toggleChecked}${toggleDisabled} onchange="toggleUserAdmin('${escHtml(u.id)}', this.checked)">
         </label>
       </div>`;
     }).join('');
