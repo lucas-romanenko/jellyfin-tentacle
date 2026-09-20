@@ -1158,16 +1158,27 @@ def _sync_movies(
             def _tmdb_lookup(args):
                 idx, name, yr = args
                 try:
-                    return idx, tmdb.search_movie(name, yr)
+                    return idx, tmdb.search_movie(name, yr, strict=True), False
                 except Exception:
-                    return idx, None
+                    return idx, None, True
 
+            lookup_failed = 0
             with ThreadPoolExecutor(max_workers=6) as pool:
                 futures = {pool.submit(_tmdb_lookup, item): item for item in needs_tmdb}
                 for future in as_completed(futures):
-                    idx, metadata = future.result()
-                    if metadata:
+                    idx, metadata, failed = future.result()
+                    if failed:
+                        lookup_failed += 1
+                    elif metadata:
                         tmdb_results[idx] = metadata
+            if lookup_failed:
+                # A stream whose lookup errored is neither matched nor "seen", so
+                # the seen set is incomplete — exactly like a failed category fetch.
+                logger.warning(
+                    f"  {cat.category_name}: {lookup_failed} TMDB lookup(s) failed — "
+                    f"nothing will be pruned from this sync"
+                )
+                fetch_ok = False
 
         # Phase 3: Process all items sequentially (DB writes, file creation, progress)
         items_since_disk_check = 0
@@ -1492,16 +1503,27 @@ def _sync_series(
             def _tmdb_lookup(args):
                 idx, name, yr = args
                 try:
-                    return idx, tmdb.search_series(name, yr)
+                    return idx, tmdb.search_series(name, yr, strict=True), False
                 except Exception:
-                    return idx, None
+                    return idx, None, True
 
+            lookup_failed = 0
             with ThreadPoolExecutor(max_workers=6) as pool:
                 futures = {pool.submit(_tmdb_lookup, item): item for item in needs_tmdb}
                 for future in as_completed(futures):
-                    idx, metadata = future.result()
-                    if metadata:
+                    idx, metadata, failed = future.result()
+                    if failed:
+                        lookup_failed += 1
+                    elif metadata:
                         tmdb_results[idx] = metadata
+            if lookup_failed:
+                # A stream whose lookup errored is neither matched nor "seen", so
+                # the seen set is incomplete — exactly like a failed category fetch.
+                logger.warning(
+                    f"  {cat.category_name}: {lookup_failed} TMDB lookup(s) failed — "
+                    f"nothing will be pruned from this sync"
+                )
+                fetch_ok = False
 
         # Phase 3: Process all items sequentially (DB writes, file creation, progress)
         items_since_disk_check = 0
