@@ -962,6 +962,7 @@
   // refresh, so Android TV gets instant updates. Web polling is a fallback.
   function startVersionPolling(gen) {
     stopVersionPolling();
+    MH.versionPollInFlight = false;
     // Seed initial version
     apiGet('TentacleHome/Version')
       .then(function (data) { MH.lastVersion = data.version || 0; })
@@ -971,9 +972,14 @@
       // Stop if generation changed (navigated away)
       if (gen !== MH.generation) { stopVersionPolling(); return; }
       if (!document.getElementById('tentacle-home')) { stopVersionPolling(); return; }
+      // One poll at a time: behind a slow backend every tick used to add
+      // another request on top of the one still outstanding.
+      if (MH.versionPollInFlight) return;
+      MH.versionPollInFlight = true;
 
       apiGet('TentacleHome/Version')
         .then(function (data) {
+          MH.versionPollInFlight = false;
           var newVersion = data.version || 0;
           if (newVersion === MH.lastVersion) return;
           console.log('[TH] Playlist version changed: ' + MH.lastVersion + ' → ' + newVersion);
@@ -984,7 +990,7 @@
             window.TentacleNavbar.refreshToolbar();
           }
         })
-        .catch(function () {});
+        .catch(function () { MH.versionPollInFlight = false; });
     }, 5000);
   }
 
