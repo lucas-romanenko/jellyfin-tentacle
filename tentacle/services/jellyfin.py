@@ -506,6 +506,21 @@ class JellyfinService:
             return None
         return data.get("Items", [])
 
+    def count_series_episodes(self, series_id: str) -> Optional[int]:
+        """Episodes Jellyfin would expand a Series into when it is added to a
+        playlist. None = unknown (request failed)."""
+        params = {"ParentId": series_id, "IncludeItemTypes": "Episode",
+                  "Recursive": "true", "Limit": 0}
+        if self.user_id:
+            params["UserId"] = self.user_id
+        try:
+            data = self._get("/Items", params=params)
+        except Exception:
+            return None
+        if data is None:
+            return None
+        return data.get("TotalRecordCount")
+
     def add_to_playlist(self, playlist_id: str, item_ids: List[str]) -> bool:
         """Add items to an existing playlist in chunks of 25.
 
