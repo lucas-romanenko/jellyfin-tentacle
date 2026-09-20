@@ -607,9 +607,9 @@ public class TentacleHomeController : ControllerBase
     public ActionResult GetNotificationsCss() => ServeAsset("tentacle-notifications.css", "text/css");
 
     /// <summary>
-    /// Returns an embedded CSS/JS resource with no-cache headers so the browser
-    /// always revalidates after a plugin update (cache-buster query params alone
-    /// are not sufficient when the page is refreshed without a server restart).
+    /// Returns an embedded CSS/JS resource. A request carrying the current boot
+    /// stamp (?v=) is cacheable for a long time — the stamp changes on every plugin
+    /// update / restart; anything else is served uncacheable.
     /// </summary>
     private ActionResult ServeAsset(string resourceSuffix, string contentType)
     {
@@ -619,7 +619,14 @@ public class TentacleHomeController : ControllerBase
             return NotFound();
         }
 
-        Response.Headers["Cache-Control"] = "no-cache, no-store, must-revalidate";
+        // index.html injects these with ?v=<boot stamp>, which already invalidates them
+        // on every plugin update / restart. Sending no-store on top of that made every
+        // page load re-download the whole injected bundle; honour the stamp instead.
+        var stamp = Request.Query["v"].FirstOrDefault();
+        Response.Headers["Cache-Control"] =
+            string.Equals(stamp, Patching.IndexHtmlPatch.CacheBust, StringComparison.Ordinal)
+                ? "public, max-age=31536000, immutable"
+                : "no-cache, no-store, must-revalidate";
         return Content(content, contentType);
     }
 
