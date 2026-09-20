@@ -315,6 +315,7 @@ def get_jellyfin_users(db: Session = Depends(get_db)):
     if not jf_url:
         raise HTTPException(400, "Jellyfin URL not configured")
     try:
+        browser_url = (get_setting(db, "jellyfin_public_url") or "").strip().rstrip("/") or jf_url.rstrip("/")
         r = requests.get(f"{jf_url.rstrip('/')}/Users/Public", timeout=10)
         r.raise_for_status()
         users = r.json()
@@ -326,7 +327,9 @@ def get_jellyfin_users(db: Session = Depends(get_db)):
                 # picker needs it to decide whether to prompt for a password.
                 "has_password": u.get("HasPassword", True),
                 "image_tag": u.get("PrimaryImageTag"),
-                "jellyfin_url": jf_url.rstrip("/"),
+                # The BROWSER loads the avatar from this, so it has to be the address a
+                # browser can reach: jellyfin_url is often a docker-internal name.
+                "jellyfin_url": browser_url,
             }
             for u in users
         ]
