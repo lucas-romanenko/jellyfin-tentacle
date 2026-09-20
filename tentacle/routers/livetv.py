@@ -593,7 +593,7 @@ def _sync_from_m3u_url(provider_data: dict, db: Session) -> dict:
         provider.last_live_sync = datetime.utcnow()
     db.commit()
 
-    log_activity(db, "livetv_sync", f"Live TV M3U sync for {provider_name}: {stats['new']} new, {stats['total']} total")
+    _log_m3u_sync(db, f"Live TV M3U sync for {provider_name}", stats)
     return stats
 
 
@@ -620,8 +620,17 @@ def _sync_from_m3u_file(provider_data: dict, db: Session) -> dict:
         provider.last_live_sync = datetime.utcnow()
     db.commit()
 
-    log_activity(db, "livetv_sync", f"Live TV file sync for {provider_name}: {stats['new']} new, {stats['total']} total")
+    _log_m3u_sync(db, f"Live TV file sync for {provider_name}", stats)
     return stats
+
+
+def _log_m3u_sync(db: Session, prefix: str, stats: dict):
+    """Activity-feed entry for an M3U sync, including any refused removal."""
+    msg = f"{prefix}: {stats['new']} new, {stats['total']} total"
+    if stats.get("removals_refused"):
+        msg += (f" — REFUSED to delete {stats['removals_refused']} channel(s): "
+                f"the playlist looked truncated or empty")
+    log_activity(db, "livetv_sync", msg)
 
 
 def _sync_groups(provider_id: int, categories: list[dict], db: Session, channel_counts: dict = None):
@@ -711,6 +720,16 @@ def _upsert_channels(
     return {"new": new_count, "updated": updated_count, "total": len(seen_ids)}
 
 
+# A provider that answers an M3U request with a truncated body, a maintenance
+# page or an empty playlist parses to few/zero channels. Deleting on that wipes
+# the user's curated lineup (enabled flags, channel numbers, sort order) and
+# empties the HDHomeRun lineup Jellyfin already scanned. Same guard shape as
+# the VOD category strikes in services.sync and the EPG guard below: refuse a
+# removal that looks like an outage rather than a real catalogue change.
+M3U_MAX_REMOVAL_FRACTION = 0.2
+M3U_MIN_REMOVAL_FLOOR = 25
+
+
 def _m3u_stable_id(name: str, stream_url: str) -> str:
     """Generate a stable stream_id for M3U channels from name + URL.
 
@@ -778,13 +797,26 @@ def _upsert_channels_from_m3u(
             ))
             new_count += 1
 
-    # Remove channels no longer in M3U
+    # Remove channels no longer in M3U — but never on a response that looks
+    # like a failed download rather than a real catalogue change.
     removed_ids = set(existing.keys()) - seen_ids
+    refused_removals = 0
     if removed_ids:
-        db.query(LiveChannel).filter(
-            LiveChannel.provider_id == provider_id,
-            LiveChannel.stream_id.in_(removed_ids),
-        ).delete(synchronize_session=False)
+        limit = max(M3U_MIN_REMOVAL_FLOOR, int(len(existing) * M3U_MAX_REMOVAL_FRACTION))
+        if not parsed_channels or len(removed_ids) > limit:
+            refused_removals = len(removed_ids)
+            removed_ids = set()
+            logger.error(
+                f"[LiveTV] Refusing to delete {refused_removals} of {len(existing)} "
+                f"channels for provider {provider_id}: the playlist parsed to "
+                f"{len(parsed_channels)} channel(s), which looks like a failed or "
+                f"partial download, not a provider removal. Existing channels kept."
+            )
+        else:
+            db.query(LiveChannel).filter(
+                LiveChannel.provider_id == provider_id,
+                LiveChannel.stream_id.in_(removed_ids),
+            ).delete(synchronize_session=False)
 
     # Sync groups
     existing_groups = {
@@ -802,7 +834,8 @@ def _upsert_channels_from_m3u(
     db.flush()
     _update_group_counts(provider_id, db)
 
-    return {"new": new_count, "updated": updated_count, "removed": len(removed_ids), "total": len(parsed_channels)}
+    return {"new": new_count, "updated": updated_count, "removed": len(removed_ids),
+            "removals_refused": refused_removals, "total": len(parsed_channels)}
 
 
 def _update_group_counts(provider_id: int, db: Session):
