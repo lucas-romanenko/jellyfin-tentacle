@@ -9,7 +9,7 @@ import zlib
 import shutil
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Tuple
 import requests
@@ -654,6 +654,27 @@ def _category_went_empty(db: Session, cat: ProviderCategory, returned: int) -> b
 # A genuine catalogue removal trickles; a provider outage arrives all at once.
 PRUNE_MAX_FRACTION = 0.05
 PRUNE_MIN_ALLOWANCE = 50
+# A removal the cap refused is no longer "an outage" once every sync has agreed
+# for this long. It is then processed gradually, at most the allowance per run,
+# instead of being refused (and leaving dead .strm files in Jellyfin) forever.
+PRUNE_BLOCKED_GRACE = timedelta(days=7)
+
+
+def _clear_provider_marks(db: Session, provider: Provider, Model, seen_ids: set) -> None:
+    """Clear provider_missing_since on every row the provider served this sync.
+
+    Runs even when the prune itself is skipped because a fetch failed: a title
+    that was served is positive evidence, and a stale mark must never count as
+    the first strike of a later, unrelated absence.
+    Filtered in Python: the marked set is small, and an IN clause over a
+    26k-id seen set would blow SQLite's bound-variable limit.
+    """
+    for record in db.query(Model).filter(
+        Model.provider_id == provider.id,
+        Model.provider_missing_since.isnot(None),
+    ).all():
+        if record.tmdb_id in seen_ids:
+            record.provider_missing_since = None
 
 
 def _prune_removed_content(db: Session, provider: Provider, media_type: str, seen_ids: set) -> int:
@@ -675,14 +696,7 @@ def _prune_removed_content(db: Session, provider: Provider, media_type: str, see
     now = datetime.utcnow()
 
     # Anything the provider served again is healthy — clear our own mark only.
-    # Filtered in Python: the marked set is small, and an IN clause over a
-    # 26k-id seen set would blow SQLite's bound-variable limit.
-    for record in db.query(Model).filter(
-        Model.provider_id == provider.id,
-        Model.provider_missing_since.isnot(None),
-    ).all():
-        if record.tmdb_id in seen_ids:
-            record.provider_missing_since = None
+    _clear_provider_marks(db, provider, Model, seen_ids)
 
     # Diff in Python rather than with a NOT IN over the whole seen set — that
     # set runs to tens of thousands of ids on a large provider, past SQLite's
@@ -721,21 +735,33 @@ def _prune_removed_content(db: Session, provider: Provider, media_type: str, see
     total_rows = db.query(Model).filter(Model.provider_id == provider.id).count()
     allowance = max(PRUNE_MIN_ALLOWANCE, int(total_rows * PRUNE_MAX_FRACTION))
     if len(confirmed) > allowance:
-        logger.error(
-            f"[Sync] REFUSING to prune {len(confirmed)} {media_type}(s) from provider "
-            f"{provider.name}: that exceeds the safety limit of {allowance} "
-            f"({int(PRUNE_MAX_FRACTION * 100)}% of {total_rows} rows). This looks like a "
-            f"provider outage rather than a catalogue change — nothing was deleted. "
-            f"If the removal is genuine, delete the titles from the Library page."
+        settled = sorted(
+            (r for r in confirmed if now - r.provider_missing_since >= PRUNE_BLOCKED_GRACE),
+            key=lambda r: r.provider_missing_since,
         )
-        db.commit()
-        log_deletion(
-            db, kind="sync-prune-blocked", name=provider.name, media_type=media_type,
-            reason="safety-limit",
-            detail=f"{len(confirmed)} {media_type}(s) were absent from two consecutive syncs "
-                   f"but exceed the {allowance}-row limit; nothing deleted",
+        if not settled:
+            logger.error(
+                f"[Sync] REFUSING to prune {len(confirmed)} {media_type}(s) from provider "
+                f"{provider.name}: that exceeds the safety limit of {allowance} "
+                f"({int(PRUNE_MAX_FRACTION * 100)}% of {total_rows} rows). This looks like a "
+                f"provider outage rather than a catalogue change — nothing was deleted. "
+                f"If they are still missing after {PRUNE_BLOCKED_GRACE.days} days they will "
+                f"be removed gradually, at most {allowance} per sync."
+            )
+            db.commit()
+            log_deletion(
+                db, kind="sync-prune-blocked", name=provider.name, media_type=media_type,
+                reason="safety-limit",
+                detail=f"{len(confirmed)} {media_type}(s) were absent from two consecutive syncs "
+                       f"but exceed the {allowance}-row limit; nothing deleted",
+            )
+            return 0
+        logger.warning(
+            f"[Sync] {len(settled)} {media_type}(s) from provider {provider.name} have been "
+            f"missing from every sync for over {PRUNE_BLOCKED_GRACE.days} days — removing "
+            f"{min(len(settled), allowance)} this sync (safety limit {allowance})"
         )
-        return 0
+        confirmed = settled[:allowance]
 
     removed = 0
     for record in confirmed:
@@ -964,10 +990,16 @@ def sync_provider(
         # seen set with fetch_ok almost certainly means a transient/empty
         # response — never wipe the whole provider on that basis).
         removed = 0
-        if m_cleanup and m_cleanup.get("fetch_ok") and m_cleanup.get("seen_ids"):
-            removed += _prune_removed_content(db, provider, "movie", m_cleanup["seen_ids"])
-        if s_cleanup and s_cleanup.get("fetch_ok") and s_cleanup.get("seen_ids"):
-            removed += _prune_removed_content(db, provider, "series", s_cleanup["seen_ids"])
+        for media_type, Model, cleanup in (("movie", Movie, m_cleanup), ("series", Series, s_cleanup)):
+            if not (cleanup and cleanup.get("seen_ids")):
+                continue
+            if cleanup.get("fetch_ok"):
+                removed += _prune_removed_content(db, provider, media_type, cleanup["seen_ids"])
+            else:
+                # Incomplete picture: prune nothing, but what WAS served still
+                # clears its mark (see _clear_provider_marks).
+                _clear_provider_marks(db, provider, Model, cleanup["seen_ids"])
+                db.commit()
         if removed:
             logger.info(f"Sync pruned {removed} item(s) removed upstream by provider {provider.name}")
 
