@@ -1604,6 +1604,15 @@ def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats
     if playlist_id:
         # Update existing playlist — incremental diff to minimize API calls
         current_entries = jf.get_playlist_items(playlist_id)
+        if current_entries is None:
+            # A failed read is not an empty playlist — treating it as one
+            # re-appends every desired item (same class of bug as #7).
+            logger.warning(
+                f"[SmartLists] '{name}': could not read playlist {playlist_id} "
+                f"(timeout or transport error) — leaving it unchanged"
+            )
+            stats["errors"] = stats.get("errors", 0) + 1
+            return
         current_ordered_ids = [entry["Id"] for entry in current_entries]
 
         # M5 guard: query_items() also returns [] when the underlying request
@@ -2155,6 +2164,9 @@ def remove_item_from_playlists(db: Session, jellyfin_item_id: str, user_id: int)
 
         try:
             items = jf.get_playlist_items(playlist_id)
+            if items is None:
+                logger.warning(f"[SmartLists] Could not read '{name}' — skipping removal of {jellyfin_item_id}")
+                continue
             entry_ids = [
                 item["PlaylistItemId"] for item in items
                 if item.get("Id") == jellyfin_item_id and "PlaylistItemId" in item
@@ -2325,6 +2337,9 @@ def add_item_to_matching_playlists(db: Session, jellyfin_item_id: str, item_tags
             # Check if item is already in the playlist
             try:
                 current_items = jf.get_playlist_items(playlist_id)
+                if current_items is None:
+                    logger.warning(f"[SmartLists] Could not read '{name}' — skipping webhook add of {jellyfin_item_id}")
+                    continue
                 current_ids = {item["Id"] for item in current_items}
                 if jellyfin_item_id in current_ids:
                     continue
@@ -2339,7 +2354,7 @@ def add_item_to_matching_playlists(db: Session, jellyfin_item_id: str, item_tags
                 if sort_by == "DateCreated":
                     # Jellyfin's move endpoint needs the PlaylistItemId, not the library Id.
                     # Re-fetch playlist entries to find the newly appended item's PlaylistItemId.
-                    updated_items = jf.get_playlist_items(playlist_id)
+                    updated_items = jf.get_playlist_items(playlist_id) or []
                     for entry in reversed(updated_items):  # newly added is last
                         if entry.get("Id") == jellyfin_item_id:
                             playlist_item_id = entry.get("PlaylistItemId")
