@@ -313,7 +313,7 @@ public class TentacleDiscoverController : ControllerBase
         try
         {
             var detailJson = await HttpClient.GetStringAsync(
-                $"{baseUrl}/api/discover/detail-tvdb/{tvdbId}");
+                AppendUserId($"{baseUrl}/api/discover/detail-tvdb/{tvdbId}"));
             // Rewrite relative proxy paths to absolute plugin endpoint URLs
             var jellyfinBase = $"{Request.Scheme}://{Request.Host}";
             detailJson = detailJson.Replace("/api/discover/image-proxy/", $"{jellyfinBase}/TentacleDiscover/ImageProxy/");
@@ -406,7 +406,7 @@ public class TentacleDiscoverController : ControllerBase
         try
         {
             var encodedQ = System.Net.WebUtility.UrlEncode(q);
-            var response = await HttpClient.GetStringAsync($"{baseUrl}/api/discover/search?q={encodedQ}&type={type}");
+            var response = await HttpClient.GetStringAsync(AppendUserId($"{baseUrl}/api/discover/search?q={encodedQ}&type={type}"));
             // Rewrite relative proxy paths to absolute plugin endpoint URLs so Android TV can reach them
             var jellyfinBase = $"{Request.Scheme}://{Request.Host}";
             response = response.Replace("/api/discover/image-proxy/", $"{jellyfinBase}/TentacleDiscover/ImageProxy/");
@@ -569,7 +569,7 @@ public class TentacleDiscoverController : ControllerBase
 
         try
         {
-            var response = await HttpClient.GetStringAsync($"{baseUrl}/api/discover/seasons/{tmdbId}");
+            var response = await HttpClient.GetStringAsync(AppendUserId($"{baseUrl}/api/discover/seasons/{tmdbId}"));
             return Content(response, "application/json");
         }
         catch (Exception ex)
@@ -591,7 +591,7 @@ public class TentacleDiscoverController : ControllerBase
 
         try
         {
-            var response = await HttpClient.GetStringAsync($"{baseUrl}/api/discover/season/{tmdbId}/{seasonNumber}");
+            var response = await HttpClient.GetStringAsync(AppendUserId($"{baseUrl}/api/discover/season/{tmdbId}/{seasonNumber}"));
             return Content(response, "application/json");
         }
         catch (Exception ex)
@@ -613,7 +613,7 @@ public class TentacleDiscoverController : ControllerBase
 
         try
         {
-            var response = await HttpClient.GetStringAsync($"{baseUrl}/api/discover/seasons-tvdb/{tvdbId}");
+            var response = await HttpClient.GetStringAsync(AppendUserId($"{baseUrl}/api/discover/seasons-tvdb/{tvdbId}"));
             return Content(response, "application/json");
         }
         catch (Exception ex)
@@ -635,7 +635,7 @@ public class TentacleDiscoverController : ControllerBase
 
         try
         {
-            var response = await HttpClient.GetStringAsync($"{baseUrl}/api/discover/season-tvdb/{tvdbId}/{seasonNumber}");
+            var response = await HttpClient.GetStringAsync(AppendUserId($"{baseUrl}/api/discover/season-tvdb/{tvdbId}/{seasonNumber}"));
             return Content(response, "application/json");
         }
         catch (Exception ex)
@@ -680,7 +680,7 @@ public class TentacleDiscoverController : ControllerBase
 
         try
         {
-            var response = await HttpClient.GetStringAsync($"{baseUrl}/api/discover/vod-episodes/{tmdbId}");
+            var response = await HttpClient.GetStringAsync(AppendUserId($"{baseUrl}/api/discover/vod-episodes/{tmdbId}"));
             return Content(response, "application/json");
         }
         catch (Exception ex)

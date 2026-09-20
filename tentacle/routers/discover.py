@@ -409,7 +409,7 @@ def _get_missing_from_lists(db: Session, known_ids: dict, type_filter: str, user
     return result[:40]
 
 
-@router.get("/detail/{media_type}/{tmdb_id}")
+@router.get("/detail/{media_type}/{tmdb_id}", dependencies=[Depends(get_user_from_request)])
 def get_discover_detail(
     media_type: str,
     tmdb_id: int,
@@ -497,7 +497,7 @@ def get_discover_detail(
     return details
 
 
-@router.get("/detail-tvdb/{tvdb_id}")
+@router.get("/detail-tvdb/{tvdb_id}", dependencies=[Depends(get_user_from_request)])
 def get_discover_detail_tvdb(
     tvdb_id: int,
     db: Session = Depends(get_db),
@@ -608,7 +608,7 @@ def _radarr_lookup_to_items(results: list) -> list:
     return items
 
 
-@router.get("/search")
+@router.get("/search", dependencies=[Depends(get_user_from_request)])
 def search_discover(
     q: str = "",
     type: str = "all",
@@ -751,7 +751,7 @@ def get_discover_config(db: Session = Depends(get_db)):
     return {"discover_in_jellyfin": True}
 
 
-@router.get("/seasons/{tmdb_id}")
+@router.get("/seasons/{tmdb_id}", dependencies=[Depends(get_user_from_request)])
 def get_seasons(
     tmdb_id: int,
     db: Session = Depends(get_db)
@@ -771,7 +771,7 @@ def get_seasons(
     }
 
 
-@router.get("/season/{tmdb_id}/{season_number}")
+@router.get("/season/{tmdb_id}/{season_number}", dependencies=[Depends(get_user_from_request)])
 def get_season_episodes(
     tmdb_id: int,
     season_number: int,
@@ -789,7 +789,7 @@ def get_season_episodes(
     return {"episodes": episodes}
 
 
-@router.get("/seasons-tvdb/{tvdb_id}")
+@router.get("/seasons-tvdb/{tvdb_id}", dependencies=[Depends(get_user_from_request)])
 def get_seasons_tvdb(
     tvdb_id: int,
     db: Session = Depends(get_db)
@@ -854,7 +854,7 @@ def get_seasons_tvdb(
     }
 
 
-@router.get("/season-tvdb/{tvdb_id}/{season_number}")
+@router.get("/season-tvdb/{tvdb_id}/{season_number}", dependencies=[Depends(get_user_from_request)])
 def get_season_episodes_tvdb(
     tvdb_id: int,
     season_number: int,
@@ -915,7 +915,7 @@ def get_season_episodes_tvdb(
     return {"episodes": []}
 
 
-@router.get("/sonarr-episodes/{tmdb_id}")
+@router.get("/sonarr-episodes/{tmdb_id}", dependencies=[Depends(get_user_from_request)])
 def get_sonarr_episodes(
     tmdb_id: int,
     db: Session = Depends(get_db)
@@ -940,7 +940,7 @@ def get_sonarr_episodes(
     }
 
 
-@router.get("/vod-episodes/{tmdb_id}")
+@router.get("/vod-episodes/{tmdb_id}", dependencies=[Depends(get_user_from_request)])
 def get_vod_episodes(
     tmdb_id: int,
     db: Session = Depends(get_db)
