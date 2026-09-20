@@ -15,6 +15,9 @@ internal static class AssetCaching
     public const string Immutable = "public, max-age=31536000, immutable";
     public const string NoStore = "no-cache, no-store, must-revalidate";
 
+    /// <summary>For an unstamped URL answered with an ETag: keep it, but ask before reusing it.</summary>
+    public const string Revalidate = "no-cache";
+
     public static string CacheControlFor(HttpRequest request)
     {
         var stamp = request.Query["v"].FirstOrDefault();
