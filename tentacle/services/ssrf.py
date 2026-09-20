@@ -25,14 +25,22 @@ def _ip_is_blocked(ip: str) -> bool:
         addr = ipaddress.ip_address(ip)
     except ValueError:
         return True  # unparseable → treat as unsafe
-    return (
+    if (
         addr.is_private        # 10/8, 172.16/12, 192.168/16, fc00::/7, ...
         or addr.is_loopback    # 127/8, ::1
         or addr.is_link_local  # 169.254/16 (incl. cloud metadata 169.254.169.254), fe80::/10
         or addr.is_multicast
         or addr.is_reserved
         or addr.is_unspecified
-    )
+    ):
+        return True
+    # Catch-all for ranges the predicates above miss. The important one here is
+    # RFC 6598 shared address space 100.64.0.0/10 — it is neither `is_private`
+    # nor `is_reserved`, but it is the CGNAT range Tailscale/Headscale hand out,
+    # so on a home server it addresses exactly the internal peers this guard is
+    # meant to keep unreachable. `is_global` is False for it and for every other
+    # non-globally-routable block (192.0.0.0/24, 198.18/15, 2001:db8::/32, ...).
+    return not addr.is_global
 
 
 def host_is_public(hostname: str) -> bool:

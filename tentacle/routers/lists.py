@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from models.database import get_db, SessionLocal, ListSubscription, ListItem, Movie, Series, TentacleUser, DownloadRequest, get_setting, log_activity
 from routers.auth import get_user_from_request
 from services.cleaner import clean_list_title
+from services.ssrf import is_safe_url
 from services.nfo import update_nfo_tags
 from services.tmdb import TMDBService
 from services import arr_add
@@ -164,8 +165,33 @@ class AddMissingBody(BaseModel):
     monitor_new: Optional[bool] = None  # Auto-monitor future episodes in Sonarr
 
 
+# Hosts each list type is allowed to point at. A subscription URL is supplied by
+# any logged-in (non-admin) user and is re-fetched by the nightly scheduler, so
+# it is attacker-controlled input to a server-side fetch. Pinning the host stops
+# both the SSRF (internal hosts/ports) and the credential leak (the Trakt branch
+# sends the real trakt-api-key to whatever host the URL names).
+LIST_ALLOWED_HOSTS = {
+    "letterboxd": {"letterboxd.com"},
+    "trakt": {"trakt.tv", "api.trakt.tv"},
+}
+
+
+def list_url_is_allowed(list_type: str, url: str) -> bool:
+    """True if `url` is a public http(s) URL on a host this list type may use."""
+    allowed = LIST_ALLOWED_HOSTS.get(list_type)
+    if allowed is None:
+        return True  # types that never fetch the user URL (imdb_* use fixed hosts)
+    return is_safe_url(url, allowed_hosts=allowed)
+
+
 def fetch_list_tmdb_ids(lst: ListSubscription, bearer_token: str = "", trakt_client_id: str = "") -> list:
     """Fetch TMDB IDs from a list URL"""
+    if not list_url_is_allowed(lst.type, lst.url or ""):
+        logger.error(
+            f"Refusing to fetch list {lst.id} ({lst.type}): URL is not a public "
+            f"{'/'.join(sorted(LIST_ALLOWED_HOSTS.get(lst.type, set())))} address"
+        )
+        return []
     if lst.type == "imdb_rss":
         return fetch_imdb_rss(lst.url, bearer_token=bearer_token)
     elif lst.type == "letterboxd":
@@ -394,6 +420,9 @@ def fetch_letterboxd_rss(url: str) -> list:
     session = requests.Session()
     session.headers.update({"User-Agent": _UA})
 
+    if not is_safe_url(url, allowed_hosts=LIST_ALLOWED_HOSTS["letterboxd"]):
+        logger.error("Refusing to fetch Letterboxd list: URL is not a public letterboxd.com address")
+        return []
     try:
         # Collect all film slugs across pages
         all_slugs = []
@@ -446,6 +475,11 @@ def fetch_trakt_list(url: str, client_id: str = "") -> list:
         # e.g. https://trakt.tv/users/username/lists/listname
         # → https://api.trakt.tv/users/username/lists/listname/items
         api_url = url.rstrip('/').replace('trakt.tv', 'api.trakt.tv') + '/items'
+        # Checked again post-transform: the request below carries the real
+        # trakt-api-key, so it must never be sent to a caller-chosen host.
+        if not is_safe_url(api_url, allowed_hosts=LIST_ALLOWED_HOSTS["trakt"]):
+            logger.error("Refusing to fetch Trakt list: URL is not a public trakt.tv address")
+            return []
         r = requests.get(api_url, timeout=15, headers={
             "Content-Type": "application/json",
             "trakt-api-version": "2",
@@ -643,6 +677,9 @@ def get_lists(db: Session = Depends(get_db), user: TentacleUser = Depends(get_us
 
 @router.post("")
 def create_list(body: ListCreate, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+    if not list_url_is_allowed(body.type, body.url or ""):
+        raise HTTPException(400, f"A {body.type} list URL must be a public "
+                                 f"{'/'.join(sorted(LIST_ALLOWED_HOSTS[body.type]))} address")
     lst = ListSubscription(
         name=body.name,
         type=body.type,

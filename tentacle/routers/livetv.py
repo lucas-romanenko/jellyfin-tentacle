@@ -48,6 +48,7 @@ from models.database import (
 )
 from routers.auth import require_admin
 from services.ssrf import is_safe_url
+from urllib.parse import urljoin
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,41 @@ _admin = [Depends(require_admin)]
 # capacity, new stream requests get a 503 rather than silently degrading every
 # active stream. Created lazily on first use so it binds to the running loop.
 _MAX_CONCURRENT_STREAMS = 6
+
+# Max redirect hops we will follow on a stream/chunk fetch, matching httpx's own
+# default ceiling.
+_MAX_STREAM_REDIRECTS = 10
+
+
+async def _send_checked(client, url: str, headers: dict):
+    """GET `url` through `client`, following redirects *and re-validating each hop*.
+
+    `client` must be built with follow_redirects=False. Letting httpx follow
+    redirects itself defeats the `is_safe_url` pre-flight: the URL that was
+    checked is not the URL that finally gets fetched, so an upstream (an IPTV
+    provider — untrusted third-party content) can answer with
+    `302 -> http://10.0.0.5:8096/...` and the stream proxy, which is a public
+    unauthenticated route, would fetch it and stream the body back to the caller.
+
+    Returns the open streaming response (caller closes it) for the first hop
+    that is not a redirect.
+    """
+    current = url
+    for _ in range(_MAX_STREAM_REDIRECTS):
+        req = client.build_request("GET", current, headers=headers)
+        resp = await client.send(req, stream=True)
+        if resp.status_code not in (301, 302, 303, 307, 308):
+            return resp
+        location = resp.headers.get("location")
+        await resp.aclose()
+        if not location:
+            raise HTTPException(502, "Redirect without Location header")
+        current = urljoin(current, location)
+        if not is_safe_url(current):
+            logger.warning(f"[LiveTV] Blocked redirect to non-public host: {current}")
+            raise HTTPException(502, "Stream redirect points to a non-public host")
+    raise HTTPException(502, "Too many redirects")
+
 _stream_semaphore: "asyncio.Semaphore | None" = None
 
 
@@ -1590,7 +1626,6 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
     slot can be freed: immediately on early-exit paths, or by the streaming
     generator's `finally` once the long-lived stream ends."""
     import httpx
-    from urllib.parse import urljoin
 
     # Step 1: Follow the provider's redirect chain with the required UA
     # to get the tokenized URL on the real streaming server
@@ -1633,12 +1668,11 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
     # Step 2: Try the tokenized URL to see what it serves
     # Probe with a streaming GET — check content type
     async with httpx.AsyncClient(
-        follow_redirects=True,
+        follow_redirects=False,
         timeout=httpx.Timeout(connect=15.0, read=120.0, write=10.0, pool=15.0),
     ) as client:
         try:
-            req = client.build_request("GET", tokenized_url, headers={"User-Agent": user_agent})
-            resp = await client.send(req, stream=True)
+            resp = await _send_checked(client, tokenized_url, {"User-Agent": user_agent})
             resp.raise_for_status()
         except httpx.HTTPError as e:
             logger.error(f"[LiveTV] Tokenized URL failed for channel {channel_id}: {e}")
@@ -1662,14 +1696,13 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
         logger.info(f"[LiveTV] Raw stream (CT: {content_type}) — proxying bytes for channel {channel_id}")
         upstream_ct = content_type or "video/mp2t"
         raw_client = httpx.AsyncClient(
-            follow_redirects=True,
+            follow_redirects=False,
             timeout=httpx.Timeout(connect=15.0, read=120.0, write=10.0, pool=15.0),
         )
 
         async def stream_generator():
             try:
-                req = raw_client.build_request("GET", tokenized_url, headers={"User-Agent": user_agent})
-                raw_resp = await raw_client.send(req, stream=True)
+                raw_resp = await _send_checked(raw_client, tokenized_url, {"User-Agent": user_agent})
                 raw_resp.raise_for_status()
                 async for chunk in raw_resp.aiter_bytes(chunk_size=131072):
                     yield chunk
@@ -1705,17 +1738,13 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
     async def _hls_worker():
         """Continuously fetch the HLS playlist and pipe chunk data as raw MPEG-TS."""
         import asyncio
-        from urllib.parse import urlparse as _urlparse
         seen_chunks: set[str] = set()
         current_playlist = playlist_text
         ua_headers = {"User-Agent": user_agent}
         consecutive_errors = 0
-        # playlist_base is already validated as public; only re-validate chunk
-        # URLs that point at a different host (SSRF guard for absolute chunk URLs).
-        base_host = (_urlparse(playlist_base).hostname or "").lower()
 
         async with httpx.AsyncClient(
-            follow_redirects=True,
+            follow_redirects=False,
             timeout=httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0),
         ) as hls_client:
             while True:
@@ -1734,8 +1763,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                             pass
                     elif stripped and not stripped.startswith("#"):
                         chunk_url = urljoin(playlist_base, stripped)
-                        ch_host = (_urlparse(chunk_url).hostname or "").lower()
-                        if ch_host != base_host and not is_safe_url(chunk_url):
+                        if not is_safe_url(chunk_url):
                             logger.warning(f"[LiveTV] Skipping HLS chunk on non-public host for channel {channel_id}: {chunk_url}")
                             continue
                         chunk_urls.append(chunk_url)
@@ -1746,9 +1774,12 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         continue
                     seen_chunks.add(chunk_url)
                     try:
-                        chunk_resp = await hls_client.get(chunk_url, headers=ua_headers)
-                        chunk_resp.raise_for_status()
-                        yield chunk_resp.content
+                        chunk_resp = await _send_checked(hls_client, chunk_url, ua_headers)
+                        try:
+                            chunk_resp.raise_for_status()
+                            yield await chunk_resp.aread()
+                        finally:
+                            await chunk_resp.aclose()
                         consecutive_errors = 0
                     except Exception as e:
                         consecutive_errors += 1
@@ -1764,9 +1795,12 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 # Live stream: wait and re-fetch playlist for new chunks
                 await asyncio.sleep(target_duration / 2)
                 try:
-                    pl_resp = await hls_client.get(playlist_base, headers=ua_headers)
-                    pl_resp.raise_for_status()
-                    current_playlist = pl_resp.text
+                    pl_resp = await _send_checked(hls_client, playlist_base, ua_headers)
+                    try:
+                        pl_resp.raise_for_status()
+                        current_playlist = (await pl_resp.aread()).decode("utf-8", errors="replace")
+                    finally:
+                        await pl_resp.aclose()
                 except Exception as e:
                     logger.warning(f"[LiveTV] Playlist refresh failed for channel {channel_id}: {e}")
                     consecutive_errors += 1
