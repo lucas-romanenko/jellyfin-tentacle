@@ -97,6 +97,7 @@ async function showLoginOverlay() {
 function selectLoginUser(user, el) {
   state._loginSelectedUser = user;
   state._loginManual = false;
+  document.getElementById('login-manual-link').style.display = '';
   document.getElementById('login-username').style.display = 'none';
   document.querySelectorAll('.user-card').forEach(c => c.classList.remove('selected'));
   el.classList.add('selected');
@@ -137,6 +138,7 @@ async function submitLogin() {
 function loginShowManual() {
   state._loginManual = true;
   state._loginSelectedUser = null;
+  document.getElementById('login-manual-link').style.display = 'none';
   document.querySelectorAll('.user-card').forEach(c => c.classList.remove('selected'));
   document.getElementById('login-password-form').style.display = 'flex';
   document.getElementById('login-error').textContent = '';
@@ -178,6 +180,7 @@ async function doLogin(username, password) {
 function loginBackToUsers() {
   state._loginSelectedUser = null;
   state._loginManual = false;
+  document.getElementById('login-manual-link').style.display = '';
   document.getElementById('login-username').style.display = 'none';
   document.getElementById('login-password-form').style.display = 'none';
   document.querySelectorAll('.user-card').forEach(c => c.classList.remove('selected'));

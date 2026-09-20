@@ -40,6 +40,7 @@ async function main() {
   loginShowManual();
   out.formShown = el('login-password-form').style.display;
   out.nameShown = el('login-username').style.display !== 'none';
+  out.linkHiddenWhileOpen = el('login-manual-link').style.display === 'none';
   await submitLogin();
   out.emptyNameLogins = logins.length;
   out.emptyNameError = el('login-error').textContent;
@@ -52,6 +53,7 @@ async function main() {
   logins.length = 0;
   selectLoginUser({ name: 'Alice', has_password: true }, el('card'));
   out.nameHiddenAfterPick = el('login-username').style.display === 'none';
+  out.linkBackAfterPick = el('login-manual-link').style.display !== 'none';
   el('login-username').value = 'someone_else';
   el('login-password').value = 'pw2';
   await submitLogin();
@@ -96,6 +98,10 @@ class ManualUsernameLogin(unittest.TestCase):
     def test_the_form_and_the_name_field_are_shown(self):
         self.assertEqual("flex", self.r["formShown"])
         self.assertTrue(self.r["nameShown"])
+
+    def test_the_link_is_not_shown_next_to_the_form_it_opens(self):
+        self.assertTrue(self.r["linkHiddenWhileOpen"])
+        self.assertTrue(self.r["linkBackAfterPick"])
 
     def test_an_empty_username_is_refused_with_a_message(self):
         self.assertEqual(0, self.r["emptyNameLogins"])
