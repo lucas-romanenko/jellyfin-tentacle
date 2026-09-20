@@ -550,9 +550,17 @@ public class TentacleHomeController : ControllerBase
     /// </summary>
     [HttpGet("Toolbar")]
     [Authorize]
-    public ActionResult GetToolbar([FromQuery] Guid userId)
+    public async Task<ActionResult> GetToolbar([FromQuery] Guid userId)
     {
-        var homeConfig = _homeScreenManager.GetHomeConfig(userId, GetApiKey());
+        // The toolbar lives in the per-user home config, so the userId has to be the
+        // caller's own, exactly as for Sections / Hero / HeroConfig / UserSettings.
+        var caller = await CallerIdentity.ResolveAsync(_authContext, HttpContext, userId).ConfigureAwait(false);
+        if (!caller.Allowed)
+        {
+            return Forbid();
+        }
+
+        var homeConfig = _homeScreenManager.GetHomeConfig(caller.UserId, GetApiKey());
         var toolbar = homeConfig?.Toolbar;
         if (toolbar != null && toolbar.Count > 0)
         {
