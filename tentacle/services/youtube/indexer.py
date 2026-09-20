@@ -250,10 +250,18 @@ def _apply_stream_preference(db: Session, channel: YouTubeChannel) -> int:
             db.commit()
         return -len(restored)
 
+    from sqlalchemy import and_, or_
     stale = db.query(YouTubeVideo).filter(
         YouTubeVideo.channel_fk == channel.id,
-        YouTubeVideo.live_status.in_(FINISHED_LIVE),
         YouTubeVideo.removed_at.is_(None),
+        or_(
+            YouTubeVideo.live_status.in_(FINISHED_LIVE),
+            # A broadcast whose live_status later cleared to NULL. It was
+            # indexed as media_type "livestream", so it still counts as a
+            # finished stream rather than an ordinary upload.
+            and_(YouTubeVideo.media_type == "livestream",
+                 YouTubeVideo.live_status.is_(None)),
+        ),
     ).all()
     for video in stale:
         library.remove_video(video)
@@ -388,7 +396,26 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
         if on_progress:
             on_progress(min(seen_kept, keep), keep)
 
+    # youtube_videos.video_id is unique across ALL channels, but `known` only
+    # covers this one. A video listed twice here (e.g. on /streams and /videos)
+    # or already indexed under another channel or playlist source would be
+    # inserted again, and the IntegrityError aborts the whole channel on every
+    # run. Look those up once, and handle each id at most once.
+    elsewhere = set()
+    fresh = [v for v in dict.fromkeys(new_videos)]
+    for i in range(0, len(fresh), 500):
+        elsewhere |= {v.video_id for v in db.query(YouTubeVideo.video_id).filter(
+            YouTubeVideo.channel_fk != channel.id,
+            YouTubeVideo.video_id.in_(fresh[i:i + 500])).all()}
+    handled = set()
+
     for vid, entry, library_tab in ordered:
+        if vid in handled:
+            continue
+        handled.add(vid)
+        if vid in elsewhere:
+            _note_skip("already indexed under another channel or playlist")
+            continue
         if vid in known:
             if library_tab and vid in kept_ids:
                 seen_kept += 1
