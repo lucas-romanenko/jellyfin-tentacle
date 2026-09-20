@@ -9,6 +9,7 @@ succeeded.
 import logging
 import re
 import time
+from urllib.parse import urlparse
 from datetime import datetime, timedelta
 
 from sqlalchemy.orm import Session
@@ -58,6 +59,16 @@ def slugify(text: str) -> str:
     return slug[:48] or "channel"
 
 
+# Everything this feature fetches has to be on YouTube. yt-dlp's generic
+# extractor will happily fetch any other host, which would make "add a channel"
+# a request-forgery primitive against the private network Tentacle sits in
+# (see services/ssrf.py, which guards the IPTV side for the same reason).
+YOUTUBE_HOSTS = frozenset((
+    "youtube.com", "www.youtube.com", "m.youtube.com",
+    "music.youtube.com", "youtu.be", "www.youtu.be",
+))
+
+
 def parse_input_url(url: str) -> dict:
     """Work out what the user pasted: a channel, a handle, or a playlist."""
     url = (url or "").strip()
@@ -66,6 +77,10 @@ def parse_input_url(url: str) -> dict:
     if not url.startswith("http"):
         # Bare "@handle" or a channel id
         url = f"https://www.youtube.com/{url.lstrip('/')}"
+
+    host = (urlparse(url).hostname or "").lower()
+    if host not in YOUTUBE_HOSTS:
+        raise ValueError("Not a YouTube channel or playlist URL")
 
     playlist = re.search(r"[?&]list=([A-Za-z0-9_-]+)", url)
     if playlist:
@@ -82,9 +97,13 @@ def parse_input_url(url: str) -> dict:
         return {"kind": "channel", "handle": handle.group(1),
                 "canonical": f"https://www.youtube.com/@{handle.group(1)}"}
 
-    user = re.search(r"/(?:user|c)/([A-Za-z0-9_.-]+)", url)
+    user = re.search(r"/(user|c)/([A-Za-z0-9_.-]+)", url)
     if user:
-        return {"kind": "channel", "handle": user.group(1), "canonical": url}
+        # Rebuilt rather than passed through: the pasted URL is only known to
+        # be on YouTube, and anything after the name (a path, a query) would be
+        # handed to yt-dlp as-is.
+        return {"kind": "channel", "handle": user.group(2),
+                "canonical": f"https://www.youtube.com/{user.group(1)}/{user.group(2)}"}
 
     raise ValueError("Not a YouTube channel or playlist URL")
 
