@@ -501,8 +501,22 @@ def delete_download(
     jf = None
     if jf_url and jf_key:
         jf = JellyfinService(jf_url, jf_key, user.jellyfin_user_id)
+        jf_type = "Movie" if media_type == "movie" else "Series"
+        if jf_item_id:
+            # The permission check above is about tmdb_id; the id actually
+            # deleted is this caller-supplied one. Only use it if it IS that
+            # title — otherwise a user who requested one film could delete any
+            # item in Jellyfin (another user's film, a collection, a library
+            # folder) by passing its id. Fetched through the user-scoped path,
+            # so it must also be an item this user can see.
+            supplied = jf.get_item_by_id(jf_item_id) or {}
+            if (supplied.get("Type") != jf_type
+                    or (supplied.get("ProviderIds") or {}).get("Tmdb") != str(tmdb_id)):
+                logger.warning(
+                    f"Delete-download tmdb:{tmdb_id}: supplied Jellyfin id {jf_item_id} is not "
+                    f"that {jf_type.lower()} — ignoring it (user={user.display_name})")
+                jf_item_id = None
         if not jf_item_id:
-            jf_type = "Movie" if media_type == "movie" else "Series"
             jf_item = jf.search_by_tmdb_id(tmdb_id, media_type=jf_type)
             jf_item_id = jf_item["Id"] if jf_item else None
 
