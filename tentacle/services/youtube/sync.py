@@ -160,21 +160,39 @@ def candidate_base_urls(db: Session, request_host: str = None, request_scheme: s
     # from Jellyfin's side whenever the home screen does.
     add(plugin_tentacle_url(db) or "")
 
-    port = TENTACLE_PORT
-    if request_host and ":" in request_host.rsplit("]", 1)[-1]:
-        try:
-            port = int(request_host.rsplit(":", 1)[1])
-        except ValueError:
-            pass
+    req_host, req_port = _split_host(request_host or "")
+    port = req_port or TENTACLE_PORT
 
     jf = urlparse(get_setting(db, "jellyfin_url", "") or "")
-    if jf.hostname and jf.hostname not in ("localhost", "127.0.0.1", "jellyfin"):
-        add(f"http://{jf.hostname}:{port}")
+    if jf.hostname and jf.hostname not in ("localhost", "127.0.0.1", "::1", "jellyfin"):
+        add(f"http://{_authority(jf.hostname, port)}")
         if port != TENTACLE_PORT:
-            add(f"http://{jf.hostname}:{TENTACLE_PORT}")
-    if request_host:
-        add(f"{request_scheme or 'http'}://{request_host}")
+            add(f"http://{_authority(jf.hostname, TENTACLE_PORT)}")
+    if req_host:
+        add(f"{request_scheme or 'http'}://{_authority(req_host, req_port)}")
     return out
+
+
+def _split_host(value: str) -> tuple:
+    """(host, port-or-None) from a Host / X-Forwarded-Host value.
+
+    Handles "name", "name:port", "[v6]", "[v6]:port", and a bare IPv6 literal
+    from a proxy that does not bracket it — that one has colons but no port.
+    """
+    if value.startswith("["):
+        host, _, rest = value[1:].partition("]")
+        port = rest[1:] if rest.startswith(":") else ""
+        return host, int(port) if port.isdigit() else None
+    if value.count(":") == 1:
+        host, _, port = value.partition(":")
+        return host, int(port) if port.isdigit() else None
+    return value, None
+
+
+def _authority(host: str, port: int = None) -> str:
+    """host[:port] for a URL; an IPv6 literal must be bracketed (RFC 3986 §3.2.2)."""
+    h = f"[{host}]" if ":" in host else host
+    return f"{h}:{port}" if port else h
 
 
 def detect_base_url(db: Session, request_host: str = None, request_scheme: str = "http") -> dict:
