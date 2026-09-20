@@ -192,6 +192,9 @@ _shared_lock: "asyncio.Lock | None" = None
 # this is broken, and must not be allowed to stall the upstream or its peers.
 _SUBSCRIBER_QUEUE_MAX = 32
 
+# How soon a pump that outlived its cancel() is cancelled again (see _cancel_pump).
+_PUMP_RECANCEL_SECONDS = 1.0
+
 
 def _get_shared_lock() -> "asyncio.Lock":
     global _shared_lock
@@ -234,6 +237,10 @@ class _SharedUpstream:
     async def _pump(self, body_iterator):
         try:
             async for piece in body_iterator:
+                if self._closed:
+                    # Retired, but the cancel() that should have stopped us was
+                    # lost (see _cancel_pump): stop pulling here.
+                    break
                 self._publish(piece)
         except asyncio.CancelledError:
             raise
@@ -242,6 +249,29 @@ class _SharedUpstream:
         finally:
             self._publish(None)   # EOF sentinel for every subscriber
             await self._retire()
+            # Leaving the loop by `break` does not close an async generator,
+            # and its `finally` is what closes the provider connection.
+            aclose = getattr(body_iterator, "aclose", None)
+            if aclose is not None:
+                await aclose()
+
+    def _cancel_pump(self):
+        """Cancel the pump, and keep at it until it is really gone.
+
+        One task.cancel() is not enough. httpx connects through anyio, whose
+        connect_tcp() cancels its own cancel scope as soon as a connection
+        attempt wins, and a scope that is being cancelled takes any
+        CancelledError raised in its host task for its own and swallows it. A
+        cancel() of ours that lands in that window is lost, and the pump goes
+        on pulling from the provider with no subscriber, no registration and
+        no slot -- invisible to /api/live/capacity. The window is the connect
+        for the first chunk: exactly where the pump is when a client opens a
+        channel and leaves at once."""
+        task = self.task
+        if task is None or task.done():
+            return
+        task.cancel()
+        asyncio.get_running_loop().call_later(_PUMP_RECANCEL_SECONDS, self._cancel_pump)
 
     async def _retire(self):
         if self._closed:
@@ -262,8 +292,7 @@ class _SharedUpstream:
             logger.info(f"[LiveTV] Last client left channel {self.channel_id} — "
                         f"closing the upstream")
             await self._retire()
-            if self.task is not None:
-                self.task.cancel()
+            self._cancel_pump()
 
 
 class _SubscriberResponse(StreamingResponse):
