@@ -48,7 +48,7 @@ from models.database import (
     log_activity,
 )
 from routers.auth import require_admin
-from services.ssrf import is_safe_url
+from services.ssrf import is_safe_url, lan_origin_guard
 from urllib.parse import urljoin
 
 logger = logging.getLogger(__name__)
@@ -72,7 +72,7 @@ _MAX_CONCURRENT_STREAMS = 6
 _MAX_STREAM_REDIRECTS = 10
 
 
-async def _send_checked(client, url: str, headers: dict):
+async def _send_checked(client, url: str, headers: dict, guard=None):
     """GET `url` through `client`, following redirects *and re-validating each hop*.
 
     `client` must be built with follow_redirects=False. Letting httpx follow
@@ -84,7 +84,12 @@ async def _send_checked(client, url: str, headers: dict):
 
     Returns the open streaming response (caller closes it) for the first hop
     that is not a redirect.
+
+    `guard` validates every hop; callers pass one scoped to the channel's
+    provider (#76) so a deliberately-configured LAN re-streamer works while
+    everything else is still held to is_safe_url().
     """
+    guard = guard or is_safe_url
     current = url
     for _ in range(_MAX_STREAM_REDIRECTS):
         req = client.build_request("GET", current, headers=headers)
@@ -96,7 +101,7 @@ async def _send_checked(client, url: str, headers: dict):
         if not location:
             raise HTTPException(502, "Redirect without Location header")
         current = urljoin(current, location)
-        if not is_safe_url(current):
+        if not guard(current):
             logger.warning(f"[LiveTV] Blocked redirect to non-public host: {current}")
             raise HTTPException(502, "Stream redirect points to a non-public host")
     raise HTTPException(502, "Too many redirects")
@@ -1648,21 +1653,31 @@ async def stream_proxy(channel_id: int, db: Session = Depends(get_db)):
         logger.info(f"[LiveTV] Stream request for channel {channel_id} ({channel.name}): {stream_url}")
 
         # SSRF guard: this endpoint is public, so refuse to fetch anything that
-        # resolves to a private/loopback/link-local/metadata address.
-        if not is_safe_url(stream_url):
+        # resolves to a private/loopback/link-local/metadata address. A provider
+        # the admin deliberately configured on a LAN address (a local
+        # re-streamer: tuliprox, xTeVe, Threadfin) is the one exception, and
+        # only for its own origin -- see services.ssrf.lan_origin_guard (#76).
+        guard = lan_origin_guard(provider.server_url) if provider else is_safe_url
+        if not guard(stream_url):
             logger.warning(f"[LiveTV] Blocked stream URL (non-public host) for channel {channel_id}: {stream_url}")
             raise HTTPException(502, "Stream URL points to a non-public host")
 
-        return await _stream_proxy_inner(channel_id, user_agent, stream_url, _release_sem)
+        return await _stream_proxy_inner(channel_id, user_agent, stream_url, _release_sem, guard)
     except BaseException:
         _release_sem()
         raise
 
 
-async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str, _release_sem):
+async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str, _release_sem,
+                              guard=None):
     """Inner stream proxy logic. `_release_sem()` is called when the concurrency
     slot can be freed: immediately on early-exit paths, or by the streaming
-    generator's `finally` once the long-lived stream ends."""
+    generator's `finally` once the long-lived stream ends.
+
+    `guard` validates every URL fetched from here on -- redirect hops, HLS
+    variants and chunks. stream_proxy passes one scoped to the channel's own
+    provider (#76); the default holds everything to is_safe_url()."""
+    guard = guard or is_safe_url
     import httpx
 
     # Step 1: Follow the provider's redirect chain with the required UA
@@ -1690,7 +1705,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     if not location:
                         raise HTTPException(502, "Redirect without Location header")
                     url = urljoin(url, location)
-                    if not is_safe_url(url):
+                    if not guard(url):
                         logger.warning(f"[LiveTV] Blocked redirect to non-public host for channel {channel_id}: {url}")
                         raise HTTPException(502, "Stream redirect points to a non-public host")
                     logger.info(f"[LiveTV] Following redirect → {url}")
@@ -1710,7 +1725,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
         timeout=httpx.Timeout(connect=15.0, read=120.0, write=10.0, pool=15.0),
     ) as client:
         try:
-            resp = await _send_checked(client, tokenized_url, {"User-Agent": user_agent})
+            resp = await _send_checked(client, tokenized_url, {"User-Agent": user_agent}, guard)
             resp.raise_for_status()
         except httpx.HTTPError as e:
             logger.error(f"[LiveTV] Tokenized URL failed for channel {channel_id}: {e}")
@@ -1740,7 +1755,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
 
         async def stream_generator():
             try:
-                raw_resp = await _send_checked(raw_client, tokenized_url, {"User-Agent": user_agent})
+                raw_resp = await _send_checked(raw_client, tokenized_url, {"User-Agent": user_agent}, guard)
                 raw_resp.raise_for_status()
                 async for chunk in raw_resp.aiter_bytes(chunk_size=131072):
                     yield chunk
@@ -1798,14 +1813,14 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     if hop == _MAX_VARIANT_HOPS:
                         logger.error(f"[LiveTV] Too many HLS variant hops for channel {channel_id}")
                         return
-                    if not is_safe_url(variant):
+                    if not guard(variant):
                         logger.warning(
                             f"[LiveTV] Blocked HLS variant on non-public host for "
                             f"channel {channel_id}: {variant}")
                         return
                     logger.info(f"[LiveTV] Master playlist for channel {channel_id} — following variant")
                     try:
-                        v_resp = await _send_checked(hls_client, variant, ua_headers)
+                        v_resp = await _send_checked(hls_client, variant, ua_headers, guard)
                         try:
                             v_resp.raise_for_status()
                             variant_text = (await v_resp.aread()).decode("utf-8", errors="replace")
@@ -1832,7 +1847,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                             pass
                     elif stripped and not stripped.startswith("#"):
                         chunk_url = urljoin(current_base, stripped)
-                        if not is_safe_url(chunk_url):
+                        if not guard(chunk_url):
                             logger.warning(f"[LiveTV] Skipping HLS chunk on non-public host for channel {channel_id}: {chunk_url}")
                             continue
                         chunk_urls.append(chunk_url)
@@ -1843,7 +1858,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         continue
                     seen_chunks.add(chunk_url)
                     try:
-                        chunk_resp = await _send_checked(hls_client, chunk_url, ua_headers)
+                        chunk_resp = await _send_checked(hls_client, chunk_url, ua_headers, guard)
                         try:
                             chunk_resp.raise_for_status()
                             yield await chunk_resp.aread()
@@ -1864,7 +1879,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 # Live stream: wait and re-fetch playlist for new chunks
                 await asyncio.sleep(target_duration / 2)
                 try:
-                    pl_resp = await _send_checked(hls_client, current_base, ua_headers)
+                    pl_resp = await _send_checked(hls_client, current_base, ua_headers, guard)
                     try:
                         pl_resp.raise_for_status()
                         current_playlist = (await pl_resp.aread()).decode("utf-8", errors="replace")
