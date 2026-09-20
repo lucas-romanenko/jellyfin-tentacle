@@ -40,6 +40,12 @@ logger = logging.getLogger(__name__)
 KNOWN_BAD_RECHECK_DAYS = 7
 DEFAULT_BATCH_SIZE = 100
 
+# 4xx codes that mean "not right now", not "not any more": the account's
+# max_connections are already in use, the provider is rate-limiting our own
+# sweep, or the credentials were refused. Marking a title dead on one of these
+# is how a one-connection IPTV account loses its library to a nightly sweep.
+INCONCLUSIVE_STATUSES = {401, 403, 407, 408, 423, 425, 429}
+
 # Direct provider URLs as written by the VOD sync:
 #   http://server/movie/{user}/{pass}/{stream_id}.mp4
 #   http://server/series/{user}/{pass}/{episode_id}.mp4
@@ -68,6 +74,8 @@ def _probe_url(url: str, user_agent: str) -> bool | None:
                 for chunk in r.iter_content(65536):
                     return len(chunk) > 0
                 return False
+            if r.status_code in INCONCLUSIVE_STATUSES:
+                return None
             if 400 <= r.status_code < 500:
                 return False
             return None  # 5xx — provider hiccup, not proof the content is gone
@@ -89,9 +97,25 @@ def check_stream(db, media_type: str, kind: str, stream_id: int, url: str, provi
             finally:
                 client.close()
             if isinstance(data, dict):
-                info = data.get("info")
-                # Providers signal "unknown vod_id" with an empty/missing info block
-                return bool(info)
+                user_info = data.get("user_info")
+                if isinstance(user_info, dict) and not user_info.get("auth", 1):
+                    # Credentials refused / account throttled — this answer says
+                    # nothing about whether the title is still in the catalog.
+                    logger.warning(
+                        f"[Stream health] catalog check for vod {stream_id} came back "
+                        f"unauthenticated — treating as inconclusive"
+                    )
+                elif "info" in data:
+                    # Providers signal "unknown vod_id" with an empty info block.
+                    return bool(data["info"])
+                else:
+                    # Not a get_vod_info answer at all (empty body, error JSON):
+                    # fall through to the reachability probe rather than
+                    # declaring the title gone.
+                    logger.debug(
+                        f"[Stream health] catalog answer for vod {stream_id} had no "
+                        f"info block — falling back to a probe"
+                    )
         except Exception as e:
             logger.debug(f"[Stream health] catalog check inconclusive for vod {stream_id}: {e}")
     return _probe_url(url, user_agent)
