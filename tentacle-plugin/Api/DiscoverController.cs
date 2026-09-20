@@ -719,108 +719,66 @@ public class TentacleDiscoverController : ControllerBase
     }
 
     /// <summary>
+    /// Serves an embedded asset. index.html injects every one of these with
+    /// ?v=&lt;boot stamp&gt;, so a request carrying the current stamp is safe to cache
+    /// for good; anything else (no stamp, stale stamp) stays uncacheable. Same rule as
+    /// the home-screen controller's assets (#56) -- these eight were left on no-store.
+    /// </summary>
+    private ActionResult ServeAsset(string resourceSuffix, string contentType)
+    {
+        var content = LoadEmbeddedResource(resourceSuffix);
+        if (content == null) return NotFound();
+        Response.Headers["Cache-Control"] = AssetCaching.CacheControlFor(Request);
+        return Content(content, contentType);
+    }
+
+    /// <summary>
     /// Serves the Tentacle discover JavaScript.
     /// </summary>
     [HttpGet("/Tentacle/discover.js")]
-    [ResponseCache(NoStore = true)]
-    public ActionResult GetDiscoverJs()
-    {
-        var content = LoadEmbeddedResource("tentacle-discover.js");
-        if (content == null) return NotFound();
-        Response.Headers["Cache-Control"] = "no-store, no-cache, must-revalidate";
-        return Content(content, "application/javascript");
-    }
+    public ActionResult GetDiscoverJs() => ServeAsset("tentacle-discover.js", "application/javascript");
 
     /// <summary>
     /// Serves the Tentacle discover CSS.
     /// </summary>
     [HttpGet("/Tentacle/discover.css")]
-    [ResponseCache(NoStore = true)]
-    public ActionResult GetDiscoverCss()
-    {
-        var content = LoadEmbeddedResource("tentacle-discover.css");
-        if (content == null) return NotFound();
-        Response.Headers["Cache-Control"] = "no-store, no-cache, must-revalidate";
-        return Content(content, "text/css");
-    }
+    public ActionResult GetDiscoverCss() => ServeAsset("tentacle-discover.css", "text/css");
 
     /// <summary>
     /// Serves the Tentacle search JavaScript.
     /// </summary>
     [HttpGet("/Tentacle/search.js")]
-    [ResponseCache(NoStore = true)]
-    public ActionResult GetSearchJs()
-    {
-        var content = LoadEmbeddedResource("tentacle-search.js");
-        if (content == null) return NotFound();
-        Response.Headers["Cache-Control"] = "no-store, no-cache, must-revalidate";
-        return Content(content, "application/javascript");
-    }
+    public ActionResult GetSearchJs() => ServeAsset("tentacle-search.js", "application/javascript");
 
     /// <summary>
     /// Serves the Tentacle search CSS.
     /// </summary>
     [HttpGet("/Tentacle/search.css")]
-    [ResponseCache(NoStore = true)]
-    public ActionResult GetSearchCss()
-    {
-        var content = LoadEmbeddedResource("tentacle-search.css");
-        if (content == null) return NotFound();
-        Response.Headers["Cache-Control"] = "no-store, no-cache, must-revalidate";
-        return Content(content, "text/css");
-    }
+    public ActionResult GetSearchCss() => ServeAsset("tentacle-search.css", "text/css");
 
     /// <summary>
     /// Serves the Tentacle Live TV JavaScript.
     /// </summary>
     [HttpGet("/Tentacle/livetv.js")]
-    [ResponseCache(NoStore = true)]
-    public ActionResult GetLiveTvJs()
-    {
-        var content = LoadEmbeddedResource("tentacle-livetv.js");
-        if (content == null) return NotFound();
-        Response.Headers["Cache-Control"] = "no-store, no-cache, must-revalidate";
-        return Content(content, "application/javascript");
-    }
+    public ActionResult GetLiveTvJs() => ServeAsset("tentacle-livetv.js", "application/javascript");
 
     /// <summary>
     /// Serves the Tentacle Live TV CSS.
     /// </summary>
     [HttpGet("/Tentacle/livetv.css")]
-    [ResponseCache(NoStore = true)]
-    public ActionResult GetLiveTvCss()
-    {
-        var content = LoadEmbeddedResource("tentacle-livetv.css");
-        if (content == null) return NotFound();
-        Response.Headers["Cache-Control"] = "no-store, no-cache, must-revalidate";
-        return Content(content, "text/css");
-    }
+    public ActionResult GetLiveTvCss() => ServeAsset("tentacle-livetv.css", "text/css");
 
     /// <summary>
     /// Serves the Tentacle Favorites JavaScript.
     /// </summary>
     [HttpGet("/Tentacle/favorites.js")]
-    [ResponseCache(NoStore = true)]
-    public ActionResult GetFavoritesJs()
-    {
-        var content = LoadEmbeddedResource("tentacle-favorites.js");
-        if (content == null) return NotFound();
-        Response.Headers["Cache-Control"] = "no-store, no-cache, must-revalidate";
-        return Content(content, "application/javascript");
-    }
+    public ActionResult GetFavoritesJs() => ServeAsset("tentacle-favorites.js", "application/javascript");
 
     /// <summary>
     /// Serves the Tentacle Favorites CSS.
     /// </summary>
     [HttpGet("/Tentacle/favorites.css")]
-    [ResponseCache(NoStore = true)]
-    public ActionResult GetFavoritesCss()
-    {
-        var content = LoadEmbeddedResource("tentacle-favorites.css");
-        if (content == null) return NotFound();
-        Response.Headers["Cache-Control"] = "no-store, no-cache, must-revalidate";
-        return Content(content, "text/css");
-    }
+    public ActionResult GetFavoritesCss() => ServeAsset("tentacle-favorites.css", "text/css");
 
     /// <summary>
     /// Proxies TVDB image requests through Jellyfin to Tentacle backend.
