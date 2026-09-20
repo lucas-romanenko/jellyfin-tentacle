@@ -193,9 +193,11 @@ class _SharedUpstream:
         if self._closed:
             return
         self._closed = True
-        async with _get_shared_lock():
-            if _shared_streams.get(self.channel_id) is self:
-                del _shared_streams[self.channel_id]
+        # Deregister and free the slot BEFORE any await: this runs from a
+        # finally during cancellation, where an await can raise CancelledError
+        # and would otherwise strand the registration and leak the slot.
+        if _shared_streams.get(self.channel_id) is self:
+            del _shared_streams[self.channel_id]
         self._release_sem()
         logger.info(f"[LiveTV] Shared upstream for channel {self.channel_id} ended")
 
