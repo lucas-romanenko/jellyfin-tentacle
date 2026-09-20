@@ -119,6 +119,10 @@ class JellyfinService:
             all_items.extend(items)
             total = data.get("TotalRecordCount", 0)
             start_index += len(items)
+            if not items and start_index < total:
+                # An empty page before the reported total is just as incomplete.
+                complete = False
+                break
             if start_index >= total or not items:
                 break
         return all_items, complete
@@ -838,9 +842,18 @@ def sweep_orphaned_downloads(db) -> int:
 
     jf = JellyfinService(jf_url, jf_key, jf_uid)
 
-    # Fetch all TMDB IDs currently in Jellyfin
+    # Fetch all TMDB IDs currently in Jellyfin. Only a COMPLETE listing may be
+    # diffed against: a page that timed out (common while the library scan the
+    # nightly job has just triggered is running) returns a partial or empty
+    # list, and every downloaded title missing from it would be deleted.
+    movie_items, movies_complete = jf._fetch_all_items_checked("Movie")
+    series_items, series_complete = jf._fetch_all_items_checked("Series")
+    if not (movies_complete and series_complete):
+        logger.warning("[Orphan sweep] Jellyfin item listing was incomplete — skipping, nothing removed")
+        return 0
+
     jf_movie_ids = set()
-    for item in jf._fetch_all_items("Movie"):
+    for item in movie_items:
         tmdb_id = item.get("ProviderIds", {}).get("Tmdb")
         if tmdb_id:
             try:
@@ -849,7 +862,7 @@ def sweep_orphaned_downloads(db) -> int:
                 pass
 
     jf_series_ids = set()
-    for item in jf._fetch_all_items("Series"):
+    for item in series_items:
         tmdb_id = item.get("ProviderIds", {}).get("Tmdb")
         if tmdb_id:
             try:
@@ -861,7 +874,9 @@ def sweep_orphaned_downloads(db) -> int:
     swept_titles = []
 
     # Check radarr movies
-    radarr_movies = db.query(Movie).filter(Movie.source == "radarr").all()
+    # A complete-but-empty answer next to existing download rows means the
+    # library is unavailable (e.g. mid-rebuild), not that everything was deleted.
+    radarr_movies = db.query(Movie).filter(Movie.source == "radarr").all() if jf_movie_ids else []
     for movie in radarr_movies:
         if movie.tmdb_id not in jf_movie_ids:
             logger.info(f"[Orphan sweep] Removing orphaned radarr movie: {movie.title} (tmdb:{movie.tmdb_id})")
@@ -874,7 +889,7 @@ def sweep_orphaned_downloads(db) -> int:
             orphans_removed += 1
 
     # Check sonarr series
-    sonarr_series = db.query(Series).filter(Series.source == "sonarr").all()
+    sonarr_series = db.query(Series).filter(Series.source == "sonarr").all() if jf_series_ids else []
     for series in sonarr_series:
         if series.tmdb_id not in jf_series_ids:
             logger.info(f"[Orphan sweep] Removing orphaned sonarr series: {series.title} (tmdb:{series.tmdb_id})")
