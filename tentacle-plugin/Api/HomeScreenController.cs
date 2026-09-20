@@ -30,6 +30,12 @@ public class TentacleHomeController : ControllerBase
     private readonly ILogger<TentacleHomeController> _logger;
     private static readonly HttpClient ProxyClient = new() { Timeout = TimeSpan.FromSeconds(15) };
 
+    // The home JS polls Version every 5 s without waiting for the previous answer.
+    // Under ProxyClient's 15 s timeout a hung backend held three polls in flight per
+    // open tab; the poll gets its own deadline, shorter than the interval, so at
+    // most one is ever outstanding. Must stay below the JS poll interval.
+    private static readonly TimeSpan VersionPollTimeout = TimeSpan.FromSeconds(4);
+
     // Last version the backend actually answered with. A backend outage must not be
     // reported to clients as "the version changed to 0" — the home JS treats any
     // change as a signal to rebuild every row, so an unreachable/flapping backend
@@ -280,8 +286,11 @@ public class TentacleHomeController : ControllerBase
 
         try
         {
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(HttpContext.RequestAborted);
+            deadline.CancelAfter(VersionPollTimeout);
             var response = await ProxyClient.GetStringAsync(
-                $"{plugin.Configuration.TentacleUrl.TrimEnd('/')}/api/smartlists/version");
+                $"{plugin.Configuration.TentacleUrl.TrimEnd('/')}/api/smartlists/version",
+                deadline.Token);
             _lastKnownVersionJson = response;
             return Content(response, "application/json");
         }
