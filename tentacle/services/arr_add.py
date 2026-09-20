@@ -18,6 +18,7 @@ Three behaviours matter here:
 """
 import json
 import logging
+import time
 from typing import Optional
 
 import requests
@@ -31,8 +32,12 @@ ADD_TIMEOUT = 90
 # Reads (root folders, quality profiles, lookups). /rootfolder computes free
 # space per root, so it is not free either.
 READ_TIMEOUT = 30
-# How long to keep checking whether a timed-out add actually landed. Radarr has
-# been measured answering an add after 127s, so this has to outlast that.
+# How long to keep checking whether a timed-out add actually landed, counted
+# from the moment the add was SENT (that is what the 127s measurement is), as a
+# wall-clock deadline that includes the probes' own time. Radarr has been
+# measured answering an add after 127s, so this has to outlast that. Measured
+# from the send it also ends well inside the Jellyfin plugin's 240s add client
+# (DiscoverController.AddClient); counted after the 90s timeout it did not.
 VERIFY_TOTAL_SECONDS = 150
 
 # added | exists | failed
@@ -185,11 +190,12 @@ def add_movie_to_radarr(radarr_url: str, radarr_key: str, tmdb_id: int,
         "rootFolderPath": root_folder,
         "addOptions": {"searchForMovie": True},
     }
+    sent_at = time.monotonic()
     try:
         r = requests.post(url, headers={"X-Api-Key": radarr_key}, json=payload, timeout=ADD_TIMEOUT)
     except requests.exceptions.Timeout:
         logger.warning(f"Radarr add tmdb:{tmdb_id} timed out after {ADD_TIMEOUT}s — verifying")
-        if _radarr_has_movie(radarr_url, radarr_key, tmdb_id):
+        if _radarr_has_movie(radarr_url, radarr_key, tmdb_id, sent_at=sent_at):
             logger.info(f"Radarr add tmdb:{tmdb_id} completed despite the timeout")
             return ADDED, None
         return FAILED, (
@@ -220,7 +226,8 @@ def verify_backoff_delays(total_seconds: int = VERIFY_TOTAL_SECONDS) -> list:
     return delays
 
 
-def _poll_until_present(check, label: str, total_seconds: int = VERIFY_TOTAL_SECONDS) -> bool:
+def _poll_until_present(check, label: str, total_seconds: int = VERIFY_TOTAL_SECONDS,
+                        sent_at: Optional[float] = None) -> bool:
     """Poll `check` until it returns truthy or the budget runs out.
 
     A single sample taken two seconds after the timeout is not enough: the add
@@ -228,29 +235,40 @@ def _poll_until_present(check, label: str, total_seconds: int = VERIFY_TOTAL_SEC
     timeout plus one immediate check still called a success a failure — and the
     user's retry then hit "already exists". Each probe is a targeted id filter,
     which is cheap enough to repeat.
+
+    The budget is a deadline `total_seconds` after `sent_at` (the moment the add
+    was sent; now if not given). Sleeps and probes both count, and no probe may
+    run past the deadline, so a slow *arr cannot stretch the wait beyond the
+    point where the Jellyfin plugin has already stopped listening.
     """
-    import time
+    deadline = (time.monotonic() if sent_at is None else sent_at) + total_seconds
     for delay in verify_backoff_delays(total_seconds):
-        time.sleep(delay)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(delay, remaining))
+        # 1s floor so the final probe, taken at the deadline, can still answer.
+        probe_timeout = max(1.0, min(READ_TIMEOUT, deadline - time.monotonic()))
         try:
-            if check():
+            if check(probe_timeout):
                 return True
         except Exception as e:
             logger.debug(f"Verification probe for {label} failed: {e}")
     return False
 
 
-def _radarr_has_movie(radarr_url: str, radarr_key: str, tmdb_id: int) -> bool:
+def _radarr_has_movie(radarr_url: str, radarr_key: str, tmdb_id: int,
+                      sent_at: Optional[float] = None) -> bool:
     """Whether Radarr ended up with this movie, polled (post-timeout verification)."""
-    def _probe() -> bool:
+    def _probe(timeout: float = READ_TIMEOUT) -> bool:
         r = requests.get(
             f"{radarr_url.rstrip('/')}/api/v3/movie",
             headers={"X-Api-Key": radarr_key},
             params={"tmdbId": tmdb_id},
-            timeout=READ_TIMEOUT,
+            timeout=timeout,
         )
         r.raise_for_status()
         movies = r.json()
         return isinstance(movies, list) and any(m.get("tmdbId") == tmdb_id for m in movies)
 
-    return _poll_until_present(_probe, f"radarr tmdb:{tmdb_id}")
+    return _poll_until_present(_probe, f"radarr tmdb:{tmdb_id}", sent_at=sent_at)

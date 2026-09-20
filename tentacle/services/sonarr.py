@@ -212,6 +212,8 @@ class SonarrService:
                 "searchForMissingEpisodes": True,
             }
 
+        import time
+        sent_at = time.monotonic()
         try:
             r = self.session.post(
                 f"{self.url}/api/v3/series",
@@ -223,7 +225,7 @@ class SonarrService:
             # refresh + artwork + disk scan all happen before it answers), so
             # poll rather than reporting a failure.
             logger.warning(f"Sonarr add tmdb:{tmdb_id} tvdb:{tvdb_id} timed out after {ADD_TIMEOUT}s — verifying")
-            existing = self._await_added_series(lookup.get("tvdbId"))
+            existing = self._await_added_series(lookup.get("tvdbId"), sent_at=sent_at)
             if existing:
                 logger.info(f"Sonarr add tmdb:{tmdb_id} completed despite the timeout")
                 # The 2xx path below applies the episode selection; reaching the
@@ -287,7 +289,7 @@ class SonarrService:
             # Preset partial monitor: unmonitor series after initial search
             self._unmonitor_series(series_id)
 
-    def _await_added_series(self, tvdb_id) -> Optional[dict]:
+    def _await_added_series(self, tvdb_id, sent_at: Optional[float] = None) -> Optional[dict]:
         """Poll for a series after an add timed out.
 
         Uses the targeted tvdbId filter rather than get_series_by_tvdb(), which
@@ -298,11 +300,11 @@ class SonarrService:
             return None
         found = {}
 
-        def _probe() -> bool:
+        def _probe(timeout: float = READ_TIMEOUT) -> bool:
             r = self.session.get(
                 f"{self.url}/api/v3/series",
                 params={"tvdbId": tvdb_id},
-                timeout=READ_TIMEOUT,
+                timeout=timeout,
             )
             r.raise_for_status()
             data = r.json()
@@ -312,7 +314,7 @@ class SonarrService:
                 return True
             return False
 
-        if _poll_until_present(_probe, f"sonarr tvdb:{tvdb_id}"):
+        if _poll_until_present(_probe, f"sonarr tvdb:{tvdb_id}", sent_at=sent_at):
             return found.get("series")
         return None
 
