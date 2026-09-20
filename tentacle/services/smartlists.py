@@ -530,6 +530,13 @@ def _enabled_toggle_names(db: Session, user_id: int) -> set:
         key = t.key or ""
         if key in builtin_names:
             names.add(builtin_names[key])
+        elif key == "builtin:my_downloads":
+            # Only "desired" while the user has a DownloadRequest (see
+            # get_desired_smartlists) — deleting their last request must not
+            # delete the enabled playlist.
+            user = db.query(TentacleUser).filter(TentacleUser.id == user_id).first()
+            if user:
+                names.add(f"{user.display_name}'s Downloads")
         elif key.startswith("source:"):
             parts = key.split(":")
             # source:<tag>:movies — rejoin the middle so a tag containing
@@ -929,6 +936,7 @@ def write_home_config(db: Session, user_id: int = None) -> dict:
         # Start with existing rows (in their saved order)
         now_iso = datetime.utcnow().isoformat()
         rows = []
+        aged_out = []  # (row, name, since, reason) unresolvable past the grace period
         for r in existing_rows:
             if r.get("type") == "builtin":
                 # Always keep built-in sections
@@ -964,10 +972,9 @@ def write_home_config(db: Session, user_id: int = None) -> dict:
                     reason = f"no SmartList named '{name}' has a Jellyfin playlist id right now"
                 since = r.get("unresolved_since") or now_iso
                 if _unresolved_for_days(since) >= UNRESOLVED_ROW_GRACE_DAYS:
-                    logger.warning(
-                        f"Home config: dropping row '{name}' — unresolvable since {since} "
-                        f"({reason})"
-                    )
+                    # Decided after the safety check below
+                    aged_out.append((r, name, since, reason))
+                    rows.append(r)
                     continue
                 r["unresolved_since"] = since
                 r.setdefault("type", "playlist")
@@ -981,14 +988,24 @@ def write_home_config(db: Session, user_id: int = None) -> dict:
         # Safety check: if we'd drop more than half the playlist rows, something
         # is wrong. Compare like with like — built-in rows are never dropped, so
         # counting them in made this guard far weaker than it reads.
+        #
+        # When it fires, keep the aged rows but still write every other change
+        # (remaps, sort info, hero). Returning the old config here froze the file
+        # permanently: aged rows only get older, so the condition held on every run.
+        aged_ids = {id(r) for r, *_ in aged_out}
         existing_playlist_rows = [r for r in existing_rows if r.get("type") != "builtin"]
-        kept_playlist_rows = [r for r in rows if r.get("type") != "builtin"]
-        if existing_playlist_rows and len(kept_playlist_rows) < len(existing_playlist_rows) / 2:
+        kept_playlist_rows = [r for r in rows if r.get("type") != "builtin" and id(r) not in aged_ids]
+        if aged_out and existing_playlist_rows and len(kept_playlist_rows) < len(existing_playlist_rows) / 2:
             logger.warning(
                 f"Home config safety: would drop from {len(existing_playlist_rows)} to "
-                f"{len(kept_playlist_rows)} playlist rows — keeping existing config to prevent data loss"
+                f"{len(kept_playlist_rows)} playlist rows — keeping the unresolvable rows "
+                f"{[n for _, n, _, _ in aged_out]} to prevent data loss "
+                f"(remove them from the Home Screen page if intended)"
             )
-            return existing_config
+        else:
+            for r, name, since, reason in aged_out:
+                logger.warning(f"Home config: dropping row '{name}' — unresolvable since {since} ({reason})")
+            rows = [r for r in rows if id(r) not in aged_ids]
 
         # No auto-bootstrap: users add rows manually via the Home Screen page.
 
