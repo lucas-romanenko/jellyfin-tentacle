@@ -135,8 +135,9 @@ class TestTransientProviderErrors(unittest.IsolatedAsyncioTestCase):
         refreshes.append(_resp(200, BASE, recovered.encode(), PLAYLIST_CT))
         refreshes.append(_resp(200, BASE, done.encode(), PLAYLIST_CT))
         return {
-            # Phase 1 redirect-follow and phase 2 probe both read this URL, then
-            # the worker re-reads it on every refresh.
+            # The open reads this URL once and the worker re-reads it on every
+            # refresh. (The open used to read it twice; the spare copy is now
+            # simply consumed as a reload that has nothing new in it.)
             BASE: [
                 _resp(200, BASE, first.encode(), PLAYLIST_CT),
                 _resp(200, BASE, first.encode(), PLAYLIST_CT),
