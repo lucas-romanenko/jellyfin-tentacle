@@ -392,6 +392,10 @@ def _get_missing_from_lists(db: Session, known_ids: dict, type_filter: str, user
             continue
         if not item.poster_path:
             continue
+        # Jellyfin is the authority here too (issue #5): an owned title that
+        # Tentacle's tables never recorded is not "missing".
+        if _is_in_library({"tmdb_id": item.tmdb_id, "media_type": mt}, known_ids):
+            continue
         seen.add(item.tmdb_id)
         # Clean pre-fix rows (HTML entities + baked-in year) at serving time
         clean_name, clean_year = clean_list_title(item.title, item.year)
