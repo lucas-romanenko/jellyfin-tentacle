@@ -24,6 +24,15 @@ public class LibraryDeleteHandler : IHostedService, IDisposable
     /// <summary>Upper bound on in-flight DELETE notifications to the backend.</summary>
     private const int MaxConcurrentNotifications = 4;
 
+    // One gate for the handler, not one per batch: a second batch starting while
+    // the first is still draining (a slow backend, a long bulk delete) must share
+    // the same four slots rather than bring four more.
+    private readonly SemaphoreSlim _gate = new SemaphoreSlim(MaxConcurrentNotifications, MaxConcurrentNotifications);
+
+    // Batches still running, so StopAsync can wait for them before Dispose()
+    // takes the HttpClient away from under them.
+    private readonly HashSet<Task> _runningBatches = new();
+
     public LibraryDeleteHandler(
         ILibraryManager libraryManager,
         ILogger<LibraryDeleteHandler> logger)
@@ -40,13 +49,30 @@ public class LibraryDeleteHandler : IHostedService, IDisposable
         return Task.CompletedTask;
     }
 
-    public Task StopAsync(CancellationToken cancellationToken)
+    public async Task StopAsync(CancellationToken cancellationToken)
     {
         _libraryManager.ItemRemoved -= OnItemRemoved;
         _debounceTimer?.Change(Timeout.Infinite, 0);
         ProcessPendingDeletes();
+
+        Task[] running;
+        lock (_lock)
+        {
+            running = _runningBatches.ToArray();
+        }
+
+        try
+        {
+            // Bounded by the host's shutdown token; each request is bounded by the
+            // client's own timeout.
+            await Task.WhenAll(running).WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogWarning("[Tentacle] Shutdown did not wait for {Count} deletion batch(es) to finish", running.Length);
+        }
+
         _logger.LogInformation("[Tentacle] LibraryDeleteHandler stopped");
-        return Task.CompletedTask;
     }
 
     private void OnItemRemoved(object? sender, ItemChangeEventArgs e)
@@ -121,12 +147,26 @@ public class LibraryDeleteHandler : IHostedService, IDisposable
         // simultaneous DELETEs at the backend; they all queued behind the connection
         // limit, all hit the 10 s client timeout, and each logged an ERROR with a full
         // stack trace — tens of thousands of log lines from a single event.
-        _ = Task.Run(() => ProcessBatchAsync(batch, tentacleUrl));
+        var run = Task.Run(() => ProcessBatchAsync(batch, tentacleUrl));
+        lock (_lock)
+        {
+            _runningBatches.Add(run);
+        }
+
+        _ = run.ContinueWith(
+            t =>
+            {
+                lock (_lock)
+                {
+                    _runningBatches.Remove(t);
+                }
+            },
+            TaskScheduler.Default);
     }
 
     private async Task ProcessBatchAsync(List<(string mediaType, string tmdbId)> batch, string tentacleUrl)
     {
-        using var gate = new SemaphoreSlim(MaxConcurrentNotifications, MaxConcurrentNotifications);
+        var gate = _gate;
         var failures = 0;
         Exception? firstFailure = null;
         var succeeded = 0;
@@ -183,5 +223,6 @@ public class LibraryDeleteHandler : IHostedService, IDisposable
     {
         _debounceTimer?.Dispose();
         _httpClient.Dispose();
+        _gate.Dispose();
     }
 }
