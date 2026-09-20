@@ -5,6 +5,7 @@ Unified view of movies and series
 
 import threading
 import logging
+import re
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -22,6 +23,19 @@ from services.tmdb import TMDBService
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/library", tags=["library"])
+
+# Jellyfin item ids are GUIDs, with or without dashes. Anything else must be
+# refused before it reaches a request URL: `requests` resolves dot-segments
+# client-side, so an id of "../Users/<guid>" turns
+# DELETE {jellyfin_url}/Items/{id} into DELETE {jellyfin_url}/Users/<guid> —
+# sent with the stored Jellyfin *admin* API key.
+_JELLYFIN_ID_RE = re.compile(r"\A[0-9a-fA-F]{32}\Z|\A[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\Z")
+
+
+def _validate_jellyfin_item_id(item_id: str) -> str:
+    if not _JELLYFIN_ID_RE.match(item_id or ""):
+        raise HTTPException(400, "Invalid Jellyfin item id")
+    return item_id
 
 
 @router.get("/stream")
@@ -483,7 +497,7 @@ def delete_download(
     from services.jellyfin import JellyfinService
     jf_url = get_setting(db, "jellyfin_url", "")
     jf_key = get_setting(db, "jellyfin_api_key", "")
-    jf_item_id = jellyfin_item_id
+    jf_item_id = _validate_jellyfin_item_id(jellyfin_item_id) if jellyfin_item_id else None
     jf = None
     if jf_url and jf_key:
         jf = JellyfinService(jf_url, jf_key, user.jellyfin_user_id)
