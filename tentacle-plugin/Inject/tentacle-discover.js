@@ -171,6 +171,19 @@
       contentType: 'application/json',
       data: JSON.stringify(body),
       headers: { accept: 'application/json' }
+    }).catch(function (err) {
+      // ApiClient.fetch rejects a non-2xx with the raw Response, which has no
+      // .message, so every caller showed "Error: Failed". Surface the
+      // server's/plugin's `detail` (or at least the HTTP status) instead.
+      if (err && typeof err.json === 'function') {
+        var status = err.status;
+        return err.json().catch(function () { return null; }).then(function (b) {
+          var e = new Error((b && b.detail) || ('Request failed (HTTP ' + status + ')'));
+          e.status = status;
+          throw e;
+        });
+      }
+      throw (err instanceof Error) ? err : new Error('Could not reach the server');
     });
   }
 
