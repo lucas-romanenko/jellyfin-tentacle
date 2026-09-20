@@ -248,9 +248,21 @@ class SonarrService:
             self.last_error = f"Unexpected error talking to Sonarr: {e}"
             return None
 
+        if isinstance(getattr(r, "history", None), list) and r.history:
+            # See arr_add.add_movie_to_radarr: a redirected POST is re-sent as a
+            # GET, so a 2xx here is not Sonarr adding anything.
+            hop = r.history[0]
+            where = hop.headers.get("Location", "?")
+            logger.error(f"Sonarr add tmdb:{tmdb_id} was redirected ({hop.status_code} -> {where}) — nothing was added")
+            self.last_error = (f"Sonarr's address redirects ({hop.status_code} to {where}), so the add never "
+                               f"reached Sonarr. Put the final address in Settings → Integrations.")
+            return None
+
         if r.status_code < 400:
             try:
                 series_data = r.json()
+                if not isinstance(series_data, dict):
+                    raise ValueError("not a series object")
             except ValueError:
                 # A 2xx carrying a non-JSON body (a reverse proxy's HTML page,
                 # say). Raising here surfaced as a 500 from the handler; report

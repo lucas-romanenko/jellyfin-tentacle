@@ -206,7 +206,29 @@ def add_movie_to_radarr(radarr_url: str, radarr_key: str, tmdb_id: int,
         logger.error(f"Failed to add tmdb:{tmdb_id} to Radarr: {e}")
         return FAILED, "Could not reach Radarr. Check it is running and the URL in Settings → Integrations."
 
+    if isinstance(getattr(r, "history", None), list) and r.history:
+        # requests re-sends a POST answered with 301/302/303 as a GET of the
+        # Location. Radarr's API never redirects, so a redirect means a proxy
+        # (http -> https, a canonical host, an SSO login) answered instead, and
+        # whatever came back — even 200 JSON, the movie LIST — is not an add.
+        hop = r.history[0]
+        where = hop.headers.get("Location", "?")
+        logger.error(f"Radarr add tmdb:{tmdb_id} was redirected ({hop.status_code} -> {where}) — nothing was added")
+        return FAILED, (f"Radarr's address redirects ({hop.status_code} to {where}), so the add never "
+                        f"reached Radarr. Put the final address in Settings → Integrations.")
+
     if r.status_code < 400:
+        try:
+            data = r.json()
+            if not isinstance(data, dict):
+                raise ValueError("not a movie object")
+        except ValueError:
+            # A 2xx that is not Radarr's JSON (a reverse proxy's or SSO login
+            # page, reached because requests follows a redirect on POST) means
+            # the add never reached Radarr — same handling as Sonarr's add path.
+            logger.error(f"Radarr returned a non-JSON {r.status_code} for tmdb:{tmdb_id}: {r.text[:200]}")
+            return FAILED, ("Radarr returned a response Tentacle could not read. "
+                            "Check whether a proxy sits in front of it.")
         return ADDED, None
     if already_exists_in_body(r.text):
         return EXISTS, None
