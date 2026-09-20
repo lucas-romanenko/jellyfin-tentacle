@@ -238,13 +238,23 @@ def sync_one(body: dict, db: Session = Depends(get_db), user: TentacleUser = Dep
 # (Cloudflare tunnel / Nginx) even though the work succeeded. We run it in a
 # daemon thread with its own DB session and expose progress via /sync-status.
 _resync_lock = threading.Lock()
-_resync_state = {
-    "running": False,
-    "started_at": None,
-    "finished_at": None,
-    "summary": None,
-    "error": None,
-}
+# Per user: a resync rebuilds one user's playlists, so one user's run must
+# neither block another's nor be reported to them as their own.
+_resync_states: dict = {}
+
+
+def _resync_state_for(user_id: int) -> dict:
+    """Caller holds _resync_lock."""
+    return _resync_states.setdefault(user_id, {
+        "running": False, "started_at": None, "finished_at": None,
+        "summary": None, "error": None,
+    })
+
+
+def _finish_resync(user_id: int, summary: dict = None, error: str = None) -> None:
+    with _resync_lock:
+        _resync_state_for(user_id).update(
+            running=False, finished_at=time.time(), summary=summary, error=error)
 
 
 def _run_full_resync(user_id: int):
@@ -311,12 +321,10 @@ def _run_full_resync(user_id: int):
         if counts:
             detail = ", ".join(f"{n}={c}" for n, c in sorted(counts.items()))
             logger.info(f"[Resync] Playlist item counts: {detail}")
-        with _resync_lock:
-            _resync_state.update(running=False, finished_at=time.time(), summary=summary, error=None)
+        _finish_resync(user_id, summary=summary)
     except Exception as e:
         logger.error(f"[Resync] Full playlist resync failed: {e}", exc_info=True)
-        with _resync_lock:
-            _resync_state.update(running=False, finished_at=time.time(), error=str(e))
+        _finish_resync(user_id, error=str(e))
     finally:
         db.close()
 
@@ -326,7 +334,7 @@ def sync_status(user: TentacleUser = Depends(get_user_from_request)):
     """Report whether a full resync is running plus the last completion summary.
     Polled by the dashboard after triggering Resync All."""
     with _resync_lock:
-        return dict(_resync_state)
+        return dict(_resync_state_for(user.id))
 
 
 @router.post("/sync")
@@ -339,9 +347,10 @@ def sync(body: dict = None, db: Session = Depends(get_db), user: TentacleUser = 
     if full:
         # Heavy full rebuild — hand off to a background thread and return now.
         with _resync_lock:
-            if _resync_state["running"]:
-                return {"status": "already_running", "started_at": _resync_state["started_at"]}
-            _resync_state.update(
+            state = _resync_state_for(user.id)
+            if state["running"]:
+                return {"status": "already_running", "started_at": state["started_at"]}
+            state.update(
                 running=True, started_at=time.time(),
                 finished_at=None, summary=None, error=None,
             )
