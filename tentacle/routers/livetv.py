@@ -2040,11 +2040,97 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
         raw_client, raw_resp = client, resp
 
         async def stream_generator():
+            # A raw stream is one long GET, so the HLS worker's resilience (#86)
+            # never reached it: when the provider dropped the connection the
+            # stream simply ended, and Jellyfin cut the recording there and
+            # started a new file. Reconnect instead -- from the CHANNEL url, since
+            # a tokenized URL is often good for one connection only -- on the
+            # same terms as the HLS worker: a growing delay, and give up only
+            # after an unbroken run of failure. A connection has to last a while
+            # to count as a recovery, or a provider that serves a few bytes and
+            # hangs up would be re-dialled once a second for ever.
+            nonlocal raw_resp
+            FAILURE_BUDGET = 120.0
+            HEALTHY_AFTER = 10.0
+            backoff = 1.0
+            failing_since = None
+            slept = 0.0          # the bound must hold even if the clock stands still
+            ua = {"User-Agent": user_agent}
+            # MPEG-TS is 188-byte packets. Only whole packets go downstream, so
+            # the tail of a packet cut off by a drop never reaches the recording
+            # in front of the fresh connection's first sync byte.
+            align = "mp2t" in upstream_ct.lower()
+            first = True
             try:
-                async for chunk in raw_resp.aiter_bytes(chunk_size=131072):
-                    yield chunk
-            except Exception as e:
-                logger.warning(f"[LiveTV] Stream interrupted for channel {channel_id}: {e}")
+                while True:
+                    opened_at = loop.time()
+                    reason = "the provider closed the stream"
+                    # Batch into ~128 KB pieces ourselves. aiter_bytes(chunk_size=)
+                    # does the same, but keeps its partial batch to itself when the
+                    # connection breaks -- the last fraction of a second before
+                    # every drop would be lost on top of the drop.
+                    pending = b""
+                    try:
+                        async for piece in raw_resp.aiter_bytes():
+                            if first:
+                                first = False
+                                align = align and piece[:1] == b"G"
+                            if failing_since is not None and loop.time() - opened_at >= HEALTHY_AFTER:
+                                failing_since, slept, backoff = None, 0.0, 1.0
+                            pending += piece
+                            if len(pending) >= 131072:
+                                cut = len(pending) - (len(pending) % 188) if align else len(pending)
+                                out, pending = pending[:cut], pending[cut:]
+                                yield out
+                    except httpx.HTTPError as e:
+                        reason = str(e) or type(e).__name__
+                    # What arrived before the stream stopped still goes out -- whole
+                    # packets only; the tail of a cut packet is unusable.
+                    cut = len(pending) - (len(pending) % 188) if align else len(pending)
+                    if cut:
+                        yield pending[:cut]
+                    if loop.time() - opened_at >= HEALTHY_AFTER:
+                        failing_since, slept, backoff = None, 0.0, 1.0
+                    await raw_resp.aclose()
+
+                    # Re-open, waiting out refusals, until it works or the budget is spent.
+                    while True:
+                        now = loop.time()
+                        if failing_since is None:
+                            failing_since = now
+                        waited = max(now - failing_since, slept)
+                        if waited + backoff > FAILURE_BUDGET:
+                            logger.error(f"[LiveTV] Raw stream for channel {channel_id} could not be "
+                                         f"re-established after {waited:.0f}s, stopping: {reason}")
+                            return
+                        logger.warning(f"[LiveTV] Raw stream for channel {channel_id} dropped "
+                                       f"(reconnect in {backoff:.0f}s, {waited:.0f}s so far): {reason}")
+                        delay = backoff * (0.8 + random.random() * 0.4)
+                        slept += delay
+                        await asyncio.sleep(delay)
+                        backoff = min(backoff * 2, 5.0)
+                        new_resp = None
+                        try:
+                            new_resp = await _send_checked(raw_client, stream_url, ua, guard)
+                            new_resp.raise_for_status()
+                            if "mpegurl" in new_resp.headers.get("content-type", "").lower():
+                                raise httpx.HTTPError("the channel now answers with a playlist")
+                        except HTTPException as e:
+                            logger.error(f"[LiveTV] Raw stream for channel {channel_id} cannot be "
+                                         f"re-opened, stopping: {e.detail}")
+                            return
+                        except httpx.HTTPError as e:
+                            if new_resp is not None:
+                                await new_resp.aclose()
+                            status = e.response.status_code if isinstance(e, httpx.HTTPStatusError) else None
+                            if isinstance(e, httpx.TransportError) or status in _OPEN_RETRYABLE_STATUS:
+                                reason = str(e) or type(e).__name__
+                                continue
+                            logger.error(f"[LiveTV] Raw stream for channel {channel_id} cannot be "
+                                         f"re-opened, stopping: {e}")
+                            return
+                        raw_resp = new_resp
+                        break
             finally:
                 await raw_resp.aclose()
                 await raw_client.aclose()

@@ -94,16 +94,28 @@ def _redirect():
     return _resp(302, PANEL, headers={"location": TOKENIZED})
 
 
+def _gone():
+    """What the panel says to a re-open. A raw stream that ends is re-dialled
+    (see test_livetv_raw_reconnect.py); these tests are about the OPEN, so the
+    scripted channel ends for good once its body has been read."""
+    return _resp(404, PANEL)
+
+
+def _at_open(log):
+    """The requests made to open the stream: everything before the re-dial."""
+    return log[:-1] if log and log[-1] == PANEL and log.count(PANEL) > 1 else log
+
+
 class TestOpenFetchesOnce(unittest.IsolatedAsyncioTestCase):
     async def test_raw_ts_channel_is_opened_with_one_get(self):
         script = {
-            PANEL: [_redirect()],
+            PANEL: [_redirect(), _gone()],
             TOKENIZED: [_resp(200, TOKENIZED, b"TSDATA", {"content-type": "video/mp2t"})],
         }
         response, body, log, made, closed = await _open(script)
         self.assertEqual(body, b"TSDATA")
         self.assertEqual(response.media_type, "video/mp2t")
-        hits = Counter(log)
+        hits = Counter(_at_open(log))
         self.assertEqual(hits[TOKENIZED], 1,
                          f"the tokenized URL was fetched {hits[TOKENIZED]}x to open one "
                          f"raw-TS stream; each GET is a provider connection: {log}")
@@ -112,7 +124,7 @@ class TestOpenFetchesOnce(unittest.IsolatedAsyncioTestCase):
     async def test_raw_ts_upstream_is_closed_when_the_stream_ends(self):
         """Handing the open response to the generator must not leak it."""
         script = {
-            PANEL: [_redirect()],
+            PANEL: [_redirect(), _gone()],
             TOKENIZED: [_resp(200, TOKENIZED, b"TSDATA", {"content-type": "video/mp2t"})],
         }
         _, _, _, made, closed = await _open(script)
@@ -198,14 +210,14 @@ class TestOpenFetchesOnce(unittest.IsolatedAsyncioTestCase):
         """#86's open retry must survive, and must not re-walk the redirect chain
         (one more provider request per attempt) to do it."""
         script = {
-            PANEL: [_redirect()],
+            PANEL: [_redirect(), _gone()],
             TOKENIZED: [_resp(509, TOKENIZED),
                         _resp(509, TOKENIZED),
                         _resp(200, TOKENIZED, b"TSDATA", {"content-type": "video/mp2t"})],
         }
         _, body, log, _, _ = await _open(script)
         self.assertEqual(body, b"TSDATA")
-        hits = Counter(log)
+        hits = Counter(_at_open(log))
         self.assertEqual(hits[TOKENIZED], 3, log)
         self.assertEqual(hits[PANEL], 1,
                          f"each retry re-walked the redirect chain: {log}")
