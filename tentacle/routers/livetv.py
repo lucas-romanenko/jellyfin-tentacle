@@ -116,6 +116,112 @@ def _get_stream_semaphore() -> "asyncio.Semaphore":
     return _stream_semaphore
 
 
+# One upstream pull per channel, fanned out to every client watching it.
+#
+# An IPTV account caps simultaneous connections (Xtream's max_connections;
+# commonly 1 or 2). Jellyfin opens a separate tuner stream per recording and
+# per viewer, so recording a channel while watching that same channel used to
+# spend the allowance twice on byte-identical data -- and the provider answers
+# 509, which is what truncates recordings. Identical requests are now served
+# from a single upstream pull.
+#
+# Only the SAME channel shares. Different channels genuinely need their own
+# upstream connection, so an account with max_connections=1 still cannot record
+# two different channels at once; that needs either a bigger allowance or a
+# local re-streamer (#76).
+_shared_streams: "dict[int, _SharedUpstream] = {}"
+_shared_streams = {}
+_shared_lock: "asyncio.Lock | None" = None
+
+# Segments of slack before a client is considered too slow. HLS segments are
+# usually 6s, so this is minutes of buffer -- a consumer further behind than
+# this is broken, and must not be allowed to stall the upstream or its peers.
+_SUBSCRIBER_QUEUE_MAX = 32
+
+
+def _get_shared_lock() -> "asyncio.Lock":
+    global _shared_lock
+    if _shared_lock is None:
+        _shared_lock = asyncio.Lock()
+    return _shared_lock
+
+
+class _SharedUpstream:
+    """A single upstream stream for one channel, with N subscribers."""
+
+    def __init__(self, channel_id: int, release_sem):
+        self.channel_id = channel_id
+        self.subscribers: set = set()
+        self.task = None
+        self._release_sem = release_sem
+        self._closed = False
+
+    def subscribe(self) -> "asyncio.Queue":
+        q = asyncio.Queue(maxsize=_SUBSCRIBER_QUEUE_MAX)
+        self.subscribers.add(q)
+        return q
+
+    def _publish(self, item):
+        for q in list(self.subscribers):
+            try:
+                q.put_nowait(item)
+            except asyncio.QueueFull:
+                # Drop this client's oldest segment rather than stalling the
+                # upstream (and therefore every other client on the channel).
+                try:
+                    q.get_nowait()
+                    q.put_nowait(item)
+                    logger.warning(
+                        f"[LiveTV] Client on channel {self.channel_id} is behind — "
+                        f"dropped a segment for it")
+                except (asyncio.QueueEmpty, asyncio.QueueFull):
+                    pass
+
+    async def _pump(self, body_iterator):
+        try:
+            async for piece in body_iterator:
+                self._publish(piece)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"[LiveTV] Shared upstream for channel {self.channel_id} failed: {e}")
+        finally:
+            self._publish(None)   # EOF sentinel for every subscriber
+            await self._retire()
+
+    async def _retire(self):
+        if self._closed:
+            return
+        self._closed = True
+        async with _get_shared_lock():
+            if _shared_streams.get(self.channel_id) is self:
+                del _shared_streams[self.channel_id]
+        self._release_sem()
+        logger.info(f"[LiveTV] Shared upstream for channel {self.channel_id} ended")
+
+    async def unsubscribe(self, q):
+        self.subscribers.discard(q)
+        if not self.subscribers and not self._closed:
+            # Nobody left watching: stop paying the provider for it.
+            logger.info(f"[LiveTV] Last client left channel {self.channel_id} — "
+                        f"closing the upstream")
+            await self._retire()
+            if self.task is not None:
+                self.task.cancel()
+
+
+async def _subscriber_body(shared: "_SharedUpstream", q):
+    """Per-client view of a shared upstream."""
+    try:
+        while True:
+            piece = await q.get()
+            if piece is None:
+                return
+            yield piece
+    finally:
+        await shared.unsubscribe(q)
+
+
 # ─── Background sync tracking ────────────────────────────────────────────────
 
 _sync_status: dict[int, dict] = {}  # provider_id → {phase, progress, message, ...}
@@ -1624,6 +1730,26 @@ async def stream_proxy(channel_id: int, db: Session = Depends(get_db)):
       2. Proxy the HLS stream as continuous MPEG-TS bytes (fetch m3u8,
          download chunks, pipe raw bytes).
     """
+    # Already pulling this channel? Attach to it instead of opening a second
+    # upstream connection for byte-identical data (recording + watching the
+    # same channel is the common case). Costs the provider nothing and needs
+    # no concurrency slot of its own.
+    async with _get_shared_lock():
+        shared = _shared_streams.get(channel_id)
+        if shared is not None and not shared._closed:
+            q = shared.subscribe()
+            logger.info(f"[LiveTV] Channel {channel_id} already streaming — "
+                        f"attaching client ({len(shared.subscribers)} now)")
+            return StreamingResponse(
+                _subscriber_body(shared, q),
+                media_type="video/mp2t",
+                headers={
+                    "Connection": "close",
+                    "Cache-Control": "no-cache, no-store",
+                    "Access-Control-Allow-Origin": "*",
+                },
+            )
+
     # Cap concurrent streams. If we're at capacity, bail with 503 instead of
     # opening yet another upstream connection (which could exhaust the provider).
     sem = _get_stream_semaphore()
@@ -1662,7 +1788,30 @@ async def stream_proxy(channel_id: int, db: Session = Depends(get_db)):
             logger.warning(f"[LiveTV] Blocked stream URL (non-public host) for channel {channel_id}: {stream_url}")
             raise HTTPException(502, "Stream URL points to a non-public host")
 
-        return await _stream_proxy_inner(channel_id, user_agent, stream_url, _release_sem, guard)
+        upstream = await _stream_proxy_inner(channel_id, user_agent, stream_url,
+                                             _release_sem, guard)
+        if not isinstance(upstream, StreamingResponse):
+            # A raw-TS channel is answered with a redirect; Jellyfin then talks
+            # to the provider directly and there is nothing here to share.
+            return upstream
+
+        # Become the shared upstream for this channel, so any further client
+        # attaches above instead of opening its own provider connection. The
+        # concurrency slot is now owned by the shared pump, not by this client.
+        shared = _SharedUpstream(channel_id, _release_sem)
+        q = shared.subscribe()
+        async with _get_shared_lock():
+            _shared_streams[channel_id] = shared
+        shared.task = asyncio.create_task(shared._pump(upstream.body_iterator))
+        return StreamingResponse(
+            _subscriber_body(shared, q),
+            media_type="video/mp2t",
+            headers={
+                "Connection": "close",
+                "Cache-Control": "no-cache, no-store",
+                "Access-Control-Allow-Origin": "*",
+            },
+        )
     except BaseException:
         _release_sem()
         raise
