@@ -295,7 +295,10 @@
       cardEl.remove();
       // Update section count / remove empty sections
       if (grid && section) {
-        var left = grid.querySelectorAll('.tfav-card').length;
+        // Live TV favorites render as .tltv-card, not .tfav-card. Counting only
+        // .tfav-card made every Live TV grid look empty after one unfavorite, so
+        // the whole Live TV section disappeared.
+        var left = grid.querySelectorAll('.tfav-card, .tltv-card').length;
         if (left === 0) section.remove();
         else {
           var count = section.querySelector('.tfav-section-count');
