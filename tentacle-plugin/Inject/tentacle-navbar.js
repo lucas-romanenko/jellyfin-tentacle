@@ -8,23 +8,20 @@
     // Jellyfin's "TV" layout (Display → Layout) renders a completely
     // different DOM than desktop/mobile — the Tentacle injections (navbar,
     // home, search, overlays) target the standard DOM and would break under
-    // it. The layout setting is stored per-device (localStorage), so the
-    // server can't enforce it — but we load on every page, so we can:
-    // detect the TV layout, reset it to Desktop once, and reload.
-    // sessionStorage-guarded so a failed reset can never cause a reload loop.
+    // it. We used to rewrite localStorage.layout to 'desktop' and reload.
+    // That destroyed a deliberate per-device choice — localStorage is permanent,
+    // so the setting did not come back when the plugin was disabled — and the
+    // loop guard lived in sessionStorage, so it happened again in every new tab,
+    // window and session. Stand aside instead: native Jellyfin renders the page,
+    // exactly as it does when the backend is unavailable.
     (function layoutGuard() {
         try {
             var check = function () {
                 var html = document.documentElement;
                 if (!html || !html.classList.contains('layout-tv')) return;
-                if (sessionStorage.getItem('tentacleLayoutGuard')) {
-                    console.warn('[Tentacle] TV layout is active and could not be reset — Tentacle UI may not render correctly. Set Settings → Display → Layout to Desktop or Auto.');
-                    return;
-                }
-                sessionStorage.setItem('tentacleLayoutGuard', '1');
-                console.warn('[Tentacle] TV layout detected — switching to Desktop layout for Tentacle compatibility.');
-                try { localStorage.setItem('layout', 'desktop'); } catch (e) { }
-                location.reload();
+                window.TentacleDisabled = true;
+                if (document.body) document.body.classList.remove('tentacle-home-active');
+                console.info('[Tentacle] TV layout active — Tentacle UI disabled for this device.');
             };
             // Layout classes are applied during app boot — check after it settles
             setTimeout(check, 1500);
