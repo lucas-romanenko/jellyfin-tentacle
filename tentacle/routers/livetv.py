@@ -456,28 +456,46 @@ def _sync_groups_from_xtream(provider_data: dict, db: Session) -> dict:
         categories = client.get_live_categories()
         logger.info(f"[LiveTV] {provider_name}: {len(categories)} categories fetched")
 
-        # Count channels per category (single API call)
+        # Count channels per category (single API call). This is the ONE
+        # unbatched get_live_streams() call in the codebase and the client's
+        # own docstring warns it "frequently times out"; when it fails we must
+        # keep the stored counts rather than reporting every group as empty.
         _set_sync_status(provider_id, {"phase": "running", "progress": 50, "message": "Counting channels..."})
         channel_counts = {}
+        counts_ok = False
         try:
             all_streams = client.get_live_streams()
             if isinstance(all_streams, list):
                 for s in all_streams:
                     cid = str(s.get("category_id", ""))
                     channel_counts[cid] = channel_counts.get(cid, 0) + 1
+                counts_ok = True
         except Exception as e:
             logger.warning(f"[LiveTV] Failed to count channels for {provider_name}: {e}")
+        if not counts_ok:
+            logger.warning(
+                f"[LiveTV] {provider_name}: channel counts unavailable this run — "
+                f"keeping the stored per-group counts"
+            )
 
         _set_sync_status(provider_id, {"phase": "running", "progress": 70, "message": f"Saving {len(categories)} groups..."})
-        _sync_groups(provider_id, categories, db, channel_counts)
+        _sync_groups(provider_id, categories, db, channel_counts if counts_ok else None)
         db.commit()
 
         total_channels = sum(channel_counts.values())
-        log_activity(db, "livetv_sync", f"Live TV group sync for {provider_name}: {len(categories)} groups, {total_channels} channels")
-        return {"groups": len(categories), "message": f"{len(categories)} groups synced. Enable the groups you want, then sync channels."}
+        count_note = "" if counts_ok else " (channel counts unavailable — kept previous)"
+        log_activity(db, "livetv_sync", f"Live TV group sync for {provider_name}: {len(categories)} groups, {total_channels} channels{count_note}")
+        result = {"groups": len(categories), "message": f"{len(categories)} groups synced. Enable the groups you want, then sync channels."}
+        # This function is also called directly by the nightly discovery step,
+        # which has no _run_group_sync_background wrapper to write a terminal
+        # status. Leaving phase="running" makes every later sync request answer
+        # "Sync already in progress" for the lifetime of the process.
+        _set_sync_status(provider_id, {"phase": "complete", "progress": 100, **result})
+        return result
 
     except Exception as e:
         logger.error(f"[LiveTV] Group sync failed for {provider_name}: {e}", exc_info=True)
+        _set_sync_status(provider_id, {"phase": "error", "progress": 0, "message": str(e)})
         raise
     finally:
         client.close()
@@ -607,7 +625,13 @@ def _sync_from_m3u_file(provider_data: dict, db: Session) -> dict:
 
 
 def _sync_groups(provider_id: int, categories: list[dict], db: Session, channel_counts: dict = None):
-    """Upsert LiveChannelGroup records from Xtream categories."""
+    """Upsert LiveChannelGroup records from Xtream categories.
+
+    channel_counts=None means the provider's per-category channel counts could
+    not be fetched this run — keep whatever is stored instead of overwriting
+    every group with 0.
+    """
+    update_counts = channel_counts is not None
     if channel_counts is None:
         channel_counts = {}
     existing = {
@@ -621,7 +645,8 @@ def _sync_groups(provider_id: int, categories: list[dict], db: Session, channel_
         count = channel_counts.get(cat_id, 0)
         if name in existing:
             existing[name].category_id = cat_id
-            existing[name].channel_count = count
+            if update_counts:
+                existing[name].channel_count = count
         else:
             db.add(LiveChannelGroup(
                 provider_id=provider_id,
