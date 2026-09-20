@@ -472,6 +472,8 @@ def setup_scheduler(db):
     logger.info(f"YouTube channel indexing scheduled: every {max(15, yt_interval)} min")
 
 logging.basicConfig(level=logging.INFO)
+from services.log_redaction import install as _install_log_redaction
+_install_log_redaction()
 logger = logging.getLogger(__name__)
 
 
