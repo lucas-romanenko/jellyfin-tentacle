@@ -1997,6 +1997,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
         FAILURE_BUDGET = 120.0   # seconds of unbroken failure before giving up
         BACKOFF_START = 1.0
         BACKOFF_CAP = 5.0        # short: the tuner reader is waiting on us
+        CHUNK_RETRIES_IN_PLACE = 3
         failing_since = None
         backoff = BACKOFF_START
 
@@ -2110,15 +2111,31 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 for chunk_url in chunk_urls:
                     if chunk_url in seen_chunks:
                         continue
-                    try:
-                        chunk_resp = await _send_checked(hls_client, chunk_url, ua_headers, guard)
+                    # A live playlist is a short sliding window. Going back to it
+                    # after a refused chunk costs the backoff, the regular
+                    # half-segment wait AND a playlist refresh that can be refused
+                    # too -- long enough for the chunk to roll out of the window
+                    # and leave a hole. Its URL is still good, so try it again in
+                    # place a few times first.
+                    payload = None
+                    for attempt in range(CHUNK_RETRIES_IN_PLACE + 1):
                         try:
-                            chunk_resp.raise_for_status()
-                            payload = await chunk_resp.aread()
-                        finally:
-                            await chunk_resp.aclose()
-                    except Exception as e:
-                        if _note_failure(e, "Chunk fetch"):
+                            chunk_resp = await _send_checked(hls_client, chunk_url, ua_headers, guard)
+                            try:
+                                chunk_resp.raise_for_status()
+                                payload = await chunk_resp.aread()
+                            finally:
+                                await chunk_resp.aclose()
+                            break
+                        except Exception as e:
+                            chunk_error = e
+                            if attempt == CHUNK_RETRIES_IN_PLACE or not _is_retryable(e):
+                                break
+                            if _note_failure(e, "Chunk fetch"):
+                                return
+                            await _backoff_sleep()
+                    if payload is None:
+                        if _note_failure(chunk_error, "Chunk fetch"):
                             return
                         # Deliberately NOT marked seen: a chunk lost to a
                         # transient error is still in the next playlist, and
