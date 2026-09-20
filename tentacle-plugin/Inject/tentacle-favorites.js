@@ -86,14 +86,29 @@
     ensureContainer();
 
     var uid = window.ApiClient.getCurrentUserId();
-    var fetches = SECTIONS.map(function (sec) {
+    // Page through the whole section. A single Limit=200 request silently showed
+    // the first 200 favorites of a type under a header that said "200". Stop on
+    // what the server reports (its total, or an empty page) rather than on the
+    // page coming back as long as was asked for.
+    var PAGE = 200;
+    var fetchSection = function (sec, acc) {
       return apiGet(
         'Users/' + uid + '/Items?Filters=IsFavorite&Recursive=true&IncludeItemTypes=' + sec.types +
-        '&SortBy=SortName&SortOrder=Ascending&Limit=200' +
+        '&SortBy=SortName&SortOrder=Ascending&StartIndex=' + acc.length + '&Limit=' + PAGE +
         '&Fields=PrimaryImageAspectRatio,ProductionYear,SeriesName' +
         '&ImageTypeLimit=1&EnableImageTypes=Primary,Thumb'
       ).then(function (data) {
-        return { section: sec, items: (data && data.Items) || [] };
+        var page = (data && data.Items) || [];
+        var all = acc.concat(page);
+        var total = data && typeof data.TotalRecordCount === 'number' ? data.TotalRecordCount : null;
+        var more = page.length > 0 && (total === null ? page.length >= PAGE : all.length < total);
+        return more ? fetchSection(sec, all) : all;
+      });
+    };
+
+    var fetches = SECTIONS.map(function (sec) {
+      return fetchSection(sec, []).then(function (items) {
+        return { section: sec, items: items };
       }).catch(function () {
         return { section: sec, items: [] };
       });
