@@ -669,6 +669,10 @@ def set_strm_managed(media_type: str, tmdb_id: int, body: StrmManagedBody,
         raise HTTPException(404, f"No {media_type} with tmdb_id {tmdb_id}")
 
     item.strm_disabled = not body.enabled
+    # The VOD sweep skips opted-out titles, so a missing-file mark set before
+    # the opt-out is never cleared by it. Left in place, that stale mark would
+    # count as the first strike on the first sweep after re-enabling.
+    item.file_missing_since = None
     deleted = 0
     if not body.enabled and body.delete_files and item.strm_path:
         # Removes only the .strm/.nfo Tentacle wrote — downloaded episodes in

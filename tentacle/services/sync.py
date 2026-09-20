@@ -434,6 +434,17 @@ def _repair_movie_strm(client, stream: dict, tmdb_id: int, provider: Provider, d
             encoding="utf-8",
         )
         chown_path(strm)
+        # The NFO goes with it when the whole folder was lost (or an opt-out
+        # deleted both) — without it Jellyfin has to guess the match again.
+        nfo = strm.with_suffix(".nfo")
+        if not nfo.exists():
+            write_movie_nfo(nfo, {
+                "tmdb_id": record.tmdb_id, "title": record.title, "year": record.year,
+                "overview": record.overview, "runtime": record.runtime, "rating": record.rating,
+                "genres": record.genres or [], "poster_path": record.poster_path,
+                "backdrop_path": record.backdrop_path,
+            }, record.tags or [])
+            chown_path(nfo)
         record.date_updated = datetime.utcnow()
         logger.info(f"[Sync] Restored missing .strm for existing movie '{record.title}'")
         return True
@@ -468,8 +479,16 @@ def _backfill_series_episodes(
     if not show_dir_str:
         return 0
     show_dir = Path(show_dir_str)
-    if not show_dir.exists():
-        return 0
+    recreate = not show_dir.exists()
+    if recreate:
+        # The whole show folder is gone (failed disk, restore, an opt-out with
+        # "delete files" switched back on). Returning here left the row to the
+        # VOD sweep, which deleted it, and the next sync re-imported the title as
+        # new. Rebuild it instead — but only when the library root is there: a
+        # missing or empty mount point means storage is unavailable.
+        root = show_dir.parent
+        if not root.is_dir() or not any(root.iterdir()):
+            return 0
 
     try:
         series_info = client.get_series_info(series.get("series_id"))
@@ -478,6 +497,18 @@ def _backfill_series_episodes(
             episodes = {"1": episodes}
         if not episodes:
             return 0
+        if recreate:
+            show_dir.mkdir(parents=True, exist_ok=True)
+            chown_path(show_dir)
+            nfo = show_dir / "tvshow.nfo"
+            write_series_nfo(nfo, {
+                "tmdb_id": record.tmdb_id, "title": record.title, "year": record.year,
+                "overview": record.overview, "genres": record.genres or [],
+                "rating": record.rating, "status": record.status,
+                "poster_path": record.poster_path, "backdrop_path": record.backdrop_path,
+            }, record.tags or [])
+            chown_path(nfo)
+            logger.info(f"[Sync] Restored missing folder for existing series '{record.title}'")
         folder_name = show_dir.name
         new_eps = _write_episode_strms(client, episodes, show_dir, folder_name)
         if new_eps:
@@ -1141,6 +1172,8 @@ def _sync_movies(
                 if known_id in existing_provider_tmdb_ids or known_id in seen_tmdb_ids:
                     _merge_source_tag(known_id, "movie", cat.source_tag, provider.id, db)
                     seen_ids_all.add(known_id)
+                    # Existing VOD movie — restore its .strm if it vanished from disk
+                    _repair_movie_strm(client, stream, known_id, provider, db)
                     cat_existing += 1
                     stats["existing"] += 1
                     if item_idx % 10 == 0 or item_idx == total_in_cat:
