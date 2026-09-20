@@ -19,8 +19,11 @@ from models.database import get_setting, TagRule, TentacleUser, DownloadRequest,
 
 logger = logging.getLogger(__name__)
 
-# Prevent concurrent playlist refreshes (webhooks can fire simultaneously)
-_playlist_refresh_lock = threading.Lock()
+# Serialize every mutation of a Jellyfin playlist: full refreshes, the toggle /
+# sync-one fast paths, the webhook add/remove paths and the orphan sweep.
+# Re-entrant because refresh_smartlist_playlists() holds it while calling
+# _process_single_playlist().
+_playlist_refresh_lock = threading.RLock()
 
 # Serialize home-config read-modify-write across the scheduler thread and HTTP
 # handlers so concurrent edits can't lose each other's changes or tear the
@@ -1515,7 +1518,15 @@ def _update_episode_playlist(jf, playlist_id: str, name: str, item_ids: list,
 
 
 def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats: dict, db: Session = None):
-    """Process a single SmartList config: query items, create/update playlist."""
+    """Process a single SmartList config: query items, create/update playlist.
+
+    Holds _playlist_refresh_lock so the toggle / sync-one fast paths can't
+    interleave with a running refresh of the same playlist."""
+    with _playlist_refresh_lock:
+        return _process_single_playlist_locked(jf, folder, config, user_id, stats, db=db)
+
+
+def _process_single_playlist_locked(jf, folder: Path, config: dict, user_id: str, stats: dict, db: Session = None):
     name = config.get("Name", "Unknown")
 
     # Query Jellyfin for matching items
@@ -1741,6 +1752,14 @@ def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats
 
 
 def cleanup_orphaned_playlists(db: Session, user_id: int) -> int:
+    """See _cleanup_orphaned_playlists_locked. Runs under _playlist_refresh_lock so
+    canonical ids are read from disk only after any in-flight create has saved
+    its new id (otherwise that just-created playlist looks like a duplicate)."""
+    with _playlist_refresh_lock:
+        return _cleanup_orphaned_playlists_locked(db, user_id)
+
+
+def _cleanup_orphaned_playlists_locked(db: Session, user_id: int) -> int:
     """Delete Jellyfin playlists that share a name with a Tentacle-managed
     playlist but aren't that config's canonical playlist (duplicates / orphans
     left behind by renames or ID mismatches).
@@ -2123,6 +2142,12 @@ def update_playlist_sort(name: str, sort_by: str, sort_order: str, db, user_id: 
 
 
 def remove_item_from_playlists(db: Session, jellyfin_item_id: str, user_id: int) -> dict:
+    """Runs _remove_item_from_playlists_locked under _playlist_refresh_lock."""
+    with _playlist_refresh_lock:
+        return _remove_item_from_playlists_locked(db, jellyfin_item_id, user_id)
+
+
+def _remove_item_from_playlists_locked(db: Session, jellyfin_item_id: str, user_id: int) -> dict:
     """Remove a specific Jellyfin item from all of a user's playlists.
 
     Much faster than a full refresh — only fetches items for each playlist
@@ -2277,6 +2302,15 @@ def _item_matches_expressions(config: dict, item_tags: set, jf_item: dict = None
 
 def add_item_to_matching_playlists(db: Session, jellyfin_item_id: str, item_tags: list,
                                     media_type: str, jf_item: dict = None) -> dict:
+    """Runs _add_item_to_matching_playlists_locked under _playlist_refresh_lock,
+    so a webhook add can't land in the middle of a refresh's clear + re-add."""
+    with _playlist_refresh_lock:
+        return _add_item_to_matching_playlists_locked(db, jellyfin_item_id, item_tags,
+                                                      media_type, jf_item=jf_item)
+
+
+def _add_item_to_matching_playlists_locked(db: Session, jellyfin_item_id: str, item_tags: list,
+                                           media_type: str, jf_item: dict = None) -> dict:
     """Directly add a Jellyfin item to all matching playlists for all users.
 
     Matches both tag-based AND native (genre/rating/year) expressions against
@@ -2343,20 +2377,31 @@ def add_item_to_matching_playlists(db: Session, jellyfin_item_id: str, item_tags
                 current_ids = {item["Id"] for item in current_items}
                 if jellyfin_item_id in current_ids:
                     continue
+                # A series playlist stores the series' EPISODES, so a Series id
+                # never appears as an entry Id. An already-present series is still
+                # re-added (Jellyfin appends only its new episodes) but not moved.
+                is_series = jf_media_type == "Series"
+                series_was_present = is_series and any(
+                    item.get("SeriesId") == jellyfin_item_id for item in current_items)
 
-                jf.add_to_playlist(playlist_id, [jellyfin_item_id])
+                if not jf.add_to_playlist(playlist_id, [jellyfin_item_id]):
+                    logger.warning(f"[SmartLists] Failed to add {jellyfin_item_id} to '{name}'")
+                    continue
 
                 # For recently-added / downloaded playlists (DateCreated sort),
                 # move the new item to the front so it appears first immediately
                 # instead of waiting for the nightly full rebuild.
                 sort_by = (config.get("Order", {}).get("SortOptions", [{}])[0]
                            .get("SortBy", "")) if config.get("Order") else ""
-                if sort_by == "DateCreated":
+                if sort_by == "DateCreated" and not series_was_present:
                     # Jellyfin's move endpoint needs the PlaylistItemId, not the library Id.
                     # Re-fetch playlist entries to find the newly appended item's PlaylistItemId.
                     updated_items = jf.get_playlist_items(playlist_id) or []
+                    # For a series, moving ONE of its episode entries to the front is
+                    # enough: the plugin groups a row by series in first-occurrence order.
                     for entry in reversed(updated_items):  # newly added is last
-                        if entry.get("Id") == jellyfin_item_id:
+                        if entry.get("Id") == jellyfin_item_id or (
+                                is_series and entry.get("SeriesId") == jellyfin_item_id):
                             playlist_item_id = entry.get("PlaylistItemId")
                             if playlist_item_id:
                                 moved = jf.move_playlist_item(playlist_id, playlist_item_id, 0)
