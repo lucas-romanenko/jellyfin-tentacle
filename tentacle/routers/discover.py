@@ -1099,6 +1099,14 @@ async def image_proxy(cache_key: str, url: str = ""):
     # "thetvdb.com" in url is trivially bypassed, e.g. ?url=http://169.254.169.254/?x=thetvdb.com).
     if not is_safe_url(url, allowed_hosts={"thetvdb.com"}):
         raise HTTPException(status_code=400, detail="Invalid URL")
+    # The cache file is named by cache_key, so it must be the key this URL was
+    # minted with (_rewrite_tvdb_url). Otherwise anyone who can reach the
+    # backend can store image B under image A's key (served to everyone
+    # afterwards, forever) or write unlimited copies under made-up keys. The
+    # plugin already enforces this; the backend is reachable directly too.
+    if cache_key.lower() != hashlib.md5(url.encode()).hexdigest():
+        raise HTTPException(status_code=400, detail="cache key does not match url")
+    cache_key = cache_key.lower()
 
     # Check disk cache
     TVDB_PROXY_CACHE.mkdir(parents=True, exist_ok=True)
