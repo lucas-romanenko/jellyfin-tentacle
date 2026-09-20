@@ -1053,7 +1053,7 @@ async function loadSettings() {
     const fields = [
       'tmdb_bearer_token', 'mdblist_api_key', 'radarr_url', 'radarr_api_key',
       'sonarr_url', 'sonarr_api_key',
-      'jellyfin_url', 'jellyfin_api_key',
+      'jellyfin_url', 'jellyfin_api_key', 'jellyfin_public_url',
       'recently_added_days', 'tmdb_match_threshold',
       'webhook_host', 'sonarr_webhook_host', 'trakt_client_id', 'logodev_api_key',
       'hybrid_series_layout'
@@ -1143,7 +1143,7 @@ async function saveSettings() {
   const fields = [
     'tmdb_bearer_token', 'mdblist_api_key', 'radarr_url', 'radarr_api_key',
     'sonarr_url', 'sonarr_api_key',
-    'jellyfin_url', 'jellyfin_api_key',
+    'jellyfin_url', 'jellyfin_api_key', 'jellyfin_public_url',
     'recently_added_days', 'tmdb_match_threshold',
     'webhook_host', 'sonarr_webhook_host', 'trakt_client_id', 'logodev_api_key',
     'hybrid_series_layout'

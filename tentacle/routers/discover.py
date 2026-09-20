@@ -39,9 +39,16 @@ _jf_server_id_cache: dict = {"id": None, "checked": False}
 
 
 def _jellyfin_web_url(db: Session, item_id: str):
-    """Deep link to an item in Jellyfin's web UI, or None if not configured."""
-    base = (get_setting(db, "jellyfin_url") or "").rstrip("/")
-    if not base or not item_id:
+    """Deep link to an item in Jellyfin's web UI, or None if not configured.
+
+    The link is opened by the user's browser, so it must use the address the
+    browser reaches Jellyfin on. jellyfin_url is the address *Tentacle* uses,
+    which in Docker setups is typically http://jellyfin:8096 and unreachable
+    from a browser. jellyfin_public_url (optional) overrides it for links.
+    """
+    internal = (get_setting(db, "jellyfin_url") or "").rstrip("/")
+    base = (get_setting(db, "jellyfin_public_url") or "").strip().rstrip("/") or internal
+    if not internal or not item_id:
         return None
     # serverId is optional in the route but makes the link work from a client
     # that has more than one server configured. Resolved once per process.
@@ -53,7 +60,7 @@ def _jellyfin_web_url(db: Session, item_id: str):
             from services.jellyfin import JellyfinService
             api_key = get_setting(db, "jellyfin_api_key")
             if api_key:
-                server_id = JellyfinService(base, api_key).get_server_id()
+                server_id = JellyfinService(internal, api_key).get_server_id()
                 if server_id:
                     _jf_server_id_cache["id"] = server_id
                     _jf_server_id_cache["checked"] = True
