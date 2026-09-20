@@ -32,12 +32,6 @@ public class TentacleHomeController : ControllerBase
     private readonly ILogger<TentacleHomeController> _logger;
     private static readonly HttpClient ProxyClient = new() { Timeout = TimeSpan.FromSeconds(15) };
 
-    // Last version the backend actually answered with. A backend outage must not be
-    // reported to clients as "the version changed to 0" — the home JS treats any
-    // change as a signal to rebuild every row, so an unreachable/flapping backend
-    // turned into a full re-fetch storm every poll.
-    private static string? _lastKnownVersionJson;
-
     // Guards the UserSettings.json read-modify-write so concurrent saves don't clobber
     // each other or read a half-written file.
     private static readonly object UserSettingsLock = new();
