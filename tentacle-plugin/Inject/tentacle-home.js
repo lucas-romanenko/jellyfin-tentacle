@@ -1005,6 +1005,10 @@
         if (!data.sections) return;
 
         var newSections = data.sections.filter(function (s) { return s.type === 'row' || s.type === 'builtin'; });
+        var mergeCW = !!data.mergeContinueWatching;
+        var hasResumeRow = newSections.some(function (s) {
+          return s.type === 'builtin' && (s.sectionId === 'resumevideo' || s.sectionId === 'resume');
+        });
         // The key includes each row's shape: a poster/wide change is a change
         // to the row's structure, not to its items, and comparing IDs alone
         // left it invisible until a full page reload — unlike a reorder, which
@@ -1023,7 +1027,14 @@
           rowsContainer.innerHTML = '';
           newSections.forEach(function (section) {
             if (section.type === 'builtin') {
-              loadBuiltinSection(rowsContainer, section);
+              // Same merge rules as the first render — dropping them here turned the
+              // "merge Continue Watching" setting off until the next full navigation.
+              if (mergeCW && section.sectionId === 'nextup' && hasResumeRow) return;
+              var renderMerged = mergeCW && (
+                section.sectionId === 'resumevideo' || section.sectionId === 'resume' ||
+                (section.sectionId === 'nextup' && !hasResumeRow)
+              );
+              loadBuiltinSection(rowsContainer, section, renderMerged);
             } else {
               loadRow(rowsContainer, section);
             }
