@@ -239,3 +239,20 @@ def sanitize_filename(name: str) -> str:
 def make_folder_name(title: str, year: Optional[str]) -> str:
     safe = sanitize_filename(title)
     return f"{safe} ({year})" if year else safe
+
+
+def vod_folder_name(title: str, year: Optional[str]) -> str:
+    """Folder (and file-stem) name for a title Tentacle writes into a VOD folder.
+
+    Never starts with a dot. Jellyfin's library scanner ignores every path
+    matching `**/.*` (Emby.Server.Implementations/Library/IgnorePatterns.cs),
+    so "...And Justice for All (1979)" or ".hack//Sign" — both real titles —
+    was written to disk and then never appeared in Jellyfin, with no error
+    anywhere. Only for Tentacle's own VOD output: make_folder_name is also used
+    to find folders Radarr/Sonarr named, which must not change.
+    """
+    name = make_folder_name(title, year).lstrip(". ")
+    if not name or name.startswith("("):
+        name = make_folder_name("Unknown", year)
+    return name
+
