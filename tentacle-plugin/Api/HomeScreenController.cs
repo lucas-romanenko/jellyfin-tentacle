@@ -226,7 +226,10 @@ public class TentacleHomeController : ControllerBase
         // For "datecreated", trust the playlist order set by the Python backend
         // (which uses Tentacle's date_added — more reliable than Jellyfin's DateCreated
         // which can shift after metadata refreshes or library rescans).
-        var sortBy = row?.SortBy?.ToLowerInvariant() ?? "releasedate";
+        // No sort_by configured means "leave it as the backend populated it", the same
+        // as an explicit "random". Defaulting to releasedate here silently re-sorted
+        // every row that the dashboard had not given an explicit sort.
+        var sortBy = row?.SortBy?.ToLowerInvariant() ?? "none";
         var descending = !string.Equals(row?.SortOrder, "Ascending", StringComparison.OrdinalIgnoreCase);
         IEnumerable<BaseItem> sorted = sortBy switch
         {
