@@ -266,6 +266,37 @@ class _SharedUpstream:
                 self.task.cancel()
 
 
+class _SubscriberResponse(StreamingResponse):
+    """A client's view of a shared upstream, which is ALWAYS unsubscribed.
+
+    The client is subscribed when this object is built, but the body generator
+    only unsubscribes from its own `finally` -- and an async generator that is
+    never started never runs it. A client that went away between the headers
+    and the first chunk therefore stayed subscribed for ever: the upstream kept
+    pulling from the provider with nobody watching and its concurrency slot
+    never came back. Unsubscribing when the response finishes, however it
+    finishes, closes that; `unsubscribe` is idempotent."""
+
+    def __init__(self, shared: "_SharedUpstream", q):
+        super().__init__(
+            _subscriber_body(shared, q),
+            media_type="video/mp2t",
+            headers={
+                "Connection": "close",
+                "Cache-Control": "no-cache, no-store",
+                "Access-Control-Allow-Origin": "*",
+            },
+        )
+        self._shared = shared
+        self._q = q
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            await self._shared.unsubscribe(self._q)
+
+
 async def _subscriber_body(shared: "_SharedUpstream", q):
     """Per-client view of a shared upstream."""
     try:
@@ -1809,15 +1840,7 @@ async def stream_proxy(channel_id: int, db: Session = Depends(get_db)):
             q = shared.subscribe()
             logger.info(f"[LiveTV] Channel {channel_id} already streaming — "
                         f"attaching client ({len(shared.subscribers)} now)")
-            return StreamingResponse(
-                _subscriber_body(shared, q),
-                media_type="video/mp2t",
-                headers={
-                    "Connection": "close",
-                    "Cache-Control": "no-cache, no-store",
-                    "Access-Control-Allow-Origin": "*",
-                },
-            )
+            return _SubscriberResponse(shared, q)
 
     # Cap concurrent upstream pulls (see _StreamSlots). A refusal here is how a
     # scheduled recording silently becomes a zero-byte file -- Jellyfin shows the
@@ -1881,15 +1904,7 @@ async def stream_proxy(channel_id: int, db: Session = Depends(get_db)):
         async with _get_shared_lock():
             _shared_streams[channel_id] = shared
         shared.task = asyncio.create_task(shared._pump(upstream.body_iterator))
-        return StreamingResponse(
-            _subscriber_body(shared, q),
-            media_type="video/mp2t",
-            headers={
-                "Connection": "close",
-                "Cache-Control": "no-cache, no-store",
-                "Access-Control-Allow-Origin": "*",
-            },
-        )
+        return _SubscriberResponse(shared, q)
     except BaseException:
         _release_sem()
         raise
