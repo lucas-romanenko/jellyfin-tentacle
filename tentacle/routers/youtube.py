@@ -13,6 +13,7 @@ from datetime import datetime
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
+from starlette.background import BackgroundTask
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing import Optional
@@ -143,8 +144,24 @@ def proxied(video_id: str, token: str, request: Request, db: Session = Depends(g
                              headers=passthrough)
 
 
-@router.get("/live/{channel_id}/stream.ts")
 @router.head("/live/{channel_id}/stream.ts")
+def live_stream_head(channel_id: int, db: Session = Depends(get_db)):
+    """Jellyfin validates a tuner URL with HEAD before it plays it. Answer from
+    the database alone: resolving the stream and starting ffmpeg here would do
+    all the work of a playback for a request whose body is thrown away."""
+    from services.youtube import livetv as yt_livetv
+
+    channel = db.query(YouTubeChannel).filter(YouTubeChannel.id == channel_id).first()
+    if not channel or not channel.live_enabled:
+        raise HTTPException(404, "Not a Live TV channel")
+    if not yt_livetv.current_live_video(db, channel_id):
+        raise HTTPException(503, f"{channel.title} is not streaming right now")
+    return Response(status_code=200, headers={
+        "Content-Type": "video/mp2t", "Connection": "close",
+        "Cache-Control": "no-cache, no-store"})
+
+
+@router.get("/live/{channel_id}/stream.ts")
 def live_stream(channel_id: int, db: Session = Depends(get_db)):
     """What the HDHomeRun lineup points a YouTube Live TV channel at.
 
@@ -203,6 +220,29 @@ def live_stream(channel_id: int, db: Session = Depends(get_db)):
     logger.info(f"[YouTube] Live TS stream for '{channel.title}' ({video.video_id})")
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
+    stopping = threading.Lock()
+
+    def _stop():
+        # Runs from the generator's finally AND as the response's background
+        # task. The background task is what makes this deterministic: when the
+        # client goes away Starlette abandons the generator without closing it,
+        # and its finally would otherwise wait for the garbage collector —
+        # leaving ffmpeg blocked on a full pipe until then.
+        if not stopping.acquire(blocking=False):
+            return
+        if proc.poll() is None:
+            proc.kill()
+        try:
+            err = (proc.stderr.read() or b"").decode("utf-8", "replace").strip()
+            if err:
+                logger.warning(f"[YouTube] ffmpeg for '{channel.title}': {err[:400]}")
+        except Exception:
+            pass
+        proc.stdout.close()
+        proc.stderr.close()
+        proc.wait(timeout=5)
+        logger.info(f"[YouTube] Live stream ended for '{channel.title}'")
+
     def _stream():
         try:
             while True:
@@ -211,23 +251,13 @@ def live_stream(channel_id: int, db: Session = Depends(get_db)):
                     break
                 yield chunk
         finally:
-            if proc.poll() is None:
-                proc.kill()
-            try:
-                err = (proc.stderr.read() or b"").decode("utf-8", "replace").strip()
-                if err:
-                    logger.warning(f"[YouTube] ffmpeg for '{channel.title}': {err[:400]}")
-            except Exception:
-                pass
-            proc.stdout.close()
-            proc.stderr.close()
-            proc.wait(timeout=5)
-            logger.info(f"[YouTube] Live stream ended for '{channel.title}'")
+            _stop()
 
     return StreamingResponse(
         _stream(),
         media_type="video/mp2t",
         headers={"Connection": "close", "Cache-Control": "no-cache, no-store"},
+        background=BackgroundTask(_stop),
     )
 
 
