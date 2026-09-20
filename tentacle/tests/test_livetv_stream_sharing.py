@@ -35,7 +35,7 @@ class SharedUpstream(unittest.TestCase):
         import routers.livetv as livetv
         self.livetv = livetv
         # These are bound to a running loop, and every test runs its own.
-        livetv._stream_semaphore = None
+        livetv._stream_slots = livetv._StreamSlots()
         livetv._shared_lock = None
         livetv._shared_streams.clear()
         self.db = _fresh_db()
@@ -139,12 +139,12 @@ class SharedUpstream(unittest.TestCase):
 
         async def body():
             resps = [await self.livetv.stream_proxy(cid, self.db) for _ in range(10)]
-            return len(resps), self.livetv._get_stream_semaphore()._value
+            return len(resps), self.livetv._stream_slots.active
 
-        (n, remaining), upstreams = self._run(body)
+        (n, in_use), upstreams = self._run(body)
         self.assertEqual(n, 10)
         self.assertEqual(len(upstreams), 1)
-        self.assertEqual(remaining, self.livetv._MAX_CONCURRENT_STREAMS - 1,
+        self.assertEqual(in_use, 1,
                          "viewers of an already-open channel used up capacity")
 
 

@@ -61,11 +61,17 @@ router = APIRouter()
 # Jellyfin's tuner integration cannot present credentials.
 _admin = [Depends(require_admin)]
 
-# Cap simultaneous live stream proxies so a burst of clients can't exhaust the
-# IPTV provider's max_connections (and our own socket/CPU budget). When at
-# capacity, new stream requests get a 503 rather than silently degrading every
-# active stream. Created lazily on first use so it binds to the running loop.
-_MAX_CONCURRENT_STREAMS = 6
+# Cap simultaneous upstream pulls so a burst of clients can't exhaust our own
+# socket/CPU budget (or an account that really is connection-limited). The cap
+# is the admin's call -- setting `livetv_max_concurrent_streams`, 0 = no limit
+# -- because the provider's advertised max_connections cannot be trusted either
+# way: panels report 1 for accounts that are not capped at all (#87).
+_DEFAULT_MAX_CONCURRENT_STREAMS = 6
+_MAX_CONCURRENT_STREAMS = _DEFAULT_MAX_CONCURRENT_STREAMS  # kept for importers
+# A slot is usually about to free up (a recording ending as the next begins, a
+# viewer changing channel), so wait this long for one before refusing. Short:
+# a tuner client is blocked on the answer.
+_SLOT_WAIT_SECONDS = 5.0
 
 # Max redirect hops we will follow on a stream/chunk fetch, matching httpx's own
 # default ceiling.
@@ -111,14 +117,56 @@ async def _send_checked(client, url: str, headers: dict, guard=None):
 _OPEN_RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504, 509}
 _OPEN_RETRY_BUDGET = 20.0   # seconds
 
-_stream_semaphore: "asyncio.Semaphore | None" = None
+class _StreamSlots:
+    """Counts upstream pulls against a limit that can change while running.
+
+    An asyncio.Semaphore bakes its size in at creation, which is why the old
+    ceiling could not be a setting. All access is from the event loop."""
+
+    def __init__(self):
+        self.active = 0
+        self.refused = 0
+        self.last_refused: "dict | None" = None
+        self._freed: "asyncio.Event | None" = None
+
+    async def acquire(self, limit: int, wait: float) -> bool:
+        if limit <= 0 or self.active < limit:
+            self.active += 1
+            return True
+        if self._freed is None:
+            self._freed = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + wait
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return False
+            self._freed.clear()
+            try:
+                await asyncio.wait_for(self._freed.wait(), timeout=remaining)
+            except asyncio.TimeoutError:
+                return False
+            if self.active < limit:
+                self.active += 1
+                return True
+
+    def release(self):
+        self.active = max(0, self.active - 1)
+        if self._freed is not None:
+            self._freed.set()
 
 
-def _get_stream_semaphore() -> "asyncio.Semaphore":
-    global _stream_semaphore
-    if _stream_semaphore is None:
-        _stream_semaphore = asyncio.Semaphore(_MAX_CONCURRENT_STREAMS)
-    return _stream_semaphore
+_stream_slots = _StreamSlots()
+
+
+def _max_concurrent_streams(db) -> int:
+    """The configured ceiling; 0 means unlimited. A value that does not parse
+    falls back to the default rather than silently removing the cap."""
+    raw = get_setting(db, "livetv_max_concurrent_streams", "")
+    try:
+        return max(0, int(raw)) if raw.strip() else _DEFAULT_MAX_CONCURRENT_STREAMS
+    except (ValueError, AttributeError):
+        return _DEFAULT_MAX_CONCURRENT_STREAMS
 
 
 # One upstream pull per channel, fanned out to every client watching it.
@@ -482,6 +530,19 @@ def sync_live_channels(provider_id: int, db: Session = Depends(get_db)):
     thread.start()
 
     return {"success": True, "message": "Channel sync started", "status_url": "/api/live/sync-status"}
+
+
+@router.get("/api/live/capacity", dependencies=_admin)
+def live_capacity(db: Session = Depends(get_db)):
+    """How many upstream pulls are running against the ceiling, and whether any
+    stream has been refused since start -- the only trace a lost recording
+    otherwise leaves is a log line."""
+    return {
+        "limit": _max_concurrent_streams(db),
+        "active": _stream_slots.active,
+        "refused_since_start": _stream_slots.refused,
+        "last_refused": _stream_slots.last_refused,
+    }
 
 
 @router.get("/api/live/sync-status", dependencies=_admin)
@@ -1757,13 +1818,22 @@ async def stream_proxy(channel_id: int, db: Session = Depends(get_db)):
                 },
             )
 
-    # Cap concurrent streams. If we're at capacity, bail with 503 instead of
-    # opening yet another upstream connection (which could exhaust the provider).
-    sem = _get_stream_semaphore()
-    if sem.locked():
-        logger.warning(f"[LiveTV] At capacity ({_MAX_CONCURRENT_STREAMS} streams) — rejecting channel {channel_id}")
-        raise HTTPException(503, "Too many concurrent live streams")
-    await sem.acquire()
+    # Cap concurrent upstream pulls (see _StreamSlots). A refusal here is how a
+    # scheduled recording silently becomes a zero-byte file -- Jellyfin shows the
+    # timer as having run -- so it is logged as an error, by channel name, and
+    # counted where the dashboard can see it (GET /api/live/capacity).
+    limit = _max_concurrent_streams(db)
+    if not await _stream_slots.acquire(limit, _SLOT_WAIT_SECONDS):
+        ch = db.query(LiveChannel).filter(LiveChannel.id == channel_id).first()
+        name = ch.name if ch else f"channel {channel_id}"
+        _stream_slots.refused += 1
+        _stream_slots.last_refused = {"channel_id": channel_id, "channel": name,
+                                      "at": datetime.utcnow().isoformat() + "Z", "limit": limit}
+        logger.error(f"[LiveTV] At capacity ({limit} streams) — REFUSED '{name}' (channel {channel_id}). "
+                     f"If this was a recording it is lost. Raise livetv_max_concurrent_streams "
+                     f"(0 = no limit) if this server and provider can carry more.")
+        raise HTTPException(503, f"Too many concurrent live streams (limit {limit})")
+    sem = _stream_slots
     # Ownership of the release is handed to the streaming generator on the
     # success paths; on every early-exit / error path below we release here.
     sem_released = False
