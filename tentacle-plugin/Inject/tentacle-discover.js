@@ -1008,12 +1008,22 @@
   }
 
   function findJellyfinItem(item) {
-    // The detail endpoint resolves this server-side by TMDB id, which is exact.
-    // The title search below stays as a fallback for items it couldn't resolve.
-    if (item.jellyfin_item_id) {
-      return Promise.resolve(item.jellyfin_item_id);
-    }
+    // The detail endpoint resolves this server-side by TMDB id, which is exact,
+    // but it does so with Tentacle's API key. Confirm the signed-in user can
+    // open that item (library access is per user) before navigating to it;
+    // otherwise fall back to the user's own title search.
     var userId = window.ApiClient.getCurrentUserId();
+    if (item.jellyfin_item_id) {
+      return window.ApiClient.getItem(userId, item.jellyfin_item_id).then(function (found) {
+        return (found && found.Id) ? found.Id : searchJellyfinItem(item, userId);
+      }).catch(function () {
+        return searchJellyfinItem(item, userId);
+      });
+    }
+    return searchJellyfinItem(item, userId);
+  }
+
+  function searchJellyfinItem(item, userId) {
     var itemType = item.media_type === 'series' ? 'Series' : 'Movie';
     var url = window.ApiClient.getUrl('Users/' + userId + '/Items', {
       searchTerm: item.title,
@@ -1028,7 +1038,8 @@
         var yearMatch = !item.year || String(i.ProductionYear || '') === String(item.year);
         return titleMatch && yearMatch;
       });
-      if (!match) match = items[0];
+      // Exact title (+ year) only, like the Android TV client: the first fuzzy
+      // search hit can be a different title that merely contains the search term.
       return match ? match.Id : null;
     }).catch(function () {
       return null;

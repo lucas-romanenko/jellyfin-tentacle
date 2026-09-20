@@ -122,7 +122,11 @@ def _get_jellyfin_tmdb_items(media_type: str) -> dict:
             if url and api_key:
                 from services.jellyfin import JellyfinService
                 jf = JellyfinService(url, api_key, jf_user)
-                lookup, complete = jf.get_tmdb_lookup_checked("Series" if key == "series" else "Movie")
+                # user_scoped: link the item users are shown, not a hidden
+                # merged-version alternate (e.g. the .strm next to a download).
+                lookup, complete = jf.get_tmdb_lookup_checked(
+                    "Series" if key == "series" else "Movie", user_scoped=True
+                )
                 out = {tid: item.get("Id") for tid, item in lookup.items() if item.get("Id")}
         except Exception as e:
             logger.warning(f"Jellyfin id fetch for in-library check failed: {e}")
