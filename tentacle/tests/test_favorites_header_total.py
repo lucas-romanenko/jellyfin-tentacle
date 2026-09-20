@@ -24,11 +24,24 @@ class HeaderTotal(unittest.TestCase):
                          "unfavorite() never touches the page total, so it goes stale")
 
     def test_the_total_counts_both_kinds_of_card(self):
-        m = re.search(r"var\s+all\s*=\s*document\.querySelectorAll\(\s*'([^']*)'\s*\)", self.fn)
+        m = re.search(r"var\s+all\s*=\s*[\w.]+\.querySelectorAll\(\s*'([^']*)'\s*\)", self.fn)
         self.assertIsNotNone(m, "the page total is not recounted from the cards")
         kinds = {k.strip() for k in m.group(1).split(",")}
         self.assertEqual({".tfav-card", ".tltv-card"}, kinds,
                          "Live TV favorites render as .tltv-card; leaving them out is #57 again")
+
+    def test_the_total_counts_only_the_favorites_page(self):
+        """Seen in a real browser: open Live TV, then Favorites, un-favorite one of
+        824 -> the header said "826 items". The Live TV page keeps its own
+        `.tltv-card`s in a hidden container on the same document, so a recount
+        taken from `document` adds every channel card on that page."""
+        m = re.search(r"var\s+all\s*=\s*([\w.]+)\.querySelectorAll\(", self.fn)
+        self.assertIsNotNone(m, "the page total is not recounted from the cards")
+        self.assertNotEqual("document", m.group(1),
+                            "the total is counted across the whole document, so the hidden "
+                            "Live TV page's channel cards are added to it")
+        self.assertRegex(self.fn, r"var\s+root\s*=\s*FAV\.container\b",
+                         "the recount is not scoped to the Favorites container")
 
     def test_the_total_keeps_its_singular_and_plural(self):
         self.assertRegex(self.fn, r"' item' \+ \(all !== 1 \? 's' : ''\)")
