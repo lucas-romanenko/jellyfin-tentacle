@@ -1,6 +1,8 @@
 using System;
 using System.Linq;
 using Jellyfin.Plugin.Tentacle.HomeScreen;
+using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.Playlists;
 using MediaBrowser.Controller.Session;
 using MediaBrowser.Model.Session;
 using Microsoft.AspNetCore.Authorization;
@@ -23,16 +25,75 @@ public class TentacleController : ControllerBase
 {
     private readonly HomeScreenManager _homeScreenManager;
     private readonly ISessionManager _sessionManager;
+    private readonly ILibraryManager _libraryManager;
+    private readonly IPlaylistManager _playlistManager;
     private readonly ILogger<TentacleController> _logger;
 
     public TentacleController(
         HomeScreenManager homeScreenManager,
         ISessionManager sessionManager,
+        ILibraryManager libraryManager,
+        IPlaylistManager playlistManager,
         ILogger<TentacleController> logger)
     {
         _homeScreenManager = homeScreenManager;
         _sessionManager = sessionManager;
+        _libraryManager = libraryManager;
+        _playlistManager = playlistManager;
         _logger = logger;
+    }
+
+    /// <summary>
+    /// Moves one entry of a Tentacle playlist to a new position, as the playlist's owner.
+    ///
+    /// Jellyfin's own POST /Playlists/{id}/Items/{entryId}/Move/{index} needs a USER
+    /// behind the request (it checks the caller against the playlist owner), so the
+    /// Tentacle server, which only holds the server API key, got a 400 from it. That
+    /// left every new download at the END of a "recently added" row until the nightly
+    /// rebuild, and off the row entirely once it was past the 30-item cap. This runs
+    /// the same IPlaylistManager move server-side with the owner's id.
+    /// Admin only: the Tentacle server's API key satisfies the policy.
+    /// </summary>
+    [HttpPost("Playlists/{playlistId}/Items/{entryId}/Move/{newIndex}")]
+    [Authorize(Policy = "RequiresElevation")]
+    public async Task<ActionResult> MoveItem(string playlistId, string entryId, int newIndex)
+    {
+        if (!Guid.TryParse(playlistId, out var playlistGuid))
+        {
+            return BadRequest("Invalid playlist id");
+        }
+
+        if (_libraryManager.GetItemById(playlistGuid) is not Playlist playlist)
+        {
+            return NotFound("Playlist not found");
+        }
+
+        // The entry id Jellyfin's move matches is the linked child's ItemId in
+        // 32-hex form, which is also the PlaylistItemId its DTOs carry.
+        if (!playlist.LinkedChildren.Any(c => c.ItemId.HasValue
+                && string.Equals(c.ItemId.Value.ToString("N"), entryId, StringComparison.OrdinalIgnoreCase)))
+        {
+            return NotFound("Entry not in playlist");
+        }
+
+        if (newIndex < 0)
+        {
+            newIndex = 0;
+        }
+
+        try
+        {
+            await _playlistManager.MoveItemAsync(playlistId, entryId, newIndex, playlist.OwnerUserId).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[Tentacle] Could not move entry {Entry} in playlist {Playlist}", entryId, playlistId);
+            return StatusCode(500, new { message = ex.Message });
+        }
+
+        // The row cache holds the old order.
+        TentacleResultsHandler.ClearItemCache();
+        return NoContent();
     }
 
     /// <summary>
