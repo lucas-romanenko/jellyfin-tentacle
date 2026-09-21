@@ -257,10 +257,14 @@ def sonarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
                 logger.warning(f"[Sonarr webhook] Series tmdb:{tmdb_id} not found after scan")
                 return
 
-            # Ensure date_added is set (scan_sonarr_library sets it from Sonarr;
-            # only stamp now() if it's still missing).
-            if event_type == "Download" and not db_series.date_added:
-                db_series.date_added = datetime.utcnow()
+            if event_type == "Download":
+                # An episode just landed: that is the series' newest download,
+                # which is what a "recently downloaded" row sorts by. (The
+                # episode label used to be recorded only the first time, when
+                # date_added was still missing.)
+                db_series.downloaded_at = datetime.utcnow()
+                if not db_series.date_added:
+                    db_series.date_added = datetime.utcnow()
                 if first_episode:
                     s = first_episode.get("seasonNumber", 0)
                     e = first_episode.get("episodeNumber", 0)

@@ -1552,39 +1552,35 @@ def _resort_by_db_date(items: list, config: dict, db: Session = None) -> list:
     if sort_by != "datecreated":
         return items
 
-    # Build TMDB ID → date_added lookup from Tentacle DB
+    # "Recently added" is the most recent arrival of the title: when it first
+    # entered the library (date_added) OR when its downloaded copy arrived
+    # (downloaded_at). A title that was VOD first and downloaded months later
+    # sorted by the old date and sat mid-row in "Downloaded Movies".
+    def _effective(date_added, downloaded_at):
+        dates = [d for d in (date_added, downloaded_at) if d]
+        return max(dates) if dates else None
+
     media_types = config.get("MediaTypes", [])
-    date_map = {}  # jellyfin_item_id -> date_added
+    date_map = {}  # jellyfin_item_id -> effective date
+    tmdb_date_map = {}  # tmdb_id_str -> effective date
+    models = []
     if "Movie" in media_types:
-        for m in db.query(Movie.jellyfin_item_id, Movie.date_added).filter(
-            Movie.jellyfin_item_id.isnot(None)
-        ).all():
-            if m.jellyfin_item_id and m.date_added:
-                date_map[m.jellyfin_item_id] = m.date_added
+        models.append(Movie)
     if "Series" in media_types:
-        for s in db.query(Series.jellyfin_item_id, Series.date_added).filter(
-            Series.jellyfin_item_id.isnot(None)
-        ).all():
-            if s.jellyfin_item_id and s.date_added:
-                date_map[s.jellyfin_item_id] = s.date_added
+        models.append(Series)
+    for model in models:
+        for row in db.query(model.jellyfin_item_id, model.tmdb_id, model.date_added,
+                            model.downloaded_at).all():
+            d = _effective(row.date_added, row.downloaded_at)
+            if not d:
+                continue
+            if row.jellyfin_item_id:
+                date_map[row.jellyfin_item_id] = d
+            if row.tmdb_id:
+                tmdb_date_map[str(row.tmdb_id)] = d
 
-    if not date_map:
+    if not date_map and not tmdb_date_map:
         return items
-
-    # Also try matching by TMDB provider ID for items without jellyfin_item_id match
-    tmdb_date_map = {}  # tmdb_id_str -> date_added
-    if "Movie" in media_types:
-        for m in db.query(Movie.tmdb_id, Movie.date_added).filter(
-            Movie.date_added.isnot(None)
-        ).all():
-            if m.tmdb_id and m.date_added:
-                tmdb_date_map[str(m.tmdb_id)] = m.date_added
-    if "Series" in media_types:
-        for s in db.query(Series.tmdb_id, Series.date_added).filter(
-            Series.date_added.isnot(None)
-        ).all():
-            if s.tmdb_id and s.date_added:
-                tmdb_date_map[str(s.tmdb_id)] = s.date_added
 
     fallback = datetime.min
 
@@ -2696,10 +2692,13 @@ def _add_item_to_matching_playlists_locked(db: Session, jellyfin_item_id: str, i
 
                 # For recently-added / downloaded playlists (DateCreated sort),
                 # move the new item to the front so it appears first immediately
-                # instead of waiting for the nightly full rebuild.
+                # instead of waiting for the nightly full rebuild. A series that
+                # was already present (a NEW EPISODE just landed) moves too: the
+                # row groups by series in first-occurrence order, so moving any
+                # one of its episode entries puts the series first.
                 sort_by = (config.get("Order", {}).get("SortOptions", [{}])[0]
                            .get("SortBy", "")) if config.get("Order") else ""
-                if sort_by == "DateCreated" and not series_was_present:
+                if sort_by == "DateCreated":
                     # Jellyfin's move endpoint needs the PlaylistItemId, not the library Id.
                     # Re-fetch playlist entries to find the newly appended item's PlaylistItemId.
                     updated_items = jf.get_playlist_items(playlist_id) or []

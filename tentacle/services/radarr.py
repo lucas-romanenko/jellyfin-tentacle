@@ -190,15 +190,22 @@ def scan_radarr_library(db: Session) -> dict:
             if file_path and existing.radarr_path != file_path:
                 existing.radarr_path = file_path
                 changed = True
-            # Backfill date_added from Radarr's file import date if more accurate
-            if movie_file and movie_file.get("dateAdded") and existing.source == "radarr":
+            radarr_date = None
+            if movie_file and movie_file.get("dateAdded"):
                 try:
                     radarr_date = datetime.fromisoformat(movie_file["dateAdded"].replace("Z", "+00:00")).replace(tzinfo=None)
-                    if existing.date_added != radarr_date:
-                        existing.date_added = radarr_date
-                        changed = True
                 except (ValueError, TypeError):
-                    pass
+                    radarr_date = None
+            # Backfill date_added from Radarr's file import date if more accurate
+            if radarr_date and existing.source == "radarr" and existing.date_added != radarr_date:
+                existing.date_added = radarr_date
+                changed = True
+            # The download date itself, whatever source owns the row: a title
+            # that was VOD first keeps its old date_added, and "Downloaded
+            # Movies" sorted by that put every such download mid-row.
+            if radarr_date and existing.downloaded_at != radarr_date:
+                existing.downloaded_at = radarr_date
+                changed = True
             # If this was a VOD-only row, create a duplicate record
             if existing.source and existing.source.startswith("provider_") and tmdb_id not in existing_dup_tmdb_ids:
                 db.add(Duplicate(
@@ -254,6 +261,7 @@ def scan_radarr_library(db: Session) -> dict:
                 radarr_path=file_path,
                 tags=[],
                 date_added=radarr_date or datetime.utcnow(),
+                downloaded_at=radarr_date or datetime.utcnow(),
             )
             # Fetch full TMDB metadata for new movies
             if tmdb:

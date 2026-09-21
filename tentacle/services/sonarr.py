@@ -600,15 +600,23 @@ def scan_sonarr_library(db: Session) -> dict:
             if series_path and existing.sonarr_path != series_path:
                 existing.sonarr_path = series_path
                 changed = True
-            # Backfill date_added from Sonarr's added date if more accurate
-            if show.get("added") and existing.source == "sonarr":
+            sonarr_date = None
+            if show.get("added"):
                 try:
                     sonarr_date = datetime.fromisoformat(show["added"].replace("Z", "+00:00")).replace(tzinfo=None)
-                    if existing.date_added != sonarr_date:
-                        existing.date_added = sonarr_date
-                        changed = True
                 except (ValueError, TypeError):
-                    pass
+                    sonarr_date = None
+            # Backfill date_added from Sonarr's added date if more accurate
+            if sonarr_date and existing.source == "sonarr" and existing.date_added != sonarr_date:
+                existing.date_added = sonarr_date
+                changed = True
+            # First download date for a row that had none (a VOD series later
+            # added to Sonarr). Never moved BACK: the Download webhook bumps it
+            # to the newest episode import, which is what a "recently
+            # downloaded" row should sort by.
+            if sonarr_date and existing.downloaded_at is None:
+                existing.downloaded_at = sonarr_date
+                changed = True
             # If this was a VOD-only row, create a duplicate record
             # Skip if sonarr_path already set (intentional add via "Download More Episodes")
             if existing.source and existing.source.startswith("provider_") and not had_sonarr_path and tmdb_id not in existing_dup_tmdb_ids:
@@ -666,6 +674,7 @@ def scan_sonarr_library(db: Session) -> dict:
                 sonarr_monitored=sonarr_monitor_map.get(tmdb_id, False),
                 tags=[],
                 date_added=sonarr_date or datetime.utcnow(),
+                downloaded_at=sonarr_date or datetime.utcnow(),
             )
             # Fetch full TMDB metadata for new series
             if tmdb:

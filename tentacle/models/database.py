@@ -187,6 +187,11 @@ class Movie(Base):
 
     # Dates
     date_added = Column(DateTime, default=datetime.utcnow)
+    # When the downloaded copy arrived (Radarr's file import date / Sonarr's
+    # latest episode import). date_added is when the title first entered the
+    # library, which for a title that was VOD first is months earlier — sorting
+    # "Downloaded Movies" by it buried every such download mid-row.
+    downloaded_at = Column(DateTime, nullable=True)
     date_updated = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
@@ -228,6 +233,11 @@ class Series(Base):
     strm_disabled = Column(Boolean, default=False)
 
     date_added = Column(DateTime, default=datetime.utcnow)
+    # When the downloaded copy arrived (Radarr's file import date / Sonarr's
+    # latest episode import). date_added is when the title first entered the
+    # library, which for a title that was VOD first is months earlier — sorting
+    # "Downloaded Movies" by it buried every such download mid-row.
+    downloaded_at = Column(DateTime, nullable=True)
     date_updated = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
