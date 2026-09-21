@@ -39,9 +39,16 @@ _jf_server_id_cache: dict = {"id": None, "checked": False}
 
 
 def _jellyfin_web_url(db: Session, item_id: str):
-    """Deep link to an item in Jellyfin's web UI, or None if not configured."""
-    base = (get_setting(db, "jellyfin_url") or "").rstrip("/")
-    if not base or not item_id:
+    """Deep link to an item in Jellyfin's web UI, or None if not configured.
+
+    The link is opened by the user's browser, so it must use the address the
+    browser reaches Jellyfin on. jellyfin_url is the address *Tentacle* uses,
+    which in Docker setups is typically http://jellyfin:8096 and unreachable
+    from a browser. jellyfin_public_url (optional) overrides it for links.
+    """
+    internal = (get_setting(db, "jellyfin_url") or "").rstrip("/")
+    base = (get_setting(db, "jellyfin_public_url") or "").strip().rstrip("/") or internal
+    if not internal or not item_id:
         return None
     # serverId is optional in the route but makes the link work from a client
     # that has more than one server configured. Resolved once per process.
@@ -53,7 +60,7 @@ def _jellyfin_web_url(db: Session, item_id: str):
             from services.jellyfin import JellyfinService
             api_key = get_setting(db, "jellyfin_api_key")
             if api_key:
-                server_id = JellyfinService(base, api_key).get_server_id()
+                server_id = JellyfinService(internal, api_key).get_server_id()
                 if server_id:
                     _jf_server_id_cache["id"] = server_id
                     _jf_server_id_cache["checked"] = True
@@ -122,7 +129,11 @@ def _get_jellyfin_tmdb_items(media_type: str) -> dict:
             if url and api_key:
                 from services.jellyfin import JellyfinService
                 jf = JellyfinService(url, api_key, jf_user)
-                lookup, complete = jf.get_tmdb_lookup_checked("Series" if key == "series" else "Movie")
+                # user_scoped: link the item users are shown, not a hidden
+                # merged-version alternate (e.g. the .strm next to a download).
+                lookup, complete = jf.get_tmdb_lookup_checked(
+                    "Series" if key == "series" else "Movie", user_scoped=True
+                )
                 out = {tid: item.get("Id") for tid, item in lookup.items() if item.get("Id")}
         except Exception as e:
             logger.warning(f"Jellyfin id fetch for in-library check failed: {e}")
@@ -387,6 +398,10 @@ def _get_missing_from_lists(db: Session, known_ids: dict, type_filter: str, user
         if item.tmdb_id in type_ids or item.tmdb_id in seen:
             continue
         if not item.poster_path:
+            continue
+        # Jellyfin is the authority here too (issue #5): an owned title that
+        # Tentacle's tables never recorded is not "missing".
+        if _is_in_library({"tmdb_id": item.tmdb_id, "media_type": mt}, known_ids):
             continue
         seen.add(item.tmdb_id)
         # Clean pre-fix rows (HTML entities + baked-in year) at serving time
@@ -1000,11 +1015,20 @@ def manage_episodes(
 
     from services.sonarr import SonarrService
     sonarr = SonarrService(sonarr_url, sonarr_key)
-    series = sonarr.get_series_by_tmdb(body.tmdb_id)
+    # "Sonarr is down" must not read as "series not found", and an empty
+    # episode list from a failed read must not be applied as a selection.
+    try:
+        series = sonarr.get_series_by_tmdb(body.tmdb_id, raise_errors=True)
+    except Exception:
+        raise HTTPException(503, "Could not read Sonarr's series list (Sonarr may be busy or down). "
+                                 "Nothing was changed — please retry in a moment.")
     if not series:
         raise HTTPException(404, "Series not found in Sonarr")
-
-    episodes = sonarr.get_episodes(series["id"])
+    try:
+        episodes = sonarr.get_episodes(series["id"], raise_errors=True)
+    except Exception:
+        raise HTTPException(503, "Could not read the series' episodes from Sonarr. "
+                                 "Nothing was changed — please retry in a moment.")
     ep_lookup = {(ep["seasonNumber"], ep["episodeNumber"]): ep for ep in episodes}
 
     # Map selected episodes to Sonarr episode IDs
@@ -1017,12 +1041,15 @@ def manage_episodes(
     # Track which are newly monitored (for search)
     currently_monitored = {ep["id"] for ep in episodes if ep.get("monitored")}
 
-    # Unmonitor all, then monitor selected
-    all_ids = [ep["id"] for ep in episodes]
-    if all_ids:
-        sonarr.set_episode_monitoring(all_ids, False)
-    if selected_ids:
-        sonarr.set_episode_monitoring(selected_ids, True)
+    # Monitor the selection FIRST, then unmonitor the rest: if the second call
+    # fails the user keeps a superset of what they asked for, never nothing.
+    selected_set = set(selected_ids)
+    to_unmonitor = [ep["id"] for ep in episodes if ep["id"] not in selected_set]
+    if selected_ids and not sonarr.set_episode_monitoring(selected_ids, True):
+        raise HTTPException(502, "Sonarr did not accept monitoring the selected episodes. Please retry.")
+    if to_unmonitor and not sonarr.set_episode_monitoring(to_unmonitor, False):
+        raise HTTPException(502, "Sonarr monitored the selected episodes but did not accept unmonitoring the "
+                                 "others. Please retry.")
 
     # Search for newly monitored episodes that don't have files
     need_search = []
@@ -1091,6 +1118,14 @@ async def image_proxy(cache_key: str, url: str = ""):
     # "thetvdb.com" in url is trivially bypassed, e.g. ?url=http://169.254.169.254/?x=thetvdb.com).
     if not is_safe_url(url, allowed_hosts={"thetvdb.com"}):
         raise HTTPException(status_code=400, detail="Invalid URL")
+    # The cache file is named by cache_key, so it must be the key this URL was
+    # minted with (_rewrite_tvdb_url). Otherwise anyone who can reach the
+    # backend can store image B under image A's key (served to everyone
+    # afterwards, forever) or write unlimited copies under made-up keys. The
+    # plugin already enforces this; the backend is reachable directly too.
+    if cache_key.lower() != hashlib.md5(url.encode()).hexdigest():
+        raise HTTPException(status_code=400, detail="cache key does not match url")
+    cache_key = cache_key.lower()
 
     # Check disk cache
     TVDB_PROXY_CACHE.mkdir(parents=True, exist_ok=True)

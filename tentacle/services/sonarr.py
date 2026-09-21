@@ -53,21 +53,26 @@ class SonarrService:
             logger.error(f"Sonarr connection failed: {e}")
             return None
 
-    def get_all_series(self) -> list:
+    def get_all_series(self, raise_errors: bool = False) -> list:
+        """Every series in Sonarr. With raise_errors=True a failed read raises
+        instead of returning [] (which callers can't tell from "none")."""
         try:
             r = self.session.get(f"{self.url}/api/v3/series", timeout=30)
             r.raise_for_status()
             return r.json()
         except Exception as e:
             logger.error(f"Failed to fetch Sonarr series: {e}")
+            if raise_errors:
+                raise
             return []
 
     def get_series_by_tvdb(self, tvdb_id: int) -> Optional[dict]:
         series = self.get_all_series()
         return next((s for s in series if s.get("tvdbId") == tvdb_id), None)
 
-    def get_series_by_tmdb(self, tmdb_id: int) -> Optional[dict]:
-        series = self.get_all_series()
+    def get_series_by_tmdb(self, tmdb_id: int, raise_errors: bool = False) -> Optional[dict]:
+        # Sonarr ignores ?tmdbId= (it returns every series), so filter locally.
+        series = self.get_all_series(raise_errors=raise_errors)
         return next((s for s in series if s.get("tmdbId") == tmdb_id), None)
 
     def delete_series(self, tmdb_id: int, delete_files: bool = True) -> bool:
@@ -213,6 +218,8 @@ class SonarrService:
                 "searchForMissingEpisodes": True,
             }
 
+        import time
+        sent_at = time.monotonic()
         try:
             r = self.session.post(
                 f"{self.url}/api/v3/series",
@@ -224,7 +231,7 @@ class SonarrService:
             # refresh + artwork + disk scan all happen before it answers), so
             # poll rather than reporting a failure.
             logger.warning(f"Sonarr add tmdb:{tmdb_id} tvdb:{tvdb_id} timed out after {ADD_TIMEOUT}s — verifying")
-            existing = self._await_added_series(lookup.get("tvdbId"))
+            existing = self._await_added_series(lookup.get("tvdbId"), sent_at=sent_at)
             if existing:
                 logger.info(f"Sonarr add tmdb:{tmdb_id} completed despite the timeout")
                 # The 2xx path below applies the episode selection; reaching the
@@ -247,9 +254,21 @@ class SonarrService:
             self.last_error = f"Unexpected error talking to Sonarr: {e}"
             return None
 
+        if isinstance(getattr(r, "history", None), list) and r.history:
+            # See arr_add.add_movie_to_radarr: a redirected POST is re-sent as a
+            # GET, so a 2xx here is not Sonarr adding anything.
+            hop = r.history[0]
+            where = hop.headers.get("Location", "?")
+            logger.error(f"Sonarr add tmdb:{tmdb_id} was redirected ({hop.status_code} -> {where}) — nothing was added")
+            self.last_error = (f"Sonarr's address redirects ({hop.status_code} to {where}), so the add never "
+                               f"reached Sonarr. Put the final address in Settings → Integrations.")
+            return None
+
         if r.status_code < 400:
             try:
                 series_data = r.json()
+                if not isinstance(series_data, dict):
+                    raise ValueError("not a series object")
             except ValueError:
                 # A 2xx carrying a non-JSON body (a reverse proxy's HTML page,
                 # say). Raising here surfaced as a 500 from the handler; report
@@ -288,7 +307,7 @@ class SonarrService:
             # Preset partial monitor: unmonitor series after initial search
             self._unmonitor_series(series_id)
 
-    def _await_added_series(self, tvdb_id) -> Optional[dict]:
+    def _await_added_series(self, tvdb_id, sent_at: Optional[float] = None) -> Optional[dict]:
         """Poll for a series after an add timed out.
 
         Uses the targeted tvdbId filter rather than get_series_by_tvdb(), which
@@ -299,11 +318,11 @@ class SonarrService:
             return None
         found = {}
 
-        def _probe() -> bool:
+        def _probe(timeout: float = READ_TIMEOUT) -> bool:
             r = self.session.get(
                 f"{self.url}/api/v3/series",
                 params={"tvdbId": tvdb_id},
-                timeout=READ_TIMEOUT,
+                timeout=timeout,
             )
             r.raise_for_status()
             data = r.json()
@@ -313,7 +332,7 @@ class SonarrService:
                 return True
             return False
 
-        if _poll_until_present(_probe, f"sonarr tvdb:{tvdb_id}"):
+        if _poll_until_present(_probe, f"sonarr tvdb:{tvdb_id}", sent_at=sent_at):
             return found.get("series")
         return None
 
@@ -354,7 +373,7 @@ class SonarrService:
         else:
             logger.warning(f"Sonarr: no episodes matched for series {series_id}")
 
-    def get_episodes(self, series_id: int) -> list:
+    def get_episodes(self, series_id: int, raise_errors: bool = False) -> list:
         """Fetch all episodes for a series from Sonarr."""
         try:
             r = self.session.get(
@@ -362,6 +381,8 @@ class SonarrService:
                 params={"seriesId": series_id},
                 timeout=10,
             )
+            if raise_errors:
+                r.raise_for_status()
             if r.status_code < 400:
                 return [
                     {
@@ -378,6 +399,8 @@ class SonarrService:
             return []
         except Exception as e:
             logger.warning(f"Sonarr: failed to fetch episodes for series {series_id}: {e}")
+            if raise_errors:
+                raise
             return []
 
     def set_episode_monitoring(self, episode_ids: list, monitored: bool) -> bool:

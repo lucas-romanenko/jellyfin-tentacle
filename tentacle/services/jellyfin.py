@@ -87,26 +87,40 @@ class JellyfinService:
         items, _complete = self._fetch_all_items_checked(media_type)
         return items
 
-    def _fetch_all_items_checked(self, media_type: str = "Movie") -> tuple:
+    def _fetch_all_items_checked(self, media_type: str = "Movie", user_scoped: bool = False) -> tuple:
         """Same as _fetch_all_items, plus whether every page actually arrived.
 
         A page that times out returns None from _get, and silently breaking out
         of the loop hands back a PARTIAL list that looks complete. Callers that
         cache the result need to know, or they persist a half-empty library.
         Returns (items, complete).
+
+        user_scoped=True lists what the configured user is shown, with only
+        ProviderIds. An unscoped /Items listing also returns items Jellyfin
+        hides from every user (the non-primary half of merged movie versions,
+        hidden duplicate series folders), so an id taken from it can open the
+        wrong copy. Raises requests.HTTPError if Jellyfin rejects the user id.
         """
         all_items = []
         start_index = 0
         page_size = 10000
         complete = True
         while True:
-            data = self._get("/Items", params={
+            params = {
                 "IncludeItemTypes": media_type,
                 "Recursive": "true",
                 "Fields": "ProviderIds,Tags",
                 "Limit": page_size,
                 "StartIndex": start_index,
-            })
+            }
+            if user_scoped and self.user_id:
+                params.update({
+                    "UserId": self.user_id,
+                    "Fields": "ProviderIds",
+                    "EnableImages": "false",
+                    "EnableUserData": "false",
+                })
+            data = self._get("/Items", params=params)
             if not data:
                 # Timeout / transport failure mid-pagination.
                 complete = False
@@ -127,9 +141,23 @@ class JellyfinService:
                 break
         return all_items, complete
 
-    def get_tmdb_lookup_checked(self, media_type: str = "Movie") -> tuple:
+    def get_tmdb_lookup_checked(self, media_type: str = "Movie", user_scoped: bool = False) -> tuple:
         """(tmdb_lookup, complete) — see _fetch_all_items_checked."""
-        items, complete = self._fetch_all_items_checked(media_type)
+        if user_scoped and self.user_id:
+            try:
+                items, complete = self._fetch_all_items_checked(media_type, user_scoped=True)
+            except requests.HTTPError as e:
+                # A configured user id Jellyfin no longer knows (user deleted
+                # or re-created) must not turn the lookup off: list unscoped.
+                status = getattr(getattr(e, "response", None), "status_code", None)
+                if status not in (400, 404):
+                    raise
+                logger.warning(
+                    f"[Jellyfin] jellyfin_user_id rejected (HTTP {status}); listing {media_type} unscoped"
+                )
+                items, complete = self._fetch_all_items_checked(media_type)
+        else:
+            items, complete = self._fetch_all_items_checked(media_type)
         lookup = {}
         for item in items:
             tmdb_id = item.get("ProviderIds", {}).get("Tmdb")

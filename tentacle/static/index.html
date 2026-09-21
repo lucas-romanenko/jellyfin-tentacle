@@ -1817,6 +1817,11 @@ td.primary { color: var(--text); font-weight: 500; }
                   </div>
                 </div>
               </div>
+              <div class="form-group" style="margin-top:12px">
+                <div class="form-label">Jellyfin URL for links (optional)</div>
+                <input class="form-input" id="jellyfin_public_url" placeholder="https://jellyfin.example.com">
+                <div class="form-hint">Where your browser opens Jellyfin, used by "Watch in Jellyfin". Leave empty if the Jellyfin URL above already works in your browser (it usually doesn't when it is a Docker name like http://jellyfin:8096).</div>
+              </div>
 
               <div style="margin-top:20px">
                 <button class="btn btn-primary" onclick="saveSettings()">Save Connections</button>

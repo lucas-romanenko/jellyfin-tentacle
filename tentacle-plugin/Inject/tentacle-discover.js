@@ -171,6 +171,19 @@
       contentType: 'application/json',
       data: JSON.stringify(body),
       headers: { accept: 'application/json' }
+    }).catch(function (err) {
+      // ApiClient.fetch rejects a non-2xx with the raw Response, which has no
+      // .message, so every caller showed "Error: Failed". Surface the
+      // server's/plugin's `detail` (or at least the HTTP status) instead.
+      if (err && typeof err.json === 'function') {
+        var status = err.status;
+        return err.json().catch(function () { return null; }).then(function (b) {
+          var e = new Error((b && b.detail) || ('Request failed (HTTP ' + status + ')'));
+          e.status = status;
+          throw e;
+        });
+      }
+      throw (err instanceof Error) ? err : new Error('Could not reach the server');
     });
   }
 
@@ -1008,12 +1021,22 @@
   }
 
   function findJellyfinItem(item) {
-    // The detail endpoint resolves this server-side by TMDB id, which is exact.
-    // The title search below stays as a fallback for items it couldn't resolve.
-    if (item.jellyfin_item_id) {
-      return Promise.resolve(item.jellyfin_item_id);
-    }
+    // The detail endpoint resolves this server-side by TMDB id, which is exact,
+    // but it does so with Tentacle's API key. Confirm the signed-in user can
+    // open that item (library access is per user) before navigating to it;
+    // otherwise fall back to the user's own title search.
     var userId = window.ApiClient.getCurrentUserId();
+    if (item.jellyfin_item_id) {
+      return window.ApiClient.getItem(userId, item.jellyfin_item_id).then(function (found) {
+        return (found && found.Id) ? found.Id : searchJellyfinItem(item, userId);
+      }).catch(function () {
+        return searchJellyfinItem(item, userId);
+      });
+    }
+    return searchJellyfinItem(item, userId);
+  }
+
+  function searchJellyfinItem(item, userId) {
     var itemType = item.media_type === 'series' ? 'Series' : 'Movie';
     var url = window.ApiClient.getUrl('Users/' + userId + '/Items', {
       searchTerm: item.title,
@@ -1028,7 +1051,8 @@
         var yearMatch = !item.year || String(i.ProductionYear || '') === String(item.year);
         return titleMatch && yearMatch;
       });
-      if (!match) match = items[0];
+      // Exact title (+ year) only, like the Android TV client: the first fuzzy
+      // search hit can be a different title that merely contains the search term.
       return match ? match.Id : null;
     }).catch(function () {
       return null;
