@@ -415,7 +415,7 @@ public class TentacleDiscoverController : ControllerBase
     /// </summary>
     [HttpGet("Genre")]
     [Authorize]
-    public async Task<ActionResult> GetByGenre([FromQuery] int genreId, [FromQuery] string type = "movies", [FromQuery] string mode = "top_rated")
+    public async Task<ActionResult> GetByGenre([FromQuery(Name = "genre_id")] int genreId, [FromQuery] string type = "movies", [FromQuery] string mode = "top_rated")
     {
         if (type != "movies" && type != "series") type = "movies";
         if (mode != "top_rated" && mode != "new") mode = "top_rated";
