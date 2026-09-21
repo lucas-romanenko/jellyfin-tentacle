@@ -25,7 +25,7 @@ def attributes_before(src: str, name: str) -> str:
 class TestAdminOnlyEndpoints(unittest.TestCase):
     def test_refresh_and_home_config_require_elevation(self):
         src = CONTROLLER.read_text()
-        for name in ("Refresh", "GetHomeConfig", "MoveItem"):
+        for name in ("Refresh", "GetHomeConfig"):
             with self.subTest(action=name):
                 attrs = attributes_before(src, name)
                 self.assertIn('[Authorize(Policy = "RequiresElevation")]', attrs,

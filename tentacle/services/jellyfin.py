@@ -622,40 +622,35 @@ class JellyfinService:
         return True
 
     def move_playlist_item(self, playlist_id: str, item_id: str, new_index: int) -> bool:
-        """Move an entry within a playlist to a new position.
+        """Move an item within a playlist to a new position.
 
-        Jellyfin's own Move route checks the caller against the playlist owner,
-        and a server API key has no user behind it, so it answered 400 and every
-        new download stayed at the END of a "recently added" row until the
-        nightly rebuild (off the row entirely past the 30-item cap). The Tentacle
-        plugin (2.249.0+) exposes the same move done server-side as the owner;
-        try that first and fall back to Jellyfin's route for an older plugin.
+        Asks the Tentacle plugin first: Jellyfin 10.11's own Move endpoint takes
+        the user from the caller's token and ignores ?UserId=, so with a server
+        API key (no user) it always answers 400. The plugin runs inside Jellyfin
+        and moves the entry as the owning user. 404/405 = no plugin, or one too
+        old to have the route: fall back to the native call as before.
         """
-        path = f"/Playlists/{playlist_id}/Items/{item_id}/Move/{new_index}"
         try:
-            r = self.session.post(f"{self.url}/Tentacle{path}", timeout=10)
-            self._check_401(r, f"/Tentacle{path}")
-            if r.status_code < 400:
-                return True
-            if r.status_code not in (404, 405):
-                logger.warning(f"Move playlist item via plugin failed: HTTP {r.status_code} "
-                               f"for playlist={playlist_id} entry={item_id} index={new_index}")
-                return False
-            # 404/405: the plugin is older than the endpoint (or the entry is
-            # unknown to it) — try Jellyfin's own route.
-        except Exception as e:
-            logger.warning(f"Move playlist item via plugin exception: {e}")
-        try:
+            if self.user_id:
+                path = f"/Tentacle/Playlists/{playlist_id}/Items/{item_id}/Move/{new_index}"
+                r = self.session.post(f"{self.url}{path}", params={"userId": self.user_id}, timeout=10)
+                self._check_401(r, path)
+                if r.status_code not in (404, 405):
+                    if r.status_code >= 400:
+                        logger.warning(f"Move playlist item failed: plugin answered HTTP {r.status_code} for playlist={playlist_id} item={item_id} index={new_index}")
+                    return r.status_code < 400
             # UserId for private per-user playlists (same reason as remove_from_playlist).
             params = {}
             if self.user_id:
                 params["UserId"] = self.user_id
-            r = self.session.post(f"{self.url}{path}", params=params, timeout=10)
-            self._check_401(r, path)
+            r = self.session.post(
+                f"{self.url}/Playlists/{playlist_id}/Items/{item_id}/Move/{new_index}",
+                params=params,
+                timeout=10,
+            )
+            self._check_401(r, f"/Playlists/{playlist_id}/Items/{item_id}/Move/{new_index}")
             if r.status_code >= 400:
-                logger.warning(f"Move playlist item failed: HTTP {r.status_code} for playlist={playlist_id} "
-                               f"item={item_id} index={new_index} — Jellyfin needs a user behind this call; "
-                               f"update the Tentacle plugin to 2.249.0 or newer so the move is done server-side")
+                logger.warning(f"Move playlist item failed: HTTP {r.status_code} for playlist={playlist_id} item={item_id} index={new_index}")
             return r.status_code < 400
         except Exception as e:
             logger.warning(f"Move playlist item exception: {e}")
