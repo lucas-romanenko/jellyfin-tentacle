@@ -412,7 +412,7 @@ def _get_missing_from_lists(db: Session, known_ids: dict, type_filter: str, user
         seen.add(item.tmdb_id)
         # Clean pre-fix rows (HTML entities + baked-in year) at serving time
         clean_name, clean_year = clean_list_title(item.title, item.year)
-        result.append({
+        result.append((item.list_id, {
             "tmdb_id": item.tmdb_id,
             "title": clean_name or "Unknown",
             "year": clean_year or "",
@@ -423,13 +423,30 @@ def _get_missing_from_lists(db: Session, known_ids: dict, type_filter: str, user
             "media_type": item.media_type or "movie",
             "in_library": False,
             "list_name": list_names.get(item.list_id, ""),
-        })
+        }))
 
-    # A single list keeps its stored order; the mixed "All" view is shuffled so
-    # one big list doesn't dominate the top.
-    if shuffle:
-        random.shuffle(result)
-    return result[:limit]
+    if not shuffle:
+        # A single-list tab keeps the list's stored order.
+        return [it for _, it in result][:limit]
+
+    # The mixed "All" view interleaves the lists round-robin so every list is
+    # represented instead of the biggest one filling the whole row. Each list's
+    # own items are shuffled first so it's not always the same few on top.
+    by_list = {}
+    for lid, it in result:
+        by_list.setdefault(lid, []).append(it)
+    for items in by_list.values():
+        random.shuffle(items)
+    order = list(by_list.keys())
+    random.shuffle(order)
+    mixed = []
+    idx = 0
+    while len(mixed) < limit and any(by_list[lid] for lid in order):
+        lid = order[idx % len(order)]
+        if by_list[lid]:
+            mixed.append(by_list[lid].pop())
+        idx += 1
+    return mixed[:limit]
 
 
 @router.get("/detail/{media_type}/{tmdb_id}", dependencies=[Depends(get_user_from_request)])

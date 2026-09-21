@@ -239,6 +239,21 @@ class TestFromMyListsPicker(unittest.TestCase):
         ids = {i["tmdb_id"] for i in r.json()["items"]}
         self.assertEqual(ids, {101, 201})
 
+    def test_all_interleaves_lists_so_the_big_one_doesnt_dominate(self):
+        from models.database import ListItem
+        # List 10 gets 30 more missing movies; list 11 has 1. Round-robin must
+        # still surface list 11 near the front, not bury it.
+        for t in range(300, 330):
+            self.db.add(ListItem(list_id=10, tmdb_id=t, media_type="movie", title=f"M{t}", poster_path="/p.jpg"))
+        self.db.commit()
+        with mock.patch.object(self.discover, "_get_jellyfin_tmdb_items", lambda mt: {}):
+            r = self.client.get("/api/discover/list-missing?list_id=all&type=movies")
+        items = r.json()["items"]
+        names = [i["list_name"] for i in items]
+        self.assertIn("Letterboxd", names, "the small list must appear in All")
+        # Letterboxd's single item should land in the first few, not at the end.
+        self.assertLessEqual(names.index("Letterboxd"), 3)
+
     def test_list_missing_one_list_only(self):
         with mock.patch.object(self.discover, "_get_jellyfin_tmdb_items", lambda mt: {}):
             r = self.client.get("/api/discover/list-missing?list_id=10&type=movies")
