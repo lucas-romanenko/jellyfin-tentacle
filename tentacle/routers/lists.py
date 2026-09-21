@@ -890,6 +890,8 @@ def delete_list(list_id: int, db: Session = Depends(get_db), user: TentacleUser 
     ).first()
     if not lst:
         raise HTTPException(404, "List not found")
+    from services.tagger import retire_tag
+    retire_tag(db, lst.tag)
     db.delete(lst)
     db.commit()
     return {"success": True}

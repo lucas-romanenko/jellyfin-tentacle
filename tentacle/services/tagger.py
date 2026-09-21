@@ -281,7 +281,43 @@ def tentacle_owned_tags(db: Session) -> set:
     for (tag,) in db.query(TagRule.output_tag).distinct():
         if tag:
             owned.add(tag)
+    # ...and every list / rule tag that has since been deleted or renamed. Once
+    # the row is gone nothing above produces the tag any more, so without this
+    # it read as somebody else's and stayed on every item for ever.
+    owned |= retired_tags(db)
     return owned
+
+
+RETIRED_TAGS_SETTING = "tentacle_retired_tags"
+
+
+def retired_tags(db: Session) -> set:
+    """Tags Tentacle used to write (a deleted list, a deleted or renamed rule)."""
+    import json
+    try:
+        return set(json.loads(get_setting(db, RETIRED_TAGS_SETTING, "[]") or "[]"))
+    except (ValueError, TypeError):
+        return set()
+
+
+def retire_tag(db: Session, tag: str) -> None:
+    """Record that `tag` was Tentacle's, so "Refresh Tags" still takes it off
+    items after the list or rule that produced it is gone. Call before the
+    commit that removes or renames the row; it does not commit."""
+    import json
+    from models.database import Setting
+    if not tag:
+        return
+    known = retired_tags(db)
+    if tag in known:
+        return
+    known.add(tag)
+    row = db.query(Setting).filter(Setting.key == RETIRED_TAGS_SETTING).first()
+    value = json.dumps(sorted(known))
+    if row:
+        row.value = value
+    else:
+        db.add(Setting(key=RETIRED_TAGS_SETTING, value=value))
 
 
 def merge_owned_tags(existing, desired, owned) -> list:

@@ -124,6 +124,9 @@ def update_rule(rule_id: int, body: TagRuleUpdate, db: Session = Depends(get_db)
     if body.name is not None:
         rule.name = body.name
     if body.output_tag is not None:
+        if body.output_tag != rule.output_tag:
+            from services.tagger import retire_tag
+            retire_tag(db, rule.output_tag)
         rule.output_tag = body.output_tag
     if body.active is not None:
         rule.active = body.active
@@ -143,6 +146,8 @@ def delete_rule(rule_id: int, db: Session = Depends(get_db), user: TentacleUser 
     if not rule:
         raise HTTPException(404, "Rule not found")
     rule_name = rule.output_tag
+    from services.tagger import retire_tag
+    retire_tag(db, rule.output_tag)
     db.delete(rule)
     db.commit()
 
