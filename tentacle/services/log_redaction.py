@@ -14,7 +14,7 @@ import traceback
 _XTREAM_PATH = re.compile(
     r"(/(?:live|movie|series|timeshift)/)[^/\s?#\"']+/[^/\s?#\"']+/", re.IGNORECASE)
 _SECRET_PARAM = re.compile(
-    r"((?:^|[?&;\s])(?:api_key|apikey|password|passwd|pwd|token|access_token|secret|x-emby-token)=)"
+    r"((?:^|[?&;\s])(?:api_key|apikey|username|password|passwd|pwd|token|access_token|secret|x-emby-token)=)"
     r"[^&\s\"']+", re.IGNORECASE)
 
 _MARK = "_tentacle_redacting"
