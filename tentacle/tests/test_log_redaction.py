@@ -127,6 +127,36 @@ class TestLogRedaction(unittest.TestCase):
         self.assertNotIn("Hunter2pw", rec.getMessage())
         self.assertIn("userId=abc", rec.getMessage())
 
+    def test_a_traceback_is_redacted_too(self):
+        # requests/httpx put the full URL in the exception text, and
+        # logger.error(..., exc_info=True) / logger.exception() render that
+        # text at HANDLER time, after the record's message was cleaned. Seen
+        # live: a provider answering 500 put "password=<pw>" into the log on
+        # the traceback's last line while the message line above it was clean.
+        def fail():
+            raise RuntimeError(
+                "500 Server Error for url: http://p.example/player_api.php"
+                "?username=alice&password=Hunter2pw&action=get_live_categories")
+
+        with _Capture("routers.livetv") as c:
+            try:
+                fail()
+            except RuntimeError as e:
+                logging.getLogger("routers.livetv").error(
+                    f"[LiveTV] Group sync failed for provider 1: {e}", exc_info=True)
+        self.assertIn("Traceback", c.text)          # the traceback is still there
+        self.assertIn("get_live_categories", c.text)  # and still useful
+        self.assertNotIn("Hunter2pw", c.text)
+
+    def test_a_stream_path_in_a_traceback_is_redacted(self):
+        with _Capture("routers.livetv") as c:
+            try:
+                raise ValueError("cannot open http://p.example/live/alice/Hunter2pw/5.ts")
+            except ValueError:
+                logging.getLogger("routers.livetv").exception("tune failed")
+        self.assertNotIn("Hunter2pw", c.text)
+        self.assertIn("5.ts", c.text)
+
     def test_ordinary_paths_are_left_alone(self):
         for s in ("/api/live/stream/123", "/api/live/sync-channels/5",
                   "http://jellyfin:8096/Items/abc", "Synced 42 movies"):

@@ -9,6 +9,7 @@ of them, and every handler (console, the dashboard's live log) at once.
 """
 import logging
 import re
+import traceback
 
 _XTREAM_PATH = re.compile(
     r"(/(?:live|movie|series|timeshift)/)[^/\s?#\"']+/[^/\s?#\"']+/", re.IGNORECASE)
@@ -50,6 +51,19 @@ def install() -> None:
                     record.msg, record.args = clean, None
         except Exception:
             pass  # never lose a log line over redaction
+        try:
+            # A traceback is rendered by the handler's Formatter, long after
+            # this factory ran, and requests/httpx put the whole URL in the
+            # exception text ("500 Server Error for url: ...password=...").
+            # Formatter.format() uses record.exc_text as-is when it is already
+            # set, so render it here, cleaned, once for every handler.
+            if record.exc_info and record.exc_info[0] is not None and not record.exc_text:
+                record.exc_text = redact(
+                    "".join(traceback.format_exception(*record.exc_info)).rstrip("\n"))
+            if record.stack_info:
+                record.stack_info = redact(record.stack_info)
+        except Exception:
+            pass
         return record
 
     setattr(factory, _MARK, True)
