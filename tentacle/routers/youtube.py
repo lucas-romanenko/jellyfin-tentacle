@@ -1176,7 +1176,7 @@ def delete_channel(channel_id: int, db: Session = Depends(get_db)):
         removed += library.remove_video(video)
     # ...and the channel's own folder, which the per-video removals leave empty.
     library.remove_channel_folder(channel.title)
-    title, was_live = channel.title, bool(channel.live_enabled)
+    title, was_live, channel_slug = channel.title, bool(channel.live_enabled), channel.slug
     if was_live:
         from models.database import EPGProgram
         from services.youtube import livetv as yt_livetv
@@ -1187,12 +1187,12 @@ def delete_channel(channel_id: int, db: Session = Depends(get_db)):
     db.commit()
     logger.info(f"[YouTube] Removed channel '{title}' ({removed} file(s) deleted)")
 
-    threading.Thread(target=_cleanup_after_remove, args=(title, was_live), daemon=True,
+    threading.Thread(target=_cleanup_after_remove, args=(title, was_live, channel_slug), daemon=True,
                      name="youtube-remove-cleanup").start()
     return {"success": True, "files_deleted": removed}
 
 
-def _cleanup_after_remove(title: str, was_live: bool) -> None:
+def _cleanup_after_remove(title: str, was_live: bool, slug: str = None) -> None:
     """Take a removed channel out of Jellyfin entirely: rows, playlist, items, guide.
 
     Every step stands on its own and is logged, because a removal that stops
@@ -1222,17 +1222,30 @@ def _cleanup_after_remove(title: str, was_live: bool) -> None:
         for user in db.query(TentacleUser).all():
             # The playlist id Tentacle recorded, captured before the sync below
             # removes the folder that holds it.
-            recorded = next((p["playlist_id"] for p in _get_smartlists_with_playlist_ids(db, user_id=user.id)
-                             if p["name"] == title), None)
+            # Found by the channel's own tag ("yt:<slug>"), never by name: a
+            # user's own playlist called "Cooking" is not the YouTube channel
+            # "Cooking", and matching by name deleted it, with its home row and
+            # hero (#52). Without a slug (an older caller), only YouTube
+            # playlists are considered.
+            smartlists = _get_smartlists_with_playlist_ids(db, user_id=user.id)
+            if slug:
+                recorded = next((p["playlist_id"] for p in smartlists
+                                 if f"yt:{slug}" in (p.get("yt_tags") or [])), None)
+            else:
+                recorded = next((p["playlist_id"] for p in smartlists
+                                 if p.get("is_youtube") and p["name"] == title), None)
 
             # 1. The home row and, if it pointed here, the hero — explicitly.
             try:
                 with home_config_lock:
                     config = _read_home_json(user) or {}
                     rows = config.get("rows") or []
-                    kept = [r for r in rows if r.get("display_name") != title]
+                    # By playlist id only. No recorded playlist means there is no
+                    # row of this channel to find, and a same-named row is someone
+                    # else's.
+                    kept = [r for r in rows if not (recorded and r.get("playlist_id") == recorded)]
                     hero = config.get("hero") or {}
-                    hero_hit = hero.get("display_name") == title
+                    hero_hit = bool(recorded) and hero.get("playlist_id") == recorded
                     if len(kept) != len(rows) or hero_hit:
                         for i, r in enumerate(kept, start=1):
                             r["order"] = i
