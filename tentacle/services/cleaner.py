@@ -29,11 +29,25 @@ QUALITY_PATTERNS = [
     r'\b(WEB[-.]?DL|WEB[-.]?RIP|BLU[-.]?RAY|BD[-.]?RIP|HD[-.]?RIP|DVD[-.]?RIP)\b',
     r'\b(x264|x265|HEVC|H\.?264|H\.?265|AVC|REMUX)\b',
     r'\b(AAC|AC3|DTS|ATMOS|TRUEHD|DD5\.?1|DDP5\.?1)\b',
-    r'\b(AMZN|NF|DSNP|ATVP|HBO|HULU|PCOK)\b',
-    r'\b(PROPER|REPACK|RERIP|REAL|INTERNAL)\b',
     r'\[.*?\]',
     r'\((?!(?:19|20)\d{2}\)).*?\)',  # Parens that aren't years
 ]
+
+# Tags that are also ordinary words in catalogue titles ("Dan in Real Life",
+# "The Real Housewives of ...", "Love with the Proper Stranger"). They are only
+# stripped from names that look like a scene release, never from a plain
+# provider title.
+SCENE_ONLY_PATTERNS = [
+    r'\b(AMZN|NF|DSNP|ATVP|HBO|HULU|PCOK)\b',
+    r'\b(PROPER|REPACK|RERIP|REAL|INTERNAL)\b',
+]
+
+# What makes a name "scene-like": a release tag no catalogue title carries.
+SCENE_MARKER_RE = re.compile(
+    r'\b(480p|720p|1080p|2160p|x264|x265|HEVC|H\.?264|H\.?265|AVC|REMUX|HDTV|'
+    r'WEB[-.]?DL|WEB[-.]?RIP|BLU[-.]?RAY|BD[-.]?RIP|HD[-.]?RIP|DVD[-.]?RIP)\b',
+    re.IGNORECASE,
+)
 
 
 def clean_list_title(title: Optional[str], year: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
@@ -88,27 +102,39 @@ def clean_title(raw_name: str) -> Tuple[Optional[str], Optional[str]]:
 
     # Step 2: Remove standard "PREFIX - " patterns
     # Handles: "NF - ", "AMZ - ", "D+ - ", "A+ - ", "EN - ", "EN-TOP - ", "NF-DO - "
+    #
+    # A separator is required. Many prefixes are also the first word of real
+    # titles ("Top Gun", "New Girl", "Max Steel", "Cam", "Max"), so a prefix
+    # followed by nothing but a space is left alone — otherwise the title is
+    # searched on TMDB truncated, or drops out of the sync entirely.
     prefix_pattern = '|'.join(
         re.escape(p) for p in sorted(STRIP_PREFIXES, key=len, reverse=True)
     )
-    name = re.sub(
-        rf'^(?:(?:{prefix_pattern})(?:[-+][A-Z0-9]{{1,4}})?\s*)+[-:.\s]+',
-        '', name, flags=re.IGNORECASE
-    )
+    prefix_re = rf'^(?:(?:{prefix_pattern})(?:[-+][A-Z0-9]{{1,4}})?\s*)+'
+    stripped = re.sub(prefix_re + r'[-:|]+\s*', '', name, flags=re.IGNORECASE)
+    if stripped != name:
+        name = stripped
+    elif re.match(prefix_re + r'\.', name) and re.search(r'\.(?:19|20)\d{2}\.', name):
+        # Scene dot-notation with a prefix ("NF.The.Matrix.1999.1080p").
+        # Case-sensitive on purpose: "Top.Gun.1986.1080p" is a title, not a prefix.
+        name = re.sub(prefix_re + r'\.', '', name)
 
     # Step 3: Remove numbered rankings "250. " or "86. "
     name = re.sub(r'^\d{1,3}\.\s*', '', name)
 
     # Step 4: Handle scene dot-notation (Movie.Name.2020.1080p)
+    scene_like = bool(SCENE_MARKER_RE.search(name))
     if re.search(r'^[A-Za-z0-9]+\.[A-Za-z0-9]+.*\.\d{4}\.', name):
         year_match = re.search(r'\.(\d{4})\.', name)
         if year_match:
             year = year_match.group(1)
             title_part = name[:year_match.start()].replace('.', ' ')
             name = f"{title_part} ({year})"
+            scene_like = True
 
-    # Step 5: Strip quality tags
-    for pattern in QUALITY_PATTERNS:
+    # Step 5: Strip quality tags (scene-only tags only on scene-like names)
+    patterns = QUALITY_PATTERNS + (SCENE_ONLY_PATTERNS if scene_like else [])
+    for pattern in patterns:
         name = re.sub(pattern, '', name, flags=re.IGNORECASE)
 
     # Step 6: Extract year

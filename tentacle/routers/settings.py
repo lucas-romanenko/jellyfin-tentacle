@@ -444,32 +444,45 @@ def delete_stale_files(
     if not ((body and body.confirm) or confirm):
         raise HTTPException(400, "Confirmation required: pass {\"confirm\": true} (or ?confirm=true) to delete stale files")
 
+    # Same precondition as GET /stale-files. Once Tentacle has synced, every .strm
+    # in these folders is its own, and this endpoint would wipe the library.
+    from models.database import Movie, Series, SyncRun
+    if (db.query(Movie).filter(Movie.source.like("provider_%")).count()
+            or db.query(Series).filter(Series.source.like("provider_%")).count()
+            or db.query(SyncRun).filter(SyncRun.status == "completed").count()):
+        raise HTTPException(409, "Tentacle already manages content in the VOD folders — "
+                                 "the stale-file cleanup is only available before the first sync")
+    from services.media_files import delete_movie_files, delete_series_files
+
     # Hardcoded roots — never derived from request input, so there is no traversal
     # vector. The containment check below is defence-in-depth against symlinks.
     vod_roots = [Path("/media/vod/movies"), Path("/media/vod/shows")]
     deleted_strm = 0
     deleted_nfo = 0
 
+    # Only the .strm files and the NFOs that belong to them go, through the same
+    # helpers the prune uses. In a merged setup these roots are also the
+    # Radarr/Sonarr library, whose own NFOs (episode .nfo, tvshow.nfo of
+    # downloaded shows) must survive.
     for vod_dir in vod_roots:
         if not vod_dir.exists():
             continue
-        for f in vod_dir.rglob("*.strm"):
-            if not _is_within(f, vod_dir):
-                continue
-            f.unlink(missing_ok=True)
-            deleted_strm += 1
-        for f in vod_dir.rglob("*.nfo"):
-            if not _is_within(f, vod_dir):
-                continue
-            f.unlink(missing_ok=True)
-            deleted_nfo += 1
-        # Remove empty directories bottom-up
-        for dirpath in sorted(vod_dir.rglob("*"), reverse=True):
-            if dirpath.is_dir() and _is_within(dirpath, vod_dir):
-                try:
-                    dirpath.rmdir()  # only removes if empty
-                except OSError:
-                    pass
+        strm_before = sum(1 for _ in vod_dir.rglob("*.strm"))
+        nfo_before = sum(1 for _ in vod_dir.rglob("*.nfo"))
+        if vod_dir == vod_roots[0]:
+            for f in list(vod_dir.rglob("*.strm")):
+                if _is_within(f, vod_dir):
+                    delete_movie_files(f)
+        else:
+            for show in list(vod_dir.iterdir()):
+                if not _is_within(show, vod_dir):
+                    continue
+                if show.is_dir() and any(show.rglob("*.strm")):
+                    delete_series_files(show)
+                elif show.suffix.lower() == ".strm":
+                    delete_movie_files(show)
+        deleted_strm += strm_before - sum(1 for _ in vod_dir.rglob("*.strm"))
+        deleted_nfo += nfo_before - sum(1 for _ in vod_dir.rglob("*.nfo"))
 
     set_setting(db, "stale_files_dismissed", "true")
     if deleted_strm or deleted_nfo:

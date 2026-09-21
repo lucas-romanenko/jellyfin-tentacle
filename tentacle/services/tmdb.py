@@ -8,6 +8,7 @@ import re
 import json
 import hashlib
 import logging
+import threading
 import requests
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -44,6 +45,12 @@ class TMDBService:
             "Content-Type": "application/json"
         })
         self.enabled = bool(bearer_token)
+        # Per-thread flag: did a request in the current lookup fail transiently
+        # (429/5xx/timeout/unreachable)? The sync runs lookups on a thread pool.
+        self._tl = threading.local()
+
+    def _lookup_failed(self) -> bool:
+        return getattr(self._tl, "failed", False)
 
     # ── Cache ──────────────────────────────────────────────────────────────
 
@@ -114,11 +121,16 @@ class TMDBService:
             r.raise_for_status()
             return r.json()
         except requests.ConnectionError as e:
+            self._tl.failed = True
             raise TMDBConnectionError(f"Cannot reach TMDB API: {e}")
         except requests.HTTPError as e:
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            if status is None or status == 429 or status >= 500:
+                self._tl.failed = True
             logger.warning(f"TMDB HTTP error {endpoint}: {e}")
             return None
         except Exception as e:
+            self._tl.failed = True
             logger.debug(f"TMDB request failed {endpoint}: {e}")
             return None
 
@@ -163,10 +175,17 @@ class TMDBService:
 
     # ── Search ─────────────────────────────────────────────────────────────
 
-    def search_movie(self, title: str, year: Optional[str] = None) -> Optional[dict]:
-        """Search for movie, return full metadata dict or None"""
+    def search_movie(self, title: str, year: Optional[str] = None, strict: bool = False) -> Optional[dict]:
+        """Search for movie, return full metadata dict or None.
+
+        None means "TMDB has no acceptable match". With ``strict``, a lookup that
+        could not complete (429/5xx/timeout/unreachable) raises
+        TMDBConnectionError instead, so callers can tell the two apart. A failed
+        lookup is never cached as a negative match.
+        """
         if not self.enabled:
             return None
+        self._tl.failed = False
 
         cache_key = f"movie_search:{title.lower()}:{year}"
         cached = self._cache_get(cache_key)
@@ -187,18 +206,28 @@ class TMDBService:
                     tmdb_id, tmdb_title, tmdb_year, score = match
                     # Fetch full details
                     full = self.get_movie_details(tmdb_id)
-                    self._cache_set(cache_key, full)
-                    return full
+                    if full:
+                        self._cache_set(cache_key, full)
+                        return full
+                    break
             if year:
                 break  # Already tried without year in second iteration
 
+        return self._no_match(cache_key, title, strict)
+
+    def _no_match(self, cache_key: str, title: str, strict: bool):
+        if self._lookup_failed():
+            if strict:
+                raise TMDBConnectionError(f"TMDB lookup for '{title}' did not complete")
+            return None
         self._cache_set(cache_key, None)
         return None
 
-    def search_series(self, title: str, year: Optional[str] = None) -> Optional[dict]:
-        """Search for series, return full metadata dict or None"""
+    def search_series(self, title: str, year: Optional[str] = None, strict: bool = False) -> Optional[dict]:
+        """Search for series, return full metadata dict or None (see search_movie)."""
         if not self.enabled:
             return None
+        self._tl.failed = False
 
         cache_key = f"series_search:{title.lower()}:{year}"
         cached = self._cache_get(cache_key)
@@ -217,13 +246,14 @@ class TMDBService:
                 if match:
                     tmdb_id, tmdb_title, tmdb_year, score = match
                     full = self.get_series_details(tmdb_id)
-                    self._cache_set(cache_key, full)
-                    return full
+                    if full:
+                        self._cache_set(cache_key, full)
+                        return full
+                    break
             if year:
                 break
 
-        self._cache_set(cache_key, None)
-        return None
+        return self._no_match(cache_key, title, strict)
 
     # ── Full Details ───────────────────────────────────────────────────────
 

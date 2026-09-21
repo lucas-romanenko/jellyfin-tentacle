@@ -11,7 +11,8 @@ from typing import Optional
 import requests
 from sqlalchemy.orm import Session
 
-from models.database import Series, Duplicate, DownloadRequest, TentacleUser, get_setting
+from models.database import Series, Duplicate, DownloadRequest, TentacleUser, get_setting, DeletionLog
+from services.radarr import file_loss_looks_like_an_outage
 
 DOWNLOADED_TV_TAG = "Downloaded TV"
 RECENTLY_ADDED_TV_TAG = "Recently Added TV"
@@ -566,6 +567,11 @@ def scan_sonarr_library(db: Session) -> dict:
             if existing.sonarr_monitored != is_following:
                 existing.sonarr_monitored = is_following
                 changed = True
+            # Whether the row ALREADY knew a Sonarr path says whether this was an
+            # intentional add ("Download More Episodes"). Read it before the line
+            # below overwrites it: testing it afterwards could only ever be true
+            # when Sonarr reported an empty path, so no overlap was ever recorded.
+            had_sonarr_path = bool(existing.sonarr_path)
             if series_path and existing.sonarr_path != series_path:
                 existing.sonarr_path = series_path
                 changed = True
@@ -580,7 +586,7 @@ def scan_sonarr_library(db: Session) -> dict:
                     pass
             # If this was a VOD-only row, create a duplicate record
             # Skip if sonarr_path already set (intentional add via "Download More Episodes")
-            if existing.source and existing.source.startswith("provider_") and not existing.sonarr_path and tmdb_id not in existing_dup_tmdb_ids:
+            if existing.source and existing.source.startswith("provider_") and not had_sonarr_path and tmdb_id not in existing_dup_tmdb_ids:
                 db.add(Duplicate(
                     tmdb_id=tmdb_id,
                     media_type="series",
@@ -677,19 +683,40 @@ def scan_sonarr_library(db: Session) -> dict:
         tid = s.get("tmdbId") or 0
         if tid:
             sonarr_tmdb_ids.add(tid)
+    listed_tmdb_ids = {s.get("tmdbId") for s in all_series if s.get("tmdbId")}
+    rows = db.query(Series).filter(Series.source == "sonarr").all()
+    # Still in Sonarr, but Sonarr says it has no episode files (see
+    # services.radarr.file_loss_looks_like_an_outage).
+    lost_file = [r for r in rows if r.tmdb_id not in sonarr_tmdb_ids and r.tmdb_id in listed_tmdb_ids]
+    refused = 0
+    keep = set()
+    if file_loss_looks_like_an_outage(len(lost_file), len(rows)):
+        refused = len(lost_file)
+        keep = {r.tmdb_id for r in lost_file}
+        logger.error(
+            f"Sonarr scan: REFUSING to remove {refused} of {len(rows)} downloaded series that "
+            f"Sonarr still lists but reports as having no episode files. That many at once looks "
+            f"like Sonarr's media storage being unavailable, not a clean-up. Rows kept; if the "
+            f"files really are gone, remove the series from Sonarr.")
     removed = 0
-    for series in db.query(Series).filter(Series.source == "sonarr").all():
-        if series.tmdb_id not in sonarr_tmdb_ids:
+    for series in rows:
+        if series.tmdb_id not in sonarr_tmdb_ids and series.tmdb_id not in keep:
             emit_library_event("series_removed", {
                 "tmdb_id": series.tmdb_id,
                 "title": series.title,
                 "media_type": "series",
             })
+            # Same transaction as the delete: the scan commits once, at the end.
+            db.add(DeletionLog(
+                kind="sonarr-scan", media_type="series", reason="removed-from-sonarr", name=series.title,
+                detail="no longer in Sonarr" if series.tmdb_id not in listed_tmdb_ids
+                else "Sonarr reports no episode files"))
             db.delete(series)
             removed += 1
     if removed:
         logger.info(f"Sonarr scan: removed {removed} series no longer in Sonarr")
     stats["removed"] = removed
+    stats["removals_refused"] = refused
 
     # Sync monitoring state for ALL series in DB (not just those processed above)
     # Covers: VOD series added to Sonarr, series with no downloads yet, etc.

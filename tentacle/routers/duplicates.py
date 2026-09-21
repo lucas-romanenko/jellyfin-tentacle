@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from models.database import get_db, get_setting, Duplicate, Movie, Series, log_deletion
 from routers.auth import require_admin
 from services.duplicates import delete_vod_files, convert_record_to_downloaded
+from services.media_files import delete_series_files
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/duplicates", tags=["duplicates"], dependencies=[Depends(require_admin)])
@@ -37,13 +38,20 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
     if record is not None:
         title = record.title
 
+    is_series = dup.media_type != "movie"
+
     if resolution == "keep_radarr":
-        # Delete VOD strm/nfo files
+        # Delete VOD strm/nfo files. A series' VOD path is its show folder, not
+        # a .strm, so it needs the folder-aware helper (extension-based, safe in
+        # merged folders); the movie helper silently ignored it.
         for source in sources:
             src = source.get("source", "")
             path = source.get("path", "")
             if src.startswith("provider_") and path:
-                delete_vod_files(path)
+                if is_series:
+                    delete_series_files(path)
+                else:
+                    delete_vod_files(path)
 
         # Convert the provider-owned row into a downloaded-only row.
         # The VOD sync then skips this title forever (source is radarr/sonarr)
@@ -55,22 +63,30 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
                      detail="Kept downloaded copy — VOD .strm/.nfo files deleted")
 
     elif resolution == "keep_vod":
-        # Delete from Radarr via API (removes from Radarr + deletes files on disk)
-        deleted_ok = _delete_from_radarr(dup.tmdb_id, db)
+        # Delete the downloaded copy from the *arr that owns it (API + files).
+        # Never Radarr for a series: TMDB movie and TV ids are separate number
+        # spaces, so a series' id names an unrelated film in Radarr.
+        if is_series:
+            deleted_ok = _delete_from_sonarr(dup.tmdb_id, db)
+            arr = "Sonarr"
+        else:
+            deleted_ok = _delete_from_radarr(dup.tmdb_id, db)
+            arr = "Radarr"
 
         # Only touch the DB if the API delete actually succeeded — otherwise
         # the files are still on disk and the resolution should be retryable.
         if not deleted_ok:
             db.rollback()
-            raise HTTPException(502, f"Failed to delete tmdb:{dup.tmdb_id} from Radarr — files may still exist")
+            raise HTTPException(502, f"Failed to delete tmdb:{dup.tmdb_id} from {arr} — files may still exist")
 
         # The (single) row is the VOD one — just clear the downloaded-copy path
-        if record is not None and getattr(record, "radarr_path", None):
-            record.radarr_path = None
+        path_attr = "sonarr_path" if is_series else "radarr_path"
+        if record is not None and getattr(record, path_attr, None):
+            setattr(record, path_attr, None)
 
         # Legacy state: a radarr-only row (shouldn't exist alongside VOD due to
         # the unique constraint, but clean up if the row itself is radarr-owned)
-        radarr_movie = db.query(Movie).filter(
+        radarr_movie = None if is_series else db.query(Movie).filter(
             Movie.tmdb_id == dup.tmdb_id,
             Movie.source == "radarr"
         ).first()
@@ -79,7 +95,7 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
             logger.info(f"Removed Radarr DB record for tmdb:{dup.tmdb_id}")
         log_deletion(db, kind="duplicate-resolve", name=title or f"tmdb:{dup.tmdb_id}",
                      media_type=dup.media_type, reason="manual",
-                     detail="Kept VOD copy — downloaded files deleted from Radarr")
+                     detail=f"Kept VOD copy — downloaded files deleted from {arr}")
 
     db.commit()
 
@@ -103,6 +119,28 @@ def _delete_from_radarr(tmdb_id: int, db: Session) -> bool:
         return bool(radarr.delete_movie(tmdb_id, delete_files=True))
     except Exception as e:
         logger.error(f"Failed to delete tmdb:{tmdb_id} from Radarr: {e}")
+        return False
+
+
+def _delete_from_sonarr(tmdb_id: int, db: Session) -> bool:
+    """Delete a series from Sonarr via its API. Returns True on success.
+
+    Same contract as _delete_from_radarr: not configured means nothing to
+    delete on the *arr side.
+    """
+    from services.sonarr import SonarrService
+
+    sonarr_url = get_setting(db, "sonarr_url")
+    sonarr_key = get_setting(db, "sonarr_api_key")
+    if not sonarr_url or not sonarr_key:
+        logger.warning(f"Cannot delete tmdb:{tmdb_id} from Sonarr — not configured")
+        return True
+
+    try:
+        sonarr = SonarrService(sonarr_url, sonarr_key)
+        return bool(sonarr.delete_series(tmdb_id, delete_files=True))
+    except Exception as e:
+        logger.error(f"Failed to delete tmdb:{tmdb_id} from Sonarr: {e}")
         return False
 
 

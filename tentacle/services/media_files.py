@@ -52,9 +52,12 @@ def delete_movie_files(strm_path) -> int:
         if strm.suffix == ".strm" and strm.exists():
             strm.unlink()
             deleted += 1
-        # The NFO sits beside the .strm with the same stem.
+        # The NFO sits beside the .strm with the same stem. In a merged folder a
+        # downloaded copy can share that stem ("Heat (1995).mkv"), and Radarr's
+        # NFO for it has the same name — then it describes the download, not us.
         nfo = strm.with_suffix(".nfo")
-        if nfo.exists():
+        has_download = any(strm.with_suffix(ext).exists() for ext in MEDIA_SUFFIXES)
+        if nfo.exists() and not has_download:
             nfo.unlink()
             deleted += 1
         parent = strm.parent

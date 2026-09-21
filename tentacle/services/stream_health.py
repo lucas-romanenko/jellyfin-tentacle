@@ -22,6 +22,7 @@ hammering the provider.
 """
 
 import json
+import time
 import logging
 import re
 from datetime import datetime, timedelta
@@ -39,6 +40,42 @@ logger = logging.getLogger(__name__)
 
 KNOWN_BAD_RECHECK_DAYS = 7
 DEFAULT_BATCH_SIZE = 100
+
+# Every probe is a connection on the provider account that live TV streams
+# from. Back to back they are a burst -- 100 in about two minutes -- and an
+# Xtream panel answers a burst by refusing the stream that was already running
+# (HTTP 509), which is a truncated recording. So: one at a time with a pause,
+# never while live TV is being proxied, and not at all once the provider has
+# said it is over its limit.
+PROBE_INTERVAL_SECONDS = 3.0
+PROVIDER_BUSY_STATUSES = {429, 509}
+_probe_state = {"provider_busy": False}
+
+
+def _live_streams_active() -> bool:
+    """True while Tentacle is proxying at least one live stream."""
+    try:
+        from routers import livetv
+        slots = getattr(livetv, "_stream_slots", None)
+        if slots is not None and getattr(slots, "active", 0) > 0:
+            return True
+        if getattr(livetv, "_shared_streams", None):
+            return True
+        # Without the configurable ceiling (#87) the limiter is a plain
+        # asyncio.Semaphore: fewer free permits than it started with means a
+        # stream is holding one.
+        sem = getattr(livetv, "_stream_semaphore", None)
+        free = getattr(sem, "_value", None)
+        size = getattr(livetv, "_MAX_CONCURRENT_STREAMS", None)
+        return isinstance(free, int) and isinstance(size, int) and free < size
+    except Exception:
+        return False
+
+# 4xx codes that mean "not right now", not "not any more": the account's
+# max_connections are already in use, the provider is rate-limiting our own
+# sweep, or the credentials were refused. Marking a title dead on one of these
+# is how a one-connection IPTV account loses its library to a nightly sweep.
+INCONCLUSIVE_STATUSES = {401, 403, 407, 408, 423, 425, 429}
 
 # Direct provider URLs as written by the VOD sync:
 #   http://server/movie/{user}/{pass}/{stream_id}.mp4
@@ -68,6 +105,11 @@ def _probe_url(url: str, user_agent: str) -> bool | None:
                 for chunk in r.iter_content(65536):
                     return len(chunk) > 0
                 return False
+            if r.status_code in PROVIDER_BUSY_STATUSES:
+                _probe_state["provider_busy"] = True
+                return None
+            if r.status_code in INCONCLUSIVE_STATUSES:
+                return None
             if 400 <= r.status_code < 500:
                 return False
             return None  # 5xx — provider hiccup, not proof the content is gone
@@ -89,9 +131,25 @@ def check_stream(db, media_type: str, kind: str, stream_id: int, url: str, provi
             finally:
                 client.close()
             if isinstance(data, dict):
-                info = data.get("info")
-                # Providers signal "unknown vod_id" with an empty/missing info block
-                return bool(info)
+                user_info = data.get("user_info")
+                if isinstance(user_info, dict) and not user_info.get("auth", 1):
+                    # Credentials refused / account throttled — this answer says
+                    # nothing about whether the title is still in the catalog.
+                    logger.warning(
+                        f"[Stream health] catalog check for vod {stream_id} came back "
+                        f"unauthenticated — treating as inconclusive"
+                    )
+                elif "info" in data:
+                    # Providers signal "unknown vod_id" with an empty info block.
+                    return bool(data["info"])
+                else:
+                    # Not a get_vod_info answer at all (empty body, error JSON):
+                    # fall through to the reachability probe rather than
+                    # declaring the title gone.
+                    logger.debug(
+                        f"[Stream health] catalog answer for vod {stream_id} had no "
+                        f"info block — falling back to a probe"
+                    )
         except Exception as e:
             logger.debug(f"[Stream health] catalog check inconclusive for vod {stream_id}: {e}")
     return _probe_url(url, user_agent)
@@ -208,6 +266,14 @@ def run_stream_health_sweep():
     db = SessionLocal()
     try:
         stats = {"rechecked": 0, "cleared": 0, "probed": 0, "new_bad": 0, "inconclusive": 0}
+        _probe_state["provider_busy"] = False
+        if _live_streams_active():
+            stats["deferred"] = True
+            set_setting(db, "stream_health_last_run", json.dumps({
+                "at": datetime.utcnow().isoformat(), **stats,
+            }))
+            logger.info("[Stream health] live TV is streaming — sweep deferred, nothing probed")
+            return
 
         # 1. Recheck known-bad entries older than the recheck window
         cutoff = datetime.utcnow() - timedelta(days=KNOWN_BAD_RECHECK_DAYS)
@@ -242,16 +308,33 @@ def run_stream_health_sweep():
             if cursor >= len(items):
                 cursor = 0
             batch = items[cursor:cursor + per_type]
+            done = 0
             for item in batch:
-                if item.strm_path in bad_paths:
-                    continue
-                alive = _check_item(db, item, media_type, providers)
-                stats["probed"] += 1
-                if alive is False:
-                    stats["new_bad"] += 1
-                elif alive is None:
-                    stats["inconclusive"] += 1
-            set_setting(db, cursor_key, str(cursor + len(batch)))
+                # Stand aside the moment somebody starts watching or recording,
+                # and stop once the provider says it is over its limit. The
+                # cursor rests on the first title NOT probed, so nothing is
+                # skipped -- the next sweep picks up here.
+                if _live_streams_active():
+                    stats["deferred"] = True
+                    break
+                if _probe_state["provider_busy"]:
+                    stats["provider_busy"] = True
+                    break
+                if item.strm_path not in bad_paths:
+                    if stats["probed"]:
+                        time.sleep(PROBE_INTERVAL_SECONDS)
+                    alive = _check_item(db, item, media_type, providers)
+                    stats["probed"] += 1
+                    if alive is False:
+                        stats["new_bad"] += 1
+                    elif alive is None:
+                        stats["inconclusive"] += 1
+                done += 1
+            set_setting(db, cursor_key, str(cursor + done))
+            if _probe_state["provider_busy"]:
+                stats["provider_busy"] = True
+            if stats.get("deferred") or stats.get("provider_busy"):
+                break
 
         set_setting(db, "stream_health_last_run", json.dumps({
             "at": datetime.utcnow().isoformat(), **stats,
@@ -260,7 +343,12 @@ def run_stream_health_sweep():
             log_activity(db, "stream_health",
                          f"Stream health sweep: {stats['new_bad']} dead stream(s) found "
                          f"({stats['probed']} probed)")
-        logger.info(f"[Stream health] sweep complete: {stats}")
+        if stats.get("deferred"):
+            logger.info(f"[Stream health] live TV started — sweep stopped early: {stats}")
+        elif stats.get("provider_busy"):
+            logger.warning(f"[Stream health] provider answered 429/509 — sweep stopped early: {stats}")
+        else:
+            logger.info(f"[Stream health] sweep complete: {stats}")
     except Exception:
         logger.exception("[Stream health] sweep failed")
     finally:

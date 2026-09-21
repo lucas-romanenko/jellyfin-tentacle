@@ -4054,11 +4054,12 @@ function renderDupList() {
 
   el.innerHTML = items.map(dup => {
     const sources = dup.sources || [];
-    const hasRadarr = sources.some(s => s.source === 'radarr');
+    // A series' downloaded copy comes from Sonarr, not Radarr.
+    const hasRadarr = sources.some(s => s.source === 'radarr' || s.source === 'sonarr');
     const hasVod = sources.some(s => s.source.startsWith('provider_'));
     const sourceCards = sources.map(s => {
-      const isRadarr = s.source === 'radarr';
-      const sourceLabel = isRadarr ? 'Downloaded (Radarr)' :
+      const isRadarr = s.source === 'radarr' || s.source === 'sonarr';
+      const sourceLabel = isRadarr ? `Downloaded (${s.source === 'sonarr' ? 'Sonarr' : 'Radarr'})` :
         s.source.startsWith('provider_') ? 'VOD (Streamed)' : s.source;
       const icon = isRadarr ? '&#11015;' : '&#128225;';
       const color = isRadarr ? 'var(--green)' : 'var(--amber)';
@@ -4086,7 +4087,7 @@ function renderDupList() {
           ${dup.resolution === 'pending' ? `
             <div class="dup-actions">
               ${hasRadarr ? `<button class="btn btn-success btn-sm" onclick="resolveDup(${dup.id}, 'keep_radarr')">Keep Downloaded</button>` : ''}
-              ${hasVod ? `<button class="btn btn-secondary btn-sm" onclick="resolveDup(${dup.id}, 'keep_vod')">Keep VOD</button>` : ''}
+              ${hasVod ? `<button class="btn btn-secondary btn-sm" onclick="resolveDup(${dup.id}, 'keep_vod', '${dup.media_type}')">Keep VOD</button>` : ''}
               <button class="btn btn-secondary btn-sm" onclick="resolveDup(${dup.id}, 'keep_both')">Keep Both</button>
             </div>` : ''}
         </div>
@@ -4094,7 +4095,7 @@ function renderDupList() {
   }).join('');
 }
 
-function resolveDup(id, resolution) {
+function resolveDup(id, resolution, mediaType) {
   if (resolution === 'keep_both') {
     _executeResolveDup(id, resolution);
     return;
@@ -4107,7 +4108,9 @@ function resolveDup(id, resolution) {
   if (resolution === 'keep_vod') {
     titleEl.textContent = 'Keep VOD Stream';
     msgEl.textContent = 'This will keep the streamed VOD version and remove the downloaded copy.';
-    warnEl.textContent = 'The movie will be deleted from Radarr and the downloaded file will be permanently removed.';
+    warnEl.textContent = mediaType === 'series'
+      ? 'The series will be deleted from Sonarr and its downloaded episodes will be permanently removed.'
+      : 'The movie will be deleted from Radarr and the downloaded file will be permanently removed.';
     confirmBtn.textContent = 'Delete Downloaded';
   } else {
     titleEl.textContent = 'Keep Downloaded';

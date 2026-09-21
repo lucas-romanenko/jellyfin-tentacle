@@ -138,10 +138,14 @@ def run_scheduled_sync():
         logger.info("Running Jellyfin pipeline (scan, tags, playlists)")
         try:
             from services.jellyfin import run_full_jellyfin_pipeline
-            pipeline_stats = run_full_jellyfin_pipeline(db, log_prefix="Nightly sync")
+            # The per-user pass below refreshes every playlist for every user;
+            # letting the pipeline do it too meant each nightly run rebuilt the
+            # same playlists twice.
+            pipeline_stats = run_full_jellyfin_pipeline(db, log_prefix="Nightly sync",
+                                                        refresh_playlists=False)
             tags_pushed = pipeline_stats.get("tags_pushed", 0)
             if tags_pushed:
-                log_activity(db, "jellyfin_push", f"Jellyfin pipeline — {tags_pushed} tag(s) pushed, playlists refreshed")
+                log_activity(db, "jellyfin_push", f"Jellyfin pipeline — {tags_pushed} tag(s) pushed")
             logger.info(f"Jellyfin pipeline complete: {pipeline_stats}")
         except Exception as e:
             logger.error(f"Jellyfin pipeline failed: {e}")
@@ -437,15 +441,19 @@ def setup_scheduler(db):
     # Stream health: daily rotating-batch probe of VOD streams + recheck of
     # known-bad entries (auto-clears recovered streams).
     from services.stream_health import run_stream_health_sweep
+    # At a fixed quiet hour, not "24 h after the container last started" -- that
+    # put a burst of provider connections wherever the last restart happened to
+    # fall, e.g. early afternoon, on top of live recordings. It still stands
+    # aside if live TV is streaming when it fires (services/stream_health.py).
     scheduler.add_job(
         run_stream_health_sweep,
-        IntervalTrigger(hours=24),
+        CronTrigger(hour=4, minute=30),
         id="stream_health",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
     )
-    logger.info("Stream health sweep scheduled: every 24 h")
+    logger.info("Stream health sweep scheduled: daily at 04:30")
 
     # YouTube source: index enabled channels and write their .strm/NFO files.
     # The job checks the youtube_enabled setting itself, so the schedule can

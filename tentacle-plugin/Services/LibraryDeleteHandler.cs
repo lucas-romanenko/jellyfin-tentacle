@@ -2,6 +2,7 @@ using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Model.Tasks;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -14,6 +15,7 @@ namespace Jellyfin.Plugin.Tentacle.Services;
 public class LibraryDeleteHandler : IHostedService, IDisposable
 {
     private readonly ILibraryManager _libraryManager;
+    private readonly ITaskManager _taskManager;
     private readonly ILogger<LibraryDeleteHandler> _logger;
     private readonly HttpClient _httpClient;
     private Timer? _debounceTimer;
@@ -22,9 +24,11 @@ public class LibraryDeleteHandler : IHostedService, IDisposable
 
     public LibraryDeleteHandler(
         ILibraryManager libraryManager,
+        ITaskManager taskManager,
         ILogger<LibraryDeleteHandler> logger)
     {
         _libraryManager = libraryManager;
+        _taskManager = taskManager;
         _logger = logger;
         _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
     }
@@ -75,6 +79,19 @@ public class LibraryDeleteHandler : IHostedService, IDisposable
             return;
         }
 
+        // A library scan removes every item whose file it cannot see — a provider
+        // sync that rewrote .strm files, an unreadable mount, a pool branch that
+        // dropped out. Those are not user deletions, and the path check above
+        // cannot tell them apart, because the file really is gone. While a scan
+        // is running, leave the catalogue alone; a deletion made in the UI during
+        // a scan is reconciled by the backend's nightly orphan sweep.
+        if (IsLibraryScanRunning())
+        {
+            _logger.LogInformation("[Tentacle] {Type} '{Name}' removed during a library scan — not forwarding to the backend",
+                mediaType, item.Name);
+            return;
+        }
+
         // Extract TMDB provider ID
         if (!item.ProviderIds.TryGetValue("Tmdb", out var tmdbId) || string.IsNullOrEmpty(tmdbId))
         {
@@ -92,6 +109,35 @@ public class LibraryDeleteHandler : IHostedService, IDisposable
             _debounceTimer?.Dispose();
             _debounceTimer = new Timer(_ => ProcessPendingDeletes(), null, TimeSpan.FromSeconds(2), Timeout.InfiniteTimeSpan);
         }
+    }
+
+    /// <summary>
+    /// True while Jellyfin's library scan / refresh task is running.
+    /// </summary>
+    private bool IsLibraryScanRunning()
+    {
+        try
+        {
+            foreach (var task in _taskManager.ScheduledTasks)
+            {
+                if (task.State != TaskState.Running)
+                {
+                    continue;
+                }
+
+                var key = task.ScheduledTask?.Key;
+                if (string.Equals(key, "RefreshLibrary", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "[Tentacle] Could not read scheduled task state");
+        }
+
+        return false;
     }
 
     private void ProcessPendingDeletes()

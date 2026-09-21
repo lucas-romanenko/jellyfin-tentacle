@@ -177,8 +177,118 @@ def _build_config(name: str, tag: str, media_types: list, folder_id: str,
     }
 
 
-def _find_jellyfin_playlist(name: str, user_id: str, jellyfin_url: str, jellyfin_key: str) -> str:
-    """Find an existing Jellyfin playlist by exact name for a user. Returns playlist ID or empty string."""
+def _playlist_ids_of_other_users(db: Session, user_id: int) -> set:
+    """Canonical Jellyfin playlist ids recorded in every OTHER Tentacle user's
+    SmartList configs.
+
+    Playlist names are not unique per user: every user gets the same generated
+    names ("Netflix Movies", "HBO TV", ...), and a playlist that is public or
+    shared shows up in other users' item listings too. Name-keyed lookups must
+    therefore never resolve to, or delete, a playlist another user's config
+    already owns.
+    """
+    ids = set()
+    for other in db.query(TentacleUser).all():
+        if other.id == user_id or not other.jellyfin_user_id:
+            continue
+        try:
+            existing = _scan_existing(_user_smartlists_path(db, other.id))
+        except Exception as e:
+            logger.warning(f"[SmartLists] Could not read SmartLists of user {other.id}: {e}")
+            continue
+        for _name, (_folder, cfg) in existing.items():
+            for up in (cfg.get("UserPlaylists") or []):
+                if up.get("JellyfinPlaylistId"):
+                    ids.add(up["JellyfinPlaylistId"])
+            if cfg.get("JellyfinPlaylistId"):
+                ids.add(cfg["JellyfinPlaylistId"])
+    return ids
+
+
+def _playlists_visible_to_other_users(jf, db: Session, user_id: int):
+    """Ids of the playlists Jellyfin lists for every OTHER user.
+
+    A playlist Tentacle created is private, so only its owner sees it. Anything
+    that shows up in a second user's listing is therefore public, shared, or
+    ownerless — someone else's row, not a duplicate to reap. Returns None if any
+    listing failed, so callers can refuse to delete rather than guess.
+
+    "Other user" means every other JELLYFIN user, not just the ones with a
+    Tentacle login: someone who only ever uses a Jellyfin client has no
+    TentacleUser row, and on a single-admin install that made their public
+    playlist look like the admin's private duplicate.
+    """
+    me = (_get_jellyfin_user_id(db, user_id) or "").replace("-", "").lower()
+    jf_user_ids = jf.get_user_ids()
+    if jf_user_ids is None:
+        logger.warning("[SmartLists] Could not list Jellyfin's users")
+        return None
+    others = {}
+    for uid in jf_user_ids:
+        others[uid.replace("-", "").lower()] = uid
+    for other in db.query(TentacleUser).all():
+        if other.id != user_id and other.jellyfin_user_id:
+            others.setdefault(other.jellyfin_user_id.replace("-", "").lower(), other.jellyfin_user_id)
+    others.pop(me, None)
+
+    ids = set()
+    for other_jf_id in others.values():
+        try:
+            listing = jf.get_playlists_checked(other_jf_id)
+        except Exception as e:
+            logger.warning(f"[SmartLists] Could not list playlists of Jellyfin user {other_jf_id}: {e}")
+            return None
+        if listing is None:
+            return None
+        for pl in listing:
+            if pl.get("Id"):
+                ids.add(pl["Id"])
+    return ids
+
+
+def _seen_by_another_jellyfin_user(playlist_id: str, user_id: str, jellyfin_url: str,
+                                   jellyfin_key: str) -> bool:
+    """True when any OTHER Jellyfin user's listing contains this playlist — or
+    when Jellyfin would not say, so the caller creates its own rather than
+    adopting what may be someone else's.
+
+    Tentacle's playlists are private. One that a second user can see is public
+    or shared, and its owner need not have a Tentacle login (so no SmartList
+    config of theirs is there to exclude it).
+    """
+    base = jellyfin_url.rstrip("/")
+    headers = {"X-Emby-Token": jellyfin_key}
+    me = (user_id or "").replace("-", "").lower()
+    try:
+        r = requests.get(f"{base}/Users", headers=headers, timeout=10)
+        r.raise_for_status()
+        users = r.json()
+        if not isinstance(users, list):
+            return True
+        for u in users:
+            uid = u.get("Id") or ""
+            if not uid or uid.replace("-", "").lower() == me:
+                continue
+            lr = requests.get(f"{base}/Users/{uid}/Items", headers=headers,
+                              params={"IncludeItemTypes": "Playlist", "Recursive": "true"},
+                              timeout=10)
+            lr.raise_for_status()
+            if any(i.get("Id") == playlist_id for i in lr.json().get("Items", [])):
+                return True
+        return False
+    except Exception as e:
+        logger.warning(f"[SmartLists] Could not check who else sees playlist {playlist_id}: {e}")
+        return True
+
+
+def _find_jellyfin_playlist(name: str, user_id: str, jellyfin_url: str, jellyfin_key: str,
+                            exclude_ids: set = None) -> str:
+    """Find an existing Jellyfin playlist by exact name for a user. Returns playlist ID or empty string.
+
+    `exclude_ids` holds playlist ids other users' SmartLists already own; a
+    shared or public playlist of theirs carries the same name and would
+    otherwise be adopted here, making two users write to one playlist.
+    """
     try:
         r = requests.get(
             f"{jellyfin_url.rstrip('/')}/Users/{user_id}/Items",
@@ -193,6 +303,18 @@ def _find_jellyfin_playlist(name: str, user_id: str, jellyfin_url: str, jellyfin
         r.raise_for_status()
         for item in r.json().get("Items", []):
             if item.get("Name") == name:
+                if exclude_ids and item.get("Id") in exclude_ids:
+                    logger.info(
+                        f"[SmartLists] Ignoring visible playlist '{name}' ({item['Id']}) — "
+                        f"it is another user's SmartList playlist"
+                    )
+                    continue
+                if _seen_by_another_jellyfin_user(item["Id"], user_id, jellyfin_url, jellyfin_key):
+                    logger.info(
+                        f"[SmartLists] Ignoring visible playlist '{name}' ({item['Id']}) — "
+                        f"another Jellyfin user sees it too, so it is shared/public, not this user's own"
+                    )
+                    continue
                 logger.info(f"[SmartLists] Found existing Jellyfin playlist '{name}' (ID: {item['Id']})")
                 return item["Id"]
     except Exception as e:
@@ -200,10 +322,12 @@ def _find_jellyfin_playlist(name: str, user_id: str, jellyfin_url: str, jellyfin
     return ""
 
 
-def _create_jellyfin_playlist(name: str, user_id: str, jellyfin_url: str, jellyfin_key: str) -> str:
+def _create_jellyfin_playlist(name: str, user_id: str, jellyfin_url: str, jellyfin_key: str,
+                             exclude_ids: set = None) -> str:
     """Find or create a private Jellyfin playlist owned by user_id."""
     # First check if a playlist with this name already exists — avoids duplicates
-    existing_id = _find_jellyfin_playlist(name, user_id, jellyfin_url, jellyfin_key)
+    existing_id = _find_jellyfin_playlist(name, user_id, jellyfin_url, jellyfin_key,
+                                          exclude_ids=exclude_ids)
     if existing_id:
         return existing_id
 
@@ -590,6 +714,10 @@ def sync_smartlists(db: Session, user_id: int = None) -> dict:
     # that should default to DateCreated (created before default_sort was added)
     _migrate_builtin_sort_defaults(existing, smartlists_path)
 
+    # Playlists other users' configs own — never adopt one by name (see
+    # _playlist_ids_of_other_users). Read once per sync, not once per playlist.
+    other_playlist_ids = _playlist_ids_of_other_users(db, user_id)
+
     created = 0
     updated = 0
     changed_names = []  # Track which playlists were created or need refresh
@@ -629,7 +757,8 @@ def sync_smartlists(db: Session, user_id: int = None) -> dict:
             else:
                 # No linked playlists — create one if we have Jellyfin credentials
                 if jf_user_id and jellyfin_url and jellyfin_key:
-                    playlist_id = _create_jellyfin_playlist(name, jf_user_id, jellyfin_url, jellyfin_key)
+                    playlist_id = _create_jellyfin_playlist(name, jf_user_id, jellyfin_url, jellyfin_key,
+                                                            exclude_ids=other_playlist_ids)
                     if playlist_id:
                         config["UserPlaylists"] = [{"UserId": jf_user_id, "JellyfinPlaylistId": playlist_id}]
 
@@ -656,7 +785,8 @@ def sync_smartlists(db: Session, user_id: int = None) -> dict:
 
             # Create private Jellyfin playlist for this user
             if jf_user_id and jellyfin_url and jellyfin_key:
-                playlist_id = _create_jellyfin_playlist(name, jf_user_id, jellyfin_url, jellyfin_key)
+                playlist_id = _create_jellyfin_playlist(name, jf_user_id, jellyfin_url, jellyfin_key,
+                                                        exclude_ids=other_playlist_ids)
                 if playlist_id:
                     config["UserPlaylists"] = [{"UserId": jf_user_id, "JellyfinPlaylistId": playlist_id}]
 
@@ -883,6 +1013,24 @@ def _backup_home_config(path: Path) -> None:
             stale.unlink(missing_ok=True)
     except Exception as e:
         logger.warning(f"Could not back up home config {path}: {e}")
+
+
+def write_home_json(path: Path, config: dict) -> None:
+    """Write a home config, keeping a copy of what it replaces.
+
+    The home layout is the only Tentacle state with no other snapshot, and the
+    Home Screen page rewrites this file on every edit (reorder, remove row,
+    hero, toolbar). Those writes used to go straight to _atomic_write_json, so
+    a mistaken removal was unrecoverable. Identical rewrites are not backed up,
+    so polling/no-op saves can't push real history out of the capped set.
+    """
+    try:
+        current = json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+    except Exception:
+        current = None
+    if current != config:
+        _backup_home_config(path)
+    _atomic_write_json(path, config)
 
 
 def write_home_config(db: Session, user_id: int = None) -> dict:
@@ -1780,12 +1928,41 @@ def cleanup_orphaned_playlists(db: Session, user_id: int) -> int:
         return 0
 
     jf = JellyfinService(jellyfin_url, jellyfin_key, jf_user_id)
+
+    # Every user's generated playlists carry the same names, and a playlist that
+    # is shared, public or ownerless is listed for other users too. Deleting by
+    # name alone therefore reaches into other people's home screens, using an
+    # admin key that no permission check stops. Two extra guards:
+    #   - never delete an id another user's SmartList config owns;
+    #   - never delete an id Jellyfin also lists for another user (Tentacle's own
+    #     playlists are private, so that can only be someone else's).
+    other_canonical_ids = _playlist_ids_of_other_users(db, user_id)
+    other_visible_ids = _playlists_visible_to_other_users(jf, db, user_id)
+    if other_visible_ids is None:
+        logger.warning(
+            f"[SmartLists] Skipping duplicate playlist cleanup for user {user_id}: "
+            f"could not list another user's playlists, so a shared playlist can't be ruled out"
+        )
+        return 0
+
     deleted = 0
     for pl in jf.get_playlists(jf_user_id):
         nl = (pl.get("Name") or "").strip().lower()
         cids = canonical.get(nl)
         pid = pl.get("Id")
         if cids and pid and pid not in cids:
+            if pid in other_canonical_ids:
+                logger.info(
+                    f"[SmartLists] Keeping '{pl.get('Name')}' ({pid}) — it is another user's "
+                    f"SmartList playlist, not a duplicate of this user's"
+                )
+                continue
+            if pid in other_visible_ids:
+                logger.info(
+                    f"[SmartLists] Keeping '{pl.get('Name')}' ({pid}) — Jellyfin also lists it "
+                    f"for another user, so it is shared/public rather than this user's duplicate"
+                )
+                continue
             if jf.delete_item(pid):
                 deleted += 1
                 logger.info(f"[SmartLists] Deleted duplicate/orphaned playlist '{pl.get('Name')}' ({pid}) for user {user_id}")
@@ -1838,6 +2015,10 @@ def sync_single_custom_playlist(db: Session, user_id: int, rule_name: str, condi
     existing = _scan_existing(smartlists_path)
     is_new = rule_name not in existing
 
+    # Never adopt a playlist another user's SmartList already owns (see
+    # _playlist_ids_of_other_users).
+    other_playlist_ids = _playlist_ids_of_other_users(db, user_id)
+
     if is_new:
         folder_id = str(uuid.uuid4())
         folder = smartlists_path / folder_id
@@ -1845,7 +2026,8 @@ def sync_single_custom_playlist(db: Session, user_id: int, rule_name: str, condi
         config = _build_config(rule_name, tag, media_types, folder_id, True, jf_user_id,
                                expressions=expressions, genre_logic=gl)
         # Create Jellyfin playlist
-        playlist_id = _create_jellyfin_playlist(rule_name, jf_user_id, jellyfin_url, jellyfin_key)
+        playlist_id = _create_jellyfin_playlist(rule_name, jf_user_id, jellyfin_url, jellyfin_key,
+                                                exclude_ids=other_playlist_ids)
         if playlist_id:
             config["UserPlaylists"] = [{"UserId": jf_user_id, "JellyfinPlaylistId": playlist_id}]
     else:
@@ -1864,7 +2046,8 @@ def sync_single_custom_playlist(db: Session, user_id: int, rule_name: str, condi
                 config["UserPlaylists"] = old_playlists
                 break
         else:
-            playlist_id = _create_jellyfin_playlist(rule_name, jf_user_id, jellyfin_url, jellyfin_key)
+            playlist_id = _create_jellyfin_playlist(rule_name, jf_user_id, jellyfin_url, jellyfin_key,
+                                                exclude_ids=other_playlist_ids)
             if playlist_id:
                 config["UserPlaylists"] = [{"UserId": jf_user_id, "JellyfinPlaylistId": playlist_id}]
 
@@ -1973,6 +2156,10 @@ def toggle_auto_playlist_fast(db: Session, user_id: int, key: str, enabled: bool
     existing = _scan_existing(smartlists_path)
     jf = JellyfinService(jellyfin_url, jellyfin_key, user_id=jf_user_id)
 
+    # Never adopt a playlist another user's SmartList already owns (see
+    # _playlist_ids_of_other_users).
+    other_playlist_ids = _playlist_ids_of_other_users(db, user_id)
+
     if enabled:
         # Create config + Jellyfin playlist + populate
         if name in existing:
@@ -1991,7 +2178,8 @@ def toggle_auto_playlist_fast(db: Session, user_id: int, key: str, enabled: bool
                     config["UserPlaylists"] = old_playlists
                     break
             else:
-                playlist_id = _create_jellyfin_playlist(name, jf_user_id, jellyfin_url, jellyfin_key)
+                playlist_id = _create_jellyfin_playlist(name, jf_user_id, jellyfin_url, jellyfin_key,
+                                                        exclude_ids=other_playlist_ids)
                 if playlist_id:
                     config["UserPlaylists"] = [{"UserId": jf_user_id, "JellyfinPlaylistId": playlist_id}]
         else:
@@ -2002,7 +2190,8 @@ def toggle_auto_playlist_fast(db: Session, user_id: int, key: str, enabled: bool
                                    sort_by=default_sort)
             if max_items:
                 config["MaxItems"] = max_items
-            playlist_id = _create_jellyfin_playlist(name, jf_user_id, jellyfin_url, jellyfin_key)
+            playlist_id = _create_jellyfin_playlist(name, jf_user_id, jellyfin_url, jellyfin_key,
+                                                    exclude_ids=other_playlist_ids)
             if playlist_id:
                 config["UserPlaylists"] = [{"UserId": jf_user_id, "JellyfinPlaylistId": playlist_id}]
 

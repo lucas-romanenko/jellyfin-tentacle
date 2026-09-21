@@ -420,12 +420,20 @@ def delete_library_item(
 
     model = Movie if media_type == "movie" else Series
     item = db.query(model).filter(model.tmdb_id == tmdb_id).first()
-    deleted = False
-    title = str(tmdb_id)
-    if item:
-        title = item.title if hasattr(item, "title") else str(tmdb_id)
-        db.delete(item)
-        deleted = True
+    if not item:
+        # Nothing of this title is in the catalogue, so there is no deletion to
+        # mirror. Stop here: the request history and the duplicate tombstones
+        # are not ours to drop on a title we never had, and a library scan that
+        # drops thousands of items would otherwise open thousands of playlist
+        # sweeps for rows that don't exist.
+        logger.info(
+            f"[Library] Jellyfin reported {media_type} tmdb:{tmdb_id} deleted, "
+            f"but it is not in the catalogue — nothing to clean up"
+        )
+        return {"success": True, "deleted": False}
+
+    title = item.title if hasattr(item, "title") else str(tmdb_id)
+    db.delete(item)
 
     # Also clean up DownloadRequest + duplicate tombstones (a deliberate full
     # delete is a clean slate — the title may re-import from VOD later)
@@ -439,10 +447,9 @@ def delete_library_item(
     ).delete()
     db.commit()
 
-    if deleted:
-        log_deletion(db, kind="jellyfin-delete", name=title, media_type=media_type, reason="webhook",
-                     detail="Deleted via Jellyfin native UI — Tentacle DB record and playlists cleaned up")
-        emit_library_event(f"{media_type}_removed", {"tmdb_id": tmdb_id, "media_type": media_type})
+    log_deletion(db, kind="jellyfin-delete", name=title, media_type=media_type, reason="webhook",
+                 detail="Deleted via Jellyfin native UI — Tentacle DB record and playlists cleaned up")
+    emit_library_event(f"{media_type}_removed", {"tmdb_id": tmdb_id, "media_type": media_type})
 
     # Remove from all users' playlists in background
     threading.Thread(
@@ -451,7 +458,7 @@ def delete_library_item(
         daemon=True,
     ).start()
 
-    return {"success": True, "deleted": deleted}
+    return {"success": True, "deleted": True}
 
 
 @router.delete("/delete-download/{tmdb_id}")
@@ -707,6 +714,10 @@ def set_strm_managed(media_type: str, tmdb_id: int, body: StrmManagedBody,
         raise HTTPException(404, f"No {media_type} with tmdb_id {tmdb_id}")
 
     item.strm_disabled = not body.enabled
+    # The VOD sweep skips opted-out titles, so a missing-file mark set before
+    # the opt-out is never cleared by it. Left in place, that stale mark would
+    # count as the first strike on the first sweep after re-enabling.
+    item.file_missing_since = None
     deleted = 0
     if not body.enabled and body.delete_files and item.strm_path:
         # Removes only the .strm/.nfo Tentacle wrote — downloaded episodes in

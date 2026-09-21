@@ -119,6 +119,10 @@ class JellyfinService:
             all_items.extend(items)
             total = data.get("TotalRecordCount", 0)
             start_index += len(items)
+            if not items and start_index < total:
+                # An empty page before the reported total is just as incomplete.
+                complete = False
+                break
             if start_index >= total or not items:
                 break
         return all_items, complete
@@ -614,6 +618,44 @@ class JellyfinService:
             return data.get("Items", [])
         return []
 
+    def get_playlists_checked(self, user_id: str = None):
+        """get_playlists(), but None — not [] — when the listing did not arrive.
+
+        _get() swallows timeouts, so get_playlists() answers [] for a user whose
+        listing failed; a caller deciding what is safe to DELETE must be able to
+        tell that apart from "this user sees no playlists".
+        """
+        uid = user_id or self.user_id
+        try:
+            data = self._get("/Items", params={
+                "IncludeItemTypes": "Playlist",
+                "Recursive": "true",
+                "UserId": uid,
+                "Fields": "ChildCount",
+            })
+        except Exception as e:
+            logger.warning(f"[Jellyfin] Playlist listing for user {uid} failed: {e}")
+            return None
+        if not isinstance(data, dict) or "Items" not in data:
+            return None
+        return data["Items"]
+
+    def get_user_ids(self):
+        """Ids of EVERY Jellyfin user, or None when Jellyfin would not say.
+
+        Not every Jellyfin user is a Tentacle user: family members who only ever
+        open a Jellyfin client never log into the dashboard, yet their playlists
+        live in the same store.
+        """
+        try:
+            r = self.session.get(f"{self.url}/Users", timeout=15)
+            self._check_401(r, "/Users")
+            r.raise_for_status()
+            return [u["Id"] for u in r.json() if u.get("Id")]
+        except Exception as e:
+            logger.warning(f"[Jellyfin] Could not list users: {e}")
+            return None
+
     def delete_item(self, item_id: str) -> bool:
         """Delete an item (playlist, collection, etc.) from Jellyfin."""
         try:
@@ -838,9 +880,18 @@ def sweep_orphaned_downloads(db) -> int:
 
     jf = JellyfinService(jf_url, jf_key, jf_uid)
 
-    # Fetch all TMDB IDs currently in Jellyfin
+    # Fetch all TMDB IDs currently in Jellyfin. Only a COMPLETE listing may be
+    # diffed against: a page that timed out (common while the library scan the
+    # nightly job has just triggered is running) returns a partial or empty
+    # list, and every downloaded title missing from it would be deleted.
+    movie_items, movies_complete = jf._fetch_all_items_checked("Movie")
+    series_items, series_complete = jf._fetch_all_items_checked("Series")
+    if not (movies_complete and series_complete):
+        logger.warning("[Orphan sweep] Jellyfin item listing was incomplete — skipping, nothing removed")
+        return 0
+
     jf_movie_ids = set()
-    for item in jf._fetch_all_items("Movie"):
+    for item in movie_items:
         tmdb_id = item.get("ProviderIds", {}).get("Tmdb")
         if tmdb_id:
             try:
@@ -849,7 +900,7 @@ def sweep_orphaned_downloads(db) -> int:
                 pass
 
     jf_series_ids = set()
-    for item in jf._fetch_all_items("Series"):
+    for item in series_items:
         tmdb_id = item.get("ProviderIds", {}).get("Tmdb")
         if tmdb_id:
             try:
@@ -861,7 +912,9 @@ def sweep_orphaned_downloads(db) -> int:
     swept_titles = []
 
     # Check radarr movies
-    radarr_movies = db.query(Movie).filter(Movie.source == "radarr").all()
+    # A complete-but-empty answer next to existing download rows means the
+    # library is unavailable (e.g. mid-rebuild), not that everything was deleted.
+    radarr_movies = db.query(Movie).filter(Movie.source == "radarr").all() if jf_movie_ids else []
     for movie in radarr_movies:
         if movie.tmdb_id not in jf_movie_ids:
             logger.info(f"[Orphan sweep] Removing orphaned radarr movie: {movie.title} (tmdb:{movie.tmdb_id})")
@@ -874,7 +927,7 @@ def sweep_orphaned_downloads(db) -> int:
             orphans_removed += 1
 
     # Check sonarr series
-    sonarr_series = db.query(Series).filter(Series.source == "sonarr").all()
+    sonarr_series = db.query(Series).filter(Series.source == "sonarr").all() if jf_series_ids else []
     for series in sonarr_series:
         if series.tmdb_id not in jf_series_ids:
             logger.info(f"[Orphan sweep] Removing orphaned sonarr series: {series.title} (tmdb:{series.tmdb_id})")
@@ -958,13 +1011,16 @@ def push_tags_to_jellyfin(db, log_prefix: str = "Pipeline") -> int:
     return jf_tagged
 
 
-def run_full_jellyfin_pipeline(db, log_prefix: str = "Pipeline") -> dict:
+def run_full_jellyfin_pipeline(db, log_prefix: str = "Pipeline", refresh_playlists: bool = True) -> dict:
     """Run the complete Jellyfin integration pipeline after content changes.
 
     1. Trigger Jellyfin library scan (so new .strm files are indexed)
     2. Wait for scan to complete
     3. Push tags via API
-    4. Refresh SmartList playlists
+    4. Refresh SmartList playlists (skipped with refresh_playlists=False, for
+       callers that run the per-user playlist pass themselves — refreshing
+       every playlist twice in one job doubles the Jellyfin write traffic and,
+       on any playlist that rebuilds, clears and re-adds it a second time)
     5. Write home config
 
     Returns stats dict.
@@ -1003,6 +1059,9 @@ def run_full_jellyfin_pipeline(db, log_prefix: str = "Pipeline") -> dict:
         logger.error(f"[{log_prefix}] Tag push failed: {e}")
 
     # Step 4: Refresh playlist contents only (don't rebuild configs or home layout)
+    if not refresh_playlists:
+        logger.info(f"[{log_prefix}] Playlist refresh left to the caller")
+        return stats
     try:
         from services.smartlists import refresh_smartlist_playlists
         refresh_smartlist_playlists(db)

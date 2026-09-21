@@ -47,11 +47,17 @@ def parse_m3u(content: str) -> list[dict]:
             comma_idx = line.rfind(",")
             display_name = line[comma_idx + 1:].strip() if comma_idx != -1 else ""
 
-            # Find the URL on the next non-comment, non-empty line
+            # Find the URL on the next non-comment, non-empty line. Directive
+            # lines (#EXTVLCOPT, #EXTGRP, ...) are skipped, but the scan stops
+            # at the next #EXTINF: an entry with no URL of its own must not be
+            # given the FOLLOWING channel's stream — that mispairs every name
+            # with the wrong stream and drops the real entry from the playlist.
             url = ""
             j = i + 1
             while j < len(lines):
                 next_line = lines[j].strip()
+                if next_line.startswith("#EXTINF:"):
+                    break
                 if next_line and not next_line.startswith("#"):
                     url = next_line
                     break

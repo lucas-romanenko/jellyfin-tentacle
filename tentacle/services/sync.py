@@ -9,7 +9,7 @@ import zlib
 import shutil
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Tuple
 import requests
@@ -434,6 +434,17 @@ def _repair_movie_strm(client, stream: dict, tmdb_id: int, provider: Provider, d
             encoding="utf-8",
         )
         chown_path(strm)
+        # The NFO goes with it when the whole folder was lost (or an opt-out
+        # deleted both) — without it Jellyfin has to guess the match again.
+        nfo = strm.with_suffix(".nfo")
+        if not nfo.exists():
+            write_movie_nfo(nfo, {
+                "tmdb_id": record.tmdb_id, "title": record.title, "year": record.year,
+                "overview": record.overview, "runtime": record.runtime, "rating": record.rating,
+                "genres": record.genres or [], "poster_path": record.poster_path,
+                "backdrop_path": record.backdrop_path,
+            }, record.tags or [])
+            chown_path(nfo)
         record.date_updated = datetime.utcnow()
         logger.info(f"[Sync] Restored missing .strm for existing movie '{record.title}'")
         return True
@@ -468,8 +479,16 @@ def _backfill_series_episodes(
     if not show_dir_str:
         return 0
     show_dir = Path(show_dir_str)
-    if not show_dir.exists():
-        return 0
+    recreate = not show_dir.exists()
+    if recreate:
+        # The whole show folder is gone (failed disk, restore, an opt-out with
+        # "delete files" switched back on). Returning here left the row to the
+        # VOD sweep, which deleted it, and the next sync re-imported the title as
+        # new. Rebuild it instead — but only when the library root is there: a
+        # missing or empty mount point means storage is unavailable.
+        root = show_dir.parent
+        if not root.is_dir() or not any(root.iterdir()):
+            return 0
 
     try:
         series_info = client.get_series_info(series.get("series_id"))
@@ -478,6 +497,18 @@ def _backfill_series_episodes(
             episodes = {"1": episodes}
         if not episodes:
             return 0
+        if recreate:
+            show_dir.mkdir(parents=True, exist_ok=True)
+            chown_path(show_dir)
+            nfo = show_dir / "tvshow.nfo"
+            write_series_nfo(nfo, {
+                "tmdb_id": record.tmdb_id, "title": record.title, "year": record.year,
+                "overview": record.overview, "genres": record.genres or [],
+                "rating": record.rating, "status": record.status,
+                "poster_path": record.poster_path, "backdrop_path": record.backdrop_path,
+            }, record.tags or [])
+            chown_path(nfo)
+            logger.info(f"[Sync] Restored missing folder for existing series '{record.title}'")
         folder_name = show_dir.name
         new_eps = _write_episode_strms(client, episodes, show_dir, folder_name)
         if new_eps:
@@ -550,8 +581,10 @@ def check_and_record_duplicate(
             resolution="pending"
         ))
 
-    # Radarr (downloaded) content always takes priority
-    if existing.source == "radarr":
+    # Downloaded content always takes priority -- Sonarr's as much as Radarr's.
+    # A "sonarr" row used to fall through to `return False` below, which tells
+    # the caller to insert a second row for a UNIQUE tmdb_id.
+    if existing.source in ("radarr", "sonarr"):
         return True
 
     # If existing is from another provider, decide which wins by priority.
@@ -576,7 +609,9 @@ def check_and_record_duplicate(
     if existing.provider_id == provider.id:
         return True
 
-    return False
+    # A row exists for this tmdb_id, whoever owns it. tmdb_id is unique, so
+    # telling the caller to insert can only ever raise IntegrityError.
+    return True
 
 
 # A category must return nothing this many syncs in a row before we believe it
@@ -623,6 +658,27 @@ def _category_went_empty(db: Session, cat: ProviderCategory, returned: int) -> b
 # A genuine catalogue removal trickles; a provider outage arrives all at once.
 PRUNE_MAX_FRACTION = 0.05
 PRUNE_MIN_ALLOWANCE = 50
+# A removal the cap refused is no longer "an outage" once every sync has agreed
+# for this long. It is then processed gradually, at most the allowance per run,
+# instead of being refused (and leaving dead .strm files in Jellyfin) forever.
+PRUNE_BLOCKED_GRACE = timedelta(days=7)
+
+
+def _clear_provider_marks(db: Session, provider: Provider, Model, seen_ids: set) -> None:
+    """Clear provider_missing_since on every row the provider served this sync.
+
+    Runs even when the prune itself is skipped because a fetch failed: a title
+    that was served is positive evidence, and a stale mark must never count as
+    the first strike of a later, unrelated absence.
+    Filtered in Python: the marked set is small, and an IN clause over a
+    26k-id seen set would blow SQLite's bound-variable limit.
+    """
+    for record in db.query(Model).filter(
+        Model.provider_id == provider.id,
+        Model.provider_missing_since.isnot(None),
+    ).all():
+        if record.tmdb_id in seen_ids:
+            record.provider_missing_since = None
 
 
 def _prune_removed_content(db: Session, provider: Provider, media_type: str, seen_ids: set) -> int:
@@ -644,14 +700,7 @@ def _prune_removed_content(db: Session, provider: Provider, media_type: str, see
     now = datetime.utcnow()
 
     # Anything the provider served again is healthy — clear our own mark only.
-    # Filtered in Python: the marked set is small, and an IN clause over a
-    # 26k-id seen set would blow SQLite's bound-variable limit.
-    for record in db.query(Model).filter(
-        Model.provider_id == provider.id,
-        Model.provider_missing_since.isnot(None),
-    ).all():
-        if record.tmdb_id in seen_ids:
-            record.provider_missing_since = None
+    _clear_provider_marks(db, provider, Model, seen_ids)
 
     # Diff in Python rather than with a NOT IN over the whole seen set — that
     # set runs to tens of thousands of ids on a large provider, past SQLite's
@@ -690,21 +739,33 @@ def _prune_removed_content(db: Session, provider: Provider, media_type: str, see
     total_rows = db.query(Model).filter(Model.provider_id == provider.id).count()
     allowance = max(PRUNE_MIN_ALLOWANCE, int(total_rows * PRUNE_MAX_FRACTION))
     if len(confirmed) > allowance:
-        logger.error(
-            f"[Sync] REFUSING to prune {len(confirmed)} {media_type}(s) from provider "
-            f"{provider.name}: that exceeds the safety limit of {allowance} "
-            f"({int(PRUNE_MAX_FRACTION * 100)}% of {total_rows} rows). This looks like a "
-            f"provider outage rather than a catalogue change — nothing was deleted. "
-            f"If the removal is genuine, delete the titles from the Library page."
+        settled = sorted(
+            (r for r in confirmed if now - r.provider_missing_since >= PRUNE_BLOCKED_GRACE),
+            key=lambda r: r.provider_missing_since,
         )
-        db.commit()
-        log_deletion(
-            db, kind="sync-prune-blocked", name=provider.name, media_type=media_type,
-            reason="safety-limit",
-            detail=f"{len(confirmed)} {media_type}(s) were absent from two consecutive syncs "
-                   f"but exceed the {allowance}-row limit; nothing deleted",
+        if not settled:
+            logger.error(
+                f"[Sync] REFUSING to prune {len(confirmed)} {media_type}(s) from provider "
+                f"{provider.name}: that exceeds the safety limit of {allowance} "
+                f"({int(PRUNE_MAX_FRACTION * 100)}% of {total_rows} rows). This looks like a "
+                f"provider outage rather than a catalogue change — nothing was deleted. "
+                f"If they are still missing after {PRUNE_BLOCKED_GRACE.days} days they will "
+                f"be removed gradually, at most {allowance} per sync."
+            )
+            db.commit()
+            log_deletion(
+                db, kind="sync-prune-blocked", name=provider.name, media_type=media_type,
+                reason="safety-limit",
+                detail=f"{len(confirmed)} {media_type}(s) were absent from two consecutive syncs "
+                       f"but exceed the {allowance}-row limit; nothing deleted",
+            )
+            return 0
+        logger.warning(
+            f"[Sync] {len(settled)} {media_type}(s) from provider {provider.name} have been "
+            f"missing from every sync for over {PRUNE_BLOCKED_GRACE.days} days — removing "
+            f"{min(len(settled), allowance)} this sync (safety limit {allowance})"
         )
-        return 0
+        confirmed = settled[:allowance]
 
     removed = 0
     for record in confirmed:
@@ -933,10 +994,16 @@ def sync_provider(
         # seen set with fetch_ok almost certainly means a transient/empty
         # response — never wipe the whole provider on that basis).
         removed = 0
-        if m_cleanup and m_cleanup.get("fetch_ok") and m_cleanup.get("seen_ids"):
-            removed += _prune_removed_content(db, provider, "movie", m_cleanup["seen_ids"])
-        if s_cleanup and s_cleanup.get("fetch_ok") and s_cleanup.get("seen_ids"):
-            removed += _prune_removed_content(db, provider, "series", s_cleanup["seen_ids"])
+        for media_type, Model, cleanup in (("movie", Movie, m_cleanup), ("series", Series, s_cleanup)):
+            if not (cleanup and cleanup.get("seen_ids")):
+                continue
+            if cleanup.get("fetch_ok"):
+                removed += _prune_removed_content(db, provider, media_type, cleanup["seen_ids"])
+            else:
+                # Incomplete picture: prune nothing, but what WAS served still
+                # clears its mark (see _clear_provider_marks).
+                _clear_provider_marks(db, provider, Model, cleanup["seen_ids"])
+                db.commit()
         if removed:
             logger.info(f"Sync pruned {removed} item(s) removed upstream by provider {provider.name}")
 
@@ -1095,16 +1162,27 @@ def _sync_movies(
             def _tmdb_lookup(args):
                 idx, name, yr = args
                 try:
-                    return idx, tmdb.search_movie(name, yr)
+                    return idx, tmdb.search_movie(name, yr, strict=True), False
                 except Exception:
-                    return idx, None
+                    return idx, None, True
 
+            lookup_failed = 0
             with ThreadPoolExecutor(max_workers=6) as pool:
                 futures = {pool.submit(_tmdb_lookup, item): item for item in needs_tmdb}
                 for future in as_completed(futures):
-                    idx, metadata = future.result()
-                    if metadata:
+                    idx, metadata, failed = future.result()
+                    if failed:
+                        lookup_failed += 1
+                    elif metadata:
                         tmdb_results[idx] = metadata
+            if lookup_failed:
+                # A stream whose lookup errored is neither matched nor "seen", so
+                # the seen set is incomplete — exactly like a failed category fetch.
+                logger.warning(
+                    f"  {cat.category_name}: {lookup_failed} TMDB lookup(s) failed — "
+                    f"nothing will be pruned from this sync"
+                )
+                fetch_ok = False
 
         # Phase 3: Process all items sequentially (DB writes, file creation, progress)
         items_since_disk_check = 0
@@ -1141,6 +1219,8 @@ def _sync_movies(
                 if known_id in existing_provider_tmdb_ids or known_id in seen_tmdb_ids:
                     _merge_source_tag(known_id, "movie", cat.source_tag, provider.id, db)
                     seen_ids_all.add(known_id)
+                    # Existing VOD movie — restore its .strm if it vanished from disk
+                    _repair_movie_strm(client, stream, known_id, provider, db)
                     cat_existing += 1
                     stats["existing"] += 1
                     if item_idx % 10 == 0 or item_idx == total_in_cat:
@@ -1427,16 +1507,27 @@ def _sync_series(
             def _tmdb_lookup(args):
                 idx, name, yr = args
                 try:
-                    return idx, tmdb.search_series(name, yr)
+                    return idx, tmdb.search_series(name, yr, strict=True), False
                 except Exception:
-                    return idx, None
+                    return idx, None, True
 
+            lookup_failed = 0
             with ThreadPoolExecutor(max_workers=6) as pool:
                 futures = {pool.submit(_tmdb_lookup, item): item for item in needs_tmdb}
                 for future in as_completed(futures):
-                    idx, metadata = future.result()
-                    if metadata:
+                    idx, metadata, failed = future.result()
+                    if failed:
+                        lookup_failed += 1
+                    elif metadata:
                         tmdb_results[idx] = metadata
+            if lookup_failed:
+                # A stream whose lookup errored is neither matched nor "seen", so
+                # the seen set is incomplete — exactly like a failed category fetch.
+                logger.warning(
+                    f"  {cat.category_name}: {lookup_failed} TMDB lookup(s) failed — "
+                    f"nothing will be pruned from this sync"
+                )
+                fetch_ok = False
 
         # Phase 3: Process all items sequentially (DB writes, file creation, progress)
         items_since_disk_check = 0
@@ -1514,7 +1605,7 @@ def _sync_series(
             seen_tmdb_ids.add(tmdb_id)
 
             # Also check DB directly in case of prior partial sync — merge tags
-            if db.query(Series).filter(Series.tmdb_id == tmdb_id).first():
+            if db.query(Series).filter(Series.tmdb_id == tmdb_id, Series.provider_id == provider.id).first():
                 existing_provider_tmdb_ids.add(tmdb_id)
                 _merge_source_tag(tmdb_id, "series", cat.source_tag, provider.id, db)
                 # Existing VOD series — back-fill any new seasons/episodes

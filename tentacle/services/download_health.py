@@ -39,6 +39,19 @@ logger = logging.getLogger(__name__)
 
 STALL_MINUTES = 30
 QUEUED_STALL_MINUTES = 240
+
+# Auto-fix does something Tentacle cannot undo: it cancels the queue item and
+# BLOCKLISTS the release, so that release is never grabbed again. A hard fault
+# fires with no elapsed-time threshold, and the messages a download client
+# publishes when it goes away ("Unable to communicate with ...") land on EVERY
+# item in the queue at once — so an unguarded sweep blocklists the whole queue
+# on one client restart. Two guards, in the spirit of the provider-prune caps:
+#   * never act on more than AUTO_FIX_MAX_PER_RUN items in one sweep
+#   * when most of an eligible queue is stuck simultaneously, that is an
+#     outage of the client or the arr, not of the releases — log and wait
+AUTO_FIX_MAX_PER_RUN = 5
+AUTO_FIX_OUTAGE_MIN_QUEUE = 4
+AUTO_FIX_OUTAGE_FRACTION = 0.5
 IMPORT_STAGE_STATES = {"importPending", "importBlocked", "imported", "importing"}
 WAITING_STATUSES = {"queued", "paused", "delay"}
 NOT_TRYING_STATUSES = {"paused", "delay"}  # never expected to resolve on their own — excluded from stall tracking
@@ -353,11 +366,31 @@ def run_download_health_check():
                 records = fetch_queue_records(url, key, app)
             except Exception:
                 continue
-            for r in records:
-                cls = classify_queue_item(r, stall_state)
+            classified = [(r, classify_queue_item(r, stall_state)) for r in records]
+            stuck_total = sum(1 for _, c in classified if c["status"] == "stuck")
+
+            app_auto_fix = auto_fix
+            if (auto_fix and len(records) >= AUTO_FIX_OUTAGE_MIN_QUEUE
+                    and stuck_total >= len(records) * AUTO_FIX_OUTAGE_FRACTION):
+                msg = (f"{stuck_total}/{len(records)} {app} queue items are stuck at "
+                       f"once — treating this as a download client / {app} outage and "
+                       f"skipping auto-fix this sweep")
+                logger.error(f"[Download health] {msg}")
+                log_activity(db, "download_fix_skipped", msg.capitalize())
+                app_auto_fix = False
+
+            fixed_this_run = 0
+            for r, cls in classified:
                 try:
-                    if auto_fix and cls["status"] == "stuck":
+                    if app_auto_fix and cls["status"] == "stuck":
+                        if fixed_this_run >= AUTO_FIX_MAX_PER_RUN:
+                            logger.warning(
+                                f"[Download health] auto-fix cap of {AUTO_FIX_MAX_PER_RUN} "
+                                f"reached for {app} this sweep — {stuck_total - fixed_this_run} "
+                                f"stuck item(s) left for the next run")
+                            break
                         result = resolve_stuck_download(db, app, r["id"], reason="auto")
+                        fixed_this_run += 1
                         if result.get("ok"):
                             logger.info(f"[Download health] auto-fixed: {result.get('title')}")
                     elif auto_import and cls["status"] == "import_blocked":
