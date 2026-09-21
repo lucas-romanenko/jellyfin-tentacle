@@ -41,7 +41,10 @@ public class TentacleController : ControllerBase
     /// Requires Jellyfin API key auth (X-Emby-Token header).
     /// </summary>
     [HttpPost("Refresh")]
-    [Authorize]
+    // Admin only: the Tentacle server calls this with the server API key, which
+    // satisfies the policy. A bare [Authorize] let any signed-in account, a child
+    // profile included, wipe every cache and reload every client in a loop (#79).
+    [Authorize(Policy = "RequiresElevation")]
     public async Task<ActionResult> Refresh()
     {
         _logger.LogInformation("Tentacle refresh triggered — full pipeline starting");
@@ -126,7 +129,9 @@ public class TentacleController : ControllerBase
     /// Returns the current home config for preview/debugging.
     /// </summary>
     [HttpGet("HomeConfig")]
-    [Authorize]
+    // Admin only: it returns any user's home config for the userId it is given,
+    // and nothing in the web UI or the app calls it (#72).
+    [Authorize(Policy = "RequiresElevation")]
     public ActionResult GetHomeConfig([FromQuery] Guid userId)
     {
         var req = HttpContext.Request;
