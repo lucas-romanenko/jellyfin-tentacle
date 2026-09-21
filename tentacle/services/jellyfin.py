@@ -622,8 +622,23 @@ class JellyfinService:
         return True
 
     def move_playlist_item(self, playlist_id: str, item_id: str, new_index: int) -> bool:
-        """Move an item within a playlist to a new position."""
+        """Move an item within a playlist to a new position.
+
+        Asks the Tentacle plugin first: Jellyfin 10.11's own Move endpoint takes
+        the user from the caller's token and ignores ?UserId=, so with a server
+        API key (no user) it always answers 400. The plugin runs inside Jellyfin
+        and moves the entry as the owning user. 404/405 = no plugin, or one too
+        old to have the route: fall back to the native call as before.
+        """
         try:
+            if self.user_id:
+                path = f"/Tentacle/Playlists/{playlist_id}/Items/{item_id}/Move/{new_index}"
+                r = self.session.post(f"{self.url}{path}", params={"userId": self.user_id}, timeout=10)
+                self._check_401(r, path)
+                if r.status_code not in (404, 405):
+                    if r.status_code >= 400:
+                        logger.warning(f"Move playlist item failed: plugin answered HTTP {r.status_code} for playlist={playlist_id} item={item_id} index={new_index}")
+                    return r.status_code < 400
             # UserId for private per-user playlists (same reason as remove_from_playlist).
             params = {}
             if self.user_id:
