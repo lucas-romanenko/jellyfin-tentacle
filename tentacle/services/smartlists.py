@@ -246,6 +246,41 @@ def _playlists_visible_to_other_users(jf, db: Session, user_id: int):
     return ids
 
 
+def _seen_by_another_jellyfin_user(playlist_id: str, user_id: str, jellyfin_url: str,
+                                   jellyfin_key: str) -> bool:
+    """True when any OTHER Jellyfin user's listing contains this playlist — or
+    when Jellyfin would not say, so the caller creates its own rather than
+    adopting what may be someone else's.
+
+    Tentacle's playlists are private. One that a second user can see is public
+    or shared, and its owner need not have a Tentacle login (so no SmartList
+    config of theirs is there to exclude it).
+    """
+    base = jellyfin_url.rstrip("/")
+    headers = {"X-Emby-Token": jellyfin_key}
+    me = (user_id or "").replace("-", "").lower()
+    try:
+        r = requests.get(f"{base}/Users", headers=headers, timeout=10)
+        r.raise_for_status()
+        users = r.json()
+        if not isinstance(users, list):
+            return True
+        for u in users:
+            uid = u.get("Id") or ""
+            if not uid or uid.replace("-", "").lower() == me:
+                continue
+            lr = requests.get(f"{base}/Users/{uid}/Items", headers=headers,
+                              params={"IncludeItemTypes": "Playlist", "Recursive": "true"},
+                              timeout=10)
+            lr.raise_for_status()
+            if any(i.get("Id") == playlist_id for i in lr.json().get("Items", [])):
+                return True
+        return False
+    except Exception as e:
+        logger.warning(f"[SmartLists] Could not check who else sees playlist {playlist_id}: {e}")
+        return True
+
+
 def _find_jellyfin_playlist(name: str, user_id: str, jellyfin_url: str, jellyfin_key: str,
                             exclude_ids: set = None) -> str:
     """Find an existing Jellyfin playlist by exact name for a user. Returns playlist ID or empty string.
@@ -272,6 +307,12 @@ def _find_jellyfin_playlist(name: str, user_id: str, jellyfin_url: str, jellyfin
                     logger.info(
                         f"[SmartLists] Ignoring visible playlist '{name}' ({item['Id']}) — "
                         f"it is another user's SmartList playlist"
+                    )
+                    continue
+                if _seen_by_another_jellyfin_user(item["Id"], user_id, jellyfin_url, jellyfin_key):
+                    logger.info(
+                        f"[SmartLists] Ignoring visible playlist '{name}' ({item['Id']}) — "
+                        f"another Jellyfin user sees it too, so it is shared/public, not this user's own"
                     )
                     continue
                 logger.info(f"[SmartLists] Found existing Jellyfin playlist '{name}' (ID: {item['Id']})")

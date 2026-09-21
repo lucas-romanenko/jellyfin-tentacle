@@ -261,6 +261,8 @@ class TestLookupDoesNotAdoptAnotherUsersPlaylist(CleanupBase):
         posted = []
 
         def fake_get(url, headers=None, params=None, timeout=None):
+            if url.rstrip("/").endswith("/Users"):
+                return FakeResponse([{"Id": u} for u in self.fake_service.jellyfin_users])
             uid = url.rstrip("/").split("/")[-2]
             items = [{"Id": pid, "Name": pl["Name"]}
                      for pid, pl in self.server.playlists.items()
@@ -301,6 +303,21 @@ class TestLookupDoesNotAdoptAnotherUsersPlaylist(CleanupBase):
 
         self.assertNotEqual(linked, "pl-user2",
                             "user 1's SmartList adopted user 2's Jellyfin playlist")
+        self.assertEqual(len(posted), 1, "a playlist of its own should have been created")
+
+    def test_a_jellyfin_only_users_public_playlist_is_not_linked(self):
+        """Found live (E2E-DATA): the other user has no Tentacle login, so no
+        SmartList config vouches for their playlist — and the admin's new
+        SmartList adopted it, after which every refresh rewrote its contents."""
+        self.db.query(mdb.TentacleUser).filter(mdb.TentacleUser.id == 2).delete()
+        self.db.commit()
+        self.fake_service.jellyfin_users = ["jf-1", "jf-mom"]
+        self.config("jf-1", "HBO TV", "")
+        self.server.add("pl-mom", "HBO TV", {"jf-mom", "jf-1"})
+
+        linked, posted = self._sync("HBO TV")
+
+        self.assertNotEqual(linked, "pl-mom")
         self.assertEqual(len(posted), 1, "a playlist of its own should have been created")
 
     def test_the_users_own_playlist_is_still_reused(self):
