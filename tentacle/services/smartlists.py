@@ -1552,13 +1552,16 @@ def _resort_by_db_date(items: list, config: dict, db: Session = None) -> list:
     if sort_by != "datecreated":
         return items
 
-    # "Recently added" is the most recent arrival of the title: when it first
-    # entered the library (date_added) OR when its downloaded copy arrived
-    # (downloaded_at). A title that was VOD first and downloaded months later
-    # sorted by the old date and sat mid-row in "Downloaded Movies".
+    # The "recently added" time for a downloaded copy is when the FILE was
+    # imported (downloaded_at), not when Tentacle's DB row was created
+    # (date_added). date_added is unreliable for this: a bulk re-add of a list,
+    # or a rescan, stamps it recently on a title that was downloaded months ago
+    # — which floated a pile of old acclaimed downloads above a fresh one. So
+    # prefer downloaded_at whenever it is set; VOD has none, and falls back to
+    # date_added, which for VOD is its .strm creation (its real arrival). Not
+    # max(): a recent date_added must never override an old real download date.
     def _effective(date_added, downloaded_at):
-        dates = [d for d in (date_added, downloaded_at) if d]
-        return max(dates) if dates else None
+        return downloaded_at or date_added
 
     media_types = config.get("MediaTypes", [])
     date_map = {}  # jellyfin_item_id -> effective date

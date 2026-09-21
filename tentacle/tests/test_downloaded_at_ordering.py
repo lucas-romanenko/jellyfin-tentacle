@@ -134,6 +134,29 @@ class TestRecentlyAddedSortUsesTheMostRecentArrival(unittest.TestCase):
         out = _resort_by_db_date(items, config, db)
         self.assertEqual([i["Id"] for i in out], ["j1", "j2", "j3"])
 
+    def test_a_recent_db_readd_never_floats_an_old_download(self):
+        """The bug on the reporter's install: acclaimed films re-added to the DB
+        recently (recent date_added) but downloaded months ago (old
+        downloaded_at) sat ABOVE a genuinely fresh download. downloaded_at must
+        win over a bogus-recent date_added."""
+        from models.database import Movie
+        from services.smartlists import _resort_by_db_date
+        db = _db()
+        now = datetime(2026, 9, 21, 12, 0)
+        # Bulk-re-added yesterday, but the file was imported 200 days ago.
+        db.add(Movie(tmdb_id=10, title="Spirited Away", source="radarr",
+                     date_added=now - timedelta(days=1), downloaded_at=now - timedelta(days=200)))
+        # Tony: genuinely downloaded 6 days ago.
+        db.add(Movie(tmdb_id=11, title="Tony", source="radarr",
+                     date_added=now - timedelta(days=6), downloaded_at=now - timedelta(days=6)))
+        db.commit()
+        items = [{"Id": "j10", "ProviderIds": {"Tmdb": "10"}},
+                 {"Id": "j11", "ProviderIds": {"Tmdb": "11"}}]
+        cfg = {"MediaTypes": ["Movie"], "Order": {"SortOptions": [{"SortBy": "DateCreated", "SortOrder": "Descending"}]}}
+        out = _resort_by_db_date(items, cfg, db)
+        self.assertEqual([i["Id"] for i in out], ["j11", "j10"],
+                         "a fresh download must rank above an old one re-added to the DB recently")
+
     def test_other_sorts_are_untouched(self):
         from services.smartlists import _resort_by_db_date
         db = _db()
