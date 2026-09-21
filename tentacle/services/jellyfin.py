@@ -550,13 +550,26 @@ class JellyfinService:
         error). Callers must not treat that as an empty playlist: doing so
         re-appends every desired item, or counts a full playlist as holding 0.
         """
-        params = {"Limit": limit, "Fields": "SeriesId"}
-        if self.user_id:
-            params["UserId"] = self.user_id
-        data = self._get(f"/Playlists/{playlist_id}/Items", params=params)
-        if data is None:
-            return None
-        return data.get("Items", [])
+        # Page through the playlist. One request capped at `limit` silently
+        # truncated anything longer (a TV playlist stores episodes, so a few
+        # hundred series is tens of thousands of entries), and a truncated
+        # listing read as "these entries are gone" (#31). A page that fails
+        # makes the whole read unknown, never a shorter playlist.
+        items: List[dict] = []
+        start = 0
+        while True:
+            params = {"Limit": limit, "StartIndex": start, "Fields": "SeriesId"}
+            if self.user_id:
+                params["UserId"] = self.user_id
+            data = self._get(f"/Playlists/{playlist_id}/Items", params=params)
+            if data is None:
+                return None
+            page = data.get("Items", [])
+            items.extend(page)
+            total = data.get("TotalRecordCount")
+            start += len(page)
+            if not page or total is None or start >= total:
+                return items
 
     def count_series_episodes(self, series_id: str) -> Optional[int]:
         """Episodes Jellyfin would expand a Series into when it is added to a
