@@ -22,12 +22,29 @@ YOUTUBE_MEDIA_ROOT = Path("/media/youtube")
 
 _UNSAFE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
+# ext4, XFS, APFS and SMB all cap a single name at 255 *bytes*. A character
+# limit is not enough: one Japanese or emoji character is 3-4 bytes, so an
+# ordinary 80-character title overruns the cap and mkdir raises ENAMETOOLONG.
+MAX_NAME_BYTES = 255
+# The folder name is "<date> <title> [<id>]" and the .strm adds ".strm", which
+# is 30 bytes around the title.
+_NAME_OVERHEAD = 30
 
-def safe_name(text: str, limit: int = 120) -> str:
+
+def _fit_bytes(text: str, budget: int) -> str:
+    """Truncate to `budget` bytes of UTF-8, never splitting a character."""
+    encoded = text.encode("utf-8")
+    if len(encoded) <= budget:
+        return text
+    return encoded[:budget].decode("utf-8", errors="ignore").rstrip()
+
+
+def safe_name(text: str, limit: int = 120, byte_limit: int = MAX_NAME_BYTES) -> str:
     """Filename-safe version of a video or channel title."""
     cleaned = _UNSAFE.sub("", (text or "").strip()).rstrip(". ")
     cleaned = re.sub(r"\s+", " ", cleaned)
-    return (cleaned[:limit].rstrip() or "Untitled")
+    cleaned = _fit_bytes(cleaned[:limit].rstrip(), byte_limit).rstrip(". ")
+    return (cleaned or "Untitled")
 
 
 def video_folder(channel_title: str, video, root: Path = None) -> Path:
@@ -36,7 +53,8 @@ def video_folder(channel_title: str, video, root: Path = None) -> Path:
     date = (video.published_at or video.first_seen or datetime.utcnow()).strftime("%Y-%m-%d")
     # The id in the folder name lets SponsorBlock tooling and the resolver find
     # the video without a DB lookup, and keeps same-titled uploads apart.
-    return root / safe_name(channel_title) / f"{date} {safe_name(video.title, 100)} [{video.video_id}]"
+    return (root / safe_name(channel_title)
+            / f"{date} {safe_name(video.title, 100, MAX_NAME_BYTES - _NAME_OVERHEAD)} [{video.video_id}]")
 
 
 def build_nfo(video, channel, base_url: str) -> str:

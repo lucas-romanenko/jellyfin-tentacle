@@ -24,6 +24,7 @@ Channel management:
 
 import asyncio
 import logging
+import re
 import threading
 from datetime import datetime
 from typing import Optional, List
@@ -47,7 +48,8 @@ from models.database import (
     log_activity,
 )
 from routers.auth import require_admin
-from services.ssrf import is_safe_url
+from services.ssrf import is_safe_url, lan_origin_guard
+from urllib.parse import urljoin
 
 logger = logging.getLogger(__name__)
 
@@ -59,19 +61,281 @@ router = APIRouter()
 # Jellyfin's tuner integration cannot present credentials.
 _admin = [Depends(require_admin)]
 
-# Cap simultaneous live stream proxies so a burst of clients can't exhaust the
-# IPTV provider's max_connections (and our own socket/CPU budget). When at
-# capacity, new stream requests get a 503 rather than silently degrading every
-# active stream. Created lazily on first use so it binds to the running loop.
-_MAX_CONCURRENT_STREAMS = 6
-_stream_semaphore: "asyncio.Semaphore | None" = None
+# Cap simultaneous upstream pulls so a burst of clients can't exhaust our own
+# socket/CPU budget (or an account that really is connection-limited). The cap
+# is the admin's call -- setting `livetv_max_concurrent_streams`, 0 = no limit
+# -- because the provider's advertised max_connections cannot be trusted either
+# way: panels report 1 for accounts that are not capped at all (#87).
+_DEFAULT_MAX_CONCURRENT_STREAMS = 6
+_MAX_CONCURRENT_STREAMS = _DEFAULT_MAX_CONCURRENT_STREAMS  # kept for importers
+# A slot is usually about to free up (a recording ending as the next begins, a
+# viewer changing channel), so wait this long for one before refusing. Short:
+# a tuner client is blocked on the answer.
+_SLOT_WAIT_SECONDS = 5.0
+
+# Max redirect hops we will follow on a stream/chunk fetch, matching httpx's own
+# default ceiling.
+_MAX_STREAM_REDIRECTS = 10
 
 
-def _get_stream_semaphore() -> "asyncio.Semaphore":
-    global _stream_semaphore
-    if _stream_semaphore is None:
-        _stream_semaphore = asyncio.Semaphore(_MAX_CONCURRENT_STREAMS)
-    return _stream_semaphore
+async def _send_checked(client, url: str, headers: dict, guard=None):
+    """GET `url` through `client`, following redirects *and re-validating each hop*.
+
+    `client` must be built with follow_redirects=False. Letting httpx follow
+    redirects itself defeats the `is_safe_url` pre-flight: the URL that was
+    checked is not the URL that finally gets fetched, so an upstream (an IPTV
+    provider — untrusted third-party content) can answer with
+    `302 -> http://10.0.0.5:8096/...` and the stream proxy, which is a public
+    unauthenticated route, would fetch it and stream the body back to the caller.
+
+    Returns the open streaming response (caller closes it) for the first hop
+    that is not a redirect.
+
+    `guard` validates every hop; callers pass one scoped to the channel's
+    provider (#76) so a deliberately-configured LAN re-streamer works while
+    everything else is still held to is_safe_url().
+    """
+    guard = guard or is_safe_url
+    current = url
+    for _ in range(_MAX_STREAM_REDIRECTS):
+        req = client.build_request("GET", current, headers=headers)
+        resp = await client.send(req, stream=True)
+        if resp.status_code not in (301, 302, 303, 307, 308):
+            return resp
+        location = resp.headers.get("location")
+        await resp.aclose()
+        if not location:
+            raise HTTPException(502, "Redirect without Location header")
+        current = urljoin(current, location)
+        if not guard(current):
+            logger.warning(f"[LiveTV] Blocked redirect to non-public host: {current}")
+            raise HTTPException(502, "Stream redirect points to a non-public host")
+    raise HTTPException(502, "Too many redirects")
+
+# Opening a stream: statuses worth waiting out, and for how long. Kept well under
+# a tuner client's patience; the running worker has its own, longer budget.
+_OPEN_RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504, 509}
+_OPEN_RETRY_BUDGET = 20.0   # seconds
+
+class _StreamSlots:
+    """Counts upstream pulls against a limit that can change while running.
+
+    An asyncio.Semaphore bakes its size in at creation, which is why the old
+    ceiling could not be a setting. All access is from the event loop."""
+
+    def __init__(self):
+        self.active = 0
+        self.refused = 0
+        self.last_refused: "dict | None" = None
+        self._freed: "asyncio.Event | None" = None
+
+    async def acquire(self, limit: int, wait: float) -> bool:
+        if limit <= 0 or self.active < limit:
+            self.active += 1
+            return True
+        if self._freed is None:
+            self._freed = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + wait
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return False
+            self._freed.clear()
+            try:
+                await asyncio.wait_for(self._freed.wait(), timeout=remaining)
+            except asyncio.TimeoutError:
+                return False
+            if self.active < limit:
+                self.active += 1
+                return True
+
+    def release(self):
+        self.active = max(0, self.active - 1)
+        if self._freed is not None:
+            self._freed.set()
+
+
+_stream_slots = _StreamSlots()
+
+
+def _max_concurrent_streams(db) -> int:
+    """The configured ceiling; 0 means unlimited. A value that does not parse
+    falls back to the default rather than silently removing the cap."""
+    raw = get_setting(db, "livetv_max_concurrent_streams", "")
+    try:
+        return max(0, int(raw)) if raw.strip() else _DEFAULT_MAX_CONCURRENT_STREAMS
+    except (ValueError, AttributeError):
+        return _DEFAULT_MAX_CONCURRENT_STREAMS
+
+
+# One upstream pull per channel, fanned out to every client watching it.
+#
+# Jellyfin opens a separate tuner stream per recording and per viewer, so
+# recording a channel while watching that same channel used to pull
+# byte-identical data from the provider twice: double the bandwidth, double the
+# playlist and segment requests, and double the footprint in whatever
+# connection accounting the provider keeps -- the accounting that answers 509,
+# which is what truncates recordings. Identical requests are now served from a
+# single upstream pull.
+#
+# Only the SAME channel shares; different channels each get their own upstream
+# connection. How many of those an account will carry is not something the
+# advertised max_connections settles (#87) -- the ceiling is
+# livetv_max_concurrent_streams, above.
+_shared_streams: "dict[int, _SharedUpstream] = {}"
+_shared_streams = {}
+_shared_lock: "asyncio.Lock | None" = None
+
+# Segments of slack before a client is considered too slow. HLS segments are
+# usually 6s, so this is minutes of buffer -- a consumer further behind than
+# this is broken, and must not be allowed to stall the upstream or its peers.
+_SUBSCRIBER_QUEUE_MAX = 32
+
+# How soon a pump that outlived its cancel() is cancelled again (see _cancel_pump).
+_PUMP_RECANCEL_SECONDS = 1.0
+
+
+def _get_shared_lock() -> "asyncio.Lock":
+    global _shared_lock
+    if _shared_lock is None:
+        _shared_lock = asyncio.Lock()
+    return _shared_lock
+
+
+class _SharedUpstream:
+    """A single upstream stream for one channel, with N subscribers."""
+
+    def __init__(self, channel_id: int, release_sem):
+        self.channel_id = channel_id
+        self.subscribers: set = set()
+        self.task = None
+        self._release_sem = release_sem
+        self._closed = False
+
+    def subscribe(self) -> "asyncio.Queue":
+        q = asyncio.Queue(maxsize=_SUBSCRIBER_QUEUE_MAX)
+        self.subscribers.add(q)
+        return q
+
+    def _publish(self, item):
+        for q in list(self.subscribers):
+            try:
+                q.put_nowait(item)
+            except asyncio.QueueFull:
+                # Drop this client's oldest segment rather than stalling the
+                # upstream (and therefore every other client on the channel).
+                try:
+                    q.get_nowait()
+                    q.put_nowait(item)
+                    logger.warning(
+                        f"[LiveTV] Client on channel {self.channel_id} is behind — "
+                        f"dropped a segment for it")
+                except (asyncio.QueueEmpty, asyncio.QueueFull):
+                    pass
+
+    async def _pump(self, body_iterator):
+        try:
+            async for piece in body_iterator:
+                if self._closed:
+                    # Retired, but the cancel() that should have stopped us was
+                    # lost (see _cancel_pump): stop pulling here.
+                    break
+                self._publish(piece)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"[LiveTV] Shared upstream for channel {self.channel_id} failed: {e}")
+        finally:
+            self._publish(None)   # EOF sentinel for every subscriber
+            await self._retire()
+            # Leaving the loop by `break` does not close an async generator,
+            # and its `finally` is what closes the provider connection.
+            aclose = getattr(body_iterator, "aclose", None)
+            if aclose is not None:
+                await aclose()
+
+    def _cancel_pump(self):
+        """Cancel the pump, and keep at it until it is really gone.
+
+        One task.cancel() is not enough. httpx connects through anyio, whose
+        connect_tcp() cancels its own cancel scope as soon as a connection
+        attempt wins, and a scope that is being cancelled takes any
+        CancelledError raised in its host task for its own and swallows it. A
+        cancel() of ours that lands in that window is lost, and the pump goes
+        on pulling from the provider with no subscriber, no registration and
+        no slot -- invisible to /api/live/capacity. The window is the connect
+        for the first chunk: exactly where the pump is when a client opens a
+        channel and leaves at once."""
+        task = self.task
+        if task is None or task.done():
+            return
+        task.cancel()
+        asyncio.get_running_loop().call_later(_PUMP_RECANCEL_SECONDS, self._cancel_pump)
+
+    async def _retire(self):
+        if self._closed:
+            return
+        self._closed = True
+        # Deregister and free the slot BEFORE any await: this runs from a
+        # finally during cancellation, where an await can raise CancelledError
+        # and would otherwise strand the registration and leak the slot.
+        if _shared_streams.get(self.channel_id) is self:
+            del _shared_streams[self.channel_id]
+        self._release_sem()
+        logger.info(f"[LiveTV] Shared upstream for channel {self.channel_id} ended")
+
+    async def unsubscribe(self, q):
+        self.subscribers.discard(q)
+        if not self.subscribers and not self._closed:
+            # Nobody left watching: stop paying the provider for it.
+            logger.info(f"[LiveTV] Last client left channel {self.channel_id} — "
+                        f"closing the upstream")
+            await self._retire()
+            self._cancel_pump()
+
+
+class _SubscriberResponse(StreamingResponse):
+    """A client's view of a shared upstream, which is ALWAYS unsubscribed.
+
+    The client is subscribed when this object is built, but the body generator
+    only unsubscribes from its own `finally` -- and an async generator that is
+    never started never runs it. A client that went away between the headers
+    and the first chunk therefore stayed subscribed for ever: the upstream kept
+    pulling from the provider with nobody watching and its concurrency slot
+    never came back. Unsubscribing when the response finishes, however it
+    finishes, closes that; `unsubscribe` is idempotent."""
+
+    def __init__(self, shared: "_SharedUpstream", q):
+        super().__init__(
+            _subscriber_body(shared, q),
+            media_type="video/mp2t",
+            headers={
+                "Connection": "close",
+                "Cache-Control": "no-cache, no-store",
+                "Access-Control-Allow-Origin": "*",
+            },
+        )
+        self._shared = shared
+        self._q = q
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            await self._shared.unsubscribe(self._q)
+
+
+async def _subscriber_body(shared: "_SharedUpstream", q):
+    """Per-client view of a shared upstream."""
+    try:
+        while True:
+            piece = await q.get()
+            if piece is None:
+                return
+            yield piece
+    finally:
+        await shared.unsubscribe(q)
 
 
 # ─── Background sync tracking ────────────────────────────────────────────────
@@ -335,6 +599,19 @@ def sync_live_channels(provider_id: int, db: Session = Depends(get_db)):
     thread.start()
 
     return {"success": True, "message": "Channel sync started", "status_url": "/api/live/sync-status"}
+
+
+@router.get("/api/live/capacity", dependencies=_admin)
+def live_capacity(db: Session = Depends(get_db)):
+    """How many upstream pulls are running against the ceiling, and whether any
+    stream has been refused since start -- the only trace a lost recording
+    otherwise leaves is a log line."""
+    return {
+        "limit": _max_concurrent_streams(db),
+        "active": _stream_slots.active,
+        "refused_since_start": _stream_slots.refused,
+        "last_refused": _stream_slots.last_refused,
+    }
 
 
 @router.get("/api/live/sync-status", dependencies=_admin)
@@ -1633,6 +1910,43 @@ def hdhr_lineup_post():
     return Response(status_code=200)
 
 
+# An HLS "master" playlist lists variant PLAYLISTS, not media segments. Our
+# tuner response body is read by Jellyfin as raw video, so a variant URI has to
+# be resolved here — piping the variant playlist's text through sends ASCII
+# where MPEG-TS is expected, and the master (which never carries
+# #EXT-X-ENDLIST) then loops for ever yielding nothing.
+_STREAM_INF_RE = re.compile(r"^#EXT-X-STREAM-INF", re.IGNORECASE)
+_BANDWIDTH_RE = re.compile(r"BANDWIDTH=(\d+)", re.IGNORECASE)
+_MAX_VARIANT_HOPS = 3
+
+
+def _select_hls_variant(playlist_text: str, base_url: str):
+    """Highest-bandwidth variant URI of an HLS master playlist.
+
+    Returns None when `playlist_text` is already a media playlist (no
+    #EXT-X-STREAM-INF tags), which is the common case.
+    """
+    from urllib.parse import urljoin
+
+    lines = playlist_text.splitlines()
+    best = None
+    best_bw = -1
+    for idx, line in enumerate(lines):
+        if not _STREAM_INF_RE.match(line.strip()):
+            continue
+        m = _BANDWIDTH_RE.search(line)
+        bw = int(m.group(1)) if m else 0
+        for nxt in lines[idx + 1:]:
+            nxt = nxt.strip()
+            if not nxt or nxt.startswith("#"):
+                continue
+            if bw >= best_bw:
+                best_bw = bw
+                best = urljoin(base_url, nxt)
+            break
+    return best
+
+
 @router.head("/api/live/stream/{channel_id}")
 async def stream_head(channel_id: int, db: Session = Depends(get_db)):
     """HEAD handler for stream URLs — Jellyfin sends HEAD to validate before playing."""
@@ -1660,13 +1974,34 @@ async def stream_proxy(channel_id: int, db: Session = Depends(get_db)):
       2. Proxy the HLS stream as continuous MPEG-TS bytes (fetch m3u8,
          download chunks, pipe raw bytes).
     """
-    # Cap concurrent streams. If we're at capacity, bail with 503 instead of
-    # opening yet another upstream connection (which could exhaust the provider).
-    sem = _get_stream_semaphore()
-    if sem.locked():
-        logger.warning(f"[LiveTV] At capacity ({_MAX_CONCURRENT_STREAMS} streams) — rejecting channel {channel_id}")
-        raise HTTPException(503, "Too many concurrent live streams")
-    await sem.acquire()
+    # Already pulling this channel? Attach to it instead of opening a second
+    # upstream connection for byte-identical data (recording + watching the
+    # same channel is the common case). Costs the provider nothing and needs
+    # no concurrency slot of its own.
+    async with _get_shared_lock():
+        shared = _shared_streams.get(channel_id)
+        if shared is not None and not shared._closed:
+            q = shared.subscribe()
+            logger.info(f"[LiveTV] Channel {channel_id} already streaming — "
+                        f"attaching client ({len(shared.subscribers)} now)")
+            return _SubscriberResponse(shared, q)
+
+    # Cap concurrent upstream pulls (see _StreamSlots). A refusal here is how a
+    # scheduled recording silently becomes a zero-byte file -- Jellyfin shows the
+    # timer as having run -- so it is logged as an error, by channel name, and
+    # counted where the dashboard can see it (GET /api/live/capacity).
+    limit = _max_concurrent_streams(db)
+    if not await _stream_slots.acquire(limit, _SLOT_WAIT_SECONDS):
+        ch = db.query(LiveChannel).filter(LiveChannel.id == channel_id).first()
+        name = ch.name if ch else f"channel {channel_id}"
+        _stream_slots.refused += 1
+        _stream_slots.last_refused = {"channel_id": channel_id, "channel": name,
+                                      "at": datetime.utcnow().isoformat() + "Z", "limit": limit}
+        logger.error(f"[LiveTV] At capacity ({limit} streams) — REFUSED '{name}' (channel {channel_id}). "
+                     f"If this was a recording it is lost. Raise livetv_max_concurrent_streams "
+                     f"(0 = no limit) if this server and provider can carry more.")
+        raise HTTPException(503, f"Too many concurrent live streams (limit {limit})")
+    sem = _stream_slots
     # Ownership of the release is handed to the streaming generator on the
     # success paths; on every early-exit / error path below we release here.
     sem_released = False
@@ -1689,108 +2024,230 @@ async def stream_proxy(channel_id: int, db: Session = Depends(get_db)):
         logger.info(f"[LiveTV] Stream request for channel {channel_id} ({channel.name}): {stream_url}")
 
         # SSRF guard: this endpoint is public, so refuse to fetch anything that
-        # resolves to a private/loopback/link-local/metadata address.
-        if not is_safe_url(stream_url):
+        # resolves to a private/loopback/link-local/metadata address. A provider
+        # the admin deliberately configured on a LAN address (a local
+        # re-streamer: tuliprox, xTeVe, Threadfin) is the one exception, and
+        # only for its own origin -- see services.ssrf.lan_origin_guard (#76).
+        guard = lan_origin_guard(provider.server_url) if provider else is_safe_url
+        if not guard(stream_url):
             logger.warning(f"[LiveTV] Blocked stream URL (non-public host) for channel {channel_id}: {stream_url}")
             raise HTTPException(502, "Stream URL points to a non-public host")
 
-        return await _stream_proxy_inner(channel_id, user_agent, stream_url, _release_sem)
+        upstream = await _stream_proxy_inner(channel_id, user_agent, stream_url,
+                                             _release_sem, guard)
+        if not isinstance(upstream, StreamingResponse):
+            # A raw-TS channel is answered with a redirect; Jellyfin then talks
+            # to the provider directly and there is nothing here to share.
+            return upstream
+
+        # Become the shared upstream for this channel, so any further client
+        # attaches above instead of opening its own provider connection. The
+        # concurrency slot is now owned by the shared pump, not by this client.
+        shared = _SharedUpstream(channel_id, _release_sem)
+        q = shared.subscribe()
+        async with _get_shared_lock():
+            _shared_streams[channel_id] = shared
+        shared.task = asyncio.create_task(shared._pump(upstream.body_iterator))
+        return _SubscriberResponse(shared, q)
     except BaseException:
         _release_sem()
         raise
 
 
-async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str, _release_sem):
+async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str, _release_sem,
+                              guard=None):
     """Inner stream proxy logic. `_release_sem()` is called when the concurrency
     slot can be freed: immediately on early-exit paths, or by the streaming
-    generator's `finally` once the long-lived stream ends."""
+    generator's `finally` once the long-lived stream ends.
+
+    `guard` validates every URL fetched from here on -- redirect hops, HLS
+    variants and chunks. stream_proxy passes one scoped to the channel's own
+    provider (#76); the default holds everything to is_safe_url()."""
+    guard = guard or is_safe_url
     import httpx
-    from urllib.parse import urljoin
 
-    # Step 1: Follow the provider's redirect chain with the required UA
-    # to get the tokenized URL on the real streaming server
-    async with httpx.AsyncClient(
+    # One GET opens the stream. _send_checked walks the provider's redirect chain
+    # with the required UA, re-validating every hop (#73), and hands back the
+    # open response from the tokenized URL on the real streaming server -- whose
+    # headers say what it serves, and whose body is the stream (raw TS) or the
+    # first playlist (HLS). This used to be up to three GETs of the tokenized
+    # URL: one to resolve redirects (body discarded), one to probe the content
+    # type, and for raw TS a third to actually stream. Each is a connection in
+    # the provider's accounting at the very moment it is most likely to say 509.
+    #
+    # Streaming GETs only, never client.get(): that buffers the WHOLE body
+    # first, which never ends for a channel serving continuous MPEG-TS.
+    client = httpx.AsyncClient(
         follow_redirects=False,
-        timeout=httpx.Timeout(connect=15.0, read=30.0, write=10.0, pool=15.0),
-    ) as client:
-        url = stream_url
-        for _ in range(10):  # max redirects
-            # Headers only. httpx's get() buffers the WHOLE body first, which
-            # never ends for a channel serving a continuous MPEG-TS stream — the
-            # coroutine hung here forever, so the raw-TS branch below was
-            # unreachable and Jellyfin's tuner got no response at all.
-            try:
-                req = client.build_request("GET", url, headers={"User-Agent": user_agent})
-                resp = await client.send(req, stream=True)
-            except httpx.HTTPError as e:
-                logger.error(f"[LiveTV] Stream failed for channel {channel_id}: {e}")
-                raise HTTPException(502, f"Failed to connect to stream: {e}")
-
-            try:
-                if resp.status_code in (301, 302, 303, 307, 308):
-                    location = resp.headers.get("location")
-                    if not location:
-                        raise HTTPException(502, "Redirect without Location header")
-                    url = urljoin(url, location)
-                    if not is_safe_url(url):
-                        logger.warning(f"[LiveTV] Blocked redirect to non-public host for channel {channel_id}: {url}")
-                        raise HTTPException(502, "Stream redirect points to a non-public host")
-                    logger.info(f"[LiveTV] Following redirect → {url}")
-                    continue
-                break
-            finally:
-                # Always release the connection — we never read this body.
-                await resp.aclose()
-
-    tokenized_url = url
-    logger.info(f"[LiveTV] Resolved tokenized URL for channel {channel_id}: {tokenized_url}")
-
-    # Step 2: Try the tokenized URL to see what it serves
-    # Probe with a streaming GET — check content type
-    async with httpx.AsyncClient(
-        follow_redirects=True,
         timeout=httpx.Timeout(connect=15.0, read=120.0, write=10.0, pool=15.0),
-    ) as client:
-        try:
-            req = client.build_request("GET", tokenized_url, headers={"User-Agent": user_agent})
-            resp = await client.send(req, stream=True)
-            resp.raise_for_status()
-        except httpx.HTTPError as e:
-            logger.error(f"[LiveTV] Tokenized URL failed for channel {channel_id}: {e}")
-            raise HTTPException(502, f"Failed to connect to stream: {e}")
+    )
+    resp = None
+    try:
+        # Same regime as the running HLS worker (#86), on a much shorter leash: a
+        # 429/509 here usually clears within seconds, but refusing the tuner costs
+        # far more than those seconds -- Jellyfin re-tries a failed open only once
+        # a minute, so a recording starts a minute late or not at all. A tuner
+        # client is blocked on this response though, so the budget is small, and a
+        # status that will never fix itself still fails at once.
+        import asyncio
+        import random
+        loop = asyncio.get_running_loop()
+        open_started = loop.time()
+        open_backoff = 1.0
+        open_slept = 0.0
+        open_url = stream_url
+        while True:
+            resp = None
+            try:
+                resp = await _send_checked(client, open_url, {"User-Agent": user_agent}, guard)
+                resp.raise_for_status()
+                break
+            except httpx.HTTPError as e:
+                if resp is not None:
+                    # Retry the server that refused, not the whole chain: that
+                    # URL has already passed the guard, and re-walking the
+                    # redirects would cost the provider an extra request per try.
+                    open_url = str(resp.url)
+                    await resp.aclose()
+                    resp = None
+                retryable = (
+                    e.response.status_code in _OPEN_RETRYABLE_STATUS
+                    if isinstance(e, httpx.HTTPStatusError)
+                    else isinstance(e, httpx.TransportError)
+                )
+                # Whichever is larger: wall clock (slow connects count) or the waits
+                # we chose (so the bound holds even if the clock is not advancing).
+                waited = max(loop.time() - open_started, open_slept)
+                if not retryable or waited + open_backoff > _OPEN_RETRY_BUDGET:
+                    logger.error(f"[LiveTV] Tokenized URL failed for channel {channel_id}"
+                                 f"{f' after {waited:.0f}s of retries' if waited >= 1 else ''}: {e}")
+                    raise HTTPException(502, f"Failed to connect to stream: {e}")
+                logger.warning(f"[LiveTV] Opening channel {channel_id} refused "
+                               f"(retry in {open_backoff:.0f}s, {waited:.0f}s so far): {e}")
+                delay = open_backoff * (0.8 + random.random() * 0.4)
+                open_slept += delay
+                await asyncio.sleep(delay)
+                open_backoff = min(open_backoff * 2, 5.0)
+
+        tokenized_url = str(resp.url)
+        logger.info(f"[LiveTV] Resolved tokenized URL for channel {channel_id}: {tokenized_url}")
 
         content_type = resp.headers.get("content-type", "")
         is_hls = "mpegurl" in content_type.lower()
 
-        if not is_hls:
-            # Raw TS or other binary stream — pipe it directly
-            # We need to keep the client alive for the duration of the stream,
-            # so we transfer ownership to the generator and exit the context manager.
-            pass
-        else:
+        if is_hls:
             # HLS playlist — read the playlist text, then we're done with this client
             playlist_text = (await resp.aread()).decode("utf-8", errors="replace")
+    except BaseException:
+        if resp is not None:
             await resp.aclose()
+        await client.aclose()
+        raise
 
-    if not is_hls:
-        # Raw TS — open a dedicated client that the generator owns and cleans up
+    if is_hls:
+        await resp.aclose()
+        await client.aclose()
+    else:
+        # Raw TS or other binary stream — pipe THIS response. The generator takes
+        # ownership of it and of the client and cleans both up.
         logger.info(f"[LiveTV] Raw stream (CT: {content_type}) — proxying bytes for channel {channel_id}")
         upstream_ct = content_type or "video/mp2t"
-        raw_client = httpx.AsyncClient(
-            follow_redirects=True,
-            timeout=httpx.Timeout(connect=15.0, read=120.0, write=10.0, pool=15.0),
-        )
+        raw_client, raw_resp = client, resp
 
         async def stream_generator():
+            # A raw stream is one long GET, so the HLS worker's resilience (#86)
+            # never reached it: when the provider dropped the connection the
+            # stream simply ended, and Jellyfin cut the recording there and
+            # started a new file. Reconnect instead -- from the CHANNEL url, since
+            # a tokenized URL is often good for one connection only -- on the
+            # same terms as the HLS worker: a growing delay, and give up only
+            # after an unbroken run of failure. A connection has to last a while
+            # to count as a recovery, or a provider that serves a few bytes and
+            # hangs up would be re-dialled once a second for ever.
+            nonlocal raw_resp
+            FAILURE_BUDGET = 120.0
+            HEALTHY_AFTER = 10.0
+            backoff = 1.0
+            failing_since = None
+            slept = 0.0          # the bound must hold even if the clock stands still
+            ua = {"User-Agent": user_agent}
+            # MPEG-TS is 188-byte packets. Only whole packets go downstream, so
+            # the tail of a packet cut off by a drop never reaches the recording
+            # in front of the fresh connection's first sync byte.
+            align = "mp2t" in upstream_ct.lower()
+            first = True
             try:
-                req = raw_client.build_request("GET", tokenized_url, headers={"User-Agent": user_agent})
-                raw_resp = await raw_client.send(req, stream=True)
-                raw_resp.raise_for_status()
-                async for chunk in raw_resp.aiter_bytes(chunk_size=131072):
-                    yield chunk
-            except Exception as e:
-                logger.warning(f"[LiveTV] Stream interrupted for channel {channel_id}: {e}")
+                while True:
+                    opened_at = loop.time()
+                    reason = "the provider closed the stream"
+                    # Batch into ~128 KB pieces ourselves. aiter_bytes(chunk_size=)
+                    # does the same, but keeps its partial batch to itself when the
+                    # connection breaks -- the last fraction of a second before
+                    # every drop would be lost on top of the drop.
+                    pending = b""
+                    try:
+                        async for piece in raw_resp.aiter_bytes():
+                            if first:
+                                first = False
+                                align = align and piece[:1] == b"G"
+                            if failing_since is not None and loop.time() - opened_at >= HEALTHY_AFTER:
+                                failing_since, slept, backoff = None, 0.0, 1.0
+                            pending += piece
+                            if len(pending) >= 131072:
+                                cut = len(pending) - (len(pending) % 188) if align else len(pending)
+                                out, pending = pending[:cut], pending[cut:]
+                                yield out
+                    except httpx.HTTPError as e:
+                        reason = str(e) or type(e).__name__
+                    # What arrived before the stream stopped still goes out -- whole
+                    # packets only; the tail of a cut packet is unusable.
+                    cut = len(pending) - (len(pending) % 188) if align else len(pending)
+                    if cut:
+                        yield pending[:cut]
+                    if loop.time() - opened_at >= HEALTHY_AFTER:
+                        failing_since, slept, backoff = None, 0.0, 1.0
+                    await raw_resp.aclose()
+
+                    # Re-open, waiting out refusals, until it works or the budget is spent.
+                    while True:
+                        now = loop.time()
+                        if failing_since is None:
+                            failing_since = now
+                        waited = max(now - failing_since, slept)
+                        if waited + backoff > FAILURE_BUDGET:
+                            logger.error(f"[LiveTV] Raw stream for channel {channel_id} could not be "
+                                         f"re-established after {waited:.0f}s, stopping: {reason}")
+                            return
+                        logger.warning(f"[LiveTV] Raw stream for channel {channel_id} dropped "
+                                       f"(reconnect in {backoff:.0f}s, {waited:.0f}s so far): {reason}")
+                        delay = backoff * (0.8 + random.random() * 0.4)
+                        slept += delay
+                        await asyncio.sleep(delay)
+                        backoff = min(backoff * 2, 5.0)
+                        new_resp = None
+                        try:
+                            new_resp = await _send_checked(raw_client, stream_url, ua, guard)
+                            new_resp.raise_for_status()
+                            if "mpegurl" in new_resp.headers.get("content-type", "").lower():
+                                raise httpx.HTTPError("the channel now answers with a playlist")
+                        except HTTPException as e:
+                            logger.error(f"[LiveTV] Raw stream for channel {channel_id} cannot be "
+                                         f"re-opened, stopping: {e.detail}")
+                            return
+                        except httpx.HTTPError as e:
+                            if new_resp is not None:
+                                await new_resp.aclose()
+                            status = e.response.status_code if isinstance(e, httpx.HTTPStatusError) else None
+                            if isinstance(e, httpx.TransportError) or status in _OPEN_RETRYABLE_STATUS:
+                                reason = str(e) or type(e).__name__
+                                continue
+                            logger.error(f"[LiveTV] Raw stream for channel {channel_id} cannot be "
+                                         f"re-opened, stopping: {e}")
+                            return
+                        raw_resp = new_resp
+                        break
             finally:
+                await raw_resp.aclose()
                 await raw_client.aclose()
                 _release_sem()
                 logger.info(f"[LiveTV] Stream ended for channel {channel_id}")
@@ -1820,20 +2277,116 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
     async def _hls_worker():
         """Continuously fetch the HLS playlist and pipe chunk data as raw MPEG-TS."""
         import asyncio
-        from urllib.parse import urlparse as _urlparse
+        import random
         seen_chunks: set[str] = set()
         current_playlist = playlist_text
+        current_base = playlist_base
         ua_headers = {"User-Agent": user_agent}
-        consecutive_errors = 0
-        # playlist_base is already validated as public; only re-validate chunk
-        # URLs that point at a different host (SSRF guard for absolute chunk URLs).
-        base_host = (_urlparse(playlist_base).hostname or "").lower()
+        # An Xtream provider answers 429/509 while the account's connection
+        # allowance is momentarily saturated -- two recordings whose short HLS
+        # requests collide, say -- and is fine again a second later. Counting
+        # those toward a six-strike limit ended the stream after well under a
+        # minute of squeeze, and Jellyfin turned that into a truncated
+        # recording plus a new file. So wait transient failures out on a
+        # growing delay and give up only after an unbroken run of them; a
+        # status that will never fix itself still stops the stream at once.
+        RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504, 509}
+        FAILURE_BUDGET = 120.0   # seconds of unbroken failure before giving up
+        BACKOFF_START = 1.0
+        BACKOFF_CAP = 5.0        # short: the tuner reader is waiting on us
+        CHUNK_RETRIES_IN_PLACE = 3
+        failing_since = None
+        backoff = BACKOFF_START
+        # When the playlist now in hand was read; reloads are timed from here.
+        playlist_loaded_at = asyncio.get_running_loop().time()
+
+        def _is_retryable(exc) -> bool:
+            if isinstance(exc, httpx.HTTPStatusError):
+                return exc.response.status_code in RETRYABLE_STATUS
+            # Timeouts, resets and refused connections are all worth another go.
+            return isinstance(exc, httpx.TransportError)
+
+        def _note_success():
+            nonlocal failing_since, backoff
+            failing_since = None
+            backoff = BACKOFF_START
+
+        def _note_failure(exc, what: str) -> bool:
+            """Record a failure. True means the stream should stop."""
+            nonlocal failing_since
+            if not _is_retryable(exc):
+                logger.error(f"[LiveTV] {what} failed fatally for channel "
+                             f"{channel_id}, stopping: {exc}")
+                return True
+            now = asyncio.get_running_loop().time()
+            if failing_since is None:
+                failing_since = now
+            waited = now - failing_since
+            if waited > FAILURE_BUDGET:
+                logger.error(f"[LiveTV] {what} still failing after {waited:.0f}s "
+                             f"for channel {channel_id}, stopping: {exc}")
+                return True
+            logger.warning(f"[LiveTV] {what} failed for channel {channel_id} "
+                           f"(retry in {backoff:.0f}s, {waited:.0f}s so far): {exc}")
+            return False
+
+        async def _backoff_sleep():
+            nonlocal backoff
+            # Jitter so several streams that were squeezed at the same moment
+            # don't all come back at the same moment and squeeze it again.
+            await asyncio.sleep(backoff * (0.8 + random.random() * 0.4))
+            backoff = min(backoff * 2, BACKOFF_CAP)
 
         async with httpx.AsyncClient(
-            follow_redirects=True,
+            follow_redirects=False,
             timeout=httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0),
         ) as hls_client:
             while True:
+                # Master playlist? Follow the best variant before treating any
+                # line as a media segment. Each hop goes through the same
+                # checked sender as everything else (#73): a variant behind a
+                # CDN redirect is normal, and every hop is re-validated.
+                variant_retry = False
+                for hop in range(_MAX_VARIANT_HOPS + 1):
+                    variant = _select_hls_variant(current_playlist, current_base)
+                    if not variant:
+                        break
+                    if hop == _MAX_VARIANT_HOPS:
+                        logger.error(f"[LiveTV] Too many HLS variant hops for channel {channel_id}")
+                        return
+                    if not guard(variant):
+                        logger.warning(
+                            f"[LiveTV] Blocked HLS variant on non-public host for "
+                            f"channel {channel_id}: {variant}")
+                        return
+                    logger.info(f"[LiveTV] Master playlist for channel {channel_id} — following variant")
+                    try:
+                        v_resp = await _send_checked(hls_client, variant, ua_headers, guard)
+                        try:
+                            v_resp.raise_for_status()
+                            variant_text = (await v_resp.aread()).decode("utf-8", errors="replace")
+                        finally:
+                            await v_resp.aclose()
+                    except Exception as e:
+                        # Same retry regime as chunks and refreshes (#86): a 509
+                        # here is the provider being momentarily busy, not a
+                        # reason to end a recording.
+                        if _note_failure(e, "Variant playlist fetch"):
+                            return
+                        await _backoff_sleep()
+                        variant_retry = True
+                        break
+                    _note_success()
+                    current_base = variant
+                    current_playlist = variant_text
+                    playlist_loaded_at = asyncio.get_running_loop().time()
+
+                if variant_retry:
+                    # Still holding a master playlist: its lines are variant
+                    # URIs, not segments, so re-read it rather than falling
+                    # through and piping playlist text out as video (#68).
+                    continue
+
                 # Parse chunk URLs from playlist
                 lines = current_playlist.splitlines()
                 chunk_urls = []
@@ -1848,45 +2401,92 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         except (ValueError, IndexError):
                             pass
                     elif stripped and not stripped.startswith("#"):
-                        chunk_url = urljoin(playlist_base, stripped)
-                        ch_host = (_urlparse(chunk_url).hostname or "").lower()
-                        if ch_host != base_host and not is_safe_url(chunk_url):
+                        chunk_url = urljoin(current_base, stripped)
+                        if not guard(chunk_url):
                             logger.warning(f"[LiveTV] Skipping HLS chunk on non-public host for channel {channel_id}: {chunk_url}")
                             continue
                         chunk_urls.append(chunk_url)
 
                 # Fetch new chunks
+                got_new = False
+                chunk_pending = False
                 for chunk_url in chunk_urls:
                     if chunk_url in seen_chunks:
                         continue
-                    seen_chunks.add(chunk_url)
-                    try:
-                        chunk_resp = await hls_client.get(chunk_url, headers=ua_headers)
-                        chunk_resp.raise_for_status()
-                        yield chunk_resp.content
-                        consecutive_errors = 0
-                    except Exception as e:
-                        consecutive_errors += 1
-                        logger.warning(f"[LiveTV] Chunk fetch failed ({consecutive_errors}): {e}")
-                        if consecutive_errors > 5:
-                            logger.error(f"[LiveTV] Too many chunk errors for channel {channel_id}, stopping")
+                    # A live playlist is a short sliding window. Going back to it
+                    # after a refused chunk costs the backoff, what is left of the
+                    # reload wait AND a playlist refresh that can be refused
+                    # too -- long enough for the chunk to roll out of the window
+                    # and leave a hole. Its URL is still good, so try it again in
+                    # place a few times first.
+                    payload = None
+                    for attempt in range(CHUNK_RETRIES_IN_PLACE + 1):
+                        try:
+                            chunk_resp = await _send_checked(hls_client, chunk_url, ua_headers, guard)
+                            try:
+                                chunk_resp.raise_for_status()
+                                payload = await chunk_resp.aread()
+                            finally:
+                                await chunk_resp.aclose()
+                            break
+                        except Exception as e:
+                            chunk_error = e
+                            if attempt == CHUNK_RETRIES_IN_PLACE or not _is_retryable(e):
+                                break
+                            if _note_failure(e, "Chunk fetch"):
+                                return
+                            await _backoff_sleep()
+                    if payload is None:
+                        if _note_failure(chunk_error, "Chunk fetch"):
                             return
+                        # Deliberately NOT marked seen: a chunk lost to a
+                        # transient error is still in the next playlist, and
+                        # dropping it silently puts a hole in the recording.
+                        # Stop here so chunks stay in order, wait, re-read the
+                        # playlist and try this one again.
+                        await _backoff_sleep()
+                        chunk_pending = True
+                        break
+                    seen_chunks.add(chunk_url)
+                    got_new = True
+                    yield payload
+                    _note_success()
 
                 if not is_live:
                     # VOD-style playlist — we're done after all chunks
                     return
 
-                # Live stream: wait and re-fetch playlist for new chunks
-                await asyncio.sleep(target_duration / 2)
+                # Live stream: wait and re-fetch playlist for new chunks.
+                #
+                # One reload per segment, as RFC 8216 6.3.4 has it: a playlist
+                # that brought something new is good for a whole target
+                # duration; only one that brought nothing (or left a chunk
+                # still owed) is asked for again after half of one. Reloading
+                # every half segment regardless doubled this stream's request
+                # rate against the provider's connection accounting for no
+                # gain -- every other reload is unchanged by construction.
+                # The wait is timed from when the playlist was READ, so time
+                # spent downloading chunks or backing off is not added on top
+                # and a slow pass cannot let segments roll out of the window.
+                reload_after = target_duration if (got_new and not chunk_pending) else target_duration / 2
+                remaining = playlist_loaded_at + reload_after - asyncio.get_running_loop().time()
+                if remaining > 0:
+                    await asyncio.sleep(remaining)
                 try:
-                    pl_resp = await hls_client.get(playlist_base, headers=ua_headers)
-                    pl_resp.raise_for_status()
-                    current_playlist = pl_resp.text
+                    pl_resp = await _send_checked(hls_client, current_base, ua_headers, guard)
+                    try:
+                        pl_resp.raise_for_status()
+                        refreshed = (await pl_resp.aread()).decode("utf-8", errors="replace")
+                    finally:
+                        await pl_resp.aclose()
                 except Exception as e:
-                    logger.warning(f"[LiveTV] Playlist refresh failed for channel {channel_id}: {e}")
-                    consecutive_errors += 1
-                    if consecutive_errors > 5:
+                    if _note_failure(e, "Playlist refresh"):
                         return
+                    await _backoff_sleep()
+                    continue
+                current_playlist = refreshed
+                playlist_loaded_at = asyncio.get_running_loop().time()
+                _note_success()
 
     return StreamingResponse(
         hls_to_mpegts(),
@@ -1921,6 +2521,16 @@ def live_playlist_m3u(request: Request, db: Session = Depends(get_db)):
             f'#EXTINF:-1 tvg-id="{epg_id}" tvg-chno="{number}"{logo}{group},{ch.name}'
         )
         lines.append(f"{base_url}/api/live/stream/{ch.id}")
+
+    # The same YouTube channels the HDHomeRun lineup carries — a user who set
+    # Tentacle up as an M3U tuner gets the same channel list either way.
+    for yt in youtube_livetv.live_channels(db):
+        logo = f' tvg-logo="{yt["logo_url"]}"' if yt["logo_url"] else ""
+        lines.append(
+            f'#EXTINF:-1 tvg-id="{yt["guide_number"]}" tvg-chno="{yt["guide_number"]}"'
+            f'{logo} group-title="{yt["group_title"]}",{yt["name"]}'
+        )
+        lines.append(f"{base_url}/api/youtube/live/{yt['youtube_channel_id']}/stream.ts")
 
     content = "\n".join(lines) + "\n"
     return Response(

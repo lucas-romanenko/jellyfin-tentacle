@@ -9,6 +9,7 @@ succeeded.
 import logging
 import re
 import time
+from urllib.parse import urlparse
 from datetime import datetime, timedelta
 
 from sqlalchemy.orm import Session
@@ -58,6 +59,16 @@ def slugify(text: str) -> str:
     return slug[:48] or "channel"
 
 
+# Everything this feature fetches has to be on YouTube. yt-dlp's generic
+# extractor will happily fetch any other host, which would make "add a channel"
+# a request-forgery primitive against the private network Tentacle sits in
+# (see services/ssrf.py, which guards the IPTV side for the same reason).
+YOUTUBE_HOSTS = frozenset((
+    "youtube.com", "www.youtube.com", "m.youtube.com",
+    "music.youtube.com", "youtu.be", "www.youtu.be",
+))
+
+
 def parse_input_url(url: str) -> dict:
     """Work out what the user pasted: a channel, a handle, or a playlist."""
     url = (url or "").strip()
@@ -66,6 +77,10 @@ def parse_input_url(url: str) -> dict:
     if not url.startswith("http"):
         # Bare "@handle" or a channel id
         url = f"https://www.youtube.com/{url.lstrip('/')}"
+
+    host = (urlparse(url).hostname or "").lower()
+    if host not in YOUTUBE_HOSTS:
+        raise ValueError("Not a YouTube channel or playlist URL")
 
     playlist = re.search(r"[?&]list=([A-Za-z0-9_-]+)", url)
     if playlist:
@@ -82,9 +97,13 @@ def parse_input_url(url: str) -> dict:
         return {"kind": "channel", "handle": handle.group(1),
                 "canonical": f"https://www.youtube.com/@{handle.group(1)}"}
 
-    user = re.search(r"/(?:user|c)/([A-Za-z0-9_.-]+)", url)
+    user = re.search(r"/(user|c)/([A-Za-z0-9_.-]+)", url)
     if user:
-        return {"kind": "channel", "handle": user.group(1), "canonical": url}
+        # Rebuilt rather than passed through: the pasted URL is only known to
+        # be on YouTube, and anything after the name (a path, a query) would be
+        # handed to yt-dlp as-is.
+        return {"kind": "channel", "handle": user.group(2),
+                "canonical": f"https://www.youtube.com/{user.group(1)}/{user.group(2)}"}
 
     raise ValueError("Not a YouTube channel or playlist URL")
 
@@ -250,10 +269,18 @@ def _apply_stream_preference(db: Session, channel: YouTubeChannel) -> int:
             db.commit()
         return -len(restored)
 
+    from sqlalchemy import and_, or_
     stale = db.query(YouTubeVideo).filter(
         YouTubeVideo.channel_fk == channel.id,
-        YouTubeVideo.live_status.in_(FINISHED_LIVE),
         YouTubeVideo.removed_at.is_(None),
+        or_(
+            YouTubeVideo.live_status.in_(FINISHED_LIVE),
+            # A broadcast whose live_status later cleared to NULL. It was
+            # indexed as media_type "livestream", so it still counts as a
+            # finished stream rather than an ordinary upload.
+            and_(YouTubeVideo.media_type == "livestream",
+                 YouTubeVideo.live_status.is_(None)),
+        ),
     ).all()
     for video in stale:
         library.remove_video(video)
@@ -388,7 +415,26 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
         if on_progress:
             on_progress(min(seen_kept, keep), keep)
 
+    # youtube_videos.video_id is unique across ALL channels, but `known` only
+    # covers this one. A video listed twice here (e.g. on /streams and /videos)
+    # or already indexed under another channel or playlist source would be
+    # inserted again, and the IntegrityError aborts the whole channel on every
+    # run. Look those up once, and handle each id at most once.
+    elsewhere = set()
+    fresh = [v for v in dict.fromkeys(new_videos)]
+    for i in range(0, len(fresh), 500):
+        elsewhere |= {v.video_id for v in db.query(YouTubeVideo.video_id).filter(
+            YouTubeVideo.channel_fk != channel.id,
+            YouTubeVideo.video_id.in_(fresh[i:i + 500])).all()}
+    handled = set()
+
     for vid, entry, library_tab in ordered:
+        if vid in handled:
+            continue
+        handled.add(vid)
+        if vid in elsewhere:
+            _note_skip("already indexed under another channel or playlist")
+            continue
         if vid in known:
             if library_tab and vid in kept_ids:
                 seen_kept += 1

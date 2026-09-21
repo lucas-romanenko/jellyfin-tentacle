@@ -21,7 +21,7 @@ from models.database import (
     SyncRun, CategorySnapshot, Duplicate, get_setting, log_deletion
 )
 from services.tmdb import TMDBService
-from services.nfo import write_movie_nfo, write_series_nfo, make_folder_name
+from services.nfo import write_movie_nfo, write_series_nfo, make_folder_name, vod_folder_name
 from services.cleaner import clean_title
 from services.m3u_parser import episode_from_title, container_from_url
 from services.duplicates import delete_vod_files, convert_record_to_downloaded
@@ -302,6 +302,57 @@ class M3UClient:
             return self._urls.get(int(episode_id), "")
         except (TypeError, ValueError):
             return ""
+
+
+def _unhidden(name: str) -> str:
+    return name.lstrip(". ")
+
+
+def unhide_vod_paths(db: Session) -> int:
+    """Move VOD titles written under a dot-prefixed name to a visible one.
+
+    Jellyfin never scans a path matching `**/.*`, so these titles were on disk
+    but missing from the library. Renames the folder and every file in it
+    whose name starts with the old stem, then updates the stored paths. Skips
+    a title when the target name is already taken rather than merging folders.
+    Returns the number of titles moved.
+    """
+    moved = 0
+    for Model in (Movie, Series):
+        rows = db.query(Model).filter(Model.source.like("provider_%"),
+                                      Model.strm_path.isnot(None)).all()
+        for row in rows:
+            strm = Path(row.strm_path)
+            folder = strm if Model is Series else strm.parent
+            if not folder.name.startswith("."):
+                continue
+            new_folder = folder.with_name(_unhidden(folder.name))
+            if not _unhidden(folder.name) or new_folder.exists() or not folder.is_dir():
+                continue
+            old_stem = folder.name
+            folder.rename(new_folder)
+            for f in list(new_folder.rglob("*")):
+                if f.is_file() and f.name.startswith(old_stem):
+                    f.rename(f.with_name(_unhidden(old_stem) + f.name[len(old_stem):]))
+            def _fix(p):
+                if not p:
+                    return p
+                p = Path(p)
+                rel = p.relative_to(folder) if p != folder else None
+                if rel is None:
+                    return str(new_folder)
+                parts = list(rel.parts)
+                if parts and parts[-1].startswith(old_stem):
+                    parts[-1] = _unhidden(old_stem) + parts[-1][len(old_stem):]
+                return str(new_folder.joinpath(*parts))
+            row.strm_path = _fix(row.strm_path)
+            row.nfo_path = _fix(row.nfo_path) if row.nfo_path and Path(row.nfo_path).is_relative_to(folder) else row.nfo_path
+            row.jellyfin_item_id = None
+            moved += 1
+            logger.info(f"Moved hidden VOD folder so Jellyfin can see it: {folder.name} -> {new_folder.name}")
+    if moved:
+        db.commit()
+    return moved
 
 
 def make_provider_client(provider: Provider):
@@ -947,6 +998,11 @@ def sync_provider(
     logger.info(f"Starting {sync_type} sync for provider: {provider.name} (run #{run.id})")
 
     try:
+        try:
+            unhide_vod_paths(db)
+        except Exception as e:
+            logger.warning(f"Could not move hidden VOD folders: {e}")
+
         # Pre-sync disk space check
         if sync_type in ("full", "movies"):
             _check_disk_before_sync(vod_movies_path)
@@ -1279,7 +1335,7 @@ def _sync_movies(
             # Compute file path early so duplicate record has it
             title = metadata["title"]
             year_str = metadata.get("year")
-            folder_name = make_folder_name(title, year_str)
+            folder_name = vod_folder_name(title, year_str)
             movie_dir = output_dir / folder_name
             strm_file = movie_dir / f"{folder_name}.strm"
             nfo_file = movie_dir / f"{folder_name}.nfo"
@@ -1619,7 +1675,7 @@ def _sync_series(
             # Compute file path early so duplicate record has it
             title = metadata["title"]
             year_str = metadata.get("year")
-            folder_name = make_folder_name(title, year_str)
+            folder_name = vod_folder_name(title, year_str)
             show_dir = output_dir / folder_name
 
             if check_and_record_duplicate(tmdb_id, "series", f"provider_{provider.id}", str(show_dir), provider, db):
