@@ -94,6 +94,62 @@ class M3UChannelSyncGuardTests(unittest.TestCase):
         self.assertEqual(parse_m3u(body), [])
 
 
+class M3USmallLineupGuardTests(unittest.TestCase):
+    """The 25-channel removal floor must not swallow a whole small lineup.
+
+    Found live: a curated 20-channel playlist (what a tuliprox/Threadfin
+    front-end typically serves) truncated to 2 entries deleted the other 18 —
+    `max(25, 20%)` lets ANY lineup of up to 25 channels lose everything but
+    one entry as long as the body parses to something.
+    """
+
+    def setUp(self):
+        self.db = _session()
+        self.provider = Provider(name="P", server_url="http://p.example",
+                                 username="u", password="p",
+                                 provider_type="m3u_url", live_tv_enabled=True)
+        self.db.add(self.provider)
+        self.db.commit()
+        self.pid = self.provider.id
+        livetv._upsert_channels_from_m3u(self.pid, _parsed(20), self.db)
+        self.db.commit()
+        for ch in self.db.query(LiveChannel).all():
+            ch.enabled = True
+        self.db.commit()
+
+    def tearDown(self):
+        self.db.close()
+
+    def _count(self, **kw):
+        q = self.db.query(LiveChannel).filter(LiveChannel.provider_id == self.pid)
+        if kw.get("enabled"):
+            q = q.filter(LiveChannel.enabled == True)  # noqa: E712
+        return q.count()
+
+    def test_truncated_small_playlist_does_not_wipe_the_lineup(self):
+        stats = livetv._upsert_channels_from_m3u(self.pid, _parsed(2), self.db)
+        self.db.commit()
+        self.assertEqual(self._count(), 20, "a truncated playlist deleted 18 of 20 channels")
+        self.assertEqual(self._count(enabled=True), 20)
+        self.assertEqual(stats["removals_refused"], 18)
+
+    def test_a_few_removals_from_a_small_lineup_still_apply(self):
+        livetv._upsert_channels_from_m3u(self.pid, _parsed(17), self.db)
+        self.db.commit()
+        self.assertEqual(self._count(), 17)
+
+    def test_a_same_size_replacement_is_not_a_failed_download(self):
+        """Every URL changed (new host/token) but the playlist is as long as
+        before: that cannot be a truncated body, so the old rows must go —
+        refusing here would double the lineup on every sync, for ever."""
+        moved = [{"name": f"Channel {i}", "stream_url": f"http://new.example/{i}.ts",
+                  "group_title": "CA| SPORTS"} for i in range(20)]
+        stats = livetv._upsert_channels_from_m3u(self.pid, moved, self.db)
+        self.db.commit()
+        self.assertEqual(self._count(), 20)
+        self.assertEqual(stats["removals_refused"], 0)
+
+
 class M3UParserPairingTests(unittest.TestCase):
     """An #EXTINF with no URL of its own must not consume the next entry's URL."""
 

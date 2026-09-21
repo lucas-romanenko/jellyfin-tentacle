@@ -802,8 +802,19 @@ def _upsert_channels_from_m3u(
     removed_ids = set(existing.keys()) - seen_ids
     refused_removals = 0
     if removed_ids:
-        limit = max(M3U_MIN_REMOVAL_FLOOR, int(len(existing) * M3U_MAX_REMOVAL_FRACTION))
-        if not parsed_channels or len(removed_ids) > limit:
+        # The fixed floor exists so a small, real removal is never blocked on
+        # a big lineup. On a SMALL lineup (a curated playlist behind tuliprox
+        # or Threadfin is often under 25 channels) it must not exceed half of
+        # what is there, or the floor swallows the whole lineup: 20 channels
+        # truncated to 2 deleted the other 18.
+        floor = min(M3U_MIN_REMOVAL_FLOOR, len(existing) // 2)
+        limit = max(floor, int(len(existing) * M3U_MAX_REMOVAL_FRACTION))
+        # A failed or partial download is always SHORTER than the lineup it
+        # replaces. A playlist at least as long as before whose entries all
+        # changed (new host, rotated token) is a real change; refusing it would
+        # keep every old row and add every new one on each sync, for ever.
+        shrank = len(parsed_channels) < len(existing)
+        if not parsed_channels or (shrank and len(removed_ids) > limit):
             refused_removals = len(removed_ids)
             removed_ids = set()
             logger.error(
