@@ -234,7 +234,13 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
+  /* A fixed, centred column cannot scroll: on a small screen with more than a
+     few users the form and its buttons ended up below the fold, unreachable.
+     `safe` keeps the top of an over-tall column on screen instead of centring
+     it off the top edge. */
   justify-content: center;
+  justify-content: safe center;
+  overflow-y: auto;
   padding: 24px;
 }
 
@@ -3092,11 +3098,13 @@ td.primary { color: var(--text); font-weight: 500; }
   </div>
   <p class="login-subtitle">Who's watching?</p>
   <div class="user-grid" id="login-user-grid"></div>
+  <a class="login-back" id="login-manual-link" tabindex="0" role="button" onclick="loginShowManual()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click()}">Sign in with a username</a>
   <div class="login-password-form" id="login-password-form" style="display:none">
+    <input type="text" class="form-input" id="login-username" placeholder="Jellyfin username" autocomplete="username" style="display:none">
     <input type="password" class="form-input" id="login-password" placeholder="Enter password" autocomplete="current-password">
     <button class="btn btn-primary" style="width:100%;justify-content:center" id="login-submit-btn" onclick="submitLogin()">Sign In</button>
     <div class="login-error" id="login-error"></div>
-    <a class="login-back" onclick="loginBackToUsers()">← Back</a>
+    <a class="login-back" tabindex="0" role="button" onclick="loginBackToUsers()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click()}">← Back</a>
   </div>
 </div>
 

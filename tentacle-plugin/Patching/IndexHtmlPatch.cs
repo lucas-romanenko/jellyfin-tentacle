@@ -69,6 +69,14 @@ public static class IndexHtmlPatch
     }
 
     /// <summary>
+    /// Cache key for a source file: its timestamp and length. Stable across process
+    /// restarts, unlike a randomised string hash code (#58).
+    /// </summary>
+    private static string SourceKey(IFileInfo file) =>
+        file.LastModified.UtcTicks.ToString(System.Globalization.CultureInfo.InvariantCulture)
+        + ":" + file.Length.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+    /// <summary>
     /// Inject CSS/JS tags into index.html.
     /// </summary>
     private static void PatchIndexHtml(ref IFileInfo __result)
@@ -95,7 +103,9 @@ public static class IndexHtmlPatch
             // Serve a cached transformation when the source index.html is unchanged so we
             // don't re-run the string replacements (and don't change the cache-buster) on
             // every request — that was forcing browsers to re-download all injected assets.
-            var sourceHash = content.Length + ":" + content.GetHashCode();
+            // Keyed on the source file's own metadata rather than content.GetHashCode(),
+            // which .NET randomises per process and so missed once after every restart (#58).
+            var sourceHash = SourceKey(__result);
             lock (_transformLock)
             {
                 if (_cachedTransformed != null && _cachedSourceHash == sourceHash)

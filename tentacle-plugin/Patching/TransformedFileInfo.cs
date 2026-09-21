@@ -21,7 +21,10 @@ public class TransformedFileInfo : IFileInfo
 
     public bool IsDirectory => false;
 
-    public DateTimeOffset LastModified => DateTimeOffset.UtcNow;
+    // Report the SOURCE file's timestamp, not "now". Returning UtcNow gave every
+    // response a fresh Last-Modified/ETag, so a conditional request could never be
+    // answered with 304 and every page load re-sent the whole document (#58).
+    public DateTimeOffset LastModified => _original.LastModified;
 
     public long Length => _content.Length;
 

@@ -5,6 +5,7 @@ Unified view of movies and series
 
 import threading
 import logging
+import re
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -23,10 +24,24 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/library", tags=["library"])
 
+# Jellyfin item ids are GUIDs, with or without dashes. Anything else must be
+# refused before it reaches a request URL: `requests` resolves dot-segments
+# client-side, so an id of "../Users/<guid>" turns
+# DELETE {jellyfin_url}/Items/{id} into DELETE {jellyfin_url}/Users/<guid> —
+# sent with the stored Jellyfin *admin* API key.
+_JELLYFIN_ID_RE = re.compile(r"\A[0-9a-fA-F]{32}\Z|\A[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\Z")
+
+
+def _validate_jellyfin_item_id(item_id: str) -> str:
+    if not _JELLYFIN_ID_RE.match(item_id or ""):
+        raise HTTPException(400, "Invalid Jellyfin item id")
+    return item_id
+
 
 @router.get("/stream")
-async def stream_library_events():
-    """SSE endpoint for real-time library change events"""
+async def stream_library_events(user: TentacleUser = Depends(get_user_from_request)):
+    """SSE endpoint for real-time library change events. Requires a session —
+    the event stream narrates the whole library as it changes."""
     return StreamingResponse(
         library_event_generator(),
         media_type="text/event-stream",
@@ -49,7 +64,8 @@ def get_library_items(
     list_status: Optional[str] = None,
     limit: int = 48,
     offset: int = 0,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: TentacleUser = Depends(get_user_from_request),
 ):
     # List mode: return all items from the list with in_library status
     if list_id is not None:
@@ -483,12 +499,26 @@ def delete_download(
     from services.jellyfin import JellyfinService
     jf_url = get_setting(db, "jellyfin_url", "")
     jf_key = get_setting(db, "jellyfin_api_key", "")
-    jf_item_id = jellyfin_item_id
+    jf_item_id = _validate_jellyfin_item_id(jellyfin_item_id) if jellyfin_item_id else None
     jf = None
     if jf_url and jf_key:
         jf = JellyfinService(jf_url, jf_key, user.jellyfin_user_id)
+        jf_type = "Movie" if media_type == "movie" else "Series"
+        if jf_item_id:
+            # The permission check above is about tmdb_id; the id actually
+            # deleted is this caller-supplied one. Only use it if it IS that
+            # title — otherwise a user who requested one film could delete any
+            # item in Jellyfin (another user's film, a collection, a library
+            # folder) by passing its id. Fetched through the user-scoped path,
+            # so it must also be an item this user can see.
+            supplied = jf.get_item_by_id(jf_item_id) or {}
+            if (supplied.get("Type") != jf_type
+                    or (supplied.get("ProviderIds") or {}).get("Tmdb") != str(tmdb_id)):
+                logger.warning(
+                    f"Delete-download tmdb:{tmdb_id}: supplied Jellyfin id {jf_item_id} is not "
+                    f"that {jf_type.lower()} — ignoring it (user={user.display_name})")
+                jf_item_id = None
         if not jf_item_id:
-            jf_type = "Movie" if media_type == "movie" else "Series"
             jf_item = jf.search_by_tmdb_id(tmdb_id, media_type=jf_type)
             jf_item_id = jf_item["Id"] if jf_item else None
 
@@ -588,8 +618,16 @@ def delete_download(
 
 
 @router.get("/tmdb/{media_type}/{tmdb_id}")
-def get_tmdb_detail(media_type: str, tmdb_id: int, db: Session = Depends(get_db)):
-    """Fetch item details from TMDB (for items not in library)"""
+def get_tmdb_detail(
+    media_type: str,
+    tmdb_id: int,
+    db: Session = Depends(get_db),
+    user: TentacleUser = Depends(get_user_from_request),
+):
+    """Fetch item details from TMDB (for items not in library).
+
+    Requires a session: this spends the server's TMDB token on behalf of the
+    caller, so leaving it open turns Tentacle into a free TMDB proxy."""
     from services.tmdb import get_tmdb_token
     bearer = get_tmdb_token(db)
     data_dir = get_setting(db, "data_dir", "/data")

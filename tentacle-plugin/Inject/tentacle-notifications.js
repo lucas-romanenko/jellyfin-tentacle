@@ -76,9 +76,10 @@
     var toast = document.createElement('div');
     toast.className = 'tentacle-toast';
 
-    // Poster
+    // Poster. poster_path is backend-supplied text; escape it before it lands in an
+    // attribute, otherwise a value containing a quote breaks out of src="..." .
     var posterUrl = notif.poster_path
-      ? 'https://image.tmdb.org/t/p/w154' + notif.poster_path
+      ? escapeAttr('https://image.tmdb.org/t/p/w154' + notif.poster_path)
       : '';
 
     toast.innerHTML =
@@ -165,6 +166,16 @@
     var div = document.createElement('div');
     div.textContent = str;
     return div.innerHTML;
+  }
+
+  function escapeAttr(str) {
+    if (str == null) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
   }
 
   // Start when DOM is ready

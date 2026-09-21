@@ -62,41 +62,118 @@ def _get_session_secret(db: Session) -> str:
     return get_setting(db, "session_secret", "fallback-secret-change-me")
 
 
-def _sign_session(user_id: int, secret: str) -> str:
-    """Create a signed session token: user_id.signature"""
+def _sign_session(user_id: int, secret: str, version: int = 0,
+                  issued_at: Optional[int] = None) -> str:
+    """Signed session token: user_id.issued_at.version.signature.
+
+    The issue time lets the server enforce the cookie lifetime itself (a
+    browser's max-age is only advice, and a copied cookie has none), and the
+    version lets logout revoke tokens already handed out.
+    """
     import hmac, hashlib
-    msg = str(user_id).encode()
-    sig = hmac.new(secret.encode(), msg, hashlib.sha256).hexdigest()
-    return f"{user_id}.{sig}"
+    issued_at = int(time.time()) if issued_at is None else int(issued_at)
+    msg = f"{user_id}.{issued_at}.{version}"
+    sig = hmac.new(secret.encode(), msg.encode(), hashlib.sha256).hexdigest()
+    return f"{msg}.{sig}"
 
 
-def _verify_session(token: str, secret: str) -> Optional[int]:
-    """Verify a signed session token and return user_id or None."""
+def _verify_session(token: str, secret: str) -> Optional[tuple]:
+    """(user_id, issued_at, version) for a validly signed token, else None.
+
+    Tokens in the old two-part format are refused: they carry no issue time,
+    so there is no way to tell a fresh one from one copied a year ago. Their
+    owners log in once more.
+    """
     import hmac, hashlib
-    if not token or "." not in token:
+    if not token or token.count(".") != 3:
         return None
     try:
-        uid_str, sig = token.rsplit(".", 1)
-        expected = hmac.new(secret.encode(), uid_str.encode(), hashlib.sha256).hexdigest()
-        if hmac.compare_digest(sig, expected):
-            return int(uid_str)
+        msg, sig = token.rsplit(".", 1)
+        expected = hmac.new(secret.encode(), msg.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(sig, expected):
+            return None
+        uid, iat, ver = (int(x) for x in msg.split("."))
+        return uid, iat, ver
     except (ValueError, TypeError):
-        pass
-    return None
+        return None
+
+
+def _issue_session(db: Session, user: TentacleUser) -> str:
+    return _sign_session(user.id, _get_session_secret(db), user.session_version or 0)
+
+
+# How long a session trusts the admin / disabled state it last saw in Jellyfin.
+_SESSION_RECHECK_SECONDS = 300
+_session_checks: dict = {}  # jellyfin_user_id -> monotonic time of last good check
+
+
+def _refresh_from_jellyfin(db: Session, user: TentacleUser) -> bool:
+    """Re-read the user's Jellyfin account at most every few minutes.
+
+    False when Jellyfin says the account is gone or disabled. The admin flag is
+    copied across either way, so rights removed in Jellyfin's dashboard are
+    removed here too rather than lasting until the next login. When Jellyfin
+    cannot be asked (down, no API key) the last known state stands: locking
+    every user out of Tentacle because Jellyfin is restarting would be worse,
+    and nothing Tentacle does needs Jellyfin to be up to be refused.
+    """
+    now = time.monotonic()
+    last = _session_checks.get(user.jellyfin_user_id)
+    if last is not None and now - last < _SESSION_RECHECK_SECONDS:
+        return True
+    jf_url = get_setting(db, "jellyfin_url")
+    jf_key = get_setting(db, "jellyfin_api_key", "")
+    if not jf_url or not jf_key:
+        return True
+    try:
+        r = requests.get(f"{jf_url.rstrip('/')}/Users/{user.jellyfin_user_id}",
+                         headers={"X-Emby-Token": jf_key}, timeout=5)
+    except requests.RequestException as e:
+        logger.warning(f"Could not re-check {user.display_name} with Jellyfin: {e}")
+        return True
+    if r.status_code == 404:
+        _session_checks.pop(user.jellyfin_user_id, None)
+        return False
+    if r.status_code != 200:
+        return True
+    policy = (r.json() or {}).get("Policy") or {}
+    if policy.get("IsDisabled"):
+        _session_checks.pop(user.jellyfin_user_id, None)
+        return False
+    is_admin = bool(policy.get("IsAdministrator", False))
+    if bool(user.is_admin) != is_admin:
+        logger.info(f"{user.display_name}: admin {'granted' if is_admin else 'removed'} in Jellyfin")
+        user.is_admin = is_admin
+        db.commit()
+    _session_checks[user.jellyfin_user_id] = now
+    return True
+
+
+def _user_from_cookie(request: Request, db: Session) -> Optional[TentacleUser]:
+    token = request.cookies.get(COOKIE_NAME)
+    if not token:
+        return None
+    parsed = _verify_session(token, _get_session_secret(db))
+    if parsed is None:
+        return None
+    user_id, issued_at, version = parsed
+    if not (0 <= time.time() - issued_at <= COOKIE_MAX_AGE):
+        return None
+    user = db.query(TentacleUser).filter(TentacleUser.id == user_id).first()
+    if not user or version != (user.session_version or 0):
+        return None
+    if not _refresh_from_jellyfin(db, user):
+        return None
+    return user
 
 
 def get_current_user(request: Request, db: Session = Depends(get_db)) -> TentacleUser:
     """Extract authenticated user from session cookie. Raises 401 if not logged in."""
-    token = request.cookies.get(COOKIE_NAME)
-    if not token:
+    if not request.cookies.get(COOKIE_NAME):
         raise HTTPException(401, "Not authenticated")
-    secret = _get_session_secret(db)
-    user_id = _verify_session(token, secret)
-    if user_id is None:
+    user = _user_from_cookie(request, db)
+    if user is None:
         raise HTTPException(401, "Invalid session")
-    user = db.query(TentacleUser).filter(TentacleUser.id == user_id).first()
-    if not user:
-        raise HTTPException(401, "User not found")
     return user
 
 
@@ -238,6 +315,7 @@ def get_jellyfin_users(db: Session = Depends(get_db)):
     if not jf_url:
         raise HTTPException(400, "Jellyfin URL not configured")
     try:
+        browser_url = (get_setting(db, "jellyfin_public_url") or "").strip().rstrip("/") or jf_url.rstrip("/")
         r = requests.get(f"{jf_url.rstrip('/')}/Users/Public", timeout=10)
         r.raise_for_status()
         users = r.json()
@@ -249,7 +327,9 @@ def get_jellyfin_users(db: Session = Depends(get_db)):
                 # picker needs it to decide whether to prompt for a password.
                 "has_password": u.get("HasPassword", True),
                 "image_tag": u.get("PrimaryImageTag"),
-                "jellyfin_url": jf_url.rstrip("/"),
+                # The BROWSER loads the avatar from this, so it has to be the address a
+                # browser can reach: jellyfin_url is often a docker-internal name.
+                "jellyfin_url": browser_url,
             }
             for u in users
         ]
@@ -330,8 +410,8 @@ def login(body: LoginRequest, response: Response, request: Request, db: Session 
     # (Cloudflare tunnel sets X-Forwarded-Proto) so the session token is not sent
     # in cleartext over the public domain — but stay non-Secure for plain-HTTP LAN
     # access (http://<ip>:8888) so local logins keep working.
-    secret = _get_session_secret(db)
-    token = _sign_session(user.id, secret)
+    token = _issue_session(db, user)
+    _session_checks[user.jellyfin_user_id] = time.monotonic()
     forwarded_proto = request.headers.get("x-forwarded-proto", request.url.scheme)
     response.set_cookie(
         COOKIE_NAME, token,
@@ -352,8 +432,18 @@ def login(body: LoginRequest, response: Response, request: Request, db: Session 
 
 
 @router.post("/logout")
-def logout(response: Response):
-    """Clear the session cookie."""
+def logout(request: Request, response: Response, db: Session = Depends(get_db)):
+    """Clear the session cookie and revoke the sessions it came from.
+
+    Bumping the user's session version ends every session they hold, on every
+    device — the only way to end the one a copied cookie is using. Logging out
+    of one browser signing out the others is the usual price of that.
+    """
+    user = _user_from_cookie(request, db)
+    if user is not None:
+        user.session_version = (user.session_version or 0) + 1
+        db.commit()
+        _session_checks.pop(user.jellyfin_user_id, None)
     response.delete_cookie(COOKIE_NAME, path="/")
     return {"success": True}
 

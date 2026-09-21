@@ -472,6 +472,9 @@ class TentacleUser(Base):
     is_admin = Column(Boolean, default=False)
     profile_image_tag = Column(String, nullable=True)  # Jellyfin image tag for avatar
     notifications_enabled = Column(Boolean, default=True)  # Per-user download notifications
+    # Bumped by logout: every session token carries the version it was issued
+    # under, so a copy of a cookie stops working when its owner logs out.
+    session_version = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 

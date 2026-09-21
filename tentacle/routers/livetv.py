@@ -82,6 +82,12 @@ _sync_status_lock = threading.Lock()
 
 def _set_sync_status(provider_id: int, status: dict):
     """Thread-safe update of sync status for a provider."""
+    # GET /api/live/sync-status hands this straight to the dashboard, and an
+    # error's text is whatever the HTTP library put in it -- for an Xtream or
+    # M3U provider that is the full URL, username, password and token included.
+    if isinstance(status.get("message"), str):
+        from services.log_redaction import redact
+        status = {**status, "message": redact(status["message"])}
     with _sync_status_lock:
         _sync_status[provider_id] = status
 
@@ -257,7 +263,8 @@ def test_live_provider(db: Session = Depends(get_db)):
                 },
             }
         except Exception as e:
-            return {"success": False, "message": str(e)}
+            from services.log_redaction import redact
+            return {"success": False, "message": redact(str(e))}
 
     elif provider_type == "m3u_url":
         import requests
@@ -269,7 +276,8 @@ def test_live_provider(db: Session = Depends(get_db)):
             )
             return {"success": resp.status_code == 200, "message": f"HTTP {resp.status_code}"}
         except Exception as e:
-            return {"success": False, "message": str(e)}
+            from services.log_redaction import redact
+            return {"success": False, "message": redact(str(e))}
 
     return {"success": False, "message": f"Unknown provider type: {provider_type}"}
 

@@ -572,7 +572,7 @@ def preview_count(body: PreviewRequest, db: Session = Depends(get_db), user: Ten
 
 
 @router.post("/notify")
-def notify(db: Session = Depends(get_db)):
+def notify(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Notify the Jellyfin plugin to reload. Does NOT touch the JSON."""
     result = _notify_jellyfin_plugin(db)
     return {"success": True, **result}

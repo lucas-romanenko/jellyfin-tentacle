@@ -5,6 +5,7 @@ using MediaBrowser.Controller.Dto;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.Net;
 using MediaBrowser.Controller.Playlists;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
@@ -27,6 +28,7 @@ public class TentacleHomeController : ControllerBase
     private readonly ILibraryManager _libraryManager;
     private readonly IUserManager _userManager;
     private readonly IDtoService _dtoService;
+    private readonly IAuthorizationContext _authContext;
     private readonly ILogger<TentacleHomeController> _logger;
     private static readonly HttpClient ProxyClient = new() { Timeout = TimeSpan.FromSeconds(15) };
 
@@ -39,12 +41,14 @@ public class TentacleHomeController : ControllerBase
         ILibraryManager libraryManager,
         IUserManager userManager,
         IDtoService dtoService,
+        IAuthorizationContext authContext,
         ILogger<TentacleHomeController> logger)
     {
         _homeScreenManager = homeScreenManager;
         _libraryManager = libraryManager;
         _userManager = userManager;
         _dtoService = dtoService;
+        _authContext = authContext;
         _logger = logger;
     }
 
@@ -94,8 +98,15 @@ public class TentacleHomeController : ControllerBase
     /// </summary>
     [HttpGet("Sections")]
     [Authorize]
-    public ActionResult GetSections([FromQuery] Guid userId)
+    public async Task<ActionResult> GetSections([FromQuery] Guid userId)
     {
+        var caller = await CallerIdentity.ResolveAsync(_authContext, HttpContext, userId).ConfigureAwait(false);
+        if (!caller.Allowed)
+        {
+            return Forbid();
+        }
+
+        userId = caller.UserId;
         var config = _homeScreenManager.GetHomeConfig(userId, GetApiKey());
         if (config == null)
         {
@@ -160,12 +171,20 @@ public class TentacleHomeController : ControllerBase
     /// </summary>
     [HttpGet("Section/{playlistId}")]
     [Authorize]
-    public ActionResult GetSectionItems(string playlistId, [FromQuery] Guid userId)
+    public async Task<ActionResult> GetSectionItems(string playlistId, [FromQuery] Guid userId)
     {
         if (!Guid.TryParse(playlistId, out var playlistGuid))
         {
             return BadRequest("Invalid playlist ID");
         }
+
+        var caller = await CallerIdentity.ResolveAsync(_authContext, HttpContext, userId).ConfigureAwait(false);
+        if (!caller.Allowed)
+        {
+            return Forbid();
+        }
+
+        userId = caller.UserId;
 
         var user = _userManager.GetUserById(userId);
         if (user == null)
@@ -177,6 +196,13 @@ public class TentacleHomeController : ControllerBase
         if (item is not Playlist playlist)
         {
             return NotFound("Playlist not found");
+        }
+
+        // Tentacle playlists are per-user and private (IsPublic=false). Without this
+        // check any signed-in user could read any other user's playlist by GUID.
+        if (!CallerIdentity.CanReadPlaylist(playlist, user))
+        {
+            return Forbid();
         }
 
         // Read row config (max_items, sort) from home config
@@ -286,8 +312,15 @@ public class TentacleHomeController : ControllerBase
     /// </summary>
     [HttpGet("Hero")]
     [Authorize]
-    public ActionResult GetHeroItems([FromQuery] Guid userId)
+    public async Task<ActionResult> GetHeroItems([FromQuery] Guid userId)
     {
+        var caller = await CallerIdentity.ResolveAsync(_authContext, HttpContext, userId).ConfigureAwait(false);
+        if (!caller.Allowed)
+        {
+            return Forbid();
+        }
+
+        userId = caller.UserId;
         var config = _homeScreenManager.GetHomeConfig(userId, GetApiKey());
         if (config?.Hero is not { Enabled: true } hero || string.IsNullOrEmpty(hero.PlaylistId))
         {
@@ -422,9 +455,15 @@ public class TentacleHomeController : ControllerBase
     /// </summary>
     [HttpGet("UserSettings")]
     [Authorize]
-    public ActionResult GetUserSettings([FromQuery] Guid userId)
+    public async Task<ActionResult> GetUserSettings([FromQuery] Guid userId)
     {
-        var settings = LoadUserSettings(userId);
+        var caller = await CallerIdentity.ResolveAsync(_authContext, HttpContext, userId).ConfigureAwait(false);
+        if (!caller.Allowed)
+        {
+            return Forbid();
+        }
+
+        var settings = LoadUserSettings(caller.UserId);
         return Ok(settings);
     }
 
@@ -433,8 +472,17 @@ public class TentacleHomeController : ControllerBase
     /// </summary>
     [HttpPost("UserSettings")]
     [Authorize]
-    public ActionResult SaveUserSettings([FromBody] UserSectionSettings settings)
+    public async Task<ActionResult> SaveUserSettings([FromBody] UserSectionSettings settings)
     {
+        // The UserId in the body is a claim, not an identity. Taking it at face value
+        // let any signed-in user overwrite another user's saved home layout.
+        var caller = await CallerIdentity.ResolveAsync(_authContext, HttpContext, settings.UserId).ConfigureAwait(false);
+        if (!caller.Allowed)
+        {
+            return Forbid();
+        }
+
+        settings.UserId = caller.UserId;
         SaveUserSettingsToDisk(settings);
         return Ok(new { status = "ok" });
     }
@@ -472,9 +520,15 @@ public class TentacleHomeController : ControllerBase
     /// </summary>
     [HttpGet("HeroConfig")]
     [Authorize]
-    public ActionResult GetHeroConfig([FromQuery] Guid userId)
+    public async Task<ActionResult> GetHeroConfig([FromQuery] Guid userId)
     {
-        var homeConfig = _homeScreenManager.GetHomeConfig(userId, GetApiKey());
+        var caller = await CallerIdentity.ResolveAsync(_authContext, HttpContext, userId).ConfigureAwait(false);
+        if (!caller.Allowed)
+        {
+            return Forbid();
+        }
+
+        var homeConfig = _homeScreenManager.GetHomeConfig(caller.UserId, GetApiKey());
         if (homeConfig?.Hero is { Enabled: true } hero && !string.IsNullOrEmpty(hero.PlaylistId))
         {
             return Ok(new { enabled = true, playlistId = hero.PlaylistId, displayName = hero.DisplayName, trailerAudio = hero.TrailerAudio, itemCount = hero.ItemCount });
@@ -490,9 +544,17 @@ public class TentacleHomeController : ControllerBase
     /// </summary>
     [HttpGet("Toolbar")]
     [Authorize]
-    public ActionResult GetToolbar([FromQuery] Guid userId)
+    public async Task<ActionResult> GetToolbar([FromQuery] Guid userId)
     {
-        var homeConfig = _homeScreenManager.GetHomeConfig(userId, GetApiKey());
+        // The toolbar lives in the per-user home config, so the userId has to be the
+        // caller's own, exactly as for Sections / Hero / HeroConfig / UserSettings.
+        var caller = await CallerIdentity.ResolveAsync(_authContext, HttpContext, userId).ConfigureAwait(false);
+        if (!caller.Allowed)
+        {
+            return Forbid();
+        }
+
+        var homeConfig = _homeScreenManager.GetHomeConfig(caller.UserId, GetApiKey());
         var toolbar = homeConfig?.Toolbar;
         if (toolbar != null && toolbar.Count > 0)
         {

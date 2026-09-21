@@ -832,10 +832,15 @@
       window.location.hash = '#/details?id=' + item.Id;
     };
 
-    // Live TV channels: request image without tag to avoid 500 errors
-    var baseUrl = MH.apiClient.serverAddress();
-    var token = MH.apiClient.accessToken();
-    var imgUrl = baseUrl + '/Items/' + item.Id + '/Images/Primary?maxWidth=300&quality=90&api_key=' + token;
+    // Live TV channels: request the image without a tag to avoid 500 errors.
+    // Build it through ApiClient.getUrl — putting api_key=<access token> in an <img
+    // src> writes the caller's Jellyfin session token into the DOM, where any other
+    // injected script, browser extension or copied link carries it away. Jellyfin's
+    // image endpoints do not need it.
+    var imgUrl = MH.apiClient.getUrl('Items/' + item.Id + '/Images/Primary', {
+      maxWidth: 300,
+      quality: 90,
+    });
 
     var channelNumber = item.ChannelNumber ? item.ChannelNumber + ' · ' : '';
     var meta = channelNumber + (item.CurrentProgram ? item.CurrentProgram.Name || '' : '');

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Jellyfin.Plugin.Tentacle.Services;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 
@@ -44,6 +45,7 @@ public class TentacleMdbListController : ControllerBase
     /// Get ratings for a movie or show by TMDB ID.
     /// </summary>
     [HttpGet("Ratings")]
+    [Authorize]
     public async Task<ActionResult> GetRatings(
         [FromQuery] string type,
         [FromQuery] string tmdbId)

@@ -49,6 +49,11 @@ async function postLoginInit() {
 async function showLoginOverlay() {
   const overlay = document.getElementById('login-overlay');
   overlay.style.display = 'flex';
+  // The dashboard is still in the document underneath. Without this, Tab walked
+  // through ~20 of its covered controls before reaching the first user card, and
+  // Space/Enter acted on them unseen. (A successful sign-in reloads the page.)
+  const shell = document.querySelector('.app');
+  if (shell) shell.setAttribute('inert', '');
   const grid = document.getElementById('login-user-grid');
   grid.innerHTML = '<div style="color:var(--text3)">Loading users...</div>';
   document.getElementById('login-password-form').style.display = 'none';
@@ -59,6 +64,7 @@ async function showLoginOverlay() {
       if (resp.status === 400) {
         // Jellyfin URL not configured — go to setup wizard
         overlay.style.display = 'none';
+        if (shell) shell.removeAttribute('inert');
         document.getElementById('setup-overlay').style.display = 'flex';
       } else {
         // Connection error (bad API key, unreachable, etc.)
@@ -68,7 +74,11 @@ async function showLoginOverlay() {
     }
     const users = await resp.json();
     if (!users.length) {
-      grid.innerHTML = '<div style="color:var(--text2)">No users found. Check Jellyfin connection.</div>';
+      // Jellyfin only lists users that are NOT "hidden from login screens", and
+      // hidden is its default for new accounts -- an empty list is normal, not a
+      // connection problem. Without a way to type a name nobody could sign in.
+      grid.innerHTML = '<div style="color:var(--text2)">No users are shown on Jellyfin\'s login screen. Sign in with your Jellyfin username.</div>';
+      loginShowManual();
       return;
     }
     grid.innerHTML = users.map(u => {
@@ -76,11 +86,13 @@ async function showLoginOverlay() {
         ? `${u.jellyfin_url}/Users/${u.id}/Images/Primary?tag=${u.image_tag}&quality=90&maxWidth=150`
         : '';
       const avatarContent = avatarUrl
-        ? `<img src="${avatarUrl}" alt="${u.name}">`
-        : u.name.charAt(0).toUpperCase();
-      return `<div class="user-card" tabindex="0" onclick="selectLoginUser(${JSON.stringify(u).replace(/"/g, '&quot;')},this)" onkeydown="if(event.key==='Enter')this.click()">
+        ? `<img src="${escHtml(avatarUrl)}" alt="${escHtml(u.name)}">`
+        : escHtml(u.name.charAt(0).toUpperCase());
+      // The payload is escaped after JSON encoding, so a name containing the
+      // literal "&quot;" cannot decode back into a quote and break out.
+      return `<div class="user-card" tabindex="0" onclick="selectLoginUser(${escHtml(JSON.stringify(u))},this)" onkeydown="if(event.key==='Enter')this.click()">
         <div class="user-avatar">${avatarContent}</div>
-        <div class="user-card-name">${u.name}</div>
+        <div class="user-card-name">${escHtml(u.name)}</div>
       </div>`;
     }).join('');
   } catch (e) {
@@ -90,6 +102,9 @@ async function showLoginOverlay() {
 
 function selectLoginUser(user, el) {
   state._loginSelectedUser = user;
+  state._loginManual = false;
+  document.getElementById('login-manual-link').style.display = '';
+  document.getElementById('login-username').style.display = 'none';
   document.querySelectorAll('.user-card').forEach(c => c.classList.remove('selected'));
   el.classList.add('selected');
 
@@ -110,9 +125,37 @@ function selectLoginUser(user, el) {
 }
 
 async function submitLogin() {
-  if (!state._loginSelectedUser) return;
   const pw = document.getElementById('login-password').value;
+  if (state._loginManual) {
+    const name = document.getElementById('login-username').value.trim();
+    if (!name) {
+      document.getElementById('login-error').textContent = 'Enter your Jellyfin username';
+      return;
+    }
+    await doLogin(name, pw);
+    return;
+  }
+  if (!state._loginSelectedUser) return;
   await doLogin(state._loginSelectedUser.name, pw);
+}
+
+// Type a username instead of picking a card: for accounts Jellyfin hides from
+// its login screen, which /Users/Public (rightly) does not list.
+function loginShowManual() {
+  state._loginManual = true;
+  state._loginSelectedUser = null;
+  document.getElementById('login-manual-link').style.display = 'none';
+  document.querySelectorAll('.user-card').forEach(c => c.classList.remove('selected'));
+  document.getElementById('login-password-form').style.display = 'flex';
+  document.getElementById('login-error').textContent = '';
+  const name = document.getElementById('login-username');
+  name.style.display = '';
+  name.value = '';
+  const pw = document.getElementById('login-password');
+  pw.value = '';
+  name.onkeydown = (e) => { if (e.key === 'Enter') pw.focus(); };
+  pw.onkeydown = (e) => { if (e.key === 'Enter') submitLogin(); };
+  setTimeout(() => name.focus(), 50);
 }
 
 async function doLogin(username, password) {
@@ -142,6 +185,9 @@ async function doLogin(username, password) {
 
 function loginBackToUsers() {
   state._loginSelectedUser = null;
+  state._loginManual = false;
+  document.getElementById('login-manual-link').style.display = '';
+  document.getElementById('login-username').style.display = 'none';
   document.getElementById('login-password-form').style.display = 'none';
   document.querySelectorAll('.user-card').forEach(c => c.classList.remove('selected'));
 }
@@ -285,6 +331,16 @@ function showSettingsSection(name) {
   if (name === 'users') loadUsers();
 }
 
+// Escape text before it is interpolated into an innerHTML string. Jellyfin
+// display names are attacker-settable and reach the *unauthenticated* login
+// picker, so this must run on every such value.
+function escHtml(str) {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 async function loadUsers() {
   const el = document.getElementById('users-list');
   try {
@@ -299,8 +355,8 @@ async function loadUsers() {
         ? `${jfUrl}/Users/${u.id}/Images/Primary?tag=${u.image_tag}&quality=90&maxWidth=80`
         : '';
       const avatar = avatarUrl
-        ? `<img src="${avatarUrl}" style="width:36px;height:36px;border-radius:50%;object-fit:cover">`
-        : `<div style="width:36px;height:36px;border-radius:50%;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:600;color:var(--text2)">${u.name.charAt(0).toUpperCase()}</div>`;
+        ? `<img src="${escHtml(avatarUrl)}" style="width:36px;height:36px;border-radius:50%;object-fit:cover">`
+        : `<div style="width:36px;height:36px;border-radius:50%;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:600;color:var(--text2)">${escHtml(u.name.charAt(0).toUpperCase())}</div>`;
       const ownerBadge = u.is_owner ? ' <span style="font-size:10px;padding:2px 6px;background:var(--accent-dim);color:var(--accent);border-radius:4px;font-weight:500">OWNER</span>' : '';
       const badge = u.is_admin
         ? '<span style="font-size:10px;padding:2px 6px;background:var(--green-dim);color:var(--green);border-radius:4px;font-weight:500">ADMIN</span>' + ownerBadge
@@ -317,12 +373,12 @@ async function loadUsers() {
       return `<div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)">
         ${avatar}
         <div style="flex:1;min-width:0">
-          <div style="font-size:13px;font-weight:500">${u.name}${loginStatus}</div>
+          <div style="font-size:13px;font-weight:500">${escHtml(u.name)}${loginStatus}</div>
           <div style="margin-top:2px">${badge}</div>
         </div>
         <label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text3);cursor:pointer">
           Admin
-          <input type="checkbox"${toggleChecked}${toggleDisabled} onchange="toggleUserAdmin('${u.id}', this.checked)">
+          <input type="checkbox"${toggleChecked}${toggleDisabled} onchange="toggleUserAdmin('${escHtml(u.id)}', this.checked)">
         </label>
       </div>`;
     }).join('');
