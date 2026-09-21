@@ -685,6 +685,61 @@ class TMDBService:
             logger.info(f"TMDB upcoming {pages} pages: {len(all_results)} items")
         return all_results
 
+    def get_new_on_provider(self, media_type: str, provider_id: int, region: str = "CA",
+                            months: int = 18, pages: int = 3) -> list:
+        """Recently released titles available on a streaming provider in a region.
+
+        Uses TMDB Discover with the JustWatch-sourced watch-provider data:
+        flatrate (subscription) titles on `provider_id` in `region`, released in
+        the last `months`, newest first. TMDB has no true "date added to the
+        service" field, so this is the reliable proxy for "new on <service>".
+        Cached 12h. Returns the standard item shape (with a `provider_id`).
+        """
+        if not self.enabled:
+            return []
+        is_tv = media_type == "series"
+        cache_key = f"provider_new:{media_type}:{provider_id}:{region}:{months}:{pages}"
+        cached = self._cache_get(cache_key, ttl_seconds=12 * 3600)
+        if cached is not None:
+            return cached
+
+        from datetime import timedelta
+        today = datetime.now().date()
+        floor = (today - timedelta(days=months * 30)).isoformat()
+        date_field = "first_air_date" if is_tv else "primary_release_date"
+        endpoint = "discover/tv" if is_tv else "discover/movie"
+
+        all_results = []
+        seen = set()
+        for page in range(1, pages + 1):
+            params = {
+                "page": page,
+                "language": "en-US",
+                "watch_region": region,
+                "with_watch_providers": str(provider_id),
+                "with_watch_monetization_types": "flatrate",
+                "sort_by": f"{date_field}.desc",
+                f"{date_field}.gte": floor,
+                f"{date_field}.lte": today.isoformat(),
+                "vote_count.gte": 3,
+            }
+            data = self._request(endpoint, params)
+            items = self._parse_results(data, media_type)
+            for m in items:
+                # Skip posterless junk; keep the row clean.
+                if not m.get("poster_path"):
+                    continue
+                if m["tmdb_id"] in seen:
+                    continue
+                seen.add(m["tmdb_id"])
+                m["provider_id"] = provider_id
+                all_results.append(m)
+            if not items:
+                break
+        self._cache_set(cache_key, all_results)
+        logger.info(f"TMDB new-on-provider {provider_id} {media_type} ({region}): {len(all_results)} items")
+        return all_results
+
     def get_on_the_air(self, pages: int = 5) -> list:
         """Fetch TV shows currently on the air (multiple pages). Cached for 6 hours."""
         if not self.enabled:

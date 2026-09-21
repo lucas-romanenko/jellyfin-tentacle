@@ -757,6 +757,50 @@ def search_discover(
     return {"items": items}
 
 
+# ── New on Streaming Services ──────────────────────────────────────────────
+# TMDB watch-provider ids are per-region. These are Canada (watch_region=CA);
+# change the region via the `discover_watch_region` setting for another country
+# and update the ids from GET /watch/providers/movie?watch_region=XX.
+STREAMING_PROVIDERS = [
+    {"slug": "netflix", "name": "Netflix", "id": 8},
+    {"slug": "crave", "name": "Crave", "id": 230},
+    {"slug": "disney", "name": "Disney+", "id": 337},
+    {"slug": "prime", "name": "Amazon Prime", "id": 119},
+    {"slug": "appletv", "name": "Apple TV+", "id": 350},
+]
+_PROVIDER_BY_SLUG = {p["slug"]: p for p in STREAMING_PROVIDERS}
+
+
+@router.get("/providers", dependencies=[Depends(get_user_from_request)])
+def get_streaming_providers(db: Session = Depends(get_db)):
+    """The streaming services offered on the 'New on Streaming' Discover section."""
+    region = get_setting(db, "discover_watch_region", "CA") or "CA"
+    return {"region": region, "providers": [
+        {"slug": p["slug"], "name": p["name"]} for p in STREAMING_PROVIDERS
+    ]}
+
+
+@router.get("/streaming", dependencies=[Depends(get_user_from_request)])
+def get_new_on_streaming(provider: str, type: str = "movies", db: Session = Depends(get_db)):
+    """Recently released movies or TV on one streaming service, newest first.
+
+    In-library and already-requested titles are marked the same way as the rest
+    of Discover, so the user sees what is genuinely new to them.
+    """
+    prov = _PROVIDER_BY_SLUG.get(provider)
+    if not prov:
+        raise HTTPException(404, "Unknown streaming provider")
+    tmdb = _get_tmdb(db)
+    if not tmdb:
+        return {"provider": provider, "items": []}
+    region = get_setting(db, "discover_watch_region", "CA") or "CA"
+    media_type = "series" if type == "series" else "movie"
+    items = tmdb.get_new_on_provider(media_type, prov["id"], region=region)
+    known_ids = _known_tmdb_ids(db)
+    return {"provider": provider, "name": prov["name"],
+            "items": _dedup_and_mark(items, known_ids)}
+
+
 @router.get("/config")
 def get_discover_config(db: Session = Depends(get_db)):
     """DEPRECATED: the global discover_in_jellyfin toggle is retired — per-user

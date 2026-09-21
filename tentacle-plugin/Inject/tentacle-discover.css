@@ -1064,3 +1064,13 @@
 .md-ep-row.md-ep-have input[type="checkbox"] { accent-color: #4caf50; }
 .md-count-full { color: #4caf50 !important; }
 .md-count-partial { color: #ff9800 !important; }
+
+/* New on Streaming — provider pills */
+.md-stream-pills { display:flex; flex-wrap:wrap; gap:8px; margin:0 0 16px 0; }
+.md-stream-pill {
+  padding:6px 16px; border-radius:16px; border:1px solid var(--md-border, rgba(255,255,255,0.15));
+  background:transparent; color:var(--md-text-dim, #aaa); font-size:13px; font-weight:500;
+  cursor:pointer; transition:all .15s ease;
+}
+.md-stream-pill:hover { color:#fff; border-color:var(--md-accent, #7b2ff7); }
+.md-stream-pill-active { background:var(--md-accent, #7b2ff7); border-color:var(--md-accent, #7b2ff7); color:#fff; }

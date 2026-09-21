@@ -388,6 +388,61 @@ public class TentacleDiscoverController : ControllerBase
     /// <summary>
     /// Proxies TMDB search requests to Tentacle.
     /// </summary>
+    /// <summary>
+    /// Proxies the "New on Streaming" provider list.
+    /// </summary>
+    [HttpGet("Providers")]
+    [Authorize]
+    public async Task<ActionResult> GetStreamingProviders()
+    {
+        var baseUrl = GetTentacleUrl();
+        if (string.IsNullOrEmpty(baseUrl))
+        {
+            return Ok(new { providers = Array.Empty<object>() });
+        }
+
+        try
+        {
+            var response = await HttpClient.GetStringAsync(AppendUserId($"{baseUrl}/api/discover/providers"));
+            return Content(response, "application/json");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("[Tentacle Discover] Failed to fetch providers: {Error}", ex.Message);
+            return Ok(new { providers = Array.Empty<object>() });
+        }
+    }
+
+    /// <summary>
+    /// Proxies recently-added titles for one streaming provider.
+    /// </summary>
+    [HttpGet("Streaming")]
+    [Authorize]
+    public async Task<ActionResult> GetNewOnStreaming([FromQuery] string provider, [FromQuery] string type = "movies")
+    {
+        if (type != "movies" && type != "series") type = "movies";
+        var baseUrl = GetTentacleUrl();
+        if (string.IsNullOrEmpty(baseUrl))
+        {
+            return Ok(new { items = Array.Empty<object>() });
+        }
+
+        try
+        {
+            var encoded = System.Net.WebUtility.UrlEncode(provider ?? "");
+            var response = await HttpClient.GetStringAsync(
+                AppendUserId($"{baseUrl}/api/discover/streaming?provider={encoded}&type={type}"));
+            var jellyfinBase = $"{Request.Scheme}://{Request.Host}";
+            response = response.Replace("/api/discover/image-proxy/", $"{jellyfinBase}/TentacleDiscover/ImageProxy/");
+            return Content(response, "application/json");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("[Tentacle Discover] Failed to fetch streaming: {Error}", ex.Message);
+            return Ok(new { items = Array.Empty<object>() });
+        }
+    }
+
     [HttpGet("Search")]
     [Authorize]
     public async Task<ActionResult> SearchDiscover([FromQuery] string q = "", [FromQuery] string type = "all")

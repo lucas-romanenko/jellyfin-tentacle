@@ -32,6 +32,9 @@
     activityData: null,   // shared — used for download badges on discover cards
     generation: 0,        // incremented on navigation, stale API responses check this
     _pendingAction: null, // 'manage' or 'downloadMore' — auto-trigger after modal render
+    streamingProviders: null, // [{slug,name}] once loaded
+    streamingActive: null,    // active provider slug
+    streamingSection: null,   // {id:'streaming', items:[...]} for findItem
   };
 
   var ACT = {
@@ -279,7 +282,7 @@
         container.querySelectorAll('.md-filter-btn').forEach(function (x) { x.classList.remove('md-active'); });
         b.classList.add('md-active');
         MD.mediaFilter = b.getAttribute('data-mdtype');
-        MD.activeSection = null;
+        if (MD.activeSection !== 'streaming') MD.activeSection = null;
         fetchDiscoverData();
       });
     });
@@ -317,7 +320,7 @@
       renderSectionTabs();
       if (MD.sections.length > 0) {
         var targetId = MD.activeSection || MD.sections[0].id;
-        var found = MD.sections.find(function (s) { return s.id === targetId; });
+        var found = targetId === 'streaming' || MD.sections.find(function (s) { return s.id === targetId; });
         if (!found) targetId = MD.sections[0].id;
         switchSection(targetId);
       } else {
@@ -351,7 +354,8 @@
         esc(SECTION_LABELS[sec.id] || sec.title) +
         '<span class="md-section-count">' + count + '</span>' +
       '</button>';
-    }).join('');
+    }).join('') +
+      '<button class="md-section-tab" data-section="streaming">New on Streaming</button>';
 
     tabsEl.querySelectorAll('.md-section-tab').forEach(function (btn) {
       btn.addEventListener('click', function () {
@@ -367,15 +371,66 @@
       btn.classList.toggle('md-section-active', btn.getAttribute('data-section') === sectionId);
     });
 
+    if (sectionId === 'streaming') { renderStreaming(); return; }
+
     var section = MD.sections && MD.sections.find(function (s) { return s.id === sectionId; });
     if (!section) return;
 
     renderGrid(section);
   }
 
-  // ── Grid rendering ──────────────────────────────────────────────────
-  function renderGrid(section) {
+  // ── New on Streaming ────────────────────────────────────────────────
+  function renderStreaming() {
     var content = document.getElementById('mdDiscoverContent');
+    if (!content) return;
+    var gen = MD.generation;
+
+    function paint() {
+      var provs = MD.streamingProviders || [];
+      if (!provs.length) {
+        content.innerHTML = '<div class="md-loading">No streaming services configured.</div>';
+        return;
+      }
+      if (!MD.streamingActive || !provs.find(function (p) { return p.slug === MD.streamingActive; })) {
+        MD.streamingActive = provs[0].slug;
+      }
+      var pills = '<div class="md-stream-pills">' + provs.map(function (p) {
+        var on = p.slug === MD.streamingActive ? ' md-stream-pill-active' : '';
+        return '<button class="md-stream-pill' + on + '" data-prov="' + esc(p.slug) + '">' + esc(p.name) + '</button>';
+      }).join('') + '</div>';
+      content.innerHTML = pills + '<div id="mdStreamGrid"><div class="md-loading"><div class="md-spinner"></div><br>Loading...</div></div>';
+      content.querySelectorAll('.md-stream-pill').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          MD.streamingActive = btn.getAttribute('data-prov');
+          renderStreaming();
+        });
+      });
+      var typeParam = MD.mediaFilter === 'series' ? 'series' : 'movies';
+      apiGet('TentacleDiscover/Streaming?provider=' + encodeURIComponent(MD.streamingActive) + '&type=' + typeParam + '&userId=' + window.ApiClient.getCurrentUserId())
+        .then(function (data) {
+          if (gen !== MD.generation) return;
+          MD.streamingSection = { id: 'streaming', items: (data && data.items) || [] };
+          var wrap = document.getElementById('mdStreamGrid');
+          if (wrap) renderGrid(MD.streamingSection, wrap);
+        })
+        .catch(function () {
+          var wrap = document.getElementById('mdStreamGrid');
+          if (wrap) wrap.innerHTML = '<div class="md-loading">Failed to load.</div>';
+        });
+    }
+
+    if (!MD.streamingProviders) {
+      apiGet('TentacleDiscover/Providers?userId=' + window.ApiClient.getCurrentUserId())
+        .then(function (data) { MD.streamingProviders = (data && data.providers) || []; if (gen === MD.generation) paint(); })
+        .catch(function () { MD.streamingProviders = []; if (gen === MD.generation) paint(); });
+    } else {
+      paint();
+    }
+  }
+
+  // ── Grid rendering ──────────────────────────────────────────────────
+  function renderGrid(section, target) {
+    var content = target || document.getElementById('mdDiscoverContent');
     if (!content) return;
 
     var items = section.items || [];
@@ -448,6 +503,12 @@
   }
 
   function findItem(tmdbId, tvdbId) {
+    if (MD.streamingSection) {
+      var sitems = MD.streamingSection.items || [];
+      for (var k = 0; k < sitems.length; k++) {
+        if ((sitems[k].tmdb_id || 0) === tmdbId || (tvdbId && (sitems[k].tvdb_id || 0) === tvdbId)) return sitems[k];
+      }
+    }
     if (!MD.sections) return null;
     for (var i = 0; i < MD.sections.length; i++) {
       var items = MD.sections[i].items;
