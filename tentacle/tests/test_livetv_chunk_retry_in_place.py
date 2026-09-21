@@ -69,5 +69,40 @@ class TestChunkRetriedInPlace(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, log.count(C % 2))
 
 
+
+class TestAGoneSegmentIsSkipped(unittest.IsolatedAsyncioTestCase):
+    """A 404 on ONE segment must not end the recording. Panels routinely 404 a
+    segment that is not written yet or has just expired; the next one is fine."""
+
+    def _script(self, c2_statuses):
+        first = _playlist("c1.ts", "c2.ts", "c3.ts", end=True)
+        return {
+            BASE: [_resp(200, BASE, first.encode(), PLAYLIST_CT)] * 2,
+            C % 1: _chunk(1, 200),
+            C % 2: _chunk(2, *c2_statuses),
+            C % 3: _chunk(3, 200),
+        }
+
+    async def test_the_stream_continues_past_a_gone_segment(self):
+        body, log, _ = await _drive(self._script([404]))
+        self.assertIn(b"CHUNK1", body)
+        self.assertIn(b"CHUNK3", body, "one 404 segment ended the whole stream")
+        self.assertEqual(1, log.count(C % 2), "a gone segment is not retried")
+
+    async def test_a_run_of_gone_segments_still_ends_the_stream(self):
+        import routers.livetv as livetv
+        n = 15
+        names = [f"g{i}.ts" for i in range(n)]
+        first = _playlist(*names, end=True)
+        script = {BASE: [_resp(200, BASE, first.encode(), PLAYLIST_CT)] * 2}
+        for name in names:
+            url = f"http://provider.test/live/u/p/{name}"
+            script[url] = [_resp(404, url)]
+        body, log, _ = await _drive(script)
+        self.assertEqual(body, b"")
+        fetched = sum(log.count(f"http://provider.test/live/u/p/{name}") for name in names)
+        self.assertLess(fetched, n, "a dead stream was nursed through every gone segment")
+
+
 if __name__ == "__main__":
     unittest.main()

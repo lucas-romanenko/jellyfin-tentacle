@@ -148,5 +148,93 @@ class SharedUpstream(unittest.TestCase):
                          "viewers of an already-open channel used up capacity")
 
 
+
+class ConcurrentOpeners(SharedUpstream):
+    """Two clients arriving while the channel is still being OPENED must end up
+    on one upstream. The open takes a while (slot wait, redirect chain, 509
+    backoff), and it happened outside the registry lock: the second arrival
+    found no entry, took its own slot and opened a second provider connection."""
+
+    def _run_slow(self, body, delay=0.05):
+        livetv = self.livetv
+        upstreams = []
+
+        async def slow_inner(channel_id, ua, url, release, guard=None):
+            await asyncio.sleep(delay)          # the open takes time
+            upstreams.append(channel_id)
+
+            async def gen():
+                # A live stream keeps going: give the second client time to
+                # attach before the second segment (a fake that ends at once
+                # would end the channel before anyone else could join it).
+                try:
+                    yield b"SEG1"
+                    await asyncio.sleep(delay)
+                    yield b"SEG2"
+                finally:
+                    release()
+            return StreamingResponse(gen(), media_type="video/mp2t")
+
+        async def drive():
+            with mock.patch.object(livetv, "_stream_proxy_inner", slow_inner), \
+                    mock.patch.object(livetv, "is_safe_url", lambda *a, **k: True), \
+                    mock.patch.object(livetv, "lan_origin_guard",
+                                      lambda *a, **k: (lambda url: True)):
+                return await body()
+
+        return asyncio.run(drive()), upstreams
+
+    def test_clients_arriving_during_the_open_attach_to_it(self):
+        cid = self._channel()
+
+        async def body():
+            a, b = await asyncio.gather(self.livetv.stream_proxy(cid, self.db),
+                                        self.livetv.stream_proxy(cid, self.db))
+            return await asyncio.gather(self._read(a), self._read(b))
+
+        (body_a, body_b), upstreams = self._run_slow(body)
+        self.assertEqual(len(upstreams), 1,
+                         f"{len(upstreams)} upstreams opened for 2 clients that arrived together")
+        self.assertIn(b"SEG1", body_a)
+        self.assertIn(b"SEG2", body_b, "the client that arrived during the open got no data")
+        self.assertEqual(self.livetv._pending_opens, {})
+
+    def test_a_failed_open_does_not_strand_the_next_client(self):
+        cid = self._channel()
+        livetv = self.livetv
+        calls = []
+
+        async def failing_then_ok(channel_id, ua, url, release, guard=None):
+            calls.append(1)
+            await asyncio.sleep(0.02)
+            if len(calls) == 1:
+                release()
+                from fastapi import HTTPException
+                raise HTTPException(502, "provider refused")
+
+            async def gen():
+                try:
+                    yield b"SEG1"
+                finally:
+                    release()
+            return StreamingResponse(gen(), media_type="video/mp2t")
+
+        async def body():
+            with mock.patch.object(livetv, "_stream_proxy_inner", failing_then_ok), \
+                    mock.patch.object(livetv, "is_safe_url", lambda *a, **k: True), \
+                    mock.patch.object(livetv, "lan_origin_guard", lambda *a, **k: (lambda url: True)):
+                results = await asyncio.gather(livetv.stream_proxy(cid, self.db),
+                                               livetv.stream_proxy(cid, self.db),
+                                               return_exceptions=True)
+                return results
+
+        results = asyncio.run(body())
+        kinds = sorted(type(r).__name__ for r in results)
+        # One failed with the provider's error, the other opened its own and streams.
+        self.assertIn("HTTPException", kinds)
+        self.assertIn("_SubscriberResponse", kinds)
+        self.assertEqual(livetv._pending_opens, {})
+
+
 if __name__ == "__main__":
     unittest.main()

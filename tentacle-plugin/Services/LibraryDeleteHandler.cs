@@ -114,7 +114,8 @@ public class LibraryDeleteHandler : IHostedService, IDisposable
         // dropped out. Those are not user deletions, and the path check above
         // cannot tell them apart, because the file really is gone. While a scan
         // is running, leave the catalogue alone; a deletion made in the UI during
-        // a scan is reconciled by the backend's nightly orphan sweep.
+        // a scan is reconciled by the backend's nightly orphan sweep (downloaded
+        // rows; a VOD row simply comes back through the next sync's .strm repair).
         if (IsLibraryScanRunning())
         {
             _logger.LogInformation("[Tentacle] {Type} '{Name}' removed during a library scan — not forwarding to the backend",

@@ -268,7 +268,18 @@ def live_stream(channel_id: int, db: Session = Depends(get_db)):
         finally:
             _stop()
 
-    return StreamingResponse(
+    class _ReapingResponse(StreamingResponse):
+        # Starlette runs `background` after the response; a newer Starlette
+        # raises ClientDisconnect on a disconnect and skips it. A `finally`
+        # around the whole send runs on every path (compare livetv's
+        # _SubscriberResponse), and _stop is idempotent.
+        async def __call__(self, scope, receive, send):
+            try:
+                await super().__call__(scope, receive, send)
+            finally:
+                _stop()
+
+    return _ReapingResponse(
         _stream(),
         media_type="video/mp2t",
         headers={"Connection": "close", "Cache-Control": "no-cache, no-store"},

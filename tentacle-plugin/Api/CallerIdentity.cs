@@ -32,9 +32,15 @@ internal static class CallerIdentity
         var info = await authContext.GetAuthorizationInfo(httpContext).ConfigureAwait(false);
 
         // A server-level API key has no user behind it; it may address any user.
-        if (info.IsApiKey || info.UserId.Equals(default))
+        // Only a real API key qualifies: a token with no user is not one.
+        if (info.IsApiKey)
         {
             return (true, requestedUserId);
+        }
+
+        if (info.UserId.Equals(default))
+        {
+            return (false, default);
         }
 
         if (requestedUserId.Equals(default) || requestedUserId.Equals(info.UserId))

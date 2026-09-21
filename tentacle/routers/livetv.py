@@ -186,6 +186,12 @@ def _max_concurrent_streams(db) -> int:
 _shared_streams: "dict[int, _SharedUpstream] = {}"
 _shared_streams = {}
 _shared_lock: "asyncio.Lock | None" = None
+# Channels whose shared upstream is being opened right now: channel_id -> Future
+# resolved with the _SharedUpstream (or None when nothing shareable came of it).
+_pending_opens: "dict[int, asyncio.Future]" = {}
+# Longest an opener can take: the slot wait, the open budget with its backoff,
+# and the redirect chain. A follower waits this long before opening its own.
+_PENDING_OPEN_WAIT = 45.0
 
 # Segments of slack before a client is considered too slow. HLS segments are
 # usually 6s, so this is minutes of buffer -- a consumer further behind than
@@ -1978,14 +1984,45 @@ async def stream_proxy(channel_id: int, db: Session = Depends(get_db)):
     # upstream connection for byte-identical data (recording + watching the
     # same channel is the common case). Costs the provider nothing and needs
     # no concurrency slot of its own.
-    async with _get_shared_lock():
-        shared = _shared_streams.get(channel_id)
-        if shared is not None and not shared._closed:
-            q = shared.subscribe()
-            logger.info(f"[LiveTV] Channel {channel_id} already streaming — "
-                        f"attaching client ({len(shared.subscribers)} now)")
-            return _SubscriberResponse(shared, q)
+    #
+    # Being OPENED right now counts too. The open takes a while (slot wait,
+    # redirect chain, 509 backoff) and used to happen outside the lock, so a
+    # second client arriving in that window found no entry, took its own slot
+    # and opened a second provider connection — two timers on one channel
+    # starting the same minute, exactly when the sharing matters. The first
+    # arrival registers as the opener; the rest wait for it and attach.
+    loop = asyncio.get_running_loop()
+    while True:
+        async with _get_shared_lock():
+            shared = _shared_streams.get(channel_id)
+            if shared is not None and not shared._closed:
+                q = shared.subscribe()
+                logger.info(f"[LiveTV] Channel {channel_id} already streaming — "
+                            f"attaching client ({len(shared.subscribers)} now)")
+                return _SubscriberResponse(shared, q)
+            pending = _pending_opens.get(channel_id)
+            if pending is None:
+                pending = loop.create_future()
+                _pending_opens[channel_id] = pending
+                break  # this request opens the channel
+        logger.info(f"[LiveTV] Channel {channel_id} is being opened by another client — waiting to attach")
+        try:
+            await asyncio.wait_for(asyncio.shield(pending), timeout=_PENDING_OPEN_WAIT)
+        except Exception:
+            pass  # the opener failed or timed out; look again, maybe open it ourselves
 
+    try:
+        return await _open_shared_upstream(channel_id, db, pending)
+    finally:
+        if not pending.done():
+            pending.set_result(None)
+        async with _get_shared_lock():
+            if _pending_opens.get(channel_id) is pending:
+                del _pending_opens[channel_id]
+
+
+async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.Future"):
+    """Open the upstream for a channel this request is the first to ask for."""
     # Cap concurrent upstream pulls (see _StreamSlots). A refusal here is how a
     # scheduled recording silently becomes a zero-byte file -- Jellyfin shows the
     # timer as having run -- so it is logged as an error, by channel name, and
@@ -2048,6 +2085,8 @@ async def stream_proxy(channel_id: int, db: Session = Depends(get_db)):
         async with _get_shared_lock():
             _shared_streams[channel_id] = shared
         shared.task = asyncio.create_task(shared._pump(upstream.body_iterator))
+        if not pending.done():
+            pending.set_result(shared)
         return _SubscriberResponse(shared, q)
     except BaseException:
         _release_sem()
@@ -2295,8 +2334,31 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
         BACKOFF_START = 1.0
         BACKOFF_CAP = 5.0        # short: the tuner reader is waiting on us
         CHUNK_RETRIES_IN_PLACE = 3
+        # A segment that will never arrive (404 / 410 / 403 on ONE chunk) is
+        # skipped, not fatal: panels routinely 404 a segment that is not written
+        # yet or has just expired, and ending the stream there is the truncated
+        # recording #86 exists to prevent. A run of them is a dead stream.
+        MAX_FATAL_CHUNK_SKIPS = 10
+        fatal_chunk_skips = 0
         failing_since = None
         backoff = BACKOFF_START
+        # guard() resolves the host with a blocking getaddrinfo. Called for
+        # every playlist line on every reload it puts N synchronous lookups on
+        # the event loop every few seconds per stream; one resolver stall would
+        # freeze every stream. The answer depends only on the origin, so resolve
+        # each origin once for the life of this stream.
+        from urllib.parse import urlparse as _urlparse
+        _origin_verdicts: dict = {}
+
+        def line_guard(url: str) -> bool:
+            try:
+                p = _urlparse(url)
+                key = (p.scheme, (p.hostname or "").lower(), p.port)
+            except ValueError:
+                return guard(url)
+            if key not in _origin_verdicts:
+                _origin_verdicts[key] = guard(url)
+            return _origin_verdicts[key]
         # When the playlist now in hand was read; reloads are timed from here.
         playlist_loaded_at = asyncio.get_running_loop().time()
 
@@ -2354,7 +2416,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     if hop == _MAX_VARIANT_HOPS:
                         logger.error(f"[LiveTV] Too many HLS variant hops for channel {channel_id}")
                         return
-                    if not guard(variant):
+                    if not line_guard(variant):
                         logger.warning(
                             f"[LiveTV] Blocked HLS variant on non-public host for "
                             f"channel {channel_id}: {variant}")
@@ -2402,7 +2464,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                             pass
                     elif stripped and not stripped.startswith("#"):
                         chunk_url = urljoin(current_base, stripped)
-                        if not guard(chunk_url):
+                        if not line_guard(chunk_url):
                             logger.warning(f"[LiveTV] Skipping HLS chunk on non-public host for channel {channel_id}: {chunk_url}")
                             continue
                         chunk_urls.append(chunk_url)
@@ -2437,6 +2499,16 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                                 return
                             await _backoff_sleep()
                     if payload is None:
+                        if not _is_retryable(chunk_error):
+                            fatal_chunk_skips += 1
+                            seen_chunks.add(chunk_url)
+                            if fatal_chunk_skips > MAX_FATAL_CHUNK_SKIPS:
+                                logger.error(f"[LiveTV] {fatal_chunk_skips} segments in a row are gone for "
+                                             f"channel {channel_id}, stopping: {chunk_error}")
+                                return
+                            logger.warning(f"[LiveTV] Segment gone for channel {channel_id} "
+                                           f"({fatal_chunk_skips} in a row), skipping it: {chunk_error}")
+                            continue
                         if _note_failure(chunk_error, "Chunk fetch"):
                             return
                         # Deliberately NOT marked seen: a chunk lost to a
@@ -2449,6 +2521,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         break
                     seen_chunks.add(chunk_url)
                     got_new = True
+                    fatal_chunk_skips = 0
                     yield payload
                     _note_success()
 
