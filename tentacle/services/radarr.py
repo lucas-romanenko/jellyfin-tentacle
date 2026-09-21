@@ -12,7 +12,7 @@ import requests
 from sqlalchemy.orm import Session
 
 from datetime import timedelta
-from models.database import Movie, Duplicate, DownloadRequest, TentacleUser, get_setting
+from models.database import Movie, Duplicate, DownloadRequest, TentacleUser, get_setting, DeletionLog
 from services.tmdb import TMDBService
 from services.nfo import write_movie_nfo, make_folder_name
 from services.tagger import apply_tag_rules, get_list_tags_for_tmdb_id, detect_source_tag_from_studios
@@ -118,6 +118,19 @@ class RadarrService:
             logger.error(f"Failed to fetch quality profiles: {e}")
             return []
 
+
+
+def file_loss_looks_like_an_outage(lost: int, total: int) -> bool:
+    """True when so many still-listed titles lost their files at once that it
+    is the *arr's storage that went away, not the library.
+
+    Deleting a few files is ordinary housekeeping; an unmounted media share
+    makes the *arr report EVERY title as having no file, all in one scan. The
+    response is not empty, so an "is the list empty?" check cannot see it.
+    Titles removed from the *arr itself are a decision somebody made and are
+    not counted here -- that is also the way out for a genuinely large clean-up.
+    """
+    return lost >= 3 and lost * 2 > total
 
 def scan_radarr_library(db: Session) -> dict:
     """
@@ -279,19 +292,41 @@ def scan_radarr_library(db: Session) -> dict:
 
     # Remove movies no longer in Radarr
     radarr_tmdb_ids = {m["tmdbId"] for m in downloaded}
+    listed_tmdb_ids = {m.get("tmdbId") for m in movies if m.get("tmdbId")}
+    rows = db.query(Movie).filter(Movie.source == "radarr").all()
+    # Still in Radarr, but Radarr says the file is gone.
+    lost_file = [m for m in rows if m.tmdb_id not in radarr_tmdb_ids and m.tmdb_id in listed_tmdb_ids]
+    refused = 0
+    if file_loss_looks_like_an_outage(len(lost_file), len(rows)):
+        refused = len(lost_file)
+        keep = {m.tmdb_id for m in lost_file}
+        logger.error(
+            f"Radarr scan: REFUSING to remove {refused} of {len(rows)} downloaded movies that "
+            f"Radarr still lists but reports as having no file. That many at once looks like "
+            f"Radarr's media storage being unavailable, not a clean-up. Rows kept; if the files "
+            f"really are gone, remove the movies from Radarr.")
+    else:
+        keep = set()
     removed = 0
-    for movie in db.query(Movie).filter(Movie.source == "radarr").all():
-        if movie.tmdb_id not in radarr_tmdb_ids:
+    for movie in rows:
+        if movie.tmdb_id not in radarr_tmdb_ids and movie.tmdb_id not in keep:
             emit_library_event("movie_removed", {
                 "tmdb_id": movie.tmdb_id,
                 "title": movie.title,
                 "media_type": "movie",
             })
+            # Same transaction as the delete: the scan commits once, at the end.
+            db.add(DeletionLog(
+                kind="radarr-scan", media_type="movie", reason="removed-from-radarr",
+                name=f"{movie.title} ({movie.year})" if movie.year else movie.title,
+                detail="no longer in Radarr" if movie.tmdb_id not in listed_tmdb_ids
+                else "Radarr reports no file"))
             db.delete(movie)
             removed += 1
     if removed:
         logger.info(f"Radarr scan: removed {removed} movies no longer in Radarr")
     stats["removed"] = removed
+    stats["removals_refused"] = refused
 
     # Single commit for all DB changes
     db.commit()

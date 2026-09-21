@@ -11,7 +11,8 @@ from typing import Optional
 import requests
 from sqlalchemy.orm import Session
 
-from models.database import Series, Duplicate, DownloadRequest, TentacleUser, get_setting
+from models.database import Series, Duplicate, DownloadRequest, TentacleUser, get_setting, DeletionLog
+from services.radarr import file_loss_looks_like_an_outage
 
 DOWNLOADED_TV_TAG = "Downloaded TV"
 RECENTLY_ADDED_TV_TAG = "Recently Added TV"
@@ -682,19 +683,40 @@ def scan_sonarr_library(db: Session) -> dict:
         tid = s.get("tmdbId") or 0
         if tid:
             sonarr_tmdb_ids.add(tid)
+    listed_tmdb_ids = {s.get("tmdbId") for s in all_series if s.get("tmdbId")}
+    rows = db.query(Series).filter(Series.source == "sonarr").all()
+    # Still in Sonarr, but Sonarr says it has no episode files (see
+    # services.radarr.file_loss_looks_like_an_outage).
+    lost_file = [r for r in rows if r.tmdb_id not in sonarr_tmdb_ids and r.tmdb_id in listed_tmdb_ids]
+    refused = 0
+    keep = set()
+    if file_loss_looks_like_an_outage(len(lost_file), len(rows)):
+        refused = len(lost_file)
+        keep = {r.tmdb_id for r in lost_file}
+        logger.error(
+            f"Sonarr scan: REFUSING to remove {refused} of {len(rows)} downloaded series that "
+            f"Sonarr still lists but reports as having no episode files. That many at once looks "
+            f"like Sonarr's media storage being unavailable, not a clean-up. Rows kept; if the "
+            f"files really are gone, remove the series from Sonarr.")
     removed = 0
-    for series in db.query(Series).filter(Series.source == "sonarr").all():
-        if series.tmdb_id not in sonarr_tmdb_ids:
+    for series in rows:
+        if series.tmdb_id not in sonarr_tmdb_ids and series.tmdb_id not in keep:
             emit_library_event("series_removed", {
                 "tmdb_id": series.tmdb_id,
                 "title": series.title,
                 "media_type": "series",
             })
+            # Same transaction as the delete: the scan commits once, at the end.
+            db.add(DeletionLog(
+                kind="sonarr-scan", media_type="series", reason="removed-from-sonarr", name=series.title,
+                detail="no longer in Sonarr" if series.tmdb_id not in listed_tmdb_ids
+                else "Sonarr reports no episode files"))
             db.delete(series)
             removed += 1
     if removed:
         logger.info(f"Sonarr scan: removed {removed} series no longer in Sonarr")
     stats["removed"] = removed
+    stats["removals_refused"] = refused
 
     # Sync monitoring state for ALL series in DB (not just those processed above)
     # Covers: VOD series added to Sonarr, series with no downloads yet, etc.
