@@ -90,6 +90,7 @@
   }
 
   function tryInject() {
+    if (window.TentacleStandAside && window.TentacleStandAside()) return; // TV layout
     if (_tryInjectTimer) { clearTimeout(_tryInjectTimer); _tryInjectTimer = null; }
     if (!isHomePage()) { _tryInjectRetries = 0; return; }
     var slider = findActiveSlider();
@@ -1696,6 +1697,7 @@
 
   var _navTimer = null;
   var navHandler = function () {
+    if (window.TentacleStandAside && window.TentacleStandAside()) return; // TV layout — no overlays, no injected tab
     closeModal();
     var route = overlayRouteParam();
     if (route === 'discover') {

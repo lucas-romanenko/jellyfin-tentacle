@@ -19,8 +19,11 @@ from models.database import get_setting, TagRule, TentacleUser, DownloadRequest,
 
 logger = logging.getLogger(__name__)
 
-# Prevent concurrent playlist refreshes (webhooks can fire simultaneously)
-_playlist_refresh_lock = threading.Lock()
+# Serialize every mutation of a Jellyfin playlist: full refreshes, the toggle /
+# sync-one fast paths, the webhook add/remove paths and the orphan sweep.
+# Re-entrant because refresh_smartlist_playlists() holds it while calling
+# _process_single_playlist().
+_playlist_refresh_lock = threading.RLock()
 
 # Serialize home-config read-modify-write across the scheduler thread and HTTP
 # handlers so concurrent edits can't lose each other's changes or tear the
@@ -651,6 +654,13 @@ def _enabled_toggle_names(db: Session, user_id: int) -> set:
         key = t.key or ""
         if key in builtin_names:
             names.add(builtin_names[key])
+        elif key == "builtin:my_downloads":
+            # Only "desired" while the user has a DownloadRequest (see
+            # get_desired_smartlists) — deleting their last request must not
+            # delete the enabled playlist.
+            user = db.query(TentacleUser).filter(TentacleUser.id == user_id).first()
+            if user:
+                names.add(f"{user.display_name}'s Downloads")
         elif key.startswith("source:"):
             parts = key.split(":")
             # source:<tag>:movies — rejoin the middle so a tag containing
@@ -1074,6 +1084,7 @@ def write_home_config(db: Session, user_id: int = None) -> dict:
         # Start with existing rows (in their saved order)
         now_iso = datetime.utcnow().isoformat()
         rows = []
+        aged_out = []  # (row, name, since, reason) unresolvable past the grace period
         for r in existing_rows:
             if r.get("type") == "builtin":
                 # Always keep built-in sections
@@ -1109,10 +1120,9 @@ def write_home_config(db: Session, user_id: int = None) -> dict:
                     reason = f"no SmartList named '{name}' has a Jellyfin playlist id right now"
                 since = r.get("unresolved_since") or now_iso
                 if _unresolved_for_days(since) >= UNRESOLVED_ROW_GRACE_DAYS:
-                    logger.warning(
-                        f"Home config: dropping row '{name}' — unresolvable since {since} "
-                        f"({reason})"
-                    )
+                    # Decided after the safety check below
+                    aged_out.append((r, name, since, reason))
+                    rows.append(r)
                     continue
                 r["unresolved_since"] = since
                 r.setdefault("type", "playlist")
@@ -1126,14 +1136,24 @@ def write_home_config(db: Session, user_id: int = None) -> dict:
         # Safety check: if we'd drop more than half the playlist rows, something
         # is wrong. Compare like with like — built-in rows are never dropped, so
         # counting them in made this guard far weaker than it reads.
+        #
+        # When it fires, keep the aged rows but still write every other change
+        # (remaps, sort info, hero). Returning the old config here froze the file
+        # permanently: aged rows only get older, so the condition held on every run.
+        aged_ids = {id(r) for r, *_ in aged_out}
         existing_playlist_rows = [r for r in existing_rows if r.get("type") != "builtin"]
-        kept_playlist_rows = [r for r in rows if r.get("type") != "builtin"]
-        if existing_playlist_rows and len(kept_playlist_rows) < len(existing_playlist_rows) / 2:
+        kept_playlist_rows = [r for r in rows if r.get("type") != "builtin" and id(r) not in aged_ids]
+        if aged_out and existing_playlist_rows and len(kept_playlist_rows) < len(existing_playlist_rows) / 2:
             logger.warning(
                 f"Home config safety: would drop from {len(existing_playlist_rows)} to "
-                f"{len(kept_playlist_rows)} playlist rows — keeping existing config to prevent data loss"
+                f"{len(kept_playlist_rows)} playlist rows — keeping the unresolvable rows "
+                f"{[n for _, n, _, _ in aged_out]} to prevent data loss "
+                f"(remove them from the Home Screen page if intended)"
             )
-            return existing_config
+        else:
+            for r, name, since, reason in aged_out:
+                logger.warning(f"Home config: dropping row '{name}' — unresolvable since {since} ({reason})")
+            rows = [r for r in rows if id(r) not in aged_ids]
 
         # No auto-bootstrap: users add rows manually via the Home Screen page.
 
@@ -1393,11 +1413,13 @@ def refresh_smartlist_playlists(db: Session, user_id: int = None, only_names: li
 
     If user_id is None, refreshes for all users.
     If only_names is provided, only processes playlists with matching names.
-    Returns {processed, created, updated, errors}.
+    Returns {processed, created, updated, changed, errors}.
     """
     with _playlist_refresh_lock:
         result = _refresh_smartlist_playlists_inner(db, user_id, only_names=only_names)
-        if result.get("updated", 0) > 0 or result.get("created", 0) > 0:
+        # "updated" counts every playlist visited; only a real change (or a new
+        # playlist) should make clients live-reload their home rows.
+        if result.get("changed", 0) > 0 or result.get("created", 0) > 0:
             bump_playlist_version()
         return result
 
@@ -1406,11 +1428,11 @@ def _refresh_smartlist_playlists_inner(db: Session, user_id: int = None, only_na
     if user_id is None:
         users = db.query(TentacleUser).all()
         if not users:
-            return {"processed": 0, "created": 0, "updated": 0, "errors": 0}
-        combined = {"processed": 0, "created": 0, "updated": 0, "errors": 0}
+            return {"processed": 0, "created": 0, "updated": 0, "changed": 0, "errors": 0}
+        combined = {"processed": 0, "created": 0, "updated": 0, "changed": 0, "errors": 0}
         for u in users:
             result = _refresh_smartlist_playlists_inner(db, user_id=u.id, only_names=only_names)
-            for key in ("processed", "created", "updated", "errors"):
+            for key in ("processed", "created", "updated", "changed", "errors"):
                 combined[key] += result.get(key, 0)
         return combined
 
@@ -1479,8 +1501,8 @@ def refresh_native_playlists(db: Session, user_id: int = None) -> dict:
     add-before-remove _process_single_playlist path (no-op when unchanged, never
     clears on a transient failure). Tag-based playlists are intentionally excluded:
     they stay on the webhook + nightly path to avoid the tag-indexing race.
-    Returns combined {processed, created, updated, errors}."""
-    combined = {"processed": 0, "created": 0, "updated": 0, "errors": 0}
+    Returns combined {processed, created, updated, changed, errors}."""
+    combined = {"processed": 0, "created": 0, "updated": 0, "changed": 0, "errors": 0}
     users = ([db.query(TentacleUser).filter(TentacleUser.id == user_id).first()]
              if user_id else db.query(TentacleUser).all())
     for u in users:
@@ -1498,7 +1520,7 @@ def refresh_native_playlists(db: Session, user_id: int = None) -> dict:
         if not native_names:
             continue
         result = refresh_smartlist_playlists(db, user_id=u.id, only_names=native_names)
-        for key in ("processed", "created", "updated", "errors"):
+        for key in ("processed", "created", "updated", "changed", "errors"):
             combined[key] += result.get(key, 0)
     return combined
 
@@ -1572,8 +1594,26 @@ def _resort_by_db_date(items: list, config: dict, db: Session = None) -> list:
     return items
 
 
+def _playlist_order_matters(config: dict) -> bool:
+    """True when clients display this playlist in its STORED order.
+
+    The plugin re-sorts 'releasedate', 'communityrating' and 'name' rows at read
+    time (tentacle-plugin/Api/HomeScreenController.cs), so for those only the
+    set of items matters. 'datecreated' rows use the stored order, which the
+    backend sets from Tentacle's date_added. 'random' rows also use the stored
+    order, but that order is meant to be a shuffle fixed at populate time:
+    comparing a fresh SortBy=Random query against it would clear and re-add
+    the playlist on every refresh.
+    """
+    sort_options = (config.get("Order") or {}).get("SortOptions") or []
+    if not sort_options:
+        return False
+    return (sort_options[0].get("SortBy") or "").lower() == "datecreated"
+
+
 def _update_episode_playlist(jf, playlist_id: str, name: str, item_ids: list,
-                             current_entries: list, stats: dict) -> None:
+                             current_entries: list, stats: dict,
+                             order_matters: bool = True, series_ids: set = None) -> None:
     """Update a playlist whose stored entries are episodes of the desired series.
 
     Both sides of the diff are mapped into series space first: current episode
@@ -1584,6 +1624,11 @@ def _update_episode_playlist(jf, playlist_id: str, name: str, item_ids: list,
     sets never intersect, so `to_add` was every series and `to_remove` was every
     episode currently present — including the episodes Jellyfin had just
     recreated from the adds — and the playlist drained to a handful of entries.
+
+    Desired series that currently have no episodes in Jellyfin are left out of
+    the diff: adding one expands to nothing, so it can never become "present"
+    and would otherwise force an add (or, mid-list, a full rebuild) on every
+    refresh.
     """
     # Group entries by the series they belong to, preserving playlist order.
     entries_by_series = {}
@@ -1598,8 +1643,23 @@ def _update_episode_playlist(jf, playlist_id: str, name: str, item_ids: list,
         entries_by_series[sid].append(e.get("PlaylistItemId", e["Id"]))
 
     desired = list(dict.fromkeys(item_ids))  # de-dupe, keep order
-    desired_set = set(desired)
     current_set = set(current_series_ordered)
+
+    # Drop missing desired series that expand to zero episodes. Only series not
+    # already present are probed, and an unknown count (None) keeps the series,
+    # so a failed probe changes nothing.
+    counter = getattr(jf, "count_series_episodes", None)
+    if counter is not None:
+        empty = set()
+        for sid in desired:
+            if sid in current_set or (series_ids is not None and sid not in series_ids):
+                continue
+            if counter(sid) == 0:
+                empty.add(sid)
+        if empty:
+            logger.info(f"[SmartLists] '{name}': {len(empty)} desired series have no episodes yet — skipped")
+            desired = [s for s in desired if s not in empty]
+    desired_set = set(desired)
 
     def _done(message: str, changed: bool = False):
         logger.info(f"[SmartLists] '{name}': {message}")
@@ -1613,16 +1673,16 @@ def _update_episode_playlist(jf, playlist_id: str, name: str, item_ids: list,
         stats["processed"] += 1
         stats["item_counts"][name] = len(item_ids)
 
-    if current_series_ordered == desired:
+    if current_series_ordered == desired or (not order_matters and current_set == desired_set):
         _done(f"no changes needed ({len(desired)} series → {len(current_entries)} episodes)")
         return
 
     to_add = [s for s in desired if s not in current_set]
     to_remove = [s for s in current_series_ordered if s not in desired_set]
 
-    # Jellyfin playlists only support append, so an incremental update is only
-    # safe when the series that stay keep their relative order and every new
-    # series belongs at the end.
+    # Jellyfin playlists only support append, so when the stored order matters
+    # an incremental update is only safe when the series that stay keep their
+    # relative order and every new series belongs at the end.
     kept_current = [s for s in current_series_ordered if s in desired_set]
     kept_desired = [s for s in desired if s in current_set]
     order_preserved = kept_current == kept_desired
@@ -1634,15 +1694,16 @@ def _update_episode_playlist(jf, playlist_id: str, name: str, item_ids: list,
     else:
         adds_at_end = True
 
-    if order_preserved and adds_at_end:
+    if not order_matters or (order_preserved and adds_at_end):
         if to_add and not jf.add_to_playlist(playlist_id, to_add):
             logger.error(f"[SmartLists] '{name}': add failed — leaving playlist unchanged")
             stats["errors"] = stats.get("errors", 0) + 1
             return
         if to_remove:
             remove_entry_ids = [eid for sid in to_remove for eid in entries_by_series.get(sid, [])]
-            if remove_entry_ids:
-                jf.remove_from_playlist(playlist_id, remove_entry_ids)
+            if remove_entry_ids and not jf.remove_from_playlist(playlist_id, remove_entry_ids):
+                logger.error(f"[SmartLists] '{name}': some removals failed — will retry next refresh")
+                stats["errors"] = stats.get("errors", 0) + 1
         _done(
             f"incremental series update +{len(to_add)} -{len(to_remove)} ({len(desired)} series)",
             changed=True,
@@ -1652,9 +1713,11 @@ def _update_episode_playlist(jf, playlist_id: str, name: str, item_ids: list,
     # Order changed — clear and re-add the series in the desired order.
     all_entry_ids = [e.get("PlaylistItemId", e["Id"]) for e in current_entries]
     if all_entry_ids and not jf.remove_from_playlist(playlist_id, all_entry_ids):
-        logger.error(f"[SmartLists] '{name}': rebuild clear failed — leaving playlist unchanged")
+        # remove_from_playlist() carries on past a failed chunk, so most entries
+        # are already gone by now. Re-add rather than leave the row near-empty
+        # until the next full refresh.
+        logger.error(f"[SmartLists] '{name}': rebuild clear partly failed — re-adding anyway")
         stats["errors"] = stats.get("errors", 0) + 1
-        return
     if desired and not jf.add_to_playlist(playlist_id, desired):
         logger.error(f"[SmartLists] '{name}': rebuild re-add failed after clear — will repopulate next sync")
         stats["errors"] = stats.get("errors", 0) + 1
@@ -1663,7 +1726,15 @@ def _update_episode_playlist(jf, playlist_id: str, name: str, item_ids: list,
 
 
 def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats: dict, db: Session = None):
-    """Process a single SmartList config: query items, create/update playlist."""
+    """Process a single SmartList config: query items, create/update playlist.
+
+    Holds _playlist_refresh_lock so the toggle / sync-one fast paths can't
+    interleave with a running refresh of the same playlist."""
+    with _playlist_refresh_lock:
+        return _process_single_playlist_locked(jf, folder, config, user_id, stats, db=db)
+
+
+def _process_single_playlist_locked(jf, folder: Path, config: dict, user_id: str, stats: dict, db: Session = None):
     name = config.get("Name", "Unknown")
 
     # Query Jellyfin for matching items
@@ -1686,6 +1757,27 @@ def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats
         logger.warning(f"[SmartLists] '{name}': query failed ({e}) — leaving playlist unchanged")
         stats["errors"] = stats.get("errors", 0) + 1
         return
+
+    # YouTube videos (services/youtube) are ordinary Movie items. A native rule
+    # (genre/rating/year) only matches them by accident — "Year > 2020" matches
+    # every recent upload — so leave them out. A tag rule selects them on
+    # purpose and keeps them.
+    if _is_native_playlist_config(config):
+        from services.jellyfin import is_youtube_video
+
+        filtered = [i for i in items if not is_youtube_video(i)]
+        if len(filtered) < len(items) and query.get("limit"):
+            # The Jellyfin-side limit counted the videos too; fetch the full
+            # match so real items fill those slots, then re-cap.
+            query["limit"] = None
+            try:
+                filtered = [i for i in jf.query_items(**query) if not is_youtube_video(i)]
+            except Exception as e:
+                logger.warning(f"[SmartLists] '{name}': query failed ({e}) — leaving playlist unchanged")
+                stats["errors"] = stats.get("errors", 0) + 1
+                return
+            filtered = filtered[:saved_limit]
+        items = filtered
 
     if needs_genre_filter:
         required_lower = [g.lower() for g in required_genres]
@@ -1752,7 +1844,17 @@ def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats
     if playlist_id:
         # Update existing playlist — incremental diff to minimize API calls
         current_entries = jf.get_playlist_items(playlist_id)
+        if current_entries is None:
+            # A failed read is not an empty playlist — treating it as one
+            # re-appends every desired item (same class of bug as #7).
+            logger.warning(
+                f"[SmartLists] '{name}': could not read playlist {playlist_id} "
+                f"(timeout or transport error) — leaving it unchanged"
+            )
+            stats["errors"] = stats.get("errors", 0) + 1
+            return
         current_ordered_ids = [entry["Id"] for entry in current_entries]
+        order_matters = _playlist_order_matters(config)
 
         # M5 guard: query_items() also returns [] when the underlying request
         # fails silently (timeout / connection reset → _get returns None). If
@@ -1777,11 +1879,14 @@ def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats
         # and every stored episode as stale, and the removal pass would delete
         # the entries the add pass had just created. Diff in series space.
         if any(e.get("Type") == "Episode" for e in current_entries):
-            _update_episode_playlist(jf, playlist_id, name, item_ids, current_entries, stats)
+            series_ids = {item["Id"] for item in items if item.get("Type") == "Series"}
+            _update_episode_playlist(jf, playlist_id, name, item_ids, current_entries, stats,
+                                     order_matters=order_matters, series_ids=series_ids)
             return
 
-        if current_ordered_ids == item_ids:
-            # No changes needed — same items in same order
+        if current_ordered_ids == item_ids or (
+                not order_matters and set(current_ordered_ids) == set(item_ids)):
+            # No changes needed — same items (in the same order, where order matters)
             logger.info(f"[SmartLists] '{name}': no changes needed ({len(item_ids)} items)")
         else:
             desired_set = set(item_ids)
@@ -1813,7 +1918,7 @@ def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats
             else:
                 adds_at_end = not to_add  # no adds = trivially true
 
-            can_incremental = order_preserved and adds_at_end and (to_add or to_remove)
+            can_incremental = (not order_matters or (order_preserved and adds_at_end)) and (to_add or to_remove)
 
             if can_incremental:
                 # Incremental update — add new items first, then remove stale
@@ -1828,8 +1933,9 @@ def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats
                 if to_remove:
                     entry_id_map = {entry["Id"]: entry.get("PlaylistItemId", entry["Id"]) for entry in current_entries}
                     remove_entry_ids = [entry_id_map[rid] for rid in to_remove if rid in entry_id_map]
-                    if remove_entry_ids:
-                        jf.remove_from_playlist(playlist_id, remove_entry_ids)
+                    if remove_entry_ids and not jf.remove_from_playlist(playlist_id, remove_entry_ids):
+                        logger.error(f"[SmartLists] '{name}': some removals failed — will retry next refresh")
+                        stats["errors"] = stats.get("errors", 0) + 1
                 logger.info(f"[SmartLists] '{name}': incremental update +{len(to_add)} -{len(to_remove)} (total {len(item_ids)})")
                 stats["changed"] = stats.get("changed", 0) + 1
             else:
@@ -1846,9 +1952,10 @@ def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats
                 if current_entries:
                     all_entry_ids = [entry.get("PlaylistItemId", entry["Id"]) for entry in current_entries]
                     if not jf.remove_from_playlist(playlist_id, all_entry_ids):
-                        logger.error(f"[SmartLists] '{name}': rebuild clear failed — leaving playlist unchanged")
+                        # Chunks that succeeded are already gone — re-add rather
+                        # than leave the playlist near-empty until the next sync.
+                        logger.error(f"[SmartLists] '{name}': rebuild clear partly failed — re-adding anyway")
                         stats["errors"] = stats.get("errors", 0) + 1
-                        return
                 if item_ids:
                     if not jf.add_to_playlist(playlist_id, item_ids):
                         logger.error(f"[SmartLists] '{name}': rebuild re-add failed after clear — will repopulate next sync")
@@ -1880,6 +1987,14 @@ def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats
 
 
 def cleanup_orphaned_playlists(db: Session, user_id: int) -> int:
+    """See _cleanup_orphaned_playlists_locked. Runs under _playlist_refresh_lock so
+    canonical ids are read from disk only after any in-flight create has saved
+    its new id (otherwise that just-created playlist looks like a duplicate)."""
+    with _playlist_refresh_lock:
+        return _cleanup_orphaned_playlists_locked(db, user_id)
+
+
+def _cleanup_orphaned_playlists_locked(db: Session, user_id: int) -> int:
     """Delete Jellyfin playlists that share a name with a Tentacle-managed
     playlist but aren't that config's canonical playlist (duplicates / orphans
     left behind by renames or ID mismatches).
@@ -2303,6 +2418,12 @@ def update_playlist_sort(name: str, sort_by: str, sort_order: str, db, user_id: 
 
 
 def remove_item_from_playlists(db: Session, jellyfin_item_id: str, user_id: int) -> dict:
+    """Runs _remove_item_from_playlists_locked under _playlist_refresh_lock."""
+    with _playlist_refresh_lock:
+        return _remove_item_from_playlists_locked(db, jellyfin_item_id, user_id)
+
+
+def _remove_item_from_playlists_locked(db: Session, jellyfin_item_id: str, user_id: int) -> dict:
     """Remove a specific Jellyfin item from all of a user's playlists.
 
     Much faster than a full refresh — only fetches items for each playlist
@@ -2344,6 +2465,9 @@ def remove_item_from_playlists(db: Session, jellyfin_item_id: str, user_id: int)
 
         try:
             items = jf.get_playlist_items(playlist_id)
+            if items is None:
+                logger.warning(f"[SmartLists] Could not read '{name}' — skipping removal of {jellyfin_item_id}")
+                continue
             entry_ids = [
                 item["PlaylistItemId"] for item in items
                 if item.get("Id") == jellyfin_item_id and "PlaylistItemId" in item
@@ -2454,6 +2578,15 @@ def _item_matches_expressions(config: dict, item_tags: set, jf_item: dict = None
 
 def add_item_to_matching_playlists(db: Session, jellyfin_item_id: str, item_tags: list,
                                     media_type: str, jf_item: dict = None) -> dict:
+    """Runs _add_item_to_matching_playlists_locked under _playlist_refresh_lock,
+    so a webhook add can't land in the middle of a refresh's clear + re-add."""
+    with _playlist_refresh_lock:
+        return _add_item_to_matching_playlists_locked(db, jellyfin_item_id, item_tags,
+                                                      media_type, jf_item=jf_item)
+
+
+def _add_item_to_matching_playlists_locked(db: Session, jellyfin_item_id: str, item_tags: list,
+                                           media_type: str, jf_item: dict = None) -> dict:
     """Directly add a Jellyfin item to all matching playlists for all users.
 
     Matches both tag-based AND native (genre/rating/year) expressions against
@@ -2514,23 +2647,37 @@ def add_item_to_matching_playlists(db: Session, jellyfin_item_id: str, item_tags
             # Check if item is already in the playlist
             try:
                 current_items = jf.get_playlist_items(playlist_id)
+                if current_items is None:
+                    logger.warning(f"[SmartLists] Could not read '{name}' — skipping webhook add of {jellyfin_item_id}")
+                    continue
                 current_ids = {item["Id"] for item in current_items}
                 if jellyfin_item_id in current_ids:
                     continue
+                # A series playlist stores the series' EPISODES, so a Series id
+                # never appears as an entry Id. An already-present series is still
+                # re-added (Jellyfin appends only its new episodes) but not moved.
+                is_series = jf_media_type == "Series"
+                series_was_present = is_series and any(
+                    item.get("SeriesId") == jellyfin_item_id for item in current_items)
 
-                jf.add_to_playlist(playlist_id, [jellyfin_item_id])
+                if not jf.add_to_playlist(playlist_id, [jellyfin_item_id]):
+                    logger.warning(f"[SmartLists] Failed to add {jellyfin_item_id} to '{name}'")
+                    continue
 
                 # For recently-added / downloaded playlists (DateCreated sort),
                 # move the new item to the front so it appears first immediately
                 # instead of waiting for the nightly full rebuild.
                 sort_by = (config.get("Order", {}).get("SortOptions", [{}])[0]
                            .get("SortBy", "")) if config.get("Order") else ""
-                if sort_by == "DateCreated":
+                if sort_by == "DateCreated" and not series_was_present:
                     # Jellyfin's move endpoint needs the PlaylistItemId, not the library Id.
                     # Re-fetch playlist entries to find the newly appended item's PlaylistItemId.
-                    updated_items = jf.get_playlist_items(playlist_id)
+                    updated_items = jf.get_playlist_items(playlist_id) or []
+                    # For a series, moving ONE of its episode entries to the front is
+                    # enough: the plugin groups a row by series in first-occurrence order.
                     for entry in reversed(updated_items):  # newly added is last
-                        if entry.get("Id") == jellyfin_item_id:
+                        if entry.get("Id") == jellyfin_item_id or (
+                                is_series and entry.get("SeriesId") == jellyfin_item_id):
                             playlist_item_id = entry.get("PlaylistItemId")
                             if playlist_item_id:
                                 moved = jf.move_playlist_item(playlist_id, playlist_item_id, 0)

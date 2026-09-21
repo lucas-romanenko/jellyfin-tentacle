@@ -32,6 +32,18 @@ public class TentacleHomeController : ControllerBase
     private readonly ILogger<TentacleHomeController> _logger;
     private static readonly HttpClient ProxyClient = new() { Timeout = TimeSpan.FromSeconds(15) };
 
+    // The home JS polls Version every 5 s without waiting for the previous answer.
+    // Under ProxyClient's 15 s timeout a hung backend held three polls in flight per
+    // open tab; the poll gets its own deadline, shorter than the interval, so at
+    // most one is ever outstanding. Must stay below the JS poll interval.
+    private static readonly TimeSpan VersionPollTimeout = TimeSpan.FromSeconds(4);
+
+    // Last version the backend actually answered with. A backend outage must not be
+    // reported to clients as "the version changed to 0" — the home JS treats any
+    // change as a signal to rebuild every row, so an unreachable/flapping backend
+    // turned into a full re-fetch storm every poll.
+    private static string? _lastKnownVersionJson;
+
     // Guards the UserSettings.json read-modify-write so concurrent saves don't clobber
     // each other or read a half-written file.
     private static readonly object UserSettingsLock = new();
@@ -252,7 +264,10 @@ public class TentacleHomeController : ControllerBase
         // For "datecreated", trust the playlist order set by the Python backend
         // (which uses Tentacle's date_added — more reliable than Jellyfin's DateCreated
         // which can shift after metadata refreshes or library rescans).
-        var sortBy = row?.SortBy?.ToLowerInvariant() ?? "releasedate";
+        // No sort_by configured means "leave it as the backend populated it", the same
+        // as an explicit "random". Defaulting to releasedate here silently re-sorted
+        // every row that the dashboard had not given an explicit sort.
+        var sortBy = row?.SortBy?.ToLowerInvariant() ?? "none";
         var descending = !string.Equals(row?.SortOrder, "Ascending", StringComparison.OrdinalIgnoreCase);
         IEnumerable<BaseItem> sorted = sortBy switch
         {
@@ -297,12 +312,24 @@ public class TentacleHomeController : ControllerBase
 
         try
         {
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(HttpContext.RequestAborted);
+            deadline.CancelAfter(VersionPollTimeout);
             var response = await ProxyClient.GetStringAsync(
-                $"{plugin.Configuration.TentacleUrl.TrimEnd('/')}/api/smartlists/version");
+                $"{plugin.Configuration.TentacleUrl.TrimEnd('/')}/api/smartlists/version",
+                deadline.Token);
+            _lastKnownVersionJson = response;
             return Content(response, "application/json");
         }
-        catch
+        catch (Exception ex)
         {
+            // Replay the last version the backend gave us instead of inventing 0:
+            // a transient failure must not look like "everything changed".
+            _logger.LogDebug(ex, "[Tentacle Home] Version poll failed; replaying last known version");
+            if (_lastKnownVersionJson != null)
+            {
+                return Content(_lastKnownVersionJson, "application/json");
+            }
+
             return Ok(new { version = 0 });
         }
     }
@@ -669,9 +696,9 @@ public class TentacleHomeController : ControllerBase
     public ActionResult GetNotificationsCss() => ServeAsset("tentacle-notifications.css", "text/css");
 
     /// <summary>
-    /// Returns an embedded CSS/JS resource with no-cache headers so the browser
-    /// always revalidates after a plugin update (cache-buster query params alone
-    /// are not sufficient when the page is refreshed without a server restart).
+    /// Returns an embedded CSS/JS resource. A request carrying the current boot
+    /// stamp (?v=) is cacheable for a long time — the stamp changes on every plugin
+    /// update / restart; anything else is served uncacheable.
     /// </summary>
     private ActionResult ServeAsset(string resourceSuffix, string contentType)
     {
@@ -681,7 +708,14 @@ public class TentacleHomeController : ControllerBase
             return NotFound();
         }
 
-        Response.Headers["Cache-Control"] = "no-cache, no-store, must-revalidate";
+        // index.html injects these with ?v=<boot stamp>, which already invalidates them
+        // on every plugin update / restart. Sending no-store on top of that made every
+        // page load re-download the whole injected bundle; honour the stamp instead.
+        var stamp = Request.Query["v"].FirstOrDefault();
+        Response.Headers["Cache-Control"] =
+            string.Equals(stamp, Patching.IndexHtmlPatch.CacheBust, StringComparison.Ordinal)
+                ? "public, max-age=31536000, immutable"
+                : "no-cache, no-store, must-revalidate";
         return Content(content, contentType);
     }
 

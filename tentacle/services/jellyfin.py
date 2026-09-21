@@ -16,6 +16,18 @@ logger = logging.getLogger(__name__)
 YOUTUBE_TAG = "youtube"
 
 
+def is_youtube_video(item: dict) -> bool:
+    """True for a video written by services/youtube, identified by the
+    <uniqueid type="youtube"> its NFO carries (services/youtube/library.py),
+    which Jellyfin exposes as ProviderIds["youtube"].
+
+    Deliberately NOT tag-based: Jellyfin imports TMDB keywords as tags, and
+    real films carry a "youtube" keyword ("Bo Burnham: Inside", "The Deep
+    House", "The Sidemen Story"), so the tag alone matches genuine library
+    content. Both callers already request ProviderIds."""
+    return any(k.lower() == YOUTUBE_TAG for k in (item.get("ProviderIds") or {}))
+
+
 class JellyfinService:
     def __init__(self, url: str, api_key: str, user_id: str = ""):
         self.url = url.rstrip("/")
@@ -254,7 +266,9 @@ class JellyfinService:
             # only through the title fallback — and a video sharing a name with
             # a real film ("Frozen") would then be tagged as that film and pulled
             # into its playlists. They are never a valid fallback target.
-            if YOUTUBE_TAG in (item.get("Tags") or []):
+            # Match the video itself, not the tag: a real film with the TMDB
+            # keyword "youtube" must stay reachable.
+            if is_youtube_video(item):
                 continue
             tmdb_id = item.get("ProviderIds", {}).get("Tmdb")
             if tmdb_id:
@@ -521,17 +535,37 @@ class JellyfinService:
             logger.warning(f"Failed to create playlist '{name}': {e}")
             return None
 
-    def get_playlist_items(self, playlist_id: str, limit: int = 50000) -> List[dict]:
+    def get_playlist_items(self, playlist_id: str, limit: int = 50000) -> Optional[List[dict]]:
         """Get all items in a playlist. Includes SeriesId so callers can group
         episodes (Jellyfin expands series into episodes inside playlists) back to
-        their series for comparison."""
+        their series for comparison.
+
+        Returns None when the playlist could not be read (timeout / transport
+        error). Callers must not treat that as an empty playlist: doing so
+        re-appends every desired item, or counts a full playlist as holding 0.
+        """
         params = {"Limit": limit, "Fields": "SeriesId"}
         if self.user_id:
             params["UserId"] = self.user_id
         data = self._get(f"/Playlists/{playlist_id}/Items", params=params)
-        if data:
-            return data.get("Items", [])
-        return []
+        if data is None:
+            return None
+        return data.get("Items", [])
+
+    def count_series_episodes(self, series_id: str) -> Optional[int]:
+        """Episodes Jellyfin would expand a Series into when it is added to a
+        playlist. None = unknown (request failed)."""
+        params = {"ParentId": series_id, "IncludeItemTypes": "Episode",
+                  "Recursive": "true", "Limit": 0}
+        if self.user_id:
+            params["UserId"] = self.user_id
+        try:
+            data = self._get("/Items", params=params)
+        except Exception:
+            return None
+        if data is None:
+            return None
+        return data.get("TotalRecordCount")
 
     def add_to_playlist(self, playlist_id: str, item_ids: List[str]) -> bool:
         """Add items to an existing playlist in chunks of 25.

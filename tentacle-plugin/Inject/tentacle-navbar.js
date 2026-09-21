@@ -8,23 +8,35 @@
     // Jellyfin's "TV" layout (Display → Layout) renders a completely
     // different DOM than desktop/mobile — the Tentacle injections (navbar,
     // home, search, overlays) target the standard DOM and would break under
-    // it. The layout setting is stored per-device (localStorage), so the
-    // server can't enforce it — but we load on every page, so we can:
-    // detect the TV layout, reset it to Desktop once, and reload.
-    // sessionStorage-guarded so a failed reset can never cause a reload loop.
+    // it. We used to rewrite localStorage.layout to 'desktop' and reload.
+    // That destroyed a deliberate per-device choice — localStorage is permanent,
+    // so the setting did not come back when the plugin was disabled — and the
+    // loop guard lived in sessionStorage, so it happened again in every new tab,
+    // window and session. Stand aside instead: native Jellyfin renders the page,
+    // exactly as it does when the backend is unavailable.
+    //
+    // Standing aside has to be something the other scripts can ASK about. A flag
+    // set 1.5 s in, which nothing read, left every script mounted; removing only
+    // the body class then un-hid the native home underneath Tentacle's, and the two
+    // drew on top of each other. TentacleStandAside() is that question: every
+    // injected UI script calls it at its entry point. The device's explicit choice
+    // is readable synchronously; the class covers Jellyfin's auto-detected TVs.
     (function layoutGuard() {
         try {
-            var check = function () {
+            window.TentacleStandAside = function () {
+                try { if (localStorage.getItem('layout') === 'tv') return true; } catch (e) { }
                 var html = document.documentElement;
-                if (!html || !html.classList.contains('layout-tv')) return;
-                if (sessionStorage.getItem('tentacleLayoutGuard')) {
-                    console.warn('[Tentacle] TV layout is active and could not be reset — Tentacle UI may not render correctly. Set Settings → Display → Layout to Desktop or Auto.');
-                    return;
+                return !!(html && html.classList.contains('layout-tv'));
+            };
+            var check = function () {
+                if (!window.TentacleStandAside()) return;
+                window.TentacleDisabled = true;
+                if (document.body) {
+                    document.body.classList.remove('tentacle-home-active', 'moonfin-navbar-active');
                 }
-                sessionStorage.setItem('tentacleLayoutGuard', '1');
-                console.warn('[Tentacle] TV layout detected — switching to Desktop layout for Tentacle compatibility.');
-                try { localStorage.setItem('layout', 'desktop'); } catch (e) { }
-                location.reload();
+                var mounted = document.getElementById('tentacle-home');
+                if (mounted) mounted.remove();
+                console.info('[Tentacle] TV layout active — Tentacle UI disabled for this device.');
             };
             // Layout classes are applied during app boot — check after it settles
             setTimeout(check, 1500);
@@ -983,6 +995,7 @@
 
     // Boot
     function boot() {
+        if (window.TentacleStandAside && window.TentacleStandAside()) return; // TV layout — native header stays
         if (window.ApiClient && window.ApiClient.getCurrentUserId && window.ApiClient.getCurrentUserId()) {
             Navbar.init();
         } else {

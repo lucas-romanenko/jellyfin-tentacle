@@ -11,6 +11,8 @@
 (function () {
   'use strict';
 
+  var EMPTY_HTML = '<div class="tfav-empty">No favorites yet. Mark movies, shows, episodes or channels with the ♥ heart and they’ll show up here.</div>';
+
   var FAV = {
     active: false,
     container: null,
@@ -52,6 +54,7 @@
   // ── Activate / Deactivate ──────────────────────────────────────────
 
   function activate() {
+    if (window.TentacleStandAside && window.TentacleStandAside()) return; // TV layout — native page renders
     if (FAV.active) { refresh(); return; }
     FAV.active = true;
     document.body.classList.add('tentacle-favorites-active');
@@ -86,14 +89,29 @@
     ensureContainer();
 
     var uid = window.ApiClient.getCurrentUserId();
-    var fetches = SECTIONS.map(function (sec) {
+    // Page through the whole section. A single Limit=200 request silently showed
+    // the first 200 favorites of a type under a header that said "200". Stop on
+    // what the server reports (its total, or an empty page) rather than on the
+    // page coming back as long as was asked for.
+    var PAGE = 200;
+    var fetchSection = function (sec, acc) {
       return apiGet(
         'Users/' + uid + '/Items?Filters=IsFavorite&Recursive=true&IncludeItemTypes=' + sec.types +
-        '&SortBy=SortName&SortOrder=Ascending&Limit=200' +
+        '&SortBy=SortName&SortOrder=Ascending&StartIndex=' + acc.length + '&Limit=' + PAGE +
         '&Fields=PrimaryImageAspectRatio,ProductionYear,SeriesName' +
         '&ImageTypeLimit=1&EnableImageTypes=Primary,Thumb'
       ).then(function (data) {
-        return { section: sec, items: (data && data.Items) || [] };
+        var page = (data && data.Items) || [];
+        var all = acc.concat(page);
+        var total = data && typeof data.TotalRecordCount === 'number' ? data.TotalRecordCount : null;
+        var more = page.length > 0 && (total === null ? page.length >= PAGE : all.length < total);
+        return more ? fetchSection(sec, all) : all;
+      });
+    };
+
+    var fetches = SECTIONS.map(function (sec) {
+      return fetchSection(sec, []).then(function (items) {
+        return { section: sec, items: items };
       }).catch(function () {
         return { section: sec, items: [] };
       });
@@ -134,7 +152,7 @@
       '</div>';
 
     if (!total) {
-      html += '<div class="tfav-empty">No favorites yet. Mark movies, shows, episodes or channels with the ♥ heart and they’ll show up here.</div>';
+      html += EMPTY_HTML;
       FAV.container.innerHTML = html;
       return;
     }
@@ -295,17 +313,39 @@
       cardEl.remove();
       // Update section count / remove empty sections
       if (grid && section) {
-        var left = grid.querySelectorAll('.tfav-card').length;
+        // Live TV favorites render as .tltv-card, not .tfav-card. Counting only
+        // .tfav-card made every Live TV grid look empty after one unfavorite, so
+        // the whole Live TV section disappeared.
+        var left = grid.querySelectorAll('.tfav-card, .tltv-card').length;
         if (left === 0) section.remove();
         else {
           var count = section.querySelector('.tfav-section-count');
           if (count) count.textContent = left;
         }
       }
+      // The page header's total is the same kind of count and went stale: it
+      // kept the old number until a reload. Recount it from the cards, like the
+      // section counts, so the two cannot disagree. Count inside this page
+      // only: the Live TV page keeps its own .tltv-cards in a hidden container
+      // on the same document, and they are not favorites shown here.
+      var root = FAV.container || document;
+      var page = root.querySelector('.tfav-count');
+      if (page) {
+        var all = root.querySelectorAll('.tfav-card, .tltv-card').length;
+        page.textContent = all + ' item' + (all !== 1 ? 's' : '');
+        // Removing the last one left "0 items" over a blank page; the message a
+        // fresh load shows for an empty list only appeared after a reload.
+        if (all === 0 && FAV.container && !FAV.container.querySelector('.tfav-empty')) {
+          FAV.container.insertAdjacentHTML('beforeend', EMPTY_HTML);
+        }
+      }
     };
     try {
       if (window.ApiClient.updateFavoriteStatus) {
-        window.ApiClient.updateFavoriteStatus(itemId, false).then(done).catch(function () {});
+        // jellyfin-apiclient's signature is (userId, itemId, isFavorite). Called as
+        // (itemId, false) it threw "null itemId" before any request was made, the
+        // catch below swallowed it, and the heart did nothing at all.
+        window.ApiClient.updateFavoriteStatus(uid, itemId, false).then(done).catch(function () {});
       } else {
         window.ApiClient.ajax({
           type: 'DELETE',

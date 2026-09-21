@@ -1,3 +1,4 @@
+using System.Linq;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Entities.TV;
@@ -22,6 +23,18 @@ public class LibraryDeleteHandler : IHostedService, IDisposable
     private readonly object _lock = new();
     private readonly List<(string mediaType, string tmdbId)> _pendingDeletes = new();
 
+    /// <summary>Upper bound on in-flight DELETE notifications to the backend.</summary>
+    private const int MaxConcurrentNotifications = 4;
+
+    // One gate for the handler, not one per batch: a second batch starting while
+    // the first is still draining (a slow backend, a long bulk delete) must share
+    // the same four slots rather than bring four more.
+    private readonly SemaphoreSlim _gate = new SemaphoreSlim(MaxConcurrentNotifications, MaxConcurrentNotifications);
+
+    // Batches still running, so StopAsync can wait for them before Dispose()
+    // takes the HttpClient away from under them.
+    private readonly HashSet<Task> _runningBatches = new();
+
     public LibraryDeleteHandler(
         ILibraryManager libraryManager,
         ITaskManager taskManager,
@@ -40,13 +53,30 @@ public class LibraryDeleteHandler : IHostedService, IDisposable
         return Task.CompletedTask;
     }
 
-    public Task StopAsync(CancellationToken cancellationToken)
+    public async Task StopAsync(CancellationToken cancellationToken)
     {
         _libraryManager.ItemRemoved -= OnItemRemoved;
         _debounceTimer?.Change(Timeout.Infinite, 0);
         ProcessPendingDeletes();
+
+        Task[] running;
+        lock (_lock)
+        {
+            running = _runningBatches.ToArray();
+        }
+
+        try
+        {
+            // Bounded by the host's shutdown token; each request is bounded by the
+            // client's own timeout.
+            await Task.WhenAll(running).WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogWarning("[Tentacle] Shutdown did not wait for {Count} deletion batch(es) to finish", running.Length);
+        }
+
         _logger.LogInformation("[Tentacle] LibraryDeleteHandler stopped");
-        return Task.CompletedTask;
     }
 
     private void OnItemRemoved(object? sender, ItemChangeEventArgs e)
@@ -99,7 +129,8 @@ public class LibraryDeleteHandler : IHostedService, IDisposable
             return;
         }
 
-        _logger.LogInformation("[Tentacle] Detected deletion: {Type} '{Name}' (TMDB:{TmdbId})", mediaType, item.Name, tmdbId);
+        // Debug, not Info: a bulk removal produced one Info line per item.
+        _logger.LogDebug("[Tentacle] Detected deletion: {Type} '{Name}' (TMDB:{TmdbId})", mediaType, item.Name, tmdbId);
 
         lock (_lock)
         {
@@ -157,30 +188,80 @@ public class LibraryDeleteHandler : IHostedService, IDisposable
             return;
         }
 
-        foreach (var (mediaType, tmdbId) in batch)
+        // One task per deleted item used to be launched at once. A bulk removal
+        // (or a library scan that re-resolves thousands of items) fired thousands of
+        // simultaneous DELETEs at the backend; they all queued behind the connection
+        // limit, all hit the 10 s client timeout, and each logged an ERROR with a full
+        // stack trace — tens of thousands of log lines from a single event.
+        var run = Task.Run(() => ProcessBatchAsync(batch, tentacleUrl));
+        lock (_lock)
         {
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    var url = $"{tentacleUrl.TrimEnd('/')}/api/library/item/{mediaType}/{tmdbId}";
-                    var response = await _httpClient.DeleteAsync(url).ConfigureAwait(false);
+            _runningBatches.Add(run);
+        }
 
-                    if (response.IsSuccessStatusCode)
-                    {
-                        _logger.LogInformation("[Tentacle] Notified backend of deletion: {Type} TMDB:{TmdbId}", mediaType, tmdbId);
-                    }
-                    else
-                    {
-                        _logger.LogWarning("[Tentacle] Backend returned {Status} for deletion: {Type} TMDB:{TmdbId}",
-                            (int)response.StatusCode, mediaType, tmdbId);
-                    }
-                }
-                catch (Exception ex)
+        _ = run.ContinueWith(
+            t =>
+            {
+                lock (_lock)
                 {
-                    _logger.LogError(ex, "[Tentacle] Failed to notify backend of deletion: {Type} TMDB:{TmdbId}", mediaType, tmdbId);
+                    _runningBatches.Remove(t);
                 }
-            });
+            },
+            TaskScheduler.Default);
+    }
+
+    private async Task ProcessBatchAsync(List<(string mediaType, string tmdbId)> batch, string tentacleUrl)
+    {
+        var gate = _gate;
+        var failures = 0;
+        Exception? firstFailure = null;
+        var succeeded = 0;
+
+        var tasks = batch.Select(async entry =>
+        {
+            await gate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                var url = $"{tentacleUrl.TrimEnd('/')}/api/library/item/{entry.mediaType}/{entry.tmdbId}";
+                var response = await _httpClient.DeleteAsync(url).ConfigureAwait(false);
+
+                if (response.IsSuccessStatusCode)
+                {
+                    Interlocked.Increment(ref succeeded);
+                    _logger.LogDebug("[Tentacle] Notified backend of deletion: {Type} TMDB:{TmdbId}", entry.mediaType, entry.tmdbId);
+                }
+                else
+                {
+                    Interlocked.Increment(ref failures);
+                    _logger.LogDebug("[Tentacle] Backend returned {Status} for deletion: {Type} TMDB:{TmdbId}",
+                        (int)response.StatusCode, entry.mediaType, entry.tmdbId);
+                }
+            }
+            catch (Exception ex)
+            {
+                Interlocked.Increment(ref failures);
+                Interlocked.CompareExchange(ref firstFailure, ex, null);
+                _logger.LogDebug(ex, "[Tentacle] Failed to notify backend of deletion: {Type} TMDB:{TmdbId}", entry.mediaType, entry.tmdbId);
+            }
+            finally
+            {
+                gate.Release();
+            }
+        });
+
+        await Task.WhenAll(tasks).ConfigureAwait(false);
+
+        // One summary line per batch instead of one (or two) per item.
+        if (failures > 0)
+        {
+            _logger.LogWarning(
+                firstFailure,
+                "[Tentacle] Notified backend of {Succeeded}/{Total} deletions; {Failed} failed (first failure shown)",
+                succeeded, batch.Count, failures);
+        }
+        else if (succeeded > 0)
+        {
+            _logger.LogInformation("[Tentacle] Notified backend of {Succeeded} deletion(s)", succeeded);
         }
     }
 
@@ -188,5 +269,6 @@ public class LibraryDeleteHandler : IHostedService, IDisposable
     {
         _debounceTimer?.Dispose();
         _httpClient.Dispose();
+        _gate.Dispose();
     }
 }

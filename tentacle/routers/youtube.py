@@ -735,7 +735,13 @@ def diagnose(request: Request, db: Session = Depends(get_db)):
                         pid = ids.get(c.title)
                         if not pid:
                             continue
-                        held = len(jfc.get_playlist_items(pid) or [])
+                        items = jfc.get_playlist_items(pid)
+                        if items is None:
+                            add(False, f"'{c.title}' playlist holds its videos",
+                                "Jellyfin did not answer when asked for this playlist",
+                                "Jellyfin may be busy (a library scan or guide refresh). Check again in a minute.")
+                            continue
+                        held = len(items)
                         want = db.query(YouTubeVideo).filter(
                             YouTubeVideo.channel_fk == c.id,
                             YouTubeVideo.removed_at.is_(None),

@@ -588,6 +588,7 @@
   // ── Bootstrap ────────────────────────────────────────────────────────
 
   function init() {
+    if (window.TentacleStandAside && window.TentacleStandAside()) return; // TV layout — native search renders
     // Primary: viewshow — Jellyfin's own SPA navigation event (most reliable)
     document.addEventListener('viewshow', onViewShow);
 

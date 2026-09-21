@@ -897,6 +897,7 @@
 
     // Boot when API is ready
     function boot() {
+        if (window.TentacleStandAside && window.TentacleStandAside()) return; // TV layout — see tentacle-navbar.js
         if (window.ApiClient && window.ApiClient.getCurrentUserId && window.ApiClient.getCurrentUserId()) {
             MediaBar.init();
         } else {

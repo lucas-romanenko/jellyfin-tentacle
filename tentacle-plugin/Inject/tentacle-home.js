@@ -107,6 +107,7 @@
   // stale or fresh). Tentacle renders into a stable mount point that
   // Jellyfin's view transitions can never touch.
   function onHomePage() {
+    if (window.TentacleStandAside && window.TentacleStandAside()) return; // TV layout — native home renders
     // Detect user switch — if userId changed, tear down and re-render
     var currentUserId = MH.apiClient && MH.apiClient.getCurrentUserId();
     if (currentUserId && currentUserId !== MH.userId) {
@@ -967,6 +968,7 @@
   // refresh, so Android TV gets instant updates. Web polling is a fallback.
   function startVersionPolling(gen) {
     stopVersionPolling();
+    MH.versionPollInFlight = false;
     // Seed initial version
     apiGet('TentacleHome/Version')
       .then(function (data) { MH.lastVersion = data.version || 0; })
@@ -976,9 +978,14 @@
       // Stop if generation changed (navigated away)
       if (gen !== MH.generation) { stopVersionPolling(); return; }
       if (!document.getElementById('tentacle-home')) { stopVersionPolling(); return; }
+      // One poll at a time: behind a slow backend every tick used to add
+      // another request on top of the one still outstanding.
+      if (MH.versionPollInFlight) return;
+      MH.versionPollInFlight = true;
 
       apiGet('TentacleHome/Version')
         .then(function (data) {
+          MH.versionPollInFlight = false;
           var newVersion = data.version || 0;
           if (newVersion === MH.lastVersion) return;
           console.log('[TH] Playlist version changed: ' + MH.lastVersion + ' → ' + newVersion);
@@ -989,7 +996,7 @@
             window.TentacleNavbar.refreshToolbar();
           }
         })
-        .catch(function () {});
+        .catch(function () { MH.versionPollInFlight = false; });
     }, 5000);
   }
 
@@ -1010,6 +1017,10 @@
         if (!data.sections) return;
 
         var newSections = data.sections.filter(function (s) { return s.type === 'row' || s.type === 'builtin'; });
+        var mergeCW = !!data.mergeContinueWatching;
+        var hasResumeRow = newSections.some(function (s) {
+          return s.type === 'builtin' && (s.sectionId === 'resumevideo' || s.sectionId === 'resume');
+        });
         // The key includes each row's shape: a poster/wide change is a change
         // to the row's structure, not to its items, and comparing IDs alone
         // left it invisible until a full page reload — unlike a reorder, which
@@ -1028,7 +1039,14 @@
           rowsContainer.innerHTML = '';
           newSections.forEach(function (section) {
             if (section.type === 'builtin') {
-              loadBuiltinSection(rowsContainer, section);
+              // Same merge rules as the first render — dropping them here turned the
+              // "merge Continue Watching" setting off until the next full navigation.
+              if (mergeCW && section.sectionId === 'nextup' && hasResumeRow) return;
+              var renderMerged = mergeCW && (
+                section.sectionId === 'resumevideo' || section.sectionId === 'resume' ||
+                (section.sectionId === 'nextup' && !hasResumeRow)
+              );
+              loadBuiltinSection(rowsContainer, section, renderMerged);
             } else {
               loadRow(rowsContainer, section);
             }

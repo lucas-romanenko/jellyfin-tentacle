@@ -531,9 +531,12 @@ def publish_to_jellyfin(db: Session, channels: list, on_stage=None) -> None:
                 if not pid or not expected[ch.id]:
                     continue
                 try:
-                    have = len(jf.get_playlist_items(pid) or [])
+                    items = jf.get_playlist_items(pid)
                 except Exception:
                     continue
+                if items is None:
+                    continue  # could not read it — not the same as empty
+                have = len(items)
                 if have < expected[ch.id]:
                     short = True
                     logger.warning(f"[YouTube] Playlist '{ch.title}' for user {user.id} holds {have} of "
@@ -657,9 +660,12 @@ def reconcile_playlists(db: Session, report: bool = False):
             if not p.get("is_youtube") or not want.get(p["name"]):
                 continue
             try:
-                have = len(jf.get_playlist_items(p["playlist_id"]) or [])
+                items = jf.get_playlist_items(p["playlist_id"])
             except Exception:
                 continue
+            if items is None:
+                continue  # unreadable is unknown, not empty — no refill on a timeout
+            have = len(items)
             if have < want[p["name"]]:
                 short.append((p["name"], p["playlist_id"], have, want[p["name"]]))
         if not short:

@@ -1,4 +1,5 @@
 using System.Reflection;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 
 namespace Jellyfin.Plugin.Tentacle.Api;
@@ -65,8 +66,29 @@ public class TentacleAssetsController : ControllerBase
         var ext = Path.GetExtension(fileName);
         var contentType = ContentTypes.GetValueOrDefault(ext, "application/octet-stream");
 
-        // Set long cache headers (1 year) — assets are versioned by plugin version
-        Response.Headers["Cache-Control"] = "public, max-age=31536000, immutable";
+        // Same rule as the injected JS/CSS (#56): only a URL carrying the current
+        // ?v= stamp can never go stale, so only that may be cached for good. The
+        // icon URLs the injected scripts build carry no stamp, and `immutable`
+        // on those meant a changed icon was never fetched again. Without the
+        // stamp the browser may keep its copy but must revalidate it; the boot
+        // stamp is the validator, since the embedded bytes cannot change without
+        // a restart.
+        var cacheControl = AssetCaching.CacheControlFor(Request);
+        if (cacheControl != AssetCaching.Immutable)
+        {
+            var etag = $"\"{Patching.IndexHtmlPatch.CacheBust}\"";
+            Response.Headers["Cache-Control"] = AssetCaching.Revalidate;
+            Response.Headers["ETag"] = etag;
+            if (string.Equals(Request.Headers["If-None-Match"].ToString(), etag, StringComparison.Ordinal))
+            {
+                stream.Dispose();
+                return StatusCode(StatusCodes.Status304NotModified);
+            }
+        }
+        else
+        {
+            Response.Headers["Cache-Control"] = cacheControl;
+        }
 
         return File(stream, contentType);
     }

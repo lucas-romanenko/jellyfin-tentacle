@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net.Http;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -17,6 +19,11 @@ public class HomeScreenManager
     private readonly object _cacheLock = new();
     private readonly Dictionary<string, (HomeConfig? Config, DateTime Expiry)> _userCache = new();
     private static readonly TimeSpan CacheDuration = TimeSpan.FromSeconds(5);
+    // One fetch per user at a time. A home page load asks for the same config
+    // from several endpoints at once; without this each of them made its own
+    // blocking call, holding a thread for up to the full timeout apiece.
+    private readonly ConcurrentDictionary<string, object> _fetchLocks = new();
+    private const int PruneAbove = 64;
 
     public HomeScreenManager(ILogger<HomeScreenManager> logger, IHttpClientFactory httpClientFactory)
     {
@@ -47,14 +54,43 @@ public class HomeScreenManager
             }
         }
 
-        var config = FetchFromApi(plugin.Configuration.TentacleUrl, userId, apiKey);
-
-        lock (_cacheLock)
+        lock (_fetchLocks.GetOrAdd(cacheKey, _ => new object()))
         {
-            _userCache[cacheKey] = (config, DateTime.UtcNow.Add(CacheDuration));
-        }
+            // Whoever held the lock before us has usually just filled the cache.
+            lock (_cacheLock)
+            {
+                if (_userCache.TryGetValue(cacheKey, out var fresh) && DateTime.UtcNow < fresh.Expiry)
+                {
+                    return fresh.Config;
+                }
+            }
 
-        return config;
+            var config = FetchFromApi(plugin.Configuration.TentacleUrl, userId, apiKey, out var callerRefused);
+
+            // The cache is keyed by user, but a 401/403 is about THIS caller's token,
+            // not about the user's config: caching it would hand the refusal to the
+            // user's other, validly-authenticated requests (blank toolbar, rows with
+            // no sort settings) until the entry expires. Other failures stay cached
+            // briefly -- this is a blocking call, and an unreachable backend must not
+            // cost every home request its full timeout.
+            if (!callerRefused)
+            {
+                lock (_cacheLock)
+                {
+                    _userCache[cacheKey] = (config, DateTime.UtcNow.Add(CacheDuration));
+                    if (_userCache.Count > PruneAbove)
+                    {
+                        var now = DateTime.UtcNow;
+                        foreach (var stale in _userCache.Where(e => now >= e.Value.Expiry).Select(e => e.Key).ToList())
+                        {
+                            _userCache.Remove(stale);
+                        }
+                    }
+                }
+            }
+
+            return config;
+        }
     }
 
     /// <summary>
@@ -70,8 +106,9 @@ public class HomeScreenManager
         _logger.LogInformation("[Tentacle] Home config cache cleared");
     }
 
-    private HomeConfig? FetchFromApi(string tentacleUrl, Guid userId = default, string apiKey = "")
+    private HomeConfig? FetchFromApi(string tentacleUrl, Guid userId, string apiKey, out bool callerRefused)
     {
+        callerRefused = false;
         if (string.IsNullOrEmpty(tentacleUrl))
         {
             _logger.LogDebug("Tentacle URL not configured");
@@ -104,6 +141,8 @@ public class HomeScreenManager
             if (!response.IsSuccessStatusCode)
             {
                 _logger.LogWarning("Tentacle API returned {Status} for home-config", response.StatusCode);
+                callerRefused = response.StatusCode is System.Net.HttpStatusCode.Unauthorized
+                    or System.Net.HttpStatusCode.Forbidden;
                 return null;
             }
 
