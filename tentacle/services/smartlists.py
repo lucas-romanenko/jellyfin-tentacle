@@ -206,21 +206,37 @@ def _playlist_ids_of_other_users(db: Session, user_id: int) -> set:
 
 
 def _playlists_visible_to_other_users(jf, db: Session, user_id: int):
-    """Ids of the playlists Jellyfin lists for every OTHER Tentacle user.
+    """Ids of the playlists Jellyfin lists for every OTHER user.
 
     A playlist Tentacle created is private, so only its owner sees it. Anything
     that shows up in a second user's listing is therefore public, shared, or
     ownerless — someone else's row, not a duplicate to reap. Returns None if any
     listing failed, so callers can refuse to delete rather than guess.
+
+    "Other user" means every other JELLYFIN user, not just the ones with a
+    Tentacle login: someone who only ever uses a Jellyfin client has no
+    TentacleUser row, and on a single-admin install that made their public
+    playlist look like the admin's private duplicate.
     """
-    ids = set()
+    me = (_get_jellyfin_user_id(db, user_id) or "").replace("-", "").lower()
+    jf_user_ids = jf.get_user_ids()
+    if jf_user_ids is None:
+        logger.warning("[SmartLists] Could not list Jellyfin's users")
+        return None
+    others = {}
+    for uid in jf_user_ids:
+        others[uid.replace("-", "").lower()] = uid
     for other in db.query(TentacleUser).all():
-        if other.id == user_id or not other.jellyfin_user_id:
-            continue
+        if other.id != user_id and other.jellyfin_user_id:
+            others.setdefault(other.jellyfin_user_id.replace("-", "").lower(), other.jellyfin_user_id)
+    others.pop(me, None)
+
+    ids = set()
+    for other_jf_id in others.values():
         try:
-            listing = jf.get_playlists(other.jellyfin_user_id)
+            listing = jf.get_playlists(other_jf_id)
         except Exception as e:
-            logger.warning(f"[SmartLists] Could not list playlists of user {other.id}: {e}")
+            logger.warning(f"[SmartLists] Could not list playlists of Jellyfin user {other_jf_id}: {e}")
             return None
         if listing is None:
             return None

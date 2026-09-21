@@ -618,6 +618,22 @@ class JellyfinService:
             return data.get("Items", [])
         return []
 
+    def get_user_ids(self):
+        """Ids of EVERY Jellyfin user, or None when Jellyfin would not say.
+
+        Not every Jellyfin user is a Tentacle user: family members who only ever
+        open a Jellyfin client never log into the dashboard, yet their playlists
+        live in the same store.
+        """
+        try:
+            r = self.session.get(f"{self.url}/Users", timeout=15)
+            self._check_401(r, "/Users")
+            r.raise_for_status()
+            return [u["Id"] for u in r.json() if u.get("Id")]
+        except Exception as e:
+            logger.warning(f"[Jellyfin] Could not list users: {e}")
+            return None
+
     def delete_item(self, item_id: str) -> bool:
         """Delete an item (playlist, collection, etc.) from Jellyfin."""
         try:

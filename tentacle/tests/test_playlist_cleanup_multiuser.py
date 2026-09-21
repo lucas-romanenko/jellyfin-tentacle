@@ -54,6 +54,10 @@ class FakeServer:
 class FakeJellyfinService:
     def __init__(self, server):
         self.server = server
+        self.jellyfin_users = ["jf-1", "jf-2"]
+
+    def get_user_ids(self):
+        return self.jellyfin_users
 
     def __call__(self, url, api_key, user_id="", **kw):
         self.user_id = user_id
@@ -137,6 +141,34 @@ class TestCleanupIsOwnerAware(CleanupBase):
 
         self.assertEqual(self.server.deleted, [],
                          "cleanup deleted a playlist other users can see")
+
+    def test_a_jellyfin_only_users_public_playlist_is_left_alone(self):
+        """Found live (E2E-DATA): one Tentacle admin, plus a family member who
+        only uses a Jellyfin client and so has no TentacleUser row. Their public
+        playlist carries a managed name, the admin can see it, and nobody with a
+        Tentacle login vouches for it — the cleanup deleted it."""
+        self.db.query(mdb.TentacleUser).filter(mdb.TentacleUser.id == 2).delete()
+        self.db.commit()
+        self.fake_service.jellyfin_users = ["jf-1", "jf-mom"]
+        self.config("jf-1", "Downloaded Movies", "pl-user1")
+        self.server.add("pl-user1", "Downloaded Movies", {"jf-1"})
+        self.server.add("pl-mom", "Downloaded Movies", {"jf-mom", "jf-1"})
+        self.server.add("pl-dupe", "Downloaded Movies", {"jf-1"})
+
+        deleted = self.cleanup(1)
+
+        self.assertEqual(self.server.deleted, ["pl-dupe"],
+                         "only the admin's own private duplicate may go")
+        self.assertEqual(deleted, 1)
+
+    def test_nothing_is_deleted_when_jellyfin_will_not_list_its_users(self):
+        self.config("jf-1", "Netflix Movies", "pl-user1")
+        self.server.add("pl-user1", "Netflix Movies", {"jf-1"})
+        self.server.add("pl-dupe", "Netflix Movies", {"jf-1"})
+        self.fake_service.jellyfin_users = None
+
+        self.assertEqual(self.cleanup(1), 0)
+        self.assertEqual(self.server.deleted, [])
 
     def test_a_private_duplicate_is_still_deleted(self):
         """The case the reaper exists for: a second playlist with a managed
