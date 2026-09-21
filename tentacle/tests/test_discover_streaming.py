@@ -198,5 +198,63 @@ class TestGenreRoutes(unittest.TestCase):
         self.assertIn("popular", ids)
 
 
+
+class TestFromMyListsPicker(unittest.TestCase):
+    def setUp(self):
+        import models.database as mdb
+        from models.database import get_db, TentacleUser, ListSubscription, ListItem
+        from routers import discover
+        from routers.auth import get_user_from_request
+        self.discover = discover
+        self.db = _db()
+        self.db.add(TentacleUser(id=1, jellyfin_user_id="u1", display_name="lucas", is_admin=True))
+        mdb.set_setting(self.db, "tmdb_token", "x")
+        mdb.set_setting(self.db, "data_dir", tempfile.mkdtemp())
+        self.db.add(ListSubscription(id=10, name="IMDb Top 250", type="imdb_rss", url="u", tag="t", active=True, user_id=1))
+        self.db.add(ListSubscription(id=11, name="Letterboxd", type="letterboxd", url="u2", tag="t2", active=True, user_id=1))
+        # missing items in each list
+        self.db.add(ListItem(list_id=10, tmdb_id=101, media_type="movie", title="A", poster_path="/a.jpg"))
+        self.db.add(ListItem(list_id=11, tmdb_id=201, media_type="movie", title="B", poster_path="/b.jpg"))
+        self.db.commit()
+        app = FastAPI()
+        app.include_router(discover.router)
+        app.dependency_overrides[get_db] = lambda: self.db
+        u = self.db.query(TentacleUser).first()
+        app.dependency_overrides[get_user_from_request] = lambda: u
+        self.client = TestClient(app)
+
+    def tearDown(self):
+        self.db.close()
+
+    def test_lists_returns_active_subscriptions(self):
+        r = self.client.get("/api/discover/lists?type=movies")
+        self.assertEqual(r.status_code, 200, r.text)
+        names = [l["name"] for l in r.json()["lists"]]
+        self.assertIn("IMDb Top 250", names)
+        self.assertIn("Letterboxd", names)
+
+    def test_list_missing_all_mixes_both_lists(self):
+        with mock.patch.object(self.discover, "_get_jellyfin_tmdb_items", lambda mt: {}):
+            r = self.client.get("/api/discover/list-missing?list_id=all&type=movies")
+        ids = {i["tmdb_id"] for i in r.json()["items"]}
+        self.assertEqual(ids, {101, 201})
+
+    def test_list_missing_one_list_only(self):
+        with mock.patch.object(self.discover, "_get_jellyfin_tmdb_items", lambda mt: {}):
+            r = self.client.get("/api/discover/list-missing?list_id=10&type=movies")
+        ids = {i["tmdb_id"] for i in r.json()["items"]}
+        self.assertEqual(ids, {101}, "a single-list tab shows only that list's missing items")
+
+    def test_list_missing_bad_id_is_400(self):
+        r = self.client.get("/api/discover/list-missing?list_id=abc&type=movies")
+        self.assertEqual(r.status_code, 400)
+
+    def test_owned_titles_are_excluded(self):
+        # 101 is in the library -> not "missing".
+        with mock.patch.object(self.discover, "_get_jellyfin_tmdb_items", lambda mt: {101: {"Id": "x"}}):
+            r = self.client.get("/api/discover/list-missing?list_id=10&type=movies")
+        self.assertEqual(r.json()["items"], [])
+
+
 if __name__ == "__main__":
     unittest.main()

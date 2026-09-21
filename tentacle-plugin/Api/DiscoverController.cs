@@ -389,6 +389,54 @@ public class TentacleDiscoverController : ControllerBase
     /// Proxies TMDB search requests to Tentacle.
     /// </summary>
     /// <summary>
+    /// Proxies the From My Lists subscription list.
+    /// </summary>
+    [HttpGet("Lists")]
+    [Authorize]
+    public async Task<ActionResult> GetLists([FromQuery] string type = "movies")
+    {
+        if (type != "movies" && type != "series") type = "movies";
+        var baseUrl = GetTentacleUrl();
+        if (string.IsNullOrEmpty(baseUrl)) return Ok(new { lists = Array.Empty<object>() });
+        try
+        {
+            var response = await HttpClient.GetStringAsync(AppendUserId($"{baseUrl}/api/discover/lists?type={type}"));
+            return Content(response, "application/json");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("[Tentacle Discover] Failed to fetch lists: {Error}", ex.Message);
+            return Ok(new { lists = Array.Empty<object>() });
+        }
+    }
+
+    /// <summary>
+    /// Proxies missing titles from one list (or all).
+    /// </summary>
+    [HttpGet("ListMissing")]
+    [Authorize]
+    public async Task<ActionResult> GetListMissing([FromQuery(Name = "list_id")] string listId = "all", [FromQuery] string type = "movies")
+    {
+        if (type != "movies" && type != "series") type = "movies";
+        var baseUrl = GetTentacleUrl();
+        if (string.IsNullOrEmpty(baseUrl)) return Ok(new { items = Array.Empty<object>() });
+        try
+        {
+            var encoded = System.Net.WebUtility.UrlEncode(listId ?? "all");
+            var response = await HttpClient.GetStringAsync(
+                AppendUserId($"{baseUrl}/api/discover/list-missing?list_id={encoded}&type={type}"));
+            var jellyfinBase = $"{Request.Scheme}://{Request.Host}";
+            response = response.Replace("/api/discover/image-proxy/", $"{jellyfinBase}/TentacleDiscover/ImageProxy/");
+            return Content(response, "application/json");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("[Tentacle Discover] Failed to fetch list-missing: {Error}", ex.Message);
+            return Ok(new { items = Array.Empty<object>() });
+        }
+    }
+
+    /// <summary>
     /// Proxies the Discover genre list.
     /// </summary>
     [HttpGet("Genres")]

@@ -4494,6 +4494,8 @@ let _streamingActiveProvider = null;
 let _genreList = { movies: null, series: null };
 let _genreActive = null;
 let _genreMode = 'top_rated';  // 'top_rated' | 'new'
+let _missingLists = { movies: null, series: null };
+let _missingActiveList = 'all';
 
 async function loadDiscover() {
   const grid = document.getElementById('discover-grid');
@@ -4639,6 +4641,39 @@ function setGenreMode(m) {
   loadGenreSection();
 }
 
+async function loadListsSection() {
+  const pills = document.getElementById('discover-streaming-pills');
+  const grid = document.getElementById('discover-grid');
+  if (!_missingLists[_discoverType]) {
+    try {
+      const r = await api(`/api/discover/lists?type=${_discoverType}`);
+      _missingLists[_discoverType] = r.lists || [];
+    } catch (e) { _missingLists[_discoverType] = []; }
+  }
+  const lists = _missingLists[_discoverType];
+  const tabs = [{ id: 'all', name: 'All' }].concat(lists.map(l => ({ id: String(l.id), name: l.name })));
+  if (!tabs.find(t => t.id === _missingActiveList)) _missingActiveList = 'all';
+  if (pills) {
+    pills.innerHTML = tabs.map(t => {
+      const active = t.id === _missingActiveList;
+      return `<button onclick="selectList('${t.id}')" style="padding:6px 14px;border-radius:16px;border:1px solid ${active ? 'var(--accent)' : 'var(--border2)'};background:${active ? 'var(--accent)' : 'var(--bg2)'};color:${active ? '#fff' : 'var(--text3)'};font-size:12px;font-weight:500;cursor:pointer;font-family:'DM Sans',sans-serif">${t.name}</button>`;
+    }).join('');
+  }
+  grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text3)"><span class="toast-spinner"></span> Loading…</div>';
+  try {
+    if (!_activityData) await loadActivity().catch(() => {});
+    const data = await api(`/api/discover/list-missing?list_id=${_missingActiveList}&type=${_discoverType}`);
+    renderDiscoverGrid(data.items || []);
+  } catch (e) {
+    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Failed to load: ${e.message}</p></div>`;
+  }
+}
+
+function selectList(id) {
+  _missingActiveList = id;
+  loadListsSection();
+}
+
 // Live download / unreleased state for a discover item, from /api/activity (_activityData).
 // Mirrors the Jellyfin plugin: downloading and awaiting-release items hide the add button.
 function _discoverDownloadInfo(tmdbId) {
@@ -4779,7 +4814,7 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
 function setDiscoverType(type, btn) {
   _discoverType = type;
   // Reset server sections between Movies/TV, but keep the streaming section pinned.
-  if (_discoverActiveSection !== 'streaming' && _discoverActiveSection !== 'genres') _discoverActiveSection = null;
+  if (['streaming', 'genres', 'missing'].indexOf(_discoverActiveSection) === -1) _discoverActiveSection = null;
   document.querySelectorAll('#discover-tab-browse .filter-btn').forEach(b => b.classList.remove('active'));
   if (btn) btn.classList.add('active');
   if (_discoverSearchQuery) {
@@ -6241,7 +6276,7 @@ async function loadHealthDeletions() {
     showHealthMissingTab, loadHealthMissing, healthDiagnose, healthGrabRelease, healthSearchMissing,
     loadHealthStreams, healthRecheckStreams, healthRunStreamSweep, healthClearStream, healthRemoveStream,
     // Discover
-    loadDiscoverPage, loadDiscover, setDiscoverType, switchDiscoverSection, selectStreamingProvider, selectGenre, setGenreMode, showDiscoverDetail,
+    loadDiscoverPage, loadDiscover, setDiscoverType, switchDiscoverSection, selectStreamingProvider, selectGenre, setGenreMode, selectList, showDiscoverDetail,
     onDiscoverSearchInput, clearDiscoverSearch,
     // Live TV
     loadLiveTV, showLiveTab, onLiveTypeChange, saveLiveProvider, testLiveProvider,

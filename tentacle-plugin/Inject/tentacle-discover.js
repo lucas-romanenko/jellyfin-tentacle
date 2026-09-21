@@ -40,6 +40,10 @@
     genreActive: null,
     genreMode: 'top_rated',
     genreSection: null,
+    missingLists: null,
+    missingListType: null,
+    missingActive: 'all',
+    missingSection: null,
   };
 
   var ACT = {
@@ -379,6 +383,7 @@
 
     if (sectionId === 'streaming') { renderStreaming(); return; }
     if (sectionId === 'genres') { renderGenres(); return; }
+    if (sectionId === 'missing') { renderLists(); return; }
 
     var section = MD.sections && MD.sections.find(function (s) { return s.id === sectionId; });
     if (!section) return;
@@ -509,6 +514,50 @@
     });
   }
 
+  // ── From My Lists ───────────────────────────────────────────────────
+  function renderLists() {
+    var content = document.getElementById('mdDiscoverContent');
+    if (!content) return;
+    var gen = MD.generation;
+    var typeParam = MD.mediaFilter === 'series' ? 'series' : 'movies';
+
+    function paint() {
+      var lists = MD.missingLists || [];
+      var tabs = [{ id: 'all', name: 'All' }].concat(lists.map(function (l) { return { id: String(l.id), name: l.name }; }));
+      if (!tabs.find(function (t) { return t.id === MD.missingActive; })) MD.missingActive = 'all';
+      var pills = '<div class="md-stream-pills">' + tabs.map(function (t) {
+        var on = t.id === MD.missingActive ? ' md-stream-pill-active' : '';
+        return '<button class="md-stream-pill' + on + '" data-list="' + esc(t.id) + '">' + esc(t.name) + '</button>';
+      }).join('') + '</div>';
+      content.innerHTML = pills + '<div id="mdStreamGrid"><div class="md-loading"><div class="md-spinner"></div><br>Loading...</div></div>';
+      content.querySelectorAll('.md-stream-pill').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          MD.missingActive = btn.getAttribute('data-list');
+          renderLists();
+        });
+      });
+      apiGet('TentacleDiscover/ListMissing?list_id=' + encodeURIComponent(MD.missingActive) + '&type=' + typeParam + '&userId=' + window.ApiClient.getCurrentUserId())
+        .then(function (data) {
+          if (gen !== MD.generation) return;
+          MD.missingSection = { id: 'missing', items: (data && data.items) || [] };
+          var wrap = document.getElementById('mdStreamGrid');
+          if (wrap) renderGrid(MD.missingSection, wrap);
+        })
+        .catch(function () {
+          var wrap = document.getElementById('mdStreamGrid');
+          if (wrap) wrap.innerHTML = '<div class="md-loading">Failed to load.</div>';
+        });
+    }
+
+    if (!MD.missingLists || MD.missingListType !== typeParam) {
+      apiGet('TentacleDiscover/Lists?type=' + typeParam + '&userId=' + window.ApiClient.getCurrentUserId())
+        .then(function (data) { MD.missingLists = (data && data.lists) || []; MD.missingListType = typeParam; if (gen === MD.generation) paint(); })
+        .catch(function () { MD.missingLists = []; MD.missingListType = typeParam; if (gen === MD.generation) paint(); });
+    } else {
+      paint();
+    }
+  }
+
   // ── Genres ──────────────────────────────────────────────────────────
   function renderGenres() {
     var content = document.getElementById('mdDiscoverContent');
@@ -571,6 +620,12 @@
   }
 
   function findItem(tmdbId, tvdbId) {
+    if (MD.missingSection) {
+      var mitems = MD.missingSection.items || [];
+      for (var q = 0; q < mitems.length; q++) {
+        if ((mitems[q].tmdb_id || 0) === tmdbId || (tvdbId && (mitems[q].tvdb_id || 0) === tvdbId)) return mitems[q];
+      }
+    }
     if (MD.genreSection) {
       var gitems = MD.genreSection.items || [];
       for (var j = 0; j < gitems.length; j++) {

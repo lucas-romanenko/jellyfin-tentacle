@@ -366,11 +366,17 @@ def get_discover(
     return {"sections": sections}
 
 
-def _get_missing_from_lists(db: Session, known_ids: dict, type_filter: str, user: TentacleUser = None) -> list:
-    """Get items from active list subscriptions that aren't in the library."""
+def _get_missing_from_lists(db: Session, known_ids: dict, type_filter: str, user: TentacleUser = None,
+                            only_list_id: int = None, limit: int = 40, shuffle: bool = True) -> list:
+    """Items from active list subscriptions that aren't in the library.
+
+    only_list_id restricts to a single list (a per-list tab); None mixes them all.
+    """
     query = db.query(ListSubscription).filter(ListSubscription.active == True)
     if user:
         query = query.filter(ListSubscription.user_id == user.id)
+    if only_list_id is not None:
+        query = query.filter(ListSubscription.id == only_list_id)
     active_lists = query.all()
 
     if not active_lists:
@@ -419,9 +425,11 @@ def _get_missing_from_lists(db: Session, known_ids: dict, type_filter: str, user
             "list_name": list_names.get(item.list_id, ""),
         })
 
-    # Shuffle and cap at 40
-    random.shuffle(result)
-    return result[:40]
+    # A single list keeps its stored order; the mixed "All" view is shuffled so
+    # one big list doesn't dominate the top.
+    if shuffle:
+        random.shuffle(result)
+    return result[:limit]
 
 
 @router.get("/detail/{media_type}/{tmdb_id}", dependencies=[Depends(get_user_from_request)])
@@ -778,6 +786,35 @@ def get_streaming_providers(db: Session = Depends(get_db)):
     return {"region": region, "providers": [
         {"slug": p["slug"], "name": p["name"]} for p in STREAMING_PROVIDERS
     ]}
+
+
+@router.get("/lists", dependencies=[Depends(get_user_from_request)])
+def get_discover_lists(type: str = "movies", db: Session = Depends(get_db),
+                       user: TentacleUser = Depends(get_user_from_request)):
+    """Active list subscriptions for the From My Lists picker: [{id, name}]."""
+    q = db.query(ListSubscription).filter(ListSubscription.active == True)
+    if user:
+        q = q.filter(ListSubscription.user_id == user.id)
+    lists = [{"id": ls.id, "name": ls.name} for ls in q.order_by(ListSubscription.name).all()]
+    return {"lists": lists}
+
+
+@router.get("/list-missing", dependencies=[Depends(get_user_from_request)])
+def get_discover_list_missing(list_id: str = "all", type: str = "movies",
+                              db: Session = Depends(get_db),
+                              user: TentacleUser = Depends(get_user_from_request)):
+    """Missing (not-in-library) items from one list, or all lists mixed."""
+    known_ids = _known_tmdb_ids(db)
+    if list_id == "all" or not list_id:
+        items = _get_missing_from_lists(db, known_ids, type, user)
+    else:
+        try:
+            lid = int(list_id)
+        except (ValueError, TypeError):
+            raise HTTPException(400, "Invalid list id")
+        items = _get_missing_from_lists(db, known_ids, type, user,
+                                        only_list_id=lid, limit=60, shuffle=False)
+    return {"list_id": list_id, "items": items}
 
 
 @router.get("/genres", dependencies=[Depends(get_user_from_request)])
