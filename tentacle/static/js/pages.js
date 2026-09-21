@@ -4485,11 +4485,15 @@ const DISCOVER_SECTION_LABELS = {
   on_the_air: 'On the Air',
   top_rated: 'Top Rated',
   missing: 'From My Lists',
+  trending: 'Trending',
   streaming: 'New on Streaming',
+  genres: 'Genres',
 };
 
 let _streamingProviders = null;      // [{slug,name}] once loaded
 let _streamingActiveProvider = null;
+let _genreList = { movies: null, series: null };
+let _genreActive = null;
 
 async function loadDiscover() {
   const grid = document.getElementById('discover-grid');
@@ -4513,9 +4517,10 @@ async function loadDiscover() {
       const label = DISCOVER_SECTION_LABELS[sec.id] || sec.title;
       return `<button class="discover-sec-tab" data-section="${sec.id}" onclick="switchDiscoverSection('${sec.id}')" style="padding:10px 20px;font-size:13px;font-weight:500;border:none;background:transparent;color:var(--text3);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;font-family:'DM Sans',sans-serif;display:flex;align-items:center;gap:6px">${label}<span style="font-size:11px;background:var(--bg3);color:var(--text3);padding:1px 7px;border-radius:10px">${sec.items.length}</span></button>`;
     }).join('') +
-      `<button class="discover-sec-tab" data-section="streaming" onclick="switchDiscoverSection('streaming')" style="padding:10px 20px;font-size:13px;font-weight:500;border:none;background:transparent;color:var(--text3);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;font-family:'DM Sans',sans-serif;display:flex;align-items:center;gap:6px">New on Streaming</button>`;
+      `<button class="discover-sec-tab" data-section="streaming" onclick="switchDiscoverSection('streaming')" style="padding:10px 20px;font-size:13px;font-weight:500;border:none;background:transparent;color:var(--text3);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;font-family:'DM Sans',sans-serif;display:flex;align-items:center;gap:6px">New on Streaming</button>` +
+      `<button class="discover-sec-tab" data-section="genres" onclick="switchDiscoverSection('genres')" style="padding:10px 20px;font-size:13px;font-weight:500;border:none;background:transparent;color:var(--text3);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;font-family:'DM Sans',sans-serif;display:flex;align-items:center;gap:6px">Genres</button>`;
     // Activate first or previously active section
-    const targetId = (_discoverActiveSection === 'streaming'
+    const targetId = (_discoverActiveSection === 'streaming' || _discoverActiveSection === 'genres'
       || (_discoverActiveSection && _discoverSections.find(s => s.id === _discoverActiveSection)))
       ? _discoverActiveSection : _discoverSections[0].id;
     switchDiscoverSection(targetId);
@@ -4535,6 +4540,11 @@ function switchDiscoverSection(sectionId) {
   if (sectionId === 'streaming') {
     if (pills) pills.style.display = 'flex';
     loadStreamingSection();
+    return;
+  }
+  if (sectionId === 'genres') {
+    if (pills) pills.style.display = 'flex';
+    loadGenreSection();
     return;
   }
   if (pills) pills.style.display = 'none';
@@ -4578,6 +4588,43 @@ async function loadStreamingSection() {
 function selectStreamingProvider(slug) {
   _streamingActiveProvider = slug;
   loadStreamingSection();
+}
+
+async function loadGenreSection() {
+  const pills = document.getElementById('discover-streaming-pills');
+  const grid = document.getElementById('discover-grid');
+  if (!_genreList[_discoverType]) {
+    try {
+      const r = await api(`/api/discover/genres?type=${_discoverType}`);
+      _genreList[_discoverType] = r.genres || [];
+    } catch (e) { _genreList[_discoverType] = []; }
+  }
+  const genres = _genreList[_discoverType];
+  if (!genres.length) {
+    if (pills) pills.innerHTML = '';
+    grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>No genres available.</p></div>';
+    return;
+  }
+  if (!_genreActive || !genres.find(g => g.id === _genreActive)) _genreActive = genres[0].id;
+  if (pills) {
+    pills.innerHTML = genres.map(g => {
+      const active = g.id === _genreActive;
+      return `<button onclick="selectGenre(${g.id})" style="padding:6px 14px;border-radius:16px;border:1px solid ${active ? 'var(--accent)' : 'var(--border2)'};background:${active ? 'var(--accent)' : 'var(--bg2)'};color:${active ? '#fff' : 'var(--text3)'};font-size:12px;font-weight:500;cursor:pointer;font-family:'DM Sans',sans-serif">${g.name}</button>`;
+    }).join('');
+  }
+  grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text3)"><span class="toast-spinner"></span> Loading…</div>';
+  try {
+    if (!_activityData) await loadActivity().catch(() => {});
+    const data = await api(`/api/discover/genre?genre_id=${_genreActive}&type=${_discoverType}`);
+    renderDiscoverGrid(data.items || []);
+  } catch (e) {
+    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Failed to load: ${e.message}</p></div>`;
+  }
+}
+
+function selectGenre(id) {
+  _genreActive = id;
+  loadGenreSection();
 }
 
 // Live download / unreleased state for a discover item, from /api/activity (_activityData).
@@ -4720,7 +4767,7 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
 function setDiscoverType(type, btn) {
   _discoverType = type;
   // Reset server sections between Movies/TV, but keep the streaming section pinned.
-  if (_discoverActiveSection !== 'streaming') _discoverActiveSection = null;
+  if (_discoverActiveSection !== 'streaming' && _discoverActiveSection !== 'genres') _discoverActiveSection = null;
   document.querySelectorAll('#discover-tab-browse .filter-btn').forEach(b => b.classList.remove('active'));
   if (btn) btn.classList.add('active');
   if (_discoverSearchQuery) {
@@ -6182,7 +6229,7 @@ async function loadHealthDeletions() {
     showHealthMissingTab, loadHealthMissing, healthDiagnose, healthGrabRelease, healthSearchMissing,
     loadHealthStreams, healthRecheckStreams, healthRunStreamSweep, healthClearStream, healthRemoveStream,
     // Discover
-    loadDiscoverPage, loadDiscover, setDiscoverType, switchDiscoverSection, selectStreamingProvider, showDiscoverDetail,
+    loadDiscoverPage, loadDiscover, setDiscoverType, switchDiscoverSection, selectStreamingProvider, selectGenre, showDiscoverDetail,
     onDiscoverSearchInput, clearDiscoverSearch,
     // Live TV
     loadLiveTV, showLiveTab, onLiveTypeChange, saveLiveProvider, testLiveProvider,

@@ -121,5 +121,75 @@ class TestTmdbProviderQuery(unittest.TestCase):
         self.assertEqual(seen["params"]["sort_by"], "first_air_date.desc")
 
 
+
+class TestGenreRoutes(unittest.TestCase):
+    def setUp(self):
+        import models.database as mdb
+        from models.database import get_db, TentacleUser, Movie
+        from routers import discover
+        from routers.auth import get_user_from_request
+        self.discover = discover
+        self.db = _db()
+        self.db.add(TentacleUser(id=1, jellyfin_user_id="u1", display_name="lucas", is_admin=True))
+        mdb.set_setting(self.db, "tmdb_token", "x")
+        mdb.set_setting(self.db, "data_dir", tempfile.mkdtemp())
+        self.db.add(Movie(tmdb_id=603, title="Owned", source="radarr"))
+        self.db.commit()
+        app = FastAPI()
+        app.include_router(discover.router)
+        app.dependency_overrides[get_db] = lambda: self.db
+        u = self.db.query(TentacleUser).first()
+        app.dependency_overrides[get_user_from_request] = lambda: u
+        self.client = TestClient(app)
+
+    def tearDown(self):
+        self.db.close()
+
+    def test_genres_list(self):
+        fake = mock.MagicMock()
+        fake.get_genres.return_value = [{"id": 28, "name": "Action"}, {"id": 35, "name": "Comedy"}]
+        with mock.patch.object(self.discover, "_get_tmdb", lambda db: fake):
+            r = self.client.get("/api/discover/genres?type=movies")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual([g["name"] for g in r.json()["genres"]], ["Action", "Comedy"])
+        self.assertEqual(fake.get_genres.call_args.args[0], "movie")
+
+    def test_genre_items_marked(self):
+        fake = mock.MagicMock()
+        fake.get_by_genre.return_value = [
+            {"tmdb_id": 100, "title": "A", "media_type": "movie", "poster_path": "/a.jpg"},
+            {"tmdb_id": 603, "title": "Owned", "media_type": "movie", "poster_path": "/o.jpg"},
+        ]
+        with mock.patch.object(self.discover, "_get_tmdb", lambda db: fake), \
+                mock.patch.object(self.discover, "_get_jellyfin_tmdb_items", lambda mt: {}):
+            r = self.client.get("/api/discover/genre?genre_id=28&type=movies")
+        self.assertEqual(r.status_code, 200, r.text)
+        by_id = {i["tmdb_id"]: i for i in r.json()["items"]}
+        self.assertTrue(by_id[603]["in_library"])
+        self.assertEqual(fake.get_by_genre.call_args.args, ("movie", 28))
+
+    def test_genre_series_type(self):
+        fake = mock.MagicMock(); fake.get_by_genre.return_value = []
+        with mock.patch.object(self.discover, "_get_tmdb", lambda db: fake):
+            self.client.get("/api/discover/genre?genre_id=99&type=series")
+        self.assertEqual(fake.get_by_genre.call_args.args, ("series", 99))
+
+    def test_trending_and_top_rated_are_sections(self):
+        # get_discover should emit trending + top_rated for movies.
+        fake = mock.MagicMock()
+        fake.get_trending.return_value = [{"tmdb_id": 1, "title": "T", "media_type": "movie", "poster_path": "/t.jpg"}]
+        fake.get_popular.return_value = []
+        fake.get_now_playing.return_value = []
+        fake.get_upcoming.return_value = []
+        fake.get_top_rated.return_value = [{"tmdb_id": 2, "title": "R", "media_type": "movie", "poster_path": "/r.jpg"}]
+        with mock.patch.object(self.discover, "_get_tmdb", lambda db: fake), \
+                mock.patch.object(self.discover, "_get_jellyfin_tmdb_items", lambda mt: {}), \
+                mock.patch.object(self.discover, "_get_missing_from_lists", lambda *a, **k: []):
+            r = self.client.get("/api/discover?type=movies")
+        ids = [s["id"] for s in r.json()["sections"]]
+        self.assertIn("trending", ids)
+        self.assertIn("top_rated", ids)
+
+
 if __name__ == "__main__":
     unittest.main()

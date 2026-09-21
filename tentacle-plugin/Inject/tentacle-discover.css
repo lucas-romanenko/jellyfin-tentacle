@@ -1066,7 +1066,7 @@
 .md-count-partial { color: #ff9800 !important; }
 
 /* New on Streaming — provider pills */
-.md-stream-pills { display:flex; flex-wrap:wrap; gap:8px; margin:0 0 16px 0; }
+.md-stream-pills { display:flex; flex-wrap:wrap; gap:8px; margin:0 0 16px 0; padding:0 3.3%; }
 .md-stream-pill {
   padding:6px 16px; border-radius:16px; border:1px solid var(--md-border, rgba(255,255,255,0.15));
   background:transparent; color:var(--md-text-dim, #aaa); font-size:13px; font-weight:500;

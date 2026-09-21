@@ -389,6 +389,53 @@ public class TentacleDiscoverController : ControllerBase
     /// Proxies TMDB search requests to Tentacle.
     /// </summary>
     /// <summary>
+    /// Proxies the Discover genre list.
+    /// </summary>
+    [HttpGet("Genres")]
+    [Authorize]
+    public async Task<ActionResult> GetGenres([FromQuery] string type = "movies")
+    {
+        if (type != "movies" && type != "series") type = "movies";
+        var baseUrl = GetTentacleUrl();
+        if (string.IsNullOrEmpty(baseUrl)) return Ok(new { genres = Array.Empty<object>() });
+        try
+        {
+            var response = await HttpClient.GetStringAsync(AppendUserId($"{baseUrl}/api/discover/genres?type={type}"));
+            return Content(response, "application/json");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("[Tentacle Discover] Failed to fetch genres: {Error}", ex.Message);
+            return Ok(new { genres = Array.Empty<object>() });
+        }
+    }
+
+    /// <summary>
+    /// Proxies popular titles in a genre.
+    /// </summary>
+    [HttpGet("Genre")]
+    [Authorize]
+    public async Task<ActionResult> GetByGenre([FromQuery] int genreId, [FromQuery] string type = "movies")
+    {
+        if (type != "movies" && type != "series") type = "movies";
+        var baseUrl = GetTentacleUrl();
+        if (string.IsNullOrEmpty(baseUrl)) return Ok(new { items = Array.Empty<object>() });
+        try
+        {
+            var response = await HttpClient.GetStringAsync(
+                AppendUserId($"{baseUrl}/api/discover/genre?genre_id={genreId}&type={type}"));
+            var jellyfinBase = $"{Request.Scheme}://{Request.Host}";
+            response = response.Replace("/api/discover/image-proxy/", $"{jellyfinBase}/TentacleDiscover/ImageProxy/");
+            return Content(response, "application/json");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("[Tentacle Discover] Failed to fetch genre: {Error}", ex.Message);
+            return Ok(new { items = Array.Empty<object>() });
+        }
+    }
+
+    /// <summary>
     /// Proxies the "New on Streaming" provider list.
     /// </summary>
     [HttpGet("Providers")]

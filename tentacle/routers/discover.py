@@ -300,6 +300,12 @@ def get_discover(
     sections = []
 
     if type == "series":
+        # ── TV: Trending ──
+        trending = tmdb.get_trending("series")
+        if trending:
+            sections.append({"id": "trending", "title": "Trending",
+                             "items": _dedup_and_mark(trending, known_ids)})
+
         # ── TV: Popular ──
         popular = tmdb.get_popular("series")
         if popular:
@@ -327,6 +333,12 @@ def get_discover(
                 "items": _dedup_and_mark(top_rated, known_ids),
             })
     else:
+        # ── Movies: Trending ──
+        trending = tmdb.get_trending("movie")
+        if trending:
+            sections.append({"id": "trending", "title": "Trending",
+                             "items": _dedup_and_mark(trending, known_ids)})
+
         # ── Movies: Popular ──
         popular = tmdb.get_popular("movie")
         if popular:
@@ -352,6 +364,15 @@ def get_discover(
                 "id": "upcoming",
                 "title": "Upcoming",
                 "items": _dedup_and_mark(upcoming, known_ids),
+            })
+
+        # ── Movies: Top Rated ──
+        top_rated = tmdb.get_top_rated("movie")
+        if top_rated:
+            sections.append({
+                "id": "top_rated",
+                "title": "Top Rated",
+                "items": _dedup_and_mark(top_rated, known_ids),
             })
 
     # ── From Your Lists (both types) ──
@@ -778,6 +799,28 @@ def get_streaming_providers(db: Session = Depends(get_db)):
     return {"region": region, "providers": [
         {"slug": p["slug"], "name": p["name"]} for p in STREAMING_PROVIDERS
     ]}
+
+
+@router.get("/genres", dependencies=[Depends(get_user_from_request)])
+def get_discover_genres(type: str = "movies", db: Session = Depends(get_db)):
+    """Genre list for the Discover genre picker."""
+    tmdb = _get_tmdb(db)
+    if not tmdb:
+        return {"genres": []}
+    media_type = "series" if type == "series" else "movie"
+    return {"genres": tmdb.get_genres(media_type)}
+
+
+@router.get("/genre", dependencies=[Depends(get_user_from_request)])
+def get_discover_by_genre(genre_id: int, type: str = "movies", db: Session = Depends(get_db)):
+    """Popular titles in a genre, marked for in-library."""
+    tmdb = _get_tmdb(db)
+    if not tmdb:
+        return {"items": []}
+    media_type = "series" if type == "series" else "movie"
+    items = tmdb.get_by_genre(media_type, genre_id)
+    known_ids = _known_tmdb_ids(db)
+    return {"genre_id": genre_id, "items": _dedup_and_mark(items, known_ids)}
 
 
 @router.get("/streaming", dependencies=[Depends(get_user_from_request)])

@@ -35,6 +35,10 @@
     streamingProviders: null, // [{slug,name}] once loaded
     streamingActive: null,    // active provider slug
     streamingSection: null,   // {id:'streaming', items:[...]} for findItem
+    genreList: null,          // [{id,name}] for current media type
+    genreListType: null,      // which type genreList was loaded for
+    genreActive: null,
+    genreSection: null,
   };
 
   var ACT = {
@@ -282,7 +286,7 @@
         container.querySelectorAll('.md-filter-btn').forEach(function (x) { x.classList.remove('md-active'); });
         b.classList.add('md-active');
         MD.mediaFilter = b.getAttribute('data-mdtype');
-        if (MD.activeSection !== 'streaming') MD.activeSection = null;
+        if (MD.activeSection !== 'streaming' && MD.activeSection !== 'genres') MD.activeSection = null;
         fetchDiscoverData();
       });
     });
@@ -320,7 +324,7 @@
       renderSectionTabs();
       if (MD.sections.length > 0) {
         var targetId = MD.activeSection || MD.sections[0].id;
-        var found = targetId === 'streaming' || MD.sections.find(function (s) { return s.id === targetId; });
+        var found = targetId === 'streaming' || targetId === 'genres' || MD.sections.find(function (s) { return s.id === targetId; });
         if (!found) targetId = MD.sections[0].id;
         switchSection(targetId);
       } else {
@@ -336,6 +340,7 @@
 
   // ── Section tabs ────────────────────────────────────────────────────
   var SECTION_LABELS = {
+    trending: 'Trending',
     popular: 'Popular',
     now_playing: 'Now Playing',
     upcoming: 'Upcoming',
@@ -355,7 +360,8 @@
         '<span class="md-section-count">' + count + '</span>' +
       '</button>';
     }).join('') +
-      '<button class="md-section-tab" data-section="streaming">New on Streaming</button>';
+      '<button class="md-section-tab" data-section="streaming">New on Streaming</button>' +
+      '<button class="md-section-tab" data-section="genres">Genres</button>';
 
     tabsEl.querySelectorAll('.md-section-tab').forEach(function (btn) {
       btn.addEventListener('click', function () {
@@ -372,6 +378,7 @@
     });
 
     if (sectionId === 'streaming') { renderStreaming(); return; }
+    if (sectionId === 'genres') { renderGenres(); return; }
 
     var section = MD.sections && MD.sections.find(function (s) { return s.id === sectionId; });
     if (!section) return;
@@ -502,7 +509,62 @@
     });
   }
 
+  // ── Genres ──────────────────────────────────────────────────────────
+  function renderGenres() {
+    var content = document.getElementById('mdDiscoverContent');
+    if (!content) return;
+    var gen = MD.generation;
+    var typeParam = MD.mediaFilter === 'series' ? 'series' : 'movies';
+
+    function paint() {
+      var genres = MD.genreList || [];
+      if (!genres.length) {
+        content.innerHTML = '<div class="md-loading">No genres available.</div>';
+        return;
+      }
+      if (!MD.genreActive || !genres.find(function (g) { return g.id === MD.genreActive; })) {
+        MD.genreActive = genres[0].id;
+      }
+      var pills = '<div class="md-stream-pills">' + genres.map(function (g) {
+        var on = g.id === MD.genreActive ? ' md-stream-pill-active' : '';
+        return '<button class="md-stream-pill' + on + '" data-genre="' + g.id + '">' + esc(g.name) + '</button>';
+      }).join('') + '</div>';
+      content.innerHTML = pills + '<div id="mdStreamGrid"><div class="md-loading"><div class="md-spinner"></div><br>Loading...</div></div>';
+      content.querySelectorAll('.md-stream-pill').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          MD.genreActive = parseInt(btn.getAttribute('data-genre'), 10);
+          renderGenres();
+        });
+      });
+      apiGet('TentacleDiscover/Genre?genre_id=' + MD.genreActive + '&type=' + typeParam + '&userId=' + window.ApiClient.getCurrentUserId())
+        .then(function (data) {
+          if (gen !== MD.generation) return;
+          MD.genreSection = { id: 'genres', items: (data && data.items) || [] };
+          var wrap = document.getElementById('mdStreamGrid');
+          if (wrap) renderGrid(MD.genreSection, wrap);
+        })
+        .catch(function () {
+          var wrap = document.getElementById('mdStreamGrid');
+          if (wrap) wrap.innerHTML = '<div class="md-loading">Failed to load.</div>';
+        });
+    }
+
+    if (!MD.genreList || MD.genreListType !== typeParam) {
+      apiGet('TentacleDiscover/Genres?type=' + typeParam + '&userId=' + window.ApiClient.getCurrentUserId())
+        .then(function (data) { MD.genreList = (data && data.genres) || []; MD.genreListType = typeParam; if (gen === MD.generation) paint(); })
+        .catch(function () { MD.genreList = []; MD.genreListType = typeParam; if (gen === MD.generation) paint(); });
+    } else {
+      paint();
+    }
+  }
+
   function findItem(tmdbId, tvdbId) {
+    if (MD.genreSection) {
+      var gitems = MD.genreSection.items || [];
+      for (var j = 0; j < gitems.length; j++) {
+        if ((gitems[j].tmdb_id || 0) === tmdbId || (tvdbId && (gitems[j].tvdb_id || 0) === tvdbId)) return gitems[j];
+      }
+    }
     if (MD.streamingSection) {
       var sitems = MD.streamingSection.items || [];
       for (var k = 0; k < sitems.length; k++) {

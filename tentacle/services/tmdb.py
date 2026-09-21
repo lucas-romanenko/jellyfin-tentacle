@@ -685,6 +685,52 @@ class TMDBService:
             logger.info(f"TMDB upcoming {pages} pages: {len(all_results)} items")
         return all_results
 
+    def get_genres(self, media_type: str) -> list:
+        """TMDB genre list for movies or TV: [{id, name}]. Cached 30 days."""
+        if not self.enabled:
+            return []
+        is_tv = media_type == "series"
+        cache_key = f"genres:{'tv' if is_tv else 'movie'}"
+        cached = self._cache_get(cache_key, ttl_seconds=30 * 86400)
+        if cached is not None:
+            return cached
+        data = self._request(f"genre/{'tv' if is_tv else 'movie'}/list", {"language": "en-US"})
+        genres = [{"id": g["id"], "name": g["name"]} for g in (data or {}).get("genres", [])]
+        if genres:
+            self._cache_set(cache_key, genres)
+        return genres
+
+    def get_by_genre(self, media_type: str, genre_id: int, pages: int = 3) -> list:
+        """Popular movies/TV in a genre, most popular first. Cached 12h."""
+        if not self.enabled:
+            return []
+        is_tv = media_type == "series"
+        cache_key = f"genre_items:{media_type}:{genre_id}:{pages}"
+        cached = self._cache_get(cache_key, ttl_seconds=12 * 3600)
+        if cached is not None:
+            return cached
+        endpoint = "discover/tv" if is_tv else "discover/movie"
+        all_results = []
+        seen = set()
+        for page in range(1, pages + 1):
+            data = self._request(endpoint, {
+                "page": page,
+                "language": "en-US",
+                "with_original_language": "en",
+                "with_genres": str(genre_id),
+                "sort_by": "popularity.desc",
+                "vote_count.gte": 50,
+            })
+            for m in self._parse_results(data, media_type):
+                if not m.get("poster_path") or m["tmdb_id"] in seen:
+                    continue
+                seen.add(m["tmdb_id"])
+                all_results.append(m)
+            if not data or not data.get("results"):
+                break
+        self._cache_set(cache_key, all_results)
+        return all_results
+
     def get_new_on_provider(self, media_type: str, provider_id: int, region: str = "CA",
                             months: int = 18, pages: int = 3) -> list:
         """Recently released titles available on a streaming provider in a region.
