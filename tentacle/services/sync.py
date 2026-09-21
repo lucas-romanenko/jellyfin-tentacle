@@ -581,8 +581,10 @@ def check_and_record_duplicate(
             resolution="pending"
         ))
 
-    # Radarr (downloaded) content always takes priority
-    if existing.source == "radarr":
+    # Downloaded content always takes priority -- Sonarr's as much as Radarr's.
+    # A "sonarr" row used to fall through to `return False` below, which tells
+    # the caller to insert a second row for a UNIQUE tmdb_id.
+    if existing.source in ("radarr", "sonarr"):
         return True
 
     # If existing is from another provider, decide which wins by priority.
@@ -607,7 +609,9 @@ def check_and_record_duplicate(
     if existing.provider_id == provider.id:
         return True
 
-    return False
+    # A row exists for this tmdb_id, whoever owns it. tmdb_id is unique, so
+    # telling the caller to insert can only ever raise IntegrityError.
+    return True
 
 
 # A category must return nothing this many syncs in a row before we believe it
@@ -1601,7 +1605,7 @@ def _sync_series(
             seen_tmdb_ids.add(tmdb_id)
 
             # Also check DB directly in case of prior partial sync — merge tags
-            if db.query(Series).filter(Series.tmdb_id == tmdb_id).first():
+            if db.query(Series).filter(Series.tmdb_id == tmdb_id, Series.provider_id == provider.id).first():
                 existing_provider_tmdb_ids.add(tmdb_id)
                 _merge_source_tag(tmdb_id, "series", cat.source_tag, provider.id, db)
                 # Existing VOD series — back-fill any new seasons/episodes

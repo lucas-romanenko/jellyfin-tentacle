@@ -566,6 +566,11 @@ def scan_sonarr_library(db: Session) -> dict:
             if existing.sonarr_monitored != is_following:
                 existing.sonarr_monitored = is_following
                 changed = True
+            # Whether the row ALREADY knew a Sonarr path says whether this was an
+            # intentional add ("Download More Episodes"). Read it before the line
+            # below overwrites it: testing it afterwards could only ever be true
+            # when Sonarr reported an empty path, so no overlap was ever recorded.
+            had_sonarr_path = bool(existing.sonarr_path)
             if series_path and existing.sonarr_path != series_path:
                 existing.sonarr_path = series_path
                 changed = True
@@ -580,7 +585,7 @@ def scan_sonarr_library(db: Session) -> dict:
                     pass
             # If this was a VOD-only row, create a duplicate record
             # Skip if sonarr_path already set (intentional add via "Download More Episodes")
-            if existing.source and existing.source.startswith("provider_") and not existing.sonarr_path and tmdb_id not in existing_dup_tmdb_ids:
+            if existing.source and existing.source.startswith("provider_") and not had_sonarr_path and tmdb_id not in existing_dup_tmdb_ids:
                 db.add(Duplicate(
                     tmdb_id=tmdb_id,
                     media_type="series",
