@@ -180,5 +180,97 @@ class M3UParserPairingTests(unittest.TestCase):
         self.assertEqual(channels[0]["stream_url"], "http://p.example/a.ts")
 
 
+class M3UUrlRotationTests(unittest.TestCase):
+    """A channel whose URL changed is still the same channel.
+
+    The stable id hashes name + URL, so a provider that rotates a token in its
+    URLs (or moves host) turned every channel into "one removed, one new" on
+    every sync: the user's enabled flags, channel numbers and sort order were
+    thrown away each time, and Jellyfin saw a lineup of brand-new channel ids.
+    """
+
+    def setUp(self):
+        self.db = _session()
+        self.provider = Provider(name="P", server_url="http://p.example",
+                                 username="u", password="p",
+                                 provider_type="m3u_url", live_tv_enabled=True)
+        self.db.add(self.provider)
+        self.db.commit()
+        self.pid = self.provider.id
+        livetv._upsert_channels_from_m3u(self.pid, _parsed(20), self.db)
+        self.db.commit()
+        for n, ch in enumerate(self.db.query(LiveChannel).order_by(LiveChannel.id).all()):
+            ch.enabled = True
+            ch.channel_number = 100 + n
+        self.db.commit()
+        self.before = {ch.name: (ch.id, ch.channel_number)
+                       for ch in self.db.query(LiveChannel).all()}
+
+    def tearDown(self):
+        self.db.close()
+
+    def _rotated(self, n=20, token="t2"):
+        return [{"name": f"Channel {i}", "stream_url": f"http://p.example/{i}.ts?token={token}",
+                 "group_title": "CA| SPORTS"} for i in range(n)]
+
+    def _rows(self):
+        return self.db.query(LiveChannel).filter(LiveChannel.provider_id == self.pid).all()
+
+    def test_a_rotated_token_keeps_the_rows_and_their_settings(self):
+        stats = livetv._upsert_channels_from_m3u(self.pid, self._rotated(), self.db)
+        self.db.commit()
+        rows = self._rows()
+        self.assertEqual(20, len(rows))
+        self.assertEqual(self.before, {r.name: (r.id, r.channel_number) for r in rows},
+                         "rows were re-created: Jellyfin sees new channel ids and the numbers are gone")
+        self.assertTrue(all(r.enabled for r in rows), "the user's enabled flags were thrown away")
+        self.assertTrue(all("token=t2" in r.stream_url for r in rows), "the new URL was not taken")
+        self.assertEqual(0, stats["new"])
+        self.assertEqual(0, stats["removed"])
+
+    def test_it_keeps_working_sync_after_sync(self):
+        for token in ("t2", "t3", "t4"):
+            livetv._upsert_channels_from_m3u(self.pid, self._rotated(token=token), self.db)
+            self.db.commit()
+        rows = self._rows()
+        self.assertEqual(20, len(rows), "the lineup grew or shrank across rotations")
+        self.assertTrue(all(r.enabled and "token=t4" in r.stream_url for r in rows))
+
+    def test_a_rotation_that_is_also_truncated_is_still_refused(self):
+        """Re-identifying moved channels must not open a way round the guard."""
+        stats = livetv._upsert_channels_from_m3u(self.pid, self._rotated(n=2), self.db)
+        self.db.commit()
+        self.assertEqual(20, len(self._rows()))
+        self.assertEqual(18, stats["removals_refused"])
+
+    def test_two_channels_with_one_name_are_not_guessed_at(self):
+        """Same name twice (an HD and an SD feed, say): which row moved where is
+        not knowable, so they are left to the ordinary add/remove path."""
+        self.db.query(LiveChannel).delete()
+        self.db.commit()
+        twins = [{"name": "News", "stream_url": f"http://p.example/news{i}.ts", "group_title": "G"} for i in (1, 2)]
+        livetv._upsert_channels_from_m3u(self.pid, twins + _parsed(10), self.db)
+        self.db.commit()
+        moved = [{"name": "News", "stream_url": f"http://p.example/news{i}.ts?x=1", "group_title": "G"} for i in (1, 2)]
+        livetv._upsert_channels_from_m3u(self.pid, moved + _parsed(10), self.db)
+        self.db.commit()
+        news = [r for r in self._rows() if r.name == "News"]
+        self.assertEqual(2, len(news))
+        self.assertTrue(all("x=1" in r.stream_url for r in news))
+
+
+class RefusedRemovalIsSaid(unittest.TestCase):
+    def test_a_sync_that_refused_removals_does_not_just_say_synced(self):
+        import routers.livetv as livetv
+        msg = livetv._sync_done_message({"message": "Groups synced", "removals_refused": 18})
+        self.assertIn("18", msg)
+        self.assertIn("REFUSED", msg)
+
+    def test_an_ordinary_sync_reads_as_before(self):
+        import routers.livetv as livetv
+        self.assertEqual("Groups synced", livetv._sync_done_message({"removals_refused": 0}))
+        self.assertEqual("Done", livetv._sync_done_message({"message": "Done"}))
+
+
 if __name__ == "__main__":
     unittest.main()

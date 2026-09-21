@@ -374,8 +374,8 @@ def _run_group_sync_background(provider_data: dict):
         _set_sync_status(provider_id, {
             "phase": "complete",
             "progress": 100,
-            "message": result.get("message", "Groups synced"),
             **result,
+            "message": _sync_done_message(result),
         })
     except Exception as e:
         logger.error(f"[LiveTV] Group sync failed for provider {provider_id}: {e}", exc_info=True)
@@ -624,6 +624,18 @@ def _sync_from_m3u_file(provider_data: dict, db: Session) -> dict:
     return stats
 
 
+def _sync_done_message(result: dict) -> str:
+    """What the dashboard shows when a sync finishes. A sync that refused to
+    delete channels has NOT simply "synced": say so where the admin is looking,
+    not only in the activity feed."""
+    msg = result.get("message", "Groups synced")
+    refused = result.get("removals_refused")
+    if refused:
+        msg += (f" — but REFUSED to delete {refused} channel(s): the playlist looked "
+                f"truncated or empty, so the existing channels were kept")
+    return msg
+
+
 def _log_m3u_sync(db: Session, prefix: str, stats: dict):
     """Activity-feed entry for an M3U sync, including any refused removal."""
     msg = f"{prefix}: {stats['new']} new, {stats['total']} total"
@@ -761,6 +773,32 @@ def _upsert_channels_from_m3u(
     seen_ids = set()
     new_count = 0
     updated_count = 0
+
+    # A channel whose URL changed is still the same channel. The stable id
+    # hashes name + URL, so a rotated token or a new host used to read as "one
+    # channel removed, one added" for the whole lineup on every sync: enabled
+    # flags, channel numbers and sort order thrown away, and Jellyfin handed a
+    # lineup of new channel ids. Where a name has exactly ONE row that is about
+    # to be orphaned and exactly ONE new entry, it is that row that moved: give
+    # it the new id and keep everything else. Anything ambiguous (the same name
+    # twice) is left to the ordinary add/remove path rather than guessed at.
+    incoming = {_m3u_stable_id(ch["name"], ch["stream_url"]) for ch in parsed_channels}
+    orphans: dict[str, list] = {}
+    for row_sid, row in existing.items():
+        if row_sid not in incoming:
+            orphans.setdefault(row.name, []).append(row)
+    arrivals: dict[str, list[str]] = {}
+    for ch in parsed_channels:
+        sid = _m3u_stable_id(ch["name"], ch["stream_url"])
+        if sid not in existing:
+            arrivals.setdefault(ch["name"], []).append(sid)
+    for name, sids in arrivals.items():
+        rows = orphans.get(name, [])
+        if len(sids) == 1 and len(rows) == 1:
+            row = rows[0]
+            del existing[row.stream_id]
+            row.stream_id = sids[0]
+            existing[row.stream_id] = row
 
     for ch in parsed_channels:
         name = ch["name"]
