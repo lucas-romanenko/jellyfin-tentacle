@@ -415,15 +415,16 @@ public class TentacleDiscoverController : ControllerBase
     /// </summary>
     [HttpGet("Genre")]
     [Authorize]
-    public async Task<ActionResult> GetByGenre([FromQuery] int genreId, [FromQuery] string type = "movies")
+    public async Task<ActionResult> GetByGenre([FromQuery] int genreId, [FromQuery] string type = "movies", [FromQuery] string mode = "top_rated")
     {
         if (type != "movies" && type != "series") type = "movies";
+        if (mode != "top_rated" && mode != "new") mode = "top_rated";
         var baseUrl = GetTentacleUrl();
         if (string.IsNullOrEmpty(baseUrl)) return Ok(new { items = Array.Empty<object>() });
         try
         {
             var response = await HttpClient.GetStringAsync(
-                AppendUserId($"{baseUrl}/api/discover/genre?genre_id={genreId}&type={type}"));
+                AppendUserId($"{baseUrl}/api/discover/genre?genre_id={genreId}&type={type}&mode={mode}"));
             var jellyfinBase = $"{Request.Scheme}://{Request.Host}";
             response = response.Replace("/api/discover/image-proxy/", $"{jellyfinBase}/TentacleDiscover/ImageProxy/");
             return Content(response, "application/json");

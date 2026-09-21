@@ -166,29 +166,36 @@ class TestGenreRoutes(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.text)
         by_id = {i["tmdb_id"]: i for i in r.json()["items"]}
         self.assertTrue(by_id[603]["in_library"])
-        self.assertEqual(fake.get_by_genre.call_args.args, ("movie", 28))
+        self.assertEqual(fake.get_by_genre.call_args.args[:2], ("movie", 28))
+        self.assertEqual(fake.get_by_genre.call_args.kwargs.get("mode"), "top_rated")
 
     def test_genre_series_type(self):
         fake = mock.MagicMock(); fake.get_by_genre.return_value = []
         with mock.patch.object(self.discover, "_get_tmdb", lambda db: fake):
             self.client.get("/api/discover/genre?genre_id=99&type=series")
-        self.assertEqual(fake.get_by_genre.call_args.args, ("series", 99))
+        self.assertEqual(fake.get_by_genre.call_args.args[:2], ("series", 99))
 
-    def test_trending_and_top_rated_are_sections(self):
-        # get_discover should emit trending + top_rated for movies.
+    def test_genre_new_mode_forwarded(self):
+        fake = mock.MagicMock(); fake.get_by_genre.return_value = []
+        with mock.patch.object(self.discover, "_get_tmdb", lambda db: fake):
+            self.client.get("/api/discover/genre?genre_id=28&type=movies&mode=new")
+        self.assertEqual(fake.get_by_genre.call_args.kwargs.get("mode"), "new")
+
+    def test_discover_keeps_the_original_movie_sections_only(self):
+        # The extra Trending/Top Rated top-level tabs were reverted: movies keep
+        # Popular / Now Playing / Upcoming (+ From My Lists).
         fake = mock.MagicMock()
-        fake.get_trending.return_value = [{"tmdb_id": 1, "title": "T", "media_type": "movie", "poster_path": "/t.jpg"}]
-        fake.get_popular.return_value = []
+        fake.get_popular.return_value = [{"tmdb_id": 1, "title": "P", "media_type": "movie", "poster_path": "/p.jpg"}]
         fake.get_now_playing.return_value = []
         fake.get_upcoming.return_value = []
-        fake.get_top_rated.return_value = [{"tmdb_id": 2, "title": "R", "media_type": "movie", "poster_path": "/r.jpg"}]
         with mock.patch.object(self.discover, "_get_tmdb", lambda db: fake), \
                 mock.patch.object(self.discover, "_get_jellyfin_tmdb_items", lambda mt: {}), \
                 mock.patch.object(self.discover, "_get_missing_from_lists", lambda *a, **k: []):
             r = self.client.get("/api/discover?type=movies")
         ids = [s["id"] for s in r.json()["sections"]]
-        self.assertIn("trending", ids)
-        self.assertIn("top_rated", ids)
+        self.assertNotIn("trending", ids)
+        self.assertNotIn("top_rated", ids)
+        self.assertIn("popular", ids)
 
 
 if __name__ == "__main__":

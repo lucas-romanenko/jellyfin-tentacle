@@ -700,27 +700,43 @@ class TMDBService:
             self._cache_set(cache_key, genres)
         return genres
 
-    def get_by_genre(self, media_type: str, genre_id: int, pages: int = 3) -> list:
-        """Popular movies/TV in a genre, most popular first. Cached 12h."""
+    def get_by_genre(self, media_type: str, genre_id: int, mode: str = "top_rated",
+                     pages: int = 3) -> list:
+        """Titles in a genre. Cached 12h.
+
+        mode='top_rated' — the all-time best in the genre (high vote average with
+        enough votes to be a real title, not a brigaded obscurity).
+        mode='new' — the most recently released/aired in the genre.
+        """
         if not self.enabled:
             return []
         is_tv = media_type == "series"
-        cache_key = f"genre_items:{media_type}:{genre_id}:{pages}"
+        cache_key = f"genre_items:{media_type}:{genre_id}:{mode}:{pages}"
         cached = self._cache_get(cache_key, ttl_seconds=12 * 3600)
         if cached is not None:
             return cached
         endpoint = "discover/tv" if is_tv else "discover/movie"
+        date_field = "first_air_date" if is_tv else "primary_release_date"
+        base = {"language": "en-US", "with_original_language": "en", "with_genres": str(genre_id)}
+        if mode == "new":
+            from datetime import timedelta
+            today = datetime.now().date()
+            base.update({
+                "sort_by": f"{date_field}.desc",
+                f"{date_field}.lte": today.isoformat(),
+                f"{date_field}.gte": (today - timedelta(days=18 * 30)).isoformat(),
+                "vote_count.gte": 5,
+            })
+        else:  # top_rated (all time)
+            base.update({
+                "sort_by": "vote_average.desc",
+                "vote_count.gte": 300 if is_tv else 1000,
+            })
         all_results = []
         seen = set()
         for page in range(1, pages + 1):
-            data = self._request(endpoint, {
-                "page": page,
-                "language": "en-US",
-                "with_original_language": "en",
-                "with_genres": str(genre_id),
-                "sort_by": "popularity.desc",
-                "vote_count.gte": 50,
-            })
+            params = dict(base, page=page)
+            data = self._request(endpoint, params)
             for m in self._parse_results(data, media_type):
                 if not m.get("poster_path") or m["tmdb_id"] in seen:
                     continue

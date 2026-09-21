@@ -38,6 +38,7 @@
     genreList: null,          // [{id,name}] for current media type
     genreListType: null,      // which type genreList was loaded for
     genreActive: null,
+    genreMode: 'top_rated',
     genreSection: null,
   };
 
@@ -340,7 +341,6 @@
 
   // ── Section tabs ────────────────────────────────────────────────────
   var SECTION_LABELS = {
-    trending: 'Trending',
     popular: 'Popular',
     now_playing: 'Now Playing',
     upcoming: 'Upcoming',
@@ -525,18 +525,30 @@
       if (!MD.genreActive || !genres.find(function (g) { return g.id === MD.genreActive; })) {
         MD.genreActive = genres[0].id;
       }
-      var pills = '<div class="md-stream-pills">' + genres.map(function (g) {
+      function modeBtn(m, label) {
+        var on = MD.genreMode === m ? ' md-stream-pill-active' : '';
+        return '<button class="md-stream-pill md-genre-mode' + on + '" data-mode="' + m + '">' + label + '</button>';
+      }
+      var modeRow = '<div class="md-genre-modes">' + modeBtn('top_rated', 'Top Rated') + modeBtn('new', 'Newly Released') + '</div>';
+      var genrePills = '<div class="md-stream-pills">' + genres.map(function (g) {
         var on = g.id === MD.genreActive ? ' md-stream-pill-active' : '';
         return '<button class="md-stream-pill' + on + '" data-genre="' + g.id + '">' + esc(g.name) + '</button>';
       }).join('') + '</div>';
-      content.innerHTML = pills + '<div id="mdStreamGrid"><div class="md-loading"><div class="md-spinner"></div><br>Loading...</div></div>';
-      content.querySelectorAll('.md-stream-pill').forEach(function (btn) {
+      content.innerHTML = modeRow + genrePills + '<div id="mdStreamGrid"><div class="md-loading"><div class="md-spinner"></div><br>Loading...</div></div>';
+      content.querySelectorAll('.md-genre-mode').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          MD.genreMode = btn.getAttribute('data-mode');
+          renderGenres();
+        });
+      });
+      content.querySelectorAll('.md-stream-pills .md-stream-pill').forEach(function (btn) {
+        if (btn.classList.contains('md-genre-mode')) return;
         btn.addEventListener('click', function () {
           MD.genreActive = parseInt(btn.getAttribute('data-genre'), 10);
           renderGenres();
         });
       });
-      apiGet('TentacleDiscover/Genre?genre_id=' + MD.genreActive + '&type=' + typeParam + '&userId=' + window.ApiClient.getCurrentUserId())
+      apiGet('TentacleDiscover/Genre?genre_id=' + MD.genreActive + '&type=' + typeParam + '&mode=' + MD.genreMode + '&userId=' + window.ApiClient.getCurrentUserId())
         .then(function (data) {
           if (gen !== MD.generation) return;
           MD.genreSection = { id: 'genres', items: (data && data.items) || [] };

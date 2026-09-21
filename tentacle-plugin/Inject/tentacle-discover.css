@@ -1074,3 +1074,7 @@
 }
 .md-stream-pill:hover { color:#fff; border-color:var(--md-accent, #7b2ff7); }
 .md-stream-pill-active { background:var(--md-accent, #7b2ff7); border-color:var(--md-accent, #7b2ff7); color:#fff; }
+
+/* Genre Top Rated / Newly Released toggle */
+.md-genre-modes { display:flex; gap:8px; padding:0 3.3% 10px; margin-bottom:10px; border-bottom:1px solid var(--md-border, rgba(255,255,255,0.12)); }
+.md-genre-modes .md-stream-pill { font-weight:600; }

@@ -4485,7 +4485,6 @@ const DISCOVER_SECTION_LABELS = {
   on_the_air: 'On the Air',
   top_rated: 'Top Rated',
   missing: 'From My Lists',
-  trending: 'Trending',
   streaming: 'New on Streaming',
   genres: 'Genres',
 };
@@ -4494,6 +4493,7 @@ let _streamingProviders = null;      // [{slug,name}] once loaded
 let _streamingActiveProvider = null;
 let _genreList = { movies: null, series: null };
 let _genreActive = null;
+let _genreMode = 'top_rated';  // 'top_rated' | 'new'
 
 async function loadDiscover() {
   const grid = document.getElementById('discover-grid');
@@ -4543,7 +4543,7 @@ function switchDiscoverSection(sectionId) {
     return;
   }
   if (sectionId === 'genres') {
-    if (pills) pills.style.display = 'flex';
+    if (pills) { pills.style.display = 'block'; }
     loadGenreSection();
     return;
   }
@@ -4607,15 +4607,22 @@ async function loadGenreSection() {
   }
   if (!_genreActive || !genres.find(g => g.id === _genreActive)) _genreActive = genres[0].id;
   if (pills) {
-    pills.innerHTML = genres.map(g => {
+    const modeBtn = (m, label) => {
+      const on = _genreMode === m;
+      return `<button onclick="setGenreMode('${m}')" style="padding:6px 14px;border-radius:16px;border:1px solid ${on ? 'var(--accent)' : 'var(--border2)'};background:${on ? 'var(--accent)' : 'var(--bg2)'};color:${on ? '#fff' : 'var(--text3)'};font-size:12px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif">${label}</button>`;
+    };
+    const genrePills = genres.map(g => {
       const active = g.id === _genreActive;
       return `<button onclick="selectGenre(${g.id})" style="padding:6px 14px;border-radius:16px;border:1px solid ${active ? 'var(--accent)' : 'var(--border2)'};background:${active ? 'var(--accent)' : 'var(--bg2)'};color:${active ? '#fff' : 'var(--text3)'};font-size:12px;font-weight:500;cursor:pointer;font-family:'DM Sans',sans-serif">${g.name}</button>`;
     }).join('');
+    pills.innerHTML =
+      `<div style="display:flex;gap:8px;width:100%;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--border2)">${modeBtn('top_rated','Top Rated')}${modeBtn('new','Newly Released')}</div>` +
+      `<div style="display:flex;flex-wrap:wrap;gap:8px">${genrePills}</div>`;
   }
   grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text3)"><span class="toast-spinner"></span> Loading…</div>';
   try {
     if (!_activityData) await loadActivity().catch(() => {});
-    const data = await api(`/api/discover/genre?genre_id=${_genreActive}&type=${_discoverType}`);
+    const data = await api(`/api/discover/genre?genre_id=${_genreActive}&type=${_discoverType}&mode=${_genreMode}`);
     renderDiscoverGrid(data.items || []);
   } catch (e) {
     grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Failed to load: ${e.message}</p></div>`;
@@ -4624,6 +4631,11 @@ async function loadGenreSection() {
 
 function selectGenre(id) {
   _genreActive = id;
+  loadGenreSection();
+}
+
+function setGenreMode(m) {
+  _genreMode = m;
   loadGenreSection();
 }
 
@@ -6229,7 +6241,7 @@ async function loadHealthDeletions() {
     showHealthMissingTab, loadHealthMissing, healthDiagnose, healthGrabRelease, healthSearchMissing,
     loadHealthStreams, healthRecheckStreams, healthRunStreamSweep, healthClearStream, healthRemoveStream,
     // Discover
-    loadDiscoverPage, loadDiscover, setDiscoverType, switchDiscoverSection, selectStreamingProvider, selectGenre, showDiscoverDetail,
+    loadDiscoverPage, loadDiscover, setDiscoverType, switchDiscoverSection, selectStreamingProvider, selectGenre, setGenreMode, showDiscoverDetail,
     onDiscoverSearchInput, clearDiscoverSearch,
     // Live TV
     loadLiveTV, showLiveTab, onLiveTypeChange, saveLiveProvider, testLiveProvider,
