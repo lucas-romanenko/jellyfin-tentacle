@@ -231,7 +231,12 @@ def _playlists_visible_to_other_users(jf, db: Session, user_id: int):
         others[uid.replace("-", "").lower()] = uid
     for other in db.query(TentacleUser).all():
         if other.id != user_id and other.jellyfin_user_id:
-            others.setdefault(other.jellyfin_user_id.replace("-", "").lower(), other.jellyfin_user_id)
+            key = other.jellyfin_user_id.replace("-", "").lower()
+            if key not in others:
+                # Logged in to Tentacle once, since deleted in Jellyfin. Listing
+                # their playlists would 404 and, read as "could not check",
+                # switch the cleanup off for everyone, for ever.
+                logger.debug(f"[SmartLists] Tentacle user {other.id} is no longer a Jellyfin user — skipped")
     others.pop(me, None)
 
     ids = set()
@@ -1474,10 +1479,13 @@ def _refresh_smartlist_playlists_inner(db: Session, user_id: int = None, only_na
             logger.error(f"[SmartLists] Failed to process '{name}': {e}")
             stats["errors"] += 1
 
+    # "updated" counts playlists visited; only "changed" ones were written to.
+    # Reporting the former as "updated" read as work done on a pass that wrote
+    # nothing (#107).
     logger.info(
         f"[SmartLists] Playlist refresh (user {user_id}): {stats['processed']} processed, "
-        f"{stats['created']} created, {stats['updated']} updated, "
-        f"{stats['errors']} errors"
+        f"{stats['created']} created, {stats.get('changed', 0)} changed, "
+        f"{stats['updated'] - stats.get('changed', 0)} unchanged, {stats['errors']} errors"
     )
     return stats
 
@@ -1725,13 +1733,29 @@ def _update_episode_playlist(jf, playlist_id: str, name: str, item_ids: list,
     _done(f"full series rebuild — cleared + re-added {len(desired)} series in order", changed=True)
 
 
+# How long a request-path caller (a toggle, a custom-playlist save) waits for
+# the refresh lock before giving up. A full resync or the nightly refresh holds
+# it for minutes; a request thread blocked that long times out at the reverse
+# proxy while the UI shows the optimistic state, so answer "busy" instead.
+FAST_PATH_LOCK_TIMEOUT = 20.0
+
+
+class PlaylistsBusy(RuntimeError):
+    """A playlist refresh is running; the fast path could not get the lock."""
+
+
 def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats: dict, db: Session = None):
     """Process a single SmartList config: query items, create/update playlist.
 
     Holds _playlist_refresh_lock so the toggle / sync-one fast paths can't
-    interleave with a running refresh of the same playlist."""
-    with _playlist_refresh_lock:
+    interleave with a running refresh of the same playlist. Waits at most
+    FAST_PATH_LOCK_TIMEOUT for it and raises PlaylistsBusy otherwise."""
+    if not _playlist_refresh_lock.acquire(timeout=FAST_PATH_LOCK_TIMEOUT):
+        raise PlaylistsBusy("Playlists are being refreshed right now — try again in a moment")
+    try:
         return _process_single_playlist_locked(jf, folder, config, user_id, stats, db=db)
+    finally:
+        _playlist_refresh_lock.release()
 
 
 def _process_single_playlist_locked(jf, folder: Path, config: dict, user_id: str, stats: dict, db: Session = None):
@@ -2173,7 +2197,10 @@ def sync_single_custom_playlist(db: Session, user_id: int, rule_name: str, condi
     # Populate the Jellyfin playlist with matching items
     jf = JellyfinService(jellyfin_url, jellyfin_key, user_id=jf_user_id)
     stats = {"processed": 0, "created": 0, "updated": 0, "changed": 0, "errors": 0, "item_counts": {}}
-    _process_single_playlist(jf, folder, config, jf_user_id, stats, db=db)
+    try:
+        _process_single_playlist(jf, folder, config, jf_user_id, stats, db=db)
+    except PlaylistsBusy as e:
+        return {"error": str(e), "busy": True}
 
     # Sync artwork for this playlist
     try:
@@ -2315,7 +2342,10 @@ def toggle_auto_playlist_fast(db: Session, user_id: int, key: str, enabled: bool
 
         # Populate
         stats = {"processed": 0, "created": 0, "updated": 0, "changed": 0, "errors": 0, "item_counts": {}}
-        _process_single_playlist(jf, folder, config, jf_user_id, stats, db=db)
+        try:
+            _process_single_playlist(jf, folder, config, jf_user_id, stats, db=db)
+        except PlaylistsBusy as e:
+            return {"error": str(e), "busy": True}
         item_count = stats["item_counts"].get(name, 0)
 
         # Artwork

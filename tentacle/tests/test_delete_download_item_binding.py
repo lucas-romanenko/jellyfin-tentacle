@@ -17,6 +17,7 @@ from sqlalchemy.orm import sessionmaker
 
 MINE = "a" * 32       # the film this user requested (tmdb 603)
 THEIRS = "b" * 32     # someone else's film (tmdb 999)
+GONE = "c" * 32       # well-formed, but Jellyfin no longer has it
 ITEMS = {
     MINE: {"Id": MINE, "Type": "Movie", "ProviderIds": {"Tmdb": "603"}},
     THEIRS: {"Id": THEIRS, "Type": "Movie", "ProviderIds": {"Tmdb": "999"}},
@@ -30,6 +31,9 @@ class _FakeJellyfin:
         pass
 
     def get_item_by_id(self, item_id):
+        if item_id == GONE:
+            import requests
+            raise requests.HTTPError("404 Client Error: Not Found")  # as the real service does
         return ITEMS.get(item_id)
 
     def search_by_tmdb_id(self, tmdb_id, media_type="Movie", **kw):
@@ -86,6 +90,17 @@ class DeleteDownloadBindsTheItem(unittest.TestCase):
     def test_a_wrong_id_falls_back_to_the_real_item(self):
         self.client.delete(f"/api/library/delete-download/603?media_type=movie&jellyfin_item_id={THEIRS}",
                            cookies=self.cookie)
+        self.assertEqual([MINE], _FakeJellyfin.deleted)
+
+
+
+class TestStaleSuppliedId(DeleteDownloadBindsTheItem):
+    def test_an_id_jellyfin_no_longer_has_falls_back_to_the_lookup(self):
+        """A retried fire-and-forget delete supplies an id Jellyfin already
+        removed. That is "not that title", not a 500 before Radarr is asked."""
+        r = self.client.delete(f"/api/library/delete-download/603?media_type=movie&jellyfin_item_id={GONE}",
+                               cookies=self.cookie)
+        self.assertEqual(200, r.status_code, r.text)
         self.assertEqual([MINE], _FakeJellyfin.deleted)
 
 

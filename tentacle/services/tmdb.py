@@ -125,7 +125,11 @@ class TMDBService:
             raise TMDBConnectionError(f"Cannot reach TMDB API: {e}")
         except requests.HTTPError as e:
             status = getattr(getattr(e, "response", None), "status_code", None)
-            if status is None or status == 429 or status >= 500:
+            # Only a 404 says anything about the title. A refused key (401/403),
+            # a rate limit or a server error says nothing — treating those as
+            # "no match" cached a negative result for 30 days and let the
+            # provider prune remove titles that were never gone.
+            if status != 404:
                 self._tl.failed = True
             logger.warning(f"TMDB HTTP error {endpoint}: {e}")
             return None

@@ -64,5 +64,63 @@ class TestRadarrAddThroughRedirect(unittest.TestCase):
         self.assertIn("redirects", sonarr.last_error or "")
 
 
+
+class _Proxy308(BaseHTTPRequestHandler):
+    """A proxy that redirects with 308 (Caddy's automatic HTTPS does this):
+    requests re-sends the POST, body included, so the add DOES reach the API."""
+    seen = []
+
+    def log_message(self, *a):
+        pass
+
+    def do_POST(self):
+        _Proxy308.seen.append(("POST", self.path))
+        length = int(self.headers.get("Content-Length") or 0)
+        payload = json.loads(self.rfile.read(length) or b"{}")
+        if not self.path.startswith("/canonical"):
+            self.send_response(308)
+            self.send_header("Location", "/canonical" + self.path)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        body = json.dumps({"id": 42, "tmdbId": payload.get("tmdbId"), "title": payload.get("title", "x"),
+                           "tvdbId": payload.get("tvdbId")}).encode()
+        self.send_response(201)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        _Proxy308.seen.append(("GET", self.path))
+        body = json.dumps([{"title": "Show", "tvdbId": 5, "tmdbId": 7, "seasons": []}]).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+class TestAddThrough308KeepsThePost(unittest.TestCase):
+    def setUp(self):
+        _Proxy308.seen = []
+        self.srv = HTTPServer(("127.0.0.1", 0), _Proxy308)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.addCleanup(self.srv.shutdown)
+        self.url = f"http://127.0.0.1:{self.srv.server_port}"
+
+    def test_a_308_redirected_radarr_add_is_still_an_add(self):
+        outcome, reason = arr_add.add_movie_to_radarr(self.url, "k", 949, 1, "/movies")
+        self.assertEqual(_Proxy308.seen, [("POST", "/api/v3/movie"), ("POST", "/canonical/api/v3/movie")])
+        self.assertEqual(outcome, arr_add.ADDED, reason)
+
+    def test_a_308_redirected_sonarr_add_is_still_an_add(self):
+        from services.sonarr import SonarrService
+        sonarr = SonarrService(self.url, "k")
+        result = sonarr.add_series(tmdb_id=7, quality_profile_id=1, root_folder="/tv")
+        self.assertIn(("POST", "/canonical/api/v3/series"), _Proxy308.seen)
+        self.assertIsNotNone(result, sonarr.last_error)
+
+
 if __name__ == "__main__":
     unittest.main()

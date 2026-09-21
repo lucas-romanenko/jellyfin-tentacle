@@ -43,6 +43,11 @@ SCENE_ONLY_PATTERNS = [
 ]
 
 # What makes a name "scene-like": a release tag no catalogue title carries.
+# Scene-only tags (any mix of them) trailing a "(YYYY)" group.
+_TRAILING_SCENE_TAGS_RE = re.compile(
+    r'(\(\d{4}\))(?:\s+(?:AMZN|NF|DSNP|ATVP|HBO|HULU|PCOK|PROPER|REPACK|RERIP|REAL|INTERNAL))+\s*$',
+    re.IGNORECASE,
+)
 SCENE_MARKER_RE = re.compile(
     r'\b(480p|720p|1080p|2160p|x264|x265|HEVC|H\.?264|H\.?265|AVC|REMUX|HDTV|'
     r'WEB[-.]?DL|WEB[-.]?RIP|BLU[-.]?RAY|BD[-.]?RIP|HD[-.]?RIP|DVD[-.]?RIP)\b',
@@ -132,10 +137,16 @@ def clean_title(raw_name: str) -> Tuple[Optional[str], Optional[str]]:
             name = f"{title_part} ({year})"
             scene_like = True
 
-    # Step 5: Strip quality tags (scene-only tags only on scene-like names)
+    # Step 5: Strip quality tags (scene-only tags only on scene-like names).
+    # A scene-only tag that TRAILS a "(YYYY)" group is a release tag too —
+    # "Show (2023) HBO", "Movie (2020) PROPER" — never part of the title, and
+    # leaving it there put the year out of reach of step 6 and the title out of
+    # reach of the TMDB matcher.
     patterns = QUALITY_PATTERNS + (SCENE_ONLY_PATTERNS if scene_like else [])
     for pattern in patterns:
         name = re.sub(pattern, '', name, flags=re.IGNORECASE)
+    if not scene_like:
+        name = _TRAILING_SCENE_TAGS_RE.sub(r'\1', name)
 
     # Step 6: Extract year
     year = None

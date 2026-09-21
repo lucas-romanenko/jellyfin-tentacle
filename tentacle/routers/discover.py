@@ -1057,11 +1057,19 @@ def manage_episodes(
         ep = ep_lookup.get((sel["season"], sel["episode"]))
         if ep and ep["id"] not in currently_monitored and not ep.get("hasFile"):
             need_search.append(ep["id"])
+    search_ok = True
     if need_search:
-        sonarr.search_episodes(need_search)
+        search_ok = sonarr.search_episodes(need_search)
+        if not search_ok:
+            logger.warning(f"Managed episodes for tmdb:{body.tmdb_id}: Sonarr did not accept the search "
+                           f"for {len(need_search)} episode(s) — monitoring is set, it will search on its own schedule")
 
-    logger.info(f"Managed episodes for tmdb:{body.tmdb_id} — monitoring {len(selected_ids)}, searching {len(need_search)}")
-    return {"success": True, "monitored": len(selected_ids), "searching": len(need_search)}
+    logger.info(f"Managed episodes for tmdb:{body.tmdb_id} — monitoring {len(selected_ids)}, searching {len(need_search) if search_ok else 0}")
+    result = {"success": True, "monitored": len(selected_ids),
+              "searching": len(need_search) if search_ok else 0}
+    if need_search and not search_ok:
+        result["search_failed"] = True
+    return result
 
 
 # ---------------------------------------------------------------------------

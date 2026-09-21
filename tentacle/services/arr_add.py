@@ -206,11 +206,13 @@ def add_movie_to_radarr(radarr_url: str, radarr_key: str, tmdb_id: int,
         logger.error(f"Failed to add tmdb:{tmdb_id} to Radarr: {e}")
         return FAILED, "Could not reach Radarr. Check it is running and the URL in Settings → Integrations."
 
-    if isinstance(getattr(r, "history", None), list) and r.history:
+    if _redirect_dropped_the_post(r):
         # requests re-sends a POST answered with 301/302/303 as a GET of the
         # Location. Radarr's API never redirects, so a redirect means a proxy
         # (http -> https, a canonical host, an SSO login) answered instead, and
         # whatever came back — even 200 JSON, the movie LIST — is not an add.
+        # (A 307/308 keeps the method and body, so the add did land there; the
+        # JSON check below judges that answer as usual.)
         hop = r.history[0]
         where = hop.headers.get("Location", "?")
         logger.error(f"Radarr add tmdb:{tmdb_id} was redirected ({hop.status_code} -> {where}) — nothing was added")
@@ -277,6 +279,21 @@ def _poll_until_present(check, label: str, total_seconds: int = VERIFY_TOTAL_SEC
         except Exception as e:
             logger.debug(f"Verification probe for {label} failed: {e}")
     return False
+
+
+def _redirect_dropped_the_post(r) -> bool:
+    """True if a redirect turned the POST into a GET somewhere along the way.
+
+    301/302/303 make `requests` re-send as GET; 307/308 re-send the POST with
+    its body, so the request still reached the API (e.g. Caddy's automatic
+    HTTPS redirect is a 308).
+    """
+    history = getattr(r, "history", None)
+    if not isinstance(history, list) or not history:
+        return False
+    if getattr(getattr(r, "request", None), "method", "POST") != "POST":
+        return True
+    return any(getattr(h, "status_code", 0) in (301, 302, 303) for h in history)
 
 
 def _radarr_has_movie(radarr_url: str, radarr_key: str, tmdb_id: int,

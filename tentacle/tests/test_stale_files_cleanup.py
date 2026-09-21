@@ -89,5 +89,21 @@ class TestStaleFilesCleanup(unittest.TestCase):
         self.assertTrue(strm.exists(), "stale-file cleanup ran on an install with synced content")
 
 
+
+
+class TestStaleFilesBannerCount(TestStaleFilesCleanup):
+    def test_the_banner_counts_what_start_fresh_would_delete(self):
+        """The banner said `nfo_count: 10` when the action deleted 4 (#107):
+        it counted Sonarr's episode NFOs and tvshow.nfo of downloaded shows,
+        which the cleanup leaves alone."""
+        (self.old / "Season 01" / "Old Show S01E01.nfo").write_text("<episodedetails/>")
+        before = settings.check_stale_files(db=self.db)
+        self.assertTrue(before["show"])
+        result = settings.delete_stale_files(body=settings.StaleFilesDelete(confirm=True), db=self.db)
+        self.assertEqual(before["strm_count"], result["deleted_strm"])
+        self.assertEqual(before["nfo_count"], result["deleted_nfo"])
+        self.assertEqual(before["nfo_count"], 2)  # the episode's NFO + Old Show's tvshow.nfo
+
+
 if __name__ == "__main__":
     unittest.main()

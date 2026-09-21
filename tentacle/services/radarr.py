@@ -321,6 +321,13 @@ def scan_radarr_library(db: Session) -> dict:
                 name=f"{movie.title} ({movie.year})" if movie.year else movie.title,
                 detail="no longer in Radarr" if movie.tmdb_id not in listed_tmdb_ids
                 else "Radarr reports no file"))
+            # The request that asked for this title goes with it, as the orphan
+            # sweep already does — otherwise "My Downloads" keeps a stale entry
+            # and the requester keeps delete rights over the id (#107).
+            db.query(DownloadRequest).filter(
+                DownloadRequest.tmdb_id == movie.tmdb_id,
+                DownloadRequest.media_type == "movie",
+            ).delete()
             db.delete(movie)
             removed += 1
     if removed:

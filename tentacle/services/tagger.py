@@ -248,6 +248,48 @@ def _check_condition(
     return False
 
 
+def tentacle_owned_tags(db: Session) -> set:
+    """Every tag name Tentacle itself can put on a Jellyfin item.
+
+    "Refresh Tags" replaces an item's whole tag list with Tentacle's computed
+    set, which is the only way a stale Tentacle tag (an expired "Recently
+    Added", a deleted list) ever comes off — but it also wiped tags nobody here
+    wrote: a `youtube` keyword from a TMDB import, anything a user added by
+    hand in Jellyfin (#107). This set lets a caller replace only its own tags
+    and keep the rest.
+
+    Built from what the tagger can produce: source tags in both suffix forms,
+    the recency and download built-ins, every list subscription's tag and every
+    tag rule's output tag — including inactive ones, so a tag that stops being
+    produced is still recognised as ours and removed.
+    """
+    from models.database import ProviderCategory, TagRule
+
+    owned = {"Recently Added Movies", "Recently Added TV", "Recently Added",
+             "Downloaded Movies", "Downloaded TV"}
+    sources = set()
+    for model in (Movie, Series, ProviderCategory):
+        for (tag,) in db.query(model.source_tag).distinct():
+            if tag:
+                sources.add(tag)
+    for st in sources:
+        owned |= {f"{st} Movies", f"{st} TV", f"{st} Recently Added Movies",
+                  f"{st} Recently Added TV", f"{st} Recently Added"}
+    for (tag,) in db.query(ListSubscription.tag).distinct():
+        if tag:
+            owned.add(tag)
+    for (tag,) in db.query(TagRule.output_tag).distinct():
+        if tag:
+            owned.add(tag)
+    return owned
+
+
+def merge_owned_tags(existing, desired, owned) -> list:
+    """Replace Tentacle's own tags in `existing` with `desired`; keep the rest."""
+    kept = [t for t in (existing or []) if t not in owned and t not in (desired or [])]
+    return kept + list(desired or [])
+
+
 def refresh_recently_added_tags(db: Session):
     """
     Periodic job: update Recently Added tags and tag rules for all content.

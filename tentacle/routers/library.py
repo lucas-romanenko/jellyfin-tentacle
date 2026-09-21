@@ -271,7 +271,15 @@ def _get_list_items(list_id: int, search: Optional[str], sort: Optional[str],
 
 
 @router.get("/item/{media_type}/{tmdb_id}")
-def get_item_detail(media_type: str, tmdb_id: int, request: Request, db: Session = Depends(get_db)):
+def get_item_detail(
+    media_type: str,
+    tmdb_id: int,
+    db: Session = Depends(get_db),
+    user: TentacleUser = Depends(get_user_from_request),
+):
+    """Library item detail. Requires a session (#74): the response carries the
+    on-disk .strm path and the playlist tags for the title. The dashboard
+    sends its cookie and the plugin forwards the caller's token."""
     if media_type == "movie":
         item = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
         if not item:
@@ -326,19 +334,15 @@ def get_item_detail(media_type: str, tmdb_id: int, request: Request, db: Session
     # can_delete: True if downloaded content AND (admin OR user requested it)
     result["can_delete"] = False
     if item.source in ("radarr", "sonarr"):
-        try:
-            user = get_user_from_request(request, db)
-            if user.is_admin:
-                result["can_delete"] = True
-            else:
-                has_request = db.query(DownloadRequest).filter(
-                    DownloadRequest.tmdb_id == tmdb_id,
-                    DownloadRequest.media_type == media_type,
-                    DownloadRequest.user_id == user.id,
-                ).first()
-                result["can_delete"] = bool(has_request)
-        except HTTPException:
-            pass
+        if user.is_admin:
+            result["can_delete"] = True
+        else:
+            has_request = db.query(DownloadRequest).filter(
+                DownloadRequest.tmdb_id == tmdb_id,
+                DownloadRequest.media_type == media_type,
+                DownloadRequest.user_id == user.id,
+            ).first()
+            result["can_delete"] = bool(has_request)
 
     return result
 
@@ -518,7 +522,15 @@ def delete_download(
             # item in Jellyfin (another user's film, a collection, a library
             # folder) by passing its id. Fetched through the user-scoped path,
             # so it must also be an item this user can see.
-            supplied = jf.get_item_by_id(jf_item_id) or {}
+            try:
+                supplied = jf.get_item_by_id(jf_item_id) or {}
+            except Exception as e:
+                # Already gone from Jellyfin (a retried fire-and-forget delete)
+                # or not visible to this user: either way it is not the title
+                # we were asked about. Fall back to the lookup below.
+                logger.info(f"Delete-download tmdb:{tmdb_id}: supplied Jellyfin id {jf_item_id} "
+                            f"could not be read ({e}) — ignoring it")
+                supplied = {}
             if (supplied.get("Type") != jf_type
                     or (supplied.get("ProviderIds") or {}).get("Tmdb") != str(tmdb_id)):
                 logger.warning(

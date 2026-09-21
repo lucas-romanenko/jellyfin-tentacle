@@ -130,5 +130,75 @@ class TestSessionLifecycle(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
 
 
+
+class TestTokenPathIsRecheckedToo(TestSessionLifecycle):
+    """The plugin and the Android TV app authenticate with ?api_key= (the
+    user's Jellyfin access token), never with the cookie. A demotion or a
+    disabled account has to take effect on that path as well."""
+
+    def _me_by_token(self, jf):
+        self.client.cookies.clear()
+        with mock.patch.object(auth_router, "_resolve_token_user", return_value=JF_ID), \
+                mock.patch.object(auth_router.requests, "get", return_value=jf):
+            # /api/auth/me is cookie-only; use a route that takes get_user_from_request.
+            from fastapi import Depends, FastAPI
+            app = FastAPI()
+
+            @app.get("/probe")
+            def probe(user=Depends(auth_router.get_user_from_request)):
+                return {"is_admin": user.is_admin}
+
+            from models.database import get_db
+            app.dependency_overrides[get_db] = self._db
+            return TestClient(app).get("/probe?api_key=tok")
+
+    def test_admin_removed_in_jellyfin_is_not_admin_on_the_token_path(self):
+        r = self._me_by_token(_jf_user(is_admin=False))
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(r.json()["is_admin"])
+
+    def test_a_user_disabled_in_jellyfin_loses_access_on_the_token_path(self):
+        self.assertEqual(self._me_by_token(_jf_user(disabled=True)).status_code, 401)
+
+    def test_a_user_deleted_in_jellyfin_loses_access_on_the_token_path(self):
+        self.assertEqual(self._me_by_token(_jf_user(status=404)).status_code, 401)
+
+
+
+class TestPluginUsersAreProvisioned(TestSessionLifecycle):
+    """A Jellyfin user who never opened the dashboard has a verified token but no
+    TentacleUser row; every proxied route refused them (No results in search)."""
+
+    def _probe(self, uid, profile):
+        from fastapi import Depends, FastAPI
+        from models.database import get_db
+        app = FastAPI()
+
+        @app.get("/probe")
+        def probe(user=Depends(auth_router.get_user_from_request)):
+            return {"name": user.display_name, "is_admin": user.is_admin}
+
+        app.dependency_overrides[get_db] = self._db
+        auth_router._token_profiles[uid] = profile
+        with mock.patch.object(auth_router, "_resolve_token_user", return_value=uid), \
+                mock.patch.object(auth_router, "_build_playlists_for_new_user", lambda uid: None), \
+                mock.patch.object(auth_router.requests, "get", return_value=_jf_user(is_admin=False)):
+            return TestClient(app).get("/probe?api_key=tok")
+
+    def test_a_verified_token_owner_gets_a_row_on_first_call(self):
+        r = self._probe("c" * 32, {"name": "Teen", "is_admin": False})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json(), {"name": "Teen", "is_admin": False})
+        db = self.Session()
+        self.assertEqual(db.query(TentacleUser).filter_by(jellyfin_user_id="c" * 32).count(), 1)
+        db.close()
+
+    def test_no_row_is_created_before_the_first_dashboard_login(self):
+        db = self.Session()
+        db.query(TentacleUser).delete(); db.commit(); db.close()
+        r = self._probe("c" * 32, {"name": "Teen", "is_admin": True})
+        self.assertEqual(r.status_code, 401)
+
+
 if __name__ == "__main__":
     unittest.main()

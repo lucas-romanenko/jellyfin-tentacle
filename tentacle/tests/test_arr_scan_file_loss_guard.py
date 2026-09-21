@@ -144,5 +144,37 @@ class SonarrScan(_Base):
         self.assertEqual(3, self._rows())
 
 
+
+class DownloadRequestsFollowTheirTitle(_Base):
+    """A title that leaves Radarr/Sonarr takes its download request with it, as
+    the orphan sweep already does (#107)."""
+
+    def _user(self):
+        u = self.mdb.TentacleUser(jellyfin_user_id="u1", display_name="u")
+        self.db.add(u); self.db.commit()
+        return u.id
+
+    def test_radarr_removal_also_removes_the_download_request(self):
+        uid = self._user()
+        for i in range(3):
+            self.db.add(self.mdb.Movie(tmdb_id=1000 + i, title=f"Film {i}", year="2000", source="radarr"))
+            self.db.add(self.mdb.DownloadRequest(tmdb_id=1000 + i, media_type="movie", user_id=uid))
+        self.db.commit()
+        RadarrScan._scan(self, [_radarr_movie(i) for i in (0, 1)])  # Film 2 left Radarr
+        self.assertEqual({1000, 1001}, {m.tmdb_id for m in self.db.query(self.mdb.Movie).all()})
+        self.assertEqual({1000, 1001}, {r.tmdb_id for r in self.db.query(self.mdb.DownloadRequest).all()})
+
+    def test_sonarr_removal_also_removes_the_download_request(self):
+        uid = self._user()
+        for i in range(3):
+            self.db.add(self.mdb.Series(tmdb_id=3000 + i, title=f"Show {i}", source="sonarr",
+                                        sonarr_path=f"/tv/Show {i}"))
+            self.db.add(self.mdb.DownloadRequest(tmdb_id=3000 + i, media_type="series", user_id=uid))
+        self.db.commit()
+        SonarrScan._scan(self, [_sonarr_show(i) for i in (0, 1)])  # Show 2 left Sonarr
+        self.assertEqual({3000, 3001}, {s.tmdb_id for s in self.db.query(self.mdb.Series).all()})
+        self.assertEqual({3000, 3001}, {r.tmdb_id for r in self.db.query(self.mdb.DownloadRequest).all()})
+
+
 if __name__ == "__main__":
     unittest.main()

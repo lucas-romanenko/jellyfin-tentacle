@@ -231,7 +231,10 @@ def sync_one(body: dict, db: Session = Depends(get_db), user: TentacleUser = Dep
     output_tag = body.get("output_tag", name)
     if not name or not conditions:
         return {"error": "name and conditions required"}
-    return sync_single_custom_playlist(db, user.id, name, conditions, apply_to, output_tag)
+    result = sync_single_custom_playlist(db, user.id, name, conditions, apply_to, output_tag)
+    if result.get("busy"):
+        raise HTTPException(503, result["error"])
+    return result
 
 
 # ── Full resync: run in the background so the request returns immediately ──
@@ -1204,6 +1207,8 @@ def toggle_auto_playlist(req: AutoPlaylistToggleRequest, db: Session = Depends(g
     jellyfin_error = None
     try:
         result = toggle_auto_playlist_fast(db, user.id, req.key, req.enabled)
+        if result.get("busy"):
+            raise HTTPException(503, result["error"])
         if result.get("error"):
             jellyfin_error = result["error"]
     except Exception as e:

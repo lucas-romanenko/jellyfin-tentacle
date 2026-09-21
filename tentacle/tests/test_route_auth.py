@@ -61,6 +61,17 @@ class LibraryRouteAuthTests(unittest.TestCase):
         r = self.client.get("/api/library/items")
         self.assertEqual(r.status_code, 401, f"library contents served anonymously: {r.text[:200]}")
 
+    def test_item_detail_requires_a_session(self):
+        # The detail carries the on-disk .strm path and every playlist tag.
+        r = self.client.get("/api/library/item/movie/603")
+        self.assertEqual(r.status_code, 401, r.text[:200])
+
+    def test_item_detail_still_works_for_a_logged_in_user(self):
+        r = self.client.get("/api/library/item/movie/603", cookies=self.cookie)
+        self.assertEqual(r.status_code, 200, r.text[:200])
+        self.assertEqual(r.json()["title"], "A Movie")
+        self.assertIn("can_delete", r.json())
+
     def test_items_still_works_for_a_logged_in_user(self):
         r = self.client.get("/api/library/items", cookies=self.cookie)
         self.assertEqual(r.status_code, 200)

@@ -18,7 +18,7 @@ from pydantic import BaseModel
 
 from models.database import get_db, Provider, SyncRun, Movie, Series, Duplicate, ActivityLog, get_setting, set_setting, log_activity
 from services.sync import sync_provider
-from services.tagger import refresh_recently_added_tags
+from services.tagger import refresh_recently_added_tags, tentacle_owned_tags, merge_owned_tags
 from routers.auth import require_admin
 import time
 import requests as _requests
@@ -852,6 +852,9 @@ def refresh_tags(db: Session = Depends(get_db)):
     if jellyfin_url and jellyfin_key:
         from services.jellyfin import JellyfinService
         jf = JellyfinService(jellyfin_url, jellyfin_key, jellyfin_uid)
+        # Only Tentacle's own tags are replaced; a tag from a TMDB keyword
+        # import or one a user added by hand in Jellyfin survives (#107).
+        owned = tentacle_owned_tags(db)
 
         # Push tags for ALL movies (VOD + Radarr)
         all_movies = db.query(Movie).all()
@@ -868,7 +871,10 @@ def refresh_tags(db: Session = Depends(get_db)):
                     norm_title = JellyfinService._normalize_title(movie.title)
                     jf_item = jf_movie_title_lookup.get((norm_title, str(movie.year or "")))
                 if jf_item:
-                    if jf.set_item_tags(jf_item["Id"], movie.tags):
+                    merged = merge_owned_tags(jf_item.get("Tags"), movie.tags, owned)
+                    if sorted(merged) == sorted(jf_item.get("Tags") or []):
+                        jf_tagged += 1  # already right — no write needed
+                    elif jf.set_item_tags(jf_item["Id"], merged):
                         jf_tagged += 1
                     else:
                         jf_errors += 1
@@ -893,7 +899,10 @@ def refresh_tags(db: Session = Depends(get_db)):
                     norm_title = JellyfinService._normalize_title(series.title)
                     jf_item = jf_series_title_lookup.get((norm_title, str(series.year or "")))
                 if jf_item:
-                    if jf.set_item_tags(jf_item["Id"], series.tags):
+                    merged = merge_owned_tags(jf_item.get("Tags"), series.tags, owned)
+                    if sorted(merged) == sorted(jf_item.get("Tags") or []):
+                        jf_tagged += 1  # already right — no write needed
+                    elif jf.set_item_tags(jf_item["Id"], merged):
                         jf_tagged += 1
                     else:
                         jf_errors += 1

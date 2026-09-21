@@ -254,9 +254,11 @@ class SonarrService:
             self.last_error = f"Unexpected error talking to Sonarr: {e}"
             return None
 
-        if isinstance(getattr(r, "history", None), list) and r.history:
-            # See arr_add.add_movie_to_radarr: a redirected POST is re-sent as a
-            # GET, so a 2xx here is not Sonarr adding anything.
+        from services.arr_add import _redirect_dropped_the_post
+        if _redirect_dropped_the_post(r):
+            # See arr_add.add_movie_to_radarr: a 301/302/303 makes requests
+            # re-send the POST as a GET, so a 2xx here is not Sonarr adding
+            # anything. A 307/308 keeps the POST, so that add did land.
             hop = r.history[0]
             where = hop.headers.get("Location", "?")
             logger.error(f"Sonarr add tmdb:{tmdb_id} was redirected ({hop.status_code} -> {where}) — nothing was added")
@@ -734,6 +736,10 @@ def scan_sonarr_library(db: Session) -> dict:
                 kind="sonarr-scan", media_type="series", reason="removed-from-sonarr", name=series.title,
                 detail="no longer in Sonarr" if series.tmdb_id not in listed_tmdb_ids
                 else "Sonarr reports no episode files"))
+            db.query(DownloadRequest).filter(
+                DownloadRequest.tmdb_id == series.tmdb_id,
+                DownloadRequest.media_type == "series",
+            ).delete()
             db.delete(series)
             removed += 1
     if removed:

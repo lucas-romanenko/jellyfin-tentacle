@@ -99,7 +99,8 @@ class JellyfinService:
         items, _complete = self._fetch_all_items_checked(media_type)
         return items
 
-    def _fetch_all_items_checked(self, media_type: str = "Movie", user_scoped: bool = False) -> tuple:
+    def _fetch_all_items_checked(self, media_type: str = "Movie", user_scoped: bool = False,
+                                 ids_only: bool = False) -> tuple:
         """Same as _fetch_all_items, plus whether every page actually arrived.
 
         A page that times out returns None from _get, and silently breaking out
@@ -132,6 +133,11 @@ class JellyfinService:
                     "EnableImages": "false",
                     "EnableUserData": "false",
                 })
+            if ids_only:
+                # The lightest possible rows, for callers that only need
+                # provider ids (the orphan sweep reads the whole library).
+                params.update({"Fields": "ProviderIds", "EnableImages": "false",
+                               "EnableUserData": "false", "EnableTotalRecordCount": "true"})
             data = self._get("/Items", params=params)
             if not data:
                 # Timeout / transport failure mid-pagination.
@@ -922,12 +928,24 @@ class JellyfinService:
             return False
 
 
+# The orphan sweep may never remove more than this share of the download rows
+# in one night (floor SWEEP_MIN_ALLOWANCE). Genuine orphans trickle in by the
+# dozen; "every downloaded title vanished overnight" is a failed Jellyfin read
+# of some kind, whatever the completeness flag says (#27).
+SWEEP_MAX_FRACTION = 0.05
+SWEEP_MIN_ALLOWANCE = 50
+
+
 def sweep_orphaned_downloads(db) -> int:
     """Remove Tentacle DB records for downloaded content no longer in Jellyfin.
 
     Fetches all Jellyfin movie/series TMDB IDs, then deletes any Tentacle DB
     records with source='radarr' or 'sonarr' whose tmdb_id is missing from
     Jellyfin. Also cleans up associated DownloadRequest records.
+
+    Only a complete listing is diffed against, an empty listing next to
+    existing rows is not treated as deletions, and a removal larger than the
+    blast-radius cap is refused and logged (#27).
 
     Should run BEFORE the per-user playlist rebuild so rebuilt playlists
     won't reference dead items.
@@ -946,10 +964,13 @@ def sweep_orphaned_downloads(db) -> int:
     # diffed against: a page that timed out (common while the library scan the
     # nightly job has just triggered is running) returns a partial or empty
     # list, and every downloaded title missing from it would be deleted.
-    movie_items, movies_complete = jf._fetch_all_items_checked("Movie")
-    series_items, series_complete = jf._fetch_all_items_checked("Series")
+    movie_items, movies_complete = jf._fetch_all_items_checked("Movie", ids_only=True)
+    series_items, series_complete = jf._fetch_all_items_checked("Series", ids_only=True)
     if not (movies_complete and series_complete):
-        logger.warning("[Orphan sweep] Jellyfin item listing was incomplete — skipping, nothing removed")
+        logger.warning(
+            "[Orphan sweep] Jellyfin item listing was incomplete "
+            f"(movies={'ok' if movies_complete else 'partial'}, series={'ok' if series_complete else 'partial'}) "
+            "— skipping, nothing removed. It will run again on the next sync.")
         return 0
 
     jf_movie_ids = set()
@@ -973,33 +994,57 @@ def sweep_orphaned_downloads(db) -> int:
     orphans_removed = 0
     swept_titles = []
 
-    # Check radarr movies
     # A complete-but-empty answer next to existing download rows means the
     # library is unavailable (e.g. mid-rebuild), not that everything was deleted.
-    radarr_movies = db.query(Movie).filter(Movie.source == "radarr").all() if jf_movie_ids else []
-    for movie in radarr_movies:
-        if movie.tmdb_id not in jf_movie_ids:
-            logger.info(f"[Orphan sweep] Removing orphaned radarr movie: {movie.title} (tmdb:{movie.tmdb_id})")
-            swept_titles.append(movie.title)
-            db.query(DownloadRequest).filter(
-                DownloadRequest.tmdb_id == movie.tmdb_id,
-                DownloadRequest.media_type == "movie",
-            ).delete()
-            db.delete(movie)
-            orphans_removed += 1
+    radarr_movies = db.query(Movie).filter(Movie.source == "radarr").all()
+    sonarr_series = db.query(Series).filter(Series.source == "sonarr").all()
+    total_rows = len(radarr_movies) + len(sonarr_series)
+    if radarr_movies and not jf_movie_ids:
+        logger.warning(f"[Orphan sweep] Jellyfin listed no movies at all while {len(radarr_movies)} "
+                       "downloaded movies are recorded — not treating that as deletions")
+        radarr_movies = []
+    if sonarr_series and not jf_series_ids:
+        logger.warning(f"[Orphan sweep] Jellyfin listed no series at all while {len(sonarr_series)} "
+                       "downloaded series are recorded — not treating that as deletions")
+        sonarr_series = []
 
-    # Check sonarr series
-    sonarr_series = db.query(Series).filter(Series.source == "sonarr").all() if jf_series_ids else []
-    for series in sonarr_series:
-        if series.tmdb_id not in jf_series_ids:
-            logger.info(f"[Orphan sweep] Removing orphaned sonarr series: {series.title} (tmdb:{series.tmdb_id})")
-            swept_titles.append(series.title)
-            db.query(DownloadRequest).filter(
-                DownloadRequest.tmdb_id == series.tmdb_id,
-                DownloadRequest.media_type == "series",
-            ).delete()
-            db.delete(series)
-            orphans_removed += 1
+    orphan_movies = [m for m in radarr_movies if m.tmdb_id not in jf_movie_ids]
+    orphan_series = [s for s in sonarr_series if s.tmdb_id not in jf_series_ids]
+
+    allowance = max(SWEEP_MIN_ALLOWANCE, int(total_rows * SWEEP_MAX_FRACTION))
+    candidates = len(orphan_movies) + len(orphan_series)
+    if candidates > allowance:
+        logger.error(
+            f"[Orphan sweep] REFUSING to remove {candidates} download record(s): that exceeds the "
+            f"safety limit of {allowance} ({int(SWEEP_MAX_FRACTION * 100)}% of {total_rows} rows). "
+            "This looks like Jellyfin failing to list its library rather than that many titles "
+            "being deleted — nothing was removed. If the removal is genuine, delete the titles "
+            "from the Library page.")
+        log_deletion(db, kind="orphan-sweep-blocked", name=f"{candidates} download record(s)",
+                     reason="safety-limit",
+                     detail=f"{candidates} downloaded titles were missing from Jellyfin's listing but "
+                            f"exceed the {allowance}-row limit; nothing deleted")
+        return 0
+
+    for movie in orphan_movies:
+        logger.info(f"[Orphan sweep] Removing orphaned radarr movie: {movie.title} (tmdb:{movie.tmdb_id})")
+        swept_titles.append(movie.title)
+        db.query(DownloadRequest).filter(
+            DownloadRequest.tmdb_id == movie.tmdb_id,
+            DownloadRequest.media_type == "movie",
+        ).delete()
+        db.delete(movie)
+        orphans_removed += 1
+
+    for series in orphan_series:
+        logger.info(f"[Orphan sweep] Removing orphaned sonarr series: {series.title} (tmdb:{series.tmdb_id})")
+        swept_titles.append(series.title)
+        db.query(DownloadRequest).filter(
+            DownloadRequest.tmdb_id == series.tmdb_id,
+            DownloadRequest.media_type == "series",
+        ).delete()
+        db.delete(series)
+        orphans_removed += 1
 
     if orphans_removed:
         db.commit()

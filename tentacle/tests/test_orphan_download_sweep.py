@@ -18,7 +18,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 import models.database as mdb
-from models.database import Movie, Series, DownloadRequest, Setting, TentacleUser
+from models.database import Movie, Series, DownloadRequest, Setting, TentacleUser, DeletionLog
 import services.jellyfin as jellyfin
 
 def setUpModule():
@@ -40,8 +40,10 @@ class FakeJellyfinGet:
         self.page_size = page_size
         self.fail_pages = set(fail_pages)
         self.empty_pages = set(empty_pages)
+        self.params_seen = []
 
     def __call__(self, service, path, params=None):
+        self.params_seen.append(dict(params or {}))
         kind = params["IncludeItemTypes"]
         start = int(params["StartIndex"])
         if (kind, start) in self.fail_pages:
@@ -129,6 +131,54 @@ class TestOrphanDownloadSweep(unittest.TestCase):
         removed = self._run(FakeJellyfinGet(jf, self.jf_series))
         self.assertEqual(removed, 1)
         self.assertIsNone(self.db.query(Movie).filter(Movie.tmdb_id == 7).first())
+
+
+
+class TestOrphanSweepBlastRadius(TestOrphanDownloadSweep):
+    """The completeness flag fixes the known trigger; the cap makes sure no
+    future bug in the fetch path can ever wipe the download library in one
+    night either. Genuine orphans still trickle through."""
+
+    def test_a_nights_worth_of_genuine_orphans_is_swept(self):
+        gone = set(range(100, 114))
+        jf = [t for t in self.jf_movies if t not in gone]
+        removed = self._run(FakeJellyfinGet(jf, self.jf_series))
+        self.assertEqual(removed, 14)
+        self.assertEqual(self.db.query(Movie).count(), 286)
+
+    def test_a_removal_over_the_cap_is_refused_and_logged(self):
+        gone = set(range(1, 101))
+        jf = [t for t in self.jf_movies if t not in gone]
+        removed = self._run(FakeJellyfinGet(jf, self.jf_series))
+        self.assertEqual(removed, 0)
+        self.assertEqual(self.db.query(Movie).count(), 300)
+        self.assertEqual(self.db.query(DownloadRequest).count(), 300)
+        blocked = self.db.query(DeletionLog).filter(DeletionLog.kind == "orphan-sweep-blocked").all()
+        self.assertEqual(len(blocked), 1)
+        self.assertIn("100", blocked[0].detail)
+
+    def test_series_page_timeout_deletes_nothing_either(self):
+        removed = self._run(FakeJellyfinGet(self.jf_movies, self.jf_series,
+                                            fail_pages={("Series", 0)}))
+        self.assertEqual(removed, 0)
+        self.assertEqual(self.db.query(Series).count(), 20)
+
+    def test_the_sweep_asks_for_the_lightest_possible_listing(self):
+        fake = FakeJellyfinGet(self.jf_movies, self.jf_series)
+        self._run(fake)
+        for p in fake.params_seen:
+            self.assertEqual(p["Fields"], "ProviderIds")
+            self.assertEqual(p["EnableImages"], "false")
+
+
+class TestNightlyOrder(unittest.TestCase):
+    def test_sweep_runs_before_the_guide_refresh(self):
+        # The sweep reads the whole library; the EPG step ends by making
+        # Jellyfin rewrite its guide, which is when that read timed out.
+        import inspect
+        import main
+        src = inspect.getsource(main.run_scheduled_sync)
+        self.assertLess(src.index("sweep_orphaned_downloads(db)"), src.index("Syncing Live TV EPG data"))
 
 
 if __name__ == "__main__":

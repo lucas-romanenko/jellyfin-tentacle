@@ -30,7 +30,6 @@ ALLOW = {
     ("POST", "/api/radarr/webhook"): "authenticates in body (_check_webhook_auth)",
     ("POST", "/api/sonarr/webhook"): "authenticates in body (_check_webhook_auth)",
     ("DELETE", "/api/library/delete-download/{tmdb_id}"): "authenticates in body (get_user_from_request)",
-    ("GET", "/api/library/item/{media_type}/{tmdb_id}"): "optional auth in body (can_delete)",
     ("DELETE", "/api/library/item/{media_type}/{tmdb_id}"): "plugin ItemRemoved hook, unauthenticated by design (#49)",
     ("GET", "/api/live/stream/{channel_id}"): "HDHomeRun tuner, Jellyfin cannot send credentials",
     ("GET", "/api/live/playlist.m3u"): "M3U tuner",

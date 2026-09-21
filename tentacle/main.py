@@ -172,6 +172,19 @@ def run_scheduled_sync():
         except Exception as e:
             logger.error(f"Provider content discovery failed: {e}")
 
+        # Sweep orphaned downloads (radarr/sonarr records no longer in Jellyfin).
+        # Deliberately BEFORE the EPG sync: that ends by starting Jellyfin's guide
+        # refresh, and reading the whole library while Jellyfin rewrites its
+        # guide is exactly when the listing timed out (#27).
+        logger.info("Sweeping orphaned downloads")
+        try:
+            from services.jellyfin import sweep_orphaned_downloads
+            orphans = sweep_orphaned_downloads(db)
+            if orphans:
+                log_activity(db, "orphan_sweep", f"Removed {orphans} orphaned download(s) from DB")
+        except Exception as e:
+            logger.error(f"Orphan sweep failed: {e}")
+
         # EPG sync for Live TV providers + Jellyfin guide refresh
         logger.info("Syncing Live TV EPG data")
         try:
@@ -222,17 +235,6 @@ def run_scheduled_sync():
                     logger.error(f"Jellyfin guide refresh failed: {e}")
         except Exception as e:
             logger.error(f"EPG sync failed: {e}")
-
-        # Sweep orphaned downloads (radarr/sonarr records no longer in Jellyfin)
-        logger.info("Sweeping orphaned downloads")
-        try:
-            from services.jellyfin import sweep_orphaned_downloads
-            orphans = sweep_orphaned_downloads(db)
-            if orphans:
-                from models.database import log_activity
-                log_activity(db, "orphan_sweep", f"Removed {orphans} orphaned download(s) from DB")
-        except Exception as e:
-            logger.error(f"Orphan sweep failed: {e}")
 
         # Sweep VOD DB records whose .strm files no longer exist on disk
         logger.info("Sweeping orphaned VOD records")

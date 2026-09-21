@@ -41,5 +41,20 @@ class TestCleanTitle(unittest.TestCase):
         self.assertEqual(clean_title(""), (None, None))
 
 
+
+class TestTrailingSceneTagsAfterYear(unittest.TestCase):
+    def test_release_tags_after_the_year_are_dropped(self):
+        for raw, title, year in (("Show (2023) HBO", "Show", "2023"),
+                                 ("Movie (2020) PROPER", "Movie", "2020"),
+                                 ("Movie (2020) NF REPACK", "Movie", "2020")):
+            with self.subTest(raw=raw):
+                self.assertEqual(clean_title(raw), (title, year))
+
+    def test_a_title_word_that_looks_like_a_tag_stays(self):
+        # Only tags that trail the year are release tags.
+        self.assertEqual(clean_title("Real Steel (2011)"), ("Real Steel", "2011"))
+        self.assertEqual(clean_title("Max (2015)"), ("Max", "2015"))
+
+
 if __name__ == "__main__":
     unittest.main()

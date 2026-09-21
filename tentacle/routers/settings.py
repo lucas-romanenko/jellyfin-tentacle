@@ -400,7 +400,7 @@ def check_stale_files(db: Session = Depends(get_db)):
     if has_content or has_series or has_synced:
         return {"show": False}
 
-    # Scan VOD folders for existing .strm / .nfo files
+    # Scan VOD folders for existing .strm files and the NFOs that go with them.
     movies_path = Path("/media/vod/movies")
     shows_path = Path("/media/vod/shows")
     strm_count = 0
@@ -408,12 +408,41 @@ def check_stale_files(db: Session = Depends(get_db)):
     for vod_dir in [movies_path, shows_path]:
         if vod_dir.exists():
             strm_count += len(list(vod_dir.rglob("*.strm")))
-            nfo_count += len(list(vod_dir.rglob("*.nfo")))
+            nfo_count += _stale_nfo_count(vod_dir)
 
     if strm_count == 0:
         return {"show": False}
 
     return {"show": True, "strm_count": strm_count, "nfo_count": nfo_count}
+
+
+def _stale_nfo_count(vod_dir) -> int:
+    """How many NFOs "Delete All & Start Fresh" would actually remove under vod_dir.
+
+    The banner used to count every .nfo in the tree, but since #28 the cleanup
+    removes only a .strm's own NFO, plus a show's tvshow.nfo / season.nfo when
+    no real media is left in it — so in a merged Radarr/Sonarr library the
+    banner promised far more than the action deleted (#107).
+    """
+    from services.media_files import _has_media_files
+    count = 0
+    seen = set()
+    for strm in vod_dir.rglob("*.strm"):
+        nfo = strm.with_suffix(".nfo")
+        if nfo.exists() and nfo not in seen:
+            seen.add(nfo)
+            count += 1
+    # Show-level metadata goes only with a show that holds .strm episodes and no media.
+    for show in vod_dir.iterdir() if vod_dir.is_dir() else []:
+        if not show.is_dir() or not any(show.rglob("*.strm")):
+            continue
+        if _has_media_files(show):
+            continue
+        for shared in (show / "tvshow.nfo", show / "season.nfo"):
+            if shared.exists() and shared not in seen:
+                seen.add(shared)
+                count += 1
+    return count
 
 
 class StaleFilesDelete(BaseModel):

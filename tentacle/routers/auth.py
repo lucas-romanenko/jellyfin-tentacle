@@ -28,6 +28,10 @@ COOKIE_MAX_AGE = 30 * 24 * 60 * 60  # 30 days
 # trusts it for a short window, avoiding a /Users/Me round-trip on every request.
 _token_cache: dict[str, tuple[str, float]] = {}
 _TOKEN_CACHE_TTL = 300  # 5 minutes
+# What /Users/Me said about each verified token owner (name, admin flag), so a
+# Jellyfin user who has never opened the dashboard can be given a Tentacle row
+# on their first plugin call instead of being refused.
+_token_profiles: dict[str, dict] = {}
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -210,7 +214,8 @@ def _resolve_token_user(db: Session, api_key: str) -> Optional[str]:
         )
         if r.status_code != 200:
             return None
-        token_uid = str(r.json().get("Id", "")).replace("-", "")
+        profile = r.json() or {}
+        token_uid = str(profile.get("Id", "")).replace("-", "")
         if token_uid:
             # Opportunistically prune expired entries to bound memory growth.
             if len(_token_cache) > 512:
@@ -218,6 +223,11 @@ def _resolve_token_user(db: Session, api_key: str) -> Optional[str]:
                     if exp <= now:
                         _token_cache.pop(k, None)
             _token_cache[api_key] = (token_uid, now + _TOKEN_CACHE_TTL)
+            _token_profiles[token_uid] = {
+                "name": profile.get("Name") or token_uid,
+                "is_admin": bool((profile.get("Policy") or {}).get("IsAdministrator", False)),
+                "image_tag": profile.get("PrimaryImageTag"),
+            }
             return token_uid
     except Exception as e:
         logger.warning(f"Jellyfin token validation failed: {e}")
@@ -248,9 +258,47 @@ def get_user_from_request(request: Request, db: Session = Depends(get_db)) -> Te
         if jf_user_id and jf_user_id.replace("-", "") != token_uid:
             raise HTTPException(401, "Not authenticated")
         user = db.query(TentacleUser).filter(TentacleUser.jellyfin_user_id == token_uid).first()
+        if user is None:
+            user = _provision_plugin_user(db, token_uid)
         if user:
+            # Same re-check as the cookie path (#80): the token proves who the
+            # caller is, but admin rights removed in Jellyfin — or an account
+            # disabled there — must stop working here too, not only in a browser.
+            if not _refresh_from_jellyfin(db, user):
+                raise HTTPException(401, "Not authenticated")
             return user
     raise HTTPException(401, "Not authenticated")
+
+
+def _provision_plugin_user(db: Session, token_uid: str) -> Optional[TentacleUser]:
+    """Create the Tentacle row for a Jellyfin user the token has just proved.
+
+    Every route the plugin proxies needs a session, and a session needs a
+    TentacleUser row — which only the dashboard login used to create. A
+    household member who only ever uses Jellyfin therefore got "No results" in
+    the Jellyfin search and an empty Discover tab. Their identity is exactly as
+    verified as a login (Jellyfin answered /Users/Me for their token), so give
+    them the row the login would have, with the admin flag Jellyfin reports.
+
+    Never on an install with no users yet: the first Tentacle login becomes the
+    owner and inherits the pre-multi-user data, and that must stay a deliberate
+    dashboard login, not whichever TV happened to poll first.
+    """
+    if db.query(TentacleUser).count() == 0:
+        return None
+    profile = _token_profiles.get(token_uid) or {}
+    user = TentacleUser(
+        jellyfin_user_id=token_uid,
+        display_name=profile.get("name") or token_uid,
+        is_admin=bool(profile.get("is_admin", False)),
+        profile_image_tag=profile.get("image_tag"),
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    logger.info(f"Created Tentacle user '{user.display_name}' from a verified Jellyfin token")
+    _build_playlists_for_new_user(user.id)
+    return user
 
 
 def require_admin(request: Request, db: Session = Depends(get_db)) -> Optional[TentacleUser]:
