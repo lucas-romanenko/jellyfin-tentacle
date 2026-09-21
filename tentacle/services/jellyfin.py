@@ -618,6 +618,28 @@ class JellyfinService:
             return data.get("Items", [])
         return []
 
+    def get_playlists_checked(self, user_id: str = None):
+        """get_playlists(), but None — not [] — when the listing did not arrive.
+
+        _get() swallows timeouts, so get_playlists() answers [] for a user whose
+        listing failed; a caller deciding what is safe to DELETE must be able to
+        tell that apart from "this user sees no playlists".
+        """
+        uid = user_id or self.user_id
+        try:
+            data = self._get("/Items", params={
+                "IncludeItemTypes": "Playlist",
+                "Recursive": "true",
+                "UserId": uid,
+                "Fields": "ChildCount",
+            })
+        except Exception as e:
+            logger.warning(f"[Jellyfin] Playlist listing for user {uid} failed: {e}")
+            return None
+        if not isinstance(data, dict) or "Items" not in data:
+            return None
+        return data["Items"]
+
     def get_user_ids(self):
         """Ids of EVERY Jellyfin user, or None when Jellyfin would not say.
 

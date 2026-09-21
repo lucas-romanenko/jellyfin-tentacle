@@ -71,6 +71,9 @@ class FakeJellyfinService:
             if uid in pl["visible_to"]
         ]
 
+    def get_playlists_checked(self, user_id=None):
+        return self.get_playlists(user_id)
+
     def delete_item(self, item_id):
         self.server.deleted.append(item_id)
         self.server.playlists.pop(item_id, None)
@@ -169,6 +172,39 @@ class TestCleanupIsOwnerAware(CleanupBase):
 
         self.assertEqual(self.cleanup(1), 0)
         self.assertEqual(self.server.deleted, [])
+
+    def test_nothing_is_deleted_when_another_users_listing_times_out(self):
+        """JellyfinService.get_playlists() swallows a timeout and answers [],
+        which reads as "this user sees nothing" — so a slow Jellyfin turned a
+        shared playlist back into a deletable duplicate (found live, E2E-DATA)."""
+        self.server.add("pl-user1", "Netflix Movies", {"jf-1"})
+        self.server.add("pl-shared", "Netflix Movies", {"jf-1", "jf-2"})
+        self.config("jf-1", "Netflix Movies", "pl-user1")
+
+        svc = jellyfin.JellyfinService("http://jellyfin:8096", "k", "jf-1")
+        server = self.server
+
+        def fake_get(path, params=None):
+            if path == "/Items" and (params or {}).get("UserId") == "jf-2":
+                return None          # what _get returns after a read timeout
+            uid = (params or {}).get("UserId")
+            return {"Items": [{"Id": pid, "Name": pl["Name"]} for pid, pl in server.playlists.items()
+                              if uid in pl["visible_to"]]}
+
+        def setting(db, key, default=""):
+            if key == "smartlists_path":
+                return str(self.root)
+            return _settings(db, key, default)
+
+        with mock.patch.object(svc, "_get", fake_get), \
+             mock.patch.object(svc, "get_user_ids", lambda: ["jf-1", "jf-2"]), \
+             mock.patch.object(svc, "delete_item", lambda pid: server.deleted.append(pid) or True), \
+             mock.patch.object(sl, "get_setting", side_effect=setting), \
+             mock.patch.object(jellyfin, "JellyfinService", lambda *a, **k: svc):
+            deleted = sl.cleanup_orphaned_playlists(self.db, 1)
+
+        self.assertEqual(self.server.deleted, [])
+        self.assertEqual(deleted, 0)
 
     def test_a_private_duplicate_is_still_deleted(self):
         """The case the reaper exists for: a second playlist with a managed

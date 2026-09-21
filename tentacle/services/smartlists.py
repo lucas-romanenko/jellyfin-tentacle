@@ -234,7 +234,7 @@ def _playlists_visible_to_other_users(jf, db: Session, user_id: int):
     ids = set()
     for other_jf_id in others.values():
         try:
-            listing = jf.get_playlists(other_jf_id)
+            listing = jf.get_playlists_checked(other_jf_id)
         except Exception as e:
             logger.warning(f"[SmartLists] Could not list playlists of Jellyfin user {other_jf_id}: {e}")
             return None
