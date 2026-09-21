@@ -316,10 +316,15 @@ def radarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
                 logger.warning(f"[Radarr webhook] Movie tmdb:{tmdb_id} not found after scan")
                 return
 
-            # Ensure date_added is set (scan_radarr_library sets it from Radarr's
-            # movieFile.dateAdded; only stamp now() if it's still missing).
-            if event_type == "Download" and not db_movie.date_added:
-                db_movie.date_added = datetime.utcnow()
+            # A Download just landed: stamp its download time now, so it is at the
+            # front of "recently added" rows immediately, without waiting for the
+            # scan's movieFile.dateAdded (which is normally the same moment, but
+            # this is the authoritative "it arrived now"). date_added (first seen
+            # in the library) is only set if the row had none.
+            if event_type == "Download":
+                db_movie.downloaded_at = datetime.utcnow()
+                if not db_movie.date_added:
+                    db_movie.date_added = datetime.utcnow()
                 db.commit()
 
             list_items = db.query(ListItem).filter(ListItem.tmdb_id == tmdb_id).all()
