@@ -566,6 +566,17 @@ public class TentacleHomeController : ControllerBase
         return Ok(new { enabled = false, playlistId = "", displayName = "", trailerAudio = fallbackHero?.TrailerAudio ?? false, itemCount = fallbackHero?.ItemCount ?? 10 });
     }
 
+    private static readonly object[] DefaultToolbar =
+    {
+        new { id = "search", enabled = true },
+        new { id = "discover", enabled = true },
+        new { id = "activity", enabled = true },
+        new { id = "favorites", enabled = true },
+        new { id = "libraries", enabled = true },
+        new { id = "shuffle", enabled = false },
+        new { id = "genres", enabled = false },
+    };
+
     /// <summary>
     /// Returns toolbar button configuration (visibility and order).
     /// </summary>
@@ -588,8 +599,12 @@ public class TentacleHomeController : ControllerBase
             return Ok(new { buttons = toolbar });
         }
 
-        // No local defaults — Tentacle backend always provides toolbar config via write_home_config()
-        return Ok(new { buttons = Array.Empty<object>() });
+        // No toolbar in the user's home config yet. The backend's write_home_config() skips a
+        // user who has no smart playlists, so a new household member (or anyone Tentacle has
+        // not built playlists for) never gets one. The web navbar falls back to its own defaults
+        // on an empty list, but the Android TV app hid every button, Search and Libraries
+        // included. Answer with the same defaults write_home_config() uses (services/smartlists.py).
+        return Ok(new { buttons = DefaultToolbar });
     }
 
     /// <summary>
