@@ -862,8 +862,8 @@ def set_row_shape(req: RowShapeRequest, db: Session = Depends(get_db), user: Ten
 
         _write_home_json(user, config)
     bump_playlist_version()
-    _notify_jellyfin_plugin(db)
-    return {"success": True, "shape": shape}
+    notify = _notify_jellyfin_plugin(db)
+    return {"success": True, "shape": shape, **notify}
 
 
 @router.post("/hero")

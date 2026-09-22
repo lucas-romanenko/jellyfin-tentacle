@@ -1316,17 +1316,27 @@ def _notify_jellyfin_plugin(db: Session) -> dict:
             logger.info("Notified Tentacle Jellyfin plugin to refresh")
             return {"notified": True}
         elif r.status_code == 404:
-            return {"notified": False, "error": "Tentacle plugin not installed in Jellyfin"}
+            err = "Tentacle plugin not installed in Jellyfin"
         elif r.status_code == 401:
-            return {"notified": False, "error": "Jellyfin API key is invalid"}
+            err = "Jellyfin API key is invalid"
+        elif r.status_code == 403:
+            # /Tentacle/Refresh requires an administrator. A user access token or a
+            # non-admin key passes ordinary API calls (so the Settings badge looked
+            # green) but is rejected here, and Android TV never hears about changes.
+            err = ("Jellyfin API key is not an administrator — use an API key from "
+                   "Jellyfin Dashboard → API Keys")
         else:
-            return {"notified": False, "error": f"Jellyfin returned {r.status_code}"}
+            err = f"Jellyfin returned {r.status_code}"
     except requests.ConnectionError:
-        return {"notified": False, "error": f"Cannot reach Jellyfin at {jellyfin_url}"}
+        err = f"Cannot reach Jellyfin at {jellyfin_url}"
     except requests.Timeout:
-        return {"notified": False, "error": "Jellyfin connection timed out"}
+        err = "Jellyfin connection timed out"
     except Exception:
-        return {"notified": False, "error": "Jellyfin plugin not reachable"}
+        err = "Jellyfin plugin not reachable"
+    # This is the only signal Android TV gets (web polls the version counter
+    # instead), so a failure here must never be silent.
+    logger.warning(f"Jellyfin plugin NOT notified — {err}. Android TV clients will not live-update.")
+    return {"notified": False, "error": err}
 
 
 # ── Playlist Population (replaces C# SmartLists plugin) ─────────────────

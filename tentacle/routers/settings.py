@@ -330,7 +330,7 @@ def connection_status(db: Session = Depends(get_db)):
     sonarr_url = get_setting(db, "sonarr_url", "")
     sonarr_key = get_setting(db, "sonarr_api_key", "")
 
-    def _test(url, key, health_path, auth_header):
+    def _test(url, key, health_path, auth_header, elevation_path=None):
         if not url or not key:
             return {"ok": False, "error": "Not configured", "configured": False}
         try:
@@ -342,6 +342,21 @@ def connection_status(db: Session = Depends(get_db)):
             if r.status_code == 401:
                 return {"ok": False, "error": "API key is invalid", "configured": True}
             r.raise_for_status()
+            if elevation_path:
+                # The health path only proves the key is valid. The Tentacle plugin's
+                # refresh (the only thing that live-updates Android TV) requires an
+                # administrator, so a user token or non-admin key would show green
+                # here while every plugin notify fails 403 in silence.
+                e = requests.get(
+                    f"{url.rstrip('/')}/{elevation_path}",
+                    headers={auth_header: key},
+                    timeout=5,
+                )
+                if e.status_code == 403:
+                    return {"ok": False, "configured": True,
+                            "error": "Key is valid but not an administrator — plugin refresh "
+                                     "(Android TV live updates) will fail. Use an API key from "
+                                     "Jellyfin Dashboard → API Keys"}
             return {"ok": True, "configured": True}
         except requests.ConnectionError:
             return {"ok": False, "error": f"Cannot reach {url}", "configured": True}
@@ -352,7 +367,7 @@ def connection_status(db: Session = Depends(get_db)):
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
         futs = {
-            "jellyfin": executor.submit(_test, jf_url, jf_key, "System/Info", "X-Emby-Token"),
+            "jellyfin": executor.submit(_test, jf_url, jf_key, "System/Info", "X-Emby-Token", "System/Configuration"),
             "radarr": executor.submit(_test, radarr_url, radarr_key, "api/v3/system/status", "X-Api-Key"),
             "sonarr": executor.submit(_test, sonarr_url, sonarr_key, "api/v3/system/status", "X-Api-Key"),
         }

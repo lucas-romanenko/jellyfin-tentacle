@@ -3385,14 +3385,20 @@ async function saveRowMaxItemsByKey(key, val) {
 
 async function saveRowShapeByKey(key, shape) {
   try {
-    await api('/api/smartlists/row-shape', {
+    const resp = await api('/api/smartlists/row-shape', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ row_key: key, shape }),
     });
     const row = homeRows.find(r => rowKey(r) === key);
     if (row) row.shape = shape;
-    toast(shape === 'wide' ? 'Row now uses wide cards' : 'Row now uses poster cards');
+    if (resp.notified === false) {
+      // Saved, but clients that rely on the plugin broadcast (Android TV) won't see it.
+      toast('Saved, but the Jellyfin plugin was not notified — ' + (resp.error || 'check the plugin is installed')
+        + '. Android TV will not update until this is fixed.', 'warning', 8000);
+    } else {
+      toast(shape === 'wide' ? 'Row now uses wide cards' : 'Row now uses poster cards');
+    }
   } catch (e) {
     toast('Failed to save: ' + e.message, 'error');
   }
