@@ -1560,8 +1560,8 @@ async function showMediaDetail(tmdbId, mediaType) {
     document.getElementById('detail-title').textContent = data.title;
     const isSeries = mediaType === 'series';
     document.getElementById('detail-body').innerHTML = `
-      <div style="display:flex;gap:20px">
-        ${data.poster_path ? `<img src="${_imgUrl(data.poster_path, 'w185')}" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
+      <div class="detail-layout" style="display:flex;gap:20px">
+        ${data.poster_path ? `<img src="${_imgUrl(data.poster_path, 'w185')}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
         <div style="flex:1">
           <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${data.year || '—'} · ${data.runtime ? data.runtime+'m' : ''} · ★ ${data.rating || '—'}</div>
           <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${data.overview || 'No overview available.'}</p>
@@ -1824,8 +1824,8 @@ async function showCoverageDetail(tmdbId, mediaType, title, year, posterPath) {
     const data = await api(`/api/library/item/${mediaType}/${tmdbId}`);
     document.getElementById('detail-title').textContent = data.title;
     document.getElementById('detail-body').innerHTML = `
-      <div style="display:flex;gap:20px">
-        ${data.poster_path ? `<img src="${_imgUrl(data.poster_path, 'w185')}" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
+      <div class="detail-layout" style="display:flex;gap:20px">
+        ${data.poster_path ? `<img src="${_imgUrl(data.poster_path, 'w185')}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
         <div style="flex:1">
           <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${data.year || '—'} · ${data.runtime ? data.runtime+'m' : ''} · ★ ${data.rating || '—'}</div>
           <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${data.overview || 'No overview available.'}</p>
@@ -1849,8 +1849,8 @@ async function showCoverageDetail(tmdbId, mediaType, title, year, posterPath) {
       const arrLabel = isSeries ? 'Sonarr' : 'Radarr';
       document.getElementById('detail-title').textContent = data.title || title || 'Unknown';
       document.getElementById('detail-body').innerHTML = `
-        <div style="display:flex;gap:20px">
-          ${data.poster_path ? `<img src="${_imgUrl(data.poster_path, 'w185')}" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
+        <div class="detail-layout" style="display:flex;gap:20px">
+          ${data.poster_path ? `<img src="${_imgUrl(data.poster_path, 'w185')}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
           <div style="flex:1">
             <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${data.year || '—'} · ${data.runtime ? data.runtime+'m · ' : ''}★ ${data.rating || '—'}</div>
             <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${data.overview || 'No overview available.'}</p>
@@ -1868,8 +1868,8 @@ async function showCoverageDetail(tmdbId, mediaType, title, year, posterPath) {
     } catch {
       document.getElementById('detail-title').textContent = title || 'Unknown';
       document.getElementById('detail-body').innerHTML = `
-        <div style="display:flex;gap:20px">
-          ${posterPath ? `<img src="${_imgUrl(posterPath, 'w185')}" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
+        <div class="detail-layout" style="display:flex;gap:20px">
+          ${posterPath ? `<img src="${_imgUrl(posterPath, 'w185')}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
           <div style="flex:1">
             <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${year || '—'}</div>
             <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">Not in library yet.</p>
@@ -2194,14 +2194,16 @@ async function loadAutoPlaylists() {
               <span style="position:absolute;top:2px;left:${togglePos};width:16px;height:16px;background:white;border-radius:50%;transition:0.2s"></span>
             </label>`;
         html += `
-          <div style="display:flex;align-items:center;gap:12px;padding:8px 16px;border-bottom:1px solid var(--border)">
+          <div class="auto-pl-row">
             ${control}
-            <div style="flex:1;min-width:0">
+            <div class="auto-pl-info">
               <div style="font-size:13px;font-weight:500">${p.name}</div>
               <div style="font-size:11px;color:var(--text3)">${p.origin}</div>
             </div>
-            ${sortDrop}
-            ${countBadge}
+            <div class="auto-pl-actions">
+              ${sortDrop}
+              ${countBadge}
+            </div>
           </div>`;
       }
     }
@@ -3166,17 +3168,82 @@ const TOOLBAR_ICONS = {
 };
 let toolbarButtons = [];
 
+// ── List reordering that works with a mouse AND a finger ──────────────────
+// HTML5 drag-and-drop never fires on touch screens (and is flaky on the ones
+// that half-support it), so rows are moved with Pointer Events instead: press
+// the grip (any pointer) or the row itself (mouse only, so a swipe still
+// scrolls the list), a floating copy follows the pointer, and the row's
+// placeholder is re-slotted as neighbours are crossed. onReorder(from, to)
+// fires once, on release, only when the position actually changed.
+function makeSortable(listEl, itemSelector, onReorder) {
+  if (!listEl) return;
+  listEl._sortableOnReorder = onReorder;   // re-render keeps the same element; refresh the callback
+  if (listEl._sortableBound) return;
+  listEl._sortableBound = true;
+
+  let drag = null;
+  const items = () => Array.from(listEl.querySelectorAll(itemSelector));
+
+  listEl.addEventListener('pointerdown', e => {
+    if (drag) return;
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    const item = e.target.closest(itemSelector);
+    if (!item || !listEl.contains(item)) return;
+    const onGrip = !!e.target.closest('.row-grip');
+    if (!onGrip && (e.pointerType !== 'mouse' || e.target.closest('input,select,button,label,a,textarea'))) return;
+    e.preventDefault();
+    const rect = item.getBoundingClientRect();
+    const ghost = item.cloneNode(true);
+    ghost.classList.add('sortable-ghost');
+    ghost.style.width = rect.width + 'px';
+    ghost.style.transform = `translate(${rect.left}px, ${rect.top}px)`;
+    document.body.appendChild(ghost);
+    item.classList.add('sorting-placeholder');
+    drag = { el: item, ghost, left: rect.left, offsetY: e.clientY - rect.top, startIdx: items().indexOf(item), pointerId: e.pointerId };
+    try { listEl.setPointerCapture(e.pointerId); } catch (_) {}
+  });
+
+  listEl.addEventListener('pointermove', e => {
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    e.preventDefault();
+    drag.ghost.style.transform = `translate(${drag.left}px, ${e.clientY - drag.offsetY}px)`;
+    // Slot the placeholder before the first neighbour whose midpoint is below the pointer
+    const others = items().filter(el => el !== drag.el);
+    const next = others.find(el => { const r = el.getBoundingClientRect(); return e.clientY < r.top + r.height / 2; });
+    if (next) { if (drag.el.nextElementSibling !== next) listEl.insertBefore(drag.el, next); }
+    else if (listEl.lastElementChild !== drag.el) listEl.appendChild(drag.el);
+    // Nudge the page when dragging near the top or bottom edge of the screen
+    const edge = 56;
+    if (e.clientY < edge) window.scrollBy(0, -12);
+    else if (e.clientY > window.innerHeight - edge) window.scrollBy(0, 12);
+  });
+
+  const finish = e => {
+    if (!drag || (e && e.pointerId != null && e.pointerId !== drag.pointerId)) return;
+    const { el, ghost, startIdx } = drag;
+    drag = null;
+    ghost.remove();
+    el.classList.remove('sorting-placeholder');
+    const endIdx = items().indexOf(el);
+    if (endIdx >= 0 && endIdx !== startIdx) listEl._sortableOnReorder(startIdx, endIdx);
+  };
+  listEl.addEventListener('pointerup', finish);
+  listEl.addEventListener('pointercancel', finish);
+  listEl.addEventListener('lostpointercapture', finish);
+  listEl.addEventListener('contextmenu', e => { if (drag) e.preventDefault(); });
+}
+
 function renderToolbarButtons(buttons) {
   toolbarButtons = buttons;
   const listEl = document.getElementById('toolbar-buttons-list');
   if (!listEl) return;
 
   listEl.innerHTML = toolbarButtons.map((btn, i) => `
-    <div class="home-row-item" draggable="true" data-toolbar-idx="${i}" style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--bg2);border-radius:6px;border:1px solid var(--border);cursor:grab">
-      <span style="cursor:grab;color:var(--text3);font-size:14px">⠿</span>
+    <div class="home-row-item" data-toolbar-idx="${i}" style="padding:8px 12px;border-radius:6px;margin-bottom:0">
+      <span class="row-grip" aria-label="Drag to reorder" title="Drag to reorder">⠿</span>
       <span style="display:flex;align-items:center;color:var(--text2);flex-shrink:0">${TOOLBAR_ICONS[btn.id] || ''}</span>
-      <span style="flex:1;font-size:13px;color:var(--text)">${TOOLBAR_LABELS[btn.id] || btn.id}</span>
-      <label style="position:relative;display:inline-block;width:36px;height:20px;flex-shrink:0">
+      <span class="row-name">${TOOLBAR_LABELS[btn.id] || btn.id}</span>
+      <label style="position:relative;display:inline-block;width:36px;height:20px;flex-shrink:0;margin-left:auto">
         <input type="checkbox" ${btn.enabled ? 'checked' : ''} onchange="toggleToolbarButton(${i}, this.checked)" style="opacity:0;width:0;height:0">
         <span style="position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:${btn.enabled ? 'var(--accent)' : 'var(--bg3)'};border-radius:10px;transition:.2s"></span>
         <span style="position:absolute;height:14px;width:14px;left:${btn.enabled ? '19px' : '3px'};bottom:3px;background:white;border-radius:50%;transition:.2s"></span>
@@ -3184,26 +3251,11 @@ function renderToolbarButtons(buttons) {
     </div>
   `).join('');
 
-  // Drag-and-drop reorder
-  listEl.querySelectorAll('[data-toolbar-idx]').forEach(el => {
-    el.addEventListener('dragstart', e => {
-      e.dataTransfer.setData('text/plain', el.dataset.toolbarIdx);
-      el.style.opacity = '0.5';
-    });
-    el.addEventListener('dragend', () => { el.style.opacity = '1'; });
-    el.addEventListener('dragover', e => { e.preventDefault(); el.style.borderTop = '2px solid var(--accent)'; });
-    el.addEventListener('dragleave', () => { el.style.borderTop = ''; });
-    el.addEventListener('drop', e => {
-      e.preventDefault();
-      el.style.borderTop = '';
-      const from = parseInt(e.dataTransfer.getData('text/plain'));
-      const to = parseInt(el.dataset.toolbarIdx);
-      if (from === to) return;
-      const item = toolbarButtons.splice(from, 1)[0];
-      toolbarButtons.splice(to, 0, item);
-      renderToolbarButtons(toolbarButtons);
-      saveToolbarConfig();
-    });
+  makeSortable(listEl, '.home-row-item', (from, to) => {
+    const item = toolbarButtons.splice(from, 1)[0];
+    toolbarButtons.splice(to, 0, item);
+    renderToolbarButtons(toolbarButtons);
+    saveToolbarConfig();
   });
 }
 
@@ -3244,52 +3296,42 @@ function renderHomeRows() {
         onclick="event.stopPropagation()" onmousedown="event.stopPropagation()"
         onchange="saveRowMaxItemsByKey('${key}', this.value)"
         style="width:52px;padding:3px 4px;font-size:11px;text-align:center;background:var(--bg1);border:1px solid var(--border);border-radius:4px;color:var(--text);cursor:text"
-        title="Max items in this row" draggable="false">`;
+        title="Max items in this row">`;
     // Card shape. Some content has no portrait artwork — a YouTube thumbnail
     // in a poster slot is cropped to a strip of its middle — so each row picks.
     const shapeSelect = isBuiltin ? '' : `
       <select onclick="event.stopPropagation()" onmousedown="event.stopPropagation()"
         onchange="saveRowShapeByKey('${key}', this.value)"
         style="padding:3px 4px;font-size:11px;background:var(--bg1);border:1px solid var(--border);border-radius:4px;color:var(--text);cursor:pointer"
-        title="Card shape for this row" draggable="false">
+        title="Card shape for this row">
         <option value="poster" ${row.shape !== 'wide' ? 'selected' : ''}>Poster</option>
         <option value="wide" ${row.shape === 'wide' ? 'selected' : ''}>Wide</option>
       </select>`;
     return `
-    <div class="home-row-item" draggable="true" data-idx="${i}"
-      ondragstart="homeRowDragStart(event)" ondragover="homeRowDragOver(event)" ondrop="homeRowDrop(event)"
-      style="display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px;background:var(--bg2);cursor:grab">
-      <span style="color:var(--text3);font-size:11px;width:24px;text-align:center">${i + 1}</span>
-      <span style="color:var(--text3);font-size:16px;cursor:grab">&#x2630;</span>
-      <span style="flex:1;font-size:13px;color:var(--text)">${row.display_name}</span>
-      ${shapeSelect}
-      ${maxItemsInput}
-      ${badge}
-      <button onclick="event.stopPropagation();removeHomeRowByKey('${key}')"
-        style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:14px;padding:4px 6px;border-radius:4px"
-        onmouseover="this.style.color='var(--red)'" onmouseout="this.style.color='var(--text3)'"
-        title="Remove row">&#10005;</button>
+    <div class="home-row-item" data-idx="${i}">
+      <span style="color:var(--text3);font-size:11px;width:20px;text-align:center;flex-shrink:0">${i + 1}</span>
+      <span class="row-grip" aria-label="Drag to reorder" title="Drag to reorder">&#x2630;</span>
+      <span class="row-name">${row.display_name}</span>
+      <div class="row-controls">
+        ${shapeSelect}
+        ${maxItemsInput}
+        ${badge}
+        <button onclick="event.stopPropagation();removeHomeRowByKey('${key}')"
+          style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:14px;padding:6px 8px;border-radius:4px"
+          onmouseover="this.style.color='var(--red)'" onmouseout="this.style.color='var(--text3)'"
+          title="Remove row">&#10005;</button>
+      </div>
     </div>`;
   }).join('');
+
+  makeSortable(listEl, '.home-row-item', reorderHomeRows);
 }
 
-let homeRowDragIdx = null;
-function homeRowDragStart(e) {
-  homeRowDragIdx = parseInt(e.currentTarget.getAttribute('data-idx'));
-  e.dataTransfer.effectAllowed = 'move';
-}
-function homeRowDragOver(e) {
-  e.preventDefault();
-  e.dataTransfer.dropEffect = 'move';
-}
-async function homeRowDrop(e) {
-  e.preventDefault();
-  const dropIdx = parseInt(e.currentTarget.getAttribute('data-idx'));
-  if (homeRowDragIdx === null || homeRowDragIdx === dropIdx) return;
-  const moved = homeRows.splice(homeRowDragIdx, 1)[0];
-  homeRows.splice(dropIdx, 0, moved);
+async function reorderHomeRows(fromIdx, toIdx) {
+  if (fromIdx === toIdx) return;
+  const moved = homeRows.splice(fromIdx, 1)[0];
+  homeRows.splice(toIdx, 0, moved);
   for (let i = 0; i < homeRows.length; i++) homeRows[i].order = i + 1;
-  homeRowDragIdx = null;
   renderHomeRows();
   try {
     await api('/api/smartlists/reorder', {
@@ -3600,7 +3642,7 @@ async function loadTagRules() {
             </div>
             <div class="list-meta" style="margin-top:4px">${rule.active ? '<span style="color:var(--green)">Active</span>' : '<span style="color:var(--text3)">Inactive</span>'}</div>
           </div>
-          <div style="display:flex;gap:6px;align-items:center">
+          <div class="list-actions" style="display:flex;gap:6px;align-items:center">
             ${_sortDropdown(rule.output_tag)}
             <div class="dot ${rule.active ? 'dot-green' : 'dot-gray'}"></div>
             <button class="btn btn-secondary btn-sm" onclick="editTagRule(${rule.id})">Edit</button>
@@ -4523,10 +4565,10 @@ async function loadDiscover() {
     // Render section tabs
     tabsEl.innerHTML = _discoverSections.map(sec => {
       const label = DISCOVER_SECTION_LABELS[sec.id] || sec.title;
-      return `<button class="discover-sec-tab" data-section="${sec.id}" onclick="switchDiscoverSection('${sec.id}')" style="padding:10px 20px;font-size:13px;font-weight:500;border:none;background:transparent;color:var(--text3);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;font-family:'DM Sans',sans-serif;display:flex;align-items:center;gap:6px">${label}<span style="font-size:11px;background:var(--bg3);color:var(--text3);padding:1px 7px;border-radius:10px">${sec.items.length}</span></button>`;
+      return `<button class="discover-sec-tab" data-section="${sec.id}" onclick="switchDiscoverSection('${sec.id}')">${label}<span style="font-size:11px;background:var(--bg3);color:var(--text3);padding:1px 7px;border-radius:10px">${sec.items.length}</span></button>`;
     }).join('') +
-      `<button class="discover-sec-tab" data-section="streaming" onclick="switchDiscoverSection('streaming')" style="padding:10px 20px;font-size:13px;font-weight:500;border:none;background:transparent;color:var(--text3);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;font-family:'DM Sans',sans-serif;display:flex;align-items:center;gap:6px">New on Streaming</button>` +
-      `<button class="discover-sec-tab" data-section="genres" onclick="switchDiscoverSection('genres')" style="padding:10px 20px;font-size:13px;font-weight:500;border:none;background:transparent;color:var(--text3);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;font-family:'DM Sans',sans-serif;display:flex;align-items:center;gap:6px">Genres</button>`;
+      `<button class="discover-sec-tab" data-section="streaming" onclick="switchDiscoverSection('streaming')">New on Streaming</button>` +
+      `<button class="discover-sec-tab" data-section="genres" onclick="switchDiscoverSection('genres')">Genres</button>`;
     // Activate first or previously active section
     const targetId = (_discoverActiveSection === 'streaming' || _discoverActiveSection === 'genres'
       || (_discoverActiveSection && _discoverSections.find(s => s.id === _discoverActiveSection)))
@@ -4543,6 +4585,8 @@ function switchDiscoverSection(sectionId) {
     const active = btn.getAttribute('data-section') === sectionId;
     btn.style.color = active ? 'var(--text)' : 'var(--text3)';
     btn.style.borderBottomColor = active ? 'var(--accent)' : 'transparent';
+    // The strip scrolls sideways on phones: keep the chosen tab in view
+    if (active && btn.scrollIntoView) btn.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   });
   const pills = document.getElementById('discover-streaming-pills');
   if (sectionId === 'streaming') {
@@ -4791,8 +4835,8 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
     document.getElementById('detail-title').textContent = data.title || title || 'Unknown';
     const detailPosterSrc = _imgUrl(data.poster_path, 'w185');
     document.getElementById('detail-body').innerHTML = `
-      <div style="display:flex;gap:20px">
-        ${detailPosterSrc ? `<img src="${detailPosterSrc}" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
+      <div class="detail-layout" style="display:flex;gap:20px">
+        ${detailPosterSrc ? `<img src="${detailPosterSrc}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
         <div style="flex:1">
           <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${data.year || year || '—'} · ${data.runtime ? data.runtime+'m · ' : ''}★ ${data.rating || '—'}</div>
           <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${data.overview || 'No overview available.'}</p>
@@ -4807,8 +4851,8 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
   } catch {
     document.getElementById('detail-title').textContent = title || 'Unknown';
     document.getElementById('detail-body').innerHTML = `
-      <div style="display:flex;gap:20px">
-        ${_imgUrl(posterPath, 'w185') ? `<img src="${_imgUrl(posterPath, 'w185')}" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
+      <div class="detail-layout" style="display:flex;gap:20px">
+        ${_imgUrl(posterPath, 'w185') ? `<img src="${_imgUrl(posterPath, 'w185')}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
         <div style="flex:1">
           <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${year || '—'}</div>
           <p style="font-size:13px;color:var(--text2)">Could not load details.</p>
@@ -6248,7 +6292,7 @@ async function loadHealthDeletions() {
     addRuleCondition, updateCondOps, onCollectionNameInput, syncSmartLists, refreshTags, syncPlaylistsToJellyfin, resyncAllPlaylists, setPlaylistSort,
     pushHomeConfig, updateHeroPick, updateHeroSort, saveRowMaxItems, saveRowMaxItemsByKey, saveRowShapeByKey, toggleNotificationsFromCheckbox, saveMergeContinueWatching, dismissNewContentNotice, toggleGenreChip, _scheduleMatchCount, toggleToolbarButton,
     showAddHomeRow, hideAddHomeRow, confirmAddHomeRow, removeHomeRow, removeHomeRowByKey,
-    homeRowDragStart, homeRowDragOver, homeRowDrop, rowKey,
+    reorderHomeRows, rowKey,
     // Library
     openSyncDetailModal, closeSyncDetailModal,
     loadLibListPills, setLibList, setLibListStatus, setLibSort, scrollListPills,

@@ -1317,16 +1317,26 @@ async function testSonarrWebhookUrl() {
 // ── Modals ─────────────────────────────────────────────────────────────────
 function showModal(id) {
   document.getElementById(id).style.display = 'flex';
+  // Lock the page behind the sheet on phones (the modal scrolls on its own)
+  document.body.classList.add('modal-open');
 }
 
 function closeModal(id) {
   document.getElementById(id).style.display = 'none';
+  _syncModalLock();
+}
+
+// Release the page scroll lock once no modal is showing (whatever closed it)
+function _syncModalLock() {
+  const anyOpen = [...document.querySelectorAll('.modal-overlay')].some(o => getComputedStyle(o).display !== 'none');
+  document.body.classList.toggle('modal-open', anyOpen);
 }
 
 // Close modal on overlay click
 document.addEventListener('click', e => {
   if (e.target.classList.contains('modal-overlay')) {
     e.target.style.display = 'none';
+    _syncModalLock();
   }
 });
 
@@ -1336,6 +1346,7 @@ document.addEventListener('keydown', e => {
     document.querySelectorAll('.modal-overlay').forEach(m => {
       if (m.id !== 'setup-overlay') m.style.display = 'none';
     });
+    _syncModalLock();
   }
 });
 

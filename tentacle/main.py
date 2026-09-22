@@ -749,11 +749,11 @@ def _asset_version() -> str:
 def _index_html() -> str:
     """index.html with ?v= rewritten to match what the scripts actually contain.
 
-    Recomputed when a script's modified time or size changes, so editing one
-    during development takes effect without a restart.
+    Recomputed when a script's (or index.html's) modified time or size changes,
+    so editing one during development takes effect without a restart.
     """
     key = []
-    for name in _ASSET_FILES:
+    for name in _ASSET_FILES + ("static/index.html",):
         try:
             st = Path(name).stat()
             key.append((st.st_mtime_ns, st.st_size))
