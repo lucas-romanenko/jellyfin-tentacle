@@ -72,6 +72,7 @@ public class TentacleController : ControllerBase
         // Step 2: Clear home config + discover + ratings caches
         _homeScreenManager.ClearCache();
         TentacleResultsHandler.ClearItemCache();
+        TentacleHomeController.ClearSectionCache();
         TentacleDiscoverController.ClearCache();
         TentacleMdbListController.ClearSettingsCache();
         Services.MdbListCacheService.Clear();
