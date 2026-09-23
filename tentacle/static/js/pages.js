@@ -1581,7 +1581,7 @@ async function showMediaDetail(tmdbId, mediaType) {
             <span class="detail-follow-label">Manage .strm files</span>
           </label>` : ''}
           ${data.is_vod && !isSeries && state.currentUser?.is_admin ? `<div style="margin-top:10px">
-            <button class="btn btn-danger btn-sm" title="The provider's stream is a different film than this title" onclick="reportWrongMovie(${tmdbId}, '${escapeJS(data.title || '')}')">Wrong movie?</button>
+            <button class="btn btn-danger btn-sm" title="The provider's stream is a different film than this title" onclick="openFixMatch(${tmdbId}, '${escapeJS(data.title || '')}')">Wrong movie? Fix it</button>
           </div>` : ''}
           <div id="detail-trailer-slot" style="margin-top:10px"></div>
         </div>
@@ -1602,8 +1602,8 @@ async function showMediaDetail(tmdbId, mediaType) {
 }
 
 // ── Wrong movie: the provider's stream is a different film than its label ──
-async function reportWrongMovie(tmdbId, title) {
-  if (!confirm(
+async function reportWrongMovie(tmdbId, title, confirmed = false) {
+  if (!confirmed && !confirm(
     `Does "${title}" play a different film?\n\n` +
     'Your IPTV provider labelled that stream wrong. This removes this copy from the library ' +
     'and stops that stream from being added again (you can undo the block under Library).\n\n' +
@@ -1613,6 +1613,7 @@ async function reportWrongMovie(tmdbId, title) {
     const r = await api(`/api/library/wrong-match/movie/${tmdbId}`, { method: 'POST' });
     toast(r.message || `Removed the wrong copy of ${title}`);
     closeModal('modal-media-detail');
+    closeModal('modal-fix-match');
     loadMatchSuspects();
     if (typeof fetchLibraryPage === 'function') { pages.lib.offset = 0; pages.lib.items = []; fetchLibraryPage(); }
     return true;
@@ -1620,6 +1621,91 @@ async function reportWrongMovie(tmdbId, title) {
     toast(e.message, 'error');
     return false;
   }
+}
+
+// Which film is this stream really? Candidates are ranked by the stream's real
+// length (Jellyfin's probe) when known; picking one moves the copy there.
+let _fm = { tmdbId: null, title: '', cands: [], armed: false, busy: false };
+
+function openFixMatch(tmdbId, title) {
+  _fm = { tmdbId, title, cands: [], armed: false, busy: false };
+  let m = document.getElementById('modal-fix-match');
+  if (!m) {
+    m = document.createElement('div');
+    m.className = 'modal-overlay'; m.id = 'modal-fix-match'; m.style.display = 'none';
+    m.innerHTML = `<div class="modal" style="max-width:620px">
+      <div class="modal-header"><div class="modal-title">Which movie is this really?</div>
+        <button class="modal-close" onclick="closeModal('modal-fix-match')">✕</button></div>
+      <div style="padding:0 20px 20px">
+        <p class="fm-intro" id="fm-intro"></p>
+        <div class="fm-search"><input id="fm-q" class="form-input" placeholder="Search for the right title"
+          onkeydown="if(event.key==='Enter'){event.preventDefault();_fmLoad(this.value.trim())}">
+          <button class="btn btn-secondary btn-sm" onclick="_fmLoad(document.getElementById('fm-q').value.trim())">Search</button></div>
+        <div id="fm-list" class="fm-list"></div>
+        <div id="fm-status" class="fm-status"></div>
+        <div class="fm-footer"><button class="btn btn-danger btn-sm" id="fm-remove" onclick="_fmRemove()">None of these — remove it</button></div>
+      </div></div>`;
+    document.body.appendChild(m);
+  }
+  document.getElementById('fm-q').value = '';
+  document.getElementById('fm-status').textContent = '';
+  document.getElementById('fm-remove').textContent = 'None of these — remove it';
+  document.getElementById('fm-intro').innerHTML = `Your IPTV provider labelled this stream <strong>${escapeAttr(title)}</strong>, but it plays something else. <span id="fm-actual"></span>`;
+  closeModal('modal-media-detail');
+  showModal('modal-fix-match');
+  _fmLoad('');
+}
+
+async function _fmLoad(q) {
+  const list = document.getElementById('fm-list');
+  list.innerHTML = `<div class="fm-note">${q ? 'Searching…' : 'Looking for likely matches…'}</div>`;
+  try {
+    const d = await api(`/api/library/fix-match/movie/${_fm.tmdbId}/suggestions${q ? '?q=' + encodeURIComponent(q) : ''}`);
+    document.getElementById('fm-actual').textContent = d.actual_minutes
+      ? `It plays ${d.actual_minutes} minutes — films of that length are listed first.`
+      : 'Pick the film it really is, or search for it.';
+    _fm.cands = d.candidates || [];
+    list.innerHTML = _fm.cands.length ? _fm.cands.map((c, i) => `
+      <button class="fm-cand" onclick="_fmPick(${i})">
+        ${c.poster_path ? `<img src="${_imgUrl(c.poster_path, 'w92')}" loading="lazy">` : '<div class="fm-noposter"></div>'}
+        <span class="fm-cand-text"><span class="fm-cand-title">${escapeAttr(c.title)}</span>
+          <span class="fm-cand-meta">${[c.year, c.runtime ? c.runtime + ' min' : ''].filter(Boolean).join(' · ')}
+            ${c.runtime_matches ? '<span class="badge badge-green">same length</span>' : ''}
+            ${c.in_library ? '<span class="badge badge-amber">already in library</span>' : ''}</span>
+          ${c.overview ? `<span class="fm-cand-ov">${escapeAttr(c.overview)}</span>` : ''}</span>
+      </button>`).join('') : '<div class="fm-note">No matches found — try searching for the title you saw.</div>';
+  } catch (e) {
+    list.innerHTML = `<div class="fm-note">${escapeAttr(e.message || 'Could not load suggestions')}</div>`;
+  }
+}
+
+async function _fmPick(i) {
+  const c = _fm.cands[i];
+  if (!c || _fm.busy) return;
+  _fm.busy = true;
+  const st = document.getElementById('fm-status');
+  st.style.color = 'var(--text2)'; st.textContent = 'Fixing…';
+  try {
+    const r = await api(`/api/library/fix-match/movie/${_fm.tmdbId}`, { method: 'POST', body: { tmdb_id: c.tmdb_id } });
+    toast(r.message || `Fixed: ${c.title}`);
+    closeModal('modal-fix-match');
+    loadMatchSuspects();
+    pages.lib.offset = 0; pages.lib.items = []; fetchLibraryPage();
+  } catch (e) {
+    st.style.color = 'var(--red)'; st.textContent = e.message || 'Failed';
+  } finally { _fm.busy = false; }
+}
+
+function _fmRemove() {
+  const b = document.getElementById('fm-remove');
+  if (!_fm.armed) {
+    _fm.armed = true;
+    b.textContent = 'Click again: remove this copy and block the stream';
+    setTimeout(() => { _fm.armed = false; if (b) b.textContent = 'None of these — remove it'; }, 5000);
+    return;
+  }
+  _fm.armed = false;
+  reportWrongMovie(_fm.tmdbId, _fm.title, true);
 }
 
 async function loadMatchSuspects() {
@@ -1638,7 +1724,7 @@ async function loadMatchSuspects() {
           <div class="wm-meta">Plays <strong>${x.actual_minutes} min</strong> — this film is ${x.expected_minutes} min</div>
         </div>
         <div class="wm-actions">
-          <button class="btn btn-danger btn-sm" onclick="reportWrongMovie(${x.tmdb_id}, '${escapeJS(x.title || '')}')">Wrong movie</button>
+          <button class="btn btn-primary btn-sm" onclick="openFixMatch(${x.tmdb_id}, '${escapeJS(x.title || '')}')">Fix it</button>
           <button class="btn btn-secondary btn-sm" onclick="dismissMatchSuspect(${x.tmdb_id})">It's fine</button>
         </div>
       </div>`).join('') : '<div class="wm-meta" style="padding:4px 0">Nothing flagged right now.</div>';
@@ -6468,7 +6554,7 @@ async function loadHealthDeletions() {
     // Activity (inline handlers)
     _activityPosterFailed, activitySearchAgain, activityRemove,
     // Wrong movie (mislabelled provider streams)
-    reportWrongMovie, dismissMatchSuspect, unblockStream,
+    reportWrongMovie, dismissMatchSuspect, unblockStream, openFixMatch, _fmLoad, _fmPick, _fmRemove,
     // Lists page
     loadLists, loadListCards,
     saveQuickList, onQuickListUrlInput, onQuickListNameInput, onModalUrlInput, onModalNameInput,

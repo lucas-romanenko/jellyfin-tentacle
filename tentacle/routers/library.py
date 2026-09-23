@@ -854,3 +854,30 @@ def unblock_stream(block_id: int, db: Session = Depends(get_db)):
     db.delete(row)
     db.commit()
     return {"ok": True}
+
+
+class FixMatchBody(BaseModel):
+    tmdb_id: int
+
+
+@router.get("/fix-match/movie/{tmdb_id}/suggestions", dependencies=[Depends(require_admin)])
+def fix_match_suggestions(tmdb_id: int, q: Optional[str] = None, db: Session = Depends(get_db)):
+    """Films this VOD movie might really be — ranked by its real length when known."""
+    from services.wrong_match import WrongMatchError, suggest_matches
+    try:
+        return suggest_matches(db, tmdb_id, q)
+    except WrongMatchError as e:
+        raise HTTPException(e.status, str(e))
+
+
+@router.post("/fix-match/movie/{tmdb_id}")
+def fix_match(tmdb_id: int, body: FixMatchBody, db: Session = Depends(get_db),
+              user: Optional[TentacleUser] = Depends(require_admin)):
+    """This VOD movie is really `body.tmdb_id`: move it there and keep it there."""
+    from services.wrong_match import WrongMatchError, rematch_movie
+    try:
+        result = rematch_movie(db, tmdb_id, body.tmdb_id, user_name=user.display_name if user else None)
+    except WrongMatchError as e:
+        raise HTTPException(e.status, str(e))
+    emit_library_event("movie_removed", {"tmdb_id": tmdb_id, "media_type": "movie"})
+    return result

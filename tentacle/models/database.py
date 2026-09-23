@@ -561,6 +561,26 @@ class BlockedStream(Base):
     )
 
 
+class MatchOverride(Base):
+    """"This provider stream is really this film." Set when an admin fixes a
+    mislabelled stream; the sync uses it instead of matching the provider's
+    label, so the fix survives every night."""
+    __tablename__ = "match_overrides"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    provider_id = Column(Integer, ForeignKey("providers.id"), nullable=False, index=True)
+    media_type = Column(String, nullable=False, default="movie")
+    stream_key = Column(String, nullable=False)     # stream id, or the stream URL
+    tmdb_id = Column(Integer, nullable=False)        # the film it really is
+    previous_tmdb_id = Column(Integer, nullable=True)
+    title = Column(String, nullable=True)
+    set_by = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("provider_id", "media_type", "stream_key", name="uq_match_override"),
+    )
+
+
 class MatchSuspect(Base):
     """A VOD title whose real length is far from what TMDB says it should be —
     likely a different film under the provider's label. Found once Jellyfin has
