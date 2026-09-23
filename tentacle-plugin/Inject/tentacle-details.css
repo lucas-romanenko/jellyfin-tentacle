@@ -2291,3 +2291,10 @@ body.moonfin-details-visible .moonfin-nav-back {
 .tfm-status { min-height: 20px; font-size: 13px; text-align: center; margin: 10px 0 4px; }
 .tfm-footer { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
 .tfm-footer .moonfin-more-item { width: auto; }
+.tfm-frames-wrap { margin-bottom: 12px; text-align: center; }
+.tfm-frames-wrap .tfm-show-frames { width: auto; display: inline-flex; }
+.tfm-frames { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.tfm-frames .tfm-note { grid-column: 1 / -1; }
+.tfm-frame { margin: 0; }
+.tfm-frame img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 6px; background: #000; display: block; }
+.tfm-frame figcaption { font-size: 11px; color: rgba(255,255,255,.55); margin-top: 3px; }

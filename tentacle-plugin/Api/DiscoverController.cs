@@ -481,6 +481,31 @@ public class TentacleDiscoverController : ControllerBase
         }
     }
 
+    /// <summary>A few stills from a VOD movie's stream, to tell which film it is (admin).</summary>
+    [HttpGet("FixMatch/movie/{tmdbId}/Frames")]
+    [Authorize]
+    public async Task<ActionResult> FixMatchFrames(int tmdbId)
+    {
+        var baseUrl = GetTentacleUrl();
+        if (string.IsNullOrEmpty(baseUrl))
+        {
+            return BadRequest(new { detail = "Tentacle URL not configured" });
+        }
+
+        try
+        {
+            var response = await AddClient.GetAsync(AppendUserId($"{baseUrl}/api/library/fix-match/movie/{tmdbId}/frames"));
+            var result = await response.Content.ReadAsStringAsync();
+            return new ContentResult { Content = result, ContentType = "application/json", StatusCode = (int)response.StatusCode };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("[Tentacle Discover] Fix-match frames failed: {Error}", ex.Message);
+            var (reason, message) = DescribeFailure(ex);
+            return StatusCode(502, new { detail = message, error = reason });
+        }
+    }
+
     /// <summary>Re-match a mislabelled VOD movie to the film it really is (body: tmdb_id).</summary>
     [HttpPost("FixMatch/movie/{tmdbId}")]
     [Authorize]

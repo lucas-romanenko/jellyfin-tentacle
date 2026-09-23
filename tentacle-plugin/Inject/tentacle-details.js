@@ -2253,13 +2253,17 @@ var Details = {
             '<h3 class="moonfin-more-title">Which movie is this really?</h3>' +
             '<p class="tfm-intro">Your IPTV provider labelled this stream <strong>' + this.esc(item.Name || '') + '</strong>, ' +
                 'but it plays something else. <span class="tfm-actual"></span></p>' +
+            '<div class="tfm-frames-wrap">' +
+                '<button class="moonfin-more-item moonfin-focusable tfm-show-frames" tabindex="0"><span class="moonfin-more-item-text">Not sure? Show pictures from the stream</span></button>' +
+                '<div class="tfm-frames"></div>' +
+            '</div>' +
             '<div class="tfm-search"><input class="tfm-q" type="text" placeholder="Search for the right title" />' +
                 '<button class="moonfin-more-item moonfin-focusable tfm-go" tabindex="0"><span class="moonfin-more-item-text">Search</span></button></div>' +
             '<div class="tfm-list"><div class="tfm-note">Looking for likely matches…</div></div>' +
             '<div class="tfm-status"></div>' +
             '<div class="tfm-footer">' +
                 '<button class="moonfin-more-item moonfin-focusable moonfin-more-item-danger tfm-remove" tabindex="0"><span class="moonfin-more-item-text">None of these — remove it</span></button>' +
-                '<button class="moonfin-more-item moonfin-focusable tfm-cancel" tabindex="0"><span class="moonfin-more-item-text">Cancel</span></button>' +
+                '<button class="moonfin-more-item moonfin-focusable tfm-cancel" tabindex="0"><span class="moonfin-more-item-text">Not sure — leave it for now</span></button>' +
             '</div>' +
         '</div>';
 
@@ -2283,8 +2287,12 @@ var Details = {
 
         var render = function(data) {
             var actual = data && data.actual_minutes;
-            overlay.querySelector('.tfm-actual').textContent = actual
-                ? 'It plays ' + actual + ' minutes — films of that length are listed first.'
+            var langs = ((data && data.audio_languages) || []).map(function(l) { return l.name; });
+            var clues = [];
+            if (actual) clues.push('it plays ' + actual + ' minutes');
+            if (langs.length === 1) clues.push('its audio is ' + langs[0]);
+            overlay.querySelector('.tfm-actual').textContent = clues.length
+                ? 'Clues: ' + clues.join(', ') + ' — films that fit are listed first.'
                 : 'Pick the film it really is, or search for it.';
             var cands = (data && data.candidates) || [];
             if (!cands.length) {
@@ -2293,11 +2301,12 @@ var Details = {
             }
             list.innerHTML = cands.map(function(c, i) {
                 var poster = c.poster_path ? '<img src="https://image.tmdb.org/t/p/w92' + c.poster_path + '" loading="lazy">' : '<div class="tfm-noposter"></div>';
-                var meta = [c.year, c.runtime ? c.runtime + ' min' : ''].filter(Boolean).join(' · ');
+                var meta = [c.year, c.runtime ? c.runtime + ' min' : '', c.language_name || ''].filter(Boolean).join(' · ');
                 return '<button class="moonfin-focusable tfm-cand" data-idx="' + i + '" tabindex="0">' + poster +
                     '<span class="tfm-cand-text"><span class="tfm-cand-title">' + self.esc(c.title) + '</span>' +
                     '<span class="tfm-cand-meta">' + self.esc(meta) +
                     (c.runtime_matches ? ' <span class="tfm-badge">same length</span>' : '') +
+                    (c.language_matches ? ' <span class="tfm-badge">same language</span>' : '') +
                     (c.in_library ? ' <span class="tfm-badge tfm-badge-lib">already in library</span>' : '') + '</span>' +
                     (c.overview ? '<span class="tfm-cand-ov">' + self.esc(c.overview) + '</span>' : '') +
                     '</span></button>';
@@ -2341,6 +2350,35 @@ var Details = {
                 })
                 .catch(function() { list.innerHTML = '<div class="tfm-note">Can\'t reach the server right now</div>'; });
         };
+        // Stills from the stream: fetched only when asked (it opens a provider connection).
+        var framesBtn = overlay.querySelector('.tfm-show-frames');
+        var framesBox = overlay.querySelector('.tfm-frames');
+        framesBtn.addEventListener('click', function() {
+            if (framesBtn.disabled) return;
+            framesBtn.disabled = true;
+            framesBtn.style.display = 'none';
+            framesBox.innerHTML = '<div class="tfm-note">Grabbing pictures from the stream… (can take a few seconds)</div>';
+            fetch(withUser(serverUrl + '/TentacleDiscover/FixMatch/movie/' + tmdbId + '/Frames'), { headers: headers })
+                .then(function(r) { return r.json().catch(function() { return {}; }).then(function(b) { return { ok: r.ok, b: b }; }); })
+                .then(function(res) {
+                    var frames = (res.ok && res.b && res.b.frames) || [];
+                    if (!frames.length) {
+                        framesBox.innerHTML = '<div class="tfm-note">' + self.esc((res.b && res.b.detail) || 'Could not grab pictures from the stream') + '</div>';
+                        framesBtn.disabled = false;
+                        framesBtn.style.display = '';
+                        return;
+                    }
+                    framesBox.innerHTML = frames.map(function(f) {
+                        return '<figure class="tfm-frame"><img src="' + f.image + '" alt=""><figcaption>' + f.at_minutes + ' min</figcaption></figure>';
+                    }).join('');
+                })
+                .catch(function() {
+                    framesBox.innerHTML = '<div class="tfm-note">Can\'t reach the server right now</div>';
+                    framesBtn.disabled = false;
+                    framesBtn.style.display = '';
+                });
+        });
+
         var input = overlay.querySelector('.tfm-q');
         overlay.querySelector('.tfm-go').addEventListener('click', function() { load(input.value.trim()); });
         input.addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); load(input.value.trim()); } });

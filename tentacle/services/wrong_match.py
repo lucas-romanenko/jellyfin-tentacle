@@ -254,25 +254,76 @@ def _jf(db: Session):
     return JellyfinService(url, key, get_setting(db, "jellyfin_user_id", ""))
 
 
-def probed_minutes(db: Session, row: Movie) -> Optional[int]:
-    """The stream's real length from Jellyfin's probe, if it has been played."""
+# Jellyfin labels audio tracks with ISO 639-2 codes, TMDB films with ISO 639-1.
+_LANG_3_TO_1 = {
+    "eng": "en", "fre": "fr", "fra": "fr", "spa": "es", "ger": "de", "deu": "de",
+    "ita": "it", "por": "pt", "dut": "nl", "nld": "nl", "swe": "sv", "nor": "no",
+    "nob": "no", "dan": "da", "fin": "fi", "pol": "pl", "rus": "ru", "ukr": "uk",
+    "tur": "tr", "gre": "el", "ell": "el", "heb": "he", "ara": "ar", "per": "fa",
+    "fas": "fa", "hin": "hi", "tam": "ta", "tel": "te", "mal": "ml", "ben": "bn",
+    "jpn": "ja", "kor": "ko", "chi": "zh", "zho": "zh", "cmn": "zh", "yue": "cn",
+    "tha": "th", "vie": "vi", "ind": "id", "may": "ms", "msa": "ms", "fil": "tl",
+    "tgl": "tl", "cze": "cs", "ces": "cs", "slo": "sk", "slk": "sk", "hun": "hu",
+    "rum": "ro", "ron": "ro", "bul": "bg", "srp": "sr", "hrv": "hr", "ice": "is",
+    "isl": "is", "cat": "ca", "baq": "eu", "eus": "eu", "glg": "gl", "est": "et",
+    "lav": "lv", "lit": "lt", "slv": "sl",
+}
+LANGUAGE_NAMES = {
+    "en": "English", "fr": "French", "es": "Spanish", "de": "German", "it": "Italian",
+    "pt": "Portuguese", "nl": "Dutch", "sv": "Swedish", "no": "Norwegian", "da": "Danish",
+    "fi": "Finnish", "pl": "Polish", "ru": "Russian", "uk": "Ukrainian", "tr": "Turkish",
+    "el": "Greek", "he": "Hebrew", "ar": "Arabic", "fa": "Persian", "hi": "Hindi",
+    "ta": "Tamil", "te": "Telugu", "ml": "Malayalam", "bn": "Bengali", "ja": "Japanese",
+    "ko": "Korean", "zh": "Chinese", "cn": "Cantonese", "th": "Thai", "vi": "Vietnamese",
+    "id": "Indonesian", "ms": "Malay", "tl": "Tagalog", "cs": "Czech", "sk": "Slovak",
+    "hu": "Hungarian", "ro": "Romanian", "bg": "Bulgarian", "sr": "Serbian", "hr": "Croatian",
+    "is": "Icelandic", "ca": "Catalan", "eu": "Basque", "gl": "Galician", "et": "Estonian",
+    "lv": "Latvian", "lt": "Lithuanian", "sl": "Slovenian",
+}
+
+
+def language_code(code: Optional[str]) -> Optional[str]:
+    """A track or film language as ISO 639-1, or None when unknown/undetermined."""
+    c = (code or "").strip().lower()
+    if not c or c in ("und", "unk", "mul", "zxx", "mis", "xx", "qaa"):
+        return None
+    if len(c) == 2:
+        return c
+    return _LANG_3_TO_1.get(c[:3])
+
+
+def probe_info(db: Session, row: Movie) -> dict:
+    """What Jellyfin's probe learned about the stream, if it has been played:
+    its real length in minutes and the languages of its audio tracks."""
+    empty = {"minutes": None, "audio_languages": []}
     jf = _jf(db)
     if jf is None:
-        return None
+        return empty
     try:
         item_id = row.jellyfin_item_id
         if not item_id:
             found = jf.search_by_tmdb_id(row.tmdb_id, media_type="Movie")
             item_id = found["Id"] if found else None
         if not item_id:
-            return None
+            return empty
         item = jf.get_item_by_id(item_id) or {}
         sources = item.get("MediaSources") or []
         ticks = (sources[0].get("RunTimeTicks") if sources else None) or 0
-        return round(ticks / 600_000_000) or None
+        langs = []
+        for s in (sources[0].get("MediaStreams") or []) if sources else []:
+            if s.get("Type") == "Audio":
+                code = language_code(s.get("Language"))
+                if code and code not in langs:
+                    langs.append(code)
+        return {"minutes": round(ticks / 600_000_000) or None, "audio_languages": langs}
     except Exception as e:
-        logger.debug(f"[WrongMatch] No probed length for tmdb:{row.tmdb_id}: {e}")
-        return None
+        logger.debug(f"[WrongMatch] No probe for tmdb:{row.tmdb_id}: {e}")
+        return empty
+
+
+def probed_minutes(db: Session, row: Movie) -> Optional[int]:
+    """The stream's real length from Jellyfin's probe, if it has been played."""
+    return probe_info(db, row)["minutes"]
 
 
 def _title_queries(title: str) -> list:
@@ -295,7 +346,9 @@ def suggest_matches(db: Session, tmdb_id: int, query: Optional[str] = None) -> d
     if row is None:
         raise WrongMatchError(404, "This movie is not in Tentacle's library")
     tmdb = _tmdb(db)
-    actual = probed_minutes(db, row)
+    probe = probe_info(db, row)
+    actual = probe["minutes"]
+    audio = probe["audio_languages"]
     queries = [query.strip()] if query and query.strip() else _title_queries(row.title)
 
     seen, found = {tmdb_id}, []
@@ -317,12 +370,18 @@ def suggest_matches(db: Session, tmdb_id: int, query: Optional[str] = None) -> d
         runtime = details.get("runtime") or None
         title = r.get("title") or details.get("title") or ""
         close = bool(actual and runtime and abs(runtime - actual) <= RUNTIME_CLOSE)
+        lang = language_code(r.get("original_language") or details.get("original_language"))
         candidates.append({
             "tmdb_id": r["id"], "title": title,
             "year": (r.get("release_date") or "")[:4] or None,
             "runtime": runtime, "poster_path": r.get("poster_path"),
             "overview": (r.get("overview") or "")[:240],
             "runtime_matches": close, "in_library": r["id"] in in_lib,
+            "original_language": lang,
+            "language_name": LANGUAGE_NAMES.get(lang, lang.upper()) if lang else None,
+            # Only a clue when the stream has a single audio language: a
+            # multi-track stream (original + dubs) says little about the film.
+            "language_matches": bool(lang and len(audio) == 1 and audio[0] == lang),
             "_sim": tmdb._similarity(label, title), "_pop": r.get("popularity") or 0,
         })
 
@@ -331,8 +390,10 @@ def suggest_matches(db: Session, tmdb_id: int, query: Optional[str] = None) -> d
             gap = abs(c["runtime"] - actual)
         else:
             gap = 999
-        # Length first (when known), then how much of the label it shares, then fame.
-        return (0 if c["runtime_matches"] else 1, gap if actual else 0, -c["_sim"], -c["_pop"])
+        # Length first (when known), then the audio language, then how much
+        # of the label it shares, then fame.
+        return (0 if c["runtime_matches"] else 1, 0 if c["language_matches"] else 1,
+                gap if actual else 0, -c["_sim"], -c["_pop"])
 
     candidates.sort(key=rank)
     for c in candidates:
@@ -340,6 +401,7 @@ def suggest_matches(db: Session, tmdb_id: int, query: Optional[str] = None) -> d
     return {
         "current": {"tmdb_id": row.tmdb_id, "title": row.title, "year": row.year, "runtime": row.runtime},
         "actual_minutes": actual,
+        "audio_languages": [{"code": c, "name": LANGUAGE_NAMES.get(c, c.upper())} for c in audio],
         "searched": queries,
         "candidates": candidates[:MAX_SUGGESTIONS],
     }
@@ -477,3 +539,110 @@ def override_for(overrides: dict, stream_id, url: str = "") -> Optional[int]:
     if stream_id is not None and str(stream_id) in overrides:
         return overrides[str(stream_id)]
     return overrides.get(url) if url else None
+
+
+# ── Stills from the stream ────────────────────────────────────────────────
+# When the admin can't tell which film a stream is from its length and
+# language, a few pictures from it settle it. ffmpeg seeks into the provider
+# stream and grabs single frames; they're cached on disk per stream.
+
+FRAME_WIDTH = 480
+FRAME_TIMEOUT = 25        # seconds per frame (a provider seek can be slow)
+_frames_lock = threading.Lock()
+
+
+def frame_offsets(minutes: Optional[int]) -> list:
+    """Seconds into the film to grab: spread over it when its length is known,
+    past the opening credits either way."""
+    if minutes and minutes >= 10:
+        return [int(minutes * 60 * f) for f in (0.12, 0.4, 0.7)]
+    return [5 * 60, 20 * 60, 45 * 60]
+
+
+def _frame_cache_dir() -> Path:
+    import os
+    return Path(os.getenv("DATA_DIR", "/data")) / "frame_cache"
+
+
+def _grab_frame(ffmpeg: str, url: str, user_agent: str, seconds: int) -> Optional[bytes]:
+    import subprocess
+    cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin",
+           "-user_agent", user_agent, "-ss", str(seconds), "-i", url,
+           "-frames:v", "1", "-vf", f"scale={FRAME_WIDTH}:-2",
+           "-q:v", "5", "-f", "image2", "-c:v", "mjpeg", "pipe:1"]
+    try:
+        out = subprocess.run(cmd, capture_output=True, timeout=FRAME_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        logger.info(f"[WrongMatch] Frame at {seconds}s timed out")
+        return None
+    if out.returncode != 0 or not out.stdout:
+        logger.info(f"[WrongMatch] Frame at {seconds}s failed: {out.stderr.decode(errors='replace')[-200:]}")
+        return None
+    return out.stdout
+
+
+def _prune_frame_cache(cache: Path, max_age_days: int = 14) -> None:
+    import time
+    cutoff = time.time() - max_age_days * 86400
+    try:
+        for f in cache.glob("*.jpg"):
+            if f.stat().st_mtime < cutoff:
+                f.unlink()
+    except OSError:
+        pass
+
+
+def stream_frames(db: Session, tmdb_id: int) -> dict:
+    """A few stills from this VOD movie's stream, as data URIs."""
+    import base64
+    import hashlib
+    import shutil
+    from models.database import Provider
+
+    row = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
+    if row is None:
+        raise WrongMatchError(404, "This movie is not in Tentacle's library")
+    try:
+        url = Path(row.strm_path).read_text(encoding="utf-8").strip()
+    except (OSError, TypeError):
+        url = ""
+    if not url.startswith(("http://", "https://")):
+        raise WrongMatchError(409, "Could not read which stream this title plays (its .strm file is missing)")
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise WrongMatchError(503, "ffmpeg is not available on the Tentacle server")
+
+    provider = db.query(Provider).filter(Provider.id == row.provider_id).first() if row.provider_id else None
+    user_agent = (provider.user_agent if provider else None) or "TiviMate/4.7.0 (Linux; Android 12)"
+    minutes = probed_minutes(db, row) or row.runtime
+    offsets = frame_offsets(minutes)
+
+    key = hashlib.sha1(url.encode()).hexdigest()[:16]
+    cache = _frame_cache_dir()
+    _prune_frame_cache(cache)
+    frames = []
+    # One grab at a time: IPTV providers often allow a single connection.
+    with _frames_lock:
+        for sec in offsets:
+            path = cache / f"{key}_{sec}.jpg"
+            data = None
+            try:
+                if path.exists() and path.stat().st_size:
+                    data = path.read_bytes()
+            except OSError:
+                data = None
+            if data is None:
+                data = _grab_frame(ffmpeg, url, user_agent, sec)
+                if data:
+                    try:
+                        cache.mkdir(parents=True, exist_ok=True)
+                        path.write_bytes(data)
+                    except OSError as e:
+                        logger.debug(f"[WrongMatch] Frame cache write failed: {e}")
+            if data:
+                frames.append({"at_minutes": round(sec / 60),
+                               "image": "data:image/jpeg;base64," + base64.b64encode(data).decode()})
+    if not frames:
+        raise WrongMatchError(502, "Couldn't grab pictures from the stream — the provider may be busy "
+                                   "(many allow only one stream at a time). Try again in a minute.")
+    return {"frames": frames}
