@@ -1153,6 +1153,12 @@ def _sync_movies(
         ).all()
     }
 
+    # Streams an admin reported as mislabelled ("Wrong movie"): never imported
+    # again, whatever the provider calls them and whichever category they're in.
+    from services.wrong_match import blocked_keys, is_blocked
+    blocked = blocked_keys(db, provider.id, "movie")
+    blocked_skips = 0
+
     output_dir.mkdir(parents=True, exist_ok=True)
 
     for cat in whitelisted_cats:
@@ -1190,6 +1196,11 @@ def _sync_movies(
         # Phase 1: Clean titles and split into known vs needs-TMDB
         cleaned = []
         for stream in streams:
+            if blocked and is_blocked(
+                    blocked, stream.get("stream_id"),
+                    client.movie_stream_url(stream.get("stream_id"), stream.get("container_extension", "mp4"))):
+                blocked_skips += 1
+                continue
             raw_name = stream.get("name", "")
             clean_name, year = clean_title(raw_name)
             cleaned.append((stream, raw_name, clean_name, year))
@@ -1455,6 +1466,8 @@ def _sync_movies(
         f"{stats['skipped']} skipped (no TMDB), {stats['failed']} failed"
     )
 
+    if blocked_skips:
+        logger.info(f"[Sync] Skipped {blocked_skips} blocked (mislabelled) stream(s) from {provider.name}")
     return stats, feed, category_stats, {"seen_ids": seen_ids_all, "fetch_ok": fetch_ok}
 
 

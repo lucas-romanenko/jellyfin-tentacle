@@ -185,6 +185,18 @@ def run_scheduled_sync():
         except Exception as e:
             logger.error(f"Orphan sweep failed: {e}")
 
+        # Flag VOD movies that play a different film than their label (found
+        # once Jellyfin has probed them on first play). Same slot as the sweep:
+        # it reads the whole movie library.
+        try:
+            from services.wrong_match import check_runtime_mismatches
+            found = check_runtime_mismatches(db)
+            if found.get("flagged"):
+                log_activity(db, "wrong_match", f"{found['flagged']} VOD movie(s) may be the wrong film — "
+                                                f"see Library → Possible wrong movies")
+        except Exception as e:
+            logger.error(f"Wrong-match check failed: {e}")
+
         # EPG sync for Live TV providers + Jellyfin guide refresh
         logger.info("Syncing Live TV EPG data")
         try:

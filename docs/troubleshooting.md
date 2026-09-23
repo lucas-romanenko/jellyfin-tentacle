@@ -65,6 +65,20 @@ The Jellyfin plugin couldn't get an answer from the Tentacle dashboard, so it sa
 | Tentacle didn't accept this account | Open the Tentacle dashboard once so setup finishes, then check that the account exists in Jellyfin |
 | Can't reach Tentacle | Check that the Tentacle container is running and the plugin's Tentacle URL is correct |
 
+### A title plays a completely different movie
+
+Your IPTV provider labelled that stream wrong: its catalogue says one film, but the stream is another. Tentacle can only go by the provider's label, so the library shows the right poster and "In Library" while Play gives you something else. It also hides the real film: if you requested it, Radarr's search looks already satisfied.
+
+Fix it from the title itself (admins only):
+
+- **Jellyfin web:** open the title, **⋯ → Wrong movie**
+- **Android TV:** the **Wrong movie** button on the title's page
+- **Dashboard:** open the title in Library, **Wrong movie?**
+
+This removes that copy and blocks that provider stream so the nightly sync never re-adds it. If you requested the real film, Radarr keeps searching for it. Blocked streams are listed under **Library → Possible wrong movies**, where you can unblock one.
+
+Tentacle also flags likely cases itself: each night it compares the real length of every IPTV movie that has been played with the length the film should have. Titles that are far off appear in **Library → Possible wrong movies** with **Wrong movie** / **It's fine** buttons. Titles nobody has played yet can't be checked: Jellyfin only measures a stream the first time it plays.
+
 ### Download progress stuck at 0%
 
 Tentacle triggers `RefreshMonitoredDownloads` on Radarr/Sonarr every 5 seconds to get fresh progress. If progress stays at 0%, the download client may not be reporting progress correctly, or the download just started.

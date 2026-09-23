@@ -1,0 +1,240 @@
+"""Mislabelled provider streams: "Wrong movie" blocks + removes; a runtime check flags.
+
+Found live: provider stream 188327 is listed as "The Decline of Western
+Civilization" (1981) but plays "The Decline" (2020). Tentacle trusted the label,
+showed the documentary as In Library, and hid the user's Radarr request for it.
+
+Run from the tentacle/ directory:  python -m unittest discover -s tests
+"""
+import unittest
+from pathlib import Path as _RealPath
+from unittest import mock
+
+from web_stubs import _ensure_web_stubs  # noqa: E402
+
+_ensure_web_stubs()
+
+import models.database as mdb  # noqa: E402
+from models.database import BlockedStream, DownloadRequest, MatchSuspect, Movie  # noqa: E402
+from nightly_harness import NightlyHarness, FakeTMDB  # noqa: E402
+from services import wrong_match  # noqa: E402
+
+
+class TestStreamKey(unittest.TestCase):
+    def test_xtream_url_is_keyed_by_stream_id(self):
+        self.assertEqual("188327", wrong_match.stream_key_for_url(
+            "http://cf.example/movie/user/pass/188327.mp4\n"))
+        self.assertEqual("42", wrong_match.stream_key_for_url("http://x/movie/u/p/42.mkv"))
+
+    def test_m3u_url_is_keyed_by_the_url(self):
+        url = "http://m3u.example/vod/some-film.m3u8?token=abc"
+        self.assertEqual(url, wrong_match.stream_key_for_url(url))
+
+    def test_blank(self):
+        self.assertIsNone(wrong_match.stream_key_for_url("  "))
+
+    def test_is_blocked(self):
+        self.assertTrue(wrong_match.is_blocked({"7"}, 7))
+        self.assertTrue(wrong_match.is_blocked({"http://u"}, 9, "http://u"))
+        self.assertFalse(wrong_match.is_blocked({"7"}, 8, "http://u"))
+        self.assertFalse(wrong_match.is_blocked(set(), 7))
+
+
+class FakeJf:
+    """Records deletes, and what Tentacle's DB looked like at that moment."""
+
+    def __init__(self, db):
+        self.db = db
+        self.deleted = []
+        self.row_present_at_delete = None
+
+    def __call__(self, *a, **k):
+        return self
+
+    def search_by_tmdb_id(self, tmdb_id, media_type="Movie", **k):
+        return {"Id": f"jf-{tmdb_id}"}
+
+    def delete_item(self, item_id):
+        tmdb = int(item_id.split("-")[1])
+        self.row_present_at_delete = self.db.query(Movie).filter(Movie.tmdb_id == tmdb).first() is not None
+        self.deleted.append(item_id)
+        return True
+
+
+class _Base(NightlyHarness):
+    def setUp(self):
+        super().setUp()
+        self.add_category("1", name="NETFLIX MOVIES")
+        self.add_category("2", name="DOCS")
+        # Enough titles that one removal never trips the prune safety limits.
+        self.catalogue_movies("1", [f"Movie {i}" for i in range(60)])
+        self.catalogue_movies("2", [f"Doc {i}" for i in range(60)], first_tmdb=3000)
+        self.night()
+        mdb.set_setting(self.db, "jellyfin_url", "http://jf")
+        mdb.set_setting(self.db, "jellyfin_api_key", "k")
+        self.jf = FakeJf(self.db)
+        for p in (mock.patch("services.jellyfin.JellyfinService", self.jf),
+                  mock.patch("routers.library._cleanup_playlists_all_users")):
+            p.start()
+            self.addCleanup(p.stop)
+        self.tmdb = FakeTMDB.ids["Movie 9"]   # the "mislabelled" one (stream id == tmdb id here)
+
+    def report(self, tmdb_id=None):
+        return wrong_match.block_and_remove_movie(self.db, tmdb_id or self.tmdb, user_name="Lucas")
+
+
+class TestWrongMovie(_Base):
+    def test_removes_the_copy_and_blocks_the_stream(self):
+        strm = _RealPath(self.movie(self.tmdb).strm_path)
+        self.assertTrue(strm.exists())
+        r = self.report()
+        self.db.expire_all()
+        self.assertIsNone(self.movie(self.tmdb))
+        self.assertFalse(strm.exists())
+        self.assertFalse(strm.with_suffix(".nfo").exists())
+        self.assertEqual(str(self.tmdb), r["blocked"])
+        self.assertEqual([f"jf-{self.tmdb}"], self.jf.deleted)
+        b = self.db.query(BlockedStream).one()
+        self.assertEqual((self.provider.id, "movie", str(self.tmdb), "Lucas"),
+                         (b.provider_id, b.media_type, b.stream_key, b.blocked_by))
+
+    def test_never_comes_back_on_later_nights(self):
+        self.report()
+        for _ in range(3):
+            self.night()
+        self.assertIsNone(self.movie(self.tmdb), "the mislabelled stream was re-imported")
+        self.assertIsNotNone(self.movie(FakeTMDB.ids["Movie 8"]), "neighbours untouched")
+
+    def test_blocked_in_every_category_it_appears_in(self):
+        self.report()
+        # The provider lists the same stream under a second category.
+        self.client.movies["2"].append(("Movie 9", self.tmdb))
+        self.night()
+        self.assertIsNone(self.movie(self.tmdb))
+
+    def test_a_correct_stream_for_the_same_film_still_imports(self):
+        self.report()
+        self.client.movies["2"].append(("Movie 9", 99999))   # a different, genuine stream
+        self.night()
+        row = self.movie(self.tmdb)
+        self.assertIsNotNone(row)
+        self.assertIn("99999", _RealPath(row.strm_path).read_text())
+
+    def test_unblocking_lets_it_back_in(self):
+        self.report()
+        self.db.query(BlockedStream).delete()
+        self.db.commit()
+        self.night()
+        self.assertIsNotNone(self.movie(self.tmdb))
+
+    def test_the_request_for_the_real_film_survives(self):
+        """Radarr is searching for the REAL film; its request must not be lost.
+        The Jellyfin delete fires the plugin's clean-up, which drops requests
+        for any title still in Tentacle's DB — so the row goes first."""
+        admin = mdb.TentacleUser(jellyfin_user_id="a" * 32, display_name="Lucas", is_admin=True)
+        self.db.add(admin)
+        self.db.commit()
+        self.db.add(DownloadRequest(tmdb_id=self.tmdb, media_type="movie", user_id=admin.id))
+        self.db.commit()
+        self.report()
+        self.assertFalse(self.jf.row_present_at_delete, "Jellyfin item deleted before Tentacle's row")
+        self.assertEqual(1, self.db.query(DownloadRequest).count())
+
+    def test_reporting_twice_does_not_duplicate_the_block(self):
+        self.report()
+        self.night()
+        self.client.movies["1"] = [(t, s) for t, s in self.client.movies["1"]]  # unchanged
+        with self.assertRaises(wrong_match.WrongMatchError) as e:
+            self.report()  # already gone
+        self.assertEqual(404, e.exception.status)
+        self.assertEqual(1, self.db.query(BlockedStream).count())
+
+    def test_a_download_cannot_be_reported(self):
+        self.db.add(Movie(tmdb_id=424242, title="Downloaded", source="radarr"))
+        self.db.commit()
+        with self.assertRaises(wrong_match.WrongMatchError) as e:
+            self.report(424242)
+        self.assertEqual(400, e.exception.status)
+
+    def test_without_its_strm_it_cannot_be_blocked_and_nothing_is_removed(self):
+        _RealPath(self.movie(self.tmdb).strm_path).unlink()
+        with self.assertRaises(wrong_match.WrongMatchError) as e:
+            self.report()
+        self.assertEqual(409, e.exception.status)
+        self.assertIsNotNone(self.movie(self.tmdb))
+        self.assertEqual(0, self.db.query(BlockedStream).count())
+
+    def test_it_is_audited(self):
+        self.report()
+        log = self.db.query(mdb.DeletionLog).filter(mdb.DeletionLog.kind == "wrong-match").one()
+        self.assertEqual("Movie 9", log.name)
+        self.assertIn(str(self.tmdb), log.detail)
+
+
+class TestRuntimeCheck(_Base):
+    def listing(self, **probed):
+        """probed: tmdb_id -> probed minutes."""
+        return [{"Id": f"jf-{t}", "ProviderIds": {"Tmdb": str(t)},
+                 "MediaSources": [{"RunTimeTicks": int(m * 600_000_000)}]} for t, m in probed.items()]
+
+    def run_check(self, items):
+        self.jf.query_movies_with_media_sources = lambda: items
+        return wrong_match.check_runtime_mismatches(self.db)
+
+    def set_runtime(self, tmdb, minutes):
+        self.movie(tmdb).runtime = minutes
+        self.db.commit()
+
+    def test_a_different_film_is_flagged(self):
+        self.set_runtime(self.tmdb, 100)          # TMDB: the 1981 documentary
+        r = self.run_check(self.listing(**{str(self.tmdb): 83}))   # the stream: 83 min
+        self.assertEqual(1, r["flagged"])
+        s = self.db.query(MatchSuspect).one()
+        self.assertEqual((100, 83, "Movie 9"), (s.expected_minutes, s.actual_minutes, s.title))
+
+    def test_small_differences_are_not(self):
+        self.set_runtime(self.tmdb, 100)
+        self.assertEqual(0, self.run_check(self.listing(**{str(self.tmdb): 92}))["flagged"])   # -8 min
+        self.set_runtime(self.tmdb, 200)
+        self.assertEqual(0, self.run_check(self.listing(**{str(self.tmdb): 180}))["flagged"])  # -10%
+
+    def test_unprobed_titles_are_skipped(self):
+        self.set_runtime(self.tmdb, 100)
+        items = [{"Id": "x", "ProviderIds": {"Tmdb": str(self.tmdb)}, "MediaSources": [{}]}]
+        self.assertEqual(0, self.run_check(items)["checked"])
+
+    def test_a_dismissed_flag_stays_dismissed(self):
+        self.set_runtime(self.tmdb, 100)
+        self.run_check(self.listing(**{str(self.tmdb): 83}))
+        self.db.query(MatchSuspect).update({"dismissed": True})
+        self.db.commit()
+        self.assertEqual(0, self.run_check(self.listing(**{str(self.tmdb): 83}))["flagged"])
+        self.assertTrue(self.db.query(MatchSuspect).one().dismissed)
+
+    def test_a_flag_that_no_longer_applies_is_cleared(self):
+        self.set_runtime(self.tmdb, 100)
+        self.run_check(self.listing(**{str(self.tmdb): 83}))
+        self.run_check(self.listing(**{str(self.tmdb): 99}))
+        self.assertEqual(0, self.db.query(MatchSuspect).count())
+
+    def test_a_failed_listing_changes_nothing(self):
+        self.set_runtime(self.tmdb, 100)
+        self.run_check(self.listing(**{str(self.tmdb): 83}))
+        r = self.run_check(None)
+        self.assertIn("error", r)
+        self.assertEqual(1, self.db.query(MatchSuspect).count())
+
+    def test_reporting_a_flagged_title_clears_its_flag(self):
+        self.set_runtime(self.tmdb, 100)
+        self.run_check(self.listing(**{str(self.tmdb): 83}))
+        self.report()
+        self.assertEqual(0, self.db.query(MatchSuspect).count())
+
+    def test_downloads_are_not_checked(self):
+        self.db.add(Movie(tmdb_id=777, title="Download", source="radarr", runtime=100))
+        self.db.commit()
+        self.assertEqual(0, self.run_check(self.listing(**{"777": 50}))["checked"])
+
+
+if __name__ == "__main__":
+    unittest.main()

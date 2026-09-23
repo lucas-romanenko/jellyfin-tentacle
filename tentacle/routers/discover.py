@@ -93,6 +93,13 @@ JF_IDS_TTL = 300  # 5 minutes, matching ARR_IDS_TTL
 JF_IDS_FAILURE_TTL = 30
 
 
+def bust_known_ids_cache():
+    """A title left the library (e.g. a wrong VOD match was removed): make the
+    next Discover read ask Jellyfin again instead of serving "In Library"."""
+    for k in ("movie", "series"):
+        _jf_ids_cache["ts"][k] = 0
+
+
 def _get_jellyfin_tmdb_items(media_type: str) -> dict:
     """Cached {tmdb_id: jellyfin_item_id} for one media type.
 
@@ -533,6 +540,16 @@ def get_discover_detail(
                 details["can_delete"] = bool(has_request)
         except HTTPException:
             pass
+
+    # can_report_wrong: an admin may flag a VOD movie as a different film than
+    # its label ("Wrong movie") — blocks the provider stream and removes it.
+    details["can_report_wrong"] = False
+    if media_type == "movie" and db_item is not None \
+            and (getattr(db_item, "source", "") or "").startswith("provider_"):
+        try:
+            details["can_report_wrong"] = bool(get_user_from_request(request, db).is_admin)
+        except Exception:
+            pass  # a permission flag must never break the detail itself
 
     # can_manage: may this viewer "search again" / remove a requested title
     # (in Radarr/Sonarr, no file yet)? Same rule: admin or the requester.
