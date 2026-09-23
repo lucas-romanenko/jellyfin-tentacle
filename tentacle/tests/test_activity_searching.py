@@ -3,6 +3,7 @@
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta
 from unittest import mock
@@ -290,3 +291,104 @@ class TestActivityEndpoint(_Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSearchesStartedInSonarr(unittest.TestCase):
+    """Re-monitor an old episode in Sonarr and press Search: Activity must show it."""
+
+    OLD_SHOW = {"id": 20, "title": "Old Show", "tmdbId": 200, "tvdbId": 2000, "year": 2010,
+                "monitored": True, "added": _iso(NOW - timedelta(days=900)), "images": []}
+
+    def _get(self, recent_records):
+        def get(url, headers=None, params=None, timeout=None):
+            if url.endswith("/api/v3/wanted/missing"):
+                if params["sortKey"] == "episodes.lastSearchTime":
+                    return _Resp({"records": recent_records})
+                return _Resp(SONARR_MISSING)
+            raise AssertionError(url)
+        return get
+
+    def test_an_old_episode_just_searched_is_found_and_listed_first(self):
+        old = dict(_ep(self.OLD_SHOW, 1, 3, _iso(NOW - timedelta(days=800))), id=999,
+                   lastSearchTime=_iso(NOW - timedelta(minutes=2)))
+        with mock.patch.object(activity.requests, "get", side_effect=self._get([old])):
+            out = activity._fetch_sonarr_searching("http://arr:8989", "k")
+        by = {x["title"]: x for x in out}
+        self.assertIn("Old Show", by, "not in the newest-aired page, found via last searched")
+        self.assertEqual("S01E03", by["Old Show"]["episode"])
+        self.assertIsNotNone(by["Old Show"]["last_searched"])
+
+    def test_the_second_page_failing_keeps_the_first(self):
+        def get(url, headers=None, params=None, timeout=None):
+            if params["sortKey"] == "episodes.lastSearchTime":
+                raise OSError("old Sonarr")
+            return _Resp(SONARR_MISSING)
+        with mock.patch.object(activity.requests, "get", side_effect=get):
+            self.assertEqual({"Show A", "Show B"},
+                             {x["title"] for x in activity._fetch_sonarr_searching("http://arr:8989", "k")})
+
+    def test_an_episode_on_both_pages_counts_once(self):
+        dup = dict(SONARR_MISSING["records"][0], id=5)
+        data = {"records": [dup]}
+        with mock.patch.object(activity.requests, "get", return_value=_Resp(data)):
+            out = activity._fetch_sonarr_searching("http://arr:8989", "k")
+        self.assertEqual(1, out[0]["missing_episodes"])
+
+
+class TestSearchOrdering(_Base):
+    def test_just_searched_comes_first(self):
+        old = {"title": "Old", "media_type": "series", "tmdb_id": 1,
+               "waiting_since": _iso(NOW - timedelta(days=900)), "last_searched": _iso(NOW - timedelta(minutes=1))}
+        new = {"title": "New", "media_type": "series", "tmdb_id": 2,
+               "waiting_since": _iso(NOW - timedelta(hours=3)), "last_searched": None}
+        with mock.patch.object(activity, "_fetch_radarr_wanted", return_value={"unreleased": [], "searching": []}), \
+                mock.patch.object(activity, "_fetch_sonarr_unreleased", return_value=[]), \
+                mock.patch.object(activity, "_fetch_sonarr_file_counts", return_value={}), \
+                mock.patch.object(activity, "_fetch_sonarr_searching", return_value=[new, old]), \
+                mock.patch.object(activity, "_enrich_posters"):
+            out = activity._get_wanted(self.db)["searching"]
+        self.assertEqual(["Old", "New"], [x["title"] for x in out])
+        self.assertEqual(old["last_searched"], out[0]["waiting_since"], "the wait counts from the search")
+
+
+class TestCommandWatch(_Base):
+    def setUp(self):
+        super().setUp()
+        activity._command_watch.update(ts=0, seen=None)
+        self.commands = {"radarr": [], "sonarr": []}
+
+        def get(url, headers=None, params=None, timeout=None):
+            which = "radarr" if ":7878" in url else "sonarr"
+            return _Resp(self.commands[which])
+        p = mock.patch.object(activity.requests, "get", side_effect=get)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def poll(self):
+        activity._command_watch["ts"] = 0  # skip the throttle
+        activity._unreleased_cache.update(data={"cached": True}, ts=time.time())
+        activity._watch_arr_searches(self.db)
+        return activity._unreleased_cache["data"] is None
+
+    def test_a_search_started_in_sonarr_refreshes_the_list(self):
+        self.assertFalse(self.poll(), "first read only learns the baseline")
+        self.commands["sonarr"] = [{"id": 7, "name": "EpisodeSearch", "status": "started"}]
+        self.assertTrue(self.poll())
+        self.assertFalse(self.poll(), "nothing new")
+        self.commands["sonarr"] = [{"id": 7, "name": "EpisodeSearch", "status": "completed"}]
+        self.assertTrue(self.poll(), "finished — whatever it found is in the lists now")
+
+    def test_other_commands_are_ignored(self):
+        self.poll()
+        self.commands["radarr"] = [{"id": 1, "name": "RefreshMonitoredDownloads", "status": "started"}]
+        self.assertFalse(self.poll())
+
+    def test_movie_searches_count(self):
+        self.poll()
+        self.commands["radarr"] = [{"id": 2, "name": "MoviesSearch", "status": "queued"}]
+        self.assertTrue(self.poll())
+
+    def test_throttled(self):
+        activity._watch_arr_searches(self.db)
+        with mock.patch.object(activity.requests, "get", side_effect=AssertionError("polled")):
+            activity._watch_arr_searches(self.db)
