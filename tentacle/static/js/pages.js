@@ -284,6 +284,7 @@ async function loadLibrary() {
     loadLibSyncSummary();
     checkStaleFiles();
     checkNewContentNotice();
+    loadMatchSuspects();
   }
   loadLibDownloads();
   await fetchLibraryPage();
@@ -1579,6 +1580,9 @@ async function showMediaDetail(tmdbId, mediaType) {
             <input type="checkbox" ${data.strm_managed ? 'checked' : ''} onchange="toggleStrmManaged('${mediaType}', ${tmdbId}, this.checked)">
             <span class="detail-follow-label">Manage .strm files</span>
           </label>` : ''}
+          ${data.is_vod && !isSeries && state.currentUser?.is_admin ? `<div style="margin-top:10px">
+            <button class="btn btn-danger btn-sm" title="The provider's stream is a different film than this title" onclick="reportWrongMovie(${tmdbId}, '${escapeJS(data.title || '')}')">Wrong movie?</button>
+          </div>` : ''}
           <div id="detail-trailer-slot" style="margin-top:10px"></div>
         </div>
       </div>
@@ -1595,6 +1599,65 @@ async function showMediaDetail(tmdbId, mediaType) {
   } catch (e) {
     document.getElementById('detail-body').innerHTML = '<div class="empty-state"><p>Failed to load details</p></div>';
   }
+}
+
+// ── Wrong movie: the provider's stream is a different film than its label ──
+async function reportWrongMovie(tmdbId, title) {
+  if (!confirm(
+    `Does "${title}" play a different film?\n\n` +
+    'Your IPTV provider labelled that stream wrong. This removes this copy from the library ' +
+    'and stops that stream from being added again (you can undo the block under Library).\n\n' +
+    'If you requested the real movie, Radarr keeps looking for it.'
+  )) return false;
+  try {
+    const r = await api(`/api/library/wrong-match/movie/${tmdbId}`, { method: 'POST' });
+    toast(r.message || `Removed the wrong copy of ${title}`);
+    closeModal('modal-media-detail');
+    loadMatchSuspects();
+    if (typeof fetchLibraryPage === 'function') { pages.lib.offset = 0; pages.lib.items = []; fetchLibraryPage(); }
+    return true;
+  } catch (e) {
+    toast(e.message, 'error');
+    return false;
+  }
+}
+
+async function loadMatchSuspects() {
+  const card = document.getElementById('wrong-match-card');
+  if (!card || !state.currentUser?.is_admin) return;
+  try {
+    const [s, b] = await Promise.all([api('/api/library/match-suspects'), api('/api/library/blocked-streams')]);
+    const suspects = s.suspects || [], blocked = b.blocked || [];
+    if (!suspects.length && !blocked.length) { card.style.display = 'none'; return; }
+    card.style.display = '';
+    document.getElementById('wrong-match-list').innerHTML = suspects.length ? suspects.map(x => `
+      <div class="wm-row">
+        ${x.poster_path ? `<img src="${_imgUrl(x.poster_path, 'w92')}" class="wm-poster" loading="lazy" onerror="this.style.visibility='hidden'">` : '<div class="wm-poster"></div>'}
+        <div class="wm-info">
+          <div class="wm-title">${escapeAttr(x.title || '')}</div>
+          <div class="wm-meta">Plays <strong>${x.actual_minutes} min</strong> — this film is ${x.expected_minutes} min</div>
+        </div>
+        <div class="wm-actions">
+          <button class="btn btn-danger btn-sm" onclick="reportWrongMovie(${x.tmdb_id}, '${escapeJS(x.title || '')}')">Wrong movie</button>
+          <button class="btn btn-secondary btn-sm" onclick="dismissMatchSuspect(${x.tmdb_id})">It's fine</button>
+        </div>
+      </div>`).join('') : '<div class="wm-meta" style="padding:4px 0">Nothing flagged right now.</div>';
+    const bl = document.getElementById('wrong-match-blocked');
+    bl.innerHTML = blocked.length ? `<details><summary>${blocked.length} blocked stream${blocked.length === 1 ? '' : 's'}</summary>` +
+      blocked.map(x => `<div class="wm-blocked-row"><span>${escapeAttr(x.title || '')} <span class="wm-meta">· ${escapeAttr(x.provider)} stream ${escapeAttr(x.stream)}</span></span>
+        <button class="btn btn-secondary btn-sm" onclick="unblockStream(${x.id})">Unblock</button></div>`).join('') + '</details>' : '';
+  } catch (e) { card.style.display = 'none'; }
+}
+
+async function dismissMatchSuspect(tmdbId) {
+  try { await api(`/api/library/match-suspects/${tmdbId}/dismiss`, { method: 'POST' }); loadMatchSuspects(); }
+  catch (e) { toast(e.message, 'error'); }
+}
+
+async function unblockStream(id) {
+  if (!confirm('Unblock this stream? It will be imported again on the next sync.')) return;
+  try { await api(`/api/library/blocked-streams/${id}`, { method: 'DELETE' }); toast('Unblocked'); loadMatchSuspects(); }
+  catch (e) { toast(e.message, 'error'); }
 }
 
 async function toggleStrmManaged(mediaType, tmdbId, enabled) {
@@ -6404,6 +6467,8 @@ async function loadHealthDeletions() {
   const fns = [
     // Activity (inline handlers)
     _activityPosterFailed, activitySearchAgain, activityRemove,
+    // Wrong movie (mislabelled provider streams)
+    reportWrongMovie, dismissMatchSuspect, unblockStream,
     // Lists page
     loadLists, loadListCards,
     saveQuickList, onQuickListUrlInput, onQuickListNameInput, onModalUrlInput, onModalNameInput,

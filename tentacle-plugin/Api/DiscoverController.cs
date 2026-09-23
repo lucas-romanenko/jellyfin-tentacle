@@ -420,6 +420,36 @@ public class TentacleDiscoverController : ControllerBase
     public Task<ActionResult> ArrRemove([FromBody] JsonElement body) =>
         ForwardArrAction("remove", body, AddClient);
 
+    /// <summary>
+    /// "Wrong movie": this VOD movie plays a different film than its label. Tentacle
+    /// blocks the provider stream and removes the copy. Admin only (checked by Tentacle).
+    /// </summary>
+    [HttpPost("WrongMatch/movie/{tmdbId}")]
+    [Authorize]
+    public async Task<ActionResult> ReportWrongMatch(int tmdbId)
+    {
+        var baseUrl = GetTentacleUrl();
+        if (string.IsNullOrEmpty(baseUrl))
+        {
+            return BadRequest(new { detail = "Tentacle URL not configured" });
+        }
+
+        try
+        {
+            var response = await AddClient.PostAsync(
+                AppendUserId($"{baseUrl}/api/library/wrong-match/movie/{tmdbId}"),
+                new StringContent("{}", System.Text.Encoding.UTF8, "application/json"));
+            var result = await response.Content.ReadAsStringAsync();
+            return new ContentResult { Content = result, ContentType = "application/json", StatusCode = (int)response.StatusCode };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("[Tentacle Discover] Wrong-match report failed: {Error}", ex.Message);
+            var (reason, message) = DescribeFailure(ex);
+            return StatusCode(502, new { detail = message, error = reason });
+        }
+    }
+
     private async Task<ActionResult> ForwardArrAction(string action, JsonElement body, HttpClient client)
     {
         var baseUrl = GetTentacleUrl();

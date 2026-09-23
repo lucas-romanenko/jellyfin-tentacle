@@ -1988,7 +1988,7 @@ var Details = {
                 fetch(serverUrl + '/TentacleDiscover/Detail/' + mediaType + '/' + tmdbId, { headers: headers })
                     .then(function(r) { return r.ok ? r.json() : null; })
                     .then(function(detail) {
-                        self._buildMoreMenu(item, user, detail && detail.can_delete);
+                        self._buildMoreMenu(item, user, detail && detail.can_delete, detail && detail.can_report_wrong);
                     })
                     .catch(function() {
                         self._buildMoreMenu(item, user, false);
@@ -2001,7 +2001,7 @@ var Details = {
         });
     },
 
-    _buildMoreMenu: function(item, user, tentacleCanDelete) {
+    _buildMoreMenu: function(item, user, tentacleCanDelete, tentacleCanReportWrong) {
         var self = this;
         var policy = (user && user.Policy) || {};
         var isAdmin = policy.IsAdministrator || false;
@@ -2040,6 +2040,12 @@ var Details = {
         // Delete — only for downloaded content (Tentacle-controlled permission)
         if (tentacleCanDelete) {
             menuItems.push({ id: 'delete', name: 'Delete', icon: '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="M280-120q-33 0-56.5-23.5T200-200v-520h-40v-80h200v-40h240v40h200v80h-40v520q0 33-23.5 56.5T680-120H280Zm400-600H280v520h400v-520ZM360-280h80v-360h-80v360Zm160 0h80v-360h-80v360ZM280-720v520-520Z"/></svg>', className: 'moonfin-more-item-danger' });
+        }
+
+        // Wrong movie — admin, IPTV (VOD) movie: the provider's stream is a different
+        // film than its label. Blocks the stream and removes this copy.
+        if (tentacleCanReportWrong) {
+            menuItems.push({ id: 'wrongmovie', name: 'Wrong movie', icon: '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="m40-120 440-760 440 760H40Zm138-80h604L480-720 178-200Zm302-40q17 0 28.5-11.5T520-280q0-17-11.5-28.5T480-320q-17 0-28.5 11.5T440-280q0 17 11.5 28.5T480-240Zm-40-120h80v-200h-80v200Z"/></svg>', className: 'moonfin-more-item-danger' });
         }
 
         var hasAdminItems = false;
@@ -2223,7 +2229,75 @@ var Details = {
             case 'delete':
                 self.confirmDelete(item);
                 break;
+            case 'wrongmovie':
+                self.confirmWrongMovie(item);
+                break;
         }
+    },
+
+    confirmWrongMovie: function(item) {
+        var self = this;
+        var serverUrl = this.getServerUrl();
+        var headers = this.getAuthHeaders();
+        var tmdbId = item.ProviderIds && item.ProviderIds.Tmdb;
+        if (!tmdbId) return;
+
+        var overlay = document.createElement('div');
+        overlay.className = 'moonfin-more-overlay';
+        overlay.innerHTML = '<div class="moonfin-more-menu">' +
+            '<h3 class="moonfin-more-title">Wrong movie?</h3>' +
+            '<p style="color:rgba(255,255,255,0.75);margin:0 0 20px;text-align:center;line-height:1.5">' +
+                'Use this when <strong>' + this.esc(item.Name || 'this title') + '</strong> plays a different film.<br>' +
+                'Your IPTV provider labelled that stream wrong. This removes this copy from the library ' +
+                'and stops the stream from being added again.<br>' +
+                '<span style="color:rgba(255,255,255,0.55);font-size:13px">If you requested the real movie, Radarr keeps looking for it.</span></p>' +
+            '<div style="display:flex;gap:12px;justify-content:center">' +
+                '<button class="moonfin-more-item moonfin-focusable moonfin-delete-cancel" tabindex="0"><span class="moonfin-more-item-text">Cancel</span></button>' +
+                '<button class="moonfin-more-item moonfin-focusable moonfin-more-item-danger moonfin-delete-confirm" tabindex="0"><span class="moonfin-more-item-text">Remove wrong copy</span></button>' +
+            '</div>' +
+        '</div>';
+
+        var closeOverlay = function() {
+            if (overlay._escHandler) document.removeEventListener('keydown', overlay._escHandler, true);
+            overlay.remove();
+        };
+        overlay._escHandler = function(e) {
+            if (e.key === 'Escape' || e.keyCode === 27 || e.keyCode === 461 || e.keyCode === 10009) {
+                e.preventDefault();
+                e.stopPropagation();
+                closeOverlay();
+            }
+        };
+        document.addEventListener('keydown', overlay._escHandler, true);
+        overlay.addEventListener('click', function(e) { if (e.target === overlay) closeOverlay(); });
+        overlay.querySelector('.moonfin-delete-cancel').addEventListener('click', closeOverlay);
+
+        var confirmBtn = overlay.querySelector('.moonfin-delete-confirm');
+        confirmBtn.addEventListener('click', function() {
+            confirmBtn.disabled = true;
+            var url = serverUrl + '/TentacleDiscover/WrongMatch/movie/' + tmdbId;
+            var uid = (window.ApiClient && window.ApiClient.getCurrentUserId) ? window.ApiClient.getCurrentUserId() : null;
+            if (uid) url += '?userId=' + encodeURIComponent(uid);
+            fetch(url, { method: 'POST', headers: headers })
+                .then(function(resp) {
+                    return resp.json().catch(function() { return {}; }).then(function(body) {
+                        closeOverlay();
+                        if (resp.ok) {
+                            self.showToast((body && body.message) || 'Removed the wrong copy');
+                            self.hide();
+                        } else {
+                            self.showToast((body && body.detail) || ('Failed (HTTP ' + resp.status + ')'));
+                        }
+                    });
+                })
+                .catch(function() {
+                    closeOverlay();
+                    self.showToast("Can't reach the server right now");
+                });
+        });
+
+        document.body.appendChild(overlay);
+        setTimeout(function() { overlay.querySelector('.moonfin-delete-cancel').focus(); }, 50);
     },
 
     confirmDelete: function(item) {

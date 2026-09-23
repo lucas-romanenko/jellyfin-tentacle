@@ -232,6 +232,32 @@ class JellyfinService:
 
         return None
 
+    def query_movies_with_media_sources(self, page_size: int = 2000) -> Optional[List[dict]]:
+        """Every movie with ProviderIds + MediaSources (for probed lengths), paged.
+
+        None — not [] — when any page fails: a partial listing must not read as
+        "these titles are gone" to a caller that clears flags.
+        """
+        items, start = [], 0
+        path = f"/Users/{self.user_id}/Items" if self.user_id else "/Items"
+        while True:
+            try:
+                data = self._get(path, params={
+                    "Recursive": "true", "IncludeItemTypes": "Movie",
+                    "Fields": "ProviderIds,MediaSources,Path", "EnableImages": "false",
+                    "StartIndex": start, "Limit": page_size,
+                })
+            except Exception as e:
+                logger.warning(f"[Jellyfin] Movie listing failed at {start}: {e}")
+                return None
+            if not isinstance(data, dict) or "Items" not in data:
+                return None
+            page = data["Items"]
+            items.extend(page)
+            start += len(page)
+            if not page or start >= (data.get("TotalRecordCount") or 0):
+                return items
+
     def get_tmdb_lookup(self, media_type: str = "Movie") -> dict:
         """Build a {tmdb_id: jellyfin_item} lookup for all items of a type.
 

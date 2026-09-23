@@ -1259,6 +1259,15 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
 .activity-countdown { font-size: 12px; font-weight: 500; color: rgb(117, 111, 226); }
 .activity-countdown.activity-searching { color: #FF9800; }
 .activity-empty { text-align: center; padding: 40px; color: var(--text3); font-size: 13px; }
+.wm-row { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-top: 1px solid var(--border); }
+.wm-row:first-child { border-top: 0; }
+.wm-poster { width: 36px; min-width: 36px; height: 54px; border-radius: 4px; object-fit: cover; background: var(--bg3); }
+.wm-info { flex: 1; min-width: 0; }
+.wm-title { color: var(--text); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wm-meta { font-size: 12px; color: var(--text3); }
+.wm-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.wm-blocked-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 0; }
+#wrong-match-blocked summary { cursor: pointer; color: var(--text3); font-size: 12px; }
 .activity-actions { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
 .activity-act-btn {
   font: inherit; font-size: 11px; padding: 3px 10px; border-radius: 5px; cursor: pointer;
@@ -2244,6 +2253,15 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
               <button class="btn btn-secondary btn-sm" id="new-content-live-btn" style="display:none" onclick="showPage('live-tv')">View Live TV Groups</button>
               <button class="btn btn-secondary btn-sm" onclick="dismissNewContentNotice()">Dismiss</button>
             </div>
+          </div>
+        </div>
+        <!-- VOD titles that play a different film than their label -->
+        <div class="card" id="wrong-match-card" style="display:none;margin-bottom:16px;border-left:3px solid var(--amber)">
+          <div style="padding:16px;font-size:13px;color:var(--text2);line-height:1.5">
+            <strong style="color:var(--amber)">Possible wrong movies</strong>
+            <p style="margin:4px 0 10px">These IPTV titles play much longer or shorter than the film they're labelled as — your provider probably put the wrong film under that name. Checked each night for titles that have been played.</p>
+            <div id="wrong-match-list"></div>
+            <div id="wrong-match-blocked" style="margin-top:10px"></div>
           </div>
         </div>
         <div class="modal-overlay" id="stale-confirm-modal" style="display:none">

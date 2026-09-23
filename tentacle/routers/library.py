@@ -778,3 +778,79 @@ def toggle_follow(tmdb_id: int, body: FollowBody, db: Session = Depends(get_db),
         db.commit()
 
     return {"success": True, "following": body.follow}
+
+
+# ── Wrong movie: mislabelled provider streams ─────────────────────────────────
+# See services/wrong_match.py. Admin only: removing a VOD title and blocking its
+# stream affects every user.
+
+@router.post("/wrong-match/movie/{tmdb_id}")
+def report_wrong_match(tmdb_id: int, db: Session = Depends(get_db),
+                       user: Optional[TentacleUser] = Depends(require_admin)):
+    """This VOD movie plays a different film: block its stream, remove the copy."""
+    from services.wrong_match import WrongMatchError, block_and_remove_movie
+    try:
+        result = block_and_remove_movie(db, tmdb_id, user_name=user.display_name if user else None)
+    except WrongMatchError as e:
+        raise HTTPException(e.status, str(e))
+    emit_library_event("movie_removed", {"tmdb_id": tmdb_id, "media_type": "movie"})
+    return result
+
+
+@router.get("/match-suspects", dependencies=[Depends(require_admin)])
+def list_match_suspects(db: Session = Depends(get_db)):
+    """VOD movies whose played length is far from their TMDB runtime."""
+    from models.database import MatchSuspect
+    rows = db.query(MatchSuspect).filter(MatchSuspect.dismissed == False).order_by(  # noqa: E712
+        MatchSuspect.detected_at.desc()).all()
+    posters = {m.tmdb_id: m.poster_path for m in db.query(Movie.tmdb_id, Movie.poster_path).filter(
+        Movie.tmdb_id.in_([r.tmdb_id for r in rows])).all()} if rows else {}
+    return {"suspects": [{
+        "tmdb_id": r.tmdb_id, "media_type": r.media_type, "title": r.title,
+        "expected_minutes": r.expected_minutes, "actual_minutes": r.actual_minutes,
+        "jellyfin_item_id": r.jellyfin_item_id, "poster_path": posters.get(r.tmdb_id),
+        "detected_at": r.detected_at.isoformat() + "Z" if r.detected_at else None,
+    } for r in rows]}
+
+
+@router.post("/match-suspects/{tmdb_id}/dismiss", dependencies=[Depends(require_admin)])
+def dismiss_match_suspect(tmdb_id: int, db: Session = Depends(get_db)):
+    """It really is the right film (a different cut, say) — stop flagging it."""
+    from models.database import MatchSuspect
+    row = db.query(MatchSuspect).filter(MatchSuspect.tmdb_id == tmdb_id,
+                                        MatchSuspect.media_type == "movie").first()
+    if not row:
+        raise HTTPException(404, "Not flagged")
+    row.dismissed = True
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/match-suspects/check", dependencies=[Depends(require_admin)])
+def check_match_suspects_now(db: Session = Depends(get_db)):
+    from services.wrong_match import check_runtime_mismatches
+    return check_runtime_mismatches(db)
+
+
+@router.get("/blocked-streams", dependencies=[Depends(require_admin)])
+def list_blocked_streams(db: Session = Depends(get_db)):
+    from models.database import BlockedStream, Provider
+    names = {p.id: p.name for p in db.query(Provider.id, Provider.name).all()}
+    return {"blocked": [{
+        "id": b.id, "provider": names.get(b.provider_id, f"provider {b.provider_id}"),
+        "media_type": b.media_type, "stream": b.stream_key if b.stream_key.isdigit() else "(stream URL)",
+        "tmdb_id": b.tmdb_id, "title": b.title, "reason": b.reason, "blocked_by": b.blocked_by,
+        "created_at": b.created_at.isoformat() + "Z" if b.created_at else None,
+    } for b in db.query(BlockedStream).order_by(BlockedStream.created_at.desc()).all()]}
+
+
+@router.delete("/blocked-streams/{block_id}", dependencies=[Depends(require_admin)])
+def unblock_stream(block_id: int, db: Session = Depends(get_db)):
+    """Undo a block; the stream is imported again on the next sync."""
+    from models.database import BlockedStream
+    row = db.query(BlockedStream).filter(BlockedStream.id == block_id).first()
+    if not row:
+        raise HTTPException(404, "Not blocked")
+    db.delete(row)
+    db.commit()
+    return {"ok": True}

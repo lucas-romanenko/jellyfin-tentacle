@@ -534,6 +534,53 @@ class ActivityLog(Base):
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 
+# ─── Mislabelled provider streams ─────────────────────────────────────────────
+
+class BlockedStream(Base):
+    """A provider stream that must never be imported again.
+
+    IPTV providers mislabel streams: one called "The Decline of Western
+    Civilization" served a different film entirely. Tentacle can only trust
+    the provider's name, so the fix is to remember the stream and skip it on
+    every sync. Keyed by the Xtream stream id, or the full stream URL for an M3U
+    provider (whose entries have no stable id).
+    """
+    __tablename__ = "blocked_streams"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    provider_id = Column(Integer, ForeignKey("providers.id"), nullable=False, index=True)
+    media_type = Column(String, nullable=False, default="movie")
+    stream_key = Column(String, nullable=False)    # stream id, or the stream URL
+    tmdb_id = Column(Integer, nullable=True)        # what it had been matched to
+    title = Column(String, nullable=True)
+    reason = Column(String, nullable=True)
+    blocked_by = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("provider_id", "media_type", "stream_key", name="uq_blocked_stream"),
+    )
+
+
+class MatchSuspect(Base):
+    """A VOD title whose real length is far from what TMDB says it should be —
+    likely a different film under the provider's label. Found once Jellyfin has
+    probed the stream (on first play); the admin removes it or dismisses it."""
+    __tablename__ = "match_suspects"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tmdb_id = Column(Integer, nullable=False)
+    media_type = Column(String, nullable=False, default="movie")
+    title = Column(String, nullable=True)
+    expected_minutes = Column(Integer, nullable=True)   # TMDB runtime
+    actual_minutes = Column(Integer, nullable=True)     # Jellyfin's probe of the stream
+    jellyfin_item_id = Column(String, nullable=True)
+    dismissed = Column(Boolean, default=False)
+    detected_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("tmdb_id", "media_type", name="uq_match_suspect"),
+    )
+
+
 # ─── Deletion Log ─────────────────────────────────────────────────────────────
 
 class DeletionLog(Base):
