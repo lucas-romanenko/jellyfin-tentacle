@@ -47,6 +47,8 @@ This is almost always a **category mismatch** between Radarr/Sonarr and your dow
 
 **Searching** lists titles Radarr/Sonarr are monitoring and that are already released, but that no download has started for yet. It shows how long each one has been waiting. Minutes is normal. Days usually means your indexers have no release that matches the quality profile. A movie still before its release date shows under **Upcoming Releases**, not here.
 
+Searches you start in Radarr or Sonarr themselves (say, re-monitoring an episode and pressing Search) show up here within a few seconds, at the top of the list, with the wait counted from that search.
+
 Open the title from Activity (on the TV, select the card) to act on it:
 
 - **Search again** asks Radarr/Sonarr to search right now (for a series, only the missing aired episodes).

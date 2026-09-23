@@ -27,7 +27,10 @@ router = APIRouter(prefix="/api/activity", tags=["activity"])
 # ── Separate cache for the wanted lists (expensive, rarely changes) ───────
 # Holds {"unreleased": [...], "searching": [...]}.
 _unreleased_cache: dict = {"data": None, "ts": 0}
-UNRELEASED_TTL = 300  # 5 minutes
+# The wanted lists are two or three large Radarr/Sonarr reads, so they are
+# cached; searches started in Radarr/Sonarr themselves are noticed through
+# their command lists (see _watch_arr_searches) and refresh it at once.
+UNRELEASED_TTL = 60
 SEARCHING_LIMIT = 20
 # Queue ids seen on the previous poll. When one disappears a download finished
 # (or was removed), so the wanted lists are re-read rather than showing that
@@ -37,6 +40,49 @@ _last_queue_keys: set = set()
 # ── Throttled refresh (don't spam Radarr/Sonarr command queue) ────────────
 _last_refresh: dict = {"radarr": 0, "sonarr": 0}
 REFRESH_INTERVAL = 5  # seconds between RefreshMonitoredDownloads calls
+
+
+# ── Searches started in Radarr/Sonarr themselves ──────────────────────────
+# Re-monitoring an episode and pressing Search in Sonarr changes nothing
+# Tentacle hears about: no webhook fires for it. Their command lists are cheap
+# to read, so a new or finished search there re-reads the wanted lists —
+# the title shows as Searching within seconds, not after the cache expires.
+SEARCH_COMMANDS = {"EpisodeSearch", "SeasonSearch", "SeriesSearch", "MissingEpisodeSearch",
+                   "MoviesSearch", "MissingMoviesSearch", "CutoffUnmetMoviesSearch",
+                   "CutOffUnmetEpisodeSearch"}
+COMMAND_WATCH_INTERVAL = 5
+_command_watch: dict = {"ts": 0, "seen": None}
+
+
+def _search_command_states(url: str, api_key: str) -> Optional[set]:
+    try:
+        r = requests.get(f"{url.rstrip('/')}/api/v3/command", headers={"X-Api-Key": api_key}, timeout=3)
+        r.raise_for_status()
+        return {(c.get("id"), c.get("status")) for c in (r.json() or [])
+                if c.get("name") in SEARCH_COMMANDS}
+    except Exception as e:
+        logger.debug(f"Command list read failed: {e}")
+        return None
+
+
+def _watch_arr_searches(db: Session) -> None:
+    """Drop the wanted cache when a search starts or finishes in Radarr/Sonarr."""
+    now = time.time()
+    if now - _command_watch["ts"] < COMMAND_WATCH_INTERVAL:
+        return
+    _command_watch["ts"] = now
+    states = set()
+    for prefix in ("radarr", "sonarr"):
+        url, key = get_setting(db, f"{prefix}_url"), get_setting(db, f"{prefix}_api_key")
+        if url and key:
+            got = _search_command_states(url, key)
+            if got is None:
+                return  # unknown this time — don't mistake it for a change
+            states |= {(prefix,) + x for x in got}
+    seen = _command_watch["seen"]
+    _command_watch["seen"] = states
+    if seen is not None and states - seen:
+        invalidate_wanted_cache()
 
 
 def _trigger_refresh_throttled(key: str, url: str, api_key: str) -> None:
@@ -150,6 +196,7 @@ def _fetch_radarr_wanted(url: str, api_key: str) -> dict:
                         "source": "radarr",
                         "status": "searching",
                         "waiting_since": _iso_date(m.get("added")),
+                        "last_searched": _iso_date(m.get("lastSearchTime")),
                         "radarr_poster": _extract_poster(m),
                     })
                 continue
@@ -218,21 +265,31 @@ def _fetch_sonarr_searching(url: str, api_key: str, file_counts: Optional[dict] 
     the series being added and the episode airing — so a new episode of a
     long-followed show counts from its air date, not from years ago.
     """
-    try:
+    def page(sort_key: str, size: int) -> list:
         r = requests.get(
             f"{url.rstrip('/')}/api/v3/wanted/missing",
             headers={"X-Api-Key": api_key},
-            params={"page": 1, "pageSize": 250, "monitored": "true",
+            params={"page": 1, "pageSize": size, "monitored": "true",
                     "includeSeries": "true",
-                    "sortKey": "episodes.airDateUtc", "sortDirection": "descending"},
+                    "sortKey": sort_key, "sortDirection": "descending"},
             timeout=15,
         )
         r.raise_for_status()
         body = r.json()
-        records = body.get("records", []) if isinstance(body, dict) else (body or [])
+        return body.get("records", []) if isinstance(body, dict) else (body or [])
+
+    try:
+        records = list(page("episodes.airDateUtc", 250))
     except Exception as e:
         logger.debug(f"Sonarr wanted/missing fetch failed: {e}")
         return []
+    # The newest-aired page misses an old episode someone just re-monitored and
+    # searched in a long backlog; the most recently searched ones catch it.
+    try:
+        seen_ids = {ep.get("id") for ep in records}
+        records += [ep for ep in page("episodes.lastSearchTime", 50) if ep.get("id") not in seen_ids]
+    except Exception as e:
+        logger.debug(f"Sonarr wanted/missing (recently searched) fetch failed: {e}")
 
     now = datetime.utcnow()
     by_series: dict = {}
@@ -253,9 +310,14 @@ def _fetch_sonarr_searching(url: str, api_key: str, file_counts: Optional[dict] 
         entry = by_series.get(sid)
         if entry is None:
             entry = by_series[sid] = {
-                "series": series, "episodes": [], "wanted_since": wanted_since,
+                "series": series, "episodes": [], "wanted_since": wanted_since, "last_searched": None,
             }
-        entry["episodes"].append((ep.get("seasonNumber", 0), ep.get("episodeNumber", 0)))
+        key = (ep.get("seasonNumber", 0), ep.get("episodeNumber", 0))
+        if key not in entry["episodes"]:
+            entry["episodes"].append(key)
+        searched = _parse_dt(ep.get("lastSearchTime"))
+        if searched and (entry["last_searched"] is None or searched > entry["last_searched"]):
+            entry["last_searched"] = searched
         if wanted_since > entry["wanted_since"]:
             entry["wanted_since"] = wanted_since
 
@@ -280,6 +342,7 @@ def _fetch_sonarr_searching(url: str, api_key: str, file_counts: Optional[dict] 
             # offer "stop looking for the missing episodes" instead.
             "episodes_on_disk": (file_counts or {}).get(sid, 0),
             "waiting_since": entry["wanted_since"].strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "last_searched": entry["last_searched"].strftime("%Y-%m-%dT%H:%M:%SZ") if entry["last_searched"] else None,
             "sonarr_poster": _extract_poster(series),
         })
     return searching
@@ -594,7 +657,13 @@ def _get_wanted(db: Session) -> dict:
 
     # Sort all unreleased by release date
     unreleased.sort(key=lambda x: x["release_date"] if x["release_date"] != "TBA" else "9999-99-99")
-    # Newest request first; the rest of the backlog lives in Radarr/Sonarr.
+    # The wait counts from the latest search: an episode re-monitored and
+    # searched just now reads "searching · 2m", not the years since it aired.
+    # Most recent first, so a title re-searched in Radarr/Sonarr jumps to the
+    # top; the rest of the backlog lives in Radarr/Sonarr.
+    for x in searching:
+        if (x.get("last_searched") or "") > (x.get("waiting_since") or ""):
+            x["waiting_since"] = x["last_searched"]
     searching.sort(key=lambda x: x.get("waiting_since") or "", reverse=True)
 
     result = {"unreleased": unreleased[:20], "searching": searching[:SEARCHING_LIMIT]}
@@ -689,6 +758,7 @@ def get_activity(request: Request, db: Session = Depends(get_db),
     anonymous caller previously received the full, unfiltered download queue."""
     downloads = _build_downloads(db)
     _note_queue(downloads)
+    _watch_arr_searches(db)
     wanted = _get_wanted(db)
     # Copies: the lists are shared through the cache and edited per user below.
     unreleased = [dict(u) for u in wanted["unreleased"]]
