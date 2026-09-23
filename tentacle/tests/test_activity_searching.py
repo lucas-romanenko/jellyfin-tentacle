@@ -173,6 +173,21 @@ class TestSonarrSearching(unittest.TestCase):
         with mock.patch.object(activity.requests, "get", return_value=_Resp(data)):
             self.assertEqual([], activity._fetch_sonarr_searching("http://arr:8989", "k"))
 
+    def test_says_how_much_of_the_show_is_on_disk(self):
+        with mock.patch.object(activity.requests, "get", side_effect=_fake_get()):
+            out = {x["title"]: x for x in activity._fetch_sonarr_searching(
+                "http://arr:8989", "k", {10: 23})}
+        self.assertEqual(23, out["Show A"]["episodes_on_disk"])
+        self.assertEqual(0, out["Show B"]["episodes_on_disk"])
+        self.assertEqual(["S01E01", "S01E02", "S01E03"], out["Show B"]["missing_labels"])
+
+    def test_file_counts_come_from_the_series_list(self):
+        series = [dict(SHOW_A, statistics={"episodeFileCount": 9}), dict(SHOW_B)]
+        with mock.patch.object(activity.requests, "get", side_effect=_fake_get(sonarr_series=series)):
+            self.assertEqual({10: 9, 11: 0}, activity._fetch_sonarr_file_counts("http://arr:8989", "k"))
+        with mock.patch.object(activity.requests, "get", side_effect=OSError("down")):
+            self.assertEqual({}, activity._fetch_sonarr_file_counts("http://arr:8989", "k"))
+
     def test_a_sonarr_failure_is_an_empty_list(self):
         with mock.patch.object(activity.requests, "get", side_effect=OSError("down")):
             self.assertEqual([], activity._fetch_sonarr_searching("http://arr:8989", "k"))

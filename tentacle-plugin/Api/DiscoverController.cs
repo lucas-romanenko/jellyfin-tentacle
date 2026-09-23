@@ -411,9 +411,19 @@ public class TentacleDiscoverController : ControllerBase
         ForwardArrAction("search", body, HttpClient);
 
     /// <summary>
+    /// Stops Sonarr looking for a show's missing episodes (body: media_type, tmdb_id,
+    /// tvdb_id, optional episodes). Downloaded episodes are untouched.
+    /// </summary>
+    [HttpPost("ArrStopMissing")]
+    [Authorize]
+    public Task<ActionResult> ArrStopMissing([FromBody] JsonElement body) =>
+        ForwardArrAction("stop-missing", body, HttpClient);
+
+    /// <summary>
     /// Removes a requested title from Radarr/Sonarr, folder included (VOD folders
     /// are kept). Long timeout: a partly downloaded series goes through the full
-    /// delete, which also cleans Jellyfin and playlists.
+    /// delete, which also cleans Jellyfin and playlists. Tentacle refuses that
+    /// (409) unless the body carries delete_downloaded: true.
     /// </summary>
     [HttpPost("ArrRemove")]
     [Authorize]

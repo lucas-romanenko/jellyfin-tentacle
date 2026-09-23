@@ -777,8 +777,31 @@
         (item.can_manage
           ? '<div class="md-download-row" style="margin-top:12px">' +
               '<button id="mdArrSearchBtn" class="md-download-btn">Search again</button>' +
-              '<button id="mdArrRemoveBtn" class="md-download-btn md-arr-remove-btn">Remove from ' + reqArr + '</button>' +
+              (item.media_type === 'series'
+                ? '<button id="mdArrStopBtn" class="md-download-btn md-arr-stop-btn">' + esc(stopLabel(item, null)) + '</button>'
+                : '') +
+              (item.media_type === 'series' ? '' : '<button id="mdArrRemoveBtn" class="md-download-btn md-arr-remove-btn">' + esc(removeLabel(item)) + '</button>') +
             '</div>' +
+            (item.media_type === 'series' && (item.missing_labels || []).length > 1
+              ? '<div class="md-arr-choose">' +
+                  '<button id="mdArrChooseBtn" class="md-arr-link" type="button">Choose episodes\u2026</button>' +
+                  '<div id="mdArrChooseList" class="md-arr-choose-list" style="display:none">' +
+                    item.missing_labels.map(function (l) {
+                      return '<label class="md-arr-choose-row"><input type="checkbox" checked value="' + esc(l) + '"> ' + esc(l) + '</label>';
+                    }).join('') +
+                  '</div>' +
+                '</div>'
+              : '') +
+            (item.media_type === 'series' && item.episodes_on_disk > 0
+              ? '<div class="md-arr-note">Stopping keeps the ' + item.episodes_on_disk + ' downloaded episode' +
+                  (item.episodes_on_disk === 1 ? '' : 's') + ' and new episodes as they air. Undo it from Manage Episodes.</div>'
+              : '') +
+            // Shows: deleting sits apart, below the safe actions.
+            (item.media_type === 'series'
+              ? '<div class="md-download-row" style="margin-top:12px">' +
+                  '<button id="mdArrRemoveBtn" class="md-download-btn md-arr-remove-btn">' + esc(removeLabel(item)) + '</button>' +
+                '</div>'
+              : '') +
             '<div id="mdDownloadStatus" class="md-download-status"></div>'
           : '');
     } else {
@@ -921,10 +944,27 @@
     };
   }
 
+  function stopLabel(item, chosen) {
+    var n = chosen ? chosen.length : (item.missing_episodes || 0);
+    if (n === 1) return 'Stop looking for ' + (chosen ? chosen[0] : (item.missing_labels || [])[0] || '1 episode');
+    return n ? 'Stop looking for ' + n + (chosen ? ' chosen' : ' missing') + ' episodes' : 'Stop looking for missing episodes';
+  }
+
+  function removeLabel(item) {
+    if (item.media_type === 'series' && item.episodes_on_disk > 0) {
+      return 'Delete whole show (' + item.episodes_on_disk + ' episode' + (item.episodes_on_disk === 1 ? '' : 's') + ' on disk)';
+    }
+    return 'Remove from ' + (item.media_type === 'series' ? 'Sonarr' : 'Radarr');
+  }
+
   function wireArrActions(overlay, item) {
     var status = overlay.querySelector('#mdDownloadStatus');
     var searchBtn = overlay.querySelector('#mdArrSearchBtn');
     var removeBtn = overlay.querySelector('#mdArrRemoveBtn');
+    var stopBtn = overlay.querySelector('#mdArrStopBtn');
+    var chooseBtn = overlay.querySelector('#mdArrChooseBtn');
+    var chooseList = overlay.querySelector('#mdArrChooseList');
+    var onDisk = item.media_type === 'series' && item.episodes_on_disk > 0;
     var say = function (text, ok) {
       if (!status) return;
       status.textContent = text;
@@ -953,6 +993,50 @@
       });
     }
 
+    // "Choose episodes": the checklist of missing episodes; the stop button
+    // then covers only the ticked ones.
+    var chosen = function () {
+      if (!chooseList || chooseList.style.display === 'none') return null;
+      return Array.prototype.map.call(chooseList.querySelectorAll('input:checked'), function (cb) { return cb.value; });
+    };
+    if (chooseBtn && chooseList) {
+      chooseBtn.addEventListener('click', function () {
+        var open = chooseList.style.display === 'none';
+        chooseList.style.display = open ? '' : 'none';
+        chooseBtn.textContent = open ? 'Use all missing episodes' : 'Choose episodes\u2026';
+        if (stopBtn) stopBtn.textContent = stopLabel(item, chosen());
+      });
+      chooseList.addEventListener('change', function () {
+        var c = chosen();
+        if (stopBtn) {
+          stopBtn.textContent = stopLabel(item, c);
+          stopBtn.disabled = !!c && c.length === 0;
+        }
+      });
+    }
+
+    if (stopBtn) {
+      stopBtn.addEventListener('click', function () {
+        var c = chosen();
+        var body = arrTitleBody(item);
+        // All ticked = every missing episode (the list shows at most 50).
+        if (c && c.length < (item.missing_labels || []).length) body.episodes = c;
+        stopBtn.disabled = true;
+        if (searchBtn) searchBtn.disabled = true;
+        say('Telling Sonarr\u2026', true);
+        apiPost('TentacleDiscover/ArrStopMissing', body).then(function (r) {
+          say((r && r.message) || 'Stopped', true);
+          stopBtn.textContent = 'Stopped';
+          afterChange();
+          setTimeout(closeModal, 1200);
+        }).catch(function (e) {
+          say(e.message || 'Failed', false);
+          stopBtn.disabled = false;
+          if (searchBtn) searchBtn.disabled = false;
+        });
+      });
+    }
+
     if (removeBtn) {
       var armed = false, disarm = null;
       var label = removeBtn.textContent;
@@ -961,9 +1045,11 @@
           // Two clicks, no browser popup: the first says exactly what will go.
           armed = true;
           removeBtn.classList.add('md-arr-remove-armed');
-          removeBtn.textContent = item.media_type === 'series'
-            ? 'Click again: delete series + folder'
-            : 'Click again: delete movie + folder';
+          removeBtn.textContent = onDisk
+            ? 'Click again: delete the show and all ' + item.episodes_on_disk + ' downloaded episode' + (item.episodes_on_disk === 1 ? '' : 's')
+            : item.media_type === 'series'
+              ? 'Click again: delete series + folder'
+              : 'Click again: delete movie + folder';
           disarm = setTimeout(function () {
             armed = false;
             removeBtn.classList.remove('md-arr-remove-armed');
@@ -975,7 +1061,10 @@
         removeBtn.disabled = true;
         if (searchBtn) searchBtn.disabled = true;
         removeBtn.textContent = 'Removing\u2026';
-        apiPost('TentacleDiscover/ArrRemove', arrTitleBody(item)).then(function (r) {
+        var removeBody = arrTitleBody(item);
+        if (onDisk) removeBody.delete_downloaded = true;
+        if (stopBtn) stopBtn.disabled = true;
+        apiPost('TentacleDiscover/ArrRemove', removeBody).then(function (r) {
           say((r && r.message) || 'Removed', true);
           item.requested = false;
           afterChange();
@@ -984,6 +1073,7 @@
           say(e.message || 'Remove failed', false);
           removeBtn.disabled = false;
           if (searchBtn) searchBtn.disabled = false;
+          if (stopBtn) stopBtn.disabled = false;
           armed = false;
           removeBtn.classList.remove('md-arr-remove-armed');
           removeBtn.textContent = label;

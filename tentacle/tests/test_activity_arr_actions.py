@@ -40,6 +40,7 @@ class FakeSonarr:
 
     def __init__(self, *a):
         self.searched_eps, self.searched_series, self.deleted = [], [], []
+        self.monitoring, self.accept_monitoring = [], True
 
     def get_all_series(self):
         return self.series
@@ -54,6 +55,10 @@ class FakeSonarr:
     def search_series(self, sid):
         self.searched_series.append(sid)
         return True
+
+    def set_episode_monitoring(self, ids, monitored):
+        self.monitoring.append((list(ids), monitored))
+        return self.accept_monitoring
 
     def delete_series_by_id(self, sid, delete_files=True):
         self.deleted.append((sid, delete_files))
@@ -85,7 +90,7 @@ class _Base(unittest.TestCase):
             {"id": 23, "tmdbId": 300, "tvdbId": 3001, "title": "Hybrid", "path": "/data/vod/tv/Hybrid"},
         ]
         FakeSonarr.episodes = [
-            {"id": 1, "monitored": True, "hasFile": False, "airDateUtc": PAST},     # missing
+            {"id": 1, "seasonNumber": 1, "episodeNumber": 1, "monitored": True, "hasFile": False, "airDateUtc": PAST},  # missing
             {"id": 2, "monitored": True, "hasFile": True, "airDateUtc": PAST},      # have it
             {"id": 3, "monitored": False, "hasFile": False, "airDateUtc": PAST},    # not wanted
             {"id": 4, "monitored": True, "hasFile": False, "airDateUtc": FUTURE},   # not aired
@@ -142,6 +147,57 @@ class TestSearchAgain(_Base):
         self.assertTrue(self.search(user=self.kid, media_type="movie", tmdb_id=100)["ok"])
 
 
+class TestStopMissing(_Base):
+    def stop(self, user=None, **kw):
+        return activity.stop_missing(activity.ArrTitle(**kw), db=self.db, user=user or self.admin)
+
+    def test_unmonitors_only_the_missing_aired_episodes(self):
+        FakeSonarr.episodes = FakeSonarr.episodes + [
+            {"id": 5, "seasonNumber": 2, "episodeNumber": 3, "monitored": True, "hasFile": False, "airDateUtc": PAST}]
+        r = self.stop(media_type="series", tmdb_id=200)
+        self.assertEqual([([1, 5], False)], self.sonarr.monitoring,
+                         "not the downloaded one, not the unwanted one, not the unaired one")
+        self.assertEqual(2, r["stopped"])
+        self.assertEqual([], self.sonarr.deleted, "nothing deleted")
+        activity.invalidate_wanted_cache.assert_called()
+
+    def test_a_chosen_subset(self):
+        FakeSonarr.episodes = FakeSonarr.episodes + [
+            {"id": 5, "seasonNumber": 2, "episodeNumber": 3, "monitored": True, "hasFile": False, "airDateUtc": PAST}]
+        r = self.stop(media_type="series", tmdb_id=200, episodes=["s02e03", "S09E09"])
+        self.assertEqual([([5], False)], self.sonarr.monitoring, "only the chosen missing ones")
+        self.assertEqual("Stopped looking for S02E03 of Slow Show", r["message"])
+
+    def test_a_chosen_episode_that_is_downloaded_is_never_touched(self):
+        FakeSonarr.episodes[1].update(seasonNumber=1, episodeNumber=2)
+        r = self.stop(media_type="series", tmdb_id=200, episodes=["S01E02"])
+        self.assertEqual(0, r["stopped"])
+        self.assertEqual([], self.sonarr.monitoring)
+
+    def test_nothing_missing_is_not_an_error(self):
+        FakeSonarr.episodes = [{"id": 2, "monitored": True, "hasFile": True, "airDateUtc": PAST}]
+        r = self.stop(media_type="series", tmdb_id=200)
+        self.assertEqual(0, r["stopped"])
+        self.assertEqual([], self.sonarr.monitoring)
+
+    def test_movies_are_refused(self):
+        with self.assertRaises(HTTPException) as e:
+            self.stop(media_type="movie", tmdb_id=100)
+        self.assertEqual(400, e.exception.status_code)
+
+    def test_sonarr_refusing_is_502(self):
+        self.sonarr.accept_monitoring = False
+        with self.assertRaises(HTTPException) as e:
+            self.stop(media_type="series", tmdb_id=200)
+        self.assertEqual(502, e.exception.status_code)
+
+    def test_non_admin_only_for_their_own_requests(self):
+        with self.assertRaises(HTTPException) as e:
+            self.stop(user=self.kid, media_type="series", tmdb_id=200)
+        self.assertEqual(403, e.exception.status_code)
+        self.assertEqual([], self.sonarr.monitoring)
+
+
 class TestRemove(_Base):
     def test_movie_with_nothing_downloaded_is_deleted_with_its_folder(self):
         self.db.add(mdb.DownloadRequest(tmdb_id=100, media_type="movie", user_id=self.kid.id))
@@ -172,16 +228,48 @@ class TestRemove(_Base):
         self.remove(media_type="series", tmdb_id=300)
         self.assertEqual([(23, False)], self.sonarr.deleted)
 
-    def test_partly_downloaded_goes_through_the_full_delete(self):
+    def test_partly_downloaded_goes_through_the_full_delete_when_confirmed(self):
         self.db.add(mdb.Series(tmdb_id=200, title="Slow Show", source="sonarr"))
         self.db.commit()
         with mock.patch("routers.library.delete_download",
                         return_value={"title": "Slow Show", "deleted": True}) as full:
-            r = self.remove(media_type="series", tmdb_id=200)
+            r = self.remove(media_type="series", tmdb_id=200, delete_downloaded=True)
         full.assert_called_once()
         self.assertEqual((200, "series"), full.call_args.args[:2])
         self.assertEqual([], self.sonarr.deleted, "not deleted twice")
         self.assertTrue(r["files_deleted"])
+
+    def test_a_show_with_episodes_on_disk_is_never_deleted_whole_by_default(self):
+        FakeSonarr.series[0]["statistics"] = {"episodeFileCount": 7}
+        with mock.patch("routers.library.delete_download") as full, \
+                self.assertRaises(HTTPException) as e:
+            self.remove(media_type="series", tmdb_id=200)
+        self.assertEqual(409, e.exception.status_code)
+        self.assertIn("7 episodes are already downloaded", e.exception.detail)
+        full.assert_not_called()
+        self.assertEqual([], self.sonarr.deleted)
+
+    def test_a_sonarr_row_without_statistics_counts_as_downloaded(self):
+        self.db.add(mdb.Series(tmdb_id=200, title="Slow Show", source="sonarr"))
+        self.db.commit()
+        with self.assertRaises(HTTPException) as e:
+            self.remove(media_type="series", tmdb_id=200)
+        self.assertEqual(409, e.exception.status_code)
+
+    def test_confirmed_whole_show_delete_with_nothing_in_tentacle(self):
+        FakeSonarr.series[0]["statistics"] = {"episodeFileCount": 2}
+        self.remove(media_type="series", tmdb_id=200, delete_downloaded=True)
+        self.assertEqual([(21, True)], self.sonarr.deleted)
+
+    def test_nothing_on_disk_needs_no_confirmation(self):
+        FakeSonarr.series[0]["statistics"] = {"episodeFileCount": 0}
+        self.remove(media_type="series", tmdb_id=200)
+        self.assertEqual([(21, True)], self.sonarr.deleted)
+
+    def test_a_hybrid_vod_show_needs_no_confirmation(self):
+        FakeSonarr.series[2]["statistics"] = {"episodeFileCount": 4}
+        self.remove(media_type="series", tmdb_id=300)
+        self.assertEqual([(23, False)], self.sonarr.deleted, "files kept, so nothing is lost")
 
     def test_non_admin_cannot_remove_someone_elses_request(self):
         with self.assertRaises(HTTPException) as e:

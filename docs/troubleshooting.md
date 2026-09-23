@@ -50,7 +50,8 @@ This is almost always a **category mismatch** between Radarr/Sonarr and your dow
 Open the title from Activity (on the TV, select the card) to act on it:
 
 - **Search again** asks Radarr/Sonarr to search right now (for a series, only the missing aired episodes).
-- **Remove from Radarr/Sonarr** deletes the title from Radarr/Sonarr together with its folder. It asks for a second press first. If some episodes of a series were already downloaded, those are deleted too. A series that lives in your VOD folder is removed from Sonarr, but its VOD files are kept.
+- **Stop looking** (shows only) tells Sonarr to stop searching for the missing episodes and changes nothing else. Episodes you already have stay in Sonarr and Jellyfin. If you follow the show, new episodes are still grabbed as they air. When several episodes are missing, **Choose** lets you pick which ones to give up on, so Sonarr keeps looking for the rest. To undo it, open the show's **Manage Episodes** and tick the episodes again.
+- **Remove from Radarr/Sonarr** deletes the title from Radarr/Sonarr together with its folder. It asks for a second press first. For a show with episodes already downloaded, the button says **Delete whole show** with the number of episodes on disk, because those files are deleted too. **Stop looking** is usually what you want there. A series that lives in your VOD folder is removed from Sonarr, but its VOD files are kept.
 
 Admins can do this for any title; everyone else only for titles they requested.
 
