@@ -1155,9 +1155,12 @@ def _sync_movies(
 
     # Streams an admin reported as mislabelled ("Wrong movie"): never imported
     # again, whatever the provider calls them and whichever category they're in.
-    from services.wrong_match import blocked_keys, is_blocked
+    from services.wrong_match import blocked_keys, is_blocked, override_keys, override_for
     blocked = blocked_keys(db, provider.id, "movie")
     blocked_skips = 0
+    # Streams an admin re-matched ("this stream is really film X"): the label is
+    # wrong, so the override is used instead of matching it.
+    overrides = override_keys(db, provider.id, "movie")
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1213,6 +1216,9 @@ def _sync_movies(
         for idx, (stream, raw_name, clean_name, year) in enumerate(cleaned):
             if not clean_name:
                 continue
+            if overrides and override_for(overrides, stream.get("stream_id"), client.movie_stream_url(
+                    stream.get("stream_id"), stream.get("container_extension", "mp4"))) is not None:
+                continue  # re-matched by an admin — no lookup of the (wrong) label
 
             # Check if we already know this title → skip TMDB API call
             lookup_key = (clean_name.lower(), year)
@@ -1281,6 +1287,16 @@ def _sync_movies(
 
             # Get metadata: from parallel batch or title-based lookup
             metadata = tmdb_results.get(idx)
+            override_id = override_for(overrides, stream.get("stream_id"), client.movie_stream_url(
+                stream.get("stream_id"), stream.get("container_extension", "mp4"))) if overrides else None
+            if override_id is not None:
+                # Already in the library under the fixed id → the existing path
+                # below merges tags; otherwise fetch the right film's metadata.
+                if override_id in existing_provider_tmdb_ids or override_id in seen_tmdb_ids:
+                    metadata = {"tmdb_id": override_id}
+                else:
+                    metadata = tmdb.get_movie_details(override_id)
+                known_id = None
             if not metadata and known_id:
                 # Known title but not in batch — it's existing, merge tags
                 if known_id in existing_provider_tmdb_ids or known_id in seen_tmdb_ids:

@@ -2269,3 +2269,25 @@ body.moonfin-details-visible .moonfin-nav-back {
         width: 260px;
     }
 }
+
+/* Fix a mislabelled VOD movie (showFixMatch) */
+.tfm-panel { width: min(640px, 94vw); max-height: 88vh; overflow-y: auto; }
+.tfm-intro { color: rgba(255,255,255,.75); margin: 0 0 14px; text-align: center; line-height: 1.5; font-size: 14px; }
+.tfm-search { display: flex; gap: 8px; margin-bottom: 12px; }
+.tfm-q { flex: 1; min-width: 0; padding: 10px 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,.15); background: rgba(255,255,255,.06); color: #fff; font: inherit; }
+.tfm-search .tfm-go { flex: 0 0 auto; width: auto; }
+.tfm-list { display: flex; flex-direction: column; gap: 8px; }
+.tfm-note { color: rgba(255,255,255,.55); text-align: center; padding: 14px 0; font-size: 13px; }
+.tfm-cand { display: flex; gap: 12px; align-items: flex-start; text-align: left; width: 100%; padding: 8px; border-radius: 10px;
+  border: 1px solid rgba(255,255,255,.08); background: rgba(255,255,255,.04); color: #fff; cursor: pointer; font: inherit; }
+.tfm-cand:hover, .tfm-cand:focus { background: rgba(139,128,255,.18); border-color: rgba(139,128,255,.5); outline: none; }
+.tfm-cand img, .tfm-noposter { width: 46px; min-width: 46px; height: 69px; border-radius: 6px; object-fit: cover; background: rgba(255,255,255,.08); }
+.tfm-cand-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.tfm-cand-title { font-weight: 600; font-size: 14px; }
+.tfm-cand-meta { font-size: 12px; color: rgba(255,255,255,.6); }
+.tfm-cand-ov { font-size: 12px; color: rgba(255,255,255,.5); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.tfm-badge { display: inline-block; margin-left: 4px; padding: 1px 7px; border-radius: 6px; font-size: 11px; background: rgba(80,190,130,.18); color: #50be82; }
+.tfm-badge-lib { background: rgba(255,152,0,.18); color: #ffb74d; }
+.tfm-status { min-height: 20px; font-size: 13px; text-align: center; margin: 10px 0 4px; }
+.tfm-footer { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+.tfm-footer .moonfin-more-item { width: auto; }

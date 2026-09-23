@@ -450,6 +450,63 @@ public class TentacleDiscoverController : ControllerBase
         }
     }
 
+    /// <summary>Films a mislabelled VOD movie might really be (admin; checked by Tentacle).</summary>
+    [HttpGet("FixMatch/movie/{tmdbId}/Suggestions")]
+    [Authorize]
+    public async Task<ActionResult> FixMatchSuggestions(int tmdbId, [FromQuery] string? q = null)
+    {
+        var baseUrl = GetTentacleUrl();
+        if (string.IsNullOrEmpty(baseUrl))
+        {
+            return BadRequest(new { detail = "Tentacle URL not configured" });
+        }
+
+        try
+        {
+            var url = $"{baseUrl}/api/library/fix-match/movie/{tmdbId}/suggestions";
+            if (!string.IsNullOrWhiteSpace(q))
+            {
+                url += "?q=" + Uri.EscapeDataString(q);
+            }
+
+            var response = await AddClient.GetAsync(AppendUserId(url));
+            var result = await response.Content.ReadAsStringAsync();
+            return new ContentResult { Content = result, ContentType = "application/json", StatusCode = (int)response.StatusCode };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("[Tentacle Discover] Fix-match suggestions failed: {Error}", ex.Message);
+            var (reason, message) = DescribeFailure(ex);
+            return StatusCode(502, new { detail = message, error = reason });
+        }
+    }
+
+    /// <summary>Re-match a mislabelled VOD movie to the film it really is (body: tmdb_id).</summary>
+    [HttpPost("FixMatch/movie/{tmdbId}")]
+    [Authorize]
+    public async Task<ActionResult> FixMatch(int tmdbId, [FromBody] JsonElement body)
+    {
+        var baseUrl = GetTentacleUrl();
+        if (string.IsNullOrEmpty(baseUrl))
+        {
+            return BadRequest(new { detail = "Tentacle URL not configured" });
+        }
+
+        try
+        {
+            var content = new StringContent(body.GetRawText(), System.Text.Encoding.UTF8, "application/json");
+            var response = await AddClient.PostAsync(AppendUserId($"{baseUrl}/api/library/fix-match/movie/{tmdbId}"), content);
+            var result = await response.Content.ReadAsStringAsync();
+            return new ContentResult { Content = result, ContentType = "application/json", StatusCode = (int)response.StatusCode };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("[Tentacle Discover] Fix-match failed: {Error}", ex.Message);
+            var (reason, message) = DescribeFailure(ex);
+            return StatusCode(502, new { detail = message, error = reason });
+        }
+    }
+
     private async Task<ActionResult> ForwardArrAction(string action, JsonElement body, HttpClient client)
     {
         var baseUrl = GetTentacleUrl();

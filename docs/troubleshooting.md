@@ -71,13 +71,15 @@ Your IPTV provider labelled that stream wrong: its catalogue says one film, but 
 
 Fix it from the title itself (admins only):
 
-- **Jellyfin web:** open the title, **⋯ → Wrong movie**
-- **Android TV:** the **Wrong movie** button on the title's page
-- **Dashboard:** open the title in Library, **Wrong movie?**
+- **Jellyfin web:** open the title, **⋯ → Wrong movie? Fix it**
+- **Android TV:** the **Wrong movie? Fix it** button on the title's page
+- **Dashboard:** open the title in Library, **Wrong movie? Fix it**
 
-This removes that copy and blocks that provider stream so the nightly sync never re-adds it. If you requested the real film, Radarr keeps searching for it. Blocked streams are listed under **Library → Possible wrong movies**, where you can unblock one.
+Tentacle asks **which movie it really is** and suggests candidates. Once the title has been played, Jellyfin knows the stream's real length, and films of that length are listed first (a mislabelled stream is usually a similarly named film). Pick the right one and the copy moves there: new folder, the right metadata, same stream. Tentacle remembers the fix so the nightly sync keeps it. On the web and the dashboard you can also search for the title yourself.
 
-Tentacle also flags likely cases itself: each night it compares the real length of every IPTV movie that has been played with the length the film should have. Titles that are far off appear in **Library → Possible wrong movies** with **Wrong movie** / **It's fine** buttons. Titles nobody has played yet can't be checked: Jellyfin only measures a stream the first time it plays.
+If it's none of them, **None of these — remove it** removes the copy and blocks that provider stream so it is never re-added. Either way, if you had requested the film on the label, Radarr keeps searching for it. Blocked streams are listed under **Library → Possible wrong movies**, where you can unblock one.
+
+Tentacle also flags likely cases itself: each night it compares the real length of every IPTV movie that has been played with the length the film should have. Titles that are far off appear in **Library → Possible wrong movies** with **Fix it** / **It's fine** buttons. Titles nobody has played yet can't be checked: Jellyfin only measures a stream the first time it plays.
 
 ### Download progress stuck at 0%
 

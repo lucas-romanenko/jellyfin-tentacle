@@ -2045,7 +2045,7 @@ var Details = {
         // Wrong movie — admin, IPTV (VOD) movie: the provider's stream is a different
         // film than its label. Blocks the stream and removes this copy.
         if (tentacleCanReportWrong) {
-            menuItems.push({ id: 'wrongmovie', name: 'Wrong movie', icon: '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="m40-120 440-760 440 760H40Zm138-80h604L480-720 178-200Zm302-40q17 0 28.5-11.5T520-280q0-17-11.5-28.5T480-320q-17 0-28.5 11.5T440-280q0 17 11.5 28.5T480-240Zm-40-120h80v-200h-80v200Z"/></svg>', className: 'moonfin-more-item-danger' });
+            menuItems.push({ id: 'wrongmovie', name: 'Wrong movie? Fix it', icon: '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="m40-120 440-760 440 760H40Zm138-80h604L480-720 178-200Zm302-40q17 0 28.5-11.5T520-280q0-17-11.5-28.5T480-320q-17 0-28.5 11.5T440-280q0 17 11.5 28.5T480-240Zm-40-120h80v-200h-80v200Z"/></svg>', className: 'moonfin-more-item-danger' });
         }
 
         var hasAdminItems = false;
@@ -2230,74 +2230,147 @@ var Details = {
                 self.confirmDelete(item);
                 break;
             case 'wrongmovie':
-                self.confirmWrongMovie(item);
+                self.showFixMatch(item);
                 break;
         }
     },
 
-    confirmWrongMovie: function(item) {
+    // "This plays a different film" — find which film it really is (Tentacle
+    // ranks candidates by the stream's real length), and move it there. Removing
+    // the copy is the fallback when it is none of them.
+    showFixMatch: function(item) {
         var self = this;
         var serverUrl = this.getServerUrl();
         var headers = this.getAuthHeaders();
         var tmdbId = item.ProviderIds && item.ProviderIds.Tmdb;
         if (!tmdbId) return;
+        var uid = (window.ApiClient && window.ApiClient.getCurrentUserId) ? window.ApiClient.getCurrentUserId() : '';
+        var withUser = function(url) { return url + (url.indexOf('?') === -1 ? '?' : '&') + 'userId=' + encodeURIComponent(uid); };
 
         var overlay = document.createElement('div');
         overlay.className = 'moonfin-more-overlay';
-        overlay.innerHTML = '<div class="moonfin-more-menu">' +
-            '<h3 class="moonfin-more-title">Wrong movie?</h3>' +
-            '<p style="color:rgba(255,255,255,0.75);margin:0 0 20px;text-align:center;line-height:1.5">' +
-                'Use this when <strong>' + this.esc(item.Name || 'this title') + '</strong> plays a different film.<br>' +
-                'Your IPTV provider labelled that stream wrong. This removes this copy from the library ' +
-                'and stops the stream from being added again.<br>' +
-                '<span style="color:rgba(255,255,255,0.55);font-size:13px">If you requested the real movie, Radarr keeps looking for it.</span></p>' +
-            '<div style="display:flex;gap:12px;justify-content:center">' +
-                '<button class="moonfin-more-item moonfin-focusable moonfin-delete-cancel" tabindex="0"><span class="moonfin-more-item-text">Cancel</span></button>' +
-                '<button class="moonfin-more-item moonfin-focusable moonfin-more-item-danger moonfin-delete-confirm" tabindex="0"><span class="moonfin-more-item-text">Remove wrong copy</span></button>' +
+        overlay.innerHTML = '<div class="moonfin-more-menu tfm-panel">' +
+            '<h3 class="moonfin-more-title">Which movie is this really?</h3>' +
+            '<p class="tfm-intro">Your IPTV provider labelled this stream <strong>' + this.esc(item.Name || '') + '</strong>, ' +
+                'but it plays something else. <span class="tfm-actual"></span></p>' +
+            '<div class="tfm-search"><input class="tfm-q" type="text" placeholder="Search for the right title" />' +
+                '<button class="moonfin-more-item moonfin-focusable tfm-go" tabindex="0"><span class="moonfin-more-item-text">Search</span></button></div>' +
+            '<div class="tfm-list"><div class="tfm-note">Looking for likely matches…</div></div>' +
+            '<div class="tfm-status"></div>' +
+            '<div class="tfm-footer">' +
+                '<button class="moonfin-more-item moonfin-focusable moonfin-more-item-danger tfm-remove" tabindex="0"><span class="moonfin-more-item-text">None of these — remove it</span></button>' +
+                '<button class="moonfin-more-item moonfin-focusable tfm-cancel" tabindex="0"><span class="moonfin-more-item-text">Cancel</span></button>' +
             '</div>' +
         '</div>';
 
-        var closeOverlay = function() {
+        var close = function() {
             if (overlay._escHandler) document.removeEventListener('keydown', overlay._escHandler, true);
             overlay.remove();
         };
         overlay._escHandler = function(e) {
             if (e.key === 'Escape' || e.keyCode === 27 || e.keyCode === 461 || e.keyCode === 10009) {
-                e.preventDefault();
-                e.stopPropagation();
-                closeOverlay();
+                e.preventDefault(); e.stopPropagation(); close();
             }
         };
         document.addEventListener('keydown', overlay._escHandler, true);
-        overlay.addEventListener('click', function(e) { if (e.target === overlay) closeOverlay(); });
-        overlay.querySelector('.moonfin-delete-cancel').addEventListener('click', closeOverlay);
+        overlay.addEventListener('click', function(e) { if (e.target === overlay) close(); });
+        overlay.querySelector('.tfm-cancel').addEventListener('click', close);
 
-        var confirmBtn = overlay.querySelector('.moonfin-delete-confirm');
-        confirmBtn.addEventListener('click', function() {
-            confirmBtn.disabled = true;
-            var url = serverUrl + '/TentacleDiscover/WrongMatch/movie/' + tmdbId;
-            var uid = (window.ApiClient && window.ApiClient.getCurrentUserId) ? window.ApiClient.getCurrentUserId() : null;
-            if (uid) url += '?userId=' + encodeURIComponent(uid);
-            fetch(url, { method: 'POST', headers: headers })
+        var list = overlay.querySelector('.tfm-list');
+        var status = overlay.querySelector('.tfm-status');
+        var say = function(text, ok) { status.textContent = text || ''; status.style.color = ok ? '#50be82' : '#f87171'; };
+        var busy = false;
+
+        var render = function(data) {
+            var actual = data && data.actual_minutes;
+            overlay.querySelector('.tfm-actual').textContent = actual
+                ? 'It plays ' + actual + ' minutes — films of that length are listed first.'
+                : 'Pick the film it really is, or search for it.';
+            var cands = (data && data.candidates) || [];
+            if (!cands.length) {
+                list.innerHTML = '<div class="tfm-note">No matches found — try searching for the title you saw.</div>';
+                return;
+            }
+            list.innerHTML = cands.map(function(c, i) {
+                var poster = c.poster_path ? '<img src="https://image.tmdb.org/t/p/w92' + c.poster_path + '" loading="lazy">' : '<div class="tfm-noposter"></div>';
+                var meta = [c.year, c.runtime ? c.runtime + ' min' : ''].filter(Boolean).join(' · ');
+                return '<button class="moonfin-focusable tfm-cand" data-idx="' + i + '" tabindex="0">' + poster +
+                    '<span class="tfm-cand-text"><span class="tfm-cand-title">' + self.esc(c.title) + '</span>' +
+                    '<span class="tfm-cand-meta">' + self.esc(meta) +
+                    (c.runtime_matches ? ' <span class="tfm-badge">same length</span>' : '') +
+                    (c.in_library ? ' <span class="tfm-badge tfm-badge-lib">already in library</span>' : '') + '</span>' +
+                    (c.overview ? '<span class="tfm-cand-ov">' + self.esc(c.overview) + '</span>' : '') +
+                    '</span></button>';
+            }).join('');
+            Array.prototype.forEach.call(list.querySelectorAll('.tfm-cand'), function(btn) {
+                btn.addEventListener('click', function() {
+                    if (busy) return;
+                    var c = cands[parseInt(btn.getAttribute('data-idx'), 10)];
+                    busy = true;
+                    say('Fixing…', true);
+                    fetch(withUser(serverUrl + '/TentacleDiscover/FixMatch/movie/' + tmdbId), {
+                        method: 'POST',
+                        headers: Object.assign({ 'Content-Type': 'application/json' }, headers),
+                        body: JSON.stringify({ tmdb_id: c.tmdb_id })
+                    }).then(function(resp) {
+                        return resp.json().catch(function() { return {}; }).then(function(body) {
+                            busy = false;
+                            if (resp.ok) {
+                                close();
+                                self.showToast((body && body.message) || 'Fixed');
+                                self.hide();
+                            } else {
+                                say((body && body.detail) || ('Failed (HTTP ' + resp.status + ')'), false);
+                            }
+                        });
+                    }).catch(function() { busy = false; say("Can't reach the server right now", false); });
+                });
+            });
+            var first = list.querySelector('.tfm-cand');
+            if (first) first.focus();
+        };
+
+        var load = function(q) {
+            list.innerHTML = '<div class="tfm-note">' + (q ? 'Searching…' : 'Looking for likely matches…') + '</div>';
+            var url = serverUrl + '/TentacleDiscover/FixMatch/movie/' + tmdbId + '/Suggestions' + (q ? '?q=' + encodeURIComponent(q) : '');
+            fetch(withUser(url), { headers: headers })
+                .then(function(r) { return r.json().then(function(b) { return { ok: r.ok, b: b }; }); })
+                .then(function(res) {
+                    if (!res.ok) { list.innerHTML = '<div class="tfm-note">' + self.esc((res.b && res.b.detail) || 'Could not load suggestions') + '</div>'; return; }
+                    render(res.b);
+                })
+                .catch(function() { list.innerHTML = '<div class="tfm-note">Can\'t reach the server right now</div>'; });
+        };
+        var input = overlay.querySelector('.tfm-q');
+        overlay.querySelector('.tfm-go').addEventListener('click', function() { load(input.value.trim()); });
+        input.addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); load(input.value.trim()); } });
+
+        // Fallback: it is none of these → remove the copy and block the stream.
+        var removeBtn = overlay.querySelector('.tfm-remove');
+        var armed = false;
+        removeBtn.addEventListener('click', function() {
+            if (busy) return;
+            if (!armed) {
+                armed = true;
+                removeBtn.querySelector('.moonfin-more-item-text').textContent = 'Click again: remove this copy and block the stream';
+                setTimeout(function() { armed = false; removeBtn.querySelector('.moonfin-more-item-text').textContent = 'None of these — remove it'; }, 5000);
+                return;
+            }
+            busy = true;
+            say('Removing…', true);
+            fetch(withUser(serverUrl + '/TentacleDiscover/WrongMatch/movie/' + tmdbId), { method: 'POST', headers: headers })
                 .then(function(resp) {
                     return resp.json().catch(function() { return {}; }).then(function(body) {
-                        closeOverlay();
-                        if (resp.ok) {
-                            self.showToast((body && body.message) || 'Removed the wrong copy');
-                            self.hide();
-                        } else {
-                            self.showToast((body && body.detail) || ('Failed (HTTP ' + resp.status + ')'));
-                        }
+                        busy = false;
+                        if (resp.ok) { close(); self.showToast((body && body.message) || 'Removed'); self.hide(); }
+                        else say((body && body.detail) || ('Failed (HTTP ' + resp.status + ')'), false);
                     });
                 })
-                .catch(function() {
-                    closeOverlay();
-                    self.showToast("Can't reach the server right now");
-                });
+                .catch(function() { busy = false; say("Can't reach the server right now", false); });
         });
 
         document.body.appendChild(overlay);
-        setTimeout(function() { overlay.querySelector('.moonfin-delete-cancel').focus(); }, 50);
+        load('');
     },
 
     confirmDelete: function(item) {

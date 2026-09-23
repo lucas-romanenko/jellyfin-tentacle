@@ -238,3 +238,149 @@ class TestRuntimeCheck(_Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ── Fixing the match instead of removing ─────────────────────────────────────
+
+REAL = {"tmdb_id": 674607, "title": "The Decline", "year": "2020", "overview": "Survivalists...",
+        "runtime": 83, "rating": 5.5, "genres": ["Thriller"], "poster_path": "/decline.jpg",
+        "backdrop_path": None}
+
+
+class FakeRealTMDB:
+    """TMDB for the fixer: search results + details, like the live case."""
+    def __init__(self):
+        self.searches = []
+
+    def get_movie_details(self, tmdb_id):
+        if tmdb_id == REAL["tmdb_id"]:
+            return dict(REAL)
+        return {21137: {"tmdb_id": 21137, "title": "The Decline of Western Civilization", "year": "1981", "runtime": 100},
+                44848: {"tmdb_id": 44848, "title": "The Decline of Western Civilization Part III", "year": "1998", "runtime": 86},
+                36724: {"tmdb_id": 36724, "title": "The Decline of Western Civilization Part II", "year": "1988", "runtime": 93},
+                }.get(tmdb_id)
+
+    def _request(self, endpoint, params):
+        self.searches.append(params["query"])
+        pool = [{"id": 36724, "title": "The Decline of Western Civilization Part II", "release_date": "1988-06-17", "popularity": 5},
+                {"id": 44848, "title": "The Decline of Western Civilization Part III", "release_date": "1998-11-13", "popularity": 4}]
+        if params["query"] == "The Decline":
+            pool = [{"id": 674607, "title": "The Decline", "release_date": "2020-02-27", "popularity": 9}] + pool
+        return {"results": pool}
+
+    @staticmethod
+    def _similarity(a, b):
+        from difflib import SequenceMatcher
+        return SequenceMatcher(None, a.lower(), b.lower()).ratio()
+
+
+class TestSuggestions(_Base):
+    def setUp(self):
+        super().setUp()
+        self.fake = FakeRealTMDB()
+        row = self.movie(self.tmdb)
+        row.title = "The Decline of Western Civilization"
+        self.db.commit()
+        for p in (mock.patch.object(wrong_match, "_tmdb", lambda db: self.fake),):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_the_real_film_comes_first_when_the_length_is_known(self):
+        with mock.patch.object(wrong_match, "probed_minutes", return_value=83):
+            r = wrong_match.suggest_matches(self.db, self.tmdb)
+        self.assertEqual(83, r["actual_minutes"])
+        self.assertEqual(674607, r["candidates"][0]["tmdb_id"])
+        self.assertTrue(r["candidates"][0]["runtime_matches"])
+        self.assertIn("The Decline", r["searched"], "shortens the label until it finds candidates")
+
+    def test_a_search_replaces_the_label(self):
+        with mock.patch.object(wrong_match, "probed_minutes", return_value=None):
+            wrong_match.suggest_matches(self.db, self.tmdb, query="The Decline")
+        self.assertEqual(["The Decline"], self.fake.searches)
+
+    def test_the_current_film_is_never_suggested(self):
+        with mock.patch.object(wrong_match, "probed_minutes", return_value=None):
+            r = wrong_match.suggest_matches(self.db, self.tmdb)
+        self.assertNotIn(self.tmdb, [c["tmdb_id"] for c in r["candidates"]])
+
+
+class TestRematch(_Base):
+    def setUp(self):
+        super().setUp()
+        self.fake = FakeRealTMDB()
+        p = mock.patch.object(wrong_match, "_tmdb", lambda db: self.fake)
+        p.start()
+        self.addCleanup(p.stop)
+        # The sync fetches details for a re-matched stream it has no row for.
+        FakeTMDB.get_movie_details = lambda _self, tid: self.fake.get_movie_details(tid)
+        self.addCleanup(lambda: delattr(FakeTMDB, "get_movie_details"))
+        self.jf.trigger_library_scan = mock.Mock(return_value=True)
+
+    def rematch(self, new=674607):
+        return wrong_match.rematch_movie(self.db, self.tmdb, new, user_name="Lucas")
+
+    def test_the_copy_moves_to_the_right_film(self):
+        old = self.movie(self.tmdb)
+        old_strm = _RealPath(old.strm_path)
+        url = old_strm.read_text()
+        r = self.rematch()
+        self.db.expire_all()
+        self.assertTrue(r["ok"])
+        self.assertIsNone(self.movie(self.tmdb))
+        row = self.movie(674607)
+        self.assertEqual(("The Decline", "2020", 83), (row.title, row.year, row.runtime))
+        new_strm = _RealPath(row.strm_path)
+        self.assertEqual("The Decline (2020)", new_strm.parent.name)
+        self.assertEqual(url, new_strm.read_text(), "same stream, new identity")
+        self.assertIn("<title>The Decline</title>", new_strm.with_suffix(".nfo").read_text())
+        self.assertFalse(old_strm.exists())
+        self.assertIn("Tag1 Movies", row.tags, "source category tags are kept")
+        self.jf.trigger_library_scan.assert_called_once()
+
+    def test_it_stays_fixed_every_night(self):
+        self.rematch()
+        for _ in range(3):
+            self.night()
+        self.assertIsNotNone(self.movie(674607))
+        self.assertIsNone(self.movie(self.tmdb), "the wrong label came back as a new title")
+        self.assertEqual(1, self.db.query(Movie).filter(Movie.title == "The Decline").count())
+
+    def test_if_the_copy_is_lost_the_sync_rebuilds_it_as_the_right_film(self):
+        self.rematch()
+        self.db.query(Movie).filter(Movie.tmdb_id == 674607).delete()
+        self.db.commit()
+        self.night()
+        row = self.movie(674607)
+        self.assertIsNotNone(row)
+        self.assertEqual("The Decline", row.title)
+        self.assertIsNone(self.movie(self.tmdb))
+
+    def test_the_request_for_the_labelled_film_survives(self):
+        admin = mdb.TentacleUser(jellyfin_user_id="a" * 32, display_name="Lucas", is_admin=True)
+        self.db.add(admin)
+        self.db.commit()
+        self.db.add(DownloadRequest(tmdb_id=self.tmdb, media_type="movie", user_id=admin.id))
+        self.db.commit()
+        self.rematch()
+        self.assertFalse(self.jf.row_present_at_delete)
+        self.assertEqual(1, self.db.query(DownloadRequest).filter(DownloadRequest.tmdb_id == self.tmdb).count())
+
+    def test_the_right_film_already_in_the_library_means_this_is_a_duplicate(self):
+        other = FakeTMDB.ids["Movie 8"]
+        r = wrong_match.rematch_movie(self.db, self.tmdb, other, user_name="Lucas")
+        self.assertTrue(r["merged"])
+        self.assertIsNone(self.movie(self.tmdb))
+        self.assertIsNotNone(self.movie(other))
+        self.assertEqual(1, self.db.query(BlockedStream).count())
+
+    def test_downloads_cannot_be_rematched(self):
+        self.db.add(Movie(tmdb_id=424242, title="Downloaded", source="radarr"))
+        self.db.commit()
+        with self.assertRaises(wrong_match.WrongMatchError) as e:
+            wrong_match.rematch_movie(self.db, 424242, 674607)
+        self.assertEqual(400, e.exception.status)
+
+    def test_it_is_audited(self):
+        self.rematch()
+        log = self.db.query(mdb.DeletionLog).filter(mdb.DeletionLog.kind == "rematch").one()
+        self.assertIn("674607", log.detail)
