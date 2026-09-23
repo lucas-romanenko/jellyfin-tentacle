@@ -1,7 +1,10 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Globalization;
+using Jellyfin.Data.Enums;
 using Jellyfin.Plugin.Tentacle.HomeScreen;
+using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Net;
 using MediaBrowser.Controller.Playlists;
@@ -184,6 +187,156 @@ public class TentacleController : ControllerBase
         }
 
         return NoContent();
+    }
+
+    /// <summary>Body of POST /Tentacle/Playlists/PruneDead.</summary>
+    public class PruneDeadRequest
+    {
+        /// <summary>Gets or sets the playlists to check. Empty = every playlist on the server.</summary>
+        public List<string>? Ids { get; set; }
+
+        /// <summary>Gets or sets a value indicating whether to skip the mass-removal guards.</summary>
+        public bool Force { get; set; }
+    }
+
+    // A playlist this big with not ONE entry resolving looks like storage that is
+    // offline, not like every title being deleted. Same idea across the whole run.
+    internal const int WholePlaylistGuardMin = 10;
+    internal const int RunGuardMinDead = 500;
+
+    /// <summary>
+    /// Drops playlist entries whose item no longer exists in Jellyfin (#120).
+    /// When YouTube retention deletes a video or Radarr replaces a file, the old
+    /// entry stays in every playlist that held it. Jellyfin hides such entries
+    /// from /Playlists/{id}/Items, so Tentacle's refresh — which only sees what
+    /// that endpoint returns — can never remove them, and every read of the
+    /// playlist logs "Unable to find linked item at path".
+    /// The removal itself is Jellyfin's own RemoveItemFromPlaylistAsync with no
+    /// ids: it rebuilds the list from the entries that still resolve and saves
+    /// playlist.xml exactly as a normal removal does.
+    /// Called by the Tentacle server (API key) after playlist refreshes.
+    /// </summary>
+    [HttpPost("Playlists/PruneDead")]
+    [Authorize(Policy = "RequiresElevation")]
+    public async Task<ActionResult> PruneDeadPlaylistEntries([FromBody] PruneDeadRequest? body)
+    {
+        List<Playlist> playlists;
+        if (body?.Ids is { Count: > 0 } ids)
+        {
+            playlists = ids
+                .Select(id => Guid.TryParse(id, out var g) ? _libraryManager.GetItemById(g) as Playlist : null)
+                .OfType<Playlist>()
+                .DistinctBy(p => p.Id)
+                .ToList();
+        }
+        else
+        {
+            playlists = _libraryManager.GetItemList(new InternalItemsQuery
+            {
+                IncludeItemTypes = new[] { BaseItemKind.Playlist },
+                Recursive = true,
+            }).OfType<Playlist>().ToList();
+        }
+
+        // Pass 1: count, touching nothing.
+        var found = new List<(Playlist Playlist, int Total, int Dead)>();
+        int totalEntries = 0, totalDead = 0;
+        foreach (var playlist in playlists)
+        {
+            var total = playlist.LinkedChildren.Length;
+            if (total == 0)
+            {
+                continue;
+            }
+
+            var dead = total - playlist.GetLinkedChildrenInfos().Count;
+            totalEntries += total;
+            totalDead += dead;
+            if (dead > 0)
+            {
+                found.Add((playlist, total, dead));
+            }
+        }
+
+        var force = body?.Force ?? false;
+        var skipped = new List<object>();
+        if (!force && totalDead >= RunGuardMinDead && totalDead * 2 > totalEntries)
+        {
+            _logger.LogWarning(
+                "Tentacle prune: REFUSING — {Dead} of {Total} playlist entries across {Count} playlist(s) do not resolve. "
+                + "That many at once looks like media storage being unavailable, not deleted items. Nothing removed.",
+                totalDead, totalEntries, playlists.Count);
+            return Ok(new { checkedPlaylists = playlists.Count, prunedPlaylists = 0, removed = 0, refused = true, dead = totalDead });
+        }
+
+        // Pass 2: remove.
+        int pruned = 0, removed = 0;
+        foreach (var (playlist, total, dead) in found)
+        {
+            if (!force && dead == total && total >= WholePlaylistGuardMin)
+            {
+                _logger.LogWarning(
+                    "Tentacle prune: skipping playlist {Name} ({Id}) — none of its {Total} entries resolve, which looks like storage being offline",
+                    playlist.Name, playlist.Id, total);
+                skipped.Add(new { id = playlist.Id.ToString("N", CultureInfo.InvariantCulture), name = playlist.Name, total });
+                continue;
+            }
+
+            try
+            {
+                await _playlistManager.RemoveItemFromPlaylistAsync(
+                    playlist.Id.ToString("N", CultureInfo.InvariantCulture), Array.Empty<string>()).ConfigureAwait(false);
+                pruned++;
+                removed += dead;
+                _logger.LogInformation(
+                    "Tentacle prune: removed {Dead} dead entries from playlist {Name} ({Id}); {Left} left",
+                    dead, playlist.Name, playlist.Id, total - dead);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Tentacle prune: could not update playlist {Name} ({Id})", playlist.Name, playlist.Id);
+            }
+        }
+
+        return Ok(new
+        {
+            checkedPlaylists = playlists.Count,
+            prunedPlaylists = pruned,
+            removed,
+            refused = false,
+            skipped,
+        });
+    }
+
+    /// <summary>
+    /// Lists playlists with no owner (OwnerUserId empty), with their entry counts (#120).
+    /// Jellyfin's own API never says who owns a playlist, and an ownerless one is
+    /// hidden from — or, with open access, shown to — every user alike, so the
+    /// Tentacle server cannot tell it apart from a shared playlist and its
+    /// duplicate clean-up leaves it alone. The server decides what to delete.
+    /// </summary>
+    [HttpGet("Playlists/Ownerless")]
+    [Authorize(Policy = "RequiresElevation")]
+    public ActionResult GetOwnerlessPlaylists()
+    {
+        var result = _libraryManager.GetItemList(new InternalItemsQuery
+            {
+                IncludeItemTypes = new[] { BaseItemKind.Playlist },
+                Recursive = true,
+            })
+            .OfType<Playlist>()
+            .Where(p => p.OwnerUserId.Equals(Guid.Empty))
+            .Select(p => new
+            {
+                id = p.Id.ToString("N", CultureInfo.InvariantCulture),
+                name = p.Name,
+                entries = p.LinkedChildren.Length,
+                openAccess = p.OpenAccess,
+                shares = p.Shares?.Count ?? 0,
+                created = p.DateCreated,
+            })
+            .ToList();
+        return Ok(result);
     }
 
     /// <summary>

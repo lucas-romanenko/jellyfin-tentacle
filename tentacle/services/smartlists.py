@@ -1432,11 +1432,62 @@ def refresh_smartlist_playlists(db: Session, user_id: int = None, only_names: li
     """
     with _playlist_refresh_lock:
         result = _refresh_smartlist_playlists_inner(db, user_id, only_names=only_names)
+        if "error" not in result:
+            pruned = _prune_dead_entries_locked(db, user_id=user_id, only_names=only_names)
+            if pruned:
+                result["dead_removed"] = pruned
+                result["changed"] = result.get("changed", 0) + 1
         # "updated" counts every playlist visited; only a real change (or a new
         # playlist) should make clients live-reload their home rows.
         if result.get("changed", 0) > 0 or result.get("created", 0) > 0:
             bump_playlist_version()
         return result
+
+
+def prune_dead_entries(db: Session, user_id: int = None, only_names: list = None) -> int:
+    """Remove playlist entries whose item Jellyfin no longer has. See the plugin's
+    PruneDead: YouTube retention and Radarr file replacements leave entries that
+    Jellyfin hides from every read, so a refresh can never see them to remove
+    them. Covers the managed playlists of one user (or all). Returns how many
+    entries were removed; 0 when there were none or the plugin can't do it."""
+    with _playlist_refresh_lock:
+        return _prune_dead_entries_locked(db, user_id=user_id, only_names=only_names)
+
+
+def _prune_dead_entries_locked(db: Session, user_id: int = None, only_names: list = None) -> int:
+    from services.jellyfin import JellyfinService
+
+    jellyfin_url = get_setting(db, "jellyfin_url", "")
+    jellyfin_key = get_setting(db, "jellyfin_api_key", "")
+    if not jellyfin_url or not jellyfin_key:
+        return 0
+    user_ids = [user_id] if user_id is not None else [u.id for u in db.query(TentacleUser).all()]
+    ids = []
+    for uid in user_ids:
+        for p in _get_smartlists_with_playlist_ids(db, user_id=uid):
+            if only_names and p["name"] not in only_names:
+                continue
+            ids.append(p["playlist_id"])
+    if not ids:
+        return 0
+    try:
+        result = JellyfinService(jellyfin_url, jellyfin_key).prune_dead_playlist_entries(ids)
+    except Exception as e:
+        logger.warning(f"[SmartLists] Could not prune dead playlist entries: {e}")
+        return 0
+    if not result:
+        return 0
+    if result.get("refused"):
+        logger.warning(f"[SmartLists] Jellyfin refused to prune {result.get('dead')} dead playlist entries — "
+                       f"too many at once, which looks like media storage being offline")
+    for skipped in result.get("skipped") or []:
+        logger.warning(f"[SmartLists] Playlist '{skipped.get('name')}': none of its {skipped.get('total')} "
+                       f"entries resolve in Jellyfin — left alone (storage offline?)")
+    removed = int(result.get("removed") or 0)
+    if removed:
+        logger.info(f"[SmartLists] Removed {removed} dead entr{'y' if removed == 1 else 'ies'} "
+                    f"(deleted or replaced files) from {result.get('prunedPlaylists')} playlist(s)")
+    return removed
 
 
 def _refresh_smartlist_playlists_inner(db: Session, user_id: int = None, only_names: list = None) -> dict:
@@ -2116,8 +2167,67 @@ def _cleanup_orphaned_playlists_locked(db: Session, user_id: int) -> int:
                 logger.info(f"[SmartLists] Deleted duplicate/orphaned playlist '{pl.get('Name')}' ({pid}) for user {user_id}")
             else:
                 logger.warning(f"[SmartLists] Failed to delete duplicate playlist '{pl.get('Name')}' ({pid})")
+    deleted += _cleanup_ownerless_playlists_locked(db, jf)
     if deleted:
         logger.info(f"[SmartLists] Cleaned up {deleted} duplicate/orphaned playlist(s) for user {user_id}")
+    return deleted
+
+
+def _managed_playlist_names(db: Session) -> set:
+    """Lower-cased names of every playlist any Tentacle user manages."""
+    names = set()
+    for user in db.query(TentacleUser).all():
+        try:
+            path = _user_smartlists_path(db, user.id)
+        except ValueError:
+            continue
+        for name, (_folder, config) in _scan_existing(path).items():
+            if config.get("Type") == "Playlist":
+                names.add(name.strip().lower())
+    return names
+
+
+def _is_managed_name_variant(name: str, managed: set) -> bool:
+    """The managed name itself, or it with the digits Jellyfin appends when a
+    playlist folder of that name already exists ("Recently Added Movies1")."""
+    n = (name or "").strip().lower()
+    if n in managed:
+        return True
+    # Not rstrip(digits): "Top 250" + "1" is "Top 2501".
+    return any(n.startswith(m) and n[len(m):].isdigit() for m in managed)
+
+
+def _cleanup_ownerless_playlists_locked(db: Session, jf) -> int:
+    """Delete EMPTY playlists that have no owner and carry a managed name (#120).
+
+    Jellyfin can leave one behind — an interrupted create, where the folder got
+    a "1" suffix because the name was taken, and no owner was ever written.
+    It shows up in nobody's settings yet may be listed for everyone, and the
+    duplicate clean-up above can never remove it: it matches exact names only
+    and leaves anything other users can see alone. Jellyfin's API never says
+    who owns a playlist, so the plugin reports these. Only an empty one is
+    removed — nothing is lost — and only under a name Tentacle manages.
+    """
+    try:
+        ownerless = jf.get_ownerless_playlists()
+    except Exception as e:
+        logger.debug(f"[SmartLists] Could not list ownerless playlists: {e}")
+        return 0
+    if not ownerless:
+        return 0
+    managed = _managed_playlist_names(db)
+    if not managed:
+        return 0
+    deleted = 0
+    for pl in ownerless:
+        name, pid = pl.get("name") or "", pl.get("id")
+        if not pid or (pl.get("entries") or 0) != 0 or not _is_managed_name_variant(name, managed):
+            continue
+        if jf.delete_item(pid):
+            deleted += 1
+            logger.info(f"[SmartLists] Deleted empty ownerless playlist '{name}' ({pid})")
+        else:
+            logger.warning(f"[SmartLists] Failed to delete empty ownerless playlist '{name}' ({pid})")
     return deleted
 
 

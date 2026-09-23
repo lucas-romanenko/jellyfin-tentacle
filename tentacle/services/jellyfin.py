@@ -656,6 +656,54 @@ class JellyfinService:
             logger.warning(f"Move playlist item exception: {e}")
             return False
 
+    def prune_dead_playlist_entries(self, playlist_ids: List[str]) -> Optional[dict]:
+        """Drop entries whose item no longer exists from these playlists (#120).
+
+        Jellyfin hides an entry whose file is gone from /Playlists/{id}/Items,
+        so nothing Tentacle reads can see it to remove it; it stays in
+        playlist.xml and is warned about on every read. The Tentacle plugin
+        removes them in-process. Returns the plugin's summary, or None when the
+        plugin is missing or too old for the route (404/405) or the call failed.
+        """
+        if not playlist_ids:
+            return {"checkedPlaylists": 0, "prunedPlaylists": 0, "removed": 0}
+        path = "/Tentacle/Playlists/PruneDead"
+        try:
+            r = self.session.post(f"{self.url}{path}", json={"Ids": list(playlist_ids)}, timeout=60)
+            self._check_401(r, path)
+            if r.status_code in (404, 405):
+                logger.debug("[Jellyfin] Tentacle plugin has no PruneDead route — dead playlist entries not cleaned")
+                return None
+            if r.status_code >= 400:
+                logger.warning(f"[Jellyfin] Pruning dead playlist entries failed: HTTP {r.status_code}")
+                return None
+            return r.json()
+        except requests.HTTPError:
+            raise
+        except Exception as e:
+            logger.warning(f"[Jellyfin] Pruning dead playlist entries failed: {e}")
+            return None
+
+    def get_ownerless_playlists(self) -> Optional[List[dict]]:
+        """Playlists with no owner, from the Tentacle plugin: [{id, name, entries,
+        openAccess, shares}]. None when the plugin can't answer — Jellyfin's own
+        API never says who owns a playlist."""
+        path = "/Tentacle/Playlists/Ownerless"
+        try:
+            r = self.session.get(f"{self.url}{path}", timeout=30)
+            self._check_401(r, path)
+            if r.status_code >= 400:
+                if r.status_code not in (404, 405):
+                    logger.warning(f"[Jellyfin] Listing ownerless playlists failed: HTTP {r.status_code}")
+                return None
+            data = r.json()
+            return data if isinstance(data, list) else None
+        except requests.HTTPError:
+            raise
+        except Exception as e:
+            logger.warning(f"[Jellyfin] Listing ownerless playlists failed: {e}")
+            return None
+
     def remove_from_playlist(self, playlist_id: str, entry_ids: List[str]) -> bool:
         """Remove items from a playlist by their PlaylistItemId, in chunks of 25.
 
