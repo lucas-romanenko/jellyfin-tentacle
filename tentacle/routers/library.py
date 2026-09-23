@@ -440,11 +440,14 @@ def delete_library_item(
     db.delete(item)
 
     # Also clean up DownloadRequest + duplicate tombstones (a deliberate full
-    # delete is a clean slate — the title may re-import from VOD later)
-    db.query(DownloadRequest).filter(
-        DownloadRequest.tmdb_id == tmdb_id,
-        DownloadRequest.media_type == media_type,
-    ).delete()
+    # delete is a clean slate — the title may re-import from VOD later).
+    # Not while a bad copy is being replaced: the request still stands.
+    from services.bad_copy import is_replacing
+    if not is_replacing(db, media_type, tmdb_id):
+        db.query(DownloadRequest).filter(
+            DownloadRequest.tmdb_id == tmdb_id,
+            DownloadRequest.media_type == media_type,
+        ).delete()
     db.query(Duplicate).filter(
         Duplicate.tmdb_id == tmdb_id,
         Duplicate.media_type == media_type,
@@ -868,6 +871,42 @@ def fix_match_suggestions(tmdb_id: int, q: Optional[str] = None, db: Session = D
         return suggest_matches(db, tmdb_id, q)
     except WrongMatchError as e:
         raise HTTPException(e.status, str(e))
+
+
+class ReplaceCopyBody(BaseModel):
+    season_number: Optional[int] = None
+    episode_number: Optional[int] = None
+
+
+@router.post("/replace/{media_type}/{tmdb_id}")
+def replace_copy(media_type: str, tmdb_id: int, body: ReplaceCopyBody, db: Session = Depends(get_db),
+                 user: TentacleUser = Depends(get_user_from_request)):
+    """'Bad copy? Get another one': blocklist the release a downloaded file came
+    from, delete the file and search for a different one. A movie, or one
+    episode (season_number + episode_number). Admin, or whoever requested it."""
+    from services.bad_copy import BadCopyError, replace_episode, replace_movie
+    if media_type not in ("movie", "series"):
+        raise HTTPException(400, "Invalid media type")
+    if not user.is_admin and not db.query(DownloadRequest).filter(
+            DownloadRequest.tmdb_id == tmdb_id, DownloadRequest.media_type == media_type,
+            DownloadRequest.user_id == user.id).first():
+        raise HTTPException(403, "You can only replace content you requested")
+    try:
+        if media_type == "movie":
+            result = replace_movie(db, tmdb_id, user_name=user.display_name)
+        else:
+            if body.season_number is None or body.episode_number is None:
+                raise HTTPException(400, "Which episode? (season_number and episode_number)")
+            result = replace_episode(db, tmdb_id, body.season_number, body.episode_number,
+                                     user_name=user.display_name)
+    except BadCopyError as e:
+        raise HTTPException(e.status, str(e))
+    try:
+        from routers.activity import invalidate_wanted_cache
+        invalidate_wanted_cache()
+    except Exception:
+        pass
+    return result
 
 
 @router.get("/fix-match/movie/{tmdb_id}/frames", dependencies=[Depends(require_admin)])

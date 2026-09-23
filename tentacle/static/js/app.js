@@ -39,9 +39,36 @@ async function postLoginInit() {
     await checkSetup();
     loadProviders();
     checkRunningSyncs();
+    loadArrProblems();
+    setInterval(loadArrProblems, 120000);
   }
   // Everyone lands on Library
   showPage('library');
+}
+
+// ── Radarr/Sonarr problems banner (admins) ────────────────────────────────
+// Indexers failing, download client unreachable, disk filling up: the usual
+// reasons nothing downloads, and invisible unless you open Radarr/Sonarr.
+let _arrProblemsHidden = '';
+async function loadArrProblems() {
+  const el = document.getElementById('arr-problems-banner');
+  if (!el) return;
+  let problems = [];
+  try { problems = (await api('/api/health/arr-problems')).problems || []; } catch (e) { return; }
+  const sig = problems.map(p => p.app + p.message).join('|');
+  if (!problems.length || sig === _arrProblemsHidden) { el.style.display = 'none'; return; }
+  const esc = s => String(s || '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+  el.className = 'arr-problems' + (problems.some(p => p.level === 'error') ? ' error' : '');
+  el.innerHTML = `<div class="arr-problems-head">⚠ ${problems.length === 1 ? 'Radarr/Sonarr has a problem' : `Radarr/Sonarr have ${problems.length} problems`} — downloads may not happen
+      <button class="btn btn-secondary btn-sm" onclick="hideArrProblems()">Hide</button></div>
+    <ul>${problems.slice(0, 5).map(p => `<li><strong>${esc(p.app)}:</strong> ${esc(p.message)}${p.wiki ? ` <a href="${esc(p.wiki)}" target="_blank" rel="noopener">How to fix</a>` : ''}</li>`).join('')}</ul>`;
+  el.dataset.sig = sig;
+  el.style.display = '';
+}
+function hideArrProblems() {
+  const el = document.getElementById('arr-problems-banner');
+  _arrProblemsHidden = el.dataset.sig || '';   // back if the problems change
+  el.style.display = 'none';
 }
 
 // ── Login ─────────────────────────────────────────────────────────────────

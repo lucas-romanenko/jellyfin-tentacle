@@ -812,10 +812,30 @@ def get_activity(request: Request, db: Session = Depends(get_db),
         for r in recently_downloaded:
             r["requested_by"] = requester_map.get(r.get("tmdb_id"))
 
+    # Why each title is still searching (the last release check, if any), what
+    # in Radarr/Sonarr is stopping downloads, and the week ahead.
+    from services import arr_insight
+    for x in searching:
+        x["check"] = arr_insight.cached_line(x.get("media_type"), x.get("tmdb_id") or 0, x.get("tvdb_id") or 0)
+    try:
+        problems = arr_insight.searching_problems(db)
+    except Exception as e:
+        logger.debug(f"Activity: problems check failed: {e}")
+        problems = []
+    try:
+        unreleased_series = {u.get("tmdb_id") for u in unreleased if u.get("media_type") == "series"}
+        coming_up = [dict(c) for c in arr_insight.coming_up(db)
+                     if c.get("tmdb_id") not in unreleased_series
+                     and (is_admin or c.get("tmdb_id") in user_requests)]
+        _enrich_posters(db, coming_up)
+    except Exception as e:
+        logger.debug(f"Activity: calendar failed: {e}")
+        coming_up = []
+
     if downloads:
         logger.info(f"Activity: {len(downloads)} download(s) in queue")
     return {"downloads": downloads, "searching": searching, "unreleased": unreleased,
-            "recently_downloaded": recently_downloaded}
+            "recently_downloaded": recently_downloaded, "problems": problems, "coming_up": coming_up}
 
 
 # ── Actions on requested titles: search again / remove ────────────────────
@@ -833,6 +853,11 @@ class ArrTitle(BaseModel):
     # Stop-missing only: limit to these episodes, as "S01E02" labels (the
     # Searching row's missing_labels). Default: every missing episode.
     episodes: Optional[List[str]] = None
+    # Check only: search again even if a recent check exists.
+    fresh: bool = False
+    # Grab only: the release, from a check's list.
+    guid: Optional[str] = None
+    indexer_id: Optional[int] = None
 
 
 def _can_manage(db: Session, user: TentacleUser, title: ArrTitle) -> bool:
@@ -875,8 +900,11 @@ def _find_arr_record(db: Session, title: ArrTitle):
     raise HTTPException(400, "media_type must be movie or series")
 
 
-def _after_arr_change() -> None:
+def _after_arr_change(title: Optional["ArrTitle"] = None) -> None:
     invalidate_wanted_cache()
+    if title is not None:
+        from services import arr_insight
+        arr_insight.forget(title.media_type, title.tmdb_id, title.tvdb_id)
     try:
         from routers.discover import bust_arr_ids_cache
         bust_arr_ids_cache()
@@ -920,9 +948,46 @@ def search_again(title: ArrTitle, db: Session = Depends(get_db),
             what = "series"
     if not ok:
         raise HTTPException(502, f"{'Radarr' if title.media_type == 'movie' else 'Sonarr'} did not accept the search")
+    from services import arr_insight
+    arr_insight.forget(title.media_type, title.tmdb_id, title.tvdb_id)  # its last check is stale now
     logger.info(f"Activity: search again for '{name}' ({what}) by {user.display_name}")
     return {"ok": True, "title": name,
             "message": f"Searching again for {what if title.media_type == 'series' else name}"}
+
+
+@router.post("/arr/check")
+def check_releases(title: ArrTitle, db: Session = Depends(get_db),
+                   user: TentacleUser = Depends(get_user_from_request)):
+    """Why hasn't this downloaded? Runs Radarr/Sonarr's interactive search (every
+    indexer, so it can take a minute) and sums up the releases it found.
+    A recent check is reused unless `fresh`."""
+    if not _can_manage(db, user, title):
+        raise HTTPException(403, "You can only check titles you requested")
+    from services import arr_insight
+    try:
+        return arr_insight.check(db, title.media_type, title.tmdb_id, title.tvdb_id,
+                                 max_age=0 if title.fresh else None)
+    except arr_insight.InsightError as e:
+        raise HTTPException(e.status, str(e))
+
+
+@router.post("/arr/grab")
+def grab_release(title: ArrTitle, db: Session = Depends(get_db),
+                 user: TentacleUser = Depends(get_user_from_request)):
+    """Download one release from a check — including one the profile rejected."""
+    if not _can_manage(db, user, title):
+        raise HTTPException(403, "You can only manage titles you requested")
+    if not title.guid or title.indexer_id is None:
+        raise HTTPException(400, "Which release? (guid and indexer_id)")
+    from services import arr_insight
+    try:
+        result = arr_insight.grab(db, title.media_type, title.tmdb_id, title.tvdb_id, title.guid, title.indexer_id)
+    except arr_insight.InsightError as e:
+        raise HTTPException(e.status, str(e))
+    invalidate_wanted_cache()
+    logger.info(f"Activity: {user.display_name} picked a release for {title.media_type} "
+                f"tmdb:{title.tmdb_id} tvdb:{title.tvdb_id}")
+    return result
 
 
 @router.post("/arr/stop-missing")
@@ -946,7 +1011,7 @@ def stop_missing(title: ArrTitle, db: Session = Depends(get_db),
         wanted = {e.strip().upper() for e in title.episodes}
         missing = [ep for ep in missing if _ep_label(ep) in wanted]
     if not missing:
-        _after_arr_change()
+        _after_arr_change(title)
         return {"ok": True, "title": name, "stopped": 0,
                 "message": (f"Sonarr isn't looking for those episodes of {name} any more" if title.episodes is not None
                             else f"Sonarr isn't looking for any episodes of {name}")}
@@ -957,7 +1022,7 @@ def stop_missing(title: ArrTitle, db: Session = Depends(get_db),
     log_deletion(db, kind="arr-unmonitor", name=name, media_type="series", reason="manual",
                  user_name=user.display_name,
                  detail=f"Stopped looking for {len(labels)} missing episode(s): {', '.join(labels[:20])}")
-    _after_arr_change()
+    _after_arr_change(title)
     logger.info(f"Activity: stopped looking for {len(labels)} missing episode(s) of '{name}' by {user.display_name}")
     n = len(labels)
     return {"ok": True, "title": name, "stopped": n, "episodes": labels,
@@ -1008,7 +1073,7 @@ def remove_from_arr(title: ArrTitle, request: Request, db: Session = Depends(get
     if row is not None and getattr(row, "source", None) in ("radarr", "sonarr"):
         from routers.library import delete_download
         result = delete_download(title.tmdb_id, title.media_type, request, db=db)
-        _after_arr_change()
+        _after_arr_change(title)
         return {"ok": True, "title": result.get("title"), "files_deleted": True,
                 "message": f"Removed {result.get('title')} and its downloaded files"}
 
@@ -1037,7 +1102,7 @@ def remove_from_arr(title: ArrTitle, request: Request, db: Session = Depends(get
     log_deletion(db, kind="arr-remove", name=name, media_type=title.media_type, reason="manual",
                  user_name=user.display_name,
                  detail=f"Removed from {arr} while searching; files {'kept (VOD)' if keep_files else 'deleted'}")
-    _after_arr_change()
+    _after_arr_change(title)
     logger.info(f"Activity: removed '{name}' from {arr} (deleteFiles={not keep_files}) by {user.display_name}")
     return {"ok": True, "title": name, "files_deleted": not keep_files,
             "message": f"Removed {name} from {arr}" + (" (VOD files kept)" if keep_files else "")}

@@ -541,6 +541,21 @@ def get_discover_detail(
         except HTTPException:
             pass
 
+    # can_replace: "Bad copy? Get another one" — a downloaded movie, or a show
+    # with downloaded episodes (Sonarr-only or hybrid), for admin or requester.
+    details["can_replace"] = False
+    if db_item is not None and (getattr(db_item, "source", None) in ("radarr", "sonarr")
+                                or (media_type == "series" and getattr(db_item, "sonarr_path", None))):
+        try:
+            user = get_user_from_request(request, db)
+            details["can_replace"] = bool(user.is_admin or db.query(DownloadRequest).filter(
+                DownloadRequest.tmdb_id == tmdb_id,
+                DownloadRequest.media_type == media_type,
+                DownloadRequest.user_id == user.id,
+            ).first())
+        except Exception:
+            pass
+
     # can_report_wrong: an admin may flag a VOD movie as a different film than
     # its label ("Wrong movie") — blocks the provider stream and removes it.
     details["can_report_wrong"] = False

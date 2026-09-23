@@ -1988,11 +1988,26 @@ var Details = {
                 fetch(serverUrl + '/TentacleDiscover/Detail/' + mediaType + '/' + tmdbId, { headers: headers })
                     .then(function(r) { return r.ok ? r.json() : null; })
                     .then(function(detail) {
-                        self._buildMoreMenu(item, user, detail && detail.can_delete, detail && detail.can_report_wrong);
+                        self._buildMoreMenu(item, user, detail && detail.can_delete, detail && detail.can_report_wrong,
+                            item.Type === 'Movie' && detail && detail.can_replace);
                     })
                     .catch(function() {
                         self._buildMoreMenu(item, user, false);
                     });
+            } else if (item.Type === 'Episode' && item.SeriesId && !self._isStrm(item)) {
+                // A downloaded episode: "Bad copy?" is decided by its show.
+                window.ApiClient.getItem(window.ApiClient.getCurrentUserId(), item.SeriesId).then(function(series) {
+                    var seriesTmdb = series && series.ProviderIds && series.ProviderIds.Tmdb;
+                    if (!seriesTmdb) { self._buildMoreMenu(item, user, false); return; }
+                    return fetch(self.getServerUrl() + '/TentacleDiscover/Detail/series/' + seriesTmdb, { headers: self.getAuthHeaders() })
+                        .then(function(r) { return r.ok ? r.json() : null; })
+                        .then(function(detail) {
+                            item._tentacleSeriesTmdb = seriesTmdb;
+                            self._buildMoreMenu(item, user, false, false, !!(detail && detail.can_replace));
+                        });
+                }).catch(function() {
+                    self._buildMoreMenu(item, user, false);
+                });
             } else {
                 self._buildMoreMenu(item, user, false);
             }
@@ -2001,7 +2016,12 @@ var Details = {
         });
     },
 
-    _buildMoreMenu: function(item, user, tentacleCanDelete, tentacleCanReportWrong) {
+    _isStrm: function(item) {
+        var path = item.Path || (item.MediaSources && item.MediaSources[0] && item.MediaSources[0].Path) || '';
+        return /\.strm$/i.test(path);
+    },
+
+    _buildMoreMenu: function(item, user, tentacleCanDelete, tentacleCanReportWrong, tentacleCanReplace) {
         var self = this;
         var policy = (user && user.Policy) || {};
         var isAdmin = policy.IsAdministrator || false;
@@ -2040,6 +2060,12 @@ var Details = {
         // Delete — only for downloaded content (Tentacle-controlled permission)
         if (tentacleCanDelete) {
             menuItems.push({ id: 'delete', name: 'Delete', icon: '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="M280-120q-33 0-56.5-23.5T200-200v-520h-40v-80h200v-40h240v40h200v80h-40v520q0 33-23.5 56.5T680-120H280Zm400-600H280v520h400v-520ZM360-280h80v-360h-80v360Zm160 0h80v-360h-80v360ZM280-720v520-520Z"/></svg>', className: 'moonfin-more-item-danger' });
+        }
+
+        // Bad copy — a downloaded movie or episode (admin or requester): blocklist
+        // the release it came from, delete the file, search for another.
+        if (tentacleCanReplace) {
+            menuItems.push({ id: 'badcopy', name: 'Bad copy? Get another one', icon: '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="M480-160q-134 0-227-93t-93-227q0-134 93-227t227-93q69 0 132 28.5T720-690v-110h80v280H520v-80h168q-32-56-87.5-88T480-720q-100 0-170 70t-70 170q0 100 70 170t170 70q77 0 139-44t87-116h84q-28 106-114 173t-196 67Z"/></svg>' });
         }
 
         // Wrong movie — admin, IPTV (VOD) movie: the provider's stream is a different
@@ -2232,6 +2258,9 @@ var Details = {
             case 'wrongmovie':
                 self.showFixMatch(item);
                 break;
+            case 'badcopy':
+                self.confirmReplace(item);
+                break;
         }
     },
 
@@ -2409,6 +2438,65 @@ var Details = {
 
         document.body.appendChild(overlay);
         load('');
+    },
+
+    confirmReplace: function(item) {
+        var self = this;
+        var isEpisode = item.Type === 'Episode';
+        var tmdbId = isEpisode ? item._tentacleSeriesTmdb : (item.ProviderIds && item.ProviderIds.Tmdb);
+        if (!tmdbId) return;
+        var label = isEpisode
+            ? (item.SeriesName || '') + ' S' + String(item.ParentIndexNumber || 0).padStart(2, '0') + 'E' + String(item.IndexNumber || 0).padStart(2, '0')
+            : (item.Name || 'this movie');
+
+        var overlay = document.createElement('div');
+        overlay.className = 'moonfin-more-overlay';
+        overlay.innerHTML = '<div class="moonfin-more-menu">' +
+            '<h3 class="moonfin-more-title">Get another copy?</h3>' +
+            '<p style="color:rgba(255,255,255,0.75);margin:0 0 20px;text-align:center;line-height:1.5">For a bad copy of <strong>' + this.esc(label) + '</strong>: ' +
+                'wrong language, burned-in subtitles, broken audio or a fake.<br>' +
+                '<span style="font-size:13px;color:rgba(255,255,255,0.55)">The current file is deleted, the release it came from is blocked so it isn\u2019t downloaded again, and a different one is searched for.</span></p>' +
+            '<div style="display:flex;gap:12px;justify-content:center">' +
+                '<button class="moonfin-more-item moonfin-focusable tbc-cancel" tabindex="0"><span class="moonfin-more-item-text">Cancel</span></button>' +
+                '<button class="moonfin-more-item moonfin-focusable moonfin-more-item-danger tbc-go" tabindex="0"><span class="moonfin-more-item-text">Get another copy</span></button>' +
+            '</div>' +
+        '</div>';
+        var close = function() {
+            if (overlay._escHandler) document.removeEventListener('keydown', overlay._escHandler, true);
+            overlay.remove();
+        };
+        overlay._escHandler = function(e) {
+            if (e.key === 'Escape' || e.keyCode === 27 || e.keyCode === 461 || e.keyCode === 10009) {
+                e.preventDefault(); e.stopPropagation(); close();
+            }
+        };
+        document.addEventListener('keydown', overlay._escHandler, true);
+        overlay.addEventListener('click', function(e) { if (e.target === overlay) close(); });
+        overlay.querySelector('.tbc-cancel').addEventListener('click', close);
+        var go = overlay.querySelector('.tbc-go');
+        go.addEventListener('click', function() {
+            if (go.disabled) return;
+            go.disabled = true;
+            go.querySelector('.moonfin-more-item-text').textContent = 'Working\u2026';
+            var uid = (window.ApiClient && window.ApiClient.getCurrentUserId) ? window.ApiClient.getCurrentUserId() : '';
+            fetch(self.getServerUrl() + '/TentacleDiscover/ReplaceCopy/' + (isEpisode ? 'series' : 'movie') + '/' + tmdbId + '?userId=' + encodeURIComponent(uid), {
+                method: 'POST',
+                headers: Object.assign({ 'Content-Type': 'application/json' }, self.getAuthHeaders()),
+                body: JSON.stringify(isEpisode ? { season_number: item.ParentIndexNumber, episode_number: item.IndexNumber } : {})
+            }).then(function(resp) {
+                return resp.json().catch(function() { return {}; }).then(function(body) {
+                    close();
+                    if (resp.ok) {
+                        self.showToast((body && body.message) || 'Getting another copy');
+                        self.hide();
+                    } else {
+                        self.showToast((body && body.detail) || ('Failed (HTTP ' + resp.status + ')'));
+                    }
+                });
+            }).catch(function() { close(); self.showToast("Can't reach the server right now"); });
+        });
+        document.body.appendChild(overlay);
+        setTimeout(function() { overlay.querySelector('.tbc-cancel').focus(); }, 50);
     },
 
     confirmDelete: function(item) {

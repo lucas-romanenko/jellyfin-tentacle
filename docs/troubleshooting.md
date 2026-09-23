@@ -57,6 +57,31 @@ Open the title from Activity (on the TV, select the card) to act on it:
 
 Admins can do this for any title; everyone else only for titles they requested.
 
+#### Why hasn't it downloaded?
+
+Radarr and Sonarr don't record why their automatic searches came up empty, so Tentacle asks them to search again and reads what comes back. On the dashboard use **Why? / Pick**; in Jellyfin open the title and choose **Why hasn't it downloaded? Check now**; on the TV use **Why? / Pick** in the title's dialog. It asks every indexer, so it can take up to a minute. The result is one of:
+
+- **No releases found.** Nobody seems to have uploaded it yet, or your indexers didn't return it. Check your indexers (see below).
+- **Usable releases found.** Radarr/Sonarr should grab one shortly.
+- **Held back by your delay profile.** One will be grabbed when the delay ends.
+- **None usable**, with the reasons counted, for example "9 quality not in your profile (best was HDTV-720p), 3 wrong size". Widening the quality profile or size limits in Radarr/Sonarr fixes this for next time.
+
+For a show, the check covers its newest missing episode. Tentacle also runs this check by itself for titles that have been searching for 45 minutes or more, at most every 12 hours per title, so the Searching card shows a short reason ("None usable: quality not in your profile") without you asking.
+
+The check lists every release it found. **Download** (or **Download anyway** for one your settings turned down) sends that release straight to your download client, like Interactive Search in Radarr/Sonarr. The list goes stale after about half an hour; if a download says so, press **Check again**.
+
+#### "Searches may not work right now"
+
+Activity shows this box, and admins also get a banner at the top of the dashboard, when Radarr or Sonarr reports a problem that stops downloads: indexers failing, the download client unreachable, a root folder missing, Tentacle unable to reach Radarr/Sonarr at all, or under 20 GB (or 5%) free on the disk a root folder lives on. The messages are Radarr/Sonarr's own. The dashboard banner links to their fix-it pages, and **Hide** keeps it away until the problems change.
+
+#### Coming up this week
+
+Activity lists episodes of the shows Sonarr is monitoring that air in the next seven days, from Sonarr's calendar, with the day and time in your own time zone.
+
+### A download is the wrong language, has burned-in subtitles or is broken
+
+Use **Bad copy? Get another one**: in Jellyfin it's in the title's **⋯** menu (for a movie, or for a single downloaded episode), on the TV it's the **Bad copy?** button, and on the dashboard it's on the movie's detail, or the **↻** next to a downloaded episode. Tentacle marks the release the file came from as failed in Radarr/Sonarr (which blocklists it, so it isn't picked again), deletes the file and searches for a different one. The title shows under Activity → Searching until the new copy arrives, and whoever requested it is told when it's ready. Admins can do this for anything downloaded; everyone else for titles they requested. IPTV streams aren't downloads. For those, use **Wrong movie? Fix it**.
+
 ### Discover or Activity says "Tentacle is busy" or "Can't reach Tentacle"
 
 The Jellyfin plugin couldn't get an answer from the Tentacle dashboard, so it says why instead of showing an empty page:

@@ -397,6 +397,10 @@ def sonarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
                         ep_label = f" - S{s:02d}E{e:02d}"
 
                     notif_msg = f"{db_series.title}{ep_label} has completed and is ready to watch"
+                    from services.bad_copy import is_replacing, clear_replacing
+                    if is_replacing(db, "series", tmdb_id):
+                        clear_replacing(db, "series", tmdb_id)
+                        notif_msg = f"A new copy of {db_series.title}{ep_label} is ready to watch"
 
                     # Notify the requester
                     notified_user_ids = set()

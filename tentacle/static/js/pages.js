@@ -1580,6 +1580,10 @@ async function showMediaDetail(tmdbId, mediaType) {
             <input type="checkbox" ${data.strm_managed ? 'checked' : ''} onchange="toggleStrmManaged('${mediaType}', ${tmdbId}, this.checked)">
             <span class="detail-follow-label">Manage .strm files</span>
           </label>` : ''}
+          ${data.source === 'radarr' ? `<div style="margin-top:10px">
+            <button class="btn btn-secondary btn-sm" title="Wrong language, burned-in subtitles, broken audio or a fake: delete this file, block its release, find another"
+              onclick="replaceCopy('movie', ${tmdbId}, null, null, this)">Bad copy? Get another one</button>
+          </div>` : ''}
           ${data.is_vod && !isSeries && state.currentUser?.is_admin ? `<div style="margin-top:10px">
             <button class="btn btn-danger btn-sm" title="The provider's stream is a different film than this title" onclick="openFixMatch(${tmdbId}, '${escapeJS(data.title || '')}')">Wrong movie? Fix it</button>
           </div>` : ''}
@@ -1659,6 +1663,30 @@ function openFixMatch(tmdbId, title) {
   closeModal('modal-media-detail');
   showModal('modal-fix-match');
   _fmLoad('');
+}
+
+// "Bad copy? Get another one": blocklist the release, delete the file, search
+// for a different one. Two clicks: the first says what will happen.
+async function replaceCopy(mediaType, tmdbId, season, episode, btn) {
+  if (btn.dataset.armed !== '1') {
+    btn.dataset.armed = '1';
+    btn.dataset.label = btn.textContent;
+    btn.textContent = mediaType === 'movie' ? 'Click again: delete this file and find another' : 'Again: replace';
+    btn.classList.add('armed');
+    setTimeout(() => { if (btn.dataset.armed === '1') { btn.dataset.armed = ''; btn.textContent = btn.dataset.label; btn.classList.remove('armed'); } }, 5000);
+    return;
+  }
+  btn.dataset.armed = '';
+  btn.disabled = true;
+  try {
+    const body = mediaType === 'series' ? { season_number: season, episode_number: episode } : {};
+    const r = await api(`/api/library/replace/${mediaType}/${tmdbId}`, { method: 'POST', body });
+    toast(r.message || 'Getting another copy');
+    btn.textContent = mediaType === 'movie' ? 'Getting another copy…' : '…';
+  } catch (e) {
+    toast(e.message || 'Failed', 'error');
+    btn.disabled = false; btn.textContent = btn.dataset.label; btn.classList.remove('armed');
+  }
 }
 
 async function _fmLoad(q) {
@@ -1971,6 +1999,8 @@ async function detailToggleSeason(sn) {
         <span class="ep-num">${epNum}</span>
         <span class="detail-ep-name">${nameMap[epNum] || ''}</span>
         ${badges.join('')}
+        ${isDl && !isVod ? `<button class="ep-replace-btn" title="Bad copy? Get another one" aria-label="Bad copy? Get another one"
+          onclick="replaceCopy('series', ${_detailEpState.tmdbId}, ${sn}, ${epNum}, this)">↻</button>` : ''}
       </div>`;
     }
 
@@ -4739,6 +4769,96 @@ function _smGo() {
   _stopMissing(_smKey, item, chosen.length === (item.missing_labels || []).length ? null : chosen);
 }
 
+// "Today 9 PM" / "Tomorrow" / "Thursday" for an air time, in the viewer's zone.
+function _airDay(iso) {
+  if (!iso) return '';
+  const d = new Date(iso), now = new Date();
+  const days = Math.round((new Date(d.getFullYear(), d.getMonth(), d.getDate()) - new Date(now.getFullYear(), now.getMonth(), now.getDate())) / 86400000);
+  const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  if (days <= 0) return `Today ${time}`;
+  if (days === 1) return `Tomorrow ${time}`;
+  return d.toLocaleDateString([], { weekday: 'long' }) + ` ${time}`;
+}
+
+function _ago(iso) {
+  if (!iso) return '';
+  const mins = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins} min ago`;
+  const h = Math.round(mins / 60);
+  return h < 48 ? `${h} h ago` : `${Math.round(h / 24)} days ago`;
+}
+
+// ── Why? / Pick a release ──────────────────────────────────────────────
+// Radarr/Sonarr's interactive search, summed up: nothing found, usable
+// releases, or everything rejected and why — and a list to pick from.
+let _rc = null;
+function openReleaseCheck(key) {
+  const item = _actItem(key);
+  if (!item) return;
+  _rc = { key, item, data: null, busy: false };
+  let m = document.getElementById('modal-release-check');
+  if (!m) {
+    m = document.createElement('div');
+    m.className = 'modal-overlay'; m.id = 'modal-release-check'; m.style.display = 'none';
+    m.innerHTML = `<div class="modal" style="max-width:720px">
+      <div class="modal-header"><div class="modal-title" id="rc-title"></div>
+        <button class="modal-close" onclick="closeModal('modal-release-check')">✕</button></div>
+      <div style="padding:0 20px 20px">
+        <p class="rc-summary" id="rc-summary"></p>
+        <div class="rc-meta" id="rc-meta"></div>
+        <div id="rc-list" class="rc-list"></div>
+      </div></div>`;
+    document.body.appendChild(m);
+  }
+  document.getElementById('rc-title').textContent = `Why hasn't ${item.title} downloaded?`;
+  showModal('modal-release-check');
+  _rcLoad(false);
+}
+
+async function _rcLoad(fresh) {
+  const { item } = _rc;
+  const sum = document.getElementById('rc-summary'), meta = document.getElementById('rc-meta'), list = document.getElementById('rc-list');
+  sum.textContent = 'Asking your indexers… this can take up to a minute.';
+  meta.innerHTML = ''; list.innerHTML = '';
+  try {
+    const d = await api('/api/activity/arr/check', { method: 'POST', body: { ..._actBody(item), fresh } });
+    if (!_rc || _rc.item !== item) return;
+    _rc.data = d;
+    sum.textContent = d.summary;
+    meta.innerHTML = `${d.scope ? `${escapeAttr(d.scope)} · ` : ''}Checked ${escapeAttr(_ago(d.checked_at))}
+      · <a href="#" onclick="event.preventDefault();_rcLoad(true)">Check again</a>`;
+    list.innerHTML = (d.releases || []).map((r, i) => `<div class="rc-row${r.rejected ? ' rejected' : ''}">
+        <div class="rc-info">
+          <div class="rc-title">${escapeAttr(r.title)}</div>
+          <div class="rc-facts">${[r.quality, _fmtBytes(r.size_bytes), r.protocol === 'torrent' && r.seeders != null ? `${r.seeders} seeders` : r.protocol,
+            r.languages, r.indexer, r.age_days != null ? `${r.age_days} d old` : ''].filter(Boolean).map(escapeAttr).join(' · ')}</div>
+          ${r.rejected ? `<div class="rc-why" title="${escapeAttr((r.raw_reasons || []).join('\n'))}">${escapeAttr((r.reasons || []).join(', ') || 'rejected')}</div>` : ''}
+        </div>
+        <button class="btn ${r.rejected ? 'btn-secondary' : 'btn-primary'} btn-sm" onclick="_rcGrab(${i}, this)">${r.rejected ? 'Download anyway' : 'Download'}</button>
+      </div>`).join('');
+  } catch (e) {
+    if (!_rc || _rc.item !== item) return;
+    sum.textContent = e.message || 'The check failed';
+    meta.innerHTML = '<a href="#" onclick="event.preventDefault();_rcLoad(true)">Try again</a>';
+  }
+}
+
+async function _rcGrab(i, btn) {
+  if (!_rc || !_rc.data || _rc.busy) return;
+  const r = _rc.data.releases[i];
+  _rc.busy = true; btn.disabled = true; btn.textContent = 'Sending…';
+  try {
+    const res = await api('/api/activity/arr/grab', { method: 'POST', body: { ..._actBody(_rc.item), guid: r.guid, indexer_id: r.indexer_id } });
+    toast(res.message || 'Sent to your download client');
+    closeModal('modal-release-check');
+    await loadActivity();
+  } catch (e) {
+    toast(e.message || 'Download failed', 'error');
+    btn.disabled = false; btn.textContent = r.rejected ? 'Download anyway' : 'Download';
+  } finally { if (_rc) _rc.busy = false; }
+}
+
 async function activityRemove(key) {
   const item = _actItem(key);
   if (!item || _actBusy[key]) return;
@@ -4785,6 +4905,14 @@ function renderActivity(data) {
   const downloads = data.downloads || [];
   const unreleased = data.unreleased || [];
   let html = '';
+
+  // What in Radarr/Sonarr is stopping downloads (indexers, download client, disk).
+  const problems = data.problems || [];
+  if (problems.length > 0) {
+    html += `<div class="arr-problems activity-problems${problems.some(p => p.level === 'error') ? ' error' : ''}">
+      <div class="arr-problems-head">⚠ Searches may not work right now</div>
+      <ul>${problems.slice(0, 4).map(p => `<li><strong>${escapeAttr(p.app)}:</strong> ${escapeAttr(p.message)}</li>`).join('')}</ul></div>`;
+  }
 
   if (downloads.length > 0) {
     html += '<div class="activity-section-title">Downloading</div><div class="activity-grid">';
@@ -4841,9 +4969,12 @@ function renderActivity(data) {
         <div class="activity-info">
           <div class="activity-title">${escapeAttr(item.title)}${item.episode ? ' · ' + escapeAttr(item.episode) : ''}</div>
           <div class="activity-meta">${escapeAttr(item.year || '')} · Looking for a release ${reqByLabel}</div>
+          ${item.check ? `<div class="activity-check ${escapeAttr(item.check.state)}" title="${escapeAttr(item.check.summary)}">${escapeAttr(item.check.short)}</div>` : ''}
           <div class="activity-countdown activity-searching">${waited ? 'Searching for ' + escapeAttr(waited) : 'Searching'}</div>
           <div class="activity-actions">
             <button class="activity-act-btn" ${busy ? 'disabled' : ''} onclick="activitySearchAgain('${escapeAttr(key)}')">${busy === 'search' ? 'Searching…' : 'Search again'}</button>
+            <button class="activity-act-btn" ${busy ? 'disabled' : ''} title="Check what your indexers have and why nothing downloaded; pick a release yourself"
+              onclick="openReleaseCheck('${escapeAttr(key)}')">Why? / Pick</button>
             ${isShow ? `<button class="activity-act-btn" ${busy ? 'disabled' : ''} title="Stop Sonarr looking for the missing episodes; keep everything downloaded"
               onclick="activityStopMissing('${escapeAttr(key)}')">${busy === 'stop' ? 'Stopping…' : 'Stop looking'}</button>` : ''}
             <button class="activity-act-btn activity-act-remove${armed ? ' armed' : ''}" ${busy ? 'disabled' : ''} title="${escapeAttr(removeTitle)}"
@@ -4870,6 +5001,20 @@ function renderActivity(data) {
         </div>
       </div>`;
     }).join('');
+    html += '</div>';
+  }
+
+  const coming = data.coming_up || [];
+  if (coming.length > 0) {
+    html += '<div class="activity-section-title">Coming up this week</div><div class="activity-grid">';
+    html += coming.map(item => `<div class="activity-card">
+        <div class="activity-poster">${_activityPoster(item.poster_path)}</div>
+        <div class="activity-info">
+          <div class="activity-title">${escapeAttr(item.title)} · ${escapeAttr(item.episode)}</div>
+          <div class="activity-meta">${escapeAttr(item.episode_title || '')}</div>
+          <div class="coming-day">${escapeAttr(_airDay(item.air_date_utc))}</div>
+        </div>
+      </div>`).join('');
     html += '</div>';
   }
 
@@ -6662,7 +6807,7 @@ async function loadHealthDeletions() {
 (function exposeGlobals() {
   const fns = [
     // Activity (inline handlers)
-    _activityPosterFailed, activitySearchAgain, activityRemove, activityStopMissing, _smAll, _smCount, _smGo,
+    _activityPosterFailed, activitySearchAgain, activityRemove, activityStopMissing, _smAll, _smCount, _smGo, openReleaseCheck, _rcLoad, _rcGrab, replaceCopy,
     // Wrong movie (mislabelled provider streams)
     reportWrongMovie, dismissMatchSuspect, unblockStream, openFixMatch, _fmLoad, _fmFrames, _fmPick, _fmRemove,
     // Lists page
