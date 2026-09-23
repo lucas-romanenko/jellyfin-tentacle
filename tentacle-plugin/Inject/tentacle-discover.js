@@ -1555,7 +1555,7 @@
       if (searching.length > 0) parts.push(searching.length + ' searching');
       if (recent.length > 0) parts.push(recent.length + ' ready to watch');
       if (unreleased.length > 0) parts.push(unreleased.length + ' upcoming');
-      summary.textContent = parts.length > 0 ? parts.join(' \u00b7 ') : 'All clear';
+      summary.textContent = parts.length > 0 ? parts.join(' \u00b7 ') : (failureMessage(data) ? 'Unavailable' : 'All clear');
     }
 
     var html = '';
