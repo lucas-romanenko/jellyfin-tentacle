@@ -241,9 +241,12 @@ def radarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
             logger.info(f"[Radarr webhook] MovieFileDelete upgrade for '{title}' — ignoring")
             return {"status": "ignored", "reason": "upgrade"}
         # Non-upgrade file deletion — remove from DB
+        from services.bad_copy import is_replacing
+        replacing = is_replacing(db, "movie", tmdb_id)
         try:
             deleted = db.query(Movie).filter(Movie.tmdb_id == tmdb_id, Movie.source == "radarr").delete()
-            db.query(DownloadRequest).filter(DownloadRequest.tmdb_id == tmdb_id, DownloadRequest.media_type == "movie").delete()
+            if not replacing:  # "Bad copy": the request stands while another copy comes
+                db.query(DownloadRequest).filter(DownloadRequest.tmdb_id == tmdb_id, DownloadRequest.media_type == "movie").delete()
             # Clear duplicate tombstones — deleting the downloaded copy is a
             # clean slate; the title may legitimately re-import from VOD later
             db.query(Duplicate).filter(Duplicate.tmdb_id == tmdb_id, Duplicate.media_type == "movie").delete()
@@ -458,11 +461,16 @@ def radarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
                         DownloadRequest.tmdb_id == tmdb_id,
                         DownloadRequest.media_type == "movie"
                     ).first()
+                    from services.bad_copy import is_replacing, clear_replacing
+                    replaced = is_replacing(db, "movie", tmdb_id)
+                    if replaced:
+                        clear_replacing(db, "movie", tmdb_id)
                     if dr:
                         create_notification(
                             db, user_id=dr.user_id, tmdb_id=tmdb_id, media_type="movie",
                             title=db_movie.title,
-                            message=f"{db_movie.title} has completed and is ready to watch",
+                            message=(f"A new copy of {db_movie.title} is ready to watch" if replaced
+                                     else f"{db_movie.title} has completed and is ready to watch"),
                             poster_path=db_movie.poster_path,
                             jellyfin_item_id=db_movie.jellyfin_item_id,
                         )

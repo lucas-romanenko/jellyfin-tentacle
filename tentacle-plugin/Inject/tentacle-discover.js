@@ -775,6 +775,14 @@
           '<div class="md-requested-badge">⏳ In ' + reqArr + ' — searching for release</div>' +
         '</div>' +
         (item.can_manage
+          ? '<div class="md-arr-why">' +
+              (item.check ? '<div class="md-arr-why-summary">' + esc(item.check.summary) + '</div>' : '') +
+              '<button id="mdArrWhyBtn" class="md-arr-link" type="button">' +
+                (item.check ? 'See the releases and pick one' : 'Why hasn\u2019t it downloaded? Check now') + '</button>' +
+              '<div id="mdArrWhy" class="md-arr-why-body" style="display:none"></div>' +
+            '</div>'
+          : '') +
+        (item.can_manage
           ? '<div class="md-download-row" style="margin-top:12px">' +
               '<button id="mdArrSearchBtn" class="md-download-btn">Search again</button>' +
               (item.media_type === 'series'
@@ -957,6 +965,82 @@
     return 'Remove from ' + (item.media_type === 'series' ? 'Sonarr' : 'Radarr');
   }
 
+  function fmtSize(b) {
+    if (!b) return '';
+    return b >= 1073741824 ? (b / 1073741824).toFixed(1) + ' GB' : Math.round(b / 1048576) + ' MB';
+  }
+
+  function checkedAgo(iso) {
+    var ms = iso ? Date.now() - new Date(iso).getTime() : 0;
+    return ms >= 60000 ? 'checked ' + waitedFor(iso) + ' ago' : 'checked just now';
+  }
+
+  // "Why hasn't it downloaded?": Radarr/Sonarr's interactive search summed up,
+  // and the releases to pick from (including ones the profile turned down).
+  function wireWhy(overlay, item, afterChange) {
+    var btn = overlay.querySelector('#mdArrWhyBtn');
+    var body = overlay.querySelector('#mdArrWhy');
+    if (!btn || !body) return;
+    var data = null, busy = false;
+    var load = function (fresh) {
+      btn.style.display = 'none';
+      body.style.display = '';
+      body.innerHTML = '<div class="md-arr-why-wait">Asking your indexers\u2026 this can take up to a minute.</div>';
+      var req = arrTitleBody(item);
+      req.fresh = !!fresh;
+      apiPost('TentacleDiscover/ArrCheck', req).then(function (d) {
+        data = d;
+        var summary = overlay.querySelector('.md-arr-why-summary');
+        if (summary) summary.remove();
+        body.innerHTML =
+          '<div class="md-arr-why-summary">' + esc(d.summary) + '</div>' +
+          '<div class="md-arr-why-meta">' + (d.scope ? esc(d.scope) + ' \u00b7 ' : '') + esc(checkedAgo(d.checked_at)) +
+            ' \u00b7 <button class="md-arr-link" type="button" data-why-again>Check again</button></div>' +
+          '<div class="md-arr-rel-list">' + (d.releases || []).map(function (r, i) {
+            var facts = [r.quality, fmtSize(r.size_bytes),
+              r.protocol === 'torrent' && r.seeders != null ? r.seeders + ' seeders' : r.protocol,
+              r.languages, r.indexer].filter(Boolean).map(esc).join(' \u00b7 ');
+            return '<div class="md-arr-rel' + (r.rejected ? ' md-arr-rel-rejected' : '') + '">' +
+              '<div class="md-arr-rel-info">' +
+                '<div class="md-arr-rel-title">' + esc(r.title) + '</div>' +
+                '<div class="md-arr-rel-facts">' + facts + '</div>' +
+                (r.rejected ? '<div class="md-arr-rel-why" title="' + esc((r.raw_reasons || []).join('\n')) + '">' + esc((r.reasons || []).join(', ') || 'rejected') + '</div>' : '') +
+              '</div>' +
+              '<button class="md-download-btn md-arr-rel-btn" type="button" data-rel="' + i + '">' + (r.rejected ? 'Download anyway' : 'Download') + '</button>' +
+            '</div>';
+          }).join('') + '</div>';
+      }).catch(function (e) {
+        body.innerHTML = '<div class="md-arr-why-summary md-arr-why-error">' + esc(e.message || 'The check failed') + '</div>' +
+          '<button class="md-arr-link" type="button" data-why-again>Try again</button>';
+      });
+    };
+    btn.addEventListener('click', function () { load(false); });
+    body.addEventListener('click', function (e) {
+      if (e.target.closest('[data-why-again]')) { load(true); return; }
+      var b = e.target.closest('[data-rel]');
+      if (!b || !data || busy) return;
+      var r = data.releases[parseInt(b.getAttribute('data-rel'), 10)];
+      busy = true;
+      b.disabled = true;
+      b.textContent = 'Sending\u2026';
+      var req = arrTitleBody(item);
+      req.guid = r.guid;
+      req.indexer_id = r.indexer_id;
+      apiPost('TentacleDiscover/ArrGrab', req).then(function (res) {
+        var status = overlay.querySelector('#mdDownloadStatus');
+        if (status) { status.textContent = (res && res.message) || 'Sent to your download client'; status.style.color = 'rgb(80, 190, 130)'; }
+        afterChange();
+        setTimeout(closeModal, 1500);
+      }).catch(function (err) {
+        busy = false;
+        b.disabled = false;
+        b.textContent = r.rejected ? 'Download anyway' : 'Download';
+        var status = overlay.querySelector('#mdDownloadStatus');
+        if (status) { status.textContent = err.message || 'Download failed'; status.style.color = '#f87171'; }
+      });
+    });
+  }
+
   function wireArrActions(overlay, item) {
     var status = overlay.querySelector('#mdDownloadStatus');
     var searchBtn = overlay.querySelector('#mdArrSearchBtn');
@@ -978,6 +1062,8 @@
         window.dispatchEvent(new CustomEvent('tentacle-activity-count', { detail: activityCount(data) }));
       }).catch(function () {});
     };
+
+    wireWhy(overlay, item, afterChange);
 
     if (searchBtn) {
       searchBtn.addEventListener('click', function () {
@@ -1679,7 +1765,8 @@
   var _badPosters = {};
   window.__tentacleBadPoster = function (img, phClass) {
     _badPosters[img.getAttribute('src')] = 1;
-    img.parentElement.innerHTML = '<div class="' + phClass + '">&#9707;</div>';
+    // Replace just the image: its box also holds the status badge.
+    img.outerHTML = '<div class="' + phClass + '">&#9707;</div>';
   };
   function actPoster(path, phClass) {
     var src = path ? _imgUrl(path, 'w185') : '';
@@ -1746,6 +1833,17 @@
     return Math.floor(hrs / 24) + 'd';
   }
 
+  // "Today 9 PM" / "Tomorrow 9 PM" / "Thu 9 PM" in the viewer's time zone.
+  function airDay(iso) {
+    if (!iso) return '';
+    var d = new Date(iso), now = new Date();
+    var days = Math.round((new Date(d.getFullYear(), d.getMonth(), d.getDate()) - new Date(now.getFullYear(), now.getMonth(), now.getDate())) / 86400000);
+    var time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    if (days <= 0) return 'Today ' + time;
+    if (days === 1) return 'Tomorrow ' + time;
+    return d.toLocaleDateString([], { weekday: 'short' }) + ' ' + time;
+  }
+
   function renderActivityPage(container) {
     container.innerHTML =
       '<div class="md-act-header">' +
@@ -1799,6 +1897,17 @@
     }
 
     var html = '';
+
+    // What in Radarr/Sonarr is stopping downloads (indexers, download client, disk).
+    var problems = data.problems || [];
+    if (problems.length > 0) {
+      html += '<div class="md-act-problems' + (problems.some(function (p) { return p.level === 'error'; }) ? ' md-act-problems-error' : '') + '">' +
+        '<div class="md-act-problems-head">\u26A0 Searches may not work right now</div>' +
+        '<ul>' + problems.slice(0, 4).map(function (p) {
+          return '<li><strong>' + esc(p.app) + ':</strong> ' + esc(p.message) + '</li>';
+        }).join('') + '</ul>' +
+      '</div>';
+    }
 
     if (downloads.length > 0) {
       html += '<div class="md-act-section">' +
@@ -1865,7 +1974,9 @@
             '<div class="md-act-upcoming-info">' +
               '<div class="md-act-upcoming-title">' + esc(item.title) + '</div>' +
               epLabel +
-              '<div class="md-act-upcoming-date">Looking for a release</div>' +
+              (item.check
+                ? '<div class="md-act-upcoming-date md-act-check md-act-check-' + esc(item.check.state) + '" title="' + esc(item.check.summary) + '">' + esc(item.check.short) + '</div>'
+                : '<div class="md-act-upcoming-date">Looking for a release</div>') +
               (item.requested_by ? '<div class="md-act-requested-by" style="margin-top:2px">' + esc(item.requested_by) + '</div>' : '') +
             '</div>' +
           '</div>';
@@ -1892,6 +2003,30 @@
               '<div class="md-act-upcoming-title">' + esc(item.title) + '</div>' +
               epLabel +
               '<div class="md-act-upcoming-date">Ready to watch</div>' +
+            '</div>' +
+          '</div>';
+        }).join('') +
+        '</div></div>';
+    }
+
+    var coming = data.coming_up || [];
+    if (coming.length > 0) {
+      html += '<div class="md-act-section">' +
+        '<div class="md-act-section-header">' +
+          '<svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M19 4h-1V2h-2v2H8V2H6v2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2zm0 16H5V10h14v10zm0-12H5V6h14v2z"/></svg>' +
+          '<span>Coming up this week</span>' +
+          '<span class="md-act-section-count">' + coming.length + '</span>' +
+        '</div>' +
+        '<div class="md-act-upcoming-grid">' +
+        coming.map(function (item) {
+          return '<div class="md-act-upcoming-card">' +
+            '<div class="md-act-upcoming-poster">' + actPoster(item.poster_path, 'md-act-upcoming-ph') +
+              '<div class="md-act-countdown-badge md-act-cd-week">' + esc(airDay(item.air_date_utc)) + '</div>' +
+            '</div>' +
+            '<div class="md-act-upcoming-info">' +
+              '<div class="md-act-upcoming-title">' + esc(item.title) + '</div>' +
+              '<div class="md-act-upcoming-type">' + esc(item.episode) + '</div>' +
+              '<div class="md-act-upcoming-date">' + esc(item.episode_title || '') + '</div>' +
             '</div>' +
           '</div>';
         }).join('') +

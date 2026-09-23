@@ -414,6 +414,22 @@ public class TentacleDiscoverController : ControllerBase
     /// Stops Sonarr looking for a show's missing episodes (body: media_type, tmdb_id,
     /// tvdb_id, optional episodes). Downloaded episodes are untouched.
     /// </summary>
+    /// <summary>
+    /// Why hasn't this downloaded? Tentacle runs Radarr/Sonarr's interactive search
+    /// (every indexer — can take a minute) and sums up the releases (body: media_type,
+    /// tmdb_id, tvdb_id, fresh).
+    /// </summary>
+    [HttpPost("ArrCheck")]
+    [Authorize]
+    public Task<ActionResult> ArrCheck([FromBody] JsonElement body) =>
+        ForwardArrAction("check", body, AddClient);
+
+    /// <summary>Downloads one release from a check (body: ... guid, indexer_id).</summary>
+    [HttpPost("ArrGrab")]
+    [Authorize]
+    public Task<ActionResult> ArrGrab([FromBody] JsonElement body) =>
+        ForwardArrAction("grab", body, AddClient);
+
     [HttpPost("ArrStopMissing")]
     [Authorize]
     public Task<ActionResult> ArrStopMissing([FromBody] JsonElement body) =>
@@ -594,6 +610,41 @@ public class TentacleDiscoverController : ControllerBase
         {
             _logger.LogWarning("[Tentacle Discover] Failed to delete library item: {Error}", ex.Message);
             return StatusCode(500, new { detail = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// "Bad copy? Get another one": blocklists the release a downloaded file came from,
+    /// deletes the file and searches again. A movie, or one episode (body:
+    /// season_number, episode_number). Admin or download requester (checked by Tentacle).
+    /// </summary>
+    [HttpPost("ReplaceCopy/{mediaType}/{tmdbId}")]
+    [Authorize]
+    public async Task<ActionResult> ReplaceCopy(string mediaType, int tmdbId, [FromBody] JsonElement body)
+    {
+        var baseUrl = GetTentacleUrl();
+        if (string.IsNullOrEmpty(baseUrl))
+        {
+            return BadRequest(new { detail = "Tentacle URL not configured" });
+        }
+
+        if (mediaType != "movie" && mediaType != "series")
+        {
+            return BadRequest(new { detail = "mediaType must be movie or series" });
+        }
+
+        try
+        {
+            var content = new StringContent(body.GetRawText(), System.Text.Encoding.UTF8, "application/json");
+            var response = await AddClient.PostAsync(AppendUserId($"{baseUrl}/api/library/replace/{mediaType}/{tmdbId}"), content);
+            var result = await response.Content.ReadAsStringAsync();
+            return new ContentResult { Content = result, ContentType = "application/json", StatusCode = (int)response.StatusCode };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("[Tentacle Discover] Replace copy failed: {Error}", ex.Message);
+            var (reason, message) = DescribeFailure(ex);
+            return StatusCode(502, new { detail = message, error = reason });
         }
     }
 

@@ -281,6 +281,15 @@ def search_missing_item(body: MissingSearchRequest, db: Session = Depends(get_db
     return {"success": True}
 
 
+# ─── Radarr/Sonarr problems ───────────────────────────────────────────────────
+
+@router.get("/arr-problems")
+def arr_problems(db: Session = Depends(get_db)):
+    """Radarr/Sonarr's own warnings and errors, plus low disk space (cached 60 s)."""
+    from services.arr_insight import problems
+    return {"problems": problems(db)}
+
+
 # ─── Stream health ────────────────────────────────────────────────────────────
 
 class StreamCheckRequest(BaseModel):

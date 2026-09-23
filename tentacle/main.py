@@ -452,6 +452,20 @@ def setup_scheduler(db):
     )
     logger.info("Download health check scheduled: every 5 min")
 
+    # Release checks: why titles in Activity → Searching haven't downloaded.
+    # A couple per run, only for titles searching 45+ min, each at most every 12 h
+    # (an interactive search queries every indexer).
+    from services.arr_insight import run_auto_checks
+    scheduler.add_job(
+        run_auto_checks,
+        IntervalTrigger(minutes=10),
+        id="arr_release_checks",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    logger.info("Release checks for searching titles scheduled: every 10 min")
+
     # Stream health: daily rotating-batch probe of VOD streams + recheck of
     # known-bad entries (auto-clears recovered streams).
     from services.stream_health import run_stream_health_sweep
