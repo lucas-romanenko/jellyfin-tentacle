@@ -1,7 +1,9 @@
 """
 Tentacle - Activity Router
-Real-time download queue from Radarr/Sonarr + unreleased monitored items.
-Queue data fetched fresh every request. Unreleased cached separately (5min).
+Real-time download queue from Radarr/Sonarr, plus the two waits either side of
+it: titles still searching for a release, and titles not released yet.
+Queue data fetched fresh every request; the wanted lists are cached (5min) and
+dropped early whenever an item leaves the queue.
 """
 
 import time
@@ -21,9 +23,15 @@ from services.download_health import classify_queue_item, get_stall_state
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/activity", tags=["activity"])
 
-# ── Separate cache for unreleased only (expensive, rarely changes) ────────
+# ── Separate cache for the wanted lists (expensive, rarely changes) ───────
+# Holds {"unreleased": [...], "searching": [...]}.
 _unreleased_cache: dict = {"data": None, "ts": 0}
 UNRELEASED_TTL = 300  # 5 minutes
+SEARCHING_LIMIT = 20
+# Queue ids seen on the previous poll. When one disappears a download finished
+# (or was removed), so the wanted lists are re-read rather than showing that
+# title as "searching" again until the cache expires.
+_last_queue_keys: set = set()
 
 # ── Throttled refresh (don't spam Radarr/Sonarr command queue) ────────────
 _last_refresh: dict = {"radarr": 0, "sonarr": 0}
@@ -81,7 +89,20 @@ def _fetch_sonarr_queue(url: str, api_key: str) -> list:
 
 
 def _fetch_radarr_unreleased(url: str, api_key: str) -> list:
-    """Fetch monitored movies without files from Radarr."""
+    """Monitored movies without files whose release is still ahead."""
+    return _fetch_radarr_wanted(url, api_key)["unreleased"]
+
+
+def _fetch_radarr_wanted(url: str, api_key: str) -> dict:
+    """Monitored movies without files, split by why there is no file yet.
+
+    "unreleased": a release date is still ahead. "searching": nothing is ahead
+    and Radarr considers the movie available, so it is looking for a release —
+    the gap between asking for a title and a download starting, which can be
+    minutes or days and used to show nothing at all. One /movie read serves
+    both, so the new list costs no extra request.
+    """
+    empty = {"unreleased": [], "searching": []}
     try:
         r = requests.get(
             f"{url.rstrip('/')}/api/v3/movie",
@@ -92,6 +113,7 @@ def _fetch_radarr_unreleased(url: str, api_key: str) -> list:
         movies = r.json()
         now = datetime.utcnow()
         unreleased = []
+        searching = []
         release_labels = {
             "digitalRelease": "Digital",
             "physicalRelease": "Physical",
@@ -114,8 +136,21 @@ def _fetch_radarr_unreleased(url: str, api_key: str) -> list:
                             release_type = release_labels[field]
                     except (ValueError, TypeError):
                         pass
-            # Skip movies that are already released (all known dates in the past)
             if not release:
+                # Released. Radarr only searches once the movie meets its
+                # minimum availability; before that it is waiting, not looking.
+                if m.get("isAvailable", True):
+                    searching.append({
+                        "tmdb_id": m.get("tmdbId"),
+                        "title": m.get("title", ""),
+                        "year": str(m.get("year", "")),
+                        "overview": m.get("overview", ""),
+                        "media_type": "movie",
+                        "source": "radarr",
+                        "status": "searching",
+                        "waiting_since": _iso_date(m.get("added")),
+                        "radarr_poster": _extract_poster(m),
+                    })
                 continue
 
             # Extract YouTube trailer from Radarr metadata
@@ -140,10 +175,97 @@ def _fetch_radarr_unreleased(url: str, api_key: str) -> list:
                 "trailer_url": trailer_url,
             })
         unreleased.sort(key=lambda x: x["release_date"] if x["release_date"] != "TBA" else "9999-99-99")
-        return unreleased
+        return {"unreleased": unreleased, "searching": searching}
     except Exception as e:
-        logger.debug(f"Radarr unreleased fetch failed: {e}")
+        logger.debug(f"Radarr wanted fetch failed: {e}")
+        return empty
+
+
+def _parse_dt(val) -> Optional[datetime]:
+    """Radarr/Sonarr timestamp -> naive UTC datetime, or None."""
+    if not val:
+        return None
+    try:
+        return datetime.fromisoformat(str(val).replace("Z", "+00:00")).replace(tzinfo=None)
+    except (ValueError, TypeError):
+        return None
+
+
+def _iso_date(val) -> Optional[str]:
+    dt = _parse_dt(val)
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ") if dt else None
+
+
+def _fetch_sonarr_searching(url: str, api_key: str) -> list:
+    """Monitored series with aired episodes Sonarr has not found yet.
+
+    Sonarr's own Wanted → Missing list: monitored, aired, no file. One entry
+    per series, with how many episodes are outstanding and the first of them.
+    `waiting_since` is when the newest of those became wanted — the later of
+    the series being added and the episode airing — so a new episode of a
+    long-followed show counts from its air date, not from years ago.
+    """
+    try:
+        r = requests.get(
+            f"{url.rstrip('/')}/api/v3/wanted/missing",
+            headers={"X-Api-Key": api_key},
+            params={"page": 1, "pageSize": 250, "monitored": "true",
+                    "includeSeries": "true",
+                    "sortKey": "episodes.airDateUtc", "sortDirection": "descending"},
+            timeout=15,
+        )
+        r.raise_for_status()
+        body = r.json()
+        records = body.get("records", []) if isinstance(body, dict) else (body or [])
+    except Exception as e:
+        logger.debug(f"Sonarr wanted/missing fetch failed: {e}")
         return []
+
+    now = datetime.utcnow()
+    by_series: dict = {}
+    for ep in records:
+        if ep.get("hasFile") or ep.get("monitored") is False:
+            continue
+        aired = _parse_dt(ep.get("airDateUtc"))
+        if not aired or aired > now:
+            continue
+        series = ep.get("series") or {}
+        if series.get("monitored") is False:
+            continue
+        sid = ep.get("seriesId") or series.get("id")
+        if not sid:
+            continue
+        added = _parse_dt(series.get("added"))
+        wanted_since = max(d for d in (aired, added) if d)
+        entry = by_series.get(sid)
+        if entry is None:
+            entry = by_series[sid] = {
+                "series": series, "episodes": [], "wanted_since": wanted_since,
+            }
+        entry["episodes"].append((ep.get("seasonNumber", 0), ep.get("episodeNumber", 0)))
+        if wanted_since > entry["wanted_since"]:
+            entry["wanted_since"] = wanted_since
+
+    searching = []
+    for entry in by_series.values():
+        series = entry["series"]
+        eps = sorted(entry["episodes"])
+        first = f"S{eps[0][0]:02d}E{eps[0][1]:02d}"
+        searching.append({
+            "tmdb_id": series.get("tmdbId") or 0,
+            "tvdb_id": series.get("tvdbId") or 0,
+            "title": series.get("title", ""),
+            "year": str(series.get("year", "")),
+            "overview": series.get("overview", ""),
+            "media_type": "series",
+            "source": "sonarr",
+            "status": "searching",
+            "episode": first if len(eps) == 1 else f"{first} +{len(eps) - 1}",
+            "missing_episodes": len(eps),
+            "waiting_since": entry["wanted_since"].strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "sonarr_poster": _extract_poster(series),
+        })
+    return searching
 
 
 def _fetch_sonarr_unreleased(url: str, api_key: str) -> list:
@@ -406,27 +528,10 @@ def _build_downloads(db: Session) -> list:
     return downloads
 
 
-def _get_unreleased(db: Session) -> list:
-    """Get unreleased movies and series — cached for 5 minutes (expensive call)."""
-    now = time.time()
-    if _unreleased_cache["data"] is not None and (now - _unreleased_cache["ts"]) < UNRELEASED_TTL:
-        return _unreleased_cache["data"]
-
-    unreleased = []
-
-    radarr_url = get_setting(db, "radarr_url")
-    radarr_key = get_setting(db, "radarr_api_key")
-    if radarr_url and radarr_key:
-        unreleased.extend(_fetch_radarr_unreleased(radarr_url, radarr_key))
-
-    sonarr_url = get_setting(db, "sonarr_url")
-    sonarr_key = get_setting(db, "sonarr_api_key")
-    if sonarr_url and sonarr_key:
-        unreleased.extend(_fetch_sonarr_unreleased(sonarr_url, sonarr_key))
-
-    # Enrich with posters (DB first, then Radarr/Sonarr fallback)
+def _enrich_posters(db: Session, items: list) -> None:
+    """Poster from the local DB first, then Radarr/Sonarr's own image."""
     from routers.discover import _rewrite_tvdb_url
-    for item in unreleased:
+    for item in items:
         fallback_poster = item.pop("radarr_poster", None) or item.pop("sonarr_poster", None)
         poster = _get_poster(db, item.get("tmdb_id"), item.get("media_type", "movie")) or fallback_poster
         # Rewrite TVDB CDN URLs to proxy paths
@@ -434,13 +539,71 @@ def _get_unreleased(db: Session) -> list:
             poster = _rewrite_tvdb_url(poster)
         item["poster_path"] = poster
 
+
+def _same_title(a: dict, b_tmdb: set, b_tvdb: set) -> bool:
+    return bool((a.get("tmdb_id") and a["tmdb_id"] in b_tmdb)
+                or (a.get("tvdb_id") and a["tvdb_id"] in b_tvdb))
+
+
+def _get_wanted(db: Session) -> dict:
+    """Unreleased and still-searching titles — cached for 5 minutes (expensive calls)."""
+    now = time.time()
+    if _unreleased_cache["data"] is not None and (now - _unreleased_cache["ts"]) < UNRELEASED_TTL:
+        return _unreleased_cache["data"]
+
+    unreleased, searching = [], []
+
+    radarr_url = get_setting(db, "radarr_url")
+    radarr_key = get_setting(db, "radarr_api_key")
+    if radarr_url and radarr_key:
+        wanted = _fetch_radarr_wanted(radarr_url, radarr_key)
+        unreleased.extend(wanted["unreleased"])
+        searching.extend(wanted["searching"])
+
+    sonarr_url = get_setting(db, "sonarr_url")
+    sonarr_key = get_setting(db, "sonarr_api_key")
+    if sonarr_url and sonarr_key:
+        unreleased.extend(_fetch_sonarr_unreleased(sonarr_url, sonarr_key))
+        searching.extend(_fetch_sonarr_searching(sonarr_url, sonarr_key))
+
+    # A series with no files whose next episode is ahead used to be listed as
+    # upcoming even when earlier episodes had already aired. If Sonarr is
+    # looking for aired ones, "searching" is the true state; never show both.
+    s_tmdb = {x["tmdb_id"] for x in searching if x.get("media_type") == "series" and x.get("tmdb_id")}
+    s_tvdb = {x["tvdb_id"] for x in searching if x.get("tvdb_id")}
+    unreleased = [u for u in unreleased
+                  if not (u.get("media_type") == "series" and _same_title(u, s_tmdb, s_tvdb))]
+
     # Sort all unreleased by release date
     unreleased.sort(key=lambda x: x["release_date"] if x["release_date"] != "TBA" else "9999-99-99")
+    # Newest request first; the rest of the backlog lives in Radarr/Sonarr.
+    searching.sort(key=lambda x: x.get("waiting_since") or "", reverse=True)
 
-    result = unreleased[:20]
+    result = {"unreleased": unreleased[:20], "searching": searching[:SEARCHING_LIMIT]}
+    _enrich_posters(db, result["unreleased"])
+    _enrich_posters(db, result["searching"])
     _unreleased_cache["data"] = result
     _unreleased_cache["ts"] = now
     return result
+
+
+def _get_unreleased(db: Session) -> list:
+    """Get unreleased movies and series — cached for 5 minutes (expensive call)."""
+    return _get_wanted(db)["unreleased"]
+
+
+def invalidate_wanted_cache() -> None:
+    _unreleased_cache["data"] = None
+    _unreleased_cache["ts"] = 0
+
+
+def _note_queue(downloads: list) -> None:
+    """Re-read the wanted lists when something has left the download queue."""
+    global _last_queue_keys
+    keys = {(d.get("source"), d.get("queue_id")) for d in downloads if d.get("queue_id") is not None}
+    if _last_queue_keys - keys:
+        invalidate_wanted_cache()
+    _last_queue_keys = keys
 
 
 def _hours_remaining(date_added) -> int:
@@ -507,7 +670,11 @@ def get_activity(request: Request, db: Session = Depends(get_db),
     Requires authentication (dashboard cookie or plugin-forwarded user token) — an
     anonymous caller previously received the full, unfiltered download queue."""
     downloads = _build_downloads(db)
-    unreleased = _get_unreleased(db)
+    _note_queue(downloads)
+    wanted = _get_wanted(db)
+    # Copies: the lists are shared through the cache and edited per user below.
+    unreleased = [dict(u) for u in wanted["unreleased"]]
+    searching = [dict(x) for x in wanted["searching"]]
     recently_downloaded = _get_recently_downloaded(db)
 
     # Build lookup: tmdb_id -> requester display name
@@ -525,8 +692,17 @@ def get_activity(request: Request, db: Session = Depends(get_db),
     downloading_tmdb_ids = {d.get("tmdb_id") for d in downloads if d.get("tmdb_id")}
     downloading_tvdb_ids = {d.get("tvdb_id") for d in downloads if d.get("tvdb_id")}
     unreleased = [u for u in unreleased
-                  if not (u.get("tmdb_id") and u["tmdb_id"] in downloading_tmdb_ids)
-                  and not (u.get("tvdb_id") and u["tvdb_id"] in downloading_tvdb_ids)]
+                  if not _same_title(u, downloading_tmdb_ids, downloading_tvdb_ids)]
+    # Same for searching: the moment a grab lands in the queue it is a download.
+    # A movie Tentacle already holds a Radarr file for is found, whatever the
+    # cached list says.
+    searching_movie_ids = [x["tmdb_id"] for x in searching
+                           if x.get("media_type") == "movie" and x.get("tmdb_id")]
+    have_movie_file = {tid for (tid,) in db.query(Movie.tmdb_id).filter(
+        Movie.source == "radarr", Movie.tmdb_id.in_(searching_movie_ids)).all()} if searching_movie_ids else set()
+    searching = [x for x in searching
+                 if not _same_title(x, downloading_tmdb_ids, downloading_tvdb_ids)
+                 and not (x.get("media_type") == "movie" and x.get("tmdb_id") in have_movie_file)]
 
     is_admin = user and user.is_admin
 
@@ -534,6 +710,7 @@ def get_activity(request: Request, db: Session = Depends(get_db),
         # Non-admin: only show items they requested
         downloads = [d for d in downloads if d.get("tmdb_id") in user_requests]
         unreleased = [u for u in unreleased if u.get("tmdb_id") in user_requests]
+        searching = [x for x in searching if x.get("tmdb_id") in user_requests]
         recently_downloaded = [r for r in recently_downloaded if r.get("tmdb_id") in user_requests]
 
     if is_admin:
@@ -542,9 +719,12 @@ def get_activity(request: Request, db: Session = Depends(get_db),
             d["requested_by"] = requester_map.get(d.get("tmdb_id"))
         for u in unreleased:
             u["requested_by"] = requester_map.get(u.get("tmdb_id"))
+        for x in searching:
+            x["requested_by"] = requester_map.get(x.get("tmdb_id"))
         for r in recently_downloaded:
             r["requested_by"] = requester_map.get(r.get("tmdb_id"))
 
     if downloads:
         logger.info(f"Activity: {len(downloads)} download(s) in queue")
-    return {"downloads": downloads, "unreleased": unreleased, "recently_downloaded": recently_downloaded}
+    return {"downloads": downloads, "searching": searching, "unreleased": unreleased,
+            "recently_downloaded": recently_downloaded}

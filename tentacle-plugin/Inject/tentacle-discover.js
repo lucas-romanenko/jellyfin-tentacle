@@ -323,7 +323,7 @@
       MD.sections = data.sections || [];
 
       // Dispatch activity count for navbar badge
-      var actCount = (activity.downloads || []).length + (activity.unreleased || []).length;
+      var actCount = activityCount(activity);
       window.dispatchEvent(new CustomEvent('tentacle-activity-count', { detail: actCount }));
 
       renderSectionTabs();
@@ -1479,6 +1479,25 @@
     if (overlay) overlay.style.display = 'none';
   }
 
+  // Everything the badge counts: downloading, searching for a release, upcoming.
+  function activityCount(data) {
+    data = data || {};
+    return (data.downloads || []).length + (data.searching || []).length +
+      (data.unreleased || []).length;
+  }
+
+  // "5m" / "3h" / "2d" since an ISO timestamp, or '' when unknown.
+  function waitedFor(iso) {
+    if (!iso) return '';
+    var ms = Date.now() - new Date(iso).getTime();
+    if (!isFinite(ms) || ms < 0) return '';
+    var mins = Math.floor(ms / 60000);
+    if (mins < 60) return Math.max(mins, 1) + 'm';
+    var hrs = Math.floor(mins / 60);
+    if (hrs < 48) return hrs + 'h';
+    return Math.floor(hrs / 24) + 'd';
+  }
+
   function renderActivityPage(container) {
     container.innerHTML =
       '<div class="md-act-header">' +
@@ -1500,7 +1519,7 @@
       renderActivityContent(data);
 
       // Update navbar badge
-      var count = (data.downloads || []).length + (data.unreleased || []).length;
+      var count = activityCount(data);
       window.dispatchEvent(new CustomEvent('tentacle-activity-count', { detail: count }));
     }).catch(function () {
       var c = document.getElementById('mdActContent');
@@ -1514,8 +1533,10 @@
 
     var downloads = data.downloads || [];
     var unreleased = data.unreleased || [];
+    var searching = data.searching || [];
     var recent = data.recently_downloaded || [];
     MD._unreleased = unreleased;
+    MD._searching = searching;
     MD._recent = recent;
 
     // Update summary
@@ -1523,6 +1544,7 @@
     if (summary) {
       var parts = [];
       if (downloads.length > 0) parts.push(downloads.length + ' downloading');
+      if (searching.length > 0) parts.push(searching.length + ' searching');
       if (recent.length > 0) parts.push(recent.length + ' ready to watch');
       if (unreleased.length > 0) parts.push(unreleased.length + ' upcoming');
       summary.textContent = parts.length > 0 ? parts.join(' \u00b7 ') : 'All clear';
@@ -1572,6 +1594,35 @@
                 '<div class="md-act-progress-bar"><div class="md-act-progress-fill md-act-fill-' + statusClass + '" style="width:' + progressPct + '%"></div></div>' +
                 '<span class="md-act-progress-text">' + progressPct.toFixed(1) + '%' + (etaLabel ? ' \u00b7 ' + etaLabel : '') + '</span>' +
               '</div>' +
+            '</div>' +
+          '</div>';
+        }).join('') +
+        '</div></div>';
+    }
+
+    if (searching.length > 0) {
+      html += '<div class="md-act-section">' +
+        '<div class="md-act-section-header">' +
+          '<svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>' +
+          '<span>Searching</span>' +
+          '<span class="md-act-section-count">' + searching.length + '</span>' +
+        '</div>' +
+        '<div class="md-act-upcoming-grid">' +
+        searching.map(function (item, idx) {
+          var poster = item.poster_path
+            ? '<img src="' + _imgUrl(item.poster_path, 'w185') + '" loading="lazy" onerror="this.parentElement.innerHTML=\'<div class=md-act-upcoming-ph>&#9707;</div>\'">'
+            : '<div class="md-act-upcoming-ph">&#9707;</div>';
+          var waited = waitedFor(item.waiting_since);
+          var epLabel = item.episode ? '<div class="md-act-upcoming-type">' + esc(item.episode) + '</div>' : '';
+          return '<div class="md-act-upcoming-card" data-searching-idx="' + idx + '" style="cursor:pointer">' +
+            '<div class="md-act-upcoming-poster">' + poster +
+              '<div class="md-act-countdown-badge md-act-cd-searching">' + (waited ? 'Searching \u00b7 ' + esc(waited) : 'Searching') + '</div>' +
+            '</div>' +
+            '<div class="md-act-upcoming-info">' +
+              '<div class="md-act-upcoming-title">' + esc(item.title) + '</div>' +
+              epLabel +
+              '<div class="md-act-upcoming-date">Looking for a release</div>' +
+              (item.requested_by ? '<div class="md-act-requested-by" style="margin-top:2px">' + esc(item.requested_by) + '</div>' : '') +
             '</div>' +
           '</div>';
         }).join('') +
@@ -1648,7 +1699,7 @@
       html =
         '<div class="md-act-empty">' +
           '<svg viewBox="0 0 24 24" width="48" height="48"><path fill="currentColor" opacity="0.3" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>' +
-          '<div>No active downloads or upcoming releases</div>' +
+          '<div>No active downloads, searches or upcoming releases</div>' +
         '</div>';
     }
 
@@ -1662,6 +1713,14 @@
         if (it.jellyfin_item_id && window.TentacleDetails && window.TentacleDetails.show) {
           window.TentacleDetails.show(it.jellyfin_item_id, it.media_type === 'series' ? 'Series' : 'Movie');
         }
+      });
+    });
+
+    // Searching cards open the title's Discover detail (manage / episodes / delete)
+    content.querySelectorAll('.md-act-upcoming-card[data-searching-idx]').forEach(function (card) {
+      card.addEventListener('click', function () {
+        var it = MD._searching && MD._searching[parseInt(card.getAttribute('data-searching-idx'), 10)];
+        if (it) showDetailModal(Object.assign({}, it));
       });
     });
 
@@ -1775,7 +1834,7 @@
       }
       apiGet('TentacleDiscover/Activity?userId=' + window.ApiClient.getCurrentUserId()).then(function (data) {
         MD.activityData = data;
-        var count = (data.downloads || []).length + (data.unreleased || []).length;
+        var count = activityCount(data);
         window.dispatchEvent(new CustomEvent('tentacle-activity-count', { detail: count }));
 
         // Re-render activity page if visible
@@ -1811,7 +1870,7 @@
       if (_badgeIdleTicks > 0 && (_badgeIdleTicks % 2) === 1) { _badgeIdleTicks++; return; }
       apiGet('TentacleDiscover/Activity?userId=' + window.ApiClient.getCurrentUserId()).then(function (data) {
         MD.activityData = data;
-        var count = (data.downloads || []).length + (data.unreleased || []).length;
+        var count = activityCount(data);
         _badgeIdleTicks = count > 0 ? 0 : (_badgeIdleTicks + 1);
         window.dispatchEvent(new CustomEvent('tentacle-activity-count', { detail: count }));
       }).catch(function () {});
