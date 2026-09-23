@@ -1487,6 +1487,59 @@
     return (data && data.error && data.message) ? String(data.message) : '';
   }
 
+  // Posters that failed to load once. Activity re-renders every 3s; without this
+  // a broken poster would be retried — and blink — on every poll.
+  var _badPosters = {};
+  window.__tentacleBadPoster = function (img, phClass) {
+    _badPosters[img.getAttribute('src')] = 1;
+    img.parentElement.innerHTML = '<div class="' + phClass + '">&#9707;</div>';
+  };
+  function actPoster(path, phClass) {
+    var src = path ? _imgUrl(path, 'w185') : '';
+    if (!src || _badPosters[src]) return '<div class="' + phClass + '">&#9707;</div>';
+    return '<img src="' + src + '" loading="lazy" onerror="__tentacleBadPoster(this,\'' + phClass + '\')">';
+  }
+
+  // Patch `from` (live) to match `to` (freshly built) in place, keeping every
+  // node that did not change. Activity polls every 3s; replacing innerHTML
+  // threw away and re-created every <img>, which painted blank for a frame
+  // before the cached poster decoded — the whole page flashed each poll.
+  function morphNode(from, to) {
+    if (from.nodeType !== to.nodeType || from.nodeName !== to.nodeName) {
+      from.parentNode.replaceChild(to, from);
+      return;
+    }
+    if (from.nodeType === 3 || from.nodeType === 8) {
+      if (from.nodeValue !== to.nodeValue) from.nodeValue = to.nodeValue;
+      return;
+    }
+    if (from.nodeType !== 1) return;
+    var i, a;
+    for (i = from.attributes.length - 1; i >= 0; i--) {
+      a = from.attributes[i].name;
+      if (!to.hasAttribute(a)) from.removeAttribute(a);
+    }
+    for (i = 0; i < to.attributes.length; i++) {
+      a = to.attributes[i];
+      if (from.getAttribute(a.name) !== a.value) from.setAttribute(a.name, a.value);
+    }
+    morphChildren(from, to);
+  }
+  function morphChildren(from, to) {
+    var fc = Array.prototype.slice.call(from.childNodes);
+    var tc = Array.prototype.slice.call(to.childNodes);
+    for (var i = 0; i < tc.length; i++) {
+      if (i < fc.length) morphNode(fc[i], tc[i]);
+      else from.appendChild(tc[i]);
+    }
+    for (var j = tc.length; j < fc.length; j++) from.removeChild(fc[j]);
+  }
+  function morphInto(el, html) {
+    var tpl = document.createElement('div');
+    tpl.innerHTML = html;
+    morphChildren(el, tpl);
+  }
+
   // Everything the badge counts: downloading, searching for a release, upcoming.
   function activityCount(data) {
     data = data || {};
@@ -1569,9 +1622,7 @@
         '</div>' +
         '<div class="md-act-dl-grid">' +
         downloads.map(function (dl) {
-          var poster = dl.poster_path
-            ? '<img src="' + _imgUrl(dl.poster_path, 'w185') + '" loading="lazy" onerror="this.parentElement.innerHTML=\'<div class=md-act-poster-ph>&#9707;</div>\'">'
-            : '<div class="md-act-poster-ph">&#9707;</div>';
+          var poster = actPoster(dl.poster_path, 'md-act-poster-ph');
           var statusClass = dl.status === 'importing' ? 'importing' :
             dl.status === 'queued' ? 'queued' :
             dl.status === 'warning' ? 'warning' :
@@ -1617,9 +1668,7 @@
         '</div>' +
         '<div class="md-act-upcoming-grid">' +
         searching.map(function (item, idx) {
-          var poster = item.poster_path
-            ? '<img src="' + _imgUrl(item.poster_path, 'w185') + '" loading="lazy" onerror="this.parentElement.innerHTML=\'<div class=md-act-upcoming-ph>&#9707;</div>\'">'
-            : '<div class="md-act-upcoming-ph">&#9707;</div>';
+          var poster = actPoster(item.poster_path, 'md-act-upcoming-ph');
           var waited = waitedFor(item.waiting_since);
           var epLabel = item.episode ? '<div class="md-act-upcoming-type">' + esc(item.episode) + '</div>' : '';
           return '<div class="md-act-upcoming-card" data-searching-idx="' + idx + '" style="cursor:pointer">' +
@@ -1646,9 +1695,7 @@
         '</div>' +
         '<div class="md-act-upcoming-grid">' +
         recent.map(function (item, idx) {
-          var poster = item.poster_path
-            ? '<img src="' + _imgUrl(item.poster_path, 'w185') + '" loading="lazy" onerror="this.parentElement.innerHTML=\'<div class=md-act-upcoming-ph>&#9707;</div>\'">'
-            : '<div class="md-act-upcoming-ph">&#9707;</div>';
+          var poster = actPoster(item.poster_path, 'md-act-upcoming-ph');
           var hrs = item.hours_remaining;
           var chip = (hrs != null) ? '<div class="md-act-countdown-badge md-act-cd-ready">' + hrs + 'h</div>' : '';
           var epLabel = item.episode ? '<div class="md-act-upcoming-type">' + esc(item.episode) + '</div>' : '';
@@ -1673,9 +1720,7 @@
         '</div>' +
         '<div class="md-act-upcoming-grid">' +
         unreleased.map(function (item, idx) {
-          var poster = item.poster_path
-            ? '<img src="' + _imgUrl(item.poster_path, 'w185') + '" loading="lazy" onerror="this.parentElement.innerHTML=\'<div class=md-act-upcoming-ph>&#9707;</div>\'">'
-            : '<div class="md-act-upcoming-ph">&#9707;</div>';
+          var poster = actPoster(item.poster_path, 'md-act-upcoming-ph');
           var countdown = '';
           var countdownClass = '';
           if (item.release_date) {
@@ -1711,35 +1756,33 @@
         '</div>';
     }
 
-    content.innerHTML = html;
+    morphInto(content, html);
 
-    // Click handler for recently-downloaded cards — open the item in the library
-    content.querySelectorAll('.md-act-upcoming-card[data-recent-idx]').forEach(function (card) {
-      card.addEventListener('click', function () {
-        var it = MD._recent && MD._recent[parseInt(card.getAttribute('data-recent-idx'), 10)];
-        if (!it) return;
-        if (it.jellyfin_item_id && window.TentacleDetails && window.TentacleDetails.show) {
-          window.TentacleDetails.show(it.jellyfin_item_id, it.media_type === 'series' ? 'Series' : 'Movie');
+    // One delegated click handler for the lifetime of the container: cards are
+    // patched in place on every poll, so per-card listeners would pile up.
+    if (!content.__tentacleActClicks) {
+      content.__tentacleActClicks = true;
+      content.addEventListener('click', function (e) {
+        var card = e.target.closest && e.target.closest('.md-act-upcoming-card');
+        if (!card || !content.contains(card)) return;
+        var idx;
+        if (card.hasAttribute('data-recent-idx')) {
+          // Recently downloaded — open the item in the library
+          var it = MD._recent && MD._recent[parseInt(card.getAttribute('data-recent-idx'), 10)];
+          if (it && it.jellyfin_item_id && window.TentacleDetails && window.TentacleDetails.show) {
+            window.TentacleDetails.show(it.jellyfin_item_id, it.media_type === 'series' ? 'Series' : 'Movie');
+          }
+        } else if (card.hasAttribute('data-searching-idx')) {
+          // Searching — the title's Discover detail (manage / episodes / delete)
+          var sit = MD._searching && MD._searching[parseInt(card.getAttribute('data-searching-idx'), 10)];
+          if (sit) showDetailModal(Object.assign({}, sit));
+        } else if (card.hasAttribute('data-upcoming-idx')) {
+          idx = parseInt(card.getAttribute('data-upcoming-idx'), 10);
+          var uit = MD._unreleased && MD._unreleased[idx];
+          if (uit) showUpcomingModal(uit);
         }
       });
-    });
-
-    // Searching cards open the title's Discover detail (manage / episodes / delete)
-    content.querySelectorAll('.md-act-upcoming-card[data-searching-idx]').forEach(function (card) {
-      card.addEventListener('click', function () {
-        var it = MD._searching && MD._searching[parseInt(card.getAttribute('data-searching-idx'), 10)];
-        if (it) showDetailModal(Object.assign({}, it));
-      });
-    });
-
-    // Click handler for upcoming cards
-    content.querySelectorAll('.md-act-upcoming-card[data-upcoming-idx]').forEach(function (card) {
-      card.addEventListener('click', function () {
-        var idx = parseInt(card.dataset.upcomingIdx, 10);
-        var item = MD._unreleased && MD._unreleased[idx];
-        if (item) showUpcomingModal(item);
-      });
-    });
+    }
   }
 
   // ── Upcoming Release Modal ──────────────────────────────────────────

@@ -4425,6 +4425,48 @@ async function loadActivity() {
   } catch (_) {}
 }
 
+// Activity re-renders every 3s. Replacing innerHTML re-created every poster
+// <img>, which paints blank for a frame before the cached image decodes — the
+// whole tab flashed on each poll. _morphInto patches the live DOM to match the
+// new markup instead, so unchanged cards (and their images) are left alone.
+function _morphNode(from, to) {
+  if (from.nodeType !== to.nodeType || from.nodeName !== to.nodeName) {
+    from.parentNode.replaceChild(to, from);
+    return;
+  }
+  if (from.nodeType === 3 || from.nodeType === 8) {
+    if (from.nodeValue !== to.nodeValue) from.nodeValue = to.nodeValue;
+    return;
+  }
+  if (from.nodeType !== 1) return;
+  for (const a of [...from.attributes]) if (!to.hasAttribute(a.name)) from.removeAttribute(a.name);
+  for (const a of [...to.attributes]) if (from.getAttribute(a.name) !== a.value) from.setAttribute(a.name, a.value);
+  _morphChildren(from, to);
+}
+function _morphChildren(from, to) {
+  const fc = [...from.childNodes], tc = [...to.childNodes];
+  tc.forEach((n, i) => (i < fc.length ? _morphNode(fc[i], n) : from.appendChild(n)));
+  fc.slice(tc.length).forEach(n => from.removeChild(n));
+}
+function _morphInto(el, html) {
+  const tpl = document.createElement('div');
+  tpl.innerHTML = html;
+  _morphChildren(el, tpl);
+}
+
+// Posters that failed once render as the placeholder from then on, so a poll
+// doesn't retry (and blink) a broken image every 3 seconds.
+const _activityBadPosters = new Set();
+function _activityPosterFailed(img) {
+  _activityBadPosters.add(img.getAttribute('src'));
+  img.outerHTML = '<div class="activity-poster-placeholder">◫</div>';
+}
+function _activityPoster(path) {
+  const src = path ? _imgUrl(path, 'w185') : '';
+  if (!src || _activityBadPosters.has(src)) return '<div class="activity-poster-placeholder">◫</div>';
+  return `<img src="${src}" loading="lazy" onerror="_activityPosterFailed(this)">`;
+}
+
 // "5m" / "3h" / "2d" since an ISO timestamp, or '' when unknown.
 function _activityWaited(iso) {
   if (!iso) return '';
@@ -4450,9 +4492,7 @@ function renderActivity(data) {
   if (downloads.length > 0) {
     html += '<div class="activity-section-title">Downloading</div><div class="activity-grid">';
     html += downloads.map(dl => {
-      const poster = dl.poster_path
-        ? `<img src="${_imgUrl(dl.poster_path, 'w185')}" loading="lazy" onerror="this.style.display='none'">`
-        : '<div class="activity-poster-placeholder">◫</div>';
+      const poster = _activityPoster(dl.poster_path);
       const statusClass = 'dl-' + (dl.status || 'downloading');
       const statusLabel = dl.status === 'importing' ? 'Importing' :
         dl.status === 'queued' ? 'Queued' :
@@ -4485,9 +4525,7 @@ function renderActivity(data) {
   if (searching.length > 0) {
     html += '<div class="activity-section-title">Searching</div><div class="activity-grid">';
     html += searching.map(item => {
-      const poster = item.poster_path
-        ? `<img src="${_imgUrl(item.poster_path, 'w185')}" loading="lazy" onerror="this.style.display='none'">`
-        : '<div class="activity-poster-placeholder">◫</div>';
+      const poster = _activityPoster(item.poster_path);
       const waited = _activityWaited(item.waiting_since);
       const reqByLabel = item.requested_by ? `<span class="activity-requested-by">${escapeAttr(item.requested_by)}</span>` : '';
       return `<div class="activity-card">
@@ -4506,9 +4544,7 @@ function renderActivity(data) {
   if (recent.length > 0) {
     html += '<div class="activity-section-title">Recently Downloaded</div><div class="activity-grid">';
     html += recent.map(item => {
-      const poster = item.poster_path
-        ? `<img src="${_imgUrl(item.poster_path, 'w185')}" loading="lazy" onerror="this.style.display='none'">`
-        : '<div class="activity-poster-placeholder">◫</div>';
+      const poster = _activityPoster(item.poster_path);
       const hrs = item.hours_remaining != null ? `${item.hours_remaining}h left` : '';
       return `<div class="activity-card">
         <div class="activity-poster">${poster}</div>
@@ -4525,9 +4561,7 @@ function renderActivity(data) {
   if (unreleased.length > 0) {
     html += '<div class="activity-section-title">Upcoming Releases</div><div class="activity-grid">';
     html += unreleased.map(item => {
-      const poster = item.poster_path
-        ? `<img src="${_imgUrl(item.poster_path, 'w185')}" loading="lazy" onerror="this.style.display='none'">`
-        : '<div class="activity-poster-placeholder">◫</div>';
+      const poster = _activityPoster(item.poster_path);
       let daysUntil = '';
       if (item.release_date) {
         const rd = new Date(item.release_date + 'T00:00:00');
@@ -4551,7 +4585,7 @@ function renderActivity(data) {
     html = '<div class="activity-empty">No active downloads, searches or upcoming releases</div>';
   }
 
-  content.innerHTML = html;
+  _morphInto(content, html);
 }
 
 // ── DISCOVER PAGE ────────────────────────────────────────────────────────
@@ -6312,6 +6346,8 @@ async function loadHealthDeletions() {
 
 (function exposeGlobals() {
   const fns = [
+    // Activity (inline onerror on posters)
+    _activityPosterFailed,
     // Lists page
     loadLists, loadListCards,
     saveQuickList, onQuickListUrlInput, onQuickListNameInput, onModalUrlInput, onModalNameInput,
