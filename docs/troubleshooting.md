@@ -77,6 +77,13 @@ Fix it from the title itself (admins only):
 
 Tentacle asks **which movie it really is** and suggests candidates. Once the title has been played, Jellyfin knows the stream's real length, and films of that length are listed first (a mislabelled stream is usually a similarly named film). Pick the right one and the copy moves there: new folder, the right metadata, same stream. Tentacle remembers the fix so the nightly sync keeps it. On the web and the dashboard you can also search for the title yourself.
 
+**Not sure which film it is?** Two more clues help:
+
+- **Audio language.** Jellyfin also records the language of the stream's audio. When the stream has a single audio language, films originally in that language get a **same language** badge and move up the list. A stream with several audio tracks (an original plus dubs) says little about the film, so it isn't used.
+- **Pictures from the stream.** **Not sure? Show pictures** grabs three stills from the stream, spread across its length, so you can see what it actually is before you pick. The pictures come straight from your provider, so they take a few seconds. If the provider only allows one stream at a time and someone is watching, try again later. They are cached for two weeks.
+
+If you still can't tell, **Leave it for now** closes the panel and changes nothing. The title stays flagged under **Library → Possible wrong movies**, so you can come back to it.
+
 If it's none of them, **None of these — remove it** removes the copy and blocks that provider stream so it is never re-added. Either way, if you had requested the film on the label, Radarr keeps searching for it. Blocked streams are listed under **Library → Possible wrong movies**, where you can unblock one.
 
 Tentacle also flags likely cases itself: each night it compares the real length of every IPTV movie that has been played with the length the film should have. Titles that are far off appear in **Library → Possible wrong movies** with **Fix it** / **It's fine** buttons. Titles nobody has played yet can't be checked: Jellyfin only measures a stream the first time it plays.

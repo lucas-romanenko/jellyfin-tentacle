@@ -870,6 +870,16 @@ def fix_match_suggestions(tmdb_id: int, q: Optional[str] = None, db: Session = D
         raise HTTPException(e.status, str(e))
 
 
+@router.get("/fix-match/movie/{tmdb_id}/frames", dependencies=[Depends(require_admin)])
+def fix_match_frames(tmdb_id: int, db: Session = Depends(get_db)):
+    """A few stills from the stream, for when its length and language aren't enough."""
+    from services.wrong_match import WrongMatchError, stream_frames
+    try:
+        return stream_frames(db, tmdb_id)
+    except WrongMatchError as e:
+        raise HTTPException(e.status, str(e))
+
+
 @router.post("/fix-match/movie/{tmdb_id}")
 def fix_match(tmdb_id: int, body: FixMatchBody, db: Session = Depends(get_db),
               user: Optional[TentacleUser] = Depends(require_admin)):

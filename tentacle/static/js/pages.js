@@ -1638,18 +1638,23 @@ function openFixMatch(tmdbId, title) {
         <button class="modal-close" onclick="closeModal('modal-fix-match')">✕</button></div>
       <div style="padding:0 20px 20px">
         <p class="fm-intro" id="fm-intro"></p>
+        <div class="fm-frames-wrap"><button class="btn btn-secondary btn-sm" id="fm-show-frames" onclick="_fmFrames()">Not sure? Show pictures from the stream</button>
+          <div id="fm-frames" class="fm-frames"></div></div>
         <div class="fm-search"><input id="fm-q" class="form-input" placeholder="Search for the right title"
           onkeydown="if(event.key==='Enter'){event.preventDefault();_fmLoad(this.value.trim())}">
           <button class="btn btn-secondary btn-sm" onclick="_fmLoad(document.getElementById('fm-q').value.trim())">Search</button></div>
         <div id="fm-list" class="fm-list"></div>
         <div id="fm-status" class="fm-status"></div>
-        <div class="fm-footer"><button class="btn btn-danger btn-sm" id="fm-remove" onclick="_fmRemove()">None of these — remove it</button></div>
+        <div class="fm-footer"><button class="btn btn-danger btn-sm" id="fm-remove" onclick="_fmRemove()">None of these — remove it</button>
+          <button class="btn btn-secondary btn-sm" onclick="closeModal('modal-fix-match')">Not sure — leave it for now</button></div>
       </div></div>`;
     document.body.appendChild(m);
   }
   document.getElementById('fm-q').value = '';
   document.getElementById('fm-status').textContent = '';
   document.getElementById('fm-remove').textContent = 'None of these — remove it';
+  document.getElementById('fm-frames').innerHTML = '';
+  document.getElementById('fm-show-frames').style.display = '';
   document.getElementById('fm-intro').innerHTML = `Your IPTV provider labelled this stream <strong>${escapeAttr(title)}</strong>, but it plays something else. <span id="fm-actual"></span>`;
   closeModal('modal-media-detail');
   showModal('modal-fix-match');
@@ -1661,21 +1666,45 @@ async function _fmLoad(q) {
   list.innerHTML = `<div class="fm-note">${q ? 'Searching…' : 'Looking for likely matches…'}</div>`;
   try {
     const d = await api(`/api/library/fix-match/movie/${_fm.tmdbId}/suggestions${q ? '?q=' + encodeURIComponent(q) : ''}`);
-    document.getElementById('fm-actual').textContent = d.actual_minutes
-      ? `It plays ${d.actual_minutes} minutes — films of that length are listed first.`
+    const langs = (d.audio_languages || []).map(l => l.name);
+    const clues = [];
+    if (d.actual_minutes) clues.push(`it plays ${d.actual_minutes} minutes`);
+    if (langs.length === 1) clues.push(`its audio is ${langs[0]}`);
+    document.getElementById('fm-actual').textContent = clues.length
+      ? `Clues: ${clues.join(', ')} — films that fit are listed first.`
       : 'Pick the film it really is, or search for it.';
     _fm.cands = d.candidates || [];
     list.innerHTML = _fm.cands.length ? _fm.cands.map((c, i) => `
       <button class="fm-cand" onclick="_fmPick(${i})">
         ${c.poster_path ? `<img src="${_imgUrl(c.poster_path, 'w92')}" loading="lazy">` : '<div class="fm-noposter"></div>'}
         <span class="fm-cand-text"><span class="fm-cand-title">${escapeAttr(c.title)}</span>
-          <span class="fm-cand-meta">${[c.year, c.runtime ? c.runtime + ' min' : ''].filter(Boolean).join(' · ')}
+          <span class="fm-cand-meta">${escapeAttr([c.year, c.runtime ? c.runtime + ' min' : '', c.language_name || ''].filter(Boolean).join(' · '))}
             ${c.runtime_matches ? '<span class="badge badge-green">same length</span>' : ''}
+            ${c.language_matches ? '<span class="badge badge-green">same language</span>' : ''}
             ${c.in_library ? '<span class="badge badge-amber">already in library</span>' : ''}</span>
           ${c.overview ? `<span class="fm-cand-ov">${escapeAttr(c.overview)}</span>` : ''}</span>
       </button>`).join('') : '<div class="fm-note">No matches found — try searching for the title you saw.</div>';
   } catch (e) {
     list.innerHTML = `<div class="fm-note">${escapeAttr(e.message || 'Could not load suggestions')}</div>`;
+  }
+}
+
+// Stills from the stream — only on request, since it opens a provider connection.
+async function _fmFrames() {
+  const btn = document.getElementById('fm-show-frames');
+  const box = document.getElementById('fm-frames');
+  const id = _fm.tmdbId;
+  btn.style.display = 'none';
+  box.innerHTML = '<div class="fm-note">Grabbing pictures from the stream… (can take a few seconds)</div>';
+  try {
+    const d = await api(`/api/library/fix-match/movie/${id}/frames`);
+    if (_fm.tmdbId !== id) return;
+    box.innerHTML = (d.frames || []).map(f =>
+      `<figure class="fm-frame"><img src="${f.image}" alt=""><figcaption>${f.at_minutes} min</figcaption></figure>`).join('');
+  } catch (e) {
+    if (_fm.tmdbId !== id) return;
+    box.innerHTML = `<div class="fm-note">${escapeAttr(e.message || 'Could not grab pictures from the stream')}</div>`;
+    btn.style.display = '';
   }
 }
 
@@ -6554,7 +6583,7 @@ async function loadHealthDeletions() {
     // Activity (inline handlers)
     _activityPosterFailed, activitySearchAgain, activityRemove,
     // Wrong movie (mislabelled provider streams)
-    reportWrongMovie, dismissMatchSuspect, unblockStream, openFixMatch, _fmLoad, _fmPick, _fmRemove,
+    reportWrongMovie, dismissMatchSuspect, unblockStream, openFixMatch, _fmLoad, _fmFrames, _fmPick, _fmRemove,
     // Lists page
     loadLists, loadListCards,
     saveQuickList, onQuickListUrlInput, onQuickListNameInput, onModalUrlInput, onModalNameInput,

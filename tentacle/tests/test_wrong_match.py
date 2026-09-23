@@ -6,6 +6,7 @@ showed the documentary as In Library, and hid the user's Radarr request for it.
 
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
+import tempfile
 import unittest
 from pathlib import Path as _RealPath
 from unittest import mock
@@ -247,6 +248,9 @@ REAL = {"tmdb_id": 674607, "title": "The Decline", "year": "2020", "overview": "
         "backdrop_path": None}
 
 
+NO_PROBE = {"minutes": None, "audio_languages": []}
+
+
 class FakeRealTMDB:
     """TMDB for the fixer: search results + details, like the live case."""
     def __init__(self):
@@ -262,10 +266,13 @@ class FakeRealTMDB:
 
     def _request(self, endpoint, params):
         self.searches.append(params["query"])
-        pool = [{"id": 36724, "title": "The Decline of Western Civilization Part II", "release_date": "1988-06-17", "popularity": 5},
-                {"id": 44848, "title": "The Decline of Western Civilization Part III", "release_date": "1998-11-13", "popularity": 4}]
+        pool = [{"id": 36724, "title": "The Decline of Western Civilization Part II", "release_date": "1988-06-17",
+                 "popularity": 5, "original_language": "en"},
+                {"id": 44848, "title": "The Decline of Western Civilization Part III", "release_date": "1998-11-13",
+                 "popularity": 4, "original_language": "en"}]
         if params["query"] == "The Decline":
-            pool = [{"id": 674607, "title": "The Decline", "release_date": "2020-02-27", "popularity": 9}] + pool
+            pool = [{"id": 674607, "title": "The Decline", "release_date": "2020-02-27", "popularity": 9,
+                     "original_language": "fr"}] + pool
         return {"results": pool}
 
     @staticmethod
@@ -286,7 +293,7 @@ class TestSuggestions(_Base):
             self.addCleanup(p.stop)
 
     def test_the_real_film_comes_first_when_the_length_is_known(self):
-        with mock.patch.object(wrong_match, "probed_minutes", return_value=83):
+        with mock.patch.object(wrong_match, "probe_info", return_value={"minutes": 83, "audio_languages": []}):
             r = wrong_match.suggest_matches(self.db, self.tmdb)
         self.assertEqual(83, r["actual_minutes"])
         self.assertEqual(674607, r["candidates"][0]["tmdb_id"])
@@ -294,14 +301,115 @@ class TestSuggestions(_Base):
         self.assertIn("The Decline", r["searched"], "shortens the label until it finds candidates")
 
     def test_a_search_replaces_the_label(self):
-        with mock.patch.object(wrong_match, "probed_minutes", return_value=None):
+        with mock.patch.object(wrong_match, "probe_info", return_value=NO_PROBE):
             wrong_match.suggest_matches(self.db, self.tmdb, query="The Decline")
         self.assertEqual(["The Decline"], self.fake.searches)
 
+    def test_the_audio_language_is_a_clue_when_the_length_is_unknown(self):
+        with mock.patch.object(wrong_match, "probe_info", return_value={"minutes": None, "audio_languages": ["fr"]}):
+            r = wrong_match.suggest_matches(self.db, self.tmdb)
+        top = r["candidates"][0]
+        self.assertEqual(674607, top["tmdb_id"], "the French film beats closer-titled English ones")
+        self.assertTrue(top["language_matches"])
+        self.assertEqual("French", top["language_name"])
+        self.assertEqual([{"code": "fr", "name": "French"}], r["audio_languages"])
+
+    def test_without_a_language_the_label_decides(self):
+        with mock.patch.object(wrong_match, "probe_info", return_value=NO_PROBE):
+            r = wrong_match.suggest_matches(self.db, self.tmdb)
+        self.assertEqual(36724, r["candidates"][0]["tmdb_id"])
+        self.assertFalse(any(c["language_matches"] for c in r["candidates"]))
+
+    def test_a_dubbed_multi_language_stream_is_no_clue(self):
+        with mock.patch.object(wrong_match, "probe_info", return_value={"minutes": None, "audio_languages": ["en", "fr"]}):
+            r = wrong_match.suggest_matches(self.db, self.tmdb)
+        self.assertEqual(36724, r["candidates"][0]["tmdb_id"])
+
+    def test_length_still_outranks_language(self):
+        with mock.patch.object(wrong_match, "probe_info", return_value={"minutes": 93, "audio_languages": ["fr"]}):
+            r = wrong_match.suggest_matches(self.db, self.tmdb)
+        self.assertEqual(36724, r["candidates"][0]["tmdb_id"], "Part II is 93 min")
+
     def test_the_current_film_is_never_suggested(self):
-        with mock.patch.object(wrong_match, "probed_minutes", return_value=None):
+        with mock.patch.object(wrong_match, "probe_info", return_value=NO_PROBE):
             r = wrong_match.suggest_matches(self.db, self.tmdb)
         self.assertNotIn(self.tmdb, [c["tmdb_id"] for c in r["candidates"]])
+
+
+class TestLanguageCodes(unittest.TestCase):
+    def test_jellyfin_and_tmdb_codes_meet(self):
+        for jf, tmdb in (("fre", "fr"), ("fra", "fr"), ("eng", "en"), ("ger", "de"), ("jpn", "ja"), ("en", "en")):
+            self.assertEqual(tmdb, wrong_match.language_code(jf))
+        for unknown in ("und", "", None, "mul", "zzz"):
+            self.assertIsNone(wrong_match.language_code(unknown))
+
+
+class TestProbeInfo(_Base):
+    def test_reads_length_and_audio_languages(self):
+        self.jf.get_item_by_id = lambda _id: {"MediaSources": [{
+            "RunTimeTicks": 83 * 600_000_000,
+            "MediaStreams": [{"Type": "Video"}, {"Type": "Audio", "Language": "fre"},
+                             {"Type": "Audio", "Language": "fra"}, {"Type": "Subtitle", "Language": "eng"},
+                             {"Type": "Audio", "Language": "und"}]}]}
+        info = wrong_match.probe_info(self.db, self.movie(self.tmdb))
+        self.assertEqual({"minutes": 83, "audio_languages": ["fr"]}, info)
+
+    def test_never_played_has_nothing(self):
+        self.jf.get_item_by_id = lambda _id: {"MediaSources": []}
+        self.assertEqual(NO_PROBE, wrong_match.probe_info(self.db, self.movie(self.tmdb)))
+
+
+class TestFrames(_Base):
+    def setUp(self):
+        super().setUp()
+        self.tmp = tempfile.mkdtemp()
+        self.grabs = []
+
+        def grab(ffmpeg, url, ua, sec):
+            self.grabs.append((url, ua, sec))
+            return b"JPEG" if self.ok else None
+        self.ok = True
+        for p in (mock.patch.dict("os.environ", {"DATA_DIR": self.tmp}),
+                  mock.patch("shutil.which", return_value="/usr/bin/ffmpeg"),
+                  mock.patch.object(wrong_match, "_grab_frame", side_effect=grab),
+                  mock.patch.object(wrong_match, "probed_minutes", return_value=100)):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_three_stills_spread_over_the_film(self):
+        r = wrong_match.stream_frames(self.db, self.tmdb)
+        self.assertEqual([720, 2400, 4200], [g[2] for g in self.grabs])
+        self.assertEqual([12, 40, 70], [f["at_minutes"] for f in r["frames"]])
+        self.assertTrue(r["frames"][0]["image"].startswith("data:image/jpeg;base64,"))
+        url = _RealPath(self.movie(self.tmdb).strm_path).read_text().strip()
+        self.assertEqual(url, self.grabs[0][0], "grabs from the title's own stream")
+
+    def test_cached_the_second_time(self):
+        wrong_match.stream_frames(self.db, self.tmdb)
+        wrong_match.stream_frames(self.db, self.tmdb)
+        self.assertEqual(3, len(self.grabs))
+
+    def test_some_frames_are_better_than_none(self):
+        calls = iter([b"A", None, b"C"])
+        wrong_match._grab_frame.side_effect = lambda *a: next(calls)
+        r = wrong_match.stream_frames(self.db, self.tmdb)
+        self.assertEqual(2, len(r["frames"]))
+
+    def test_a_busy_provider_is_a_clear_error(self):
+        self.ok = False
+        with self.assertRaises(wrong_match.WrongMatchError) as e:
+            wrong_match.stream_frames(self.db, self.tmdb)
+        self.assertEqual(502, e.exception.status)
+        self.assertEqual(0, len(list(_RealPath(self.tmp).glob("frame_cache/*.jpg"))), "failures aren't cached")
+
+    def test_no_ffmpeg(self):
+        with mock.patch("shutil.which", return_value=None), \
+                self.assertRaises(wrong_match.WrongMatchError) as e:
+            wrong_match.stream_frames(self.db, self.tmdb)
+        self.assertEqual(503, e.exception.status)
+
+    def test_offsets_without_a_length(self):
+        self.assertEqual([300, 1200, 2700], wrong_match.frame_offsets(None))
 
 
 class TestRematch(_Base):
