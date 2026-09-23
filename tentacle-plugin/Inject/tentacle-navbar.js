@@ -52,10 +52,19 @@
     // On mismatch: reload once — loop-guarded, and never during playback.
     (function stalenessWatchdog() {
         try {
-            var el = document.querySelector('script[src*="/Tentacle/navbar.js"]');
-            var m = el && el.src ? el.src.match(/[?&]v=([^&]+)/) : null;
-            var bootStamp = m ? decodeURIComponent(m[1]) : null;
-            if (!bootStamp) return;
+            // One watchdog per page, however many copies of this script loaded.
+            if (window.__tentacleWatchdog) return;
+            window.__tentacleWatchdog = true;
+            // Every stamp the page carries. A page served while an older plugin's
+            // patch was still loaded had several copies of the tags; judging by the
+            // first one alone saw "server updated" on every check and reloaded the
+            // page in a loop. The page is current if ANY copy matches the server.
+            var stamps = [];
+            Array.prototype.forEach.call(document.querySelectorAll('script[src*="/Tentacle/navbar.js"]'), function (s) {
+                var mm = s.src ? s.src.match(/[?&]v=([^&]+)/) : null;
+                if (mm) stamps.push(decodeURIComponent(mm[1]));
+            });
+            if (!stamps.length) return;
 
             var checking = false;
             var check = function () {
@@ -66,7 +75,7 @@
                     .then(function (r) { return r.ok ? r.json() : null; })
                     .then(function (data) {
                         checking = false;
-                        if (!data || !data.boot || data.boot === bootStamp) return;
+                        if (!data || !data.boot || stamps.indexOf(data.boot) !== -1) return;
                         // Never interrupt playback — the next focus/interval retries
                         if ((location.hash || '').indexOf('#/video') !== -1) return;
                         var last = 0;
