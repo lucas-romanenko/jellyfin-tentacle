@@ -4669,6 +4669,76 @@ async function activitySearchAgain(key) {
   }
 }
 
+// Shows: stop Sonarr looking for the missing episodes, keep everything on
+// disk. One missing episode goes straight through; several open a checklist.
+async function activityStopMissing(key) {
+  const item = _actItem(key);
+  if (!item || _actBusy[key]) return;
+  const labels = item.missing_labels || [];
+  if (labels.length > 1) { _openStopMissing(key, item); return; }
+  await _stopMissing(key, item, null);
+}
+
+async function _stopMissing(key, item, episodes) {
+  _actBusy[key] = 'stop'; renderActivity();
+  try {
+    const body = _actBody(item);
+    if (episodes) body.episodes = episodes;
+    const r = await api('/api/activity/arr/stop-missing', { method: 'POST', body });
+    toast(r.message || 'Stopped looking');
+    closeModal('modal-stop-missing');
+    await loadActivity();
+  } catch (e) {
+    toast(e.message || 'Failed', 'error');
+  } finally {
+    delete _actBusy[key]; renderActivity();
+  }
+}
+
+let _smKey = null;
+function _openStopMissing(key, item) {
+  _smKey = key;
+  let m = document.getElementById('modal-stop-missing');
+  if (!m) {
+    m = document.createElement('div');
+    m.className = 'modal-overlay'; m.id = 'modal-stop-missing'; m.style.display = 'none';
+    m.innerHTML = `<div class="modal" style="max-width:460px">
+      <div class="modal-header"><div class="modal-title" id="sm-title"></div>
+        <button class="modal-close" onclick="closeModal('modal-stop-missing')">✕</button></div>
+      <div style="padding:0 20px 20px">
+        <p class="sm-intro" id="sm-intro"></p>
+        <div class="sm-tools"><button class="btn btn-secondary btn-sm" onclick="_smAll(true)">All</button>
+          <button class="btn btn-secondary btn-sm" onclick="_smAll(false)">None</button></div>
+        <div id="sm-list" class="sm-list" onchange="_smCount()"></div>
+        <div class="sm-footer"><button class="btn btn-secondary btn-sm" onclick="closeModal('modal-stop-missing')">Cancel</button>
+          <button class="btn btn-primary btn-sm" id="sm-go" onclick="_smGo()"></button></div>
+      </div></div>`;
+    document.body.appendChild(m);
+  }
+  document.getElementById('sm-title').textContent = `Stop looking — ${item.title}`;
+  const disk = item.episodes_on_disk || 0;
+  document.getElementById('sm-intro').textContent =
+    `Sonarr stops searching for the ticked episodes. ${disk ? `The ${disk} downloaded episode${disk === 1 ? '' : 's'} stay, and n` : 'N'}ew episodes are still grabbed as they air. You can undo this from Manage Episodes.`;
+  document.getElementById('sm-list').innerHTML = (item.missing_labels || []).map(l =>
+    `<label class="sm-row"><input type="checkbox" checked value="${escapeAttr(l)}"> ${escapeAttr(l)}</label>`).join('');
+  _smCount();
+  showModal('modal-stop-missing');
+}
+function _smChosen() { return [...document.querySelectorAll('#sm-list input:checked')].map(c => c.value); }
+function _smAll(on) { document.querySelectorAll('#sm-list input').forEach(c => { c.checked = on; }); _smCount(); }
+function _smCount() {
+  const n = _smChosen().length, b = document.getElementById('sm-go');
+  b.textContent = n === 1 ? `Stop looking for ${_smChosen()[0]}` : `Stop looking for ${n} episodes`;
+  b.disabled = n === 0;
+}
+function _smGo() {
+  const item = _actItem(_smKey);
+  if (!item) { closeModal('modal-stop-missing'); return; }
+  const chosen = _smChosen();
+  // Everything ticked = "all missing": also covers episodes past the 50 listed.
+  _stopMissing(_smKey, item, chosen.length === (item.missing_labels || []).length ? null : chosen);
+}
+
 async function activityRemove(key) {
   const item = _actItem(key);
   if (!item || _actBusy[key]) return;
@@ -4682,7 +4752,9 @@ async function activityRemove(key) {
   delete _actArmed[key];
   _actBusy[key] = 'remove'; renderActivity();
   try {
-    const r = await api('/api/activity/arr/remove', { method: 'POST', body: _actBody(item) });
+    const body = _actBody(item);
+    if (item.media_type === 'series' && item.episodes_on_disk > 0) body.delete_downloaded = true;
+    const r = await api('/api/activity/arr/remove', { method: 'POST', body });
     toast(r.message || `Removed ${item.title}`);
     await loadActivity();
   } catch (e) {
@@ -4757,6 +4829,13 @@ function renderActivity(data) {
       const busy = _actBusy[key];
       const armed = !busy && (_actArmed[key] || 0) > Date.now();
       const arr = item.media_type === 'series' ? 'Sonarr' : 'Radarr';
+      const isShow = item.media_type === 'series';
+      const disk = isShow ? (item.episodes_on_disk || 0) : 0;
+      const removeText = busy === 'remove' ? 'Removing…'
+        : armed ? (disk ? `Click again: delete show + ${disk} episode${disk === 1 ? '' : 's'}` : 'Click again: delete + folder')
+        : (disk ? 'Delete show' : 'Remove');
+      const removeTitle = disk ? `Delete the whole show from ${arr}, including ${disk} downloaded episode${disk === 1 ? '' : 's'}`
+        : `Remove from ${arr}, folder included`;
       return `<div class="activity-card">
         <div class="activity-poster">${poster}</div>
         <div class="activity-info">
@@ -4765,8 +4844,10 @@ function renderActivity(data) {
           <div class="activity-countdown activity-searching">${waited ? 'Searching for ' + escapeAttr(waited) : 'Searching'}</div>
           <div class="activity-actions">
             <button class="activity-act-btn" ${busy ? 'disabled' : ''} onclick="activitySearchAgain('${escapeAttr(key)}')">${busy === 'search' ? 'Searching…' : 'Search again'}</button>
-            <button class="activity-act-btn activity-act-remove${armed ? ' armed' : ''}" ${busy ? 'disabled' : ''} title="Remove from ${arr}, folder included"
-              onclick="activityRemove('${escapeAttr(key)}')">${busy === 'remove' ? 'Removing…' : armed ? 'Click again: delete + folder' : 'Remove'}</button>
+            ${isShow ? `<button class="activity-act-btn" ${busy ? 'disabled' : ''} title="Stop Sonarr looking for the missing episodes; keep everything downloaded"
+              onclick="activityStopMissing('${escapeAttr(key)}')">${busy === 'stop' ? 'Stopping…' : 'Stop looking'}</button>` : ''}
+            <button class="activity-act-btn activity-act-remove${armed ? ' armed' : ''}" ${busy ? 'disabled' : ''} title="${escapeAttr(removeTitle)}"
+              onclick="activityRemove('${escapeAttr(key)}')">${removeText}</button>
           </div>
         </div>
       </div>`;
@@ -6581,7 +6662,7 @@ async function loadHealthDeletions() {
 (function exposeGlobals() {
   const fns = [
     // Activity (inline handlers)
-    _activityPosterFailed, activitySearchAgain, activityRemove,
+    _activityPosterFailed, activitySearchAgain, activityRemove, activityStopMissing, _smAll, _smCount, _smGo,
     // Wrong movie (mislabelled provider streams)
     reportWrongMovie, dismissMatchSuspect, unblockStream, openFixMatch, _fmLoad, _fmFrames, _fmPick, _fmRemove,
     // Lists page

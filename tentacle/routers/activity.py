@@ -10,7 +10,7 @@ import time
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 
 import requests
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -197,7 +197,19 @@ def _iso_date(val) -> Optional[str]:
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ") if dt else None
 
 
-def _fetch_sonarr_searching(url: str, api_key: str) -> list:
+def _fetch_sonarr_file_counts(url: str, api_key: str) -> dict:
+    """Series id → episode files on disk. The episodes embedded in
+    wanted/missing carry no statistics, so ask the series list."""
+    try:
+        r = requests.get(f"{url.rstrip('/')}/api/v3/series", headers={"X-Api-Key": api_key}, timeout=15)
+        r.raise_for_status()
+        return {s["id"]: (s.get("statistics") or {}).get("episodeFileCount", 0) for s in r.json() if s.get("id")}
+    except Exception as e:
+        logger.debug(f"Sonarr series stats fetch failed: {e}")
+        return {}
+
+
+def _fetch_sonarr_searching(url: str, api_key: str, file_counts: Optional[dict] = None) -> list:
     """Monitored series with aired episodes Sonarr has not found yet.
 
     Sonarr's own Wanted → Missing list: monitored, aired, no file. One entry
@@ -248,7 +260,7 @@ def _fetch_sonarr_searching(url: str, api_key: str) -> list:
             entry["wanted_since"] = wanted_since
 
     searching = []
-    for entry in by_series.values():
+    for sid, entry in by_series.items():
         series = entry["series"]
         eps = sorted(entry["episodes"])
         first = f"S{eps[0][0]:02d}E{eps[0][1]:02d}"
@@ -263,6 +275,10 @@ def _fetch_sonarr_searching(url: str, api_key: str) -> list:
             "status": "searching",
             "episode": first if len(eps) == 1 else f"{first} +{len(eps) - 1}",
             "missing_episodes": len(eps),
+            "missing_labels": [f"S{a:02d}E{b:02d}" for a, b in eps[:50]],
+            # Anything on disk: removing the show would delete it, so clients
+            # offer "stop looking for the missing episodes" instead.
+            "episodes_on_disk": (file_counts or {}).get(sid, 0),
             "waiting_since": entry["wanted_since"].strftime("%Y-%m-%dT%H:%M:%SZ"),
             "sonarr_poster": _extract_poster(series),
         })
@@ -565,7 +581,8 @@ def _get_wanted(db: Session) -> dict:
     sonarr_key = get_setting(db, "sonarr_api_key")
     if sonarr_url and sonarr_key:
         unreleased.extend(_fetch_sonarr_unreleased(sonarr_url, sonarr_key))
-        searching.extend(_fetch_sonarr_searching(sonarr_url, sonarr_key))
+        searching.extend(_fetch_sonarr_searching(
+            sonarr_url, sonarr_key, _fetch_sonarr_file_counts(sonarr_url, sonarr_key)))
 
     # A series with no files whose next episode is ahead used to be listed as
     # upcoming even when earlier episodes had already aired. If Sonarr is
@@ -740,6 +757,12 @@ class ArrTitle(BaseModel):
     media_type: str
     tmdb_id: int = 0
     tvdb_id: int = 0
+    # Remove only: a series with episodes on disk is deleted whole only when
+    # the caller says so explicitly (older clients never do).
+    delete_downloaded: bool = False
+    # Stop-missing only: limit to these episodes, as "S01E02" labels (the
+    # Searching row's missing_labels). Default: every missing episode.
+    episodes: Optional[List[str]] = None
 
 
 def _can_manage(db: Session, user: TentacleUser, title: ArrTitle) -> bool:
@@ -791,6 +814,21 @@ def _after_arr_change() -> None:
         pass
 
 
+def _ep_label(ep: dict) -> str:
+    return f"S{ep.get('seasonNumber') or 0:02d}E{ep.get('episodeNumber') or 0:02d}"
+
+
+def _missing_aired(episodes: list) -> list:
+    """The episodes Sonarr is actually looking for: monitored, aired, no file."""
+    now = datetime.utcnow()
+    out = []
+    for ep in episodes:
+        aired = _parse_dt(ep.get("airDateUtc"))
+        if ep.get("monitored") and not ep.get("hasFile") and aired and aired <= now:
+            out.append(ep)
+    return out
+
+
 @router.post("/arr/search")
 def search_again(title: ArrTitle, db: Session = Depends(get_db),
                  user: TentacleUser = Depends(get_user_from_request)):
@@ -803,13 +841,7 @@ def search_again(title: ArrTitle, db: Session = Depends(get_db),
         ok = svc.search_movie(rec["id"])
         what = "movie"
     else:
-        # The episodes that are actually missing: monitored, aired, no file.
-        now = datetime.utcnow()
-        missing = []
-        for ep in svc.get_episodes(rec["id"]):
-            aired = _parse_dt(ep.get("airDateUtc"))
-            if ep.get("monitored") and not ep.get("hasFile") and aired and aired <= now:
-                missing.append(ep["id"])
+        missing = [ep["id"] for ep in _missing_aired(svc.get_episodes(rec["id"]))]
         if missing:
             ok = svc.search_episodes(missing)
             what = f"{len(missing)} missing episode{'s' if len(missing) != 1 else ''}"
@@ -821,6 +853,63 @@ def search_again(title: ArrTitle, db: Session = Depends(get_db),
     logger.info(f"Activity: search again for '{name}' ({what}) by {user.display_name}")
     return {"ok": True, "title": name,
             "message": f"Searching again for {what if title.media_type == 'series' else name}"}
+
+
+@router.post("/arr/stop-missing")
+def stop_missing(title: ArrTitle, db: Session = Depends(get_db),
+                 user: TentacleUser = Depends(get_user_from_request)):
+    """Stop Sonarr looking for a show's missing episodes; keep everything else.
+
+    Unmonitors only the aired, monitored episodes without a file (or the
+    given subset of them). Downloaded episodes, the Jellyfin entry and
+    playlists are untouched, and so is Following: new episodes are still
+    grabbed as they air. Undo from Manage Episodes.
+    """
+    if title.media_type != "series":
+        raise HTTPException(400, "Only shows have episodes to stop looking for")
+    if not _can_manage(db, user, title):
+        raise HTTPException(403, "You can only manage titles you requested")
+    svc, rec = _find_arr_record(db, title)
+    name = rec.get("title", "")
+    missing = _missing_aired(svc.get_episodes(rec["id"]))
+    if title.episodes is not None:
+        wanted = {e.strip().upper() for e in title.episodes}
+        missing = [ep for ep in missing if _ep_label(ep) in wanted]
+    if not missing:
+        _after_arr_change()
+        return {"ok": True, "title": name, "stopped": 0,
+                "message": (f"Sonarr isn't looking for those episodes of {name} any more" if title.episodes is not None
+                            else f"Sonarr isn't looking for any episodes of {name}")}
+    if not svc.set_episode_monitoring([ep["id"] for ep in missing], False):
+        raise HTTPException(502, "Sonarr did not accept the change")
+    labels = [_ep_label(ep) for ep in missing]
+    from models.database import log_deletion
+    log_deletion(db, kind="arr-unmonitor", name=name, media_type="series", reason="manual",
+                 user_name=user.display_name,
+                 detail=f"Stopped looking for {len(labels)} missing episode(s): {', '.join(labels[:20])}")
+    _after_arr_change()
+    logger.info(f"Activity: stopped looking for {len(labels)} missing episode(s) of '{name}' by {user.display_name}")
+    n = len(labels)
+    return {"ok": True, "title": name, "stopped": n, "episodes": labels,
+            "message": f"Stopped looking for {labels[0] if n == 1 else f'{n} episodes'} of {name}"}
+
+
+def _series_files_on_disk(db: Session, title: ArrTitle, row) -> int:
+    """Downloaded episodes a whole-show delete would destroy. VOD folders are
+    never deleted (their files are kept), so they don't count."""
+    try:
+        svc, rec = _find_arr_record(db, title)
+    except HTTPException:
+        return 0
+    path = (rec.get("path") or "").lower()
+    if "/vod/" in path or (row is not None and getattr(row, "sonarr_path", None)
+                           and getattr(row, "source", None) not in ("sonarr",)):
+        return 0
+    stats = rec.get("statistics")
+    if isinstance(stats, dict) and "episodeFileCount" in stats:
+        return int(stats.get("episodeFileCount") or 0)
+    # No statistics: Tentacle only keeps a Sonarr-sourced row for a show with files.
+    return 1 if row is not None and getattr(row, "source", None) == "sonarr" else 0
 
 
 @router.post("/arr/remove")
@@ -841,6 +930,11 @@ def remove_from_arr(title: ArrTitle, request: Request, db: Session = Depends(get
 
     model = Movie if title.media_type == "movie" else Series
     row = db.query(model).filter(model.tmdb_id == title.tmdb_id).first() if title.tmdb_id else None
+    if title.media_type == "series" and not title.delete_downloaded:
+        on_disk = _series_files_on_disk(db, title, row)
+        if on_disk:
+            raise HTTPException(409, f"{on_disk} episode{'s are' if on_disk != 1 else ' is'} already downloaded. "
+                                     "Stop looking for the missing episodes instead, or confirm deleting the whole show.")
     if row is not None and getattr(row, "source", None) in ("radarr", "sonarr"):
         from routers.library import delete_download
         result = delete_download(title.tmdb_id, title.media_type, request, db=db)
