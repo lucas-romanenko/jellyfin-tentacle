@@ -1259,6 +1259,15 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
 .activity-countdown { font-size: 12px; font-weight: 500; color: rgb(117, 111, 226); }
 .activity-countdown.activity-searching { color: #FF9800; }
 .activity-empty { text-align: center; padding: 40px; color: var(--text3); font-size: 13px; }
+.activity-actions { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+.activity-act-btn {
+  font: inherit; font-size: 11px; padding: 3px 10px; border-radius: 5px; cursor: pointer;
+  border: 1px solid var(--border2); background: var(--bg2); color: var(--text2);
+}
+.activity-act-btn:hover:not(:disabled) { border-color: var(--text3); color: var(--text); }
+.activity-act-btn:disabled { opacity: .55; cursor: default; }
+.activity-act-remove { color: var(--red); border-color: rgba(239, 68, 68, .35); }
+.activity-act-remove.armed { background: var(--red); border-color: var(--red); color: #fff; }
 .activity-requested-by { font-size: 10px; color: var(--text3); background: var(--bg3); padding: 1px 6px; border-radius: 3px; margin-left: 2px; }
 
 /* ── Hero config tooltip ── */

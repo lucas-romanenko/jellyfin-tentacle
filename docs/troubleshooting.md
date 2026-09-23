@@ -45,7 +45,14 @@ This is almost always a **category mismatch** between Radarr/Sonarr and your dow
 
 ### A title sits under "Searching" for a long time
 
-**Searching** lists titles Radarr/Sonarr are monitoring and that are already released, but that no download has started for yet. It shows how long each one has been waiting. Minutes is normal. Days usually means your indexers have no release that matches the quality profile. Check Radarr/Sonarr → Wanted → Missing, run a manual search there, or pick a less strict quality profile. A movie still before its release date shows under **Upcoming Releases**, not here.
+**Searching** lists titles Radarr/Sonarr are monitoring and that are already released, but that no download has started for yet. It shows how long each one has been waiting. Minutes is normal. Days usually means your indexers have no release that matches the quality profile. A movie still before its release date shows under **Upcoming Releases**, not here.
+
+Open the title from Activity (on the TV, select the card) to act on it:
+
+- **Search again** asks Radarr/Sonarr to search right now (for a series, only the missing aired episodes).
+- **Remove from Radarr/Sonarr** deletes the title from Radarr/Sonarr together with its folder. It asks for a second press first. If some episodes of a series were already downloaded, those are deleted too. A series that lives in your VOD folder is removed from Sonarr, but its VOD files are kept.
+
+Admins can do this for any title; everyone else only for titles they requested.
 
 ### Discover or Activity says "Tentacle is busy" or "Can't reach Tentacle"
 

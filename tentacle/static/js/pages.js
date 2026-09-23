@@ -4467,6 +4467,53 @@ function _activityPoster(path) {
   return `<img src="${src}" loading="lazy" onerror="_activityPosterFailed(this)">`;
 }
 
+// ── Search again / Remove on a Searching card ──────────────────────────
+// State lives here, not in the DOM: the tab re-renders every 3 seconds.
+const _actArmed = {};   // key -> ms until which "Remove" waits for its second click
+const _actBusy = {};    // key -> 'search' | 'remove' while a request is out
+function _actKey(item) { return `${item.media_type}:${item.tmdb_id || 0}:${item.tvdb_id || 0}`; }
+function _actItem(key) { return ((_activityData && _activityData.searching) || []).find(x => _actKey(x) === key); }
+function _actBody(item) {
+  return { media_type: item.media_type === 'series' ? 'series' : 'movie', tmdb_id: item.tmdb_id || 0, tvdb_id: item.tvdb_id || 0 };
+}
+
+async function activitySearchAgain(key) {
+  const item = _actItem(key);
+  if (!item || _actBusy[key]) return;
+  _actBusy[key] = 'search'; renderActivity();
+  try {
+    const r = await api('/api/activity/arr/search', { method: 'POST', body: _actBody(item) });
+    toast(r.message || `Searching again for ${item.title}`);
+  } catch (e) {
+    toast(e.message || 'Search failed', 'error');
+  } finally {
+    delete _actBusy[key]; renderActivity();
+  }
+}
+
+async function activityRemove(key) {
+  const item = _actItem(key);
+  if (!item || _actBusy[key]) return;
+  // First click arms it (and says what will be deleted); the second, within 5s, removes.
+  if (!((_actArmed[key] || 0) > Date.now())) {
+    _actArmed[key] = Date.now() + 5000;
+    renderActivity();
+    setTimeout(() => { if ((_actArmed[key] || 0) <= Date.now()) { delete _actArmed[key]; renderActivity(); } }, 5100);
+    return;
+  }
+  delete _actArmed[key];
+  _actBusy[key] = 'remove'; renderActivity();
+  try {
+    const r = await api('/api/activity/arr/remove', { method: 'POST', body: _actBody(item) });
+    toast(r.message || `Removed ${item.title}`);
+    await loadActivity();
+  } catch (e) {
+    toast(e.message || 'Remove failed', 'error');
+  } finally {
+    delete _actBusy[key]; renderActivity();
+  }
+}
+
 // "5m" / "3h" / "2d" since an ISO timestamp, or '' when unknown.
 function _activityWaited(iso) {
   if (!iso) return '';
@@ -4528,12 +4575,21 @@ function renderActivity(data) {
       const poster = _activityPoster(item.poster_path);
       const waited = _activityWaited(item.waiting_since);
       const reqByLabel = item.requested_by ? `<span class="activity-requested-by">${escapeAttr(item.requested_by)}</span>` : '';
+      const key = _actKey(item);
+      const busy = _actBusy[key];
+      const armed = !busy && (_actArmed[key] || 0) > Date.now();
+      const arr = item.media_type === 'series' ? 'Sonarr' : 'Radarr';
       return `<div class="activity-card">
         <div class="activity-poster">${poster}</div>
         <div class="activity-info">
           <div class="activity-title">${escapeAttr(item.title)}${item.episode ? ' · ' + escapeAttr(item.episode) : ''}</div>
           <div class="activity-meta">${escapeAttr(item.year || '')} · Looking for a release ${reqByLabel}</div>
           <div class="activity-countdown activity-searching">${waited ? 'Searching for ' + escapeAttr(waited) : 'Searching'}</div>
+          <div class="activity-actions">
+            <button class="activity-act-btn" ${busy ? 'disabled' : ''} onclick="activitySearchAgain('${escapeAttr(key)}')">${busy === 'search' ? 'Searching…' : 'Search again'}</button>
+            <button class="activity-act-btn activity-act-remove${armed ? ' armed' : ''}" ${busy ? 'disabled' : ''} title="Remove from ${arr}, folder included"
+              onclick="activityRemove('${escapeAttr(key)}')">${busy === 'remove' ? 'Removing…' : armed ? 'Click again: delete + folder' : 'Remove'}</button>
+          </div>
         </div>
       </div>`;
     }).join('');
@@ -6346,8 +6402,8 @@ async function loadHealthDeletions() {
 
 (function exposeGlobals() {
   const fns = [
-    // Activity (inline onerror on posters)
-    _activityPosterFailed,
+    // Activity (inline handlers)
+    _activityPosterFailed, activitySearchAgain, activityRemove,
     // Lists page
     loadLists, loadListCards,
     saveQuickList, onQuickListUrlInput, onQuickListNameInput, onModalUrlInput, onModalNameInput,
