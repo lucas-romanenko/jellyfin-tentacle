@@ -11,7 +11,7 @@ import threading
 from datetime import datetime
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
 from starlette.background import BackgroundTask
 from pydantic import BaseModel
@@ -55,13 +55,28 @@ def _known_video(db: Session, video_id: str) -> YouTubeVideo:
     return video
 
 
+def effective_height(channel_cap: int, requested: Optional[int]) -> int:
+    """The height to serve: the client's ask, never above the channel's cap."""
+    cap = channel_cap or 1080
+    return min(requested, cap) if requested else cap
+
+
 @router.get("/v/{video_id}/master.m3u8")
 @router.head("/v/{video_id}/master.m3u8")
-def master_playlist(video_id: str, db: Session = Depends(get_db)):
-    """What a .strm points at. Jellyfin re-probes this on every PlaybackInfo."""
+def master_playlist(video_id: str,
+                    h: Optional[int] = Query(None, ge=1, le=4320),
+                    db: Session = Depends(get_db)):
+    """What a .strm points at. Jellyfin re-probes this on every PlaybackInfo.
+
+    `h` lets a client ask for a lower picture than the channel's setting — a
+    device on a weak link can take YouTube's own 720p or 480p instead of
+    making the server transcode. It is clamped to the channel's cap, so it can
+    never pull more than the owner configured, and leaving it out serves
+    exactly what the channel is set to. Still one variant either way.
+    """
     video = _known_video(db, video_id)
     channel = db.query(YouTubeChannel).filter(YouTubeChannel.id == video.channel_fk).first()
-    max_height = (channel.max_height if channel else 1080) or 1080
+    max_height = effective_height(channel.max_height if channel else 1080, h)
 
     try:
         resolved = resolver.resolve(video_id, max_height)
@@ -69,6 +84,12 @@ def master_playlist(video_id: str, db: Session = Depends(get_db)):
             r = c.get(resolved.master_url, headers=resolved.headers)
             r.raise_for_status()
             text = r.text
+    except resolver.ResolveBackoff as e:
+        # Already logged when it failed; Jellyfin re-probes far more often
+        # than it is worth hearing about.
+        logger.debug(f"[YouTube] {video_id} still backing off: {e}")
+        raise HTTPException(502, "Could not resolve this video",
+                            headers={"Retry-After": str(max(e.retry_in, 1))})
     except YouTubeBlocked as e:
         logger.warning(f"[YouTube] Blocked resolving {video_id}: {e}")
         raise HTTPException(503, "YouTube is rate-limiting this server; try again shortly")
@@ -102,7 +123,13 @@ def proxied(video_id: str, token: str, request: Request, db: Session = Depends(g
         raise HTTPException(404, "Unknown or expired stream token")
 
     headers = {}
-    resolved = resolver.resolve(video_id)
+    try:
+        resolved = resolver.resolve(video_id)
+    except YouTubeBlocked:
+        raise HTTPException(503, "YouTube is rate-limiting this server; try again shortly")
+    except YouTubeError as e:
+        logger.debug(f"[YouTube] Could not resolve {video_id} for a segment: {e}")
+        raise HTTPException(502, "Could not resolve this video")
     headers.update(resolved.headers or {})
     range_header = request.headers.get("range")
     if range_header:
@@ -308,7 +335,9 @@ def live_master(channel_id: int, db: Session = Depends(get_db)):
         raise HTTPException(503, f"{channel.title} is not streaming right now")
 
     try:
-        resolved = resolver.resolve(video.video_id, channel.max_height or 1080)
+        # No failure back-off: a broadcast can start answering at any moment.
+        resolved = resolver.resolve(video.video_id, channel.max_height or 1080,
+                                    backoff=False)
         with httpx.Client(timeout=UPSTREAM_TIMEOUT, follow_redirects=True) as c:
             r = c.get(resolved.master_url, headers=resolved.headers)
             r.raise_for_status()
@@ -428,6 +457,7 @@ def status(request: Request, db: Session = Depends(get_db)):
         "channels": db.query(YouTubeChannel).count(),
         "videos": db.query(YouTubeVideo).filter(YouTubeVideo.removed_at.is_(None)).count(),
         "resolver_cache": resolver.cache_size(),
+        "resolver_backing_off": resolver.failure_count(),
     }
 
 
@@ -1113,6 +1143,8 @@ def reprobe(db: Session = Depends(get_db)):
     """
     from services.jellyfin import JellyfinService
 
+    # An explicit re-probe should really try again, not hit a back-off.
+    resolver.clear_failures()
     touched = 0
     for video in db.query(YouTubeVideo).filter(
         YouTubeVideo.removed_at.is_(None),

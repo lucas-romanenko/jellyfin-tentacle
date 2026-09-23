@@ -16,7 +16,7 @@ import time
 from typing import Optional
 
 from services.youtube import client
-from services.youtube.errors import YouTubeError
+from services.youtube.errors import YouTubeBlocked, YouTubeError, YouTubeUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +29,26 @@ _cache_lock = threading.Lock()
 # several times in parallel for the same item.
 _inflight: dict = {}
 _inflight_lock = threading.Lock()
+
+# Videos that failed to resolve, and when to try again. Jellyfin re-probes a
+# .strm on every PlaybackInfo and on scans, so an unplayable video (members-
+# only, no HLS for any client) was re-extracted over and over — seven 502s a
+# night for one item. The back-off doubles per consecutive failure. A network
+# hiccup gets a short fixed pause instead, so a working video is never held
+# back for long; a bot check is never recorded here, because it says nothing
+# about this video and warming already stops on it.
+FAILURE_BACKOFF_START = 10 * 60
+FAILURE_BACKOFF_MAX = 6 * 3600
+TRANSIENT_BACKOFF = 60
+_failures: dict = {}  # video_id -> (retry_at, consecutive_failures, message)
+
+
+class ResolveBackoff(YouTubeError):
+    """A recent attempt failed; not trying YouTube again until the back-off ends."""
+
+    def __init__(self, message: str, retry_in: int):
+        super().__init__(message)
+        self.retry_in = retry_in
 
 
 class ResolvedVideo:
@@ -82,13 +102,50 @@ def _pick_hls_master(info: dict, max_height: int) -> tuple:
     return chosen.get("manifest_url"), chosen.get("http_headers")
 
 
-def resolve(video_id: str, max_height: int = 1080, force: bool = False) -> ResolvedVideo:
-    """Cached, single-flight resolution."""
+def _check_backoff(video_id: str) -> None:
+    with _cache_lock:
+        failed = _failures.get(video_id)
+    if not failed:
+        return
+    retry_at, count, message = failed
+    remaining = int(retry_at - time.time())
+    if remaining > 0:
+        raise ResolveBackoff(
+            f"{message} (failed {count}x; next attempt in {remaining}s)", remaining)
+
+
+def _record_failure(video_id: str, error: Exception) -> None:
+    if isinstance(error, YouTubeBlocked):
+        return
+    with _cache_lock:
+        _, count, _ = _failures.get(video_id, (0, 0, ""))
+        count += 1
+        if isinstance(error, YouTubeUnavailable):
+            delay = TRANSIENT_BACKOFF
+        else:
+            delay = min(FAILURE_BACKOFF_START * 2 ** (count - 1), FAILURE_BACKOFF_MAX)
+        _failures[video_id] = (time.time() + delay, count, str(error))
+    logger.info(f"[YouTube] {video_id} could not be resolved ({count}x); "
+                f"not retrying for {delay}s: {error}")
+
+
+def resolve(video_id: str, max_height: int = 1080, force: bool = False,
+            backoff: bool = True) -> ResolvedVideo:
+    """Cached, single-flight resolution.
+
+    Raises ResolveBackoff without calling YouTube while a recent failure is
+    still backing off; `force` skips the back-off along with the cache.
+    `backoff=False` neither checks nor records failures — for a live stream,
+    whose broadcast can start working at any moment.
+    """
+    backoff = backoff and not force
     if not force:
         with _cache_lock:
             hit = _cache.get(video_id)
             if hit and not hit.expired:
                 return hit
+    if backoff:
+        _check_backoff(video_id)
 
     with _inflight_lock:
         lock = _inflight.setdefault(video_id, threading.Lock())
@@ -99,9 +156,18 @@ def resolve(video_id: str, max_height: int = 1080, force: bool = False) -> Resol
                 hit = _cache.get(video_id)
                 if hit and not hit.expired:
                     return hit
-        resolved = _extract(video_id, max_height)
+        if backoff:
+            # A parallel probe may have just failed while this one waited.
+            _check_backoff(video_id)
+        try:
+            resolved = _extract(video_id, max_height)
+        except YouTubeError as e:
+            if backoff:
+                _record_failure(video_id, e)
+            raise
         with _cache_lock:
             _cache[video_id] = resolved
+            _failures.pop(video_id, None)
         return resolved
 
 
@@ -191,6 +257,22 @@ def is_cached(video_id: str) -> bool:
 def invalidate(video_id: str) -> None:
     with _cache_lock:
         _cache.pop(video_id, None)
+        _failures.pop(video_id, None)
+
+
+def clear_failures() -> int:
+    """Forget every recorded failure, so the next probe tries YouTube again."""
+    with _cache_lock:
+        n = len(_failures)
+        _failures.clear()
+    return n
+
+
+def failure_count() -> int:
+    """Videos currently backing off after a failed resolve."""
+    now = time.time()
+    with _cache_lock:
+        return sum(1 for retry_at, _, _ in _failures.values() if retry_at > now)
 
 
 def cache_size() -> int:
