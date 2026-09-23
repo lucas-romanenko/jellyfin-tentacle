@@ -4411,7 +4411,7 @@ async function loadActivity() {
     const data = await api('/api/activity');
     _activityData = data;
     // Always update badge count
-    const count = (data.downloads || []).length + (data.unreleased || []).length;
+    const count = (data.downloads || []).length + (data.searching || []).length + (data.unreleased || []).length;
     const badge = document.getElementById('activity-tab-badge');
     if (badge) {
       badge.textContent = count;
@@ -4423,6 +4423,18 @@ async function loadActivity() {
       renderActivity(data);
     }
   } catch (_) {}
+}
+
+// "5m" / "3h" / "2d" since an ISO timestamp, or '' when unknown.
+function _activityWaited(iso) {
+  if (!iso) return '';
+  const ms = Date.now() - new Date(iso).getTime();
+  if (!isFinite(ms) || ms < 0) return '';
+  const mins = Math.floor(ms / 60000);
+  if (mins < 60) return Math.max(mins, 1) + 'm';
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 48) return hrs + 'h';
+  return Math.floor(hrs / 24) + 'd';
 }
 
 function renderActivity(data) {
@@ -4463,6 +4475,27 @@ function renderActivity(data) {
             <div class="activity-progress-bar"><div class="activity-progress-fill ${statusClass}" style="width:${pct}%"></div></div>
             <span class="activity-progress-label">${statusLabel} · ${pct.toFixed(1)}%${etaLabel}</span>
           </div>
+        </div>
+      </div>`;
+    }).join('');
+    html += '</div>';
+  }
+
+  const searching = data.searching || [];
+  if (searching.length > 0) {
+    html += '<div class="activity-section-title">Searching</div><div class="activity-grid">';
+    html += searching.map(item => {
+      const poster = item.poster_path
+        ? `<img src="${_imgUrl(item.poster_path, 'w185')}" loading="lazy" onerror="this.style.display='none'">`
+        : '<div class="activity-poster-placeholder">◫</div>';
+      const waited = _activityWaited(item.waiting_since);
+      const reqByLabel = item.requested_by ? `<span class="activity-requested-by">${escapeAttr(item.requested_by)}</span>` : '';
+      return `<div class="activity-card">
+        <div class="activity-poster">${poster}</div>
+        <div class="activity-info">
+          <div class="activity-title">${escapeAttr(item.title)}${item.episode ? ' · ' + escapeAttr(item.episode) : ''}</div>
+          <div class="activity-meta">${escapeAttr(item.year || '')} · Looking for a release ${reqByLabel}</div>
+          <div class="activity-countdown activity-searching">${waited ? 'Searching for ' + escapeAttr(waited) : 'Searching'}</div>
         </div>
       </div>`;
     }).join('');
@@ -4515,7 +4548,7 @@ function renderActivity(data) {
   }
 
   if (!html) {
-    html = '<div class="activity-empty">No active downloads or upcoming releases</div>';
+    html = '<div class="activity-empty">No active downloads, searches or upcoming releases</div>';
   }
 
   content.innerHTML = html;

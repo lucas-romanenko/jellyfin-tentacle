@@ -116,6 +116,53 @@ public class TentacleDiscoverController : ControllerBase
     }
 
     /// <summary>
+    /// An empty list that says WHY it is empty (#120). The proxies used to turn a
+    /// timeout, a 401 or a missing Tentacle URL into a plain empty result, so a
+    /// client showed "no results" or a blank page for what was really "server
+    /// busy" or "not set up". Still HTTP 200 with the usual empty list — older
+    /// clients see exactly what they saw before — plus "error" (a stable code)
+    /// and "message" (something a person can read).
+    /// </summary>
+    private ActionResult Unavailable(string listKey, Exception? ex)
+    {
+        var (reason, message) = DescribeFailure(ex);
+        return Ok(new Dictionary<string, object>
+        {
+            [listKey] = Array.Empty<object>(),
+            ["error"] = reason,
+            ["message"] = message,
+        });
+    }
+
+    private ActionResult ActivityUnavailable(Exception? ex)
+    {
+        var (reason, message) = DescribeFailure(ex);
+        return Ok(new Dictionary<string, object>
+        {
+            ["downloads"] = Array.Empty<object>(),
+            ["searching"] = Array.Empty<object>(),
+            ["unreleased"] = Array.Empty<object>(),
+            ["recently_downloaded"] = Array.Empty<object>(),
+            ["error"] = reason,
+            ["message"] = message,
+        });
+    }
+
+    internal static (string Reason, string Message) DescribeFailure(Exception? ex) => ex switch
+    {
+        null => ("not_configured",
+            "Tentacle isn't set up yet: the Jellyfin plugin has no Tentacle URL."),
+        TaskCanceledException or TimeoutException => ("timeout",
+            "Tentacle is busy and didn't answer in time. Try again in a moment."),
+        HttpRequestException { StatusCode: System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden } => ("unauthorized",
+            "Tentacle didn't accept this account. Open the Tentacle dashboard once to finish setup."),
+        HttpRequestException { StatusCode: not null } h => ("server_error",
+            $"Tentacle answered with an error (HTTP {(int)h.StatusCode!.Value})."),
+        _ => ("unreachable",
+            "Can't reach Tentacle. Check that it is running and that the plugin's Tentacle URL is right."),
+    };
+
+    /// <summary>
     /// Proxies trending items from Tentacle /api/discover.
     /// Cached for 30 minutes.
     /// </summary>
@@ -136,7 +183,7 @@ public class TentacleDiscoverController : ControllerBase
         var baseUrl = GetTentacleUrl();
         if (string.IsNullOrEmpty(baseUrl))
         {
-            return Ok(new { sections = Array.Empty<object>() });
+            return Unavailable("sections", null);
         }
 
         try
@@ -148,7 +195,7 @@ public class TentacleDiscoverController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogWarning("[Tentacle Discover] Failed to fetch discover: {Error}", ex.Message);
-            return Ok(new { sections = Array.Empty<object>() });
+            return Unavailable("sections", ex);
         }
     }
 
@@ -202,7 +249,7 @@ public class TentacleDiscoverController : ControllerBase
         var baseUrl = GetTentacleUrl();
         if (string.IsNullOrEmpty(baseUrl))
         {
-            return Ok(new { downloads = Array.Empty<object>(), unreleased = Array.Empty<object>() });
+            return ActivityUnavailable(null);
         }
 
         try
@@ -216,7 +263,7 @@ public class TentacleDiscoverController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogWarning("[Tentacle Discover] Failed to fetch activity: {Error}", ex.Message);
-            return Ok(new { downloads = Array.Empty<object>(), unreleased = Array.Empty<object>() });
+            return ActivityUnavailable(ex);
         }
     }
 
@@ -397,7 +444,7 @@ public class TentacleDiscoverController : ControllerBase
     {
         if (type != "movies" && type != "series") type = "movies";
         var baseUrl = GetTentacleUrl();
-        if (string.IsNullOrEmpty(baseUrl)) return Ok(new { lists = Array.Empty<object>() });
+        if (string.IsNullOrEmpty(baseUrl)) return Unavailable("lists", null);
         try
         {
             var response = await HttpClient.GetStringAsync(AppendUserId($"{baseUrl}/api/discover/lists?type={type}"));
@@ -406,7 +453,7 @@ public class TentacleDiscoverController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogWarning("[Tentacle Discover] Failed to fetch lists: {Error}", ex.Message);
-            return Ok(new { lists = Array.Empty<object>() });
+            return Unavailable("lists", ex);
         }
     }
 
@@ -419,7 +466,7 @@ public class TentacleDiscoverController : ControllerBase
     {
         if (type != "movies" && type != "series") type = "movies";
         var baseUrl = GetTentacleUrl();
-        if (string.IsNullOrEmpty(baseUrl)) return Ok(new { items = Array.Empty<object>() });
+        if (string.IsNullOrEmpty(baseUrl)) return Unavailable("items", null);
         try
         {
             var encoded = System.Net.WebUtility.UrlEncode(listId ?? "all");
@@ -432,7 +479,7 @@ public class TentacleDiscoverController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogWarning("[Tentacle Discover] Failed to fetch list-missing: {Error}", ex.Message);
-            return Ok(new { items = Array.Empty<object>() });
+            return Unavailable("items", ex);
         }
     }
 
@@ -445,7 +492,7 @@ public class TentacleDiscoverController : ControllerBase
     {
         if (type != "movies" && type != "series") type = "movies";
         var baseUrl = GetTentacleUrl();
-        if (string.IsNullOrEmpty(baseUrl)) return Ok(new { genres = Array.Empty<object>() });
+        if (string.IsNullOrEmpty(baseUrl)) return Unavailable("genres", null);
         try
         {
             var response = await HttpClient.GetStringAsync(AppendUserId($"{baseUrl}/api/discover/genres?type={type}"));
@@ -454,7 +501,7 @@ public class TentacleDiscoverController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogWarning("[Tentacle Discover] Failed to fetch genres: {Error}", ex.Message);
-            return Ok(new { genres = Array.Empty<object>() });
+            return Unavailable("genres", ex);
         }
     }
 
@@ -468,7 +515,7 @@ public class TentacleDiscoverController : ControllerBase
         if (type != "movies" && type != "series") type = "movies";
         if (mode != "top_rated" && mode != "new") mode = "top_rated";
         var baseUrl = GetTentacleUrl();
-        if (string.IsNullOrEmpty(baseUrl)) return Ok(new { items = Array.Empty<object>() });
+        if (string.IsNullOrEmpty(baseUrl)) return Unavailable("items", null);
         try
         {
             var response = await HttpClient.GetStringAsync(
@@ -480,7 +527,7 @@ public class TentacleDiscoverController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogWarning("[Tentacle Discover] Failed to fetch genre: {Error}", ex.Message);
-            return Ok(new { items = Array.Empty<object>() });
+            return Unavailable("items", ex);
         }
     }
 
@@ -494,7 +541,7 @@ public class TentacleDiscoverController : ControllerBase
         var baseUrl = GetTentacleUrl();
         if (string.IsNullOrEmpty(baseUrl))
         {
-            return Ok(new { providers = Array.Empty<object>() });
+            return Unavailable("providers", null);
         }
 
         try
@@ -505,7 +552,7 @@ public class TentacleDiscoverController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogWarning("[Tentacle Discover] Failed to fetch providers: {Error}", ex.Message);
-            return Ok(new { providers = Array.Empty<object>() });
+            return Unavailable("providers", ex);
         }
     }
 
@@ -520,7 +567,7 @@ public class TentacleDiscoverController : ControllerBase
         var baseUrl = GetTentacleUrl();
         if (string.IsNullOrEmpty(baseUrl))
         {
-            return Ok(new { items = Array.Empty<object>() });
+            return Unavailable("items", null);
         }
 
         try
@@ -535,7 +582,7 @@ public class TentacleDiscoverController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogWarning("[Tentacle Discover] Failed to fetch streaming: {Error}", ex.Message);
-            return Ok(new { items = Array.Empty<object>() });
+            return Unavailable("items", ex);
         }
     }
 
@@ -551,7 +598,7 @@ public class TentacleDiscoverController : ControllerBase
         var baseUrl = GetTentacleUrl();
         if (string.IsNullOrEmpty(baseUrl))
         {
-            return Ok(new { items = Array.Empty<object>() });
+            return Unavailable("items", null);
         }
 
         try
@@ -566,7 +613,7 @@ public class TentacleDiscoverController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogWarning("[Tentacle Discover] Failed to search: {Error}", ex.Message);
-            return Ok(new { items = Array.Empty<object>() });
+            return Unavailable("items", ex);
         }
     }
 

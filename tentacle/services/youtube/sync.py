@@ -691,7 +691,16 @@ def reconcile_playlists(db: Session, report: bool = False):
                 fixed += len(can_grow)
             except Exception as e:
                 logger.warning(f"[YouTube] Refill failed for user {user.id}: {e}")
-    if fixed:
+    # Retired videos leave entries Jellyfin hides but keeps. The refresh that
+    # followed retention may have run before Jellyfin's scan dropped them, so
+    # sweep here too — this runs hourly.
+    pruned = 0
+    try:
+        from services.smartlists import prune_dead_entries
+        pruned = prune_dead_entries(db)
+    except Exception as e:
+        logger.warning(f"[YouTube] Could not prune dead playlist entries: {e}")
+    if fixed or pruned:
         bump_playlist_version()
         _notify_jellyfin_plugin(db)
     return (fixed, still_behind) if report else fixed
