@@ -30,7 +30,7 @@ A hero spotlight banner with Ken Burns zoom, drag-and-drop playlist rows, and na
 Browse trending, popular, and upcoming titles from TMDB. Subscribe to curated lists. Add missing content to Radarr or Sonarr with one click. A Discover tab is injected directly into Jellyfin via the companion plugin.
 
 ### :material-download: Activity Tracking
-Real-time progress for content being downloaded. Unreleased titles you're following shown with countdown badges. Polls every 3 seconds for live updates.
+Real-time progress for content being downloaded. Titles still waiting for a release to be found are listed with how long they've been searching. Unreleased titles you're following show countdown badges. Updates every 3 seconds.
 
 ### :material-account-group: Multi-User
 Each Jellyfin user gets their own home screen layout, playlists, list subscriptions, and content preferences. Netflix-style user picker on login.

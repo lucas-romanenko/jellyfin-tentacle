@@ -43,6 +43,21 @@ This is almost always a **category mismatch** between Radarr/Sonarr and your dow
 !!! tip "Quick check"
     If Radarr/Sonarr's own Activity → Queue shows the download with progress, but Tentacle doesn't — that's a different issue (likely Tentacle can't reach Radarr/Sonarr). Check the connection in Settings.
 
+### A title sits under "Searching" for a long time
+
+**Searching** lists titles Radarr/Sonarr are monitoring and that are already released, but that no download has started for yet. It shows how long each one has been waiting. Minutes is normal. Days usually means your indexers have no release that matches the quality profile. Check Radarr/Sonarr → Wanted → Missing, run a manual search there, or pick a less strict quality profile. A movie still before its release date shows under **Upcoming Releases**, not here.
+
+### Discover or Activity says "Tentacle is busy" or "Can't reach Tentacle"
+
+The Jellyfin plugin couldn't get an answer from the Tentacle dashboard, so it says why instead of showing an empty page:
+
+| Message | What to check |
+|---|---|
+| Tentacle isn't set up yet | Set the Tentacle URL in the Jellyfin plugin's settings |
+| Tentacle is busy and didn't answer in time | Usually temporary (for example, right after sign-in or during a sync). Try again in a moment |
+| Tentacle didn't accept this account | Open the Tentacle dashboard once so setup finishes, then check that the account exists in Jellyfin |
+| Can't reach Tentacle | Check that the Tentacle container is running and the plugin's Tentacle URL is correct |
+
 ### Download progress stuck at 0%
 
 Tentacle triggers `RefreshMonitoredDownloads` on Radarr/Sonarr every 5 seconds to get fresh progress. If progress stays at 0%, the download client may not be reporting progress correctly, or the download just started.
