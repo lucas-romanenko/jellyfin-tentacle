@@ -96,7 +96,7 @@ public static class IndexHtmlPatch
         }
     }
 
-    // Any tag this plugin injects: <link …/Tentacle/x.css?v=…> or <script …/Tentacle/x.js?v=…></script>.
+    // Any stylesheet link or script tag this plugin injects (the tags built in PatchIndexHtml).
     private static readonly System.Text.RegularExpressions.Regex InjectedTag = new(
         "<link rel=\"stylesheet\" href=\"/Tentacle/[a-z]+\\.css\\?v=[^\"]*\" />"
         + "|<script src=\"/Tentacle/[a-z]+\\.js\\?v=[^\"]*\" defer></script>",
