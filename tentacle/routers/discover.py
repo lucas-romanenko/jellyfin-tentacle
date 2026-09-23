@@ -534,6 +534,20 @@ def get_discover_detail(
         except HTTPException:
             pass
 
+    # can_manage: may this viewer "search again" / remove a requested title
+    # (in Radarr/Sonarr, no file yet)? Same rule: admin or the requester.
+    details["can_manage"] = False
+    if details.get("requested"):
+        try:
+            user = get_user_from_request(request, db)
+            details["can_manage"] = bool(user.is_admin or db.query(DownloadRequest).filter(
+                DownloadRequest.tmdb_id == tmdb_id,
+                DownloadRequest.media_type == media_type,
+                DownloadRequest.user_id == user.id,
+            ).first())
+        except HTTPException:
+            pass
+
     return details
 
 

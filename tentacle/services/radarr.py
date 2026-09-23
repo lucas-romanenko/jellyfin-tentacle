@@ -109,6 +109,34 @@ class RadarrService:
             logger.error(f"Failed to delete movie tmdb:{tmdb_id} from Radarr: {e}")
             return False
 
+    def search_movie(self, radarr_id: int) -> bool:
+        """Ask Radarr to search its indexers for this movie now."""
+        try:
+            r = self.session.post(
+                f"{self.url}/api/v3/command",
+                json={"name": "MoviesSearch", "movieIds": [radarr_id]},
+                timeout=10,
+            )
+            return r.status_code < 400
+        except Exception as e:
+            logger.warning(f"Radarr: failed to trigger search for movie {radarr_id}: {e}")
+            return False
+
+    def delete_movie_by_id(self, radarr_id: int, delete_files: bool = True) -> bool:
+        """Delete a movie by Radarr id (the caller already looked it up)."""
+        try:
+            r = self.session.delete(
+                f"{self.url}/api/v3/movie/{radarr_id}",
+                params={"deleteFiles": str(delete_files).lower(), "addImportExclusion": "false"},
+                timeout=15,
+            )
+            r.raise_for_status()
+            logger.info(f"Deleted movie radarr id:{radarr_id} from Radarr (deleteFiles={delete_files})")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to delete movie radarr id:{radarr_id} from Radarr: {e}")
+            return False
+
     def get_quality_profiles(self) -> list:
         try:
             r = self.session.get(f"{self.url}/api/v3/qualityprofile", timeout=10)

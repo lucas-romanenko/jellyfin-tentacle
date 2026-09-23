@@ -402,6 +402,49 @@ public class TentacleDiscoverController : ControllerBase
     }
 
     /// <summary>
+    /// Asks Radarr/Sonarr to search again for a requested title (body: media_type,
+    /// tmdb_id, tvdb_id). Permission (admin or requester) is checked by Tentacle.
+    /// </summary>
+    [HttpPost("ArrSearch")]
+    [Authorize]
+    public Task<ActionResult> ArrSearch([FromBody] JsonElement body) =>
+        ForwardArrAction("search", body, HttpClient);
+
+    /// <summary>
+    /// Removes a requested title from Radarr/Sonarr, folder included (VOD folders
+    /// are kept). Long timeout: a partly downloaded series goes through the full
+    /// delete, which also cleans Jellyfin and playlists.
+    /// </summary>
+    [HttpPost("ArrRemove")]
+    [Authorize]
+    public Task<ActionResult> ArrRemove([FromBody] JsonElement body) =>
+        ForwardArrAction("remove", body, AddClient);
+
+    private async Task<ActionResult> ForwardArrAction(string action, JsonElement body, HttpClient client)
+    {
+        var baseUrl = GetTentacleUrl();
+        if (string.IsNullOrEmpty(baseUrl))
+        {
+            return BadRequest(new { detail = "Tentacle URL not configured" });
+        }
+
+        try
+        {
+            var content = new StringContent(body.GetRawText(), System.Text.Encoding.UTF8, "application/json");
+            var response = await client.PostAsync(AppendUserId($"{baseUrl}/api/activity/arr/{action}"), content);
+            var result = await response.Content.ReadAsStringAsync();
+            // Forward the real status: a 403/404/502 from Tentacle must reach the client.
+            return new ContentResult { Content = result, ContentType = "application/json", StatusCode = (int)response.StatusCode };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("[Tentacle Discover] Arr {Action} failed: {Error}", action, ex.Message);
+            var (reason, message) = DescribeFailure(ex);
+            return StatusCode(502, new { detail = message, error = reason });
+        }
+    }
+
+    /// <summary>
     /// Proxies downloaded content deletion to Tentacle.
     /// Full cleanup: Radarr/Sonarr (disk), Jellyfin, Tentacle DB, playlists.
     /// Permission check: admin or download requester.

@@ -431,6 +431,34 @@ class SonarrService:
             logger.warning(f"Sonarr: failed to trigger episode search: {e}")
             return False
 
+    def search_series(self, series_id: int) -> bool:
+        """Ask Sonarr to search for every monitored episode of a series."""
+        try:
+            r = self.session.post(
+                f"{self.url}/api/v3/command",
+                json={"name": "SeriesSearch", "seriesId": series_id},
+                timeout=10,
+            )
+            return r.status_code < 400
+        except Exception as e:
+            logger.warning(f"Sonarr: failed to trigger series search for {series_id}: {e}")
+            return False
+
+    def delete_series_by_id(self, series_id: int, delete_files: bool = True) -> bool:
+        """Delete a series by Sonarr id (the caller already looked it up)."""
+        try:
+            r = self.session.delete(
+                f"{self.url}/api/v3/series/{series_id}",
+                params={"deleteFiles": str(delete_files).lower(), "addImportListExclusion": "false"},
+                timeout=15,
+            )
+            r.raise_for_status()
+            logger.info(f"Deleted series sonarr id:{series_id} from Sonarr (deleteFiles={delete_files})")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to delete series sonarr id:{series_id} from Sonarr: {e}")
+            return False
+
     def _unmonitor_series(self, series_id: int):
         """Set series monitored=false so Sonarr stops watching for new episodes."""
         try:

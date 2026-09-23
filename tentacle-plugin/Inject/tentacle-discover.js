@@ -677,7 +677,13 @@
         // Exact Jellyfin item id resolved server-side by TMDB id, so "Watch"
         // works for VOD titles (whose rows carry no stored id).
         if (details.jellyfin_item_id) item.jellyfin_item_id = details.jellyfin_item_id;
-        if (details.in_library !== undefined) {
+        // In Radarr/Sonarr with no file yet: show search/remove, not "Add to …".
+        if (details.requested !== undefined && !item._fromSearching) item.requested = details.requested;
+        if (details.can_manage !== undefined && !item._fromSearching) item.can_manage = details.can_manage;
+        // Opened from Activity → Searching: it IS still being searched for, even
+        // when some episodes are already downloaded — keep that state so Search
+        // again / Remove are offered (Remove then deletes the downloaded ones too).
+        if (details.in_library !== undefined && !item._fromSearching) {
           item.in_library = details.in_library;
           // Update the grid card badge if in_library changed
           if (details.in_library) {
@@ -761,11 +767,20 @@
           '<div id="mdDownloadStatus" class="md-download-status"></div>' +
         '</div>';
     } else if (item.requested) {
-      // In Radarr/Sonarr but no file yet — no add button, just the state
+      // In Radarr/Sonarr but no file yet — adding it again makes no sense;
+      // offer what you would otherwise have to do in Radarr/Sonarr by hand.
+      var reqArr = item.media_type === 'series' ? 'Sonarr' : 'Radarr';
       downloadSection =
         '<div class="md-inlib-row">' +
-          '<div class="md-requested-badge">⏳ In ' + (item.media_type === 'series' ? 'Sonarr' : 'Radarr') + ' — searching for release</div>' +
-        '</div>';
+          '<div class="md-requested-badge">⏳ In ' + reqArr + ' — searching for release</div>' +
+        '</div>' +
+        (item.can_manage
+          ? '<div class="md-download-row" style="margin-top:12px">' +
+              '<button id="mdArrSearchBtn" class="md-download-btn">Search again</button>' +
+              '<button id="mdArrRemoveBtn" class="md-download-btn md-arr-remove-btn">Remove from ' + reqArr + '</button>' +
+            '</div>' +
+            '<div id="mdDownloadStatus" class="md-download-status"></div>'
+          : '');
     } else {
       var isSeries = item.media_type === 'series';
       var arrLabel = isSeries ? 'Sonarr' : 'Radarr';
@@ -835,7 +850,9 @@
       });
     }
 
-    if (item.in_library) {
+    if (!item.in_library && item.requested) {
+      wireArrActions(overlay, item);
+    } else if (item.in_library) {
       var viewBtn = overlay.querySelector('#mdViewInLibrary');
       if (viewBtn) {
         viewBtn.addEventListener('click', function () {
@@ -865,7 +882,7 @@
       } else if (isVodSeries) {
         _mdLoadDownloadMore(item);
       }
-    } else {
+    } else if (!item.requested) {
       loadDownloadOptions(item);
       var monitorSel = overlay.querySelector('#mdMonitorSelect');
       if (monitorSel) {
@@ -893,6 +910,86 @@
     }
 
     MD._pendingAction = null;
+  }
+
+  // ── Search again / Remove for a requested title ─────────────────────
+  function arrTitleBody(item) {
+    return {
+      media_type: item.media_type === 'series' ? 'series' : 'movie',
+      tmdb_id: item.tmdb_id > 0 ? item.tmdb_id : 0,
+      tvdb_id: item.tvdb_id || 0,
+    };
+  }
+
+  function wireArrActions(overlay, item) {
+    var status = overlay.querySelector('#mdDownloadStatus');
+    var searchBtn = overlay.querySelector('#mdArrSearchBtn');
+    var removeBtn = overlay.querySelector('#mdArrRemoveBtn');
+    var say = function (text, ok) {
+      if (!status) return;
+      status.textContent = text;
+      status.style.color = ok ? 'rgb(80, 190, 130)' : '#f87171';
+    };
+    var afterChange = function () {
+      // Activity and the Discover badges both come from /Activity — refresh it.
+      apiGet('TentacleDiscover/Activity?userId=' + window.ApiClient.getCurrentUserId()).then(function (data) {
+        MD.activityData = data;
+        if (ACT.active) renderActivityContent(data);
+        window.dispatchEvent(new CustomEvent('tentacle-activity-count', { detail: activityCount(data) }));
+      }).catch(function () {});
+    };
+
+    if (searchBtn) {
+      searchBtn.addEventListener('click', function () {
+        searchBtn.disabled = true;
+        say('Asking ' + (item.media_type === 'series' ? 'Sonarr' : 'Radarr') + ' to search\u2026', true);
+        apiPost('TentacleDiscover/ArrSearch', arrTitleBody(item)).then(function (r) {
+          say((r && r.message) || 'Search started', true);
+          searchBtn.textContent = 'Search started';
+        }).catch(function (e) {
+          say(e.message || 'Search failed', false);
+          searchBtn.disabled = false;
+        });
+      });
+    }
+
+    if (removeBtn) {
+      var armed = false, disarm = null;
+      var label = removeBtn.textContent;
+      removeBtn.addEventListener('click', function () {
+        if (!armed) {
+          // Two clicks, no browser popup: the first says exactly what will go.
+          armed = true;
+          removeBtn.classList.add('md-arr-remove-armed');
+          removeBtn.textContent = item.media_type === 'series'
+            ? 'Click again: delete series + folder'
+            : 'Click again: delete movie + folder';
+          disarm = setTimeout(function () {
+            armed = false;
+            removeBtn.classList.remove('md-arr-remove-armed');
+            removeBtn.textContent = label;
+          }, 5000);
+          return;
+        }
+        clearTimeout(disarm);
+        removeBtn.disabled = true;
+        if (searchBtn) searchBtn.disabled = true;
+        removeBtn.textContent = 'Removing\u2026';
+        apiPost('TentacleDiscover/ArrRemove', arrTitleBody(item)).then(function (r) {
+          say((r && r.message) || 'Removed', true);
+          item.requested = false;
+          afterChange();
+          setTimeout(closeModal, 900);
+        }).catch(function (e) {
+          say(e.message || 'Remove failed', false);
+          removeBtn.disabled = false;
+          if (searchBtn) searchBtn.disabled = false;
+          armed = false;
+          removeBtn.classList.remove('md-arr-remove-armed');
+          removeBtn.textContent = label;
+        });
+      });
+    }
   }
 
   // ── Episode picker helpers (shared by Discover modal) ───────────────
@@ -1775,7 +1872,9 @@
         } else if (card.hasAttribute('data-searching-idx')) {
           // Searching — the title's Discover detail (manage / episodes / delete)
           var sit = MD._searching && MD._searching[parseInt(card.getAttribute('data-searching-idx'), 10)];
-          if (sit) showDetailModal(Object.assign({}, sit));
+          // Everything in Searching is in Radarr/Sonarr, and every viewer may
+        // manage what they see there (non-admins only see their own requests).
+        if (sit) showDetailModal(Object.assign({}, sit, { requested: true, can_manage: true, in_library: false, _fromSearching: true }));
         } else if (card.hasAttribute('data-upcoming-idx')) {
           idx = parseInt(card.getAttribute('data-upcoming-idx'), 10);
           var uit = MD._unreleased && MD._unreleased[idx];

@@ -13,7 +13,8 @@ from datetime import datetime
 from typing import Optional
 
 import requests
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from models.database import get_db, get_setting, Movie, Series, DownloadRequest, TentacleUser
@@ -728,3 +729,151 @@ def get_activity(request: Request, db: Session = Depends(get_db),
         logger.info(f"Activity: {len(downloads)} download(s) in queue")
     return {"downloads": downloads, "searching": searching, "unreleased": unreleased,
             "recently_downloaded": recently_downloaded}
+
+
+# ── Actions on requested titles: search again / remove ────────────────────
+# For a title Radarr/Sonarr is monitoring but has not found (the "Searching"
+# list, or a Discover detail marked requested). Before, the only way to give up
+# on one was to find it in Radarr/Sonarr and delete it there by hand.
+
+class ArrTitle(BaseModel):
+    media_type: str
+    tmdb_id: int = 0
+    tvdb_id: int = 0
+
+
+def _can_manage(db: Session, user: TentacleUser, title: ArrTitle) -> bool:
+    """Admins, or the user who asked for it — the same rule as deleting a download."""
+    if user.is_admin:
+        return True
+    if not title.tmdb_id:
+        return False
+    return db.query(DownloadRequest).filter(
+        DownloadRequest.tmdb_id == title.tmdb_id,
+        DownloadRequest.media_type == title.media_type,
+        DownloadRequest.user_id == user.id,
+    ).first() is not None
+
+
+def _find_arr_record(db: Session, title: ArrTitle):
+    """(service, record) for this title in Radarr/Sonarr, or raise 404/503."""
+    if title.media_type == "movie":
+        url, key = get_setting(db, "radarr_url"), get_setting(db, "radarr_api_key")
+        if not (url and key):
+            raise HTTPException(503, "Radarr is not configured")
+        from services.radarr import RadarrService
+        svc = RadarrService(url, key)
+        rec = svc.get_movie_by_tmdb(title.tmdb_id) if title.tmdb_id else None
+        if not rec:
+            raise HTTPException(404, "This movie is not in Radarr")
+        return svc, rec
+    if title.media_type == "series":
+        url, key = get_setting(db, "sonarr_url"), get_setting(db, "sonarr_api_key")
+        if not (url and key):
+            raise HTTPException(503, "Sonarr is not configured")
+        from services.sonarr import SonarrService
+        svc = SonarrService(url, key)
+        series = svc.get_all_series()
+        rec = next((x for x in series if title.tmdb_id and x.get("tmdbId") == title.tmdb_id), None) \
+            or next((x for x in series if title.tvdb_id and x.get("tvdbId") == title.tvdb_id), None)
+        if not rec:
+            raise HTTPException(404, "This series is not in Sonarr")
+        return svc, rec
+    raise HTTPException(400, "media_type must be movie or series")
+
+
+def _after_arr_change() -> None:
+    invalidate_wanted_cache()
+    try:
+        from routers.discover import bust_arr_ids_cache
+        bust_arr_ids_cache()
+    except Exception:
+        pass
+
+
+@router.post("/arr/search")
+def search_again(title: ArrTitle, db: Session = Depends(get_db),
+                 user: TentacleUser = Depends(get_user_from_request)):
+    """Ask Radarr/Sonarr to search for this title again, now."""
+    if not _can_manage(db, user, title):
+        raise HTTPException(403, "You can only manage titles you requested")
+    svc, rec = _find_arr_record(db, title)
+    name = rec.get("title", "")
+    if title.media_type == "movie":
+        ok = svc.search_movie(rec["id"])
+        what = "movie"
+    else:
+        # The episodes that are actually missing: monitored, aired, no file.
+        now = datetime.utcnow()
+        missing = []
+        for ep in svc.get_episodes(rec["id"]):
+            aired = _parse_dt(ep.get("airDateUtc"))
+            if ep.get("monitored") and not ep.get("hasFile") and aired and aired <= now:
+                missing.append(ep["id"])
+        if missing:
+            ok = svc.search_episodes(missing)
+            what = f"{len(missing)} missing episode{'s' if len(missing) != 1 else ''}"
+        else:
+            ok = svc.search_series(rec["id"])
+            what = "series"
+    if not ok:
+        raise HTTPException(502, f"{'Radarr' if title.media_type == 'movie' else 'Sonarr'} did not accept the search")
+    logger.info(f"Activity: search again for '{name}' ({what}) by {user.display_name}")
+    return {"ok": True, "title": name,
+            "message": f"Searching again for {what if title.media_type == 'series' else name}"}
+
+
+@router.post("/arr/remove")
+def remove_from_arr(title: ArrTitle, request: Request, db: Session = Depends(get_db),
+                    user: TentacleUser = Depends(get_user_from_request)):
+    """Remove a requested title from Radarr/Sonarr, folder included.
+
+    - Nothing downloaded yet: deleted from Radarr/Sonarr with its folder.
+    - Some of it downloaded (a series with episodes on disk): the full delete
+      used for downloads — Radarr/Sonarr, Jellyfin, Tentacle, playlists.
+    - A series whose folder is VOD content (a hybrid VOD + download series, or
+      any folder under the VOD tree): removed from Sonarr, files KEPT — deleting
+      it would delete the .strm files too.
+    """
+    from models.database import log_deletion
+    if not _can_manage(db, user, title):
+        raise HTTPException(403, "You can only remove titles you requested")
+
+    model = Movie if title.media_type == "movie" else Series
+    row = db.query(model).filter(model.tmdb_id == title.tmdb_id).first() if title.tmdb_id else None
+    if row is not None and getattr(row, "source", None) in ("radarr", "sonarr"):
+        from routers.library import delete_download
+        result = delete_download(title.tmdb_id, title.media_type, request, db=db)
+        _after_arr_change()
+        return {"ok": True, "title": result.get("title"), "files_deleted": True,
+                "message": f"Removed {result.get('title')} and its downloaded files"}
+
+    svc, rec = _find_arr_record(db, title)
+    name = rec.get("title", "")
+    path = (rec.get("path") or "").lower()
+    hybrid = title.media_type == "series" and row is not None and bool(getattr(row, "sonarr_path", None))
+    keep_files = hybrid or "/vod/" in path
+    if title.media_type == "movie":
+        ok = svc.delete_movie_by_id(rec["id"], delete_files=not keep_files)
+    else:
+        ok = svc.delete_series_by_id(rec["id"], delete_files=not keep_files)
+    if not ok:
+        raise HTTPException(502, f"{'Radarr' if title.media_type == 'movie' else 'Sonarr'} refused the delete")
+
+    if hybrid:
+        row.sonarr_path = None
+        row.sonarr_monitored = False
+    if title.tmdb_id:
+        db.query(DownloadRequest).filter(
+            DownloadRequest.tmdb_id == title.tmdb_id,
+            DownloadRequest.media_type == title.media_type,
+        ).delete()
+    db.commit()
+    arr = "Radarr" if title.media_type == "movie" else "Sonarr"
+    log_deletion(db, kind="arr-remove", name=name, media_type=title.media_type, reason="manual",
+                 user_name=user.display_name,
+                 detail=f"Removed from {arr} while searching; files {'kept (VOD)' if keep_files else 'deleted'}")
+    _after_arr_change()
+    logger.info(f"Activity: removed '{name}' from {arr} (deleteFiles={not keep_files}) by {user.display_name}")
+    return {"ok": True, "title": name, "files_deleted": not keep_files,
+            "message": f"Removed {name} from {arr}" + (" (VOD files kept)" if keep_files else "")}
