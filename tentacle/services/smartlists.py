@@ -1059,8 +1059,28 @@ def write_home_config(db: Session, user_id: int = None) -> dict:
     smartlists = _get_smartlists_with_playlist_ids(db, user_id=user_id)
 
     if not smartlists:
-        logger.warning(f"No SmartLists with JellyfinPlaylistId found for user {user_id}, skipping home config write")
-        return {}
+        # A user who already has a home config keeps it untouched: an empty
+        # lookup can be transient, and rebuilding from it would drop their rows.
+        if user_id is None or get_home_config(db, user_id=user_id):
+            logger.warning(f"No SmartLists with JellyfinPlaylistId found for user {user_id}, skipping home config write")
+            return {}
+        # A user with no playlists and no config at all — a new household
+        # member, a fresh install's owner — used to get nothing until the
+        # nightly job or a settings change, so their home and toolbar were
+        # blank (#120). Give them the starter config the first plugin read
+        # would: their Jellyfin home sections as built-in rows, plus the
+        # default toolbar.
+        from routers.smartlists import _seed_home_config_from_jellyfin
+        user = db.query(TentacleUser).filter(TentacleUser.id == user_id).first()
+        seeded = _seed_home_config_from_jellyfin(db, user) if user else {}
+        if not seeded:
+            logger.warning(f"No SmartLists for user {user_id} and no starter home config could be "
+                           f"built (Jellyfin unreachable?) — will retry on the next write")
+            return {}
+        bump_playlist_version()
+        logger.info(f"Wrote a starter home config for user {user_id} "
+                    f"({len(seeded.get('rows', []))} built-in rows) — no playlists yet")
+        return seeded
 
     with home_config_lock:
         existing_config = get_home_config(db, user_id=user_id)

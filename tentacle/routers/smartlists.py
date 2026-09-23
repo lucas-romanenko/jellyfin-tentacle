@@ -97,6 +97,9 @@ def _seed_home_config_from_jellyfin(db: Session, user: TentacleUser) -> dict:
         config = {
             "hero": {"enabled": False, "playlist_id": "", "display_name": ""},
             "rows": rows,
+            # Without it the toolbar endpoint answered [] and the Android TV
+            # app hid every button (#119/#120).
+            "toolbar": [dict(b) for b in DEFAULT_TOOLBAR],
             "jellyfin_sections_snapshot": sections,
         }
         with home_config_lock:

@@ -109,6 +109,16 @@ class TMDBService:
 
     # ── API ────────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _valid_id(value) -> bool:
+        """A real, positive TMDB id. Rows without one (None, 0, or the negative
+        ids given to provider-only titles) used to be requested as tv/None or
+        movie/-12 — a 422 that also flagged the lookup as a TMDB failure (#120)."""
+        try:
+            return int(value) > 0
+        except (TypeError, ValueError):
+            return False
+
     def _request(self, endpoint: str, params: dict = None) -> Optional[dict]:
         if not self.enabled:
             return None
@@ -277,6 +287,8 @@ class TMDBService:
         return None
 
     def get_movie_details(self, tmdb_id: int) -> Optional[dict]:
+        if not self._valid_id(tmdb_id):
+            return None
         cache_key = f"movie_details:{tmdb_id}"
         cached = self._cache_get(cache_key)
         if cached is not None:
@@ -318,6 +330,8 @@ class TMDBService:
         return result
 
     def get_series_details(self, tmdb_id: int) -> Optional[dict]:
+        if not self._valid_id(tmdb_id):
+            return None
         cache_key = f"series_details:{tmdb_id}"
         cached = self._cache_get(cache_key, ttl_seconds=7 * 86400)
         if cached is not None and "seasons" in cached:
@@ -366,7 +380,7 @@ class TMDBService:
 
     def get_season_episodes(self, tmdb_id: int, season_number: int) -> Optional[list]:
         """Fetch episodes for a specific season. Cached for 7 days."""
-        if not self.enabled:
+        if not self.enabled or not self._valid_id(tmdb_id):
             return None
 
         cache_key = f"season_episodes:{tmdb_id}:{season_number}"

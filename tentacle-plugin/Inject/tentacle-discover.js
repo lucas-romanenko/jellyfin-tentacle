@@ -334,7 +334,8 @@
         switchSection(targetId);
       } else {
         var c = document.getElementById('mdDiscoverContent');
-        if (c) c.innerHTML = '<div class="md-loading">No content found</div>';
+        var why = failureMessage(data);
+        if (c) c.innerHTML = '<div class="md-loading">' + (why ? esc(why) : 'No content found') + '</div>';
       }
     }).catch(function () {
       if (gen !== MD.generation) return;
@@ -421,7 +422,7 @@
       apiGet('TentacleDiscover/Streaming?provider=' + encodeURIComponent(MD.streamingActive) + '&type=' + typeParam + '&userId=' + window.ApiClient.getCurrentUserId())
         .then(function (data) {
           if (gen !== MD.generation) return;
-          MD.streamingSection = { id: 'streaming', items: (data && data.items) || [] };
+          MD.streamingSection = { id: 'streaming', items: (data && data.items) || [], failure: failureMessage(data) };
           var wrap = document.getElementById('mdStreamGrid');
           if (wrap) renderGrid(MD.streamingSection, wrap);
         })
@@ -447,7 +448,7 @@
 
     var items = section.items || [];
     if (!items.length) {
-      content.innerHTML = '<div class="md-loading">No content in this section</div>';
+      content.innerHTML = '<div class="md-loading">' + (section.failure ? esc(section.failure) : 'No content in this section') + '</div>';
       return;
     }
 
@@ -539,7 +540,7 @@
       apiGet('TentacleDiscover/ListMissing?list_id=' + encodeURIComponent(MD.missingActive) + '&type=' + typeParam + '&userId=' + window.ApiClient.getCurrentUserId())
         .then(function (data) {
           if (gen !== MD.generation) return;
-          MD.missingSection = { id: 'missing', items: (data && data.items) || [] };
+          MD.missingSection = { id: 'missing', items: (data && data.items) || [], failure: failureMessage(data) };
           var wrap = document.getElementById('mdStreamGrid');
           if (wrap) renderGrid(MD.missingSection, wrap);
         })
@@ -600,7 +601,7 @@
       apiGet('TentacleDiscover/Genre?genre_id=' + MD.genreActive + '&type=' + typeParam + '&mode=' + MD.genreMode + '&userId=' + window.ApiClient.getCurrentUserId())
         .then(function (data) {
           if (gen !== MD.generation) return;
-          MD.genreSection = { id: 'genres', items: (data && data.items) || [] };
+          MD.genreSection = { id: 'genres', items: (data && data.items) || [], failure: failureMessage(data) };
           var wrap = document.getElementById('mdStreamGrid');
           if (wrap) renderGrid(MD.genreSection, wrap);
         })
@@ -1479,6 +1480,13 @@
     if (overlay) overlay.style.display = 'none';
   }
 
+  // The plugin answers an empty list with {error, message} when Tentacle could
+  // not be asked (busy, not set up, refused this account) — show that rather
+  // than "no results", which reads as "there is nothing".
+  function failureMessage(data) {
+    return (data && data.error && data.message) ? String(data.message) : '';
+  }
+
   // Everything the badge counts: downloading, searching for a release, upcoming.
   function activityCount(data) {
     data = data || {};
@@ -1699,7 +1707,7 @@
       html =
         '<div class="md-act-empty">' +
           '<svg viewBox="0 0 24 24" width="48" height="48"><path fill="currentColor" opacity="0.3" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>' +
-          '<div>No active downloads, searches or upcoming releases</div>' +
+          '<div>' + (failureMessage(data) ? esc(failureMessage(data)) : 'No active downloads, searches or upcoming releases') + '</div>' +
         '</div>';
     }
 

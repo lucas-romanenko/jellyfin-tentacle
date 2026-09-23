@@ -416,7 +416,11 @@
         var items = data.items || [];
         SEARCH.results = items;
         if (!items.length) {
-          grid.innerHTML = '<div class="tentacle-search-empty">No results for \u201c' + esc(query) + '\u201d</div>';
+          // {error, message}: Tentacle couldn't be asked (busy, not set up) —
+          // not the same as nothing matching.
+          grid.innerHTML = (data && data.error && data.message)
+            ? '<div class="tentacle-search-empty">' + esc(String(data.message)) + '</div>'
+            : '<div class="tentacle-search-empty">No results for \u201c' + esc(query) + '\u201d</div>';
           return;
         }
         renderResults(items, grid);
