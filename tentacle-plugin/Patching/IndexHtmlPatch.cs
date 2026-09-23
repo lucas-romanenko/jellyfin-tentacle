@@ -45,9 +45,37 @@ public static class IndexHtmlPatch
             return;
         }
 
+        // Jellyfin's "restart" (the dashboard button, POST /System/Restart, and a
+        // plugin update's restart) reboots the server INSIDE the same process. The
+        // previous plugin version's assembly stays loaded and so does its postfix,
+        // so every such restart after an update stacked one more copy of the
+        // injected tags into index.html. The older copies carry an older ?v= stamp,
+        // which the staleness watchdog read as "server updated" and reloaded the
+        // page — over and over. Remove every earlier Tentacle patch before adding
+        // this one; Harmony keeps patch state process-wide, across loaded copies.
+        try
+        {
+            var existing = Harmony.GetPatchInfo(targetMethod);
+            var stale = existing?.Postfixes.Count(p => p.owner == HarmonyInstance.Id) ?? 0;
+            if (stale > 0)
+            {
+                HarmonyInstance.Unpatch(targetMethod, HarmonyPatchType.All, HarmonyInstance.Id);
+                logger?.LogInformation("[Tentacle] Removed {Count} index.html patch(es) left by an earlier plugin version in this process", stale);
+            }
+        }
+        catch (Exception ex)
+        {
+            logger?.LogWarning(ex, "[Tentacle] Could not remove earlier index.html patches — the injection still strips their tags");
+        }
+
         var postfix = new HarmonyMethod(typeof(IndexHtmlPatch).GetMethod(
             nameof(Postfix),
-            BindingFlags.NonPublic | BindingFlags.Static));
+            BindingFlags.NonPublic | BindingFlags.Static))
+        {
+            // Run after any other postfix, so the tags this version injects are the
+            // ones that end up in the page even if an old patch could not be removed.
+            priority = Priority.Last,
+        };
 
         HarmonyInstance.Patch(targetMethod, postfix: postfix);
         logger?.LogInformation("[Tentacle] Harmony patch applied to PhysicalFileProvider.GetFileInfo");
@@ -67,6 +95,12 @@ public static class IndexHtmlPatch
             PatchIndexHtml(ref __result);
         }
     }
+
+    // Any tag this plugin injects: <link …/Tentacle/x.css?v=…> or <script …/Tentacle/x.js?v=…></script>.
+    private static readonly System.Text.RegularExpressions.Regex InjectedTag = new(
+        "<link rel=\"stylesheet\" href=\"/Tentacle/[a-z]+\\.css\\?v=[^\"]*\" />"
+        + "|<script src=\"/Tentacle/[a-z]+\\.js\\?v=[^\"]*\" defer></script>",
+        System.Text.RegularExpressions.RegexOptions.Compiled);
 
     /// <summary>
     /// Cache key for a source file: its timestamp and length. Stable across process
@@ -95,10 +129,10 @@ public static class IndexHtmlPatch
                 return;
             }
 
-            if (content.Contains("tentacle-home"))
-            {
-                return;
-            }
+            // Tags another copy of this patch already injected (see SetupPatches) are
+            // replaced, never added to: exactly one set, carrying this version's stamp.
+            // The old check looked for "tentacle-home", which the tags never contain.
+            content = InjectedTag.Replace(content, string.Empty);
 
             // Serve a cached transformation when the source index.html is unchanged so we
             // don't re-run the string replacements (and don't change the cache-buster) on
