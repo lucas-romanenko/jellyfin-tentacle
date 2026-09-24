@@ -127,22 +127,108 @@ _BACKOFF_CAP = 5.0
 _REFUSAL_STATUS = {429, 509}
 _REFUSAL_BACKOFF_CAP = 15.0
 
+# What an upstream pull is for. Lower number = more important. A recording
+# outranks a viewer (tvheadend: 300 vs 100): a viewer who is cut off changes
+# channel; a recording that is cut off is gone for good.
+_LEASE_PRIORITY = {"recording": 0, "live": 10, "vod": 20, "probe": 30}
+
+
+class _Lease:
+    """One upstream pull's claim on a connection slot."""
+    __slots__ = ("id", "kind", "priority", "owner", "stream_key", "started", "preempted", "on_preempt")
+
+    def __init__(self, lease_id: int, kind: str, owner: "str | None", stream_key: "str | None" = None):
+        self.id = lease_id
+        self.kind = kind
+        self.priority = _LEASE_PRIORITY.get(kind, _LEASE_PRIORITY["live"])
+        self.owner = owner
+        self.stream_key = stream_key   # the channel's GuideNumber, for upgrade_recordings
+        self.started = asyncio.get_running_loop().time()
+        self.preempted = False
+        # Set by the owner once its pump exists: called (may be async) when
+        # a more important pull takes this slot.
+        self.on_preempt = None
+
+
 class _StreamSlots:
-    """Counts upstream pulls against a limit that can change while running.
+    """Counts upstream pulls against a limit that can change while running,
+    and knows what each one is for.
 
     An asyncio.Semaphore bakes its size in at creation, which is why the old
-    ceiling could not be a setting. All access is from the event loop."""
+    ceiling could not be a setting. All access is from the event loop.
+
+    At capacity, a pull that outranks one already running takes its slot
+    (`_LEASE_PRIORITY`): a recording pre-empts a viewer, never the other way
+    round, and never an equal. Everything else waits briefly for a slot and
+    is then refused, as before."""
 
     def __init__(self):
-        self.active = 0
+        self.leases: "dict[int, _Lease]" = {}
         self.refused = 0
+        self.preempted_since_start = 0
         self.last_refused: "dict | None" = None
+        self._next_id = 1
         self._freed: "asyncio.Event | None" = None
 
-    async def acquire(self, limit: int, wait: float) -> bool:
-        if limit <= 0 or self.active < limit:
-            self.active += 1
-            return True
+    @property
+    def active(self) -> int:
+        return len(self.leases)
+
+    def _grant(self, kind: str, owner: "str | None", stream_key: "str | None" = None) -> _Lease:
+        lease = _Lease(self._next_id, kind, owner, stream_key)
+        self._next_id += 1
+        self.leases[lease.id] = lease
+        return lease
+
+    def upgrade_recordings(self, stream_keys) -> int:
+        """Promote running viewer pulls whose channel turns out to be recorded.
+
+        Jellyfin marks a timer InProgress only AFTER its tuner stream is open
+        (RecordingsManager.RecordStream: OpenLiveStreamInternal, then
+        timer.Status = InProgress), so the pull that starts a recording is
+        classified "live" at the moment it opens. The next lookup corrects
+        it here, before anything could take its slot."""
+        keys = set(stream_keys or ())
+        n = 0
+        for lease in self.leases.values():
+            if lease.kind == "live" and lease.stream_key is not None and lease.stream_key in keys:
+                lease.kind = "recording"
+                lease.priority = _LEASE_PRIORITY["recording"]
+                n += 1
+                logger.info(f"[LiveTV] '{lease.owner}' is being recorded — its slot now outranks viewers")
+        return n
+
+    def _victim_for(self, kind: str) -> "_Lease | None":
+        """The least important running pull this kind may take a slot from:
+        strictly lower priority only; among equals, the most recent."""
+        prio = _LEASE_PRIORITY.get(kind, _LEASE_PRIORITY["live"])
+        candidates = [l for l in self.leases.values() if l.priority > prio and not l.preempted]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda l: (l.priority, l.started))
+
+    async def _preempt(self, victim: _Lease, kind: str, owner: "str | None"):
+        victim.preempted = True
+        self.leases.pop(victim.id, None)   # the slot is free from this moment
+        self.preempted_since_start += 1
+        logger.warning(f"[LiveTV] At capacity: {kind} '{owner}' takes the slot of {victim.kind} "
+                       f"'{victim.owner}', which is stopped")
+        if victim.on_preempt is not None:
+            try:
+                result = victim.on_preempt()
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception as e:
+                logger.error(f"[LiveTV] Stopping pre-empted {victim.kind} '{victim.owner}' failed: {e}")
+
+    async def acquire_lease(self, limit: int, wait: float, kind: str = "live",
+                            owner: "str | None" = None, stream_key: "str | None" = None) -> "_Lease | None":
+        if limit <= 0 or len(self.leases) < limit:
+            return self._grant(kind, owner, stream_key)
+        victim = self._victim_for(kind)
+        if victim is not None:
+            await self._preempt(victim, kind, owner)
+            return self._grant(kind, owner, stream_key)
         if self._freed is None:
             self._freed = asyncio.Event()
         loop = asyncio.get_running_loop()
@@ -150,20 +236,35 @@ class _StreamSlots:
         while True:
             remaining = deadline - loop.time()
             if remaining <= 0:
-                return False
+                return None
             self._freed.clear()
             try:
                 await asyncio.wait_for(self._freed.wait(), timeout=remaining)
             except asyncio.TimeoutError:
-                return False
-            if self.active < limit:
-                self.active += 1
-                return True
+                return None
+            if len(self.leases) < limit:
+                return self._grant(kind, owner, stream_key)
 
-    def release(self):
-        self.active = max(0, self.active - 1)
+    async def acquire(self, limit: int, wait: float) -> bool:
+        """The original shape: an anonymous viewer-priority slot."""
+        return await self.acquire_lease(limit, wait, "live", None) is not None
+
+    def release_lease(self, lease: "_Lease | None"):
+        if lease is not None:
+            self.leases.pop(lease.id, None)
         if self._freed is not None:
             self._freed.set()
+
+    def release(self):
+        """The original shape: frees the most recent anonymous slot."""
+        anon = [l for l in self.leases.values() if l.owner is None]
+        self.release_lease(max(anon, key=lambda l: l.started) if anon else None)
+
+    def lease_for(self, owner: str) -> "_Lease | None":
+        for lease in self.leases.values():
+            if lease.owner == owner:
+                return lease
+        return None
 
 
 _stream_slots = _StreamSlots()
@@ -247,6 +348,94 @@ def _live_extension(db, provider_id: int) -> str:
     if fmt in ("m3u8", "ts"):
         return fmt
     return "ts" if "ts" in _remembered_output_formats(db, provider_id) else "m3u8"
+
+
+# Which channels are being RECORDED right now. Jellyfin opens the same tuner
+# URL for a recording as for a viewer, so the request itself cannot say; its
+# timers can. A timer that is InProgress names the channel by the id this
+# lineup gave it -- ExternalChannelId "hdhr_<GuideNumber>", and GuideNumber
+# is the channel's stream_id (see hdhr_lineup) -- which is all the mapping
+# there is. Looked up at most every few seconds. A DVR front end that knows
+# a recording is about to start (pre-padding) can also reserve the channel
+# ahead of time through POST /api/live/reserve.
+_RECORDING_LOOKUP_TTL = 5.0
+# Longest a tuner open waits for the answer. A slow Jellyfin must not hold
+# up a stream open (Jellyfin's own tuner timeout is what it would hit); past
+# this the lookup finishes in the background and the last answer is used.
+_RECORDING_LOOKUP_WAIT = 3.0
+_recording_cache = {"at": -1e9, "sids": set(), "pending": None}
+_reserved_channels: "dict[int, float]" = {}   # channel id -> loop time the reservation ends
+
+
+def _recording_stream_ids_from_jellyfin(url: str, key: str) -> "set[str] | None":
+    """GuideNumbers of the channels Jellyfin is recording, or None if it
+    could not be asked. Blocking; run it off the event loop."""
+    from services.jellyfin import JellyfinService
+    data = JellyfinService(url, key, "")._get("/LiveTv/Timers")
+    if not isinstance(data, dict):
+        return None
+    out = set()
+    for timer in data.get("Items") or []:
+        if timer.get("Status") != "InProgress":
+            continue
+        ext = timer.get("ExternalChannelId") or ""
+        if ext.startswith("hdhr_"):
+            out.add(ext[len("hdhr_"):])
+    return out
+
+
+async def _recording_channel_ids(db, force: bool = False) -> "set[int]":
+    """LiveChannel ids being recorded now: reservations plus Jellyfin's
+    in-progress timers (cached for _RECORDING_LOOKUP_TTL; `force` asks
+    again regardless -- used when a slot is about to be taken from someone,
+    so the victim is chosen on current information)."""
+    loop = asyncio.get_running_loop()
+    now = loop.time()
+    for cid in [c for c, until in _reserved_channels.items() if until <= now]:
+        del _reserved_channels[cid]
+    reserved = set(_reserved_channels)
+    cache = _recording_cache
+    if (force or now - cache["at"] >= _RECORDING_LOOKUP_TTL) and cache["pending"] is None:
+        url = (get_setting(db, "jellyfin_url", "") or "").strip()
+        key = (get_setting(db, "jellyfin_api_key", "") or "").strip()
+        if url and key:
+            cache["pending"] = asyncio.ensure_future(
+                asyncio.to_thread(_recording_stream_ids_from_jellyfin, url, key))
+            cache["pending"].add_done_callback(_recording_lookup_done)
+        else:
+            cache["at"], cache["sids"] = now, set()
+    pending = cache["pending"]
+    if pending is not None:
+        try:
+            await asyncio.wait_for(asyncio.shield(pending), _RECORDING_LOOKUP_WAIT)
+        except asyncio.TimeoutError:
+            logger.warning("[LiveTV] Jellyfin is slow to say which channels are recording; "
+                           "using the last answer for this stream open")
+        except Exception:
+            pass
+        if pending.done():
+            # A done-callback runs a loop turn later than the await returns;
+            # apply the answer now (idempotent) so THIS open sees it.
+            _recording_lookup_done(pending)
+    sids = cache["sids"]
+    ids = {row.id for row in db.query(LiveChannel).filter(LiveChannel.stream_id.in_(list(sids))).all()} if sids else set()
+    return reserved | ids
+
+
+def _recording_lookup_done(task):
+    cache = _recording_cache
+    if cache["pending"] is not task:
+        return      # already applied (or superseded by a newer lookup)
+    cache["pending"] = None
+    try:
+        sids = task.result()
+    except Exception as e:
+        logger.debug(f"[LiveTV] Could not ask Jellyfin which channels are recording: {e}")
+        sids = None
+    cache["at"] = asyncio.get_running_loop().time()
+    if sids is not None:
+        cache["sids"] = set(sids)
+        _stream_slots.upgrade_recordings(cache["sids"])
 
 
 # One upstream pull per channel, fanned out to every client watching it.
@@ -408,6 +597,17 @@ class _SharedUpstream:
                         f"closing the upstream")
             await self._retire()
             self._cancel_pump()
+
+    async def preempt(self):
+        """A more important pull (a recording) took this upstream's slot:
+        end every client's stream cleanly and stop pulling."""
+        if self._closed:
+            return
+        logger.warning(f"[LiveTV] Channel {self.channel_id}: stream stopped for "
+                       f"{len(self.subscribers)} client(s) — a recording needed its connection slot")
+        self._publish(None)
+        await self._retire()
+        self._cancel_pump()
 
 
 class _SubscriberResponse(StreamingResponse):
@@ -744,9 +944,11 @@ def _stream_snapshot(db) -> list:
     for channel_id, st in sorted(_stream_status.items()):
         ch = db.query(LiveChannel).filter(LiveChannel.id == channel_id).first()
         shared = _shared_streams.get(channel_id)
+        lease = _stream_slots.lease_for(f"channel:{channel_id}")
         out.append({
             "channel_id": channel_id,
             "channel": ch.name if ch else None,
+            "kind": lease.kind if lease else None,
             "state": st["state"],
             "for_seconds": round(max(0.0, now - st["since"]), 1),
             "open_seconds": round(max(0.0, now - st["opened_at"]), 1),
@@ -769,8 +971,35 @@ def live_streams(db: Session = Depends(get_db)):
         "streams": _stream_snapshot(db),
         "limit": _max_concurrent_streams(db),
         "active": _stream_slots.active,
+        "preempted_since_start": _stream_slots.preempted_since_start,
         "reconnect_budget_seconds": _reconnect_budget(db),
+        "reserved_channel_ids": sorted(_reserved_channels),
     }
+
+
+class ReserveRequest(BaseModel):
+    channel_id: int
+    seconds: int = 1800
+
+
+@router.post("/api/live/reserve", dependencies=[Depends(require_internal_or_admin)])
+async def live_reserve(body: ReserveRequest, db: Session = Depends(get_db)):
+    """Mark a channel as about to be recorded, so the pull that opens it is
+    treated as a recording (and outranks viewers at capacity) even before
+    Jellyfin's timer shows as InProgress -- the pre-padding window. For a
+    DVR front end; the reservation lapses on its own."""
+    ch = db.query(LiveChannel).filter(LiveChannel.id == body.channel_id).first()
+    if not ch:
+        raise HTTPException(404, "Channel not found")
+    seconds = max(1, min(int(body.seconds), 24 * 3600))
+    _reserved_channels[body.channel_id] = asyncio.get_running_loop().time() + seconds
+    return {"channel_id": body.channel_id, "channel": ch.name, "reserved_for_seconds": seconds}
+
+
+@router.delete("/api/live/reserve/{channel_id}", dependencies=[Depends(require_internal_or_admin)])
+async def live_unreserve(channel_id: int):
+    _reserved_channels.pop(channel_id, None)
+    return {"channel_id": channel_id, "reserved": False}
 
 
 @router.get("/api/live/sync-status", dependencies=_admin)
@@ -2194,13 +2423,23 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
     # timer as having run -- so it is logged as an error, by channel name, and
     # counted where the dashboard can see it (GET /api/live/capacity).
     limit = _max_concurrent_streams(db)
-    if not await _stream_slots.acquire(limit, _SLOT_WAIT_SECONDS):
-        ch = db.query(LiveChannel).filter(LiveChannel.id == channel_id).first()
+    ch = db.query(LiveChannel).filter(LiveChannel.id == channel_id).first()
+    # A recording outranks a viewer at capacity (see _StreamSlots). Whether
+    # this pull is one comes from Jellyfin's own timers, or a reservation.
+    # When a slot would have to be taken from someone, ask afresh so the
+    # victim is chosen on current information (a recording that opened a
+    # moment ago may still be classified as a viewer: upgrade_recordings).
+    at_capacity = limit > 0 and _stream_slots.active >= limit
+    recording_ids = await _recording_channel_ids(db, force=at_capacity)
+    kind = "recording" if channel_id in recording_ids else "live"
+    lease = await _stream_slots.acquire_lease(limit, _SLOT_WAIT_SECONDS, kind, f"channel:{channel_id}",
+                                              stream_key=(ch.stream_id or str(ch.id)) if ch else None)
+    if lease is None:
         name = ch.name if ch else f"channel {channel_id}"
         _stream_slots.refused += 1
-        _stream_slots.last_refused = {"channel_id": channel_id, "channel": name,
+        _stream_slots.last_refused = {"channel_id": channel_id, "channel": name, "kind": kind,
                                       "at": datetime.utcnow().isoformat() + "Z", "limit": limit}
-        logger.error(f"[LiveTV] At capacity ({limit} streams) — REFUSED '{name}' (channel {channel_id}). "
+        logger.error(f"[LiveTV] At capacity ({limit} streams) — REFUSED {kind} '{name}' (channel {channel_id}). "
                      f"If this was a recording it is lost. Raise livetv_max_concurrent_streams "
                      f"(0 = no limit) if this server and provider can carry more.")
         raise HTTPException(503, f"Too many concurrent live streams (limit {limit})")
@@ -2213,7 +2452,7 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
         nonlocal sem_released
         if not sem_released:
             sem_released = True
-            sem.release()
+            sem.release_lease(lease)
 
     try:
         channel = db.query(LiveChannel).filter(LiveChannel.id == channel_id).first()
@@ -2239,6 +2478,14 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
         upstream = await _stream_proxy_inner(channel_id, user_agent, stream_url,
                                              _release_sem, guard,
                                              failure_budget=_reconnect_budget(db))
+        if lease.preempted:
+            # A recording took this slot while the open was still in flight
+            # (there was no pump yet to stop). Going on would run one more
+            # upstream than the ceiling allows, uncounted.
+            aclose = getattr(getattr(upstream, "body_iterator", None), "aclose", None)
+            if aclose is not None:
+                await aclose()
+            raise HTTPException(503, "A recording needed this connection slot")
         if not isinstance(upstream, StreamingResponse):
             # A raw-TS channel is answered with a redirect; Jellyfin then talks
             # to the provider directly and there is nothing here to share.
@@ -2248,6 +2495,7 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
         # attaches above instead of opening its own provider connection. The
         # concurrency slot is now owned by the shared pump, not by this client.
         shared = _SharedUpstream(channel_id, _release_sem)
+        lease.on_preempt = shared.preempt
         q = shared.subscribe()
         async with _get_shared_lock():
             _shared_streams[channel_id] = shared
