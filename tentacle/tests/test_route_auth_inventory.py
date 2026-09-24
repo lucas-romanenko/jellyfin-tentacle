@@ -47,7 +47,9 @@ ALLOW = {
     ("GET", "/api/smartlists/version"): "plugin poll (version number only)",
 }
 
-AUTH_DEPS = {"get_user_from_request", "require_admin", "get_current_user"}
+# require_internal_or_admin: a trusted server-side caller with the shared
+# internal secret (constant-time compared), or an admin session.
+AUTH_DEPS = {"get_user_from_request", "require_admin", "get_current_user", "require_internal_or_admin"}
 
 
 def _dep_names(dependant):
