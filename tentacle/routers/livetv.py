@@ -45,6 +45,7 @@ from models.database import (
     SessionLocal,
     get_db,
     get_setting,
+    set_setting,
     log_activity,
 )
 from routers.auth import require_admin, require_internal_or_admin
@@ -198,6 +199,54 @@ def _reconnect_budget(db) -> float:
         return max(0.0, float(raw)) if raw.strip() else _DEFAULT_RECONNECT_BUDGET
     except (ValueError, AttributeError):
         return _DEFAULT_RECONNECT_BUDGET
+
+
+# Which stream an Xtream channel URL asks the provider for.
+#
+# "m3u8" (the default, unchanged behaviour) is HLS: the pump reloads the
+# playlist every few seconds and fetches every segment -- about 3,600 short
+# requests over a three-hour game -- and on a connection-limited account
+# every one of them is a chance for the provider to answer 509 because
+# something else opened a connection meanwhile. "ts" is the continuous
+# MPEG-TS stream most panels also serve: ONE connection for the whole
+# programme, taken through the raw-TS path (#103) with its re-dial. "auto"
+# picks ts when the account advertises it (user_info.allowed_output_formats,
+# remembered at sync time), else m3u8. Changing the setting takes effect at
+# the next channel sync, which rewrites every channel's URL in place.
+_LIVE_STREAM_FORMATS = ("auto", "m3u8", "ts")
+_DEFAULT_LIVE_STREAM_FORMAT = "m3u8"
+
+
+def _live_stream_format(db) -> str:
+    raw = (get_setting(db, "livetv_stream_format", "") or "").strip().lower()
+    return raw if raw in _LIVE_STREAM_FORMATS else _DEFAULT_LIVE_STREAM_FORMAT
+
+
+def _remembered_output_formats(db, provider_id: int) -> list:
+    import json
+    raw = get_setting(db, f"livetv_output_formats_{provider_id}", "") or ""
+    try:
+        val = json.loads(raw) if raw.strip() else []
+    except ValueError:
+        return []
+    return [str(v).lower() for v in val] if isinstance(val, list) else []
+
+
+def _remember_output_formats(db, provider_id: int, info: dict) -> None:
+    """Keep what the account says it can serve, from an authenticate() reply."""
+    import json
+    formats = ((info or {}).get("user_info") or {}).get("allowed_output_formats")
+    if isinstance(formats, list) and formats:
+        set_setting(db, f"livetv_output_formats_{provider_id}",
+                    json.dumps([str(v).lower() for v in formats]))
+
+
+def _live_extension(db, provider_id: int) -> str:
+    """The extension channel URLs are written with, per the setting above."""
+    fmt = _live_stream_format(db)
+    if fmt in ("m3u8", "ts"):
+        return fmt
+    return "ts" if "ts" in _remembered_output_formats(db, provider_id) else "m3u8"
 
 
 # One upstream pull per channel, fanned out to every client watching it.
@@ -582,6 +631,8 @@ def test_live_provider(db: Session = Depends(get_db)):
             )
             info = client.authenticate()
             client.close()
+            _remember_output_formats(db, provider.id, info)
+            db.commit()
             return {
                 "success": True,
                 "message": "Connected",
@@ -590,6 +641,9 @@ def test_live_provider(db: Session = Depends(get_db)):
                     "exp_date": info.get("user_info", {}).get("exp_date"),
                     "max_connections": info.get("user_info", {}).get("max_connections"),
                     "active_connections": info.get("user_info", {}).get("active_cons"),
+                    "allowed_output_formats": info.get("user_info", {}).get("allowed_output_formats"),
+                    "live_stream_format": _live_stream_format(db),
+                    "live_extension": _live_extension(db, provider.id),
                 },
             }
         except Exception as e:
@@ -942,7 +996,16 @@ def _sync_channels_from_xtream(provider_data: dict, db: Session) -> dict:
         _set_sync_status(provider_id, {"phase": "running", "progress": 95, "message": f"Saving {len(all_streams)} channels..."})
 
         # Upsert channels
-        stats = _upsert_channels(provider_id, all_streams, cat_map, client, db)
+        # What the account can serve, for the "auto" stream format. One cheap
+        # API call; not being able to read it is not a sync failure.
+        try:
+            auth = getattr(client, "authenticate", None)
+            if auth is not None:
+                _remember_output_formats(db, provider_id, auth() or {})
+        except Exception as e:
+            logger.debug(f"[LiveTV] {provider_name}: could not read account info: {e}")
+        stats = _upsert_channels(provider_id, all_streams, cat_map, client, db,
+                                 extension=_live_extension(db, provider_id))
 
         # Update provider timestamp
         provider = db.query(Provider).filter(Provider.id == provider_id).first()
@@ -1075,8 +1138,12 @@ def _upsert_channels(
     cat_map: dict[str, str],
     client,
     db: Session,
+    extension: str = "m3u8",
 ) -> dict:
-    """Upsert LiveChannel records from Xtream streams."""
+    """Upsert LiveChannel records from Xtream streams. `extension` is the
+    stream format the URLs ask for (see _live_extension); an existing
+    channel's URL is rewritten in place, so a format change is one sync away
+    and keeps the row, its enabled flag and its number."""
     existing = {
         ch.stream_id: ch
         for ch in db.query(LiveChannel).filter(LiveChannel.provider_id == provider_id).all()
@@ -1094,7 +1161,7 @@ def _upsert_channels(
 
         name = stream.get("name", "")
         group = cat_map.get(str(stream.get("category_id", "")), "")
-        url = client.live_stream_url(int(sid))
+        url = client.live_stream_url(int(sid), extension=extension)
 
         if sid in existing:
             ch = existing[sid]
