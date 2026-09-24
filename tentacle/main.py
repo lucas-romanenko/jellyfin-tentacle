@@ -62,7 +62,11 @@ def run_scheduled_sync():
         db.commit()
 
         from routers.sync import _running_syncs, _cancel_flags, _notify_sync_progress, _sync_progress, _sync_lock
+        from services.provider_activity import wait_until_quiet
         import threading
+        # A sync is minutes of provider API calls; on a connection-limited
+        # account that is enough to make the provider 509 a running recording.
+        wait_until_quiet(db, "the scheduled provider sync")
         active_providers = db.query(Provider).filter(Provider.active == True).all()
         for provider in active_providers:
             # Respect the same running-guard the manual sync endpoint uses, so the
@@ -166,6 +170,7 @@ def run_scheduled_sync():
         logger.info("Discovering new provider categories and Live TV groups")
         try:
             from services.discovery import discover_new_provider_content
+            wait_until_quiet(db, "provider discovery")
             discovered = discover_new_provider_content(db)
             if discovered["vod_new"] or discovered["live_new"]:
                 logger.info(f"Discovery: {len(discovered['vod_new'])} new VOD categories, {len(discovered['live_new'])} new Live TV groups")

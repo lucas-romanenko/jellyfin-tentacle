@@ -151,11 +151,22 @@ class XtreamClient:
         self.password = provider.password
         self.session = requests.Session()
         self.session.headers.update(XTREAM_HEADERS)
-        self.session.timeout = 30
+        # requests ignores a `timeout` attribute on a Session; it has to be
+        # passed per call. Without it a stalled panel hung the sync for ever.
+        self.timeout = 30
+        # Called before every provider request. sync_provider sets it so a
+        # sync stands aside while a live stream or recording is running
+        # (services.provider_activity); a bare client makes no such promise.
+        self.before_request = None
+
+    def _wait(self):
+        if self.before_request is not None:
+            self.before_request()
 
     def _get(self, action: str, extra: str = "") -> list:
+        self._wait()
         try:
-            r = self.session.get(f"{self.base}&action={action}{extra}")
+            r = self.session.get(f"{self.base}&action={action}{extra}", timeout=self.timeout)
             r.raise_for_status()
             data = r.json()
             return data if isinstance(data, list) else []
@@ -169,7 +180,9 @@ class XtreamClient:
         return self._get(f"get_series&category_id={category_id}")
 
     def get_series_info(self, series_id: str) -> dict:
-        r = self.session.get(f"{self.base}&action=get_series_info&series_id={series_id}")
+        self._wait()
+        r = self.session.get(f"{self.base}&action=get_series_info&series_id={series_id}",
+                             timeout=self.timeout)
         r.raise_for_status()
         return r.json()
 
@@ -1011,6 +1024,11 @@ def sync_provider(
 
         tmdb = TMDBService(bearer_token, data_dir, match_threshold)
         client = make_provider_client(provider)
+        # Every provider call first waits for live TV / a recording to end
+        # (services.provider_activity), so a recording that starts mid-sync
+        # is not competed with either.
+        from services.provider_activity import pause_while_live
+        client.before_request = lambda: pause_while_live(db, "the provider sync", cancel_check)
 
         category_stats = {}
         new_movies_feed = []

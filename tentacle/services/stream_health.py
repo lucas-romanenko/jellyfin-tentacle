@@ -235,6 +235,7 @@ def recheck_known_bad(db) -> dict:
     are gone (nothing left to track)."""
     providers = _provider_map(db)
     cleared, rechecked = [], 0
+    deferred = provider_busy = False
     for entry in db.query(StreamHealth).all():
         if not Path(entry.strm_path).exists():
             cleared.append(entry.title)
@@ -243,6 +244,18 @@ def recheck_known_bad(db) -> dict:
         url = entry.stream_url or _read_strm(entry.strm_path)
         if not url:
             continue
+        # Each re-test is a real stream open on the account. The same manners
+        # as the sweep: pace them, stand aside for live TV and a recording,
+        # and stop once the provider says it is over its limit. What was not
+        # re-tested waits for the next run.
+        if _live_streams_active():
+            deferred = True
+            break
+        if _probe_state["provider_busy"]:
+            provider_busy = True
+            break
+        if rechecked:
+            time.sleep(PROBE_INTERVAL_SECONDS)
         kind, stream_id = _parse_stream_id(url)
         # Look up provider through the library record (creds may have rotated)
         model = Movie if entry.media_type == "movie" else Series
@@ -257,7 +270,8 @@ def recheck_known_bad(db) -> dict:
         elif alive is False:
             entry.fail_count = (entry.fail_count or 1) + 1
     db.commit()
-    return {"rechecked": rechecked, "cleared": cleared}
+    return {"rechecked": rechecked, "cleared": cleared,
+            "deferred": deferred, "provider_busy": provider_busy}
 
 
 def run_stream_health_sweep():
