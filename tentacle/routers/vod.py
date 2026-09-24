@@ -123,6 +123,12 @@ class _Playback:
             if self.upstream is not None:
                 _close_resp_later(self.upstream)
                 self.upstream = None
+            # Its slot is gone (the broker moved it to the newcomer), so it is
+            # not a playback any more: off the list now, even if its request
+            # is still stuck writing to a paused player. The player's next
+            # request starts a new playback, which asks for a slot again.
+            if _playbacks.get(self.token) is self:
+                del _playbacks[self.token]
 
 
 _playbacks: "dict[str, _Playback]" = {}
@@ -278,8 +284,13 @@ async def _open_with_retry(client, method, url, headers, guard, owner: str, play
     started = loop.time()
     backoff = 1.0
     while True:
+        if stopped is not None and stopped():
+            raise HTTPException(503, "The connection slot was needed by a recording or live stream")
         try:
             resp = await _open(client, method, url, headers, guard)
+            if stopped is not None and stopped():
+                await resp.aclose()     # lost the slot while this attempt was in flight
+                raise HTTPException(503, "The connection slot was needed by a recording or live stream")
             if resp.status_code in (200, 206):
                 return resp
             status = resp.status_code
@@ -474,6 +485,8 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
                 logger.warning(f"[VOD] {owner}: upstream dropped after {sent} bytes; resuming from byte "
                                f"{start + sent} in {delay:.0f}s: {reason}")
                 await asyncio.sleep(delay)
+                if pb.stopped.is_set() or pb.generation != my_generation:
+                    return                  # pre-empted or replaced during the wait: no new connection
                 resume = f"bytes={start + sent}-" + (str(end) if end is not None else "")
                 try:
                     # No player_left here: while the body streams, Starlette

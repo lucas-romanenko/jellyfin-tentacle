@@ -438,10 +438,35 @@ class OnePlaybackOneLease(_Base):
                 await livetv._stream_slots.acquire_lease(1, 0.01, "recording", "channel:1")
                 await asyncio.sleep(0.01)
                 self.assertTrue(upstream.is_closed, "closed without waiting for the player")
+                self.assertEqual({}, vod._playbacks, "no longer listed while its request is still stuck")
+                self.assertEqual([], [x for x in livetv._stream_snapshot(self.db) if x["kind"] == "vod"])
+                self.assertEqual(["channel:1"], [l.owner for l in livetv._stream_slots.leases.values()])
                 rest = [c async for c in it]
                 self.assertLessEqual(len(rest), 1, "the body ends instead of resuming")
                 self.assertEqual(1, len(self.log), "no resume after a pre-emption")
         asyncio.run(go())
+
+    def test_pre_empted_while_waiting_out_a_509_makes_no_further_attempt(self):
+        """Pre-empted during the open's backoff: the next attempt would be
+        an uncounted provider connection while the recording opens."""
+        vod, livetv = self.vod, self.livetv
+        script = {self.upstream: [_plain(509), _file(206, [b"AAAA"], start=0)]}
+        real_sleep = asyncio.sleep
+
+        async def sleep_then_lose_the_slot(d):
+            for pb in list(vod._playbacks.values()):
+                pb.stop()
+            await real_sleep(0)
+
+        async def go():
+            with mock.patch("httpx.AsyncClient", lambda **kw: _Client(script, self.log, **kw)), \
+                    mock.patch("routers.vod.lan_origin_guard", lambda *a, **k: (lambda u: True)), \
+                    mock.patch("asyncio.sleep", sleep_then_lose_the_slot):
+                with self.assertRaises(HTTPException) as cm:
+                    await vod.vod_stream("movie", self.token_file, _request("bytes=0-"), self.db)
+                self.assertEqual(503, cm.exception.status_code)
+        asyncio.run(go())
+        self.assertEqual(1, len(self.log), "only the refused attempt reached the provider")
 
     def test_a_newer_range_closes_the_older_ones_connection_at_once(self):
         """One playback, one provider connection -- even for a player that
@@ -586,9 +611,8 @@ class OnePlaybackOneLease(_Base):
                 else:
                     self.fail("the pre-empted playback did not end")
                 self.assertLessEqual(got, 2, "stops at the next chunk")
-                pb = next(iter(vod._playbacks.values()))
-                self.assertTrue(pb.stopped.is_set())
-                self.assertEqual(1, vod._sweep_once(asyncio.get_running_loop().time()))
+                self.assertEqual({}, vod._playbacks, "a pre-empted playback is gone at once, not at the next sweep")
+                self.assertEqual(0, vod._sweep_once(asyncio.get_running_loop().time()))
                 self.assertEqual({"channel:9"}, {l.owner for l in livetv._stream_slots.leases.values()})
         asyncio.run(go())
 

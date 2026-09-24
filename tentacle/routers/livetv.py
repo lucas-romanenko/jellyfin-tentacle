@@ -249,6 +249,12 @@ class _StreamSlots:
                 result = victim.on_preempt()
                 if asyncio.iscoroutine(result):
                     await result
+            except asyncio.CancelledError:
+                # The newcomer went away while the victim was being stopped:
+                # nobody owns this lease, give the slot back.
+                self.leases.pop(lease.id, None)
+                self._wake()
+                raise
             except Exception as e:
                 logger.error(f"[LiveTV] Stopping pre-empted {victim.kind} '{victim.owner}' failed: {e}")
         return lease
@@ -491,7 +497,7 @@ def _timer_is_imminent(timer: dict, now: "datetime") -> bool:
     return (rec_start - now).total_seconds() <= _RECORDING_IMMINENT_SECONDS
 
 
-async def _recording_channel_ids(db, force: bool = False) -> "set[int]":
+async def _recording_channel_ids(db, force: bool = False, background: bool = False) -> "set[int]":
     """LiveChannel ids being recorded now: reservations plus Jellyfin's
     in-progress timers (cached for _RECORDING_LOOKUP_TTL; `force` asks
     again regardless -- used when a slot is about to be taken from someone,
@@ -502,11 +508,14 @@ async def _recording_channel_ids(db, force: bool = False) -> "set[int]":
         del _reserved_channels[cid]
     reserved = set(_reserved_channels)
     cache = _recording_cache
-    # After a failed lookup, wait (5 s doubling to a minute) before asking
-    # again -- even when `force`d: a Jellyfin that is down or has a bad key
-    # must not cost every tuner open the full lookup wait.
+    # After a failed lookup, routine asks (the TTL path and the background
+    # refresher) wait 5 s doubling to a minute. The at-capacity ask (`force`
+    # from a tuner open) never does: a recording's own tuner open comes from
+    # Jellyfin, so Jellyfin is up at that moment even if it was not a minute
+    # ago -- and a stale "nothing is recording" there would refuse it.
+    backed_off = now < cache.get("retry_at", -1e9) and (background or not force)
     if (force or now - cache["at"] >= _RECORDING_LOOKUP_TTL) and cache["pending"] is None \
-            and now >= cache.get("retry_at", -1e9):
+            and not backed_off:
         url = (get_setting(db, "jellyfin_url", "") or "").strip()
         key = (get_setting(db, "jellyfin_api_key", "") or "").strip()
         if url and key:
@@ -540,7 +549,7 @@ async def _refresh_recordings_once() -> None:
     """One fresh lookup, applied to the running leases (sync_recordings)."""
     db = SessionLocal()
     try:
-        await _recording_channel_ids(db, force=True)
+        await _recording_channel_ids(db, force=True, background=True)
     finally:
         db.close()
 
@@ -1162,7 +1171,7 @@ def _stream_snapshot(db) -> list:
                 "client": pb.client,
                 "stream_id": None,
                 "kind": "vod",
-                "state": "streaming" if pb.active_bodies else ("stopped" if pb.stopped.is_set() else "idle"),
+                "state": "stopped" if pb.stopped.is_set() else ("streaming" if pb.active_bodies else "idle"),
                 "for_seconds": round(max(0.0, now - pb.last_used), 1),
                 "open_seconds": round(max(0.0, now - pb.started), 1),
                 "last_error": None,

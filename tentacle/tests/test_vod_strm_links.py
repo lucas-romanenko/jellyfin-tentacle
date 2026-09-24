@@ -165,6 +165,23 @@ class ExistingFilesAreRewrittenInPlace(unittest.TestCase):
                 self._repair(_client(links))
                 self.assertEqual(text, self.strm.read_text(), (text, links is not None))
 
+    def test_a_provider_whose_address_has_a_path_prefix(self):
+        """server_url = http://prov.example.com:8080/xc -> stream URLs are
+        /xc/movie/<u>/<p>/<id>.<ext>; the rule must follow the prefix."""
+        from services.sync import XtreamClient, _strm_needs_rewrite
+        c = XtreamClient(types.SimpleNamespace(id=3, server_url="http://prov.example.com:8080/xc/",
+                                               username="u", password="p"))
+        c.vod_links = None
+        expected = c.movie_stream_url(42, "mkv")
+        self.assertEqual("http://prov.example.com:8080/xc/movie/u/p/42.mkv", expected)
+        self.strm.write_text("http://prov.example.com:8080/xc/movie/old/pw/42.mkv")
+        self.assertTrue(_strm_needs_rewrite(self.strm, expected, c), "new credentials")
+        self.assertTrue(_strm_needs_rewrite(self.strm, _links().movie(42, "mkv"), c), "off -> on")
+        self.strm.write_text(_links().movie(42, "mkv"))
+        self.assertTrue(_strm_needs_rewrite(self.strm, expected, c), "on -> off")
+        self.strm.write_text("http://prov.example.com:8080/movie/u/p/42.mkv")
+        self.assertFalse(_strm_needs_rewrite(self.strm, expected, c), "not under the provider's prefix")
+
     def test_a_tentacle_link_of_another_provider_is_left_alone(self):
         from services import vod_tokens
         other = vod_tokens.Links("http://192.168.2.52:8888", SECRET, 4).movie(42, "mkv")

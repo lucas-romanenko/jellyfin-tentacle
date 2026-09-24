@@ -274,12 +274,19 @@ class RecheckKnownBadIsPolite(unittest.TestCase):
     def test_stops_when_the_provider_goes_over_its_limit_during_the_run(self):
         def check(db, media_type, kind, stream_id, url, provider):
             self.checked.append(stream_id)
-            self.sh._probe_state["provider_busy"] = True      # this probe got a 509
+            self.sh._note_provider_busy()                    # this probe got a 509
             return None
         with mock.patch.object(self.sh, "check_stream", check):
             out = self.sh.recheck_known_bad(self.db)
         self.assertEqual(1, out["rechecked"])
         self.assertTrue(out["provider_busy"])
+
+    def test_the_button_does_not_clear_a_running_sweeps_busy_flag(self):
+        """The dashboard recheck (a worker thread) can overlap the nightly
+        sweep; the sweep must stay stopped once the provider said 509."""
+        self.sh._probe_state["provider_busy"] = True
+        self.sh.recheck_known_bad(self.db, limit=10)
+        self.assertTrue(self.sh._probe_state["provider_busy"])
 
     def test_a_busy_flag_left_by_an_earlier_probe_does_not_block_the_button(self):
         """A 509 seen by last night's sweep or by "Check now" sets

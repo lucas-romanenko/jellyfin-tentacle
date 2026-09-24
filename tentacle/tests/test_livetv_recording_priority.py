@@ -207,6 +207,21 @@ class Broker(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await waiter)
         self.assertEqual(1, s.active)
 
+    async def test_a_newcomer_cancelled_while_its_victim_stops_leaves_no_lease(self):
+        s = self._slots()
+        v = await s.acquire_lease(1, 0.01, "live", "channel:1")
+
+        async def slow_stop():
+            await asyncio.sleep(0.2)
+        v.on_preempt = slow_stop
+        rec = asyncio.ensure_future(s.acquire_lease(1, 0.01, "recording", "channel:2"))
+        await asyncio.sleep(0.01)
+        rec.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await rec
+        self.assertEqual(0, s.active, "the slot is free again")
+        self.assertIsNotNone(await s.acquire_lease(1, 0.01, "live", "channel:3"))
+
     async def test_a_lease_without_a_stream_key_is_never_touched(self):
         s = self._slots()
         r = await s.acquire_lease(2, 0.01, "recording", "channel:1")
@@ -348,11 +363,15 @@ class KnowingWhatIsRecording(unittest.IsolatedAsyncioTestCase):
                                              "failures": 0, "retry_at": -1e9})
         with mock.patch.object(self.livetv, "_recording_stream_ids_from_jellyfin", failing), \
                 self.assertLogs("routers.livetv", "WARNING") as logs:
-            self.assertEqual({self.a.id}, await self.livetv._recording_channel_ids(self.db, force=True),
+            self.assertEqual({self.a.id}, await self.livetv._recording_channel_ids(self.db, force=True, background=True),
                              "the last answer is kept")
             for _ in range(5):
-                await self.livetv._recording_channel_ids(self.db, force=True)
-        self.assertEqual(1, len(calls), "backed off: no second ask inside the retry window")
+                self.livetv._recording_cache["at"] = -1e9            # TTL expired
+                await self.livetv._recording_channel_ids(self.db)
+                await self.livetv._recording_channel_ids(self.db, force=True, background=True)
+            self.assertEqual(1, len(calls), "routine asks back off inside the retry window")
+            await self.livetv._recording_channel_ids(self.db, force=True)
+            self.assertEqual(2, len(calls), "a tuner open at capacity always asks: Jellyfin may be back")
         self.assertEqual(1, sum("Could not ask Jellyfin" in m for m in logs.output), "reported once")
         with mock.patch.object(self.livetv, "_recording_stream_ids_from_jellyfin", lambda u, k: set()):
             self.livetv._recording_cache["retry_at"] = -1e9

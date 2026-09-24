@@ -182,9 +182,10 @@ upstream any more. `POST /api/live/reserve` `{channel_id|stream_id, seconds}` ho
 priority for a channel ahead of a timer (for schedulers that know the start time before Jellyfin
 does); `DELETE /api/live/reserve/{channel_id}` drops it. Recording identity otherwise comes from
 Jellyfin's timers (InProgress, or New and due within 120 s and not yet past its end), asked
-for at most every 5 s while a live stream is open and on every tuner open (≤ 3 s wait, 5 s
-request timeout); when Jellyfin cannot be reached the last answer is kept, one warning is
-logged and it is asked again after 5 s doubling to a minute.
+for at most every 5 s while a live stream is open and on every tuner open (≤ 3 s wait; 3 s
+connect / 5 s read timeout); when Jellyfin cannot be reached the last answer is kept, one warning is
+logged and routine lookups wait 5 s doubling to a minute before asking again (a tuner
+open at the limit always asks).
 
 The known-bad stream recheck (Health → Recheck bad) tests 10 entries per press, least recently
 checked first, 3 s apart, and answers how many remain; it stands aside while live TV runs and

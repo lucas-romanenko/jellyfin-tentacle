@@ -247,20 +247,25 @@ def _pause_between_categories(client, db: Session, progress_callback=None, phase
         raise SyncCancelledError("Sync cancelled while waiting for live TV to finish")
 
 
-# A direct Xtream stream URL: scheme://host[:port]/movie|series/<u>/<p>/<id>.<ext>,
-# the path starting right after the host (a proxy that puts the provider's
-# path under its own prefix is not one).
-_DIRECT_STREAM_RE = re.compile(r"(?i)^https?://([^/:?#]+)(?::\d+)?/(movie|series)/[^/?#]+/[^/?#]+/(\d+)\.[a-z0-9]+$")
-_EMBEDDED_STREAM_RE = re.compile(r"(?i)https?://([^/:?#&]+)(?::\d+)?/(movie|series)/[^/?#&]+/[^/?#&]+/(\d+)\.[a-z0-9]+")
+def _direct_stream_res(prefix: str = ""):
+    """A direct Xtream stream URL: scheme://host[:port]<prefix>/movie|series/<u>/<p>/<id>.<ext>,
+    where <prefix> is the path of the provider's own server_url (usually
+    empty). Anything else -- a proxy that puts the provider's path under
+    its own prefix -- is not one. The second pattern finds such a URL
+    carried inside another one (a resume proxy's `?d=`)."""
+    p = re.escape(prefix.rstrip("/"))
+    return (re.compile(rf"(?i)^https?://([^/:?#]+)(?::\d+)?{p}/(movie|series)/[^/?#]+/[^/?#]+/(\d+)\.[a-z0-9]+$"),
+            re.compile(rf"(?i)https?://([^/:?#&]+)(?::\d+)?{p}/(movie|series)/[^/?#&]+/[^/?#&]+/(\d+)\.[a-z0-9]+"))
 
 
-def _direct_ref(url_text: str, embedded: bool = False):
+def _direct_ref(url_text: str, embedded: bool = False, prefix: str = ""):
     """(host, kind, id) of a direct Xtream URL; with `embedded`, also of one
-    carried URL-encoded inside another URL (a resume proxy's `?d=`)."""
+    carried URL-encoded inside another URL."""
     from urllib.parse import unquote
-    m = _DIRECT_STREAM_RE.match(url_text or "")
+    direct, carried = _direct_stream_res(prefix)
+    m = direct.match(url_text or "")
     if m is None and embedded:
-        m = _EMBEDDED_STREAM_RE.search(unquote(url_text or "")) if "%2F" in (url_text or "").upper() else None
+        m = carried.search(unquote(url_text or "")) if "%2F" in (url_text or "").upper() else None
     return (m.group(1).lower(), m.group(2).lower(), int(m.group(3))) if m else None
 
 
@@ -287,6 +292,7 @@ def _strm_needs_rewrite(strm_file: Path, expected: str, client) -> bool:
     from urllib.parse import urlparse
     from services import vod_tokens
     provider_host = (urlparse(client.server).hostname or "").lower()
+    prefix = urlparse(client.server).path or ""
     if not provider_host:
         return False
 
@@ -301,15 +307,15 @@ def _strm_needs_rewrite(strm_file: Path, expected: str, client) -> bool:
         have = ours(current)
         if have is not None:
             return have == want                            # new secret / address
-        ref = _direct_ref(current, embedded=True)
+        ref = _direct_ref(current, embedded=True, prefix=prefix)
         return ref is not None and ref == (provider_host, want[0], want[1])
-    exp = _direct_ref(expected)
+    exp = _direct_ref(expected, prefix=prefix)
     if exp is None:
         return False
     have = ours(current)
     if have is not None:                                   # moving back to direct
         return have == (exp[1], exp[2])
-    ref = _direct_ref(current)
+    ref = _direct_ref(current, prefix=prefix)
     return ref is not None and ref == exp and exp[0] == provider_host
 
 

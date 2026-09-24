@@ -49,7 +49,15 @@ DEFAULT_BATCH_SIZE = 100
 # said it is over its limit.
 PROBE_INTERVAL_SECONDS = 3.0
 PROVIDER_BUSY_STATUSES = {429, 509}
-_probe_state = {"provider_busy": False}
+_probe_state = {"provider_busy": False, "busy_seq": 0}
+
+
+def _note_provider_busy():
+    """A probe was answered 429/509. `provider_busy` stops the sweep for the
+    rest of its run; `busy_seq` lets a recheck notice a 509 that happened
+    during ITS run without resetting the sweep's flag (they can overlap)."""
+    _probe_state["provider_busy"] = True
+    _probe_state["busy_seq"] = _probe_state.get("busy_seq", 0) + 1
 
 
 def _live_streams_active() -> bool:
@@ -122,7 +130,7 @@ def _probe_url(url: str, user_agent: str) -> bool | None:
                     return len(chunk) > 0
                 return False
             if r.status_code in PROVIDER_BUSY_STATUSES:
-                _probe_state["provider_busy"] = True
+                _note_provider_busy()
                 return None
             if r.status_code in INCONCLUSIVE_STATUSES:
                 return None
@@ -256,8 +264,9 @@ def recheck_known_bad(db, limit: int = 0) -> dict:
     deferred = provider_busy = False
     remaining = 0
     # "Over its limit" is about THIS run: a 509 seen by an earlier sweep or
-    # "Check now" must not keep the Recheck button dead until the next sweep.
-    _probe_state["provider_busy"] = False
+    # "Check now" must not keep the Recheck button dead until the next sweep
+    # -- and resetting the shared flag could un-stop a sweep running now.
+    busy_at_start = _probe_state.get("busy_seq", 0)
     # Least recently re-tested first, so successive limited calls work
     # through the whole list instead of re-testing the same few each time.
     entries = db.query(StreamHealth).order_by(StreamHealth.last_checked_at.asc(), StreamHealth.id.asc()).all()
@@ -279,7 +288,7 @@ def recheck_known_bad(db, limit: int = 0) -> dict:
         if _live_streams_active():
             deferred = True
             break
-        if _probe_state["provider_busy"]:
+        if _probe_state.get("busy_seq", 0) != busy_at_start:
             provider_busy = True
             break
         if rechecked:
