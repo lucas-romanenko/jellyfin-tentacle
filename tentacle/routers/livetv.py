@@ -169,6 +169,28 @@ def _max_concurrent_streams(db) -> int:
         return _DEFAULT_MAX_CONCURRENT_STREAMS
 
 
+# How long a running stream keeps retrying a failing upstream before it ends.
+# 120 s was a fixed constant (#136); a provider that refuses for a little
+# longer -- seen live: 509s for 160 s while another household stream was open,
+# accepting again 18 s after the pump had given up -- turned one recording
+# into four files. Ending the response is the one thing Jellyfin cannot undo:
+# it never appends to a recording once its tuner stream closes. 0 = keep
+# retrying for as long as the client stays connected (the recorder stays
+# until its timer ends; a viewer who gives up closes the socket, which ends
+# the retries).
+_DEFAULT_RECONNECT_BUDGET = 120.0
+
+
+def _reconnect_budget(db) -> float:
+    """Seconds of unbroken upstream failure a running stream will wait out;
+    0 means until the client leaves. Garbage keeps the default."""
+    raw = get_setting(db, "livetv_reconnect_budget_seconds", "")
+    try:
+        return max(0.0, float(raw)) if raw.strip() else _DEFAULT_RECONNECT_BUDGET
+    except (ValueError, AttributeError):
+        return _DEFAULT_RECONNECT_BUDGET
+
+
 # One upstream pull per channel, fanned out to every client watching it.
 #
 # Jellyfin opens a separate tuner stream per recording and per viewer, so
@@ -2071,7 +2093,8 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
             raise HTTPException(502, "Stream URL points to a non-public host")
 
         upstream = await _stream_proxy_inner(channel_id, user_agent, stream_url,
-                                             _release_sem, guard)
+                                             _release_sem, guard,
+                                             failure_budget=_reconnect_budget(db))
         if not isinstance(upstream, StreamingResponse):
             # A raw-TS channel is answered with a redirect; Jellyfin then talks
             # to the provider directly and there is nothing here to share.
@@ -2094,14 +2117,18 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
 
 
 async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str, _release_sem,
-                              guard=None):
+                              guard=None, failure_budget: float = _DEFAULT_RECONNECT_BUDGET):
     """Inner stream proxy logic. `_release_sem()` is called when the concurrency
     slot can be freed: immediately on early-exit paths, or by the streaming
     generator's `finally` once the long-lived stream ends.
 
     `guard` validates every URL fetched from here on -- redirect hops, HLS
     variants and chunks. stream_proxy passes one scoped to the channel's own
-    provider (#76); the default holds everything to is_safe_url()."""
+    provider (#76); the default holds everything to is_safe_url().
+
+    `failure_budget` is how many seconds of unbroken upstream failure the
+    running stream waits out before ending (see _reconnect_budget); 0 means
+    for as long as the client keeps reading."""
     guard = guard or is_safe_url
     import httpx
 
@@ -2204,7 +2231,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
             # to count as a recovery, or a provider that serves a few bytes and
             # hangs up would be re-dialled once a second for ever.
             nonlocal raw_resp
-            FAILURE_BUDGET = 120.0
+            FAILURE_BUDGET = failure_budget   # 0 = until the client leaves
             HEALTHY_AFTER = 10.0
             backoff = 1.0
             failing_since = None
@@ -2253,7 +2280,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         if failing_since is None:
                             failing_since = now
                         waited = max(now - failing_since, slept)
-                        if waited + backoff > FAILURE_BUDGET:
+                        if FAILURE_BUDGET and waited + backoff > FAILURE_BUDGET:
                             logger.error(f"[LiveTV] Raw stream for channel {channel_id} could not be "
                                          f"re-established after {waited:.0f}s, stopping: {reason}")
                             return
@@ -2330,7 +2357,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
         # growing delay and give up only after an unbroken run of them; a
         # status that will never fix itself still stops the stream at once.
         RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504, 509}
-        FAILURE_BUDGET = 120.0   # seconds of unbroken failure before giving up
+        FAILURE_BUDGET = failure_budget   # seconds of unbroken failure; 0 = until the client leaves
         BACKOFF_START = 1.0
         BACKOFF_CAP = 5.0        # short: the tuner reader is waiting on us
         CHUNK_RETRIES_IN_PLACE = 3
@@ -2384,7 +2411,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
             if failing_since is None:
                 failing_since = now
             waited = now - failing_since
-            if waited > FAILURE_BUDGET:
+            if FAILURE_BUDGET and waited > FAILURE_BUDGET:
                 logger.error(f"[LiveTV] {what} still failing after {waited:.0f}s "
                              f"for channel {channel_id}, stopping: {exc}")
                 return True
