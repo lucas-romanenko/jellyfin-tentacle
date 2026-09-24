@@ -78,6 +78,23 @@ def verify(secret: str, kind: str, parsed: dict) -> bool:
     return hmac.compare_digest(expect, parsed["sig"])
 
 
+class Links:
+    """Writes the Tentacle VOD address for one provider's titles. Given to
+    the sync client (`client.vod_links`) when `vod_via_tentacle_enabled` is
+    on; absent, the client writes direct provider URLs as before."""
+
+    def __init__(self, base_url: str, secret: str, provider_id: int):
+        self.base_url = base_url.rstrip("/")
+        self.secret = secret
+        self.provider_id = int(provider_id)
+
+    def movie(self, stream_id, container: str = "mp4") -> str:
+        return url(self.base_url, self.secret, self.provider_id, "movie", stream_id, container)
+
+    def episode(self, episode_id, container: str = "mp4") -> str:
+        return url(self.base_url, self.secret, self.provider_id, "series", episode_id, container)
+
+
 def stream_id_in_url(url_text: str) -> Optional[tuple]:
     """`(kind, stream_id)` if this is a Tentacle VOD URL, else None -- for
     code that keys titles by their provider stream id (blocks, health)."""

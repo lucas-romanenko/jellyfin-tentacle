@@ -40,6 +40,10 @@ def stream_key_for_url(url: str) -> Optional[str]:
     url = (url or "").strip()
     if not url:
         return None
+    from services import vod_tokens
+    via_tentacle = vod_tokens.stream_id_in_url(url)
+    if via_tentacle:
+        return str(via_tentacle[1])
     m = _XTREAM_MOVIE.search(url)
     return m.group(1) if m else url
 

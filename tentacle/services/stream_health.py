@@ -91,8 +91,24 @@ def _read_strm(strm_path: str):
 
 
 def _parse_stream_id(url: str):
+    from services import vod_tokens
+    via_tentacle = vod_tokens.stream_id_in_url(url)
+    if via_tentacle:
+        return via_tentacle
     m = _STREAM_ID_RE.search(url or "")
     return (m.group(1), int(m.group(2))) if m else (None, None)
+
+
+def _direct_url(url: str, kind, stream_id, provider) -> str:
+    """The provider's own address for a probe. A .strm that points at
+    Tentacle's /api/vod route must not be probed through Tentacle itself:
+    that would take a playback slot for a health check."""
+    from services import vod_tokens
+    if provider and kind and stream_id and vod_tokens.is_vod_url(url):
+        container = url.rsplit(".", 1)[-1].split("?")[0] if "." in url else "mp4"
+        path = "movie" if kind == "movie" else "series"
+        return f"{provider.server_url.rstrip('/')}/{path}/{provider.username}/{provider.password}/{stream_id}.{container}"
+    return url
 
 
 def _probe_url(url: str, user_agent: str) -> bool | None:
@@ -152,7 +168,7 @@ def check_stream(db, media_type: str, kind: str, stream_id: int, url: str, provi
                     )
         except Exception as e:
             logger.debug(f"[Stream health] catalog check inconclusive for vod {stream_id}: {e}")
-    return _probe_url(url, user_agent)
+    return _probe_url(_direct_url(url, kind, stream_id, provider), user_agent)
 
 
 def _mark_bad(db, media_type: str, tmdb_id: int, title: str, episode: str,

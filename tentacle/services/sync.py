@@ -158,6 +158,11 @@ class XtreamClient:
         # sync stands aside while a live stream or recording is running
         # (services.provider_activity); a bare client makes no such promise.
         self.before_request = None
+        self.provider_id = getattr(provider, "id", None)
+        # A services.vod_tokens.Links when VOD is served through Tentacle
+        # (setting `vod_via_tentacle_enabled`): the .strm files then point
+        # at Tentacle's /api/vod route instead of at the provider.
+        self.vod_links = None
 
     def _wait(self):
         if self.before_request is not None:
@@ -187,10 +192,53 @@ class XtreamClient:
         return r.json()
 
     def movie_stream_url(self, stream_id, container="mp4") -> str:
+        if self.vod_links is not None:
+            return self.vod_links.movie(stream_id, container)
         return f"{self.server}/movie/{self.username}/{self.password}/{stream_id}.{container}"
 
     def episode_stream_url(self, episode_id, container="mp4") -> str:
+        if self.vod_links is not None:
+            return self.vod_links.episode(episode_id, container)
         return f"{self.server}/series/{self.username}/{self.password}/{episode_id}.{container}"
+
+
+def vod_links_for(db: Session, provider: Provider):
+    """The Links the sync client writes .strm files with, or None for direct
+    provider URLs. Needs the setting on, an Xtream provider, and Tentacle's
+    own address as clients reach it (the one the YouTube feature already
+    works out and keeps)."""
+    from routers.vod import vod_enabled
+    from services import vod_tokens
+    if not vod_enabled(db) or (provider.provider_type or "xtream") != "xtream":
+        return None
+    from services.youtube.sync import base_url
+    base = base_url(db)
+    if not base:
+        logger.warning("[Sync] VOD through Tentacle is on but Tentacle's address is not known "
+                       "(Settings → YouTube → Tentacle address); writing direct provider URLs")
+        return None
+    return vod_tokens.Links(base, vod_tokens.token_secret(db), provider.id)
+
+
+def _strm_needs_rewrite(strm_file: Path, expected: str, client) -> bool:
+    """An existing .strm is rewritten when its address is not the one the
+    sync would write today AND it is one of ours to manage: a direct provider
+    URL (or anything else that names the provider's host), or a Tentacle VOD
+    URL. A file that points somewhere else entirely was set up by hand and
+    is left alone. Switching `vod_via_tentacle_enabled` either way is thus
+    one sync away, in place."""
+    from urllib.parse import urlparse
+    from services import vod_tokens
+    try:
+        current = strm_file.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return False
+    if not current or current == expected:
+        return False
+    if vod_tokens.is_vod_url(current):
+        return True
+    host = (urlparse(getattr(client, "server", "") or "").hostname or "").lower()
+    return bool(host) and host in current.lower()
 
 
 # ── M3U provider support ─────────────────────────────────────────────────
@@ -462,13 +510,15 @@ def _write_episode_strms(client: "XtreamClient", episodes: dict, show_dir: Path,
             except (TypeError, ValueError):
                 continue
             strm_file = season_dir / f"{ep_filename}.strm"
+            expected = client.episode_stream_url(ep_id, container)
             if not strm_file.exists():
-                strm_file.write_text(
-                    client.episode_stream_url(ep_id, container),
-                    encoding='utf-8'
-                )
+                strm_file.write_text(expected, encoding='utf-8')
                 chown_path(strm_file)
                 ep_count += 1
+            elif _strm_needs_rewrite(strm_file, expected, client):
+                strm_file.write_text(expected, encoding='utf-8')
+                chown_path(strm_file)
+                logger.info(f"[Sync] Rewrote {strm_file.name}: stream address changed")
     return ep_count
 
 
@@ -489,14 +539,16 @@ def _repair_movie_strm(client, stream: dict, tmdb_id: int, provider: Provider, d
         return False
     try:
         strm = Path(record.strm_path)
+        expected = client.movie_stream_url(stream.get("stream_id"), stream.get("container_extension", "mp4"))
         if strm.exists():
+            if _strm_needs_rewrite(strm, expected, client):
+                strm.write_text(expected, encoding="utf-8")
+                chown_path(strm)
+                logger.info(f"[Sync] Rewrote {strm.name}: stream address changed")
             return False
         strm.parent.mkdir(parents=True, exist_ok=True)
         chown_path(strm.parent)
-        strm.write_text(
-            client.movie_stream_url(stream.get("stream_id"), stream.get("container_extension", "mp4")),
-            encoding="utf-8",
-        )
+        strm.write_text(expected, encoding="utf-8")
         chown_path(strm)
         # The NFO goes with it when the whole folder was lost (or an opt-out
         # deleted both) — without it Jellyfin has to guess the match again.
@@ -1029,6 +1081,7 @@ def sync_provider(
         # is not competed with either.
         from services.provider_activity import pause_while_live
         client.before_request = lambda: pause_while_live(db, "the provider sync", cancel_check)
+        client.vod_links = vod_links_for(db, provider)
 
         category_stats = {}
         new_movies_feed = []
