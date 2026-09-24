@@ -197,6 +197,26 @@ class SyncPausesOnlyBetweenCategories(unittest.TestCase):
         self.assertEqual(3, src.count("_pause_between_categories(client, db, progress_callback"),
                          "before the first provider call, then per movie and series category")
 
+    def test_cancelled_while_waiting_stops_the_sync_there(self):
+        from services.sync import _pause_between_categories
+        from services.exceptions import SyncCancelledError
+        c = self._client()
+        c.job_pause = mock.Mock(return_value=False, would_wait=lambda: True, cancel_check=lambda: True)
+        with self.assertRaises(SyncCancelledError):
+            _pause_between_categories(c, mock.Mock(), None, "movies", "Action", {})
+        c.job_pause = mock.Mock(return_value=False, would_wait=lambda: True, cancel_check=lambda: False)
+        _pause_between_categories(c, mock.Mock(), None, "movies", "Action", {})   # budget spent: carry on
+
+    def test_the_nightly_sync_forwards_the_waiting_message(self):
+        import main
+        main_src = Path(main.__file__).read_text(encoding="utf-8")
+        self.assertIn('progress["item_title"] = item_title', main_src)
+
+    def test_the_stuck_sync_cutoff_allows_for_the_wait(self):
+        from routers import sync as sync_router
+        src = Path(sync_router.__file__).read_text(encoding="utf-8")
+        self.assertIn("stuck_hours = 4 + defer_seconds(db) / 3600.0", src)
+
     def test_a_waiting_sync_says_so_on_screen(self):
         from services.sync import _pause_between_categories, WAITING_FOR_LIVE_TV
         c = self._client()
@@ -274,6 +294,14 @@ class SecretsStayMasked(unittest.TestCase):
         from routers import settings as settings_router
         src = Path(settings_router.__file__).read_text(encoding="utf-8")
         self.assertIn('"vod_token_secret"', src.split("# Mask sensitive values", 1)[1].split("\n", 2)[1])
+
+    def test_a_masked_secret_posted_back_is_not_written(self):
+        """GET masks it; a client that round-trips GET -> POST must not
+        replace the real secret with 'abcd...wxyz' (every .strm would 404)."""
+        from routers import settings as settings_router
+        src = Path(settings_router.__file__).read_text(encoding="utf-8")
+        sensitive = src.split("sensitive_keys = {", 1)[1].split("}", 1)[0]
+        self.assertIn('"vod_token_secret"', sensitive)
 
 
 class FrameGrabsRefuseWhileLive(unittest.TestCase):

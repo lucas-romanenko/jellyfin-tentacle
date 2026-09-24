@@ -152,6 +152,14 @@ class ExistingFilesAreRewrittenInPlace(unittest.TestCase):
         self._repair(_client())
         self.assertEqual("http://cf.panel.test/movie/u/p/42.mkv", self.strm.read_text())
 
+    def test_a_proxy_wrapper_is_left_alone_while_vod_through_tentacle_is_off(self):
+        """Somebody's own resume proxy in front of the provider is a
+        deliberate setup; only the migration TO Tentacle's route unwraps it."""
+        wrapped = "http://192.168.2.52:8889/proxy/stream/Film.mkv?d=http%3A%2F%2Fcf.panel.test%2Fmovie%2Fu%2Fp%2F42.mkv&api_password=x"
+        self.strm.write_text(wrapped)
+        self._repair(_client())
+        self.assertEqual(wrapped, self.strm.read_text())
+
     def test_a_hand_made_file_pointing_elsewhere_is_left_alone(self):
         self.strm.write_text("http://nas.local/films/film.mkv")
         self._repair(_client(_links()))

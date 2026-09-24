@@ -237,7 +237,11 @@ def _pause_between_categories(client, db: Session, progress_callback=None, phase
     db.commit()
     if progress_callback and pause.would_wait():
         progress_callback(phase, category, stats or {}, item_title=WAITING_FOR_LIVE_TV, item_pos=0, item_total=0)
-    pause()
+    cancel_check = getattr(pause, "cancel_check", None)
+    if not pause() and cancel_check and cancel_check():
+        # Cancelled while waiting: stop here, not after another category's
+        # provider calls and TMDB lookups.
+        raise SyncCancelledError("Sync cancelled while waiting for live TV to finish")
 
 
 # The provider stream a .strm plays, as (kind, id): a direct Xtream URL, the
@@ -246,13 +250,17 @@ def _pause_between_categories(client, db: Session, progress_callback=None, phase
 _DIRECT_STREAM_RE = re.compile(r"/(movie|series)/[^/]+/[^/]+/(\d+)\.[A-Za-z0-9]+")
 
 
-def _stream_ref(url_text: str):
+def _stream_ref(url_text: str, unwrap: bool = False):
+    """`unwrap` also looks inside a URL-encoded query parameter (a resume
+    proxy wrapping the provider URL) -- only when migrating such files TO
+    Tentacle's own route; with VOD through Tentacle off, a hand-made proxy
+    file is somebody's deliberate setup and is left alone."""
     from urllib.parse import unquote
     from services import vod_tokens
     via_tentacle = vod_tokens.stream_id_in_url(url_text)
     if via_tentacle:
         return via_tentacle
-    for candidate in (url_text, unquote(url_text)):
+    for candidate in ((url_text, unquote(url_text)) if unwrap else (url_text,)):
         m = _DIRECT_STREAM_RE.search(candidate or "")
         if m:
             return m.group(1), int(m.group(2))
@@ -274,7 +282,8 @@ def _strm_needs_rewrite(strm_file: Path, expected: str, client) -> bool:
         return False
     if not current or current == expected:
         return False
-    current_ref = _stream_ref(current)
+    from services import vod_tokens
+    current_ref = _stream_ref(current, unwrap=vod_tokens.is_vod_url(expected))
     return current_ref is not None and current_ref == _stream_ref(expected)
 
 

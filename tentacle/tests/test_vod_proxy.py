@@ -126,6 +126,40 @@ class _Base(unittest.TestCase):
         return asyncio.run(go())
 
 
+class MiddlewareStaysOutOfTheWay(unittest.TestCase):
+    """Starlette's BaseHTTPMiddleware turns a client hang-up into a garbage-
+    collected generator instead of a cancellation, and hides the socket from
+    `request.is_disconnected()`; every streaming route depends on neither
+    happening. The dashboard's no-cache headers are added by pure ASGI."""
+
+    def test_no_base_http_middleware_is_installed(self):
+        from starlette.middleware.base import BaseHTTPMiddleware
+        import main
+        classes = [m.cls for m in main.app.user_middleware]
+        self.assertFalse(any(issubclass(c, BaseHTTPMiddleware) for c in classes), classes)
+        self.assertIn(main.NoCacheStatic, classes)
+
+    def test_static_assets_get_no_cache_headers_and_nothing_else_does(self):
+        import main
+        sent = []
+
+        async def inner(scope, receive, send):
+            await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"text/css")]})
+            await send({"type": "http.response.body", "body": b""})
+
+        async def send(message):
+            sent.append(message)
+
+        async def go(path):
+            sent.clear()
+            await main.NoCacheStatic(inner)({"type": "http", "path": path}, None, send)
+            return dict(sent[0]["headers"])
+        h = asyncio.run(go("/static/js/pages.js"))
+        self.assertEqual(b"no-cache, no-store, must-revalidate", h[b"cache-control"])
+        h = asyncio.run(go("/api/vod/movie/x"))
+        self.assertNotIn(b"cache-control", h)
+
+
 class TokenGate(_Base):
     def test_unknown_or_forged_token_is_404_without_touching_the_provider(self):
         async def go():
@@ -152,7 +186,8 @@ class RangesAndResume(_Base):
                                   _file(206, [b"BBBB"], start=104)]}
         status, headers, body = self._play(script, range_header="bytes=100-")
         self.assertEqual(b"AAAABBBB", body, "the film would have stopped at the drop")
-        self.assertEqual("bytes=104-", self.log[1][2], "resume from start + bytes already sent")
+        self.assertEqual("bytes=104-999", self.log[1][2],
+                         "resume from start + bytes already sent, to the end the provider named")
         self.assertGreaterEqual(len(self.slept), 1, "the resume is paced, not immediate")
 
     def test_a_bounded_range_is_resumed_to_its_end_not_beyond(self):
@@ -170,6 +205,24 @@ class RangesAndResume(_Base):
         status, headers, body = self._play(script, range_header="bytes=100-103")
         self.assertEqual(b"AAAA", body)
         self.assertEqual(1, len(self.log), "nothing left to ask for")
+
+    def test_a_suffix_range_resumes_from_where_the_provider_said_it_started(self):
+        """`bytes=-500` has no start until the 206's Content-Range names it."""
+        script = {self.upstream: [_file(206, [b"AAAA"], then=_dropped(), start=500),
+                                  _file(206, [b"BBBB"], start=504)]}
+        status, headers, body = self._play(script, range_header="bytes=-500")
+        self.assertEqual(b"AAAABBBB", body)
+        self.assertEqual("bytes=504-999", self.log[1][2])
+
+    def test_a_provider_that_ignores_the_range_is_not_resumed_from_the_wrong_offset(self):
+        """200 to a Range request = the provider sent byte 0 and cannot be
+        asked to continue from anywhere; end the stream rather than splice
+        the wrong bytes in."""
+        script = {self.upstream: [_file(200, [b"AAAA"], then=_dropped()), _file(206, [b"BBBB"], start=4)]}
+        status, headers, body = self._play(script, range_header="bytes=100-")
+        self.assertEqual(200, status)
+        self.assertEqual(b"AAAA", body)
+        self.assertEqual(1, len(self.log), "no resume attempt")
 
     def test_a_provider_that_will_not_resume_ends_the_stream_instead_of_restarting(self):
         script = {self.upstream: [_file(206, [b"AAAA"], then=_dropped(), start=0),
@@ -225,12 +278,18 @@ class RangesAndResume(_Base):
                 resp = await vod.vod_stream("movie", self.token_file, _request("bytes=0-"), self.db)
                 pb = next(iter(vod._playbacks.values()))
                 self.assertEqual(1, pb.active_bodies)
-                await resp.background()             # what Starlette runs after the cancelled send
+
+                async def receive():                # the client hangs up at once
+                    return {"type": "http.disconnect"}
+
+                async def send(message):            # nothing is ever sent
+                    await asyncio.sleep(0.01)
+                await resp({"type": "http"}, receive, send)      # Starlette's own __call__
                 self.assertEqual(0, pb.active_bodies, "the never-entered generator still counts down")
                 await asyncio.sleep(0.05)
                 self.assertEqual({}, vod._playbacks, "released after the grace, not the idle window")
                 self.assertEqual(0, self.livetv._stream_slots.active)
-                await resp.background()             # idempotent with the generator's own finally
+                resp._finish()                      # idempotent with the generator's own finally
         asyncio.run(go())
 
     def test_a_player_that_leaves_while_the_provider_refuses_stops_the_waiting(self):
@@ -261,6 +320,62 @@ class RangesAndResume(_Base):
             self._play(script, range_header="bytes=0-")
             asyncio.run(asyncio.sleep(0.05))
         self.assertEqual(1, len(self.vod._playbacks), "the player will ask for the next range")
+
+    def test_a_seek_that_is_still_opening_when_the_grace_ends_keeps_its_slot(self):
+        """ffmpeg drops the old range on every seek, so the grace release is
+        scheduled; if the seek's own open is slow (a 509 first), the grace
+        must not free the lease under it -- the seek would then stream on a
+        playback with no slot, i.e. an uncounted provider connection."""
+        vod, livetv = self.vod, self.livetv
+        script = {self.upstream: [_file(206, [b"AAAA", b"BBBB"], start=0), _plain(509), _file(206, [b"CCCC"], start=500)]}
+        real_sleep = asyncio.sleep
+
+        async def go():
+            with mock.patch("httpx.AsyncClient", lambda **kw: _Client(script, self.log, **kw)), \
+                    mock.patch("routers.vod.lan_origin_guard", lambda *a, **k: (lambda u: True)), \
+                    mock.patch.object(vod, "DISCONNECT_GRACE_SECONDS", 0.02):
+                first = await vod.vod_stream("movie", self.token_file, _request("bytes=0-"), self.db)
+                it = first.body_iterator.__aiter__()
+                await it.__anext__()
+                await it.aclose()                       # the player dropped the range: grace scheduled
+                pb = next(iter(vod._playbacks.values()))
+                seek = await vod.vod_stream("movie", self.token_file, _request("bytes=500-"), self.db)
+                # the seek's open waited out a 509 (~1 s), well past the 0.02 s grace
+                self.assertIs(pb, next(iter(vod._playbacks.values())), "same playback, not released")
+                self.assertEqual(1, livetv._stream_slots.active, "the lease survived the grace")
+                out = b""
+                async for chunk in seek.body_iterator:
+                    out += chunk
+                self.assertEqual(b"CCCC", out)
+                await real_sleep(0.05)
+                self.assertEqual(1, len(vod._playbacks), "served to the end: kept for the next range")
+        asyncio.run(go())
+
+    def test_two_first_requests_for_one_title_share_one_lease(self):
+        """Both wait for a slot; both get one; the second must not overwrite
+        the first's playback (whose lease would then never be released)."""
+        vod, livetv = self.vod, self.livetv
+        from models.database import set_setting
+        set_setting(self.db, "livetv_max_concurrent_streams", "2")     # room for both
+        self.db.commit()
+        gate = asyncio.Event()
+        real_acquire = livetv._stream_slots.acquire_lease
+
+        async def slow_acquire(*a, **kw):
+            await gate.wait()
+            return await real_acquire(*a, **kw)
+
+        async def go():
+            with mock.patch.object(livetv._stream_slots, "acquire_lease", slow_acquire):
+                t1 = asyncio.ensure_future(vod._playback_for(self.db, "movie/x", "vod:movie:1:1", "10.0.0.5"))
+                t2 = asyncio.ensure_future(vod._playback_for(self.db, "movie/x", "vod:movie:1:1", "10.0.0.5"))
+                await asyncio.sleep(0)
+                gate.set()
+                a, b = await asyncio.gather(t1, t2)
+            self.assertIs(a, b)
+            self.assertEqual(1, livetv._stream_slots.active)
+            self.assertEqual(1, len(vod._playbacks))
+        asyncio.run(go())
 
     def test_a_failed_seek_keeps_a_playback_that_is_still_streaming(self):
         """Only an open with NO body running releases the playback: a seek

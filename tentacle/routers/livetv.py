@@ -272,7 +272,9 @@ class _StreamSlots:
         self.release_lease(max(anon, key=lambda l: l.started) if anon else None)
 
     def lease_for(self, owner: str) -> "_Lease | None":
-        for lease in self.leases.values():
+        # Called from worker threads too (the sync /api/live/streams route);
+        # iterate a copy so the loop's own inserts/pops cannot trip it.
+        for lease in list(self.leases.values()):
             if lease.owner == owner:
                 return lease
         return None
@@ -479,9 +481,9 @@ async def _recording_refresh_loop():
     marks its timer InProgress only after the stream is open) is promoted
     without waiting for some other stream to open and ask."""
     try:
-        while _stream_slots.leases:
+        while _live_leases_exist():
             await asyncio.sleep(_RECORDING_LOOKUP_TTL)
-            if not _stream_slots.leases:
+            if not _live_leases_exist():
                 break
             try:
                 await _refresh_recordings_once()
@@ -490,6 +492,12 @@ async def _recording_refresh_loop():
     finally:
         global _recording_refresher
         _recording_refresher = None
+
+
+def _live_leases_exist() -> bool:
+    """Only live pulls can be recordings; a film playing through /api/vod
+    on its own is no reason to keep asking Jellyfin for its timers."""
+    return any(lease.kind != "vod" for lease in list(_stream_slots.leases.values()))
 
 
 def _ensure_recording_refresher():
@@ -558,6 +566,16 @@ _PUMP_RECANCEL_SECONDS = 1.0
 _stream_status: "dict[int, dict]" = {}
 
 
+def _status_open(channel_id: int) -> dict:
+    """A new upstream for this channel: a fresh entry, returned so that the
+    stream which made it clears only its own (a channel closed and reopened
+    within the same second must not lose the new entry to the old finally)."""
+    now = asyncio.get_running_loop().time()
+    entry = {"state": "streaming", "since": now, "opened_at": now, "last_error": None}
+    _stream_status[channel_id] = entry
+    return entry
+
+
 def _status_set(channel_id: int, state: str, last_error: "str | None" = None):
     now = asyncio.get_running_loop().time()
     cur = _stream_status.get(channel_id)
@@ -572,8 +590,9 @@ def _status_set(channel_id: int, state: str, last_error: "str | None" = None):
         cur["last_error"] = last_error
 
 
-def _status_clear(channel_id: int):
-    _stream_status.pop(channel_id, None)
+def _status_clear(channel_id: int, entry: "dict | None" = None):
+    if entry is None or _stream_status.get(channel_id) is entry:
+        _stream_status.pop(channel_id, None)
 
 
 def _get_shared_lock() -> "asyncio.Lock":
@@ -2775,6 +2794,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
             # in front of the fresh connection's first sync byte.
             align = "mp2t" in upstream_ct.lower()
             first = True
+            status_entry = _status_open(channel_id)
             try:
                 while True:
                     opened_at = loop.time()
@@ -2850,7 +2870,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         raw_resp = new_resp
                         break
             finally:
-                _status_clear(channel_id)
+                _status_clear(channel_id, status_entry)
                 await raw_resp.aclose()
                 await raw_client.aclose()
                 _release_sem()
@@ -2883,12 +2903,12 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
 
     async def hls_to_mpegts():
         """Wrapper that releases the concurrency slot once the stream ends."""
-        _status_set(channel_id, "streaming")
+        status_entry = _status_open(channel_id)
         try:
             async for chunk in _hls_worker():
                 yield chunk
         finally:
-            _status_clear(channel_id)
+            _status_clear(channel_id, status_entry)
             _release_sem()
             logger.info(f"[LiveTV] Stream ended for channel {channel_id}")
 

@@ -31,7 +31,6 @@ from typing import Optional
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
-from starlette.background import BackgroundTask
 from sqlalchemy.orm import Session
 
 from models.database import Provider, get_db, get_setting
@@ -65,10 +64,28 @@ def idle_seconds(db) -> float:
         return DEFAULT_IDLE_SECONDS
 
 
+class _VodResponse(StreamingResponse):
+    """A streaming response whose cleanup is tied to the RESPONSE, not to
+    the generator's `finally` or a background task: when the client hangs
+    up, Starlette cancels the send task, and if that lands before the body
+    generator was entered neither of those runs -- but this coroutine's
+    `finally` always does, cancelled or not."""
+
+    def __init__(self, *args, finish, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._finish = finish
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self._finish()
+
+
 class _Playback:
     """One title being played: its lease and when it was last asked for."""
     __slots__ = ("token", "owner", "client", "lease", "last_used", "started", "idle", "stopped",
-                 "active_bodies", "generation")
+                 "active_bodies", "opening", "generation")
 
     def __init__(self, token: str, owner: str, lease, idle: float, client: str = ""):
         self.token = token
@@ -79,6 +96,11 @@ class _Playback:
         self.started = self.last_used = asyncio.get_running_loop().time()
         self.stopped = asyncio.Event()
         self.active_bodies = 0
+        # Requests between arriving and getting their upstream open. A slot
+        # is never released while one is pending: a seek that arrives during
+        # the disconnect grace and waits out a 509 on open would otherwise
+        # end up streaming on a playback whose lease was given away.
+        self.opening = 0
         # One playback, one provider connection: a new request (a seek) ends
         # the body still streaming the previous range, so two never run at once
         # under one counted slot.
@@ -107,12 +129,26 @@ def _release(pb: _Playback):
     logger.info(f"[VOD] {pb.owner}: playback ended, slot released")
 
 
+def _close_later(resp, client) -> None:
+    """Close an upstream response and its client from a task of their own,
+    so cleanup that runs during a cancellation still completes."""
+    async def close():
+        try:
+            await resp.aclose()
+        finally:
+            await client.aclose()
+    task = asyncio.get_running_loop().create_task(close())
+    _pending_releases.add(task)
+    task.add_done_callback(_pending_releases.discard)
+
+
 def _release_soon(pb: _Playback, generation: int) -> None:
     """The player left mid-request: give the slot back after a short grace,
     unless a newer request (a seek that arrived late) has claimed it."""
     async def later():
         await asyncio.sleep(DISCONNECT_GRACE_SECONDS)
-        if _playbacks.get(pb.token) is pb and pb.generation == generation and pb.active_bodies == 0:
+        if _playbacks.get(pb.token) is pb and pb.generation == generation \
+                and pb.active_bodies == 0 and pb.opening == 0:
             logger.info(f"[VOD] {pb.owner}: the player went away")
             _release(pb)
     task = asyncio.get_running_loop().create_task(later())
@@ -124,7 +160,7 @@ def _sweep_once(now: float) -> int:
     """Release playbacks that were stopped, or that nobody asked for lately."""
     n = 0
     for pb in list(_playbacks.values()):
-        if pb.active_bodies:
+        if pb.active_bodies or pb.opening:
             continue
         if pb.stopped.is_set() or now - pb.last_used > pb.idle:
             _release(pb)
@@ -160,11 +196,27 @@ async def _playback_for(db, token: str, owner: str, client: str = "") -> _Playba
                        f"a recording or live stream")
         raise HTTPException(503, "The provider is busy: a recording or live stream has the connection. "
                                  "Try again in a minute.")
+    existing = _playbacks.get(token)
+    if existing is not None and not existing.stopped.is_set():
+        # A concurrent first request for the same title got there while we
+        # waited for the slot: one playback, one lease -- give this one back.
+        livetv._stream_slots.release_lease(lease)
+        existing.touch()
+        return existing
     pb = _Playback(token, owner, lease, idle_seconds(db), client)
     lease.on_preempt = pb.stop
     _playbacks[token] = pb
     _ensure_sweeper()
     return pb
+
+
+_CONTENT_RANGE_RE = re.compile(r"^bytes\s+(\d+)-(\d+)/(?:\d+|\*)$")
+
+
+def _content_range(header: Optional[str]) -> tuple:
+    """(first, last) byte of a 206's Content-Range; (None, None) otherwise."""
+    m = _CONTENT_RANGE_RE.match((header or "").strip())
+    return (int(m.group(1)), int(m.group(2))) if m else (None, None)
 
 
 def _range_bounds(range_header: Optional[str]) -> tuple:
@@ -293,39 +345,55 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
         except RuntimeError:            # no receive channel (a test, or an unusual server)
             return False
 
+    pb.opening += 1
     try:
         resp = await _open_with_retry(client, "GET", url, headers, guard, owner, player_left=player_left)
     except BaseException:
+        pb.opening -= 1
         await client.aclose()
         # The player has gone (or the provider refused for good): nothing is
         # streaming for this playback, so give the slot back now instead of
         # holding it for the idle window.
-        if pb.active_bodies == 0:
+        if pb.active_bodies == 0 and pb.opening == 0:
             _release(pb)
         raise
+    pb.opening -= 1
     passthrough = {k: v for k, v in resp.headers.items()
                    if k.lower() in ("content-length", "content-range", "accept-ranges")}
     content_type = resp.headers.get("content-type") or "video/mp4"
     status = resp.status_code
-    resumable = status == 206 or resp.headers.get("accept-ranges", "").lower() == "bytes"
+    # Where the bytes we forward actually start and end is what the PROVIDER
+    # says (a 206's Content-Range), not what the client asked for: a suffix
+    # range (`bytes=-500`) has no start until the provider names it, and a
+    # provider that answers a Range request with 200 is sending byte 0 and
+    # cannot be asked to resume from anywhere.
+    if status == 206:
+        cr_start, cr_end = _content_range(resp.headers.get("content-range"))
+        start = cr_start if cr_start is not None else start
+        end = cr_end if cr_end is not None else end
+        resumable = True
+    else:
+        start, end = 0, None
+        resumable = not range_header and resp.headers.get("accept-ranges", "").lower() == "bytes"
     pb.active_bodies += 1
     pb.generation += 1
     my_generation = pb.generation
     current = {"resp": resp}
     state = {"finished": False, "complete": False}
 
-    async def finish():
-        """Runs exactly once per request, however it ends. Starlette stops
-        sending on a client disconnect by cancelling the send task; when that
-        lands before the generator is entered the generator's own `finally`
-        never runs -- so this is also the response's background task."""
+    def finish():
+        """Runs exactly once per request, however it ends (the generator's
+        `finally`, or the response's own `finally` when the generator was
+        never entered). Synchronous on purpose: it may run while the task
+        is being cancelled, when every `await` would be cancelled again --
+        so the bookkeeping is immediate and the closes go to a task of
+        their own."""
         if state["finished"]:
             return
         state["finished"] = True
         pb.active_bodies -= 1
         pb.touch()
-        await current["resp"].aclose()
-        await client.aclose()
+        _close_later(current["resp"], client)
         # Ended by a seek (a newer request took over) or by reaching the end
         # of the range: the player is still there and will ask again -- keep
         # the slot for the idle window. Otherwise the player went away.
@@ -389,7 +457,7 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
                                  f"(answered {current['resp'].status_code})")
                     return
         finally:
-            await finish()
+            finish()
 
-    return StreamingResponse(body(), status_code=status, media_type=content_type, headers=passthrough,
-                             background=BackgroundTask(finish))
+    return _VodResponse(body(), status_code=status, media_type=content_type, headers=passthrough,
+                        finish=finish)

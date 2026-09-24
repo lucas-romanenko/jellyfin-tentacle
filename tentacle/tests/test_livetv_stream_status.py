@@ -22,6 +22,27 @@ from test_livetv_open_single_fetch import PANEL, TOKENIZED, FakeClient, _redirec
 from test_livetv_raw_reconnect import _dropped, _live
 
 
+class StatusEntriesBelongToTheStreamThatMadeThem(unittest.IsolatedAsyncioTestCase):
+    async def test_a_late_finally_does_not_erase_the_reopened_streams_entry(self):
+        from routers import livetv
+        livetv._stream_status.clear()
+        old = livetv._status_open(7)
+        new = livetv._status_open(7)          # closed and reopened within the second
+        livetv._status_clear(7, old)          # the old generator's finally, running late
+        self.assertIs(new, livetv._stream_status.get(7), "the new stream stays listed")
+        livetv._status_clear(7, new)
+        self.assertNotIn(7, livetv._stream_status)
+
+    async def test_the_timer_refresher_does_not_run_for_vod_alone(self):
+        from routers import livetv
+        livetv._stream_slots = livetv._StreamSlots()
+        await livetv._stream_slots.acquire_lease(6, 0.01, "vod", "vod:movie:1:1")
+        self.assertFalse(livetv._live_leases_exist())
+        await livetv._stream_slots.acquire_lease(6, 0.01, "live", "channel:1")
+        self.assertTrue(livetv._live_leases_exist())
+        livetv._stream_slots = livetv._StreamSlots()
+
+
 class StatusTransitions(unittest.IsolatedAsyncioTestCase):
     async def test_states_and_since_move_together(self):
         import routers.livetv as livetv

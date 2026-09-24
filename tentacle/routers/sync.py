@@ -238,14 +238,19 @@ def get_sync_status(db: Session = Depends(get_db)):
         SyncRun.status == "running"
     ).order_by(SyncRun.started_at.desc()).all()
 
-    # Auto-fail syncs stuck longer than 4 hours
-    stuck_cutoff = datetime.utcnow() - timedelta(hours=4)
+    # Auto-fail syncs stuck longer than 4 hours -- plus however long a sync is
+    # allowed to wait for live TV first (services.provider_activity), or a
+    # nightly run that waited its full budget would be called stuck while
+    # still running.
+    from services.provider_activity import defer_seconds
+    stuck_hours = 4 + defer_seconds(db) / 3600.0
+    stuck_cutoff = datetime.utcnow() - timedelta(hours=stuck_hours)
     actually_running = []
     for run in running_runs:
         if run.started_at and run.started_at < stuck_cutoff:
             logger.warning(f"Auto-failing stuck sync run #{run.id} (started {run.started_at})")
             run.status = "failed"
-            run.error_message = "Automatically failed: exceeded 4 hour timeout"
+            run.error_message = f"Automatically failed: exceeded {stuck_hours:g} hour timeout"
             run.completed_at = datetime.utcnow()
             run.duration_seconds = int((run.completed_at - run.started_at).total_seconds())
         else:
