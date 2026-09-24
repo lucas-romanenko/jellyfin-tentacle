@@ -65,12 +65,12 @@ def _plain(status, url=PANEL):
     return httpx.Response(status, request=httpx.Request("GET", url))
 
 
-def _request(range_header=None, method="GET"):
+def _request(range_header=None, method="GET", client="10.0.0.5"):
     headers = [(b"host", b"tentacle")]
     if range_header:
         headers.append((b"range", range_header.encode()))
     return Request({"type": "http", "method": method, "headers": headers, "path": "/", "query_string": b"",
-                    "scheme": "http", "server": ("tentacle", 8888), "client": ("10.0.0.5", 1)})
+                    "scheme": "http", "server": ("tentacle", 8888), "client": (client, 1)})
 
 
 class _Base(unittest.TestCase):
@@ -95,7 +95,7 @@ class _Base(unittest.TestCase):
         self.upstream = f"{PANEL}/movie/u/p/2141622.mkv"
         self.log = []
 
-    def _play(self, script, range_header=None, limit_pieces=None, before=None):
+    def _play(self, script, range_header=None, limit_pieces=None, before=None, client="10.0.0.5"):
         """Call the route, read the body; returns (status, headers, body bytes)."""
         vod = self.vod
         real_sleep = asyncio.sleep
@@ -111,7 +111,7 @@ class _Base(unittest.TestCase):
             with mock.patch("httpx.AsyncClient", lambda **kw: _Client(script, self.log, **kw)), \
                     mock.patch("routers.vod.lan_origin_guard", lambda *a, **k: (lambda u: True)), \
                     mock.patch("asyncio.sleep", fast_sleep):
-                resp = await vod.vod_stream("movie", self.token_file, _request(range_header), self.db)
+                resp = await vod.vod_stream("movie", self.token_file, _request(range_header, client=client), self.db)
                 out = b""
                 n = 0
                 async for piece in resp.body_iterator:
@@ -153,6 +153,22 @@ class RangesAndResume(_Base):
         self.assertEqual("bytes=104-", self.log[1][2], "resume from start + bytes already sent")
         self.assertGreaterEqual(len(self.slept), 1, "the resume is paced, not immediate")
 
+    def test_a_bounded_range_is_resumed_to_its_end_not_beyond(self):
+        """`bytes=100-199` dropped after four bytes: the resume asks for
+        104-199. Asking for 104- would fetch the rest of the file into a
+        response the player sized at 100 bytes."""
+        script = {self.upstream: [_file(206, [b"AAAA"], then=_dropped(), start=100, total=200),
+                                  _file(206, [b"BBBB"], start=104, total=200)]}
+        status, headers, body = self._play(script, range_header="bytes=100-199")
+        self.assertEqual(b"AAAABBBB", body)
+        self.assertEqual("bytes=104-199", self.log[1][2])
+
+    def test_a_bounded_range_delivered_in_full_is_not_resumed(self):
+        script = {self.upstream: [_file(206, [b"AAAA"], then=_dropped(), start=100, total=104)]}
+        status, headers, body = self._play(script, range_header="bytes=100-103")
+        self.assertEqual(b"AAAA", body)
+        self.assertEqual(1, len(self.log), "nothing left to ask for")
+
     def test_a_provider_that_will_not_resume_ends_the_stream_instead_of_restarting(self):
         script = {self.upstream: [_file(206, [b"AAAA"], then=_dropped(), start=0),
                                   _file(200, [b"AAAA", b"BBBB"], start=0)]}
@@ -171,6 +187,46 @@ class RangesAndResume(_Base):
             self._play(script)
         self.assertEqual(404, cm.exception.status_code)
         self.assertEqual(1, len(self.log))
+        self.assertEqual(0, self.livetv._stream_slots.active, "a failed open holds no slot")
+        self.assertEqual({}, self.vod._playbacks)
+
+    def test_a_player_that_leaves_during_the_open_gives_the_slot_back(self):
+        """The 509 wait can last seconds; a player that gives up meanwhile
+        cancels the request. The playback must not sit on its slot for the
+        idle window -- the next request (theirs or another TV's) needs it."""
+        script = {self.upstream: [_plain(509), _plain(509), _plain(509)]}
+
+        async def gone(d):
+            raise asyncio.CancelledError()
+        with mock.patch("httpx.AsyncClient", lambda **kw: _Client(script, self.log, **kw)), \
+                mock.patch("routers.vod.lan_origin_guard", lambda *a, **k: (lambda u: True)), \
+                mock.patch("asyncio.sleep", gone):
+            async def go():
+                await self.vod.vod_stream("movie", self.token_file, _request("bytes=0-"), self.db)
+            with self.assertRaises(asyncio.CancelledError):
+                asyncio.run(go())
+        self.assertEqual(0, self.livetv._stream_slots.active)
+        self.assertEqual({}, self.vod._playbacks)
+
+    def test_a_failed_seek_keeps_a_playback_that_is_still_streaming(self):
+        """Only an open with NO body running releases the playback: a seek
+        that fails while the previous range still streams must not pull the
+        slot from under it."""
+        script = {self.upstream: [_file(206, [b"AAAA"], start=0), _plain(404)]}
+        vod = self.vod
+
+        async def go():
+            with mock.patch("httpx.AsyncClient", lambda **kw: _Client(script, self.log, **kw)), \
+                    mock.patch("routers.vod.lan_origin_guard", lambda *a, **k: (lambda u: True)):
+                first = await vod.vod_stream("movie", self.token_file, _request("bytes=0-"), self.db)
+                it = first.body_iterator.__aiter__()
+                await it.__anext__()
+                with self.assertRaises(HTTPException):
+                    await vod.vod_stream("movie", self.token_file, _request("bytes=500-"), self.db)
+                self.assertEqual(1, len(vod._playbacks))
+                self.assertEqual(1, self.livetv._stream_slots.active)
+                await it.aclose()
+        asyncio.run(go())
 
 
 class OnePlaybackOneLease(_Base):
@@ -180,6 +236,22 @@ class OnePlaybackOneLease(_Base):
         self._play(script, range_header="bytes=500-")
         self.assertEqual(1, self.livetv._stream_slots.active, "a seek is not a second connection slot")
         self.assertEqual(1, len(self.vod._playbacks))
+
+    def test_two_tvs_on_the_same_title_are_two_playbacks(self):
+        """Keyed by title alone, the second TV would take over the first
+        one's playback and each new range from either would end the other's
+        (the generation check). Two clients: two playbacks, two slots."""
+        from models.database import set_setting
+        set_setting(self.db, "livetv_max_concurrent_streams", "2")
+        self.db.commit()
+        script = {self.upstream: [_file(206, [b"AAAA"], start=0), _file(206, [b"BBBB"], start=0)]}
+        self._play(script, range_header="bytes=0-", client="10.0.0.5")
+        self._play(script, range_header="bytes=0-", client="10.0.0.6")
+        self.assertEqual(2, len(self.vod._playbacks))
+        self.assertEqual(2, self.livetv._stream_slots.active)
+        snap = [s for s in self.livetv._stream_snapshot(self.db) if s["kind"] == "vod"]
+        self.assertEqual({"10.0.0.5", "10.0.0.6"}, {s["client"] for s in snap})
+        self.assertEqual({"vod:movie:%d:2141622" % self.provider.id}, {s["channel"] for s in snap})
 
     def test_a_playback_is_listed_with_the_live_streams(self):
         script = {self.upstream: [_file(206, [b"AAAA"], start=0)]}

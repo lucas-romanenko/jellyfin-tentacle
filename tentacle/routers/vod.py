@@ -62,12 +62,13 @@ def idle_seconds(db) -> float:
 
 class _Playback:
     """One title being played: its lease and when it was last asked for."""
-    __slots__ = ("token", "owner", "lease", "last_used", "started", "idle", "stopped", "active_bodies",
-                 "generation")
+    __slots__ = ("token", "owner", "client", "lease", "last_used", "started", "idle", "stopped",
+                 "active_bodies", "generation")
 
-    def __init__(self, token: str, owner: str, lease, idle: float):
+    def __init__(self, token: str, owner: str, lease, idle: float, client: str = ""):
         self.token = token
         self.owner = owner
+        self.client = client
         self.lease = lease
         self.idle = idle
         self.started = self.last_used = asyncio.get_running_loop().time()
@@ -127,7 +128,7 @@ def _ensure_sweeper():
         _sweeper = asyncio.get_running_loop().create_task(_sweep())
 
 
-async def _playback_for(db, token: str, owner: str) -> _Playback:
+async def _playback_for(db, token: str, owner: str, client: str = "") -> _Playback:
     pb = _playbacks.get(token)
     if pb is not None and not pb.stopped.is_set():
         pb.touch()
@@ -140,16 +141,23 @@ async def _playback_for(db, token: str, owner: str) -> _Playback:
                        f"a recording or live stream")
         raise HTTPException(503, "The provider is busy: a recording or live stream has the connection. "
                                  "Try again in a minute.")
-    pb = _Playback(token, owner, lease, idle_seconds(db))
+    pb = _Playback(token, owner, lease, idle_seconds(db), client)
     lease.on_preempt = pb.stop
     _playbacks[token] = pb
     _ensure_sweeper()
     return pb
 
 
-def _range_start(range_header: Optional[str]) -> int:
+def _range_bounds(range_header: Optional[str]) -> tuple:
+    """(start, end) of a `bytes=start-[end]` header; (0, None) otherwise."""
     m = _RANGE_RE.match((range_header or "").strip())
-    return int(m.group(1)) if m else 0
+    if not m:
+        return 0, None
+    return int(m.group(1)), (int(m.group(2)) if m.group(2) else None)
+
+
+def _range_start(range_header: Optional[str]) -> int:
+    return _range_bounds(range_header)[0]
 
 
 async def _open(client: httpx.AsyncClient, method: str, url: str, headers: dict, guard) -> httpx.Response:
@@ -242,9 +250,13 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
     (so seeking works), resumed from where it stopped if the upstream drops,
     counted and ranked against live TV and recordings."""
     url, guard, ua, owner = _resolve(db, kind, token_file)
-    pb = await _playback_for(db, f"{kind}/{token_file}", owner)
+    # One playback per title PER CLIENT: two TVs on the same film are two
+    # playbacks (two provider connections, two slots), not one that they
+    # keep taking from each other.
+    who = request.client.host if request.client else "unknown"
+    pb = await _playback_for(db, f"{kind}/{token_file}@{who}", owner, who)
     range_header = request.headers.get("range")
-    start = _range_start(range_header)
+    start, end = _range_bounds(range_header)
     headers = {"User-Agent": ua}
     if range_header:
         headers["Range"] = range_header
@@ -254,6 +266,11 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
         resp = await _open_with_retry(client, "GET", url, headers, guard, owner)
     except BaseException:
         await client.aclose()
+        # The player may have gone (a cancelled request) or the provider
+        # refused: nothing is streaming for this playback, so give the slot
+        # back now instead of holding it for the idle window.
+        if pb.active_bodies == 0:
+            _release(pb)
         raise
     passthrough = {k: v for k, v in resp.headers.items()
                    if k.lower() in ("content-length", "content-range", "accept-ranges")}
@@ -296,13 +313,16 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
                 if pb.stopped.is_set() or not resumable or attempts >= RECONNECT_ATTEMPTS:
                     logger.error(f"[VOD] {owner}: stream lost after {sent} bytes, giving up: {reason}")
                     return
+                if end is not None and start + sent > end:
+                    return                  # the requested range was delivered in full
                 attempts += 1
                 delay = min(5.0, 2 ** (attempts - 1)) * (0.8 + random.random() * 0.4)
                 logger.warning(f"[VOD] {owner}: upstream dropped after {sent} bytes; resuming from byte "
                                f"{start + sent} in {delay:.0f}s: {reason}")
                 await asyncio.sleep(delay)
+                resume = f"bytes={start + sent}-" + (str(end) if end is not None else "")
                 try:
-                    resp = await _open_with_retry(client, "GET", url, dict(headers, Range=f"bytes={start + sent}-"),
+                    resp = await _open_with_retry(client, "GET", url, dict(headers, Range=resume),
                                                   guard, owner)
                 except HTTPException as e:
                     logger.error(f"[VOD] {owner}: could not resume: {e.detail}")

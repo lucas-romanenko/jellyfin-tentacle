@@ -86,7 +86,55 @@ class WaitUntilQuiet(unittest.TestCase):
         self.assertEqual([], self.slept, "a cancelled sync must not sit in the wait loop")
 
 
-class SyncClientWaitsBeforeEveryCall(unittest.TestCase):
+class OneBudgetPerJob(WaitUntilQuiet):
+    """A job pauses many times; "wait up to N" is N for the whole job."""
+
+    def _pause(self, limit="90"):
+        from models.database import set_setting
+        set_setting(self.db, "provider_jobs_defer_while_live_seconds", limit)
+        self.db.commit()
+        return self.pa.JobPause(self.db, "sync")
+
+    def test_the_budget_is_spent_across_pauses(self):
+        pause = self._pause()
+        self.live, self.live_ends_after_sleeps = True, 2
+        self.assertTrue(pause())
+        spent_first = sum(self.slept)
+        self.live, self.live_ends_after_sleeps = True, None
+        self.assertFalse(pause(), "only what is left of the budget is waited")
+        self.assertAlmostEqual(90.0, sum(self.slept), delta=1.0)
+        self.assertGreater(sum(self.slept), spent_first)
+
+    def test_once_spent_later_pauses_do_not_wait_at_all(self):
+        pause = self._pause()
+        self.live = True
+        self.assertFalse(pause())
+        n = len(self.slept)
+        self.assertFalse(pause())
+        self.assertFalse(pause())
+        self.assertEqual(n, len(self.slept))
+
+    def test_a_quiet_provider_costs_nothing(self):
+        pause = self._pause()
+        self.assertTrue(pause())
+        self.assertEqual(0.0, pause.spent)
+
+    def test_a_cancelled_job_does_not_wait(self):
+        from models.database import set_setting
+        set_setting(self.db, "provider_jobs_defer_while_live_seconds", "90")
+        self.db.commit()
+        self.live = True
+        self.assertFalse(self.pa.JobPause(self.db, "sync", cancel_check=lambda: True)())
+        self.assertEqual([], self.slept)
+
+
+class SyncPausesOnlyBetweenCategories(unittest.TestCase):
+    """The sync commits a category's writes at its end. A pause taken while
+    writes are pending would hold SQLite's write lock for the whole pause
+    (hours, on a busy evening) and every other write in Tentacle would fail
+    with "database is locked". So the pause is taken at category boundaries,
+    after a commit -- never from inside the provider client."""
+
     def _client(self):
         from services.sync import XtreamClient
         provider = types.SimpleNamespace(server_url="http://panel.test", username="u", password="p")
@@ -98,26 +146,46 @@ class SyncClientWaitsBeforeEveryCall(unittest.TestCase):
         c.session.get = mock.Mock(return_value=resp)
         return c
 
-    def test_hook_runs_before_each_request_and_a_timeout_is_passed(self):
+    def test_provider_calls_do_not_pause_and_carry_a_timeout(self):
         c = self._client()
-        waits = []
-        c.before_request = lambda: waits.append(1)
+        c.job_pause = mock.Mock()
         c.get_vod_streams("7")
         c.get_series_info("9")
-        self.assertEqual(2, len(waits))
+        c.job_pause.assert_not_called()
         for call in c.session.get.call_args_list:
             self.assertEqual(30, call.kwargs.get("timeout"), "requests ignores Session.timeout; pass it per call")
+        self.assertFalse(hasattr(c, "before_request"), "the per-request hook is gone")
 
-    def test_a_bare_client_has_no_hook(self):
+    def test_the_category_pause_commits_first(self):
+        from services.sync import _pause_between_categories
+        order = []
         c = self._client()
-        c.get_vod_streams("7")     # must not fail without a hook
+        c.job_pause = lambda: order.append("pause")
+        db = mock.Mock()
+        db.commit = lambda: order.append("commit")
+        _pause_between_categories(c, db)
+        self.assertEqual(["commit", "pause"], order)
+
+    def test_a_bare_client_pauses_nowhere(self):
+        from services.sync import _pause_between_categories
+        c = self._client()
+        db = mock.Mock()
+        _pause_between_categories(c, db)
+        db.commit.assert_not_called()
+        c.get_vod_streams("7")
         self.assertEqual(1, c.session.get.call_count)
 
-    def test_sync_provider_installs_the_pause(self):
-        """sync_provider wires the hook so every provider call waits for live TV."""
+    def test_both_category_loops_pause_and_the_run_shares_one_budget(self):
         import services.sync as sync
+        import main
         src = Path(sync.__file__).read_text(encoding="utf-8")
-        self.assertIn("client.before_request = lambda: pause_while_live(", src)
+        self.assertEqual(2, src.count("_pause_between_categories(client, db)"), "movies and series")
+        self.assertNotIn("before_request", src)
+        self.assertIn("client.job_pause = pause if pause is not None else JobPause(", src)
+        main_src = Path(main.__file__).read_text(encoding="utf-8")
+        self.assertIn("pause = JobPause(db, \"the scheduled provider sync\")", main_src)
+        self.assertEqual(2, main_src.count("pause()"), "before the sync and before discovery, same budget")
+        self.assertIn("pause=pause)", main_src)
 
 
 class RecheckKnownBadIsPolite(unittest.TestCase):
@@ -164,6 +232,24 @@ class RecheckKnownBadIsPolite(unittest.TestCase):
         out = self.sh.recheck_known_bad(self.db)
         self.assertEqual(0, out["rechecked"])
         self.assertTrue(out["provider_busy"])
+
+    def test_the_button_does_a_batch_and_says_how_many_are_left(self):
+        """At PROBE_INTERVAL_SECONDS per probe a long list outlasts a reverse
+        proxy's request timeout; the route does `limit` per press."""
+        out = self.sh.recheck_known_bad(self.db, limit=2)
+        self.assertEqual(2, out["rechecked"])
+        self.assertEqual(1, out["remaining"])
+        self.assertEqual([100, 101], self.checked)
+        out = self.sh.recheck_known_bad(self.db, limit=2)
+        self.assertEqual(102, self.checked[2], "the next press starts with the one not yet re-tested")
+        self.assertEqual(0, self.sh.recheck_known_bad(self.db)["remaining"], "no limit: everything")
+
+
+class SecretsStayMasked(unittest.TestCase):
+    def test_the_vod_token_secret_is_masked_like_the_api_keys(self):
+        from routers import settings as settings_router
+        src = Path(settings_router.__file__).read_text(encoding="utf-8")
+        self.assertIn('"vod_token_secret"', src.split("# Mask sensitive values", 1)[1].split("\n", 2)[1])
 
 
 class FrameGrabsRefuseWhileLive(unittest.TestCase):

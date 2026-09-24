@@ -246,13 +246,22 @@ def check_title(db, media_type: str, tmdb_id: int) -> dict:
             "result": "alive" if alive else ("dead" if alive is False else "inconclusive")}
 
 
-def recheck_known_bad(db) -> dict:
+def recheck_known_bad(db, limit: int = 0) -> dict:
     """Re-test known-bad entries; clear the ones that recovered or whose files
-    are gone (nothing left to track)."""
+    are gone (nothing left to track). `limit` > 0 re-tests at most that many
+    this call (the dashboard button: at 3 s per probe, a long list would
+    outlast a reverse proxy's request timeout) and reports the remainder."""
     providers = _provider_map(db)
     cleared, rechecked = [], 0
     deferred = provider_busy = False
-    for entry in db.query(StreamHealth).all():
+    remaining = 0
+    # Least recently re-tested first, so successive limited calls work
+    # through the whole list instead of re-testing the same few each time.
+    entries = db.query(StreamHealth).order_by(StreamHealth.last_checked_at.asc(), StreamHealth.id.asc()).all()
+    for index, entry in enumerate(entries):
+        if limit and rechecked >= limit:
+            remaining = len(entries) - index
+            break
         if not Path(entry.strm_path).exists():
             cleared.append(entry.title)
             db.delete(entry)
@@ -287,7 +296,7 @@ def recheck_known_bad(db) -> dict:
             entry.fail_count = (entry.fail_count or 1) + 1
     db.commit()
     return {"rechecked": rechecked, "cleared": cleared,
-            "deferred": deferred, "provider_busy": provider_busy}
+            "deferred": deferred, "provider_busy": provider_busy, "remaining": remaining}
 
 
 def run_stream_health_sweep():

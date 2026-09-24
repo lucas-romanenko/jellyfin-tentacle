@@ -340,10 +340,13 @@ def check_stream_now(body: StreamCheckRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/streams/recheck")
-def recheck_streams(db: Session = Depends(get_db)):
-    """Re-test all known-bad entries now; recovered ones are cleared."""
+def recheck_streams(limit: int = 25, db: Session = Depends(get_db)):
+    """Re-test known-bad entries now; recovered ones are cleared. At most
+    `limit` per call (each probe is a few seconds; a reverse proxy in front
+    of Tentacle would time the request out on a long list) -- the response
+    says how many are left, and the button asks again."""
     from services.stream_health import recheck_known_bad
-    return recheck_known_bad(db)
+    return recheck_known_bad(db, limit=max(0, min(int(limit), 200)))
 
 
 @router.post("/streams/sweep")

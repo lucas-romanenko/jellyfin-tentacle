@@ -154,6 +154,25 @@ require_tmdb_match (per-provider, for VOD only)
 | live_setup_host | "" | Server IP for Jellyfin Setup tab |
 | live_setup_port | "" | Server port (default 8888 in UI) |
 
+Provider connection settings (all via `PUT /api/settings`; each is optional and the
+default keeps today's behaviour unless noted):
+
+| Key | Default | Purpose |
+|-----|---------|---------|
+| livetv_max_concurrent_streams | "" (unlimited) | Provider connection limit. Leases are handed out by priority: recording > viewer > VOD; a lower-priority stream is taken over when a recording needs the slot |
+| livetv_reconnect_budget_seconds | "0" (until the client leaves) | How long a viewer's pull keeps retrying an upstream failure (509/timeouts) inside the same response. Recordings retry for as long as Jellyfin keeps the tuner open, whatever this says |
+| livetv_stream_format | "m3u8" | `m3u8`, `ts`, or `auto` (the provider's advertised format, remembered at channel sync). `ts` = one long-lived connection per channel instead of playlist polling |
+| provider_jobs_defer_while_live_seconds | "14400" (4 h) | Scheduled sync, discovery and the stream-health sweep wait while a live stream or recording is running — one cumulative budget per run, then they go ahead |
+| vod_via_tentacle_enabled | "false" | Write `.strm` files that play through `/api/vod/...` (signed, resumable, counted against the connection limit) instead of direct provider URLs. Switching either way rewrites the files at the next sync |
+| vod_base_url | "" (YouTube's Tentacle address) | The address players reach Tentacle at for those `.strm` files — use the LAN address, not a public name behind a tunnel |
+| vod_lease_idle_seconds | "30" | How long a paused VOD playback keeps its slot before it is released |
+| vod_token_secret | generated | HMAC key for `/api/vod` links; masked in `GET /api/settings`. Changing it invalidates every `.strm` until the next sync |
+| card_previews | "always" (via `POST /api/smartlists/card-previews`) | Home-row card previews policy handed to the plugin/clients: `always`, `local_only`, `never` |
+
+`GET /api/live/streams` lists open leases (kind, owner, started, status); `POST /api/live/reserve`
+`{channel_id|stream_id, seconds}` holds recording priority for a channel ahead of a timer (used by
+schedulers that know the start time before Jellyfin does); `DELETE /api/live/reserve/{channel_id}` drops it.
+
 ## API ENDPOINTS
 
 ```

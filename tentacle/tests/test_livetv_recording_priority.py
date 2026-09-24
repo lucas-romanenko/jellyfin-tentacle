@@ -29,6 +29,11 @@ def _fresh_db():
     return sessionmaker(bind=engine)()
 
 
+def _priority(kind):
+    from routers import livetv
+    return livetv._LEASE_PRIORITY[kind]
+
+
 class Broker(unittest.IsolatedAsyncioTestCase):
     def _slots(self):
         from routers import livetv
@@ -108,12 +113,35 @@ class Broker(unittest.IsolatedAsyncioTestCase):
         s = self._slots()
         v = await s.acquire_lease(1, 0.01, "live", "channel:7", stream_key="277123")
         v.on_preempt = lambda: self.fail("the recording's own pull was pre-empted")
-        self.assertEqual(1, s.upgrade_recordings({"277123", "5"}))
+        self.assertEqual(1, s.sync_recordings({"277123", "5"}))
         self.assertEqual("recording", v.kind)
-        self.assertEqual(0, s.upgrade_recordings({"277123"}), "already upgraded")
+        self.assertEqual(0, s.sync_recordings({"277123"}), "already upgraded")
         self.assertIsNone(await s.acquire_lease(1, 0.01, "recording", "channel:8"),
                           "an upgraded recording must not give way to another")
         self.assertIsNone(await s.acquire_lease(1, 0.01, "live", "channel:9"))
+
+    async def test_a_finished_recording_goes_back_to_viewer_priority(self):
+        """The viewer who keeps watching after the timer ends must not hold
+        a recording's rank for ever: the next timer on another channel
+        would be refused for it."""
+        s = self._slots()
+        v = await s.acquire_lease(1, 0.01, "live", "channel:7", stream_key="277123")
+        s.sync_recordings({"277123"})
+        self.assertEqual("recording", v.kind)
+        self.assertEqual(1, s.sync_recordings(set()), "the timer ended")
+        self.assertEqual("live", v.kind)
+        self.assertEqual(_priority("live"), v.priority)
+        stopped = []
+        v.on_preempt = lambda: stopped.append(1)
+        r = await s.acquire_lease(1, 0.01, "recording", "channel:8")
+        self.assertIsNotNone(r, "the next recording gets the slot")
+        self.assertEqual([1], stopped)
+
+    async def test_a_lease_without_a_stream_key_is_never_touched(self):
+        s = self._slots()
+        r = await s.acquire_lease(2, 0.01, "recording", "channel:1")
+        self.assertEqual(0, s.sync_recordings(set()))
+        self.assertEqual("recording", r.kind)
 
 
 class GivingTheConnectionBack(unittest.IsolatedAsyncioTestCase):
@@ -266,12 +294,32 @@ class KnowingWhatIsRecording(unittest.IsolatedAsyncioTestCase):
             out = await self.livetv.live_reserve(self.livetv.ReserveRequest(channel_id=self.b.id, seconds=1), self.db)
             self.assertEqual(1, out["reserved_for_seconds"])
             self.assertEqual({self.b.id}, await self.livetv._recording_channel_ids(self.db))
-            self.livetv._reserved_channels[self.b.id] = asyncio.get_running_loop().time() - 1
+            self.livetv._reserved_channels[self.b.id]["until"] = asyncio.get_running_loop().time() - 1
             self.livetv._recording_cache["at"] = -1e9
             self.assertEqual(set(), await self.livetv._recording_channel_ids(self.db))
             await self.livetv.live_reserve(self.livetv.ReserveRequest(channel_id=self.b.id), self.db)
             await self.livetv.live_unreserve(self.b.id)
             self.assertNotIn(self.b.id, self.livetv._reserved_channels)
+
+    async def test_a_reservation_keeps_a_running_pull_at_recording_rank(self):
+        """Reserved ahead of the timer: the pull already running on that
+        channel is promoted, and NOT demoted while the reservation holds
+        even though Jellyfin has no InProgress timer for it yet."""
+        with mock.patch.object(self.livetv, "_recording_stream_ids_from_jellyfin", lambda u, k: set()):
+            self.livetv._stream_slots = self.livetv._StreamSlots()
+            lease = await self.livetv._stream_slots.acquire_lease(
+                6, 0.01, "live", f"channel:{self.b.id}", stream_key=self.b.stream_id or str(self.b.id))
+            await self.livetv.live_reserve(self.livetv.ReserveRequest(channel_id=self.b.id, seconds=60), self.db)
+            self.livetv._recording_cache["at"] = -1e9
+            await self.livetv._recording_channel_ids(self.db)
+            self.assertEqual("recording", lease.kind)
+            self.livetv._recording_cache["at"] = -1e9
+            await self.livetv._recording_channel_ids(self.db)
+            self.assertEqual("recording", lease.kind, "still reserved: not demoted")
+            await self.livetv.live_unreserve(self.b.id)
+            self.livetv._recording_cache["at"] = -1e9
+            await self.livetv._recording_channel_ids(self.db)
+            self.assertEqual("live", lease.kind, "reservation dropped and no timer: back to viewer")
 
     async def test_a_reservation_by_guide_number_as_jellyfin_names_it(self):
         from fastapi import HTTPException

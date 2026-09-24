@@ -180,22 +180,33 @@ class _StreamSlots:
         self.leases[lease.id] = lease
         return lease
 
-    def upgrade_recordings(self, stream_keys) -> int:
-        """Promote running viewer pulls whose channel turns out to be recorded.
+    def sync_recordings(self, stream_keys) -> int:
+        """Bring running pulls into line with which channels are recorded NOW.
 
-        Jellyfin marks a timer InProgress only AFTER its tuner stream is open
-        (RecordingsManager.RecordStream: OpenLiveStreamInternal, then
-        timer.Status = InProgress), so the pull that starts a recording is
-        classified "live" at the moment it opens. The next lookup corrects
-        it here, before anything could take its slot."""
+        Promote: Jellyfin marks a timer InProgress only AFTER its tuner
+        stream is open (RecordingsManager.RecordStream: OpenLiveStreamInternal,
+        then timer.Status = InProgress), so the pull that starts a recording
+        is classified "live" at the moment it opens; the next lookup corrects
+        it here, before anything could take its slot.
+
+        Demote: a recording that has ended while a viewer keeps watching the
+        same channel must go back to viewer priority, or it would hold a
+        recording's rank for ever and the next scheduled recording on another
+        channel could be refused for it. Returns how many changed."""
         keys = set(stream_keys or ())
         n = 0
         for lease in self.leases.values():
-            if lease.kind == "live" and lease.stream_key is not None and lease.stream_key in keys:
-                lease.kind = "recording"
-                lease.priority = _LEASE_PRIORITY["recording"]
+            if lease.stream_key is None:
+                continue
+            recorded = lease.stream_key in keys
+            if lease.kind == "live" and recorded:
+                lease.kind, lease.priority = "recording", _LEASE_PRIORITY["recording"]
                 n += 1
                 logger.info(f"[LiveTV] '{lease.owner}' is being recorded — its slot now outranks viewers")
+            elif lease.kind == "recording" and not recorded:
+                lease.kind, lease.priority = "live", _LEASE_PRIORITY["live"]
+                n += 1
+                logger.info(f"[LiveTV] '{lease.owner}' is no longer being recorded — back to viewer priority")
         return n
 
     def _victim_for(self, kind: str) -> "_Lease | None":
@@ -419,7 +430,7 @@ async def _recording_channel_ids(db, force: bool = False) -> "set[int]":
     so the victim is chosen on current information)."""
     loop = asyncio.get_running_loop()
     now = loop.time()
-    for cid in [c for c, until in _reserved_channels.items() if until <= now]:
+    for cid in [c for c, r in _reserved_channels.items() if r["until"] <= now]:
         del _reserved_channels[cid]
     reserved = set(_reserved_channels)
     cache = _recording_cache
@@ -500,7 +511,8 @@ def _recording_lookup_done(task):
     cache["at"] = asyncio.get_running_loop().time()
     if sids is not None:
         cache["sids"] = set(sids)
-        _stream_slots.upgrade_recordings(cache["sids"])
+        reserved_keys = {r["stream_key"] for r in _reserved_channels.values() if r.get("stream_key")}
+        _stream_slots.sync_recordings(cache["sids"] | reserved_keys)
 
 
 # One upstream pull per channel, fanned out to every client watching it.
@@ -1028,6 +1040,7 @@ def _stream_snapshot(db) -> list:
         out.append({
             "channel_id": channel_id,
             "channel": ch.name if ch else None,
+            "client": None,
             # the GuideNumber Jellyfin knows this channel by (hdhr_<stream_id>)
             "stream_id": (ch.stream_id or str(ch.id)) if ch else None,
             "kind": lease.kind if lease else None,
@@ -1044,6 +1057,7 @@ def _stream_snapshot(db) -> list:
             out.append({
                 "channel_id": None,
                 "channel": pb.owner,
+                "client": pb.client,
                 "stream_id": None,
                 "kind": "vod",
                 "state": "streaming" if pb.active_bodies else ("stopped" if pb.stopped.is_set() else "idle"),
@@ -1102,7 +1116,8 @@ async def live_reserve(body: ReserveRequest, db: Session = Depends(get_db)):
     if not ch:
         raise HTTPException(404, "Channel not found")
     seconds = max(1, min(int(body.seconds), 24 * 3600))
-    _reserved_channels[ch.id] = asyncio.get_running_loop().time() + seconds
+    _reserved_channels[ch.id] = {"until": asyncio.get_running_loop().time() + seconds,
+                                 "stream_key": ch.stream_id or str(ch.id)}
     return {"channel_id": ch.id, "channel": ch.name, "stream_id": ch.stream_id, "reserved_for_seconds": seconds}
 
 

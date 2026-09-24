@@ -6455,7 +6455,8 @@ async function healthRecheckStreams(btn) {
   if (btn) { btn.disabled = true; btn.textContent = 'Rechecking…'; }
   try {
     const r = await api('/api/health/streams/recheck', { method: 'POST' });
-    toast(r.cleared.length ? `${r.cleared.length} stream(s) recovered and cleared` : `${r.rechecked} rechecked — still dead`,
+    const left = r.remaining ? ` — ${r.remaining} more to check, press again` : '';
+    toast(r.cleared.length ? `${r.cleared.length} stream(s) recovered and cleared${left}` : `${r.rechecked} rechecked — still dead${left}`,
           r.cleared.length ? 'success' : 'info');
     loadHealthStreams();
   } catch (e) {

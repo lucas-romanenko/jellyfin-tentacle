@@ -5,6 +5,7 @@ Replaces xtream_to_jellyfin.py as a proper service.
 """
 
 import os
+import re
 import zlib
 import shutil
 import logging
@@ -154,22 +155,20 @@ class XtreamClient:
         # requests ignores a `timeout` attribute on a Session; it has to be
         # passed per call. Without it a stalled panel hung the sync for ever.
         self.timeout = 30
-        # Called before every provider request. sync_provider sets it so a
-        # sync stands aside while a live stream or recording is running
-        # (services.provider_activity); a bare client makes no such promise.
-        self.before_request = None
+        # A services.provider_activity.JobPause when the sync must stand
+        # aside for live TV / a recording. It is called at CATEGORY
+        # boundaries, never between calls inside one, because a category's
+        # writes are committed once at its end: pausing with writes pending
+        # would hold the SQLite lock for as long as the pause lasts, and every
+        # other write in Tentacle (webhooks, settings) would fail meanwhile.
+        self.job_pause = None
         self.provider_id = getattr(provider, "id", None)
         # A services.vod_tokens.Links when VOD is served through Tentacle
         # (setting `vod_via_tentacle_enabled`): the .strm files then point
         # at Tentacle's /api/vod route instead of at the provider.
         self.vod_links = None
 
-    def _wait(self):
-        if self.before_request is not None:
-            self.before_request()
-
     def _get(self, action: str, extra: str = "") -> list:
-        self._wait()
         try:
             r = self.session.get(f"{self.base}&action={action}{extra}", timeout=self.timeout)
             r.raise_for_status()
@@ -185,7 +184,6 @@ class XtreamClient:
         return self._get(f"get_series&category_id={category_id}")
 
     def get_series_info(self, series_id: str) -> dict:
-        self._wait()
         r = self.session.get(f"{self.base}&action=get_series_info&series_id={series_id}",
                              timeout=self.timeout)
         r.raise_for_status()
@@ -211,34 +209,66 @@ def vod_links_for(db: Session, provider: Provider):
     from services import vod_tokens
     if not vod_enabled(db) or (provider.provider_type or "xtream") != "xtream":
         return None
-    from services.youtube.sync import base_url
-    base = base_url(db)
+    # `vod_base_url` first: the address every PLAYER reaches Tentacle at on
+    # the LAN. The YouTube address is the fallback; where that is a public
+    # name behind a tunnel or an access gate, every film would go out and
+    # back in through it, so a LAN address here is the right choice.
+    base = (get_setting(db, "vod_base_url", "") or "").strip().rstrip("/")
+    if not base:
+        from services.youtube.sync import base_url
+        base = base_url(db)
     if not base:
         logger.warning("[Sync] VOD through Tentacle is on but Tentacle's address is not known "
-                       "(Settings → YouTube → Tentacle address); writing direct provider URLs")
+                       "(set vod_base_url, or Settings → YouTube → Tentacle address); writing direct provider URLs")
         return None
     return vod_tokens.Links(base, vod_tokens.token_secret(db), provider.id)
 
 
-def _strm_needs_rewrite(strm_file: Path, expected: str, client) -> bool:
-    """An existing .strm is rewritten when its address is not the one the
-    sync would write today AND it is one of ours to manage: a direct provider
-    URL (or anything else that names the provider's host), or a Tentacle VOD
-    URL. A file that points somewhere else entirely was set up by hand and
-    is left alone. Switching `vod_via_tentacle_enabled` either way is thus
-    one sync away, in place."""
-    from urllib.parse import urlparse
+def _pause_between_categories(client, db: Session) -> None:
+    """Stand aside for live TV / a recording, with nothing left uncommitted."""
+    pause = getattr(client, "job_pause", None)
+    if pause is None:
+        return
+    db.commit()
+    pause()
+
+
+# The provider stream a .strm plays, as (kind, id): a direct Xtream URL, the
+# same wrapped by a resume proxy (URL-encoded in a query parameter), or
+# Tentacle's own /api/vod address. None for anything else (a hand-made file).
+_DIRECT_STREAM_RE = re.compile(r"/(movie|series)/[^/]+/[^/]+/(\d+)\.[A-Za-z0-9]+")
+
+
+def _stream_ref(url_text: str):
+    from urllib.parse import unquote
     from services import vod_tokens
+    via_tentacle = vod_tokens.stream_id_in_url(url_text)
+    if via_tentacle:
+        return via_tentacle
+    for candidate in (url_text, unquote(url_text)):
+        m = _DIRECT_STREAM_RE.search(candidate or "")
+        if m:
+            return m.group(1), int(m.group(2))
+    return None
+
+
+def _strm_needs_rewrite(strm_file: Path, expected: str, client) -> bool:
+    """An existing .strm is rewritten only when it plays the SAME provider
+    stream as the sync would write today, in a different form: switching to
+    or from Tentacle's VOD address, new credentials or host, or a resume
+    proxy wrapping the provider URL. A file that plays a different stream is
+    left alone -- a provider that lists one title in two categories offers
+    it twice, and rewriting to whichever listing came last would flip the
+    file every night (and change which copy plays). A file that points
+    somewhere else entirely was set up by hand and is left alone too."""
     try:
         current = strm_file.read_text(encoding="utf-8").strip()
     except (OSError, UnicodeDecodeError):
         return False
     if not current or current == expected:
         return False
-    if vod_tokens.is_vod_url(current):
-        return True
-    host = (urlparse(getattr(client, "server", "") or "").hostname or "").lower()
-    return bool(host) and host in current.lower()
+    current_ref = _stream_ref(current)
+    return current_ref is not None and current_ref == _stream_ref(expected)
 
 
 # ── M3U provider support ─────────────────────────────────────────────────
@@ -1033,11 +1063,14 @@ def sync_provider(
     db: Session,
     progress_callback=None,
     cancel_check=None,
+    pause=None,
 ) -> SyncRun:
     """
     Main entry point for syncing a provider.
     Creates and returns a SyncRun record.
     cancel_check: callable that returns True if sync should be cancelled.
+    pause: a services.provider_activity.JobPause shared with the caller's
+    other provider work, so one wait budget covers the whole run.
     """
     # Load settings
     from services.tmdb import get_tmdb_token
@@ -1076,11 +1109,11 @@ def sync_provider(
 
         tmdb = TMDBService(bearer_token, data_dir, match_threshold)
         client = make_provider_client(provider)
-        # Every provider call first waits for live TV / a recording to end
-        # (services.provider_activity), so a recording that starts mid-sync
-        # is not competed with either.
-        from services.provider_activity import pause_while_live
-        client.before_request = lambda: pause_while_live(db, "the provider sync", cancel_check)
+        # The sync stands aside for live TV / a recording at every category
+        # boundary (services.provider_activity), so a recording that starts
+        # mid-sync is not competed with either. One budget for the whole run.
+        from services.provider_activity import JobPause
+        client.job_pause = pause if pause is not None else JobPause(db, "the provider sync", cancel_check)
         client.vod_links = vod_links_for(db, provider)
 
         category_stats = {}
@@ -1241,6 +1274,7 @@ def _sync_movies(
         cat_failed = 0
         cat_skipped = 0
 
+        _pause_between_categories(client, db)
         logger.info(f"Processing category: {cat.category_name}")
 
         # Notify UI immediately so user sees which category is loading
@@ -1610,6 +1644,7 @@ def _sync_series(
         cat_skipped = 0
         cat_failed = 0
 
+        _pause_between_categories(client, db)
         logger.info(f"Processing category: {cat.category_name}")
 
         # Notify UI immediately so user sees which category is loading

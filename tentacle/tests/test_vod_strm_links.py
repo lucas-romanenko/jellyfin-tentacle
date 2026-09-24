@@ -73,6 +73,18 @@ class LinksComeFromTheSettings(unittest.TestCase):
         self.assertEqual(self.provider.id, links.provider_id)
         self.assertRegex(links.movie(1, "mp4"), r"^http://192\.168\.2\.52:8888/api/vod/movie/")
 
+    def test_vod_base_url_wins_over_the_youtube_address(self):
+        """Where the YouTube address is a public name behind a tunnel, every
+        film would go out and back in through it; `vod_base_url` names the
+        LAN address players should use instead."""
+        from models.database import set_setting
+        from services.sync import vod_links_for
+        set_setting(self.db, "vod_via_tentacle_enabled", "true")
+        set_setting(self.db, "vod_base_url", "http://192.168.2.52:8888/")
+        with mock.patch("services.youtube.sync.base_url", lambda db, *a, **k: "https://tentacle.example.net"):
+            links = vod_links_for(self.db, self.provider)
+        self.assertRegex(links.movie(1, "mp4"), r"^http://192\.168\.2\.52:8888/api/vod/movie/")
+
     def test_m3u_providers_keep_their_own_urls(self):
         from models.database import set_setting
         from services.sync import vod_links_for
@@ -117,6 +129,28 @@ class ExistingFilesAreRewrittenInPlace(unittest.TestCase):
         self.strm.write_text("http://192.168.2.52:8889/proxy/stream/Film.mkv?d=http%3A%2F%2Fcf.panel.test%2Fmovie%2Fu%2Fp%2F42.mkv&api_password=x")
         self._repair(_client(_links()))
         self.assertIn("/api/vod/movie/3.42.", self.strm.read_text())
+
+    def test_a_second_listing_of_the_same_title_does_not_flip_the_file(self):
+        """A provider that lists one film in two categories offers it twice
+        (two stream ids). The sync sees both; whichever comes second must
+        not rewrite the file to its own copy -- with VOD off that would
+        change the file every night for no reason, and with VOD on it would
+        flip which copy plays. Only the SAME stream in a different form is
+        rewritten."""
+        self.strm.write_text("http://cf.panel.test/movie/u/p/42.mkv")
+        self.stream = {"stream_id": 43, "container_extension": "mkv"}
+        self._repair(_client())
+        self.assertEqual("http://cf.panel.test/movie/u/p/42.mkv", self.strm.read_text())
+        self._repair(_client(_links()))
+        self.assertEqual("http://cf.panel.test/movie/u/p/42.mkv", self.strm.read_text())
+        self.strm.write_text(_links().movie(42, "mkv"))
+        self._repair(_client(_links()))
+        self.assertIn("/api/vod/movie/3.42.", self.strm.read_text(), "the Tentacle form is kept, for 42")
+
+    def test_new_credentials_for_the_same_stream_are_a_rewrite(self):
+        self.strm.write_text("http://old.panel.test/movie/olduser/oldpass/42.mkv")
+        self._repair(_client())
+        self.assertEqual("http://cf.panel.test/movie/u/p/42.mkv", self.strm.read_text())
 
     def test_a_hand_made_file_pointing_elsewhere_is_left_alone(self):
         self.strm.write_text("http://nas.local/films/film.mkv")
