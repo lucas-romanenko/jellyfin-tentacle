@@ -137,6 +137,76 @@ class Broker(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(r, "the next recording gets the slot")
         self.assertEqual([1], stopped)
 
+    async def test_a_waiting_recording_gets_the_freed_slot_before_a_waiting_viewer(self):
+        """Both slots held by recordings; a viewer starts waiting, then a
+        recording (pre-padding). When one recording ends, the waiting
+        recording must get the slot -- the viewer can be refused, the
+        recording cannot."""
+        for early in ("live", "vod"):
+            s = self._slots()
+            r1 = await s.acquire_lease(2, 0.01, "recording", "channel:1")
+            await s.acquire_lease(2, 0.01, "recording", "channel:2")
+            viewer = asyncio.ensure_future(s.acquire_lease(2, 1.0, early, "early"))
+            await asyncio.sleep(0.01)
+            rec = asyncio.ensure_future(s.acquire_lease(2, 1.0, "recording", "channel:3"))
+            await asyncio.sleep(0.01)
+            s.release_lease(r1)
+            got = await rec
+            self.assertIsNotNone(got, early)
+            self.assertIsNone(await viewer, f"the {early} waiter must not have jumped the queue")
+            self.assertEqual({"channel:2", "channel:3"}, {l.owner for l in s.leases.values()})
+
+    async def test_equals_are_served_in_arrival_order(self):
+        s = self._slots()
+        held = await s.acquire_lease(1, 0.01, "live", "channel:1")
+        first = asyncio.ensure_future(s.acquire_lease(1, 1.0, "live", "first"))
+        await asyncio.sleep(0.01)
+        second = asyncio.ensure_future(s.acquire_lease(1, 1.0, "live", "second"))
+        await asyncio.sleep(0.01)
+        s.release_lease(held)
+        self.assertIsNotNone(await first)
+        self.assertIsNone(await second)
+
+    async def test_a_newcomer_does_not_jump_a_waiter_that_is_as_important(self):
+        s = self._slots()
+        held = await s.acquire_lease(1, 0.01, "recording", "channel:1")
+        waiting = asyncio.ensure_future(s.acquire_lease(1, 1.0, "recording", "channel:2"))
+        await asyncio.sleep(0.01)
+        s.leases.pop(held.id)           # the slot frees without a wake-up reaching the waiter yet
+        self.assertIsNone(await s.acquire_lease(1, 0.01, "recording", "channel:3"))
+        s.release_lease(None)
+        self.assertIsNotNone(await waiting)
+
+    async def test_a_recording_waiting_takes_a_viewer_that_was_demoted_meanwhile(self):
+        s = self._slots()
+        v = await s.acquire_lease(1, 0.01, "live", "channel:7", stream_key="277123")
+        s.sync_recordings({"277123"})                     # being recorded: not takeable
+        rec = asyncio.ensure_future(s.acquire_lease(1, 1.0, "recording", "channel:8"))
+        await asyncio.sleep(0.01)
+        stopped = []
+        v.on_preempt = lambda: stopped.append(1)
+        s.sync_recordings(set())                          # its timer ended: a viewer again
+        self.assertIsNotNone(await rec)
+        self.assertEqual([1], stopped)
+
+    async def test_the_slot_moves_to_the_newcomer_before_the_victim_is_stopped(self):
+        """Stopping the victim can yield; a waiter woken meanwhile must not
+        find the slot free and put the count over the limit."""
+        s = self._slots()
+        v = await s.acquire_lease(1, 0.01, "live", "channel:1")
+        seen = []
+
+        async def slow_stop():
+            seen.append(s.active)
+            await asyncio.sleep(0)
+        v.on_preempt = slow_stop
+        waiter = asyncio.ensure_future(s.acquire_lease(1, 0.2, "live", "channel:2"))
+        await asyncio.sleep(0)
+        await s.acquire_lease(1, 0.01, "recording", "channel:3")
+        self.assertEqual([1], seen, "the newcomer already holds the slot while the victim stops")
+        self.assertIsNone(await waiter)
+        self.assertEqual(1, s.active)
+
     async def test_a_lease_without_a_stream_key_is_never_touched(self):
         s = self._slots()
         r = await s.acquire_lease(2, 0.01, "recording", "channel:1")
@@ -212,7 +282,7 @@ class KnowingWhatIsRecording(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         import routers.livetv as livetv
         self.livetv = livetv
-        livetv._recording_cache.update(at=-1e9, sids=set(), pending=None)
+        livetv._recording_cache.update(at=-1e9, sids=set(), pending=None, failures=0, retry_at=-1e9)
         livetv._reserved_channels.clear()
         self.db = _fresh_db()
         from models.database import LiveChannel, Provider, set_setting
@@ -234,9 +304,9 @@ class KnowingWhatIsRecording(unittest.IsolatedAsyncioTestCase):
             {"Status": "InProgress", "ExternalChannelId": "m3u_5"},
             {"Status": "InProgress"},
         ]}
-        with mock.patch.object(JellyfinService, "_get", lambda self, path, params=None: timers):
+        with mock.patch.object(self.livetv, "_jellyfin_timers", lambda u, k: timers):
             self.assertEqual({"277123"}, self.livetv._recording_stream_ids_from_jellyfin("http://jf.test", "k"))
-        with mock.patch.object(JellyfinService, "_get", lambda self, path, params=None: None):
+        with mock.patch.object(self.livetv, "_jellyfin_timers", lambda u, k: None):
             self.assertIsNone(self.livetv._recording_stream_ids_from_jellyfin("http://jf.test", "k"))
 
     def test_a_timer_that_is_due_counts_as_recording_before_jellyfin_marks_it(self):
@@ -256,9 +326,38 @@ class KnowingWhatIsRecording(unittest.IsolatedAsyncioTestCase):
             # cancelled: never
             {"Status": "Cancelled", "ExternalChannelId": "hdhr_4", "StartDate": fmt(now)},
             {"Status": "New", "ExternalChannelId": "hdhr_5", "StartDate": "garbage"},
+            # never started and long over (Jellyfin leaves it "New"): not recording
+            {"Status": "New", "ExternalChannelId": "hdhr_6", "StartDate": fmt(now - timedelta(hours=3)),
+             "EndDate": fmt(now - timedelta(hours=1)), "PostPaddingSeconds": 600},
+            # late but still inside its end + post-padding: still due
+            {"Status": "New", "ExternalChannelId": "hdhr_7", "StartDate": fmt(now - timedelta(hours=2)),
+             "EndDate": fmt(now - timedelta(minutes=5)), "PostPaddingSeconds": 600},
         ]}
-        with mock.patch.object(JellyfinService, "_get", lambda self, path, params=None: timers):
-            self.assertEqual({"1", "2"}, self.livetv._recording_stream_ids_from_jellyfin("http://jf.test", "k"))
+        with mock.patch.object(self.livetv, "_jellyfin_timers", lambda u, k: timers):
+            self.assertEqual({"1", "2", "7"}, self.livetv._recording_stream_ids_from_jellyfin("http://jf.test", "k"))
+
+    async def test_a_failing_jellyfin_is_asked_less_often_and_the_last_answer_kept(self):
+        """A bad key or a Jellyfin that is down must not cost every tuner
+        open the lookup wait, nor log an error every five seconds."""
+        calls = []
+
+        def failing(url, key):
+            calls.append(1)
+            raise RuntimeError("Jellyfin answered HTTP 401")
+        self.livetv._recording_cache.update({"at": -1e9, "sids": {"277123"}, "pending": None,
+                                             "failures": 0, "retry_at": -1e9})
+        with mock.patch.object(self.livetv, "_recording_stream_ids_from_jellyfin", failing), \
+                self.assertLogs("routers.livetv", "WARNING") as logs:
+            self.assertEqual({self.a.id}, await self.livetv._recording_channel_ids(self.db, force=True),
+                             "the last answer is kept")
+            for _ in range(5):
+                await self.livetv._recording_channel_ids(self.db, force=True)
+        self.assertEqual(1, len(calls), "backed off: no second ask inside the retry window")
+        self.assertEqual(1, sum("Could not ask Jellyfin" in m for m in logs.output), "reported once")
+        with mock.patch.object(self.livetv, "_recording_stream_ids_from_jellyfin", lambda u, k: set()):
+            self.livetv._recording_cache["retry_at"] = -1e9
+            self.assertEqual(set(), await self.livetv._recording_channel_ids(self.db, force=True))
+        self.assertEqual(0, self.livetv._recording_cache["failures"], "recovered")
 
     async def test_the_refresher_promotes_a_running_pull_without_another_open(self):
         """A lone recording (nothing else opening) must still become
@@ -365,7 +464,7 @@ class RouteGivesRecordingsTheSlot(unittest.TestCase):
         livetv._shared_lock = None
         livetv._shared_streams.clear()
         livetv._stream_status.clear()
-        livetv._recording_cache.update(at=-1e9, sids=set(), pending=None)
+        livetv._recording_cache.update(at=-1e9, sids=set(), pending=None, failures=0, retry_at=-1e9)
         livetv._reserved_channels.clear()
         self.db = _fresh_db()
         from models.database import LiveChannel, Provider, set_setting

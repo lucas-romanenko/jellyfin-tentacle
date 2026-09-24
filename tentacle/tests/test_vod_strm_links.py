@@ -148,9 +148,37 @@ class ExistingFilesAreRewrittenInPlace(unittest.TestCase):
         self.assertIn("/api/vod/movie/3.42.", self.strm.read_text(), "the Tentacle form is kept, for 42")
 
     def test_new_credentials_for_the_same_stream_are_a_rewrite(self):
-        self.strm.write_text("http://old.panel.test/movie/olduser/oldpass/42.mkv")
+        self.strm.write_text("http://cf.panel.test:8080/movie/olduser/oldpass/42.mp4")
         self._repair(_client())
         self.assertEqual("http://cf.panel.test/movie/u/p/42.mkv", self.strm.read_text())
+
+    def test_files_that_are_not_this_providers_own_url_are_left_alone(self):
+        """Whatever carries the same stream id: another host, a proxy with
+        the provider URL unencoded in its query, a proxy that puts the
+        provider's path under its own prefix, a URL with a query."""
+        for text in ("http://other.example/movie/u/p/42.mkv",
+                     "http://192.168.2.10:9000/play?url=http://cf.panel.test/movie/u/p/42.mkv",
+                     "http://myproxy.lan/xtream/movie/u/p/42.mkv",
+                     "http://cf.panel.test/movie/u/p/42.mkv?token=abc"):
+            for links in (None, _links()):
+                self.strm.write_text(text)
+                self._repair(_client(links))
+                self.assertEqual(text, self.strm.read_text(), (text, links is not None))
+
+    def test_a_tentacle_link_of_another_provider_is_left_alone(self):
+        from services import vod_tokens
+        other = vod_tokens.Links("http://192.168.2.52:8888", SECRET, 4).movie(42, "mkv")
+        self.strm.write_text(other)
+        self._repair(_client())
+        self.assertEqual(other, self.strm.read_text())
+
+    def test_m3u_providers_never_rewrite_existing_files(self):
+        """Their playlist URLs may carry a rotating token or a load-balanced
+        host; rewriting on every change would touch every file nightly."""
+        from services.sync import _strm_needs_rewrite, M3UClient
+        client = M3UClient.__new__(M3UClient)
+        self.strm.write_text("http://cdn1.example/movie/u/p/42.mkv?token=abc")
+        self.assertFalse(_strm_needs_rewrite(self.strm, "http://cdn2.example/movie/u/p/42.mkv?token=def", client))
 
     def test_a_proxy_wrapper_is_left_alone_while_vod_through_tentacle_is_off(self):
         """Somebody's own resume proxy in front of the provider is a

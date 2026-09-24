@@ -161,6 +161,19 @@ class MiddlewareStaysOutOfTheWay(unittest.TestCase):
 
 
 class TokenGate(_Base):
+    def test_an_install_without_a_secret_answers_404_and_makes_none(self):
+        """The secret is made by the sync that writes links; an anonymous
+        request must not create one (a SQLite write on the event loop, from
+        a public route, that can wait on the sync's lock)."""
+        from models.database import Setting, get_setting
+        self.db.query(Setting).filter(Setting.key == "vod_token_secret").delete()
+        self.db.commit()
+        with self.assertRaises(HTTPException) as cm:
+            self._play({self.upstream: [_file(206, [b"AAAA"], start=0)]})
+        self.assertEqual(404, cm.exception.status_code)
+        self.assertEqual("", get_setting(self.db, "vod_token_secret", "") or "")
+        self.assertEqual([], self.log)
+
     def test_unknown_or_forged_token_is_404_without_touching_the_provider(self):
         async def go():
             for bad in ("2141622.mkv", self.token_file.replace(self.token_file[-9:-4], "00000")):
@@ -405,6 +418,52 @@ class OnePlaybackOneLease(_Base):
         self._play(script, range_header="bytes=500-")
         self.assertEqual(1, self.livetv._stream_slots.active, "a seek is not a second connection slot")
         self.assertEqual(1, len(self.vod._playbacks))
+
+    def test_a_preempted_paused_playback_drops_its_provider_connection_at_once(self):
+        """A paused player leaves the body blocked sending to it; the
+        provider connection must still close the moment a recording takes
+        the slot -- that open connection is what 509s the recording."""
+        vod, livetv = self.vod, self.livetv
+
+        async def go():
+            with mock.patch("httpx.AsyncClient", lambda **kw: _Client({self.upstream: [_file(206, [b"A"] * 50, start=0)]},
+                                                                      self.log, **kw)), \
+                    mock.patch("routers.vod.lan_origin_guard", lambda *a, **k: (lambda u: True)):
+                resp = await vod.vod_stream("movie", self.token_file, _request("bytes=0-"), self.db)
+                it = resp.body_iterator.__aiter__()
+                await it.__anext__()                         # playing, then paused: nothing reads on
+                pb = next(iter(vod._playbacks.values()))
+                upstream = pb.upstream
+                self.assertIsNotNone(upstream)
+                await livetv._stream_slots.acquire_lease(1, 0.01, "recording", "channel:1")
+                await asyncio.sleep(0.01)
+                self.assertTrue(upstream.is_closed, "closed without waiting for the player")
+                rest = [c async for c in it]
+                self.assertLessEqual(len(rest), 1, "the body ends instead of resuming")
+                self.assertEqual(1, len(self.log), "no resume after a pre-emption")
+        asyncio.run(go())
+
+    def test_a_newer_range_closes_the_older_ones_connection_at_once(self):
+        """One playback, one provider connection -- even for a player that
+        opens the next range before closing the previous one."""
+        from models.database import set_setting
+        vod = self.vod
+        script = {self.upstream: [_file(206, [b"A"] * 50, start=0), _file(206, [b"B"] * 50, start=500)]}
+
+        async def go():
+            with mock.patch("httpx.AsyncClient", lambda **kw: _Client(script, self.log, **kw)), \
+                    mock.patch("routers.vod.lan_origin_guard", lambda *a, **k: (lambda u: True)):
+                first = await vod.vod_stream("movie", self.token_file, _request("bytes=0-"), self.db)
+                it1 = first.body_iterator.__aiter__()
+                await it1.__anext__()
+                old = next(iter(vod._playbacks.values())).upstream
+                second = await vod.vod_stream("movie", self.token_file, _request("bytes=500-"), self.db)
+                await asyncio.sleep(0.01)
+                self.assertTrue(old.is_closed)
+                self.assertLessEqual(len([c async for c in it1]), 1, "the replaced range ends quietly")
+                self.assertEqual(b"B" * 50, b"".join([c async for c in second.body_iterator]))
+                self.assertEqual(2, len(self.log), "no resume of the replaced range")
+        asyncio.run(go())
 
     def test_two_tvs_on_the_same_title_are_two_playbacks(self):
         """Keyed by title alone, the second TV would take over the first

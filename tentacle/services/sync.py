@@ -154,7 +154,10 @@ class XtreamClient:
         self.session.headers.update(XTREAM_HEADERS)
         # requests ignores a `timeout` attribute on a Session; it has to be
         # passed per call. Without it a stalled panel hung the sync for ever.
-        self.timeout = 30
+        # (connect, read): a large category can take a slow panel well over
+        # 30 s before its first byte; a stalled one must still not hang the
+        # nightly sync for ever.
+        self.timeout = (15, 180)
         # A services.provider_activity.JobPause when the sync must stand
         # aside for live TV / a recording. It is called at CATEGORY
         # boundaries, never between calls inside one, because a category's
@@ -244,47 +247,70 @@ def _pause_between_categories(client, db: Session, progress_callback=None, phase
         raise SyncCancelledError("Sync cancelled while waiting for live TV to finish")
 
 
-# The provider stream a .strm plays, as (kind, id): a direct Xtream URL, the
-# same wrapped by a resume proxy (URL-encoded in a query parameter), or
-# Tentacle's own /api/vod address. None for anything else (a hand-made file).
-_DIRECT_STREAM_RE = re.compile(r"/(movie|series)/[^/]+/[^/]+/(\d+)\.[A-Za-z0-9]+")
+# A direct Xtream stream URL: scheme://host[:port]/movie|series/<u>/<p>/<id>.<ext>,
+# the path starting right after the host (a proxy that puts the provider's
+# path under its own prefix is not one).
+_DIRECT_STREAM_RE = re.compile(r"(?i)^https?://([^/:?#]+)(?::\d+)?/(movie|series)/[^/?#]+/[^/?#]+/(\d+)\.[a-z0-9]+$")
+_EMBEDDED_STREAM_RE = re.compile(r"(?i)https?://([^/:?#&]+)(?::\d+)?/(movie|series)/[^/?#&]+/[^/?#&]+/(\d+)\.[a-z0-9]+")
 
 
-def _stream_ref(url_text: str, unwrap: bool = False):
-    """`unwrap` also looks inside a URL-encoded query parameter (a resume
-    proxy wrapping the provider URL) -- only when migrating such files TO
-    Tentacle's own route; with VOD through Tentacle off, a hand-made proxy
-    file is somebody's deliberate setup and is left alone."""
+def _direct_ref(url_text: str, embedded: bool = False):
+    """(host, kind, id) of a direct Xtream URL; with `embedded`, also of one
+    carried URL-encoded inside another URL (a resume proxy's `?d=`)."""
     from urllib.parse import unquote
-    from services import vod_tokens
-    via_tentacle = vod_tokens.stream_id_in_url(url_text)
-    if via_tentacle:
-        return via_tentacle
-    for candidate in ((url_text, unquote(url_text)) if unwrap else (url_text,)):
-        m = _DIRECT_STREAM_RE.search(candidate or "")
-        if m:
-            return m.group(1), int(m.group(2))
-    return None
+    m = _DIRECT_STREAM_RE.match(url_text or "")
+    if m is None and embedded:
+        m = _EMBEDDED_STREAM_RE.search(unquote(url_text or "")) if "%2F" in (url_text or "").upper() else None
+    return (m.group(1).lower(), m.group(2).lower(), int(m.group(3))) if m else None
 
 
 def _strm_needs_rewrite(strm_file: Path, expected: str, client) -> bool:
-    """An existing .strm is rewritten only when it plays the SAME provider
-    stream as the sync would write today, in a different form: switching to
-    or from Tentacle's VOD address, new credentials or host, or a resume
-    proxy wrapping the provider URL. A file that plays a different stream is
-    left alone -- a provider that lists one title in two categories offers
-    it twice, and rewriting to whichever listing came last would flip the
-    file every night (and change which copy plays). A file that points
-    somewhere else entirely was set up by hand and is left alone too."""
+    """An existing .strm is rewritten only when it plays the SAME stream of
+    THIS Xtream provider as the sync would write today, in a different form:
+      - switching to or from Tentacle's VOD route (vod_via_tentacle_enabled),
+        including a file that wraps the provider URL in a resume proxy
+        (URL-encoded), when moving TO Tentacle's route;
+      - the provider's own URL with changed credentials, scheme, port or
+        container extension.
+    Everything else is left alone: another stream id (a title listed twice
+    would otherwise flip every night), another host, a proxy of somebody's
+    own, and M3U providers (their playlist URLs may rotate tokens or hosts
+    on every fetch)."""
+    if not isinstance(client, XtreamClient):
+        return False
     try:
         current = strm_file.read_text(encoding="utf-8").strip()
     except (OSError, UnicodeDecodeError):
         return False
     if not current or current == expected:
         return False
+    from urllib.parse import urlparse
     from services import vod_tokens
-    current_ref = _stream_ref(current, unwrap=vod_tokens.is_vod_url(expected))
-    return current_ref is not None and current_ref == _stream_ref(expected)
+    provider_host = (urlparse(client.server).hostname or "").lower()
+    if not provider_host:
+        return False
+
+    def ours(url_text):
+        """(kind, id) of a Tentacle VOD link for THIS provider, else None."""
+        m = vod_tokens._TOKEN_URL.search(url_text or "")
+        if m is None or int(m.group(2)) != getattr(client, "provider_id", None):
+            return None
+        return m.group(1), int(m.group(3))
+    want = ours(expected)
+    if want is not None:                                   # moving TO Tentacle's route
+        have = ours(current)
+        if have is not None:
+            return have == want                            # new secret / address
+        ref = _direct_ref(current, embedded=True)
+        return ref is not None and ref == (provider_host, want[0], want[1])
+    exp = _direct_ref(expected)
+    if exp is None:
+        return False
+    have = ours(current)
+    if have is not None:                                   # moving back to direct
+        return have == (exp[1], exp[2])
+    ref = _direct_ref(current)
+    return ref is not None and ref == exp and exp[0] == provider_host
 
 
 # ── M3U provider support ─────────────────────────────────────────────────

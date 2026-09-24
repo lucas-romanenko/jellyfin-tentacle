@@ -255,6 +255,9 @@ def recheck_known_bad(db, limit: int = 0) -> dict:
     cleared, rechecked = [], 0
     deferred = provider_busy = False
     remaining = 0
+    # "Over its limit" is about THIS run: a 509 seen by an earlier sweep or
+    # "Check now" must not keep the Recheck button dead until the next sweep.
+    _probe_state["provider_busy"] = False
     # Least recently re-tested first, so successive limited calls work
     # through the whole list instead of re-testing the same few each time.
     entries = db.query(StreamHealth).order_by(StreamHealth.last_checked_at.asc(), StreamHealth.id.asc()).all()

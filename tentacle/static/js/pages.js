@@ -6456,8 +6456,15 @@ async function healthRecheckStreams(btn) {
   try {
     const r = await api('/api/health/streams/recheck', { method: 'POST' });
     const left = r.remaining ? ` — ${r.remaining} more to check, press again` : '';
-    toast(r.cleared.length ? `${r.cleared.length} stream(s) recovered and cleared${left}` : `${r.rechecked} rechecked — still dead${left}`,
-          r.cleared.length ? 'success' : 'info');
+    if (r.deferred && !r.rechecked) {
+      toast('Live TV or a recording is running — recheck again when it ends (each test opens a provider stream)', 'info');
+    } else if (r.provider_busy && !r.rechecked) {
+      toast('The provider is over its connection limit right now — try again in a few minutes', 'info');
+    } else {
+      const stopped = r.deferred ? ' — stopped: live TV started' : r.provider_busy ? ' — stopped: provider over its limit' : '';
+      toast(r.cleared.length ? `${r.cleared.length} stream(s) recovered and cleared${stopped || left}` : `${r.rechecked} rechecked — still dead${stopped || left}`,
+            r.cleared.length ? 'success' : 'info');
+    }
     loadHealthStreams();
   } catch (e) {
     toast(e.message || 'Recheck failed', 'error');
