@@ -119,6 +119,14 @@ class OneBudgetPerJob(WaitUntilQuiet):
         self.assertTrue(pause())
         self.assertEqual(0.0, pause.spent)
 
+    def test_would_wait_reads_the_budget_and_live_tv(self):
+        pause = self._pause()
+        self.assertFalse(pause.would_wait())
+        self.live = True
+        self.assertTrue(pause.would_wait())
+        pause()                                  # spends the budget
+        self.assertFalse(pause.would_wait())
+
     def test_a_cancelled_job_does_not_wait(self):
         from models.database import set_setting
         set_setting(self.db, "provider_jobs_defer_while_live_seconds", "90")
@@ -179,13 +187,29 @@ class SyncPausesOnlyBetweenCategories(unittest.TestCase):
         import services.sync as sync
         import main
         src = Path(sync.__file__).read_text(encoding="utf-8")
-        self.assertEqual(2, src.count("_pause_between_categories(client, db)"), "movies and series")
         self.assertNotIn("before_request", src)
         self.assertIn("client.job_pause = pause if pause is not None else JobPause(", src)
         main_src = Path(main.__file__).read_text(encoding="utf-8")
         self.assertIn("pause = JobPause(db, \"the scheduled provider sync\")", main_src)
-        self.assertEqual(2, main_src.count("pause()"), "before the sync and before discovery, same budget")
+        self.assertEqual(1, main_src.count("pause()"), "before discovery; the sync waits inside sync_provider")
         self.assertIn("pause=pause)", main_src)
+        self.assertIn("client.job_pause.cancel_check = cancel_check", src, "cancel works while waiting")
+        self.assertEqual(3, src.count("_pause_between_categories(client, db, progress_callback"),
+                         "before the first provider call, then per movie and series category")
+
+    def test_a_waiting_sync_says_so_on_screen(self):
+        from services.sync import _pause_between_categories, WAITING_FOR_LIVE_TV
+        c = self._client()
+        c.job_pause = mock.Mock(would_wait=lambda: True)
+        shown = []
+        _pause_between_categories(c, mock.Mock(), lambda *a, **kw: shown.append((a, kw)), "movies", "Action", {"new": 1})
+        self.assertEqual(1, len(shown))
+        self.assertEqual(("movies", "Action", {"new": 1}), shown[0][0])
+        self.assertEqual(WAITING_FOR_LIVE_TV, shown[0][1]["item_title"])
+        c.job_pause.assert_called_once()
+        c.job_pause = mock.Mock(would_wait=lambda: False)
+        _pause_between_categories(c, mock.Mock(), lambda *a, **kw: shown.append((a, kw)), "movies", "Action", {})
+        self.assertEqual(1, len(shown), "nothing to say when there is nothing to wait for")
 
 
 class RecheckKnownBadIsPolite(unittest.TestCase):

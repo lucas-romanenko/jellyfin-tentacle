@@ -93,6 +93,10 @@ class JobPause:
         self.spent = 0.0
         self._exhausted_logged = False
 
+    def would_wait(self) -> bool:
+        """True when a call now would block: live TV is on and budget is left."""
+        return self.limit > 0 and self.spent < self.limit and live_streams_active()
+
     def __call__(self) -> bool:
         """Block while a live stream is active, within what is left of the
         budget. True when the provider is quiet, False when the job should go

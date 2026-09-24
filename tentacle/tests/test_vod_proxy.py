@@ -69,8 +69,10 @@ def _request(range_header=None, method="GET", client="10.0.0.5"):
     headers = [(b"host", b"tentacle")]
     if range_header:
         headers.append((b"range", range_header.encode()))
+    async def receive():                # a client that is still there
+        return {"type": "http.request", "body": b"", "more_body": False}
     return Request({"type": "http", "method": method, "headers": headers, "path": "/", "query_string": b"",
-                    "scheme": "http", "server": ("tentacle", 8888), "client": (client, 1)})
+                    "scheme": "http", "server": ("tentacle", 8888), "client": (client, 1)}, receive)
 
 
 class _Base(unittest.TestCase):
@@ -207,6 +209,58 @@ class RangesAndResume(_Base):
                 asyncio.run(go())
         self.assertEqual(0, self.livetv._stream_slots.active)
         self.assertEqual({}, self.vod._playbacks)
+
+    def test_a_player_that_leaves_before_the_first_byte_gives_the_slot_back(self):
+        """Starlette does not cancel a handler on disconnect; it cancels the
+        SEND task, and when that lands before the body generator is entered
+        the generator's `finally` never runs. Only the response's background
+        task does -- and it must do the same bookkeeping."""
+        script = {self.upstream: [_file(206, [b"AAAA"], start=0)]}
+        vod = self.vod
+
+        async def go():
+            with mock.patch("httpx.AsyncClient", lambda **kw: _Client(script, self.log, **kw)), \
+                    mock.patch("routers.vod.lan_origin_guard", lambda *a, **k: (lambda u: True)), \
+                    mock.patch.object(vod, "DISCONNECT_GRACE_SECONDS", 0.01):
+                resp = await vod.vod_stream("movie", self.token_file, _request("bytes=0-"), self.db)
+                pb = next(iter(vod._playbacks.values()))
+                self.assertEqual(1, pb.active_bodies)
+                await resp.background()             # what Starlette runs after the cancelled send
+                self.assertEqual(0, pb.active_bodies, "the never-entered generator still counts down")
+                await asyncio.sleep(0.05)
+                self.assertEqual({}, vod._playbacks, "released after the grace, not the idle window")
+                self.assertEqual(0, self.livetv._stream_slots.active)
+                await resp.background()             # idempotent with the generator's own finally
+        asyncio.run(go())
+
+    def test_a_player_that_leaves_while_the_provider_refuses_stops_the_waiting(self):
+        """The handler is not cancelled on disconnect, so the open loop asks
+        the request whether its client is still there before each retry."""
+        script = {self.upstream: [_plain(509), _plain(509), _file(206, [b"AAAA"], start=0)]}
+        vod = self.vod
+        req = _request("bytes=0-")
+
+        async def gone():
+            return True
+
+        async def go():
+            with mock.patch("httpx.AsyncClient", lambda **kw: _Client(script, self.log, **kw)), \
+                    mock.patch("routers.vod.lan_origin_guard", lambda *a, **k: (lambda u: True)), \
+                    mock.patch.object(req, "is_disconnected", gone):
+                with self.assertRaises(HTTPException) as cm:
+                    await vod.vod_stream("movie", self.token_file, req, self.db)
+                self.assertEqual(503, cm.exception.status_code)
+        asyncio.run(go())
+        self.assertEqual(1, len(self.log), "no retry for a player that is gone")
+        self.assertEqual({}, vod._playbacks)
+        self.assertEqual(0, self.livetv._stream_slots.active)
+
+    def test_a_range_served_in_full_keeps_the_slot_for_the_next_range(self):
+        script = {self.upstream: [_file(206, [b"AAAA"], start=0)]}
+        with mock.patch.object(self.vod, "DISCONNECT_GRACE_SECONDS", 0.01):
+            self._play(script, range_header="bytes=0-")
+            asyncio.run(asyncio.sleep(0.05))
+        self.assertEqual(1, len(self.vod._playbacks), "the player will ask for the next range")
 
     def test_a_failed_seek_keeps_a_playback_that_is_still_streaming(self):
         """Only an open with NO body running releases the playback: a seek

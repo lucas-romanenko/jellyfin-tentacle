@@ -66,9 +66,10 @@ def run_scheduled_sync():
         import threading
         # A sync is minutes of provider API calls; on a connection-limited
         # account that is enough to make the provider 509 a running recording.
-        # One wait budget for the whole nightly run (sync and discovery).
+        # One wait budget for the whole nightly run (sync and discovery). The
+        # sync itself waits before its first provider call, once its run is
+        # visible -- so a waiting nightly sync can be cancelled like any other.
         pause = JobPause(db, "the scheduled provider sync")
-        pause()
         active_providers = db.query(Provider).filter(Provider.active == True).all()
         for provider in active_providers:
             # Respect the same running-guard the manual sync endpoint uses, so the

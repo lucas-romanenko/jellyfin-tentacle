@@ -224,12 +224,19 @@ def vod_links_for(db: Session, provider: Provider):
     return vod_tokens.Links(base, vod_tokens.token_secret(db), provider.id)
 
 
-def _pause_between_categories(client, db: Session) -> None:
-    """Stand aside for live TV / a recording, with nothing left uncommitted."""
+WAITING_FOR_LIVE_TV = "Waiting for live TV / a recording to finish before continuing"
+
+
+def _pause_between_categories(client, db: Session, progress_callback=None, phase: str = "",
+                              category: str = "", stats: dict = None) -> None:
+    """Stand aside for live TV / a recording, with nothing left uncommitted.
+    A sync started from the dashboard says on screen why it is not moving."""
     pause = getattr(client, "job_pause", None)
     if pause is None:
         return
     db.commit()
+    if progress_callback and pause.would_wait():
+        progress_callback(phase, category, stats or {}, item_title=WAITING_FOR_LIVE_TV, item_pos=0, item_total=0)
     pause()
 
 
@@ -1114,7 +1121,12 @@ def sync_provider(
         # mid-sync is not competed with either. One budget for the whole run.
         from services.provider_activity import JobPause
         client.job_pause = pause if pause is not None else JobPause(db, "the provider sync", cancel_check)
+        client.job_pause.cancel_check = cancel_check
         client.vod_links = vod_links_for(db, provider)
+        # Before the first provider call, with the run already visible (so a
+        # waiting sync can be seen and cancelled from the dashboard).
+        _pause_between_categories(client, db, progress_callback,
+                                  "series" if sync_type == "series" else "movies", "", {})
 
         category_stats = {}
         new_movies_feed = []
@@ -1274,7 +1286,7 @@ def _sync_movies(
         cat_failed = 0
         cat_skipped = 0
 
-        _pause_between_categories(client, db)
+        _pause_between_categories(client, db, progress_callback, "movies", cat.category_name, stats)
         logger.info(f"Processing category: {cat.category_name}")
 
         # Notify UI immediately so user sees which category is loading
@@ -1644,7 +1656,7 @@ def _sync_series(
         cat_skipped = 0
         cat_failed = 0
 
-        _pause_between_categories(client, db)
+        _pause_between_categories(client, db, progress_callback, "series", cat.category_name, stats)
         logger.info(f"Processing category: {cat.category_name}")
 
         # Notify UI immediately so user sees which category is loading

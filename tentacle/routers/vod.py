@@ -31,6 +31,7 @@ from typing import Optional
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
+from starlette.background import BackgroundTask
 from sqlalchemy.orm import Session
 
 from models.database import Provider, get_db, get_setting
@@ -43,6 +44,10 @@ router = APIRouter()
 
 DEFAULT_IDLE_SECONDS = 45.0     # a seek arrives within seconds; a stopped player never does
 SWEEP_SECONDS = 10.0
+# A request that ends without being superseded by a newer one and without
+# reaching the end of its range is a player that went away; its slot is
+# released after this grace, not after the idle window.
+DISCONNECT_GRACE_SECONDS = 3.0
 RECONNECT_ATTEMPTS = 6          # per playback, reset by a connection that lasts
 _UA_DEFAULT = "TiviMate/4.7.0 (Linux; Android 12)"
 _RANGE_RE = re.compile(r"^bytes=(\d+)-(\d*)$")
@@ -92,6 +97,7 @@ class _Playback:
 
 _playbacks: "dict[str, _Playback]" = {}
 _sweeper: "asyncio.Task | None" = None
+_pending_releases: "set[asyncio.Task]" = set()
 
 
 def _release(pb: _Playback):
@@ -99,6 +105,19 @@ def _release(pb: _Playback):
         del _playbacks[pb.token]
     livetv._stream_slots.release_lease(pb.lease)
     logger.info(f"[VOD] {pb.owner}: playback ended, slot released")
+
+
+def _release_soon(pb: _Playback, generation: int) -> None:
+    """The player left mid-request: give the slot back after a short grace,
+    unless a newer request (a seek that arrived late) has claimed it."""
+    async def later():
+        await asyncio.sleep(DISCONNECT_GRACE_SECONDS)
+        if _playbacks.get(pb.token) is pb and pb.generation == generation and pb.active_bodies == 0:
+            logger.info(f"[VOD] {pb.owner}: the player went away")
+            _release(pb)
+    task = asyncio.get_running_loop().create_task(later())
+    _pending_releases.add(task)
+    task.add_done_callback(_pending_releases.discard)
 
 
 def _sweep_once(now: float) -> int:
@@ -180,10 +199,13 @@ async def _open(client: httpx.AsyncClient, method: str, url: str, headers: dict,
     raise HTTPException(502, "Too many redirects")
 
 
-async def _open_with_retry(client, method, url, headers, guard, owner: str) -> httpx.Response:
+async def _open_with_retry(client, method, url, headers, guard, owner: str, player_left=None) -> httpx.Response:
     """Open, waiting out a provider that is momentarily refusing (429/509,
     5xx, timeouts) on the live path's terms: a growing delay, a bounded
-    budget. Anything else is final."""
+    budget. Anything else is final. `player_left` (async, -> bool) stops the
+    waiting when the request's client has gone: Starlette does not cancel a
+    handler on disconnect, and a slot must not be held for a player that is
+    no longer there."""
     loop = asyncio.get_running_loop()
     started = loop.time()
     backoff = 1.0
@@ -203,6 +225,9 @@ async def _open_with_retry(client, method, url, headers, guard, owner: str) -> h
         if waited + backoff > livetv._OPEN_RETRY_BUDGET:
             logger.error(f"[VOD] {owner}: could not open after {waited:.0f}s: {reason}")
             raise HTTPException(503, "The provider is not answering; try again shortly")
+        if player_left is not None and await player_left():
+            logger.info(f"[VOD] {owner}: the player left while the provider was refusing ({reason})")
+            raise HTTPException(503, "The player went away")
         logger.warning(f"[VOD] {owner}: open refused (retry in {backoff:.0f}s, {waited:.0f}s so far): {reason}")
         await asyncio.sleep(backoff * (0.8 + random.random() * 0.4))
         backoff = min(backoff * 2, 5.0)
@@ -262,13 +287,19 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
         headers["Range"] = range_header
     client = httpx.AsyncClient(follow_redirects=False,
                                timeout=httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0))
+    async def player_left() -> bool:
+        try:
+            return await request.is_disconnected()
+        except RuntimeError:            # no receive channel (a test, or an unusual server)
+            return False
+
     try:
-        resp = await _open_with_retry(client, "GET", url, headers, guard, owner)
+        resp = await _open_with_retry(client, "GET", url, headers, guard, owner, player_left=player_left)
     except BaseException:
         await client.aclose()
-        # The player may have gone (a cancelled request) or the provider
-        # refused: nothing is streaming for this playback, so give the slot
-        # back now instead of holding it for the idle window.
+        # The player has gone (or the provider refused for good): nothing is
+        # streaming for this playback, so give the slot back now instead of
+        # holding it for the idle window.
         if pb.active_bodies == 0:
             _release(pb)
         raise
@@ -280,14 +311,35 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
     pb.active_bodies += 1
     pb.generation += 1
     my_generation = pb.generation
+    current = {"resp": resp}
+    state = {"finished": False, "complete": False}
+
+    async def finish():
+        """Runs exactly once per request, however it ends. Starlette stops
+        sending on a client disconnect by cancelling the send task; when that
+        lands before the generator is entered the generator's own `finally`
+        never runs -- so this is also the response's background task."""
+        if state["finished"]:
+            return
+        state["finished"] = True
+        pb.active_bodies -= 1
+        pb.touch()
+        await current["resp"].aclose()
+        await client.aclose()
+        # Ended by a seek (a newer request took over) or by reaching the end
+        # of the range: the player is still there and will ask again -- keep
+        # the slot for the idle window. Otherwise the player went away.
+        if not state["complete"] and pb.generation == my_generation and pb.active_bodies == 0 \
+                and not pb.stopped.is_set():
+            _release_soon(pb, my_generation)
 
     async def body():
-        nonlocal resp
         sent = 0
         attempts = 0
         loop = asyncio.get_running_loop()
         try:
             while True:
+                resp = current["resp"]
                 opened_at = loop.time()
                 reason = "the provider closed the connection early"
                 try:
@@ -304,6 +356,7 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
                         sent += len(chunk)
                         pb.touch()
                         yield chunk
+                    state["complete"] = True
                     return                      # the provider finished the file/range
                 except httpx.HTTPError as e:
                     reason = str(e) or type(e).__name__
@@ -314,6 +367,7 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
                     logger.error(f"[VOD] {owner}: stream lost after {sent} bytes, giving up: {reason}")
                     return
                 if end is not None and start + sent > end:
+                    state["complete"] = True
                     return                  # the requested range was delivered in full
                 attempts += 1
                 delay = min(5.0, 2 ** (attempts - 1)) * (0.8 + random.random() * 0.4)
@@ -322,20 +376,20 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
                 await asyncio.sleep(delay)
                 resume = f"bytes={start + sent}-" + (str(end) if end is not None else "")
                 try:
-                    resp = await _open_with_retry(client, "GET", url, dict(headers, Range=resume),
-                                                  guard, owner)
+                    # No player_left here: while the body streams, Starlette
+                    # owns the disconnect listener and cancels this generator
+                    # itself; a second reader of the ASGI receive is not ours.
+                    current["resp"] = await _open_with_retry(client, "GET", url, dict(headers, Range=resume),
+                                                             guard, owner)
                 except HTTPException as e:
                     logger.error(f"[VOD] {owner}: could not resume: {e.detail}")
                     return
-                if resp.status_code != 206:
-                    await resp.aclose()
+                if current["resp"].status_code != 206:
                     logger.error(f"[VOD] {owner}: the provider would not resume from byte {start + sent} "
-                                 f"(answered {resp.status_code})")
+                                 f"(answered {current['resp'].status_code})")
                     return
         finally:
-            pb.active_bodies -= 1
-            pb.touch()
-            await resp.aclose()
-            await client.aclose()
+            await finish()
 
-    return StreamingResponse(body(), status_code=status, media_type=content_type, headers=passthrough)
+    return StreamingResponse(body(), status_code=status, media_type=content_type, headers=passthrough,
+                             background=BackgroundTask(finish))
