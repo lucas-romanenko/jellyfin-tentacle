@@ -130,6 +130,25 @@ class TestPlaylistMoveEndpoint(unittest.TestCase):
         self.assertNotIn("OpenAccess", head, "being able to SEE a playlist is not a right to reorder it")
         self.assertNotIn("CanReadPlaylist", head, "read access is not a right to reorder")
 
+    def test_the_entry_is_looked_up_the_way_jellyfin_resolves_it(self):
+        """#32 move race: on Jellyfin 10.11 LinkedChild.Create sets only Path; a
+        child's ItemId is filled lazily (Folder.GetLinkedChild) on whichever playlist
+        instance enumerates it. The listing Tentacle reads the PlaylistItemId from
+        resolves a different instance than GetItemById's cached one, so for a moment
+        after every add the raw LinkedChildren of the cached playlist hold the new
+        entry with ItemId == null. A pre-check on raw LinkedChildren then answered
+        404 "Playlist entry not found" for an entry that was there (seen live when a
+        webhook add followed a rebuild's re-add). Jellyfin's own MoveItemAsync finds
+        the entry through GetManageableItems(), which resolves it; the pre-check must
+        do the same, or it refuses moves Jellyfin would perform."""
+        head = self.before_move()
+        if "Playlist entry not found" not in self.body and "NotFound(" not in head:
+            return  # no pre-check at all: MoveItemAsync's own lookup decides
+        self.assertIn("GetManageableItems()", head,
+                      "look the entry up through GetManageableItems(), which resolves ItemId")
+        self.assertNotRegex(head, r"LinkedChildren\s*\.\s*(?:Any|Where|First\w*|Select)\(",
+                            "raw LinkedChildren hold unresolved (ItemId == null) entries after an add")
+
     def test_the_playlist_is_really_a_playlist(self):
         self.assertRegex(self.before_move(), r"is\s+not\s+Playlist\b|as\s+Playlist\b|GetPlaylistForUser\(")
 

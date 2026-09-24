@@ -169,9 +169,14 @@ public class TentacleController : ControllerBase
             return Forbid();
         }
 
-        // PlaylistItemId is the linked child's ItemId in "N" format.
+        // PlaylistItemId is the linked child's ItemId in "N" format. Look it up the way
+        // Jellyfin's own MoveItemAsync does, through GetManageableItems(): a just-added
+        // LinkedChild has no ItemId (LinkedChild.Create sets only Path) until something
+        // resolves it on THIS cached playlist instance, and the listing Tentacle read the
+        // id from resolves a different instance. Reading LinkedChildren raw answered 404
+        // for an entry that was really there whenever the move followed an add closely.
         var entry = entryGuid.ToString("N", CultureInfo.InvariantCulture);
-        if (!playlist.LinkedChildren.Any(c => c.ItemId.HasValue && c.ItemId.Value.Equals(entryGuid)))
+        if (!playlist.GetManageableItems().Any(c => c.Item1.ItemId.HasValue && c.Item1.ItemId.Value.Equals(entryGuid)))
         {
             return NotFound("Playlist entry not found");
         }
