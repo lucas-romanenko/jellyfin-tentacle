@@ -603,9 +603,15 @@ def _build_downloads(db: Session) -> list:
             except Exception as e:
                 logger.debug(f"Activity fetch {key} failed: {e}")
 
-    status_order = {"stuck": 0, "import_blocked": 1, "downloading": 2, "importing": 3, "queued": 4, "warning": 5}
-    downloads.sort(key=lambda d: (status_order.get(d["status"], 9), -d["progress"]))
+    _sort_downloads(downloads)
     return downloads
+
+
+_DOWNLOAD_STATUS_ORDER = {"stuck": 0, "import_blocked": 1, "downloading": 2, "importing": 3, "queued": 4, "warning": 5}
+
+
+def _sort_downloads(downloads: list) -> None:
+    downloads.sort(key=lambda d: (_DOWNLOAD_STATUS_ORDER.get(d["status"], 9), -d["progress"]))
 
 
 def _enrich_posters(db: Session, items: list) -> None:
@@ -704,6 +710,52 @@ def _hours_remaining(date_added) -> int:
     return max(0, math.ceil(remaining / 3600))
 
 
+def _ready_to_watch(media_type: str, row) -> bool:
+    """Only what can be played belongs under "Recently downloaded": Jellyfin
+    has it (a jellyfin_item_id), and the webhook is not still getting it ready
+    -- it joins the list the moment its "ready to watch" notification is sent
+    (services.download_readiness). Until then Activity shows it as importing."""
+    from services import download_readiness
+    return bool(row.jellyfin_item_id) and not download_readiness.held_back(media_type, row.tmdb_id)
+
+
+def _getting_ready(downloads: list) -> list:
+    """"Importing" cards for titles Radarr/Sonarr have handed over but that are
+    not ready to watch yet (services.download_readiness) -- the queue has
+    dropped them, so without these they would vanish from Activity for a
+    minute or two. A title the queue still lists for the same episode is not
+    repeated."""
+    from services import download_readiness
+    listed = {(d.get("media_type"), d.get("tmdb_id"), d.get("episode") or "") for d in downloads}
+    cards, seen = [], set()
+    for e in download_readiness.in_flight():
+        key = (e["media_type"], e["tmdb_id"], e["episode"])
+        if key in listed or key in seen:
+            continue
+        seen.add(key)
+        cards.append({
+            "tmdb_id": e["tmdb_id"],
+            "title": e["title"],
+            "year": "",
+            "poster_path": None,
+            "media_type": e["media_type"],
+            "source": e["source"],
+            "status": "importing",
+            "reason": "Getting it ready to watch",
+            "stalled_minutes": 0,
+            "queue_id": None,
+            "download_id": None,
+            "protocol": None,
+            "indexer": None,
+            "progress": 100.0,
+            "size_remaining": "",
+            "eta": "",
+            "quality": "",
+            "episode": e["episode"],
+        })
+    return cards
+
+
 def _get_recently_downloaded(db: Session) -> list:
     """Return items downloaded in the last 24 hours, oldest first (expiring soonest)."""
     from datetime import timedelta
@@ -717,6 +769,8 @@ def _get_recently_downloaded(db: Session) -> list:
     ).order_by(Movie.date_added.asc()).all()
 
     for m in movies:
+        if not _ready_to_watch("movie", m):
+            continue
         result.append({
             "tmdb_id": m.tmdb_id,
             "title": m.title,
@@ -733,6 +787,8 @@ def _get_recently_downloaded(db: Session) -> list:
     ).order_by(Series.date_added.asc()).all()
 
     for s in series:
+        if not _ready_to_watch("series", s):
+            continue
         result.append({
             "tmdb_id": s.tmdb_id,
             "title": s.title,
@@ -758,6 +814,12 @@ def get_activity(request: Request, db: Session = Depends(get_db),
     anonymous caller previously received the full, unfiltered download queue."""
     downloads = _build_downloads(db)
     _note_queue(downloads)
+    getting_ready = _getting_ready(downloads)
+    if getting_ready:
+        for card in getting_ready:
+            card["poster_path"] = _get_poster(db, card["tmdb_id"], card["media_type"])
+        downloads = downloads + getting_ready
+        _sort_downloads(downloads)
     _watch_arr_searches(db)
     wanted = _get_wanted(db)
     # Copies: the lists are shared through the cache and edited per user below.

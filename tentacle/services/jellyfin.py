@@ -647,6 +647,10 @@ class JellyfinService:
                 return False
         return True
 
+    # Waits before asking the plugin again when it cannot see a just-added
+    # entry yet (move_playlist_item). Live on 10.11.8 it could by ~5-10 s.
+    MOVE_ENTRY_RETRY_DELAYS = (2.0, 4.0, 8.0)
+
     def move_playlist_item(self, playlist_id: str, item_id: str, new_index: int) -> bool:
         """Move an item within a playlist to a new position.
 
@@ -659,8 +663,29 @@ class JellyfinService:
         try:
             if self.user_id:
                 path = f"/Tentacle/Playlists/{playlist_id}/Items/{item_id}/Move/{new_index}"
-                r = self.session.post(f"{self.url}{path}", params={"userId": self.user_id}, timeout=10)
-                self._check_401(r, path)
+                for delay in (*self.MOVE_ENTRY_RETRY_DELAYS, None):
+                    r = self.session.post(f"{self.url}{path}", params={"userId": self.user_id}, timeout=10)
+                    self._check_401(r, path)
+                    body = (r.text or "").lower() if r.status_code == 404 else ""
+                    if "entry not found" not in body:
+                        break
+                    # The plugin answered, and cannot see the entry YET: a
+                    # just-added entry has no ItemId until Jellyfin resolves it
+                    # on the playlist instance the plugin reads (#114). The
+                    # native endpoint cannot help (400 for an API key) -- ask
+                    # the plugin again shortly.
+                    if delay is None:
+                        logger.warning(f"Move playlist item failed: the plugin still cannot see entry {item_id} "
+                                       f"in playlist={playlist_id} — it moves at the next full rebuild")
+                        return False
+                    logger.info(f"Move: entry {item_id} not visible in playlist={playlist_id} yet, "
+                                f"asking again in {delay:g}s")
+                    time.sleep(delay)
+                if r.status_code == 404 and "not found" in (r.text or "").lower():
+                    # The plugin's own answer (e.g. "Playlist not found"), not a missing route.
+                    logger.warning(f"Move playlist item failed: plugin answered HTTP 404 ({r.text.strip()[:80]}) "
+                                   f"for playlist={playlist_id} item={item_id}")
+                    return False
                 if r.status_code not in (404, 405):
                     if r.status_code >= 400:
                         logger.warning(f"Move playlist item failed: plugin answered HTTP {r.status_code} for playlist={playlist_id} item={item_id} index={new_index}")
