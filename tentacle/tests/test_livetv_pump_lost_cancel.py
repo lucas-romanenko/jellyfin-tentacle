@@ -37,7 +37,7 @@ class PumpLosesItsCancel(unittest.TestCase):
         cid = self._channel()
         seen = {"pulls": 0, "swallowed": 0, "ended": False}
 
-        async def fake_inner(channel_id, ua, url, release, guard=None):
+        async def fake_inner(channel_id, ua, url, release, guard=None, **kw):
             async def gen():
                 try:
                     while True:

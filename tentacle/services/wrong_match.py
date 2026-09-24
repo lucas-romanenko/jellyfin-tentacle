@@ -40,6 +40,10 @@ def stream_key_for_url(url: str) -> Optional[str]:
     url = (url or "").strip()
     if not url:
         return None
+    from services import vod_tokens
+    via_tentacle = vod_tokens.stream_id_in_url(url)
+    if via_tentacle:
+        return str(via_tentacle[1])
     m = _XTREAM_MOVIE.search(url)
     return m.group(1) if m else url
 
@@ -611,6 +615,14 @@ def stream_frames(db: Session, tmdb_id: int) -> dict:
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         raise WrongMatchError(503, "ffmpeg is not available on the Tentacle server")
+    # Three ffmpeg seeks into the stream are three provider connections in a
+    # row. On a connection-limited account that cuts off whatever is already
+    # open -- usually a recording. A person pressed this button and can wait.
+    from services.provider_activity import live_streams_active
+    if live_streams_active():
+        raise WrongMatchError(503, "A live stream or recording is running right now. Grabbing pictures "
+                                   "would open another provider connection and can cut it off — "
+                                   "try again once it has finished.")
 
     provider = db.query(Provider).filter(Provider.id == row.provider_id).first() if row.provider_id else None
     user_agent = (provider.user_agent if provider else None) or "TiviMate/4.7.0 (Linux; Android 12)"

@@ -59,7 +59,7 @@ class SharedUpstream(unittest.TestCase):
         livetv = self.livetv
         upstreams = []
 
-        async def fake_inner(channel_id, ua, url, release, guard=None):
+        async def fake_inner(channel_id, ua, url, release, guard=None, **kw):
             upstreams.append(channel_id)
 
             async def gen():
@@ -159,7 +159,7 @@ class ConcurrentOpeners(SharedUpstream):
         livetv = self.livetv
         upstreams = []
 
-        async def slow_inner(channel_id, ua, url, release, guard=None):
+        async def slow_inner(channel_id, ua, url, release, guard=None, **kw):
             await asyncio.sleep(delay)          # the open takes time
             upstreams.append(channel_id)
 
@@ -204,7 +204,7 @@ class ConcurrentOpeners(SharedUpstream):
         livetv = self.livetv
         calls = []
 
-        async def failing_then_ok(channel_id, ua, url, release, guard=None):
+        async def failing_then_ok(channel_id, ua, url, release, guard=None, **kw):
             calls.append(1)
             await asyncio.sleep(0.02)
             if len(calls) == 1:

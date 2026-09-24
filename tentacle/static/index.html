@@ -2595,6 +2595,18 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
                   <span id="merge-continue-slider" style="position:absolute;height:16px;width:16px;left:3px;bottom:3px;background:white;border-radius:50%;transition:.2s"></span>
                 </label>
               </div>
+              <!-- Card focus previews -->
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding-bottom:12px;border-bottom:1px solid var(--border);margin-bottom:12px">
+                <div style="flex:1">
+                  <div style="font-size:13px;color:var(--text)">Previews when a card is focused</div>
+                  <div style="font-size:11px;color:var(--text3);margin-top:2px">Android TV plays a preview of a focused card. For a provider (IPTV) title that opens a provider connection per card scrolled over, which can cut off a running recording. "Local files only" keeps previews for downloaded media.</div>
+                </div>
+                <select id="card-previews-select" onchange="saveCardPreviews(this.value)" style="flex-shrink:0;font-size:12px;padding:4px 6px;background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:6px">
+                  <option value="all">All cards</option>
+                  <option value="local_only">Local files only</option>
+                  <option value="off">Off</option>
+                </select>
+              </div>
               <div id="add-row-inline" style="display:none;margin-bottom:8px">
                 <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
                   <select id="add-row-select" class="form-input" style="flex:1">

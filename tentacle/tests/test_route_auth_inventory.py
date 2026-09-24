@@ -17,7 +17,7 @@ from fastapi.routing import APIRoute
 ROUTER_MODULES = [
     "auth", "settings", "providers", "sync", "library", "duplicates", "lists",
     "widget", "radarr", "sonarr", "tags", "collections", "smartlists",
-    "discover", "activity", "livetv", "notifications", "health", "youtube",
+    "discover", "activity", "livetv", "notifications", "health", "youtube", "vod",
 ]
 
 # (METHOD, path) -> reason. Keep this list short and justified.
@@ -40,6 +40,8 @@ ALLOW = {
     ("GET", "/api/youtube/live/{channel_id}/master.m3u8"): "tuner",
     ("GET", "/api/youtube/ping"): "liveness",
     ("HEAD", "/api/live/stream/{channel_id}"): "tuner probe",
+    ("GET", "/api/vod/{kind}/{token_file}"): ".strm playback; signed token (services.vod_tokens)",
+    ("HEAD", "/api/vod/{kind}/{token_file}"): ".strm probe; signed token",
     ("HEAD", "/api/youtube/v/{video_id}/master.m3u8"): ".strm probe",
     ("HEAD", "/api/youtube/live/{channel_id}/stream.ts"): "tuner probe",
     ("HEAD", "/api/youtube/live/{channel_id}/master.m3u8"): "tuner probe",
@@ -47,7 +49,9 @@ ALLOW = {
     ("GET", "/api/smartlists/version"): "plugin poll (version number only)",
 }
 
-AUTH_DEPS = {"get_user_from_request", "require_admin", "get_current_user"}
+# require_internal_or_admin: a trusted server-side caller with the shared
+# internal secret (constant-time compared), or an admin session.
+AUTH_DEPS = {"get_user_from_request", "require_admin", "get_current_user", "require_internal_or_admin"}
 
 
 def _dep_names(dependant):

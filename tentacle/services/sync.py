@@ -5,6 +5,7 @@ Replaces xtream_to_jellyfin.py as a proper service.
 """
 
 import os
+import re
 import zlib
 import shutil
 import logging
@@ -151,11 +152,25 @@ class XtreamClient:
         self.password = provider.password
         self.session = requests.Session()
         self.session.headers.update(XTREAM_HEADERS)
-        self.session.timeout = 30
+        # requests ignores a `timeout` attribute on a Session; it has to be
+        # passed per call. Without it a stalled panel hung the sync for ever.
+        self.timeout = 30
+        # A services.provider_activity.JobPause when the sync must stand
+        # aside for live TV / a recording. It is called at CATEGORY
+        # boundaries, never between calls inside one, because a category's
+        # writes are committed once at its end: pausing with writes pending
+        # would hold the SQLite lock for as long as the pause lasts, and every
+        # other write in Tentacle (webhooks, settings) would fail meanwhile.
+        self.job_pause = None
+        self.provider_id = getattr(provider, "id", None)
+        # A services.vod_tokens.Links when VOD is served through Tentacle
+        # (setting `vod_via_tentacle_enabled`): the .strm files then point
+        # at Tentacle's /api/vod route instead of at the provider.
+        self.vod_links = None
 
     def _get(self, action: str, extra: str = "") -> list:
         try:
-            r = self.session.get(f"{self.base}&action={action}{extra}")
+            r = self.session.get(f"{self.base}&action={action}{extra}", timeout=self.timeout)
             r.raise_for_status()
             data = r.json()
             return data if isinstance(data, list) else []
@@ -169,15 +184,107 @@ class XtreamClient:
         return self._get(f"get_series&category_id={category_id}")
 
     def get_series_info(self, series_id: str) -> dict:
-        r = self.session.get(f"{self.base}&action=get_series_info&series_id={series_id}")
+        r = self.session.get(f"{self.base}&action=get_series_info&series_id={series_id}",
+                             timeout=self.timeout)
         r.raise_for_status()
         return r.json()
 
     def movie_stream_url(self, stream_id, container="mp4") -> str:
+        if self.vod_links is not None:
+            return self.vod_links.movie(stream_id, container)
         return f"{self.server}/movie/{self.username}/{self.password}/{stream_id}.{container}"
 
     def episode_stream_url(self, episode_id, container="mp4") -> str:
+        if self.vod_links is not None:
+            return self.vod_links.episode(episode_id, container)
         return f"{self.server}/series/{self.username}/{self.password}/{episode_id}.{container}"
+
+
+def vod_links_for(db: Session, provider: Provider):
+    """The Links the sync client writes .strm files with, or None for direct
+    provider URLs. Needs the setting on, an Xtream provider, and Tentacle's
+    own address as clients reach it (the one the YouTube feature already
+    works out and keeps)."""
+    from routers.vod import vod_enabled
+    from services import vod_tokens
+    if not vod_enabled(db) or (provider.provider_type or "xtream") != "xtream":
+        return None
+    # `vod_base_url` first: the address every PLAYER reaches Tentacle at on
+    # the LAN. The YouTube address is the fallback; where that is a public
+    # name behind a tunnel or an access gate, every film would go out and
+    # back in through it, so a LAN address here is the right choice.
+    base = (get_setting(db, "vod_base_url", "") or "").strip().rstrip("/")
+    if not base:
+        from services.youtube.sync import base_url
+        base = base_url(db)
+    if not base:
+        logger.warning("[Sync] VOD through Tentacle is on but Tentacle's address is not known "
+                       "(set vod_base_url, or Settings → YouTube → Tentacle address); writing direct provider URLs")
+        return None
+    return vod_tokens.Links(base, vod_tokens.token_secret(db), provider.id)
+
+
+WAITING_FOR_LIVE_TV = "Waiting for live TV / a recording to finish before continuing"
+
+
+def _pause_between_categories(client, db: Session, progress_callback=None, phase: str = "",
+                              category: str = "", stats: dict = None) -> None:
+    """Stand aside for live TV / a recording, with nothing left uncommitted.
+    A sync started from the dashboard says on screen why it is not moving."""
+    pause = getattr(client, "job_pause", None)
+    if pause is None:
+        return
+    db.commit()
+    if progress_callback and pause.would_wait():
+        progress_callback(phase, category, stats or {}, item_title=WAITING_FOR_LIVE_TV, item_pos=0, item_total=0)
+    cancel_check = getattr(pause, "cancel_check", None)
+    if not pause() and cancel_check and cancel_check():
+        # Cancelled while waiting: stop here, not after another category's
+        # provider calls and TMDB lookups.
+        raise SyncCancelledError("Sync cancelled while waiting for live TV to finish")
+
+
+# The provider stream a .strm plays, as (kind, id): a direct Xtream URL, the
+# same wrapped by a resume proxy (URL-encoded in a query parameter), or
+# Tentacle's own /api/vod address. None for anything else (a hand-made file).
+_DIRECT_STREAM_RE = re.compile(r"/(movie|series)/[^/]+/[^/]+/(\d+)\.[A-Za-z0-9]+")
+
+
+def _stream_ref(url_text: str, unwrap: bool = False):
+    """`unwrap` also looks inside a URL-encoded query parameter (a resume
+    proxy wrapping the provider URL) -- only when migrating such files TO
+    Tentacle's own route; with VOD through Tentacle off, a hand-made proxy
+    file is somebody's deliberate setup and is left alone."""
+    from urllib.parse import unquote
+    from services import vod_tokens
+    via_tentacle = vod_tokens.stream_id_in_url(url_text)
+    if via_tentacle:
+        return via_tentacle
+    for candidate in ((url_text, unquote(url_text)) if unwrap else (url_text,)):
+        m = _DIRECT_STREAM_RE.search(candidate or "")
+        if m:
+            return m.group(1), int(m.group(2))
+    return None
+
+
+def _strm_needs_rewrite(strm_file: Path, expected: str, client) -> bool:
+    """An existing .strm is rewritten only when it plays the SAME provider
+    stream as the sync would write today, in a different form: switching to
+    or from Tentacle's VOD address, new credentials or host, or a resume
+    proxy wrapping the provider URL. A file that plays a different stream is
+    left alone -- a provider that lists one title in two categories offers
+    it twice, and rewriting to whichever listing came last would flip the
+    file every night (and change which copy plays). A file that points
+    somewhere else entirely was set up by hand and is left alone too."""
+    try:
+        current = strm_file.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return False
+    if not current or current == expected:
+        return False
+    from services import vod_tokens
+    current_ref = _stream_ref(current, unwrap=vod_tokens.is_vod_url(expected))
+    return current_ref is not None and current_ref == _stream_ref(expected)
 
 
 # ── M3U provider support ─────────────────────────────────────────────────
@@ -449,13 +556,15 @@ def _write_episode_strms(client: "XtreamClient", episodes: dict, show_dir: Path,
             except (TypeError, ValueError):
                 continue
             strm_file = season_dir / f"{ep_filename}.strm"
+            expected = client.episode_stream_url(ep_id, container)
             if not strm_file.exists():
-                strm_file.write_text(
-                    client.episode_stream_url(ep_id, container),
-                    encoding='utf-8'
-                )
+                strm_file.write_text(expected, encoding='utf-8')
                 chown_path(strm_file)
                 ep_count += 1
+            elif _strm_needs_rewrite(strm_file, expected, client):
+                strm_file.write_text(expected, encoding='utf-8')
+                chown_path(strm_file)
+                logger.info(f"[Sync] Rewrote {strm_file.name}: stream address changed")
     return ep_count
 
 
@@ -476,14 +585,16 @@ def _repair_movie_strm(client, stream: dict, tmdb_id: int, provider: Provider, d
         return False
     try:
         strm = Path(record.strm_path)
+        expected = client.movie_stream_url(stream.get("stream_id"), stream.get("container_extension", "mp4"))
         if strm.exists():
+            if _strm_needs_rewrite(strm, expected, client):
+                strm.write_text(expected, encoding="utf-8")
+                chown_path(strm)
+                logger.info(f"[Sync] Rewrote {strm.name}: stream address changed")
             return False
         strm.parent.mkdir(parents=True, exist_ok=True)
         chown_path(strm.parent)
-        strm.write_text(
-            client.movie_stream_url(stream.get("stream_id"), stream.get("container_extension", "mp4")),
-            encoding="utf-8",
-        )
+        strm.write_text(expected, encoding="utf-8")
         chown_path(strm)
         # The NFO goes with it when the whole folder was lost (or an opt-out
         # deleted both) — without it Jellyfin has to guess the match again.
@@ -968,11 +1079,14 @@ def sync_provider(
     db: Session,
     progress_callback=None,
     cancel_check=None,
+    pause=None,
 ) -> SyncRun:
     """
     Main entry point for syncing a provider.
     Creates and returns a SyncRun record.
     cancel_check: callable that returns True if sync should be cancelled.
+    pause: a services.provider_activity.JobPause shared with the caller's
+    other provider work, so one wait budget covers the whole run.
     """
     # Load settings
     from services.tmdb import get_tmdb_token
@@ -1011,6 +1125,17 @@ def sync_provider(
 
         tmdb = TMDBService(bearer_token, data_dir, match_threshold)
         client = make_provider_client(provider)
+        # The sync stands aside for live TV / a recording at every category
+        # boundary (services.provider_activity), so a recording that starts
+        # mid-sync is not competed with either. One budget for the whole run.
+        from services.provider_activity import JobPause
+        client.job_pause = pause if pause is not None else JobPause(db, "the provider sync", cancel_check)
+        client.job_pause.cancel_check = cancel_check
+        client.vod_links = vod_links_for(db, provider)
+        # Before the first provider call, with the run already visible (so a
+        # waiting sync can be seen and cancelled from the dashboard).
+        _pause_between_categories(client, db, progress_callback,
+                                  "series" if sync_type == "series" else "movies", "", {})
 
         category_stats = {}
         new_movies_feed = []
@@ -1170,6 +1295,7 @@ def _sync_movies(
         cat_failed = 0
         cat_skipped = 0
 
+        _pause_between_categories(client, db, progress_callback, "movies", cat.category_name, stats)
         logger.info(f"Processing category: {cat.category_name}")
 
         # Notify UI immediately so user sees which category is loading
@@ -1539,6 +1665,7 @@ def _sync_series(
         cat_skipped = 0
         cat_failed = 0
 
+        _pause_between_categories(client, db, progress_callback, "series", cat.category_name, stats)
         logger.info(f"Processing category: {cat.category_name}")
 
         # Notify UI immediately so user sees which category is loading

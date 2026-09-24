@@ -36,7 +36,7 @@ class GhostSubscriber(unittest.TestCase):
         livetv = self.livetv
         upstreams = []
 
-        async def fake_inner(channel_id, ua, url, release, guard=None):
+        async def fake_inner(channel_id, ua, url, release, guard=None, **kw):
             upstreams.append(channel_id)
 
             async def gen():

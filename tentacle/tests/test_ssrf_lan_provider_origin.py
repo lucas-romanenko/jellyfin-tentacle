@@ -101,7 +101,7 @@ class StreamRouteUsesTheProviderOrigin(unittest.TestCase):
         import routers.livetv as livetv
         seen = {}
 
-        async def _inner(channel_id, ua, url, release, guard=None):
+        async def _inner(channel_id, ua, url, release, guard=None, **kw):
             release()
             seen["url"], seen["guard"] = url, guard
             return "streamed"

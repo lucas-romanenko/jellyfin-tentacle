@@ -91,8 +91,24 @@ def _read_strm(strm_path: str):
 
 
 def _parse_stream_id(url: str):
+    from services import vod_tokens
+    via_tentacle = vod_tokens.stream_id_in_url(url)
+    if via_tentacle:
+        return via_tentacle
     m = _STREAM_ID_RE.search(url or "")
     return (m.group(1), int(m.group(2))) if m else (None, None)
+
+
+def _direct_url(url: str, kind, stream_id, provider) -> str:
+    """The provider's own address for a probe. A .strm that points at
+    Tentacle's /api/vod route must not be probed through Tentacle itself:
+    that would take a playback slot for a health check."""
+    from services import vod_tokens
+    if provider and kind and stream_id and vod_tokens.is_vod_url(url):
+        container = url.rsplit(".", 1)[-1].split("?")[0] if "." in url else "mp4"
+        path = "movie" if kind == "movie" else "series"
+        return f"{provider.server_url.rstrip('/')}/{path}/{provider.username}/{provider.password}/{stream_id}.{container}"
+    return url
 
 
 def _probe_url(url: str, user_agent: str) -> bool | None:
@@ -152,7 +168,7 @@ def check_stream(db, media_type: str, kind: str, stream_id: int, url: str, provi
                     )
         except Exception as e:
             logger.debug(f"[Stream health] catalog check inconclusive for vod {stream_id}: {e}")
-    return _probe_url(url, user_agent)
+    return _probe_url(_direct_url(url, kind, stream_id, provider), user_agent)
 
 
 def _mark_bad(db, media_type: str, tmdb_id: int, title: str, episode: str,
@@ -230,12 +246,22 @@ def check_title(db, media_type: str, tmdb_id: int) -> dict:
             "result": "alive" if alive else ("dead" if alive is False else "inconclusive")}
 
 
-def recheck_known_bad(db) -> dict:
+def recheck_known_bad(db, limit: int = 0) -> dict:
     """Re-test known-bad entries; clear the ones that recovered or whose files
-    are gone (nothing left to track)."""
+    are gone (nothing left to track). `limit` > 0 re-tests at most that many
+    this call (the dashboard button: at 3 s per probe, a long list would
+    outlast a reverse proxy's request timeout) and reports the remainder."""
     providers = _provider_map(db)
     cleared, rechecked = [], 0
-    for entry in db.query(StreamHealth).all():
+    deferred = provider_busy = False
+    remaining = 0
+    # Least recently re-tested first, so successive limited calls work
+    # through the whole list instead of re-testing the same few each time.
+    entries = db.query(StreamHealth).order_by(StreamHealth.last_checked_at.asc(), StreamHealth.id.asc()).all()
+    for index, entry in enumerate(entries):
+        if limit and rechecked >= limit:
+            remaining = len(entries) - index
+            break
         if not Path(entry.strm_path).exists():
             cleared.append(entry.title)
             db.delete(entry)
@@ -243,6 +269,18 @@ def recheck_known_bad(db) -> dict:
         url = entry.stream_url or _read_strm(entry.strm_path)
         if not url:
             continue
+        # Each re-test is a real stream open on the account. The same manners
+        # as the sweep: pace them, stand aside for live TV and a recording,
+        # and stop once the provider says it is over its limit. What was not
+        # re-tested waits for the next run.
+        if _live_streams_active():
+            deferred = True
+            break
+        if _probe_state["provider_busy"]:
+            provider_busy = True
+            break
+        if rechecked:
+            time.sleep(PROBE_INTERVAL_SECONDS)
         kind, stream_id = _parse_stream_id(url)
         # Look up provider through the library record (creds may have rotated)
         model = Movie if entry.media_type == "movie" else Series
@@ -257,7 +295,8 @@ def recheck_known_bad(db) -> dict:
         elif alive is False:
             entry.fail_count = (entry.fail_count or 1) + 1
     db.commit()
-    return {"rechecked": rechecked, "cleared": cleared}
+    return {"rechecked": rechecked, "cleared": cleared,
+            "deferred": deferred, "provider_busy": provider_busy, "remaining": remaining}
 
 
 def run_stream_health_sweep():

@@ -1231,6 +1231,8 @@ def write_home_config(db: Session, user_id: int = None) -> dict:
                 config["jellyfin_sections_snapshot"] = existing_config["jellyfin_sections_snapshot"]
             if "merge_continue_watching" in existing_config:
                 config["merge_continue_watching"] = existing_config["merge_continue_watching"]
+            if existing_config.get("card_previews"):
+                config["card_previews"] = existing_config["card_previews"]
 
         # Detect whether the generated config actually differs from what's on disk,
         # so we only bump the live-update version (and notify clients) on real

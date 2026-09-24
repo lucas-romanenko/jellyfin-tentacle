@@ -154,6 +154,37 @@ require_tmdb_match (per-provider, for VOD only)
 | live_setup_host | "" | Server IP for Jellyfin Setup tab |
 | live_setup_port | "" | Server port (default 8888 in UI) |
 
+Provider connection settings (all via `POST /api/settings` with a body of
+`{"settings": {"key": "value", ...}}`; each is optional). A film playing through `/api/vod`
+counts as provider activity in the same way as a live stream: it holds a slot and it keeps the
+background jobs below waiting.
+
+| Key | Default | Purpose |
+|-----|---------|---------|
+| livetv_max_concurrent_streams | "6" (0 = unlimited) | Provider connection limit. Leases are handed out by priority: recording > viewer > VOD; at the limit a lower-priority stream is taken over when a recording needs the slot |
+| livetv_reconnect_budget_seconds | "120" (0 = until the client leaves) | How long a viewer's pull keeps retrying an upstream failure (509/timeouts) inside the same response. Recordings retry for as long as Jellyfin keeps the tuner open, whatever this says |
+| livetv_stream_format | "m3u8" | `m3u8`, `ts`, or `auto` (the provider's advertised format, remembered at channel sync). `ts` = one long-lived connection per channel instead of playlist polling |
+| provider_jobs_defer_while_live_seconds | "14400" (4 h) | Scheduled and manual syncs and discovery wait while a live stream, recording or VOD playback is running — one cumulative budget per run, then they go ahead. A waiting sync shows "Waiting for live TV…" in its progress and can be cancelled. (The stream-health sweep and the known-bad recheck do not wait: they skip and report `deferred`, and run at their next turn) |
+| vod_via_tentacle_enabled | "false" | Write `.strm` files that play through `/api/vod/...` (signed, resumable, counted against the connection limit) instead of direct provider URLs. Switching either way rewrites the files at the next sync |
+| vod_base_url | "" (YouTube's Tentacle address) | The address written into those `.strm` files. Players fetch it themselves on direct play (the Android TV app included), so it must be reachable from wherever they play: a LAN address keeps films off a tunnel/access gate but stops them playing from outside the home; a public name works everywhere but routes every film through it |
+| vod_lease_idle_seconds | "45" | How long a VOD playback keeps its slot between requests (seeks) before it is released; a player that leaves mid-request frees it within ~3 s (one that leaves while the provider is refusing the open: when the open gives up, ≤ 20 s) |
+| vod_token_secret | generated | HMAC key for `/api/vod` links; masked in `GET /api/settings` (and a masked value posted back is ignored). Changing it invalidates every `.strm` until the next sync |
+
+The home-row card previews policy is not a setting row: it is per user, in the home config,
+set with `POST /api/smartlists/card-previews` `{"mode": "all" | "local_only" | "off"}` (default
+`all`) and served to the plugin/clients as `cardPreviews` on `/TentacleHome/Toolbar` and `/Sections`.
+
+`GET /api/live/streams` (internal secret or admin) lists every open upstream — one entry per live
+channel or VOD playback: `channel_id`, `channel`, `client`, `stream_id` (the GuideNumber), `kind`
+(`recording` | `live` | `vod`), `state` (`streaming` | `reconnecting` | `idle` | `stopped`),
+`for_seconds` (in that state), `open_seconds`, `last_error`, `subscribers`. Not listed = no
+upstream any more. `POST /api/live/reserve` `{channel_id|stream_id, seconds}` holds recording
+priority for a channel ahead of a timer (for schedulers that know the start time before Jellyfin
+does); `DELETE /api/live/reserve/{channel_id}` drops it. Recording identity otherwise comes from
+Jellyfin's timers (InProgress, or due within 120 s), asked for at most every 5 s while a live
+stream is open and on every tuner open (≤ 3 s wait); when Jellyfin cannot be reached the last
+answer is kept.
+
 ## API ENDPOINTS
 
 ```

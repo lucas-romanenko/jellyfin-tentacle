@@ -3335,6 +3335,12 @@ async function loadHomeScreen() {
       updateMergeContinueSlider(mergeOn);
     }
 
+    // Card focus previews: all / local_only / off (absent = all)
+    const previewsSelect = document.getElementById('card-previews-select');
+    if (previewsSelect) {
+      previewsSelect.value = ['all', 'local_only', 'off'].includes(config.card_previews) ? config.card_previews : 'all';
+    }
+
     if (!homeRows.length) {
       listEl.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text3);font-size:13px">No rows configured — the default Jellyfin home screen will be used.</div>';
     } else {
@@ -6376,6 +6382,17 @@ async function saveMergeContinueWatching(checked) {
   }
 }
 
+async function saveCardPreviews(mode) {
+  const labels = { all: 'Previews on for all cards', local_only: 'Previews only for local files', off: 'Card previews off' };
+  try {
+    await api('/api/smartlists/card-previews', { method: 'POST', body: { mode } });
+    toast(labels[mode] || 'Saved', 'success');
+  } catch (e) {
+    toast('Failed to save setting', 'error');
+    loadHomeScreen();   // show what is actually saved
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Health page — housekeeping, downloads & audit trail
 // ═══════════════════════════════════════════════════════════════════════════
@@ -6438,7 +6455,8 @@ async function healthRecheckStreams(btn) {
   if (btn) { btn.disabled = true; btn.textContent = 'Rechecking…'; }
   try {
     const r = await api('/api/health/streams/recheck', { method: 'POST' });
-    toast(r.cleared.length ? `${r.cleared.length} stream(s) recovered and cleared` : `${r.rechecked} rechecked — still dead`,
+    const left = r.remaining ? ` — ${r.remaining} more to check, press again` : '';
+    toast(r.cleared.length ? `${r.cleared.length} stream(s) recovered and cleared${left}` : `${r.rechecked} rechecked — still dead${left}`,
           r.cleared.length ? 'success' : 'info');
     loadHealthStreams();
   } catch (e) {
@@ -6821,7 +6839,7 @@ async function loadHealthDeletions() {
     loadJellyfinPage, loadAutoPlaylists, toggleAutoPlaylist, dismissAutoPlaylistBanner,
     showAddTagRule, editTagRule, deleteTagRule, saveTagRule, onContentSourceChange, toggleAdvancedFilters,
     addRuleCondition, updateCondOps, onCollectionNameInput, syncSmartLists, refreshTags, syncPlaylistsToJellyfin, resyncAllPlaylists, setPlaylistSort,
-    pushHomeConfig, updateHeroPick, updateHeroSort, saveRowMaxItems, saveRowMaxItemsByKey, saveRowShapeByKey, toggleNotificationsFromCheckbox, saveMergeContinueWatching, dismissNewContentNotice, toggleGenreChip, _scheduleMatchCount, toggleToolbarButton,
+    pushHomeConfig, updateHeroPick, updateHeroSort, saveRowMaxItems, saveRowMaxItemsByKey, saveRowShapeByKey, toggleNotificationsFromCheckbox, saveMergeContinueWatching, saveCardPreviews, dismissNewContentNotice, toggleGenreChip, _scheduleMatchCount, toggleToolbarButton,
     showAddHomeRow, hideAddHomeRow, confirmAddHomeRow, removeHomeRow, removeHomeRowByKey,
     reorderHomeRows, rowKey,
     // Library

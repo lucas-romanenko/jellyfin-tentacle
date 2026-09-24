@@ -4,6 +4,7 @@ FastAPI app with all routers
 """
 
 from fastapi import FastAPI, HTTPException, Request
+from starlette.datastructures import MutableHeaders
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -62,7 +63,14 @@ def run_scheduled_sync():
         db.commit()
 
         from routers.sync import _running_syncs, _cancel_flags, _notify_sync_progress, _sync_progress, _sync_lock
+        from services.provider_activity import JobPause
         import threading
+        # A sync is minutes of provider API calls; on a connection-limited
+        # account that is enough to make the provider 509 a running recording.
+        # One wait budget for the whole nightly run (sync and discovery). The
+        # sync itself waits before its first provider call, once its run is
+        # visible -- so a waiting nightly sync can be cancelled like any other.
+        pause = JobPause(db, "the scheduled provider sync")
         active_providers = db.query(Provider).filter(Provider.active == True).all()
         for provider in active_providers:
             # Respect the same running-guard the manual sync endpoint uses, so the
@@ -87,14 +95,22 @@ def run_scheduled_sync():
             cancel_event = threading.Event()
             _cancel_flags[provider.id] = cancel_event
 
-            def progress_cb(phase, category, stats, _pid=provider.id, **kwargs):
-                _notify_sync_progress(_pid, phase, category, stats)
+            def progress_cb(phase, category, stats, _pid=provider.id, item_title=None, item_pos=None,
+                            item_total=None, **kwargs):
+                progress = dict(stats)
+                if item_title:          # e.g. "Waiting for live TV ..." -- shown like a manual sync's
+                    progress["item_title"] = item_title
+                if item_pos and item_total:
+                    progress["item_pos"] = item_pos
+                    progress["item_total"] = item_total
+                _notify_sync_progress(_pid, phase, category, progress)
 
             def cancel_check(_ev=cancel_event):
                 return _ev.is_set()
 
             try:
-                run = sync_provider(provider, "full", db, progress_callback=progress_cb, cancel_check=cancel_check)
+                run = sync_provider(provider, "full", db, progress_callback=progress_cb, cancel_check=cancel_check,
+                                    pause=pause)
                 phase = "complete" if run.status == "completed" else "cancelled" if run.status == "cancelled" else "error"
                 _notify_sync_progress(provider.id, phase, "", {})
             except Exception as e:
@@ -166,6 +182,7 @@ def run_scheduled_sync():
         logger.info("Discovering new provider categories and Live TV groups")
         try:
             from services.discovery import discover_new_provider_content
+            pause()
             discovered = discover_new_provider_content(db)
             if discovered["vod_new"] or discovered["live_new"]:
                 logger.info(f"Discovery: {len(discovered['vod_new'])} new VOD categories, {len(discovered['live_new'])} new Live TV groups")
@@ -634,6 +651,8 @@ app.include_router(smartlists_router.router)
 app.include_router(discover_router.router)
 app.include_router(activity_router.router)
 app.include_router(livetv_router.router)
+from routers import vod as vod_router
+app.include_router(vod_router.router)
 app.include_router(notifications_router.router)
 app.include_router(health_router.router)
 app.include_router(youtube_router.router)
@@ -660,14 +679,39 @@ async def service_worker():
     )
 
 
-@app.middleware("http")
-async def no_cache_static(request: Request, call_next):
-    response = await call_next(request)
-    if request.url.path.startswith("/static/"):
-        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-        response.headers["Pragma"] = "no-cache"
-        response.headers["Expires"] = "0"
-    return response
+class NoCacheStatic:
+    """Dashboard assets are never cached (a stale pages.js after an update
+    looks like a bug).
+
+    Pure ASGI on purpose, NOT `@app.middleware("http")`: Starlette's
+    BaseHTTPMiddleware wraps every response -- the live-TV and VOD streams
+    included -- in a second task group and a memory stream, after which a
+    client that hangs up is no longer delivered to the stream's generator
+    as a cancellation (its `finally` runs whenever the garbage collector
+    gets to it) and `request.is_disconnected()` cannot see the socket at
+    all. Measured on the QA stack: a departed VOD player's connection slot
+    was freed in 3 s on one trial in six and 15-50 s on the others."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or not scope.get("path", "").startswith("/static/"):
+            await self.app(scope, receive, send)
+            return
+
+        async def send_no_cache(message):
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                headers["Pragma"] = "no-cache"
+                headers["Expires"] = "0"
+            await send(message)
+
+        await self.app(scope, receive, send_no_cache)
+
+
+app.add_middleware(NoCacheStatic)
 
 
 # Stamped into the image by CI. Without it "which version am I running?" had

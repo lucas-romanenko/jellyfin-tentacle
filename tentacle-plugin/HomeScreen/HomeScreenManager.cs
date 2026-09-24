@@ -201,6 +201,15 @@ public class HomeConfig
     /// <summary>Combine Continue Watching + Next Up into a single home row.</summary>
     [JsonPropertyName("merge_continue_watching")]
     public bool MergeContinueWatching { get; set; }
+
+    /// <summary>
+    /// What a client may play as a preview when a card is merely focused:
+    /// "all", "local_only" (never a provider stream) or "off". A focus preview of
+    /// a provider (.strm) title is a provider connection, and on a
+    /// connection-limited account that can cut a running recording off.
+    /// </summary>
+    [JsonPropertyName("card_previews")]
+    public string? CardPreviews { get; set; }
 }
 
 /// <summary>
