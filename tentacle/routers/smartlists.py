@@ -811,6 +811,39 @@ def set_merge_continue_watching(req: MergeContinueRequest, db: Session = Depends
     return {"success": True, "merge_continue_watching": bool(req.enabled)}
 
 
+# What a client may play as a "preview" when a card is merely focused: the
+# Android TV app starts a server transcode of the item itself after 500 ms
+# of focus, and for a provider (.strm) title that is a provider connection
+# per card scrolled over -- four in fourteen seconds on one measured row,
+# each lingering after focus moved on. On a connection-limited account that
+# is what cut a running recording off. The server's answer is delivered
+# with the toolbar config every client already fetches at start-up.
+CARD_PREVIEW_POLICIES = ("all", "local_only", "off")
+
+
+class CardPreviewsRequest(BaseModel):
+    mode: str
+
+
+@router.post("/card-previews")
+def set_card_previews(req: CardPreviewsRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+    """Which cards a client may preview on focus: all, local files only
+    (never a provider stream), or none. Per-user, like the other home
+    settings; served to clients as `cardPreviews` on /TentacleHome/Toolbar."""
+    mode = (req.mode or "").strip().lower()
+    if mode not in CARD_PREVIEW_POLICIES:
+        raise HTTPException(status_code=422, detail=f"mode must be one of {', '.join(CARD_PREVIEW_POLICIES)}")
+    with home_config_lock:
+        config = _read_home_json(user)
+        if not config:
+            config = {"hero": {"enabled": False, "playlist_id": "", "display_name": ""}, "rows": []}
+        config["card_previews"] = mode
+        _write_home_json(user, config)
+    bump_playlist_version()
+    _notify_jellyfin_plugin(db)
+    return {"success": True, "card_previews": mode}
+
+
 @router.post("/row-max-items")
 def set_row_max_items(req: RowMaxItemsRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Update max_items for a specific row."""

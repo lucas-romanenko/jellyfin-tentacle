@@ -175,7 +175,13 @@ public class TentacleHomeController : ControllerBase
             }
         }
 
-        return Ok(new { enabled = true, sections, mergeContinueWatching = config.MergeContinueWatching });
+        return Ok(new
+        {
+            enabled = true,
+            sections,
+            mergeContinueWatching = config.MergeContinueWatching,
+            cardPreviews = string.IsNullOrEmpty(config.CardPreviews) ? "all" : config.CardPreviews,
+        });
     }
 
     /// <summary>
@@ -582,14 +588,17 @@ public class TentacleHomeController : ControllerBase
         }
 
         var homeConfig = _homeScreenManager.GetHomeConfig(caller.UserId, GetApiKey());
+        // Every client fetches this at start-up, so it also carries the server's
+        // answer on focus previews (all / local_only / off); absent = all.
+        var cardPreviews = string.IsNullOrEmpty(homeConfig?.CardPreviews) ? "all" : homeConfig!.CardPreviews;
         var toolbar = homeConfig?.Toolbar;
         if (toolbar != null && toolbar.Count > 0)
         {
-            return Ok(new { buttons = toolbar });
+            return Ok(new { buttons = toolbar, cardPreviews });
         }
 
         // No local defaults — Tentacle backend always provides toolbar config via write_home_config()
-        return Ok(new { buttons = Array.Empty<object>() });
+        return Ok(new { buttons = Array.Empty<object>(), cardPreviews });
     }
 
     /// <summary>
