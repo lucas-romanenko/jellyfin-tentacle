@@ -47,7 +47,7 @@ from models.database import (
     get_setting,
     log_activity,
 )
-from routers.auth import require_admin
+from routers.auth import require_admin, require_internal_or_admin
 from services.ssrf import is_safe_url, lan_origin_guard
 from urllib.parse import urljoin
 
@@ -116,6 +116,15 @@ async def _send_checked(client, url: str, headers: dict, guard=None):
 # a tuner client's patience; the running worker has its own, longer budget.
 _OPEN_RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504, 509}
 _OPEN_RETRY_BUDGET = 20.0   # seconds
+
+# Backoff while a RUNNING stream re-dials. A transport error is retried on a
+# short cap (the tuner reader is waiting). A refusal -- 429/509, the account
+# is over its connection limit right now -- is waited out on a longer cap:
+# every attempt is itself a new connection at the provider, and re-dialling
+# every few seconds while it is saturated keeps it saturated.
+_BACKOFF_CAP = 5.0
+_REFUSAL_STATUS = {429, 509}
+_REFUSAL_BACKOFF_CAP = 15.0
 
 class _StreamSlots:
     """Counts upstream pulls against a limit that can change while running.
@@ -223,6 +232,34 @@ _SUBSCRIBER_QUEUE_MAX = 32
 # How soon a pump that outlived its cancel() is cancelled again (see _cancel_pump).
 _PUMP_RECANCEL_SECONDS = 1.0
 
+# What each running upstream is doing right now, by channel id:
+#   {"state": "streaming" | "reconnecting", "since": <loop time the state began>,
+#    "opened_at": <loop time>, "last_error": str | None}
+# A stream that is waiting out a provider refusal writes nothing to its
+# subscribers for a while, so from the outside -- a DVR front end watching the
+# recording's file size -- it is indistinguishable from a dead one. That is
+# how a watchdog ends up cancelling a recording that would have recovered on
+# its own. GET /api/live/streams tells the two apart.
+_stream_status: "dict[int, dict]" = {}
+
+
+def _status_set(channel_id: int, state: str, last_error: "str | None" = None):
+    now = asyncio.get_running_loop().time()
+    cur = _stream_status.get(channel_id)
+    if cur is None:
+        _stream_status[channel_id] = {"state": state, "since": now, "opened_at": now,
+                                      "last_error": last_error}
+        return
+    if cur["state"] != state:
+        cur["state"] = state
+        cur["since"] = now
+    if last_error is not None:
+        cur["last_error"] = last_error
+
+
+def _status_clear(channel_id: int):
+    _stream_status.pop(channel_id, None)
+
 
 def _get_shared_lock() -> "asyncio.Lock":
     global _shared_lock
@@ -310,6 +347,7 @@ class _SharedUpstream:
         # and would otherwise strand the registration and leak the slot.
         if _shared_streams.get(self.channel_id) is self:
             del _shared_streams[self.channel_id]
+            _status_clear(self.channel_id)
         self._release_sem()
         logger.info(f"[LiveTV] Shared upstream for channel {self.channel_id} ended")
 
@@ -639,6 +677,45 @@ def live_capacity(db: Session = Depends(get_db)):
         "active": _stream_slots.active,
         "refused_since_start": _stream_slots.refused,
         "last_refused": _stream_slots.last_refused,
+        "reconnect_budget_seconds": _reconnect_budget(db),
+        "streams": _stream_snapshot(db),
+    }
+
+
+def _stream_snapshot(db) -> list:
+    """One entry per running upstream: what it is doing and for how long."""
+    import time
+    now = time.monotonic()
+    out = []
+    for channel_id, st in sorted(_stream_status.items()):
+        ch = db.query(LiveChannel).filter(LiveChannel.id == channel_id).first()
+        shared = _shared_streams.get(channel_id)
+        out.append({
+            "channel_id": channel_id,
+            "channel": ch.name if ch else None,
+            "state": st["state"],
+            "for_seconds": round(max(0.0, now - st["since"]), 1),
+            "open_seconds": round(max(0.0, now - st["opened_at"]), 1),
+            "last_error": st.get("last_error"),
+            "subscribers": len(shared.subscribers) if shared is not None else None,
+        })
+    return out
+
+
+@router.get("/api/live/streams", dependencies=[Depends(require_internal_or_admin)])
+def live_streams(db: Session = Depends(get_db)):
+    """Every running upstream and whether it is streaming or waiting out a
+    provider failure. A stream that is reconnecting writes nothing for a
+    while, so a DVR front end judging the recording by its file size would
+    take it for dead and cancel it -- which is what makes a second file. Ask
+    here first: "reconnecting" means leave it alone; a channel that is not
+    listed at all has no upstream any more. Reachable with the internal
+    secret so a server-side scheduler can call it without a user session."""
+    return {
+        "streams": _stream_snapshot(db),
+        "limit": _max_concurrent_streams(db),
+        "active": _stream_slots.active,
+        "reconnect_budget_seconds": _reconnect_budget(db),
     }
 
 
@@ -2234,6 +2311,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
             FAILURE_BUDGET = failure_budget   # 0 = until the client leaves
             HEALTHY_AFTER = 10.0
             backoff = 1.0
+            backoff_cap = _BACKOFF_CAP        # grows to _REFUSAL_BACKOFF_CAP after a 429/509
             failing_since = None
             slept = 0.0          # the bound must hold even if the clock stands still
             ua = {"User-Agent": user_agent}
@@ -2245,6 +2323,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
             try:
                 while True:
                     opened_at = loop.time()
+                    _status_set(channel_id, "streaming")
                     reason = "the provider closed the stream"
                     # Batch into ~128 KB pieces ourselves. aiter_bytes(chunk_size=)
                     # does the same, but keeps its partial batch to itself when the
@@ -2257,7 +2336,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                                 first = False
                                 align = align and piece[:1] == b"G"
                             if failing_since is not None and loop.time() - opened_at >= HEALTHY_AFTER:
-                                failing_since, slept, backoff = None, 0.0, 1.0
+                                failing_since, slept, backoff, backoff_cap = None, 0.0, 1.0, _BACKOFF_CAP
                             pending += piece
                             if len(pending) >= 131072:
                                 cut = len(pending) - (len(pending) % 188) if align else len(pending)
@@ -2271,7 +2350,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     if cut:
                         yield pending[:cut]
                     if loop.time() - opened_at >= HEALTHY_AFTER:
-                        failing_since, slept, backoff = None, 0.0, 1.0
+                        failing_since, slept, backoff, backoff_cap = None, 0.0, 1.0, _BACKOFF_CAP
                     await raw_resp.aclose()
 
                     # Re-open, waiting out refusals, until it works or the budget is spent.
@@ -2286,10 +2365,11 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                             return
                         logger.warning(f"[LiveTV] Raw stream for channel {channel_id} dropped "
                                        f"(reconnect in {backoff:.0f}s, {waited:.0f}s so far): {reason}")
+                        _status_set(channel_id, "reconnecting", reason)
                         delay = backoff * (0.8 + random.random() * 0.4)
                         slept += delay
                         await asyncio.sleep(delay)
-                        backoff = min(backoff * 2, 5.0)
+                        backoff = min(backoff * 2, backoff_cap)
                         new_resp = None
                         try:
                             new_resp = await _send_checked(raw_client, stream_url, ua, guard)
@@ -2306,6 +2386,8 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                             status = e.response.status_code if isinstance(e, httpx.HTTPStatusError) else None
                             if isinstance(e, httpx.TransportError) or status in _OPEN_RETRYABLE_STATUS:
                                 reason = str(e) or type(e).__name__
+                                if status in _REFUSAL_STATUS:
+                                    backoff_cap = _REFUSAL_BACKOFF_CAP
                                 continue
                             logger.error(f"[LiveTV] Raw stream for channel {channel_id} cannot be "
                                          f"re-opened, stopping: {e}")
@@ -2313,6 +2395,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         raw_resp = new_resp
                         break
             finally:
+                _status_clear(channel_id)
                 await raw_resp.aclose()
                 await raw_client.aclose()
                 _release_sem()
@@ -2333,10 +2416,12 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
 
     async def hls_to_mpegts():
         """Wrapper that releases the concurrency slot once the stream ends."""
+        _status_set(channel_id, "streaming")
         try:
             async for chunk in _hls_worker():
                 yield chunk
         finally:
+            _status_clear(channel_id)
             _release_sem()
             logger.info(f"[LiveTV] Stream ended for channel {channel_id}")
 
@@ -2359,7 +2444,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
         RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504, 509}
         FAILURE_BUDGET = failure_budget   # seconds of unbroken failure; 0 = until the client leaves
         BACKOFF_START = 1.0
-        BACKOFF_CAP = 5.0        # short: the tuner reader is waiting on us
+        backoff_cap = _BACKOFF_CAP   # short while the tuner reader waits; longer after a 429/509
         CHUNK_RETRIES_IN_PLACE = 3
         # A segment that will never arrive (404 / 410 / 403 on ONE chunk) is
         # skipped, not fatal: panels routinely 404 a segment that is not written
@@ -2396,13 +2481,17 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
             return isinstance(exc, httpx.TransportError)
 
         def _note_success():
-            nonlocal failing_since, backoff
+            nonlocal failing_since, backoff, backoff_cap
             failing_since = None
             backoff = BACKOFF_START
+            backoff_cap = _BACKOFF_CAP
+            _status_set(channel_id, "streaming")
 
         def _note_failure(exc, what: str) -> bool:
             """Record a failure. True means the stream should stop."""
-            nonlocal failing_since
+            nonlocal failing_since, backoff_cap
+            if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in _REFUSAL_STATUS:
+                backoff_cap = _REFUSAL_BACKOFF_CAP
             if not _is_retryable(exc):
                 logger.error(f"[LiveTV] {what} failed fatally for channel "
                              f"{channel_id}, stopping: {exc}")
@@ -2417,6 +2506,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 return True
             logger.warning(f"[LiveTV] {what} failed for channel {channel_id} "
                            f"(retry in {backoff:.0f}s, {waited:.0f}s so far): {exc}")
+            _status_set(channel_id, "reconnecting", f"{what}: {exc}")
             return False
 
         async def _backoff_sleep():
@@ -2424,7 +2514,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
             # Jitter so several streams that were squeezed at the same moment
             # don't all come back at the same moment and squeeze it again.
             await asyncio.sleep(backoff * (0.8 + random.random() * 0.4))
-            backoff = min(backoff * 2, BACKOFF_CAP)
+            backoff = min(backoff * 2, backoff_cap)
 
         async with httpx.AsyncClient(
             follow_redirects=False,
