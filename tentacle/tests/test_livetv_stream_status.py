@@ -103,6 +103,7 @@ class RouteReportsStreams(unittest.TestCase):
         self.assertEqual({9, 138}, set(by_id))
         self.assertEqual("reconnecting", by_id[138]["state"])
         self.assertEqual("CA: SPORTSNET ONE", by_id[138]["channel"])
+        self.assertEqual("1238991", by_id[138]["stream_id"], "the GuideNumber a DVR front end matches timers by")
         self.assertEqual("509 Bandwidth Limit Exceeded", by_id[138]["last_error"])
         self.assertGreaterEqual(by_id[138]["for_seconds"], 0.0)
         self.assertIsNone(by_id[9]["channel"], "an unknown channel id is still reported")

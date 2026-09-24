@@ -174,6 +174,19 @@ class KnowingWhatIsRecording(unittest.IsolatedAsyncioTestCase):
             await self.livetv.live_unreserve(self.b.id)
             self.assertNotIn(self.b.id, self.livetv._reserved_channels)
 
+    async def test_a_reservation_by_guide_number_as_jellyfin_names_it(self):
+        from fastapi import HTTPException
+        with mock.patch.object(self.livetv, "_recording_stream_ids_from_jellyfin", lambda u, k: set()):
+            out = await self.livetv.live_reserve(self.livetv.ReserveRequest(stream_id="hdhr_277123", seconds=60), self.db)
+            self.assertEqual(self.a.id, out["channel_id"])
+            self.assertEqual({self.a.id}, await self.livetv._recording_channel_ids(self.db))
+            with self.assertRaises(HTTPException) as cm:
+                await self.livetv.live_reserve(self.livetv.ReserveRequest(stream_id="nope"), self.db)
+            self.assertEqual(404, cm.exception.status_code)
+            with self.assertRaises(HTTPException) as cm:
+                await self.livetv.live_reserve(self.livetv.ReserveRequest(), self.db)
+            self.assertEqual(422, cm.exception.status_code)
+
 
 class RouteGivesRecordingsTheSlot(unittest.TestCase):
     def setUp(self):

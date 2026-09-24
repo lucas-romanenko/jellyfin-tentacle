@@ -948,6 +948,8 @@ def _stream_snapshot(db) -> list:
         out.append({
             "channel_id": channel_id,
             "channel": ch.name if ch else None,
+            # the GuideNumber Jellyfin knows this channel by (hdhr_<stream_id>)
+            "stream_id": (ch.stream_id or str(ch.id)) if ch else None,
             "kind": lease.kind if lease else None,
             "state": st["state"],
             "for_seconds": round(max(0.0, now - st["since"]), 1),
@@ -978,7 +980,8 @@ def live_streams(db: Session = Depends(get_db)):
 
 
 class ReserveRequest(BaseModel):
-    channel_id: int
+    channel_id: "int | None" = None
+    stream_id: "str | None" = None     # the GuideNumber Jellyfin uses (hdhr_<stream_id>)
     seconds: int = 1800
 
 
@@ -987,13 +990,23 @@ async def live_reserve(body: ReserveRequest, db: Session = Depends(get_db)):
     """Mark a channel as about to be recorded, so the pull that opens it is
     treated as a recording (and outranks viewers at capacity) even before
     Jellyfin's timer shows as InProgress -- the pre-padding window. For a
-    DVR front end; the reservation lapses on its own."""
-    ch = db.query(LiveChannel).filter(LiveChannel.id == body.channel_id).first()
+    DVR front end, which may name the channel by Tentacle's id or by the
+    GuideNumber from Jellyfin's timer; the reservation lapses on its own."""
+    q = db.query(LiveChannel)
+    if body.channel_id is not None:
+        ch = q.filter(LiveChannel.id == body.channel_id).first()
+    elif body.stream_id:
+        sid = str(body.stream_id).strip()
+        if sid.startswith("hdhr_"):
+            sid = sid[len("hdhr_"):]
+        ch = q.filter(LiveChannel.stream_id == sid).first()
+    else:
+        raise HTTPException(422, "channel_id or stream_id is required")
     if not ch:
         raise HTTPException(404, "Channel not found")
     seconds = max(1, min(int(body.seconds), 24 * 3600))
-    _reserved_channels[body.channel_id] = asyncio.get_running_loop().time() + seconds
-    return {"channel_id": body.channel_id, "channel": ch.name, "reserved_for_seconds": seconds}
+    _reserved_channels[ch.id] = asyncio.get_running_loop().time() + seconds
+    return {"channel_id": ch.id, "channel": ch.name, "stream_id": ch.stream_id, "reserved_for_seconds": seconds}
 
 
 @router.delete("/api/live/reserve/{channel_id}", dependencies=[Depends(require_internal_or_admin)])
