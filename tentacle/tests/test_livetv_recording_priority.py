@@ -187,6 +187,28 @@ class KnowingWhatIsRecording(unittest.IsolatedAsyncioTestCase):
                 await self.livetv.live_reserve(self.livetv.ReserveRequest(), self.db)
             self.assertEqual(422, cm.exception.status_code)
 
+    async def test_a_slow_jellyfin_does_not_hold_up_a_tuner_open(self):
+        """D4: the lookup is capped; the last answer is used and the answer
+        that arrives later is kept for the next open."""
+        import time as _time
+        started = asyncio.get_running_loop().time()
+
+        def slow(url, key):
+            _time.sleep(0.8)
+            return {"277123"}
+        with mock.patch.object(self.livetv, "_recording_stream_ids_from_jellyfin", slow), \
+                mock.patch.object(self.livetv, "_RECORDING_LOOKUP_WAIT", 0.2):
+            ids = await self.livetv._recording_channel_ids(self.db)
+            elapsed = asyncio.get_running_loop().time() - started
+            self.assertLess(elapsed, 0.6, "the open must not wait for a slow Jellyfin")
+            self.assertEqual(set(), ids, "no earlier answer: nothing is recording")
+            pending = self.livetv._recording_cache["pending"]
+            self.assertIsNotNone(pending, "the lookup carries on in the background")
+            await pending
+            await asyncio.sleep(0)     # let the done-callback run
+            self.assertEqual({self.a.id}, await self.livetv._recording_channel_ids(self.db),
+                             "the late answer is used from then on")
+
 
 class RouteGivesRecordingsTheSlot(unittest.TestCase):
     def setUp(self):
