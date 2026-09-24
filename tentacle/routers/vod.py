@@ -62,16 +62,21 @@ def idle_seconds(db) -> float:
 
 class _Playback:
     """One title being played: its lease and when it was last asked for."""
-    __slots__ = ("token", "owner", "lease", "last_used", "idle", "stopped", "active_bodies")
+    __slots__ = ("token", "owner", "lease", "last_used", "started", "idle", "stopped", "active_bodies",
+                 "generation")
 
     def __init__(self, token: str, owner: str, lease, idle: float):
         self.token = token
         self.owner = owner
         self.lease = lease
         self.idle = idle
-        self.last_used = asyncio.get_running_loop().time()
+        self.started = self.last_used = asyncio.get_running_loop().time()
         self.stopped = asyncio.Event()
         self.active_bodies = 0
+        # One playback, one provider connection: a new request (a seek) ends
+        # the body still streaming the previous range, so two never run at once
+        # under one counted slot.
+        self.generation = 0
 
     def touch(self):
         self.last_used = asyncio.get_running_loop().time()
@@ -256,6 +261,8 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
     status = resp.status_code
     resumable = status == 206 or resp.headers.get("accept-ranges", "").lower() == "bytes"
     pb.active_bodies += 1
+    pb.generation += 1
+    my_generation = pb.generation
 
     async def body():
         nonlocal resp
@@ -273,6 +280,9 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
                     # then re-fetched from the wrong offset.
                     async for chunk in resp.aiter_bytes():
                         if pb.stopped.is_set():
+                            return
+                        if pb.generation != my_generation:
+                            logger.debug(f"[VOD] {owner}: superseded by a newer request (seek); ending this range")
                             return
                         sent += len(chunk)
                         pb.touch()

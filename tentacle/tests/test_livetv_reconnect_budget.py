@@ -59,7 +59,7 @@ class BudgetIsASetting(unittest.TestCase):
             self.assertEqual(120.0, self._budget(), bad)
 
 
-async def _play(script, failure_budget):
+async def _play(script, failure_budget, is_recording=None):
     """Open a raw-TS channel with the given budget and read it to the end."""
     import routers.livetv as livetv
     log, closed, slept = [], [], []
@@ -77,7 +77,8 @@ async def _play(script, failure_budget):
             patch("asyncio.sleep", fast_sleep):
         response = await livetv._stream_proxy_inner(
             channel_id=1, user_agent="TestAgent/1.0", stream_url=PANEL,
-            _release_sem=lambda: None, guard=None, failure_budget=failure_budget)
+            _release_sem=lambda: None, guard=None, failure_budget=failure_budget,
+            is_recording=is_recording)
         pieces = []
         async for piece in response.body_iterator:
             pieces.append(piece)
@@ -105,6 +106,19 @@ class RawStreamHonoursTheBudget(unittest.IsolatedAsyncioTestCase):
         body, log, slept = await _play(script, failure_budget=30)
         self.assertEqual(b"AAAA", body)
         self.assertLessEqual(sum(slept), 40, "kept re-dialling past the configured budget")
+
+    async def test_a_recording_outlasts_the_viewer_budget(self):
+        """The budget is a viewer's setting; a recording keeps retrying while
+        its client is attached, whatever it says."""
+        def script():      # the fake client consumes its script; each play needs a fresh one
+            return {
+                PANEL: [_redirect()] + [_resp(509, PANEL)] * 60 + [_redirect(), _resp(404, PANEL)],
+                TOKENIZED: [_live([b"AAAA"], then=_dropped()), _live([b"BBBB"])],
+            }
+        body, log, slept = await _play(script(), failure_budget=30, is_recording=lambda: True)
+        self.assertEqual(b"AAAABBBB", body, "a recording gave up on a 30 s viewer budget")
+        body, log, slept = await _play(script(), failure_budget=30, is_recording=lambda: False)
+        self.assertEqual(b"AAAA", body, "a viewer honours the budget")
 
     async def test_zero_budget_still_stops_on_a_status_that_will_never_fix_itself(self):
         script = {

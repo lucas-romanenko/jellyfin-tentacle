@@ -181,6 +181,53 @@ class OnePlaybackOneLease(_Base):
         self.assertEqual(1, self.livetv._stream_slots.active, "a seek is not a second connection slot")
         self.assertEqual(1, len(self.vod._playbacks))
 
+    def test_a_playback_is_listed_with_the_live_streams(self):
+        script = {self.upstream: [_file(206, [b"AAAA"], start=0)]}
+        self._play(script, range_header="bytes=0-")
+        snap = self.livetv._stream_snapshot(self.db)
+        vods = [s for s in snap if s["kind"] == "vod"]
+        self.assertEqual(1, len(vods))
+        self.assertEqual("vod:movie:%d:2141622" % self.provider.id, vods[0]["channel"])
+        self.assertIn(vods[0]["state"], ("idle", "streaming"))
+
+    def test_a_seek_ends_the_previous_range_so_one_playback_holds_one_connection(self):
+        vod, livetv = self.vod, self.livetv
+
+        class _Endless(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                while True:
+                    yield b"X"
+                    await asyncio.sleep(0)
+
+            async def aclose(self):
+                pass
+
+        def endless():
+            return httpx.Response(206, headers={"content-type": "video/x-matroska", "accept-ranges": "bytes",
+                                                "content-range": "bytes 0-999/1000", "content-length": "1000"},
+                                  stream=_Endless(), request=httpx.Request("GET", self.upstream))
+        script = {self.upstream: [endless(), endless()]}
+
+        async def go():
+            with mock.patch("httpx.AsyncClient", lambda **kw: _Client(script, self.log, **kw)), \
+                    mock.patch("routers.vod.lan_origin_guard", lambda *a, **k: (lambda u: True)):
+                first = await vod.vod_stream("movie", self.token_file, _request("bytes=0-"), self.db)
+                it1 = first.body_iterator
+                self.assertTrue((await it1.__anext__()).startswith(b"X"))
+                second = await vod.vod_stream("movie", self.token_file, _request("bytes=500-"), self.db)
+                it2 = second.body_iterator
+                self.assertTrue((await it2.__anext__()).startswith(b"X"))
+                for _ in range(200):
+                    try:
+                        await asyncio.wait_for(it1.__anext__(), 1.0)
+                    except StopAsyncIteration:
+                        break
+                else:
+                    self.fail("the superseded range kept streaming alongside the seek")
+                self.assertEqual(1, livetv._stream_slots.active)
+                await it2.aclose()
+        asyncio.run(go())
+
     def test_an_idle_playback_is_released_and_a_stopped_one_too(self):
         script = {self.upstream: [_file(206, [b"AAAA"], start=0)]}
         self._play(script, range_header="bytes=0-")

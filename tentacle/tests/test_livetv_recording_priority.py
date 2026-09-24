@@ -116,6 +116,70 @@ class Broker(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await s.acquire_lease(1, 0.01, "live", "channel:9"))
 
 
+class GivingTheConnectionBack(unittest.IsolatedAsyncioTestCase):
+    """aclose() on a generator that never started runs nothing -- not its
+    finally -- so abandoning an opened stream must close the connection
+    explicitly, or the provider keeps a slot we no longer count."""
+
+    async def test_close_upstream_closes_the_raw_connection_and_frees_the_slot(self):
+        from test_livetv_open_single_fetch import PANEL, TOKENIZED, FakeClient, _redirect, _resp
+        from test_livetv_raw_reconnect import _live
+        import routers.livetv as livetv
+        script = {PANEL: [_redirect(), _resp(404, PANEL)], TOKENIZED: [_live([b"AAAA"])]}
+        log, closed, released = [], [], []
+        with mock.patch("httpx.AsyncClient", lambda **kw: FakeClient(script, log, closed, **kw)), \
+                mock.patch.object(livetv, "is_safe_url", lambda *a, **k: True):
+            resp = await livetv._stream_proxy_inner(channel_id=1, user_agent="UA", stream_url=PANEL,
+                                                    _release_sem=lambda: released.append(1), guard=None)
+        self.assertEqual([], closed, "nothing closed yet: the stream is open and unread")
+        await resp.close_upstream()
+        self.assertEqual(1, len(closed), "the httpx client (and its response) must be closed")
+        self.assertEqual([1], released)
+
+    async def test_a_shared_upstream_retired_before_its_pump_ran_closes_the_connection(self):
+        import routers.livetv as livetv
+        closed = []
+
+        async def close_upstream():
+            closed.append(1)
+
+        async def never_read():
+            yield b"X"     # never reached
+        released = []
+        shared = livetv._SharedUpstream(5, lambda: released.append(1), close_upstream=close_upstream)
+        shared.task = asyncio.get_running_loop().create_task(shared._pump(never_read()))
+        await shared.preempt()          # before the pump's first turn
+        await asyncio.sleep(0.01)
+        self.assertEqual([1], closed, "the pump never ran, so its finally never closed anything")
+        self.assertEqual([1], released)
+
+    async def test_a_shared_upstream_whose_pump_ran_lets_the_pump_close(self):
+        import routers.livetv as livetv
+        closed, iter_closed = [], []
+
+        async def close_upstream():
+            closed.append(1)
+
+        async def body():
+            try:
+                while True:
+                    yield b"X"
+                    await asyncio.sleep(0)
+            finally:
+                iter_closed.append(1)
+        shared = livetv._SharedUpstream(6, lambda: None, close_upstream=close_upstream)
+        q = shared.subscribe()
+        shared.task = asyncio.get_running_loop().create_task(shared._pump(body()))
+        await q.get()                   # the pump is running
+        await shared.preempt()
+        for _ in range(50):
+            await asyncio.sleep(0.01)
+            if iter_closed:
+                break
+        self.assertEqual([1], iter_closed, "the pump's own finally closes the iterator")
+        self.assertEqual([], closed, "not closed twice")
+
+
 class KnowingWhatIsRecording(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         import routers.livetv as livetv
@@ -138,7 +202,7 @@ class KnowingWhatIsRecording(unittest.IsolatedAsyncioTestCase):
         from services.jellyfin import JellyfinService
         timers = {"Items": [
             {"Status": "InProgress", "ExternalChannelId": "hdhr_277123"},
-            {"Status": "New", "ExternalChannelId": "hdhr_999"},
+            {"Status": "New", "ExternalChannelId": "hdhr_999", "StartDate": "2099-01-01T00:00:00.0000000Z"},
             {"Status": "InProgress", "ExternalChannelId": "m3u_5"},
             {"Status": "InProgress"},
         ]}
@@ -146,6 +210,41 @@ class KnowingWhatIsRecording(unittest.IsolatedAsyncioTestCase):
             self.assertEqual({"277123"}, self.livetv._recording_stream_ids_from_jellyfin("http://jf.test", "k"))
         with mock.patch.object(JellyfinService, "_get", lambda self, path, params=None: None):
             self.assertIsNone(self.livetv._recording_stream_ids_from_jellyfin("http://jf.test", "k"))
+
+    def test_a_timer_that_is_due_counts_as_recording_before_jellyfin_marks_it(self):
+        """Jellyfin opens the stream first and marks InProgress after; at
+        capacity the opening pull must already outrank a viewer."""
+        from datetime import datetime, timedelta
+        from services.jellyfin import JellyfinService
+        now = datetime.utcnow()
+        fmt = lambda d: d.strftime("%Y-%m-%dT%H:%M:%S.0000000Z")
+        timers = {"Items": [
+            # starts in 5 min with 15 min pre-padding: recording is due now
+            {"Status": "New", "ExternalChannelId": "hdhr_1", "StartDate": fmt(now + timedelta(minutes=5)), "PrePaddingSeconds": 900},
+            # starts in 90 s, no padding: due within the imminent window
+            {"Status": "New", "ExternalChannelId": "hdhr_2", "StartDate": fmt(now + timedelta(seconds=90))},
+            # starts in an hour: not yet
+            {"Status": "New", "ExternalChannelId": "hdhr_3", "StartDate": fmt(now + timedelta(hours=1))},
+            # cancelled: never
+            {"Status": "Cancelled", "ExternalChannelId": "hdhr_4", "StartDate": fmt(now)},
+            {"Status": "New", "ExternalChannelId": "hdhr_5", "StartDate": "garbage"},
+        ]}
+        with mock.patch.object(JellyfinService, "_get", lambda self, path, params=None: timers):
+            self.assertEqual({"1", "2"}, self.livetv._recording_stream_ids_from_jellyfin("http://jf.test", "k"))
+
+    async def test_the_refresher_promotes_a_running_pull_without_another_open(self):
+        """A lone recording (nothing else opening) must still become
+        'recording' once Jellyfin's timer flips."""
+        answers = [set()]
+        with mock.patch.object(self.livetv, "_recording_stream_ids_from_jellyfin", lambda u, k: answers[-1]), \
+                mock.patch.object(self.livetv, "SessionLocal", lambda: self.db), \
+                mock.patch.object(self.db, "close", lambda: None):
+            self.livetv._stream_slots = self.livetv._StreamSlots()
+            lease = await self.livetv._stream_slots.acquire_lease(6, 0.01, "live", "channel:9", stream_key="277123")
+            self.assertEqual("live", lease.kind)
+            answers.append({"277123"})       # the timer flipped
+            await self.livetv._refresh_recordings_once()
+            self.assertEqual("recording", lease.kind)
 
     async def test_channel_ids_come_from_timers_and_are_cached(self):
         calls = []
