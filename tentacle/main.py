@@ -639,6 +639,8 @@ app.include_router(smartlists_router.router)
 app.include_router(discover_router.router)
 app.include_router(activity_router.router)
 app.include_router(livetv_router.router)
+from routers import vod as vod_router
+app.include_router(vod_router.router)
 app.include_router(notifications_router.router)
 app.include_router(health_router.router)
 app.include_router(youtube_router.router)
