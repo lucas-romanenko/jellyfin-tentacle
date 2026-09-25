@@ -367,7 +367,9 @@ def connection_status(db: Session = Depends(get_db)):
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
         futs = {
-            "jellyfin": executor.submit(_test, jf_url, jf_key, "System/Info", "X-Emby-Token", "System/Configuration"),
+            # /Plugins requires elevation. /System/Configuration does not: any
+            # signed-in user may read it, so probing it let a non-admin key pass (#129).
+            "jellyfin": executor.submit(_test, jf_url, jf_key, "System/Info", "X-Emby-Token", "Plugins"),
             "radarr": executor.submit(_test, radarr_url, radarr_key, "api/v3/system/status", "X-Api-Key"),
             "sonarr": executor.submit(_test, sonarr_url, sonarr_key, "api/v3/system/status", "X-Api-Key"),
         }
