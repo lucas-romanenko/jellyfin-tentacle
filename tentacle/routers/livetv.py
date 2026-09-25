@@ -1037,7 +1037,7 @@ def _new_health() -> dict:
             "errors": 0}                  # failed requests that were retried
 
 
-def _stream_ended(channel_id: int, entry: dict, recording: bool) -> None:
+def _stream_ended(channel_id: int, entry: dict, recording: bool, hls: bool = False) -> None:
     """Log (and keep, for /api/live/streams) how a finished stream went.
     Synchronous and cheap: it runs from a generator's finally."""
     from datetime import timezone
@@ -1054,13 +1054,21 @@ def _stream_ended(channel_id: int, entry: dict, recording: bool) -> None:
                "segments_skipped": h["segments_skipped"], "errors": h["errors"]}
     _recent_streams.append(summary)
     del _recent_streams[:-_RECENT_STREAMS_MAX]
-    damaged = h["reconnects"] or h["segments_skipped"] or h["reconnecting_seconds"] >= 1.0
+    # A raw TS reconnect is always a gap. An HLS "interruption" can be one
+    # segment retried in place within the playlist window -- nothing lost --
+    # so for HLS only a skipped segment or a second or more of waiting counts.
+    damaged = ((h["reconnects"] and not hls) or h["segments_skipped"]
+               or h["reconnecting_seconds"] >= 1.0)
     what = "recording" if recording else "stream"
     text = (f"{h['reconnects']} interruption(s) recovered, {h['reconnecting_seconds']:.0f}s waiting "
             f"on the provider, {h['segments_skipped']} segment(s) skipped, "
             f"{h['errors']} failed request(s)")
     if not damaged:
-        logger.info(f"[LiveTV] Channel {channel_id}: {what} ran {seconds:.0f}s with no upstream trouble")
+        if h["reconnects"] or h["errors"]:
+            logger.info(f"[LiveTV] Channel {channel_id}: {what} ran {seconds:.0f}s — {text} "
+                        f"(retried in time, nothing lost)")
+        else:
+            logger.info(f"[LiveTV] Channel {channel_id}: {what} ran {seconds:.0f}s with no upstream trouble")
         return
     logger.warning(f"[LiveTV] Channel {channel_id}: {what} ran {seconds:.0f}s — {text}")
     if not recording:
@@ -3711,7 +3719,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 yield chunk
         finally:
             _stream_ended(channel_id, status_entry,
-                          bool(is_recording is not None and is_recording()))
+                          bool(is_recording is not None and is_recording()), hls=True)
             _status_clear(channel_id, status_entry)
             _release_sem()
             logger.info(f"[LiveTV] Stream ended for channel {channel_id}")

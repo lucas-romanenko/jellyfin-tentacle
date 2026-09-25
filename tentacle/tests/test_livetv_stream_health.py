@@ -112,11 +112,41 @@ class HlsHealth(unittest.IsolatedAsyncioTestCase):
         script = {HLS: [_resp(200, HLS, content=media, headers=PL)],
                   s1: [_resp(509, s1), _resp(509, s1), _resp(200, s1, content=b"G" * 188, headers=TS)],
                   s2: [_resp(200, s2, content=b"H" * 188, headers=TS)]}
-        with self.assertLogs("routers.livetv", "WARNING") as logs:
+        with self.assertLogs("routers.livetv", "INFO") as logs:
             await _play(script, HLS, recording=True)
         last = livetv._recent_streams[-1]
         self.assertEqual((1, 2), (last["reconnects"], last["errors"]))
         self.assertTrue(any("1 interruption(s) recovered" in m for m in logs.output), logs.output)
+
+
+class HlsDamagedThreshold(unittest.IsolatedAsyncioTestCase):
+    """e3875e9 review: one HLS segment retried in place (well under a second
+    of waiting, nothing lost) must not mark a recording as damaged."""
+
+    def setUp(self):
+        livetv._recent_streams.clear()
+
+    async def test_a_quick_in_place_retry_is_not_damage(self):
+        s1 = "http://provider.test/live/u/p/s1.ts"
+        media = b"#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4,\ns1.ts\n#EXT-X-ENDLIST\n"
+        script = {HLS: [_resp(200, HLS, content=media, headers=PL)],
+                  s1: [_resp(509, s1), _resp(200, s1, content=b"G" * 188, headers=TS)]}
+        writes = []
+        with patch.object(livetv, "log_activity", lambda db, ev, msg, detail=None: writes.append(ev)):
+            with self.assertLogs("routers.livetv", "INFO") as logs:
+                await _play(script, HLS, recording=True)
+            await asyncio.sleep(0.05)
+        self.assertEqual(1, livetv._recent_streams[-1]["reconnects"])
+        self.assertFalse(any("recording ran" in m and "WARNING" in m for m in logs.output), logs.output)
+        self.assertNotIn("livetv_recording_damaged", writes)
+
+    def test_raw_ts_reconnects_still_count_as_damage(self):
+        async def run():
+            h = livetv._new_health()
+            h["reconnects"] = 1
+            with self.assertLogs("routers.livetv", "WARNING"):
+                livetv._stream_ended(5, {"opened_at": asyncio.get_running_loop().time(), "health": h}, False)
+        asyncio.run(run())
 
 
 class StatusShape(unittest.IsolatedAsyncioTestCase):
