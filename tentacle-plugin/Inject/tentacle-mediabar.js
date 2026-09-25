@@ -72,6 +72,7 @@
             var self = this;
             var configUrl = this.apiClient.getUrl('TentacleHome/HeroConfig', { userId: this.userId });
             this.apiClient.getJSON(configUrl).then(function (cfg) {
+                self._heroConfigKey = JSON.stringify(cfg || null);
                 if (cfg && cfg.trailerAudio === false) {
                     self._defaultMuted = true;
                     self._isMuted = true;
@@ -147,6 +148,25 @@
 
             // Fixed position hero — append to body, rows scroll over it
             document.body.appendChild(this.container);
+        },
+
+        // Called by the home page when the dashboard's settings version moves:
+        // reload the hero only when its configuration (playlist, sort, filters,
+        // count) changed. Reloading on every version bump would reshuffle a
+        // Random hero whenever any playlist anywhere changed.
+        refreshIfChanged: function () {
+            var self = this;
+            if (!this.initialized || !this.apiClient) return Promise.resolve(false);
+            var configUrl = this.apiClient.getUrl('TentacleHome/HeroConfig', { userId: this.userId });
+            return this.apiClient.getJSON(configUrl).then(function (cfg) {
+                var key = JSON.stringify(cfg || null);
+                if (key === self._heroConfigKey) return false;
+                self._heroConfigKey = key;
+                return self.loadContent().then(function () {
+                    if (self.items.length > 0 && self._autoAdvance) self.resetAutoAdvance();
+                    return true;
+                });
+            }).catch(function () { return false; });
         },
 
         loadContent: function () {
