@@ -487,6 +487,7 @@ def fetch_letterboxd_rss(url: str) -> list:
         # Collect all film slugs across pages
         all_slugs = []
         page = 1
+        cut_short = False
         while True:
             page_url = f"{url.rstrip('/')}/page/{page}/"
             r = session.get(page_url, timeout=15)
@@ -496,6 +497,10 @@ def fetch_letterboxd_rss(url: str) -> list:
 
             slugs = re.findall(r'data-target-link="/film/([^/]+)/"', r.text)
             if not slugs:
+                # Page N+1 was linked from page N, so an empty one is not the
+                # end of the list but a page that did not render (a Cloudflare
+                # challenge answers 200) — what came before is only part of it.
+                cut_short = page > 1
                 break
             all_slugs.extend(slugs)
 
@@ -507,6 +512,7 @@ def fetch_letterboxd_rss(url: str) -> list:
 
         # Fetch film pages in parallel
         items = []
+        failed = 0
         with ThreadPoolExecutor(max_workers=10) as pool:
             futures = {pool.submit(_fetch_letterboxd_film, slug, session): slug for slug in all_slugs}
             for future in as_completed(futures):
@@ -516,9 +522,22 @@ def fetch_letterboxd_rss(url: str) -> list:
                     if result:
                         items.append(result)
                 except Exception as e:
+                    failed += 1
                     logger.debug(f"Letterboxd: failed to fetch film '{slug}': {e}")
 
-        logger.info(f"Letterboxd: resolved {len(items)} films with TMDB IDs")
+        logger.info(f"Letterboxd: resolved {len(items)} films with TMDB IDs"
+                    + (f", {failed} film page(s) failed" if failed else ""))
+        if failed or cut_short:
+            # A film page that failed (ten at a time, so a 429 is likely on a
+            # long list) is a film still on the list, not one that left it.
+            reasons = []
+            if cut_short:
+                reasons.append(f"page {page} of the list did not load")
+            if failed:
+                reasons.append(f"{failed} film page(s) did not load")
+            return ListFetch(items, source="letterboxd", complete=False, note=(
+                f"Letterboxd was only partly read ({'; '.join(reasons)}). "
+                f"Films already on this list were kept."))
         return items
     except Exception as e:
         logger.error(f"Failed to fetch Letterboxd {url}: {e}")
