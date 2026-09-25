@@ -253,7 +253,8 @@ function stopAllPolling() {
   if (state._arrProblemsTimer) { clearInterval(state._arrProblemsTimer); state._arrProblemsTimer = null; }
   if (state._syncPollInterval) { clearInterval(state._syncPollInterval); state._syncPollInterval = null; }
   for (const fn of ['stopActivityPolling', 'stopDownloadPolling', 'stopHealthPolling',
-                    'stopYouTubePolling', 'stopLivePolling']) {
+                    'stopYouTubePolling', 'stopLivePolling',
+                    'disconnectLibraryStream', 'stopLogStream']) {
     if (typeof window[fn] === 'function') { try { window[fn](); } catch (_) {} }
   }
 }

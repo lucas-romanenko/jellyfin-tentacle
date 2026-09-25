@@ -262,7 +262,7 @@ function connectLibraryStream() {
     _libEventSource = null;
     // Reconnect after 5s if still on library page
     setTimeout(() => {
-      if (state.currentPage === 'library') connectLibraryStream();
+      if (state.currentPage === 'library' && !state.sessionExpired) connectLibraryStream();
     }, 5000);
   };
 }
@@ -363,7 +363,7 @@ async function loadLibDownloads() {
       if (el) el.style.display = '';
       if (countEl) countEl.textContent = '';
       if (body) body.innerHTML = '<div class="dl-item" style="color:var(--text3)">Couldn\'t load downloads — retrying…</div>';
-      if (!_dlPollTimer) {
+      if (!_dlPollTimer && !state.sessionExpired) {
         _dlPollActive = true;
         _dlPollTimer = setInterval(pollLibDownloads, 5000);
       }
@@ -2666,6 +2666,7 @@ async function pollResyncStatus() {
   try {
     s = await api('/api/smartlists/sync-status');
   } catch (e) {
+    if (e && e.sessionExpired) return;   // signing in reloads the page
     setTimeout(pollResyncStatus, 5000); // transient error — keep polling
     return;
   }
@@ -4595,7 +4596,12 @@ let _logAutoScroll = true;
 let _logEventSource = null;
 let _logLineCount = 0;
 
+function stopLogStream() {
+  if (_logEventSource) { _logEventSource.close(); _logEventSource = null; }
+}
+
 function initLogViewer() {
+  if (state.sessionExpired) return;
   if (_logEventSource) _logEventSource.close();
 
   const body = document.getElementById('log-body');
