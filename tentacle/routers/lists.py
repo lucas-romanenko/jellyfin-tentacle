@@ -687,6 +687,16 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
         media_type = item.get("media_type", "")
         if tmdb_id:
             valid_ids.add((tmdb_id, media_type))
+    # Every other list with the same tag wants its titles tagged too. Tags are
+    # library-wide while lists are per user, and the suggested tag is the list
+    # name, so two users' "Watchlist" lists share one tag: judged on this list
+    # alone, each refresh stripped the tag from everything on the other list,
+    # and the other list's refresh stripped it back.
+    others = db.query(ListItem.tmdb_id, ListItem.media_type).join(
+        ListSubscription, ListItem.list_id == ListSubscription.id
+    ).filter(ListSubscription.tag == tag, ListItem.tmdb_id.isnot(None)).all()
+    for tmdb_id, media_type in others:
+        valid_ids.add((tmdb_id, media_type or "movie"))
 
     tagged = 0
     cleaned = 0
@@ -800,6 +810,20 @@ def create_list(body: ListCreate, db: Session = Depends(get_db), user: TentacleU
     if not list_url_is_allowed(body.type, body.url or ""):
         raise HTTPException(400, f"A {body.type} list URL must be a public "
                                  f"{'/'.join(sorted(LIST_ALLOWED_HOSTS[body.type]))} address")
+    tag = (body.tag or "").strip()
+    if tag:
+        # A list's tag is library-wide and its refresh removes the tag from
+        # every title not on the list, so it must not be a tag something else
+        # sets: another user's list (each refresh would undo the other's, and
+        # both users' playlists would show both lists), a tag rule's output, a
+        # provider source tag or a built-in like "Recently Added Movies".
+        from services.tagger import tentacle_owned_tags
+        own = {t for (t,) in db.query(ListSubscription.tag).filter(
+            ListSubscription.user_id == user.id)}
+        taken = {t.casefold() for t in tentacle_owned_tags(db) - own}
+        if tag.casefold() in taken:
+            raise HTTPException(400, f"The tag '{tag}' is already used by Tentacle or by another "
+                                     f"user's list — choose a different tag")
     if body.type == "imdb_rss" and _parse_imdb_url(body.url or "")["type"] == "unknown":
         # Otherwise accepted and then never fetched: every refresh logs
         # "Unrecognized IMDb URL" and the list stays empty (#145) — most often
