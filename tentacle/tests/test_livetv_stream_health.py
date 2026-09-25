@@ -59,7 +59,7 @@ class RawHealth(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(7, last["channel_id"])
         self.assertTrue(last["recording"])
         self.assertEqual(1, last["reconnects"])
-        self.assertTrue(any("recording ran" in m and "1 reconnect(s)" in m for m in logs.output), logs.output)
+        self.assertTrue(any("recording ran" in m and "1 interruption(s) recovered" in m for m in logs.output), logs.output)
 
     async def test_a_clean_stream_reads_clean(self):
         script = {PANEL: [_redirect()], TOKENIZED: [_live([b"G" * 188])]}
@@ -103,6 +103,20 @@ class HlsHealth(unittest.IsolatedAsyncioTestCase):
         last = livetv._recent_streams[-1]
         self.assertEqual(1, last["errors"])
         self.assertEqual(0, last["segments_skipped"])
+
+    async def test_an_hls_outage_that_recovers_is_an_interruption_not_zero(self):
+        """A11: the HLS summary said "0 reconnect(s)" after minutes of waiting."""
+        s1, s2 = "http://provider.test/live/u/p/s1.ts", "http://provider.test/live/u/p/s2.ts"
+        media = (b"#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4,\ns1.ts\n#EXTINF:4,\ns2.ts\n"
+                 b"#EXT-X-ENDLIST\n")
+        script = {HLS: [_resp(200, HLS, content=media, headers=PL)],
+                  s1: [_resp(509, s1), _resp(509, s1), _resp(200, s1, content=b"G" * 188, headers=TS)],
+                  s2: [_resp(200, s2, content=b"H" * 188, headers=TS)]}
+        with self.assertLogs("routers.livetv", "WARNING") as logs:
+            await _play(script, HLS, recording=True)
+        last = livetv._recent_streams[-1]
+        self.assertEqual((1, 2), (last["reconnects"], last["errors"]))
+        self.assertTrue(any("1 interruption(s) recovered" in m for m in logs.output), logs.output)
 
 
 class StatusShape(unittest.IsolatedAsyncioTestCase):

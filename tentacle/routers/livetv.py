@@ -1029,7 +1029,9 @@ _recent_streams: "list[dict]" = []
 
 
 def _new_health() -> dict:
-    return {"reconnects": 0,              # raw TS: connections re-established
+    return {"reconnects": 0,              # outages recovered from: a raw TS connection
+                                          # re-established, or an HLS run of failed
+                                          # requests that ended in a success
             "reconnecting_seconds": 0.0,  # time spent with the provider failing
             "segments_skipped": 0,        # HLS: segments that never arrived
             "errors": 0}                  # failed requests that were retried
@@ -1054,8 +1056,9 @@ def _stream_ended(channel_id: int, entry: dict, recording: bool) -> None:
     del _recent_streams[:-_RECENT_STREAMS_MAX]
     damaged = h["reconnects"] or h["segments_skipped"] or h["reconnecting_seconds"] >= 1.0
     what = "recording" if recording else "stream"
-    text = (f"{h['reconnects']} reconnect(s), {h['reconnecting_seconds']:.0f}s waiting on the "
-            f"provider, {h['segments_skipped']} segment(s) skipped, {h['errors']} failed request(s)")
+    text = (f"{h['reconnects']} interruption(s) recovered, {h['reconnecting_seconds']:.0f}s waiting "
+            f"on the provider, {h['segments_skipped']} segment(s) skipped, "
+            f"{h['errors']} failed request(s)")
     if not damaged:
         logger.info(f"[LiveTV] Channel {channel_id}: {what} ran {seconds:.0f}s with no upstream trouble")
         return
@@ -3784,6 +3787,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
             in_placeholder = False
             if failing_since is not None:
                 health["reconnecting_seconds"] += asyncio.get_running_loop().time() - failing_since
+                health["reconnects"] += 1   # an outage recovered from
             failing_since = None
             backoff = BACKOFF_START
             backoff_cap = _BACKOFF_CAP
