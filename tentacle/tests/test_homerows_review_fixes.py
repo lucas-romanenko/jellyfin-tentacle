@@ -192,3 +192,33 @@ class TestR3CorruptConfigIsNotSeededOver(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRound2HeroFollowUps(unittest.TestCase):
+    """Round-2 review: R6-1 (after an in-tab user switch a failed HeroConfig left the previous user's hero cycling)
+    and R6-2 (a request from before hide() was shared with the next Home visit and resolved false)."""
+
+    def setUp(self):
+        self.bar = MEDIABAR_JS.read_text()
+        show = _method(self.bar, "show")
+        self.switch = show[show.index("if (userChanged && this.apiClient) {"): show.index("} else if (wasDetached")]
+
+    def test_a_switch_clears_the_previous_users_hero_before_any_request(self):
+        first_async = self.switch.index("this.refreshIfChanged()")
+        for step in ("this.generation++", "this.stopTrailer()", "this.stopAutoAdvance()", "this.items = []",
+                     "classList.add('empty')", "classList.remove('moonfin-mediabar-active')"):
+            self.assertIn(step, self.switch)
+            self.assertLess(self.switch.index(step), first_async, step)
+        # stopTrailer() restarts the timer when none is running, so the timer must be stopped after it
+        self.assertLess(self.switch.index("this.stopTrailer()"), self.switch.index("this.stopAutoAdvance()"))
+
+    def test_a_failed_hero_config_falls_back_to_loading_the_hero(self):
+        tail = self.switch[self.switch.index("this.refreshIfChanged().then(function (loaded)"):]
+        self.assertRegex(tail.replace("\n", " "),
+                         r"if \(loaded \|\| self\.userId !== switchedTo \|\| !self\.isHomePage\(\) \|\|\s*self\._heroConfigKey !== undefined\) return;")
+        self.assertIn("self.loadContent()", tail)
+
+    def test_in_flight_requests_are_shared_only_within_one_generation(self):
+        r = _method(self.bar, "refreshIfChanged")
+        self.assertIn("this._heroCfgInFlightGen === this.generation", r)
+        self.assertIn("this._heroCfgInFlightGen = gen", r)

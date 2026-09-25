@@ -157,7 +157,11 @@
         refreshIfChanged: function () {
             var self = this;
             if (!this.initialized || !this.apiClient || !this.isHomePage()) return Promise.resolve(false);
-            if (this._heroCfgInFlight && this._heroCfgInFlightUser === this.userId) return this._heroCfgInFlight;
+            // Share an in-flight request only while it can still succeed: one
+            // started before hide() (an older generation) would resolve false
+            // and drop a change on a quick Home -> away -> Home trip.
+            if (this._heroCfgInFlight && this._heroCfgInFlightUser === this.userId &&
+                    this._heroCfgInFlightGen === this.generation) return this._heroCfgInFlight;
             var gen = this.generation;
             var forUser = this.userId;
             var configUrl = this.apiClient.getUrl('TentacleHome/HeroConfig', { userId: forUser });
@@ -182,6 +186,7 @@
             }).catch(function () { return false; });
             this._heroCfgInFlight = p;
             this._heroCfgInFlightUser = forUser;
+            this._heroCfgInFlightGen = gen;
             var clear = function () { if (self._heroCfgInFlight === p) self._heroCfgInFlight = null; };
             p.then(clear, clear);
             return p;
@@ -732,8 +737,28 @@
                     // hero really loaded (retried on the next visit otherwise), so
                     // the next bump neither misses the change nor reloads (and
                     // reshuffles) a second time.
+                    // Drop the previous user's hero NOW, before any request: if
+                    // the new user's HeroConfig fails, their hero must not be the
+                    // previous user's items cycling on (review R6-1).
+                    this.generation++;          // cancel the old user's in-flight loads
+                    this.stopTrailer();
+                    this.stopAutoAdvance();
+                    this.items = [];
+                    this.currentIndex = 0;
+                    this.container.classList.add('empty');
+                    document.body.classList.remove('moonfin-mediabar-active');
                     this._heroConfigKey = undefined;
-                    this.refreshIfChanged();
+                    var switchedTo = this.userId;
+                    this.refreshIfChanged().then(function (loaded) {
+                        // HeroConfig failed (or was dropped): load the hero itself,
+                        // as before; the key stays unset so the next visit retries.
+                        if (loaded || self.userId !== switchedTo || !self.isHomePage() ||
+                                self._heroConfigKey !== undefined) return;
+                        self.loadContent().then(function () {
+                            if (!self.isHomePage() || self.userId !== switchedTo) return;
+                            if (self.items.length > 0 && self._autoAdvance) self.resetAutoAdvance();
+                        }).catch(function () {});
+                    });
                 } else if (wasDetached && this.apiClient) {
                     this.loadContent().then(function () {
                         if (!self.isHomePage()) return;
