@@ -2036,6 +2036,12 @@ class TestRemovingAChannelRemovesEverything(_PublishFixture):
         rs._write_home_json = lambda user, cfg: self.written.__setitem__(user.id, cfg)
         livetv.refresh_jellyfin_guide = lambda db: self.log.append(("guide",)) or True
         self.jf._playlists = [{"Id": "pl-1", "Name": "TraderTV Live"}]
+        # Each user has their OWN copy of the channel's playlist, found by the
+        # channel's tag -- as _get_smartlists_with_playlist_ids reports it.
+        per_user = {self.user.id: "pl-1", self.other.id: "pl-9"}
+        self.sm._get_smartlists_with_playlist_ids = lambda db, user_id=None: [
+            {"name": "TraderTV Live", "playlist_id": per_user.get(user_id, "pl-1"),
+             "is_youtube": True, "yt_tags": ["yt:tradertv-live"]}]
 
     def tearDown(self):
         import models.database as mdb
@@ -2048,7 +2054,44 @@ class TestRemovingAChannelRemovesEverything(_PublishFixture):
 
     def _remove(self, was_live=True):
         from routers.youtube import _cleanup_after_remove
-        _cleanup_after_remove("TraderTV Live", was_live)
+        _cleanup_after_remove("TraderTV Live", was_live, "tradertv-live")
+
+    def _with_a_users_own_playlist_of_the_same_name(self):
+        """The user built their OWN rule playlist that happens to share the
+        channel's name, put it on the home screen and made it the hero. It is
+        listed FIRST, as it was when this deleted a real playlist (#52)."""
+        per_user = {self.user.id: "pl-1", self.other.id: "pl-9"}
+        self.sm._get_smartlists_with_playlist_ids = lambda db, user_id=None: [
+            {"name": "TraderTV Live", "playlist_id": "pl-mine", "is_youtube": False, "yt_tags": []},
+            {"name": "TraderTV Live", "playlist_id": per_user.get(user_id, "pl-1"),
+             "is_youtube": True, "yt_tags": ["yt:tradertv-live"]}]
+        self.configs[self.other.id] = {
+            "hero": {"enabled": True, "playlist_id": "pl-mine", "display_name": "TraderTV Live"},
+            "rows": [{"type": "playlist", "playlist_id": "pl-mine", "display_name": "TraderTV Live", "order": 1},
+                     {"type": "playlist", "playlist_id": "pl-9", "display_name": "TraderTV Live", "order": 2}]}
+        self.jf._playlists = [{"Id": "pl-1", "Name": "TraderTV Live"}, {"Id": "pl-mine", "Name": "TraderTV Live"}]
+
+    def test_a_users_own_same_named_playlist_is_not_deleted(self):
+        self._with_a_users_own_playlist_of_the_same_name()
+        self._remove()
+        self.assertNotIn(("delete", "pl-mine"), self.jf.calls,
+                         "removing the YouTube channel deleted the user's own playlist of the same name")
+        self.assertIn(("delete", "pl-1"), self.jf.calls, "the channel's own playlist must still go")
+
+    def test_a_users_own_same_named_row_and_hero_survive(self):
+        self._with_a_users_own_playlist_of_the_same_name()
+        self._remove()
+        cfg = self.written[self.other.id]
+        self.assertEqual(["pl-mine"], [r["playlist_id"] for r in cfg["rows"]],
+                         "the channel's row must go and the user's own row must stay")
+        self.assertTrue(cfg["hero"]["enabled"])
+        self.assertEqual("pl-mine", cfg["hero"]["playlist_id"])
+
+    def test_the_channel_is_identified_by_its_tag_not_its_title(self):
+        """A channel renamed on YouTube (its title changed) is still found."""
+        from routers.youtube import _cleanup_after_remove
+        _cleanup_after_remove("TraderTV (renamed)", True, "tradertv-live")
+        self.assertIn(("delete", "pl-1"), self.jf.calls)
 
     def test_the_row_is_removed_from_every_user_not_kept_for_a_grace_period(self):
         self._remove()

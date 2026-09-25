@@ -964,10 +964,12 @@ def _get_smartlists_with_playlist_ids(db: Session, user_id: int = None) -> list:
         # default to wide cards. Detected from the tag the playlist queries
         # rather than its name, which the user can change.
         expr_sets = data.get("ExpressionSets") or []
-        is_youtube = any(
-            str(e.get("TargetValue") or "").startswith("yt:")
+        yt_tags = sorted({
+            str(e.get("TargetValue"))
             for es in expr_sets for e in (es.get("Expressions") or [])
-        )
+            if str(e.get("TargetValue") or "").startswith("yt:")
+        })
+        is_youtube = bool(yt_tags)
 
         result.append({
             "name": name,
@@ -977,6 +979,9 @@ def _get_smartlists_with_playlist_ids(db: Session, user_id: int = None) -> list:
             "sort_by": sort_by,
             "sort_order": sort_order,
             "is_youtube": is_youtube,
+            # The channel identity ("yt:<slug>") the playlist queries: what
+            # a channel removal matches on, never the display name.
+            "yt_tags": yt_tags,
         })
     return result
 
