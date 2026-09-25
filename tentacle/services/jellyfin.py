@@ -279,6 +279,34 @@ class JellyfinService:
                     pass
         return lookup
 
+    def _fresh_tags_by_id(self, media_type: str = "Movie") -> dict:
+        """{item id: current Tags}, from a USER-scoped listing.
+
+        Measured on Jellyfin 10.11.8: a recursive /Items listing without a user
+        answers with Tags an item carried several writes ago, while the same
+        listing with UserId (and /Users/{id}/Items, and /Items?ids=) answers
+        with the current ones. The unscoped listing stays the source of WHAT
+        exists -- a scoped one hides items that user cannot see -- and this only
+        overlays the tags. Empty on any failure: the caller keeps what it had.
+        """
+        if not self.user_id:
+            return {}
+        out, start = {}, 0
+        while True:
+            data = self._get("/Items", params={
+                "IncludeItemTypes": media_type, "Recursive": "true", "UserId": self.user_id,
+                "Fields": "Tags", "EnableImages": "false", "EnableUserData": "false",
+                "Limit": 10000, "StartIndex": start,
+            })
+            if not data:
+                return {}
+            page = data.get("Items", [])
+            for it in page:
+                out[it.get("Id")] = it.get("Tags") or []
+            start += len(page)
+            if not page or start >= data.get("TotalRecordCount", 0):
+                return out
+
     def get_tmdb_lookup_with_fallback(self, media_type: str = "Movie") -> tuple:
         """Build both TMDB and title+year lookups in one API call.
 
@@ -290,6 +318,13 @@ class JellyfinService:
         Callers should normalize their lookup keys with _normalize_title().
         """
         items = self._fetch_all_items(media_type)
+        # The callers of this lookup decide what to write to an item's TAGS, and
+        # on Jellyfin 10.11 an unscoped recursive listing returns stale ones.
+        fresh = self._fresh_tags_by_id(media_type)
+        if fresh:
+            for it in items:
+                if it.get("Id") in fresh:
+                    it["Tags"] = fresh[it["Id"]]
         tmdb_lookup = {}
         title_lookup = {}
         for item in items:

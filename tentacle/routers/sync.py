@@ -867,16 +867,17 @@ def refresh_tags(db: Session = Depends(get_db)):
         jf_movie_lookup, jf_movie_title_lookup = jf.get_tmdb_lookup_with_fallback("Movie")
         logger.info(f"[Refresh Tags] Movie lookup: {len(jf_movie_lookup)} by TMDB, {len(jf_movie_title_lookup)} by title")
 
+        # A title with NO tags is not skipped: empty means "none of Tentacle's",
+        # so an expired Recently Added tag still comes off. Foreign tags stay and
+        # an item that needs nothing is not written (the equality check below).
         for movie in all_movies:
-            if not movie.tags:
-                continue
             try:
                 jf_item = jf_movie_lookup.get(movie.tmdb_id)
                 if not jf_item and movie.title:
                     norm_title = JellyfinService._normalize_title(movie.title)
                     jf_item = jf_movie_title_lookup.get((norm_title, str(movie.year or "")))
                 if jf_item:
-                    merged = merge_owned_tags(jf_item.get("Tags"), movie.tags, owned)
+                    merged = merge_owned_tags(jf_item.get("Tags"), movie.tags or [], owned)
                     if sorted(merged) == sorted(jf_item.get("Tags") or []):
                         jf_tagged += 1  # already right — no write needed
                     elif jf.set_item_tags(jf_item["Id"], merged):
@@ -896,15 +897,13 @@ def refresh_tags(db: Session = Depends(get_db)):
         logger.info(f"[Refresh Tags] Series lookup: {len(jf_series_lookup)} by TMDB, {len(jf_series_title_lookup)} by title")
 
         for series in all_series:
-            if not series.tags:
-                continue
             try:
                 jf_item = jf_series_lookup.get(series.tmdb_id)
                 if not jf_item and series.title:
                     norm_title = JellyfinService._normalize_title(series.title)
                     jf_item = jf_series_title_lookup.get((norm_title, str(series.year or "")))
                 if jf_item:
-                    merged = merge_owned_tags(jf_item.get("Tags"), series.tags, owned)
+                    merged = merge_owned_tags(jf_item.get("Tags"), series.tags or [], owned)
                     if sorted(merged) == sorted(jf_item.get("Tags") or []):
                         jf_tagged += 1  # already right — no write needed
                     elif jf.set_item_tags(jf_item["Id"], merged):
