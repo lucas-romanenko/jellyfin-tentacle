@@ -10,6 +10,8 @@ const state = {
   editingProviderId: null,
   currentUser: null,  // { id, jellyfin_user_id, display_name, is_admin, profile_image_tag, jellyfin_url }
   _loginSelectedUser: null,  // Jellyfin user selected on login page
+  sessionExpired: false,     // a request came back 401: pollers stop until the page reloads after sign-in
+  _arrProblemsTimer: null,
 };
 
 // ── Init ──────────────────────────────────────────────────────────────────
@@ -40,7 +42,7 @@ async function postLoginInit() {
     loadProviders();
     checkRunningSyncs();
     loadArrProblems();
-    setInterval(loadArrProblems, 120000);
+    state._arrProblemsTimer = setInterval(loadArrProblems, 120000);
   }
   // Everyone lands on Library
   showPage('library');
@@ -75,6 +77,9 @@ function hideArrProblems() {
 
 async function showLoginOverlay() {
   const overlay = document.getElementById('login-overlay');
+  // Already up (every request that meets an expired session ends up here):
+  // leave it alone, or the user grid and the password being typed are wiped.
+  if (overlay.style.display === 'flex') return;
   overlay.style.display = 'flex';
   // The dashboard is still in the document underneath. Without this, Tab walked
   // through ~20 of its covered controls before reaching the first user card, and
@@ -235,9 +240,22 @@ function applyUserRole() {
 }
 
 async function doLogout() {
+  stopAllPolling();
   await fetch('/api/auth/logout', { method: 'POST' });
   state.currentUser = null;
   showLoginOverlay();
+}
+
+// Everything that polls the backend on a timer. Called when the session has
+// ended (a 401, or sign out); signing in again reloads the page, which starts
+// whatever the page needs afresh.
+function stopAllPolling() {
+  if (state._arrProblemsTimer) { clearInterval(state._arrProblemsTimer); state._arrProblemsTimer = null; }
+  if (state._syncPollInterval) { clearInterval(state._syncPollInterval); state._syncPollInterval = null; }
+  for (const fn of ['stopActivityPolling', 'stopDownloadPolling', 'stopHealthPolling',
+                    'stopYouTubePolling', 'stopLivePolling']) {
+    if (typeof window[fn] === 'function') { try { window[fn](); } catch (_) {} }
+  }
 }
 
 
@@ -436,8 +454,14 @@ async function api(url, options = {}) {
   }
   const r = await fetch(url, merged);
   if (r.status === 401) {
+    if (!state.sessionExpired) {
+      state.sessionExpired = true;
+      stopAllPolling();
+    }
     showLoginOverlay();
-    throw new Error('Session expired');
+    const err = new Error('Session expired');
+    err.sessionExpired = true;
+    throw err;
   }
   if (!r.ok) {
     const err = await r.json().catch(() => ({ detail: r.statusText }));

@@ -353,6 +353,7 @@ async function loadLibDownloads() {
       stopDownloadPolling();
     }
   } catch (e) {
+    if (e && e.sessionExpired) return;
     // If endpoint not available, hide section silently
     const el = document.getElementById('lib-downloads');
     if (el) el.style.display = 'none';
@@ -432,7 +433,7 @@ async function pollLibDownloads() {
   let data = null, failed = false;
   try {
     data = await _fetchActivity(start.signal);
-  } catch (e) { failed = true; }
+  } catch (e) { failed = true; if (e && e.sessionExpired) { stopDownloadPolling(); return; } }
   if (!_pollEnd(_dlPoller, start.req)) return;   // given up on, or polling stopped
   if (failed) {
     // A backend restart or a dropped connection: keep polling, backing off to
@@ -3285,6 +3286,7 @@ async function ytRefreshNow() {
 }
 
 let _ytPoll = null;   // the progress poll's interval handle, while an index runs
+function stopYouTubePolling() { if (_ytPoll) { clearInterval(_ytPoll); _ytPoll = null; } }
 
 function ytStartPolling() {
   if (_ytPoll) clearInterval(_ytPoll);
@@ -6182,6 +6184,11 @@ async function liveSyncEpg() {
   } catch (e) {
     toast(`EPG sync failed: ${e.message}`, 'error');
   }
+}
+
+function stopLivePolling() {
+  if (liveState.epgPollTimer) { clearInterval(liveState.epgPollTimer); liveState.epgPollTimer = null; }
+  if (liveState.syncPollTimer) { clearInterval(liveState.syncPollTimer); liveState.syncPollTimer = null; }
 }
 
 function startEpgPoll() {
