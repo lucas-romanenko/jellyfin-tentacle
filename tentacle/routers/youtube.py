@@ -391,7 +391,8 @@ def toggle_live(channel_id: int, body: LiveToggle, db: Session = Depends(get_db)
 
     logger.info(f"[YouTube] Live TV {'enabled' if body.enabled else 'disabled'} for '{channel.title}'")
     return {"success": True, "live_enabled": body.enabled,
-            "guide_number": yt_livetv.guide_number(channel), "programmes": guide}
+            "guide_number": yt_livetv.guide_number(channel, yt_livetv.iptv_guide_numbers(db)),
+            "programmes": guide}
 
 
 # ── Admin ───────────────────────────────────────────────────────────────────
@@ -819,13 +820,14 @@ def list_channels(db: Session = Depends(get_db)):
     from services.youtube import livetv as yt_livetv
 
     out = []
+    taken = yt_livetv.iptv_guide_numbers(db)
     for ch in db.query(YouTubeChannel).order_by(YouTubeChannel.title).all():
         # Guide entries this channel has in Tentacle's own EPG — what the
         # Live TV page shows next to it, and what Jellyfin's guide is built from.
         guide_programmes = db.query(EPGProgram).filter(
             EPGProgram.channel_id == yt_livetv.epg_channel_id(ch)).count() if ch.live_enabled else 0
         out.append({
-            "guide_number": yt_livetv.guide_number(ch),
+            "guide_number": yt_livetv.guide_number(ch, taken),
             "guide_programmes": guide_programmes,
             "id": ch.id, "title": ch.title, "slug": ch.slug, "kind": ch.kind,
             "input_url": ch.input_url, "avatar_url": ch.avatar_url,
