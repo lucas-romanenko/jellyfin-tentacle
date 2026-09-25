@@ -244,7 +244,18 @@ def sonarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
         import time
         from models.database import SessionLocal, get_setting
         from services.jellyfin import JellyfinService
+        from services import download_readiness
         db = SessionLocal()
+        # Activity shows the title as "importing" until it can be watched, and
+        # only then under "Recently downloaded" -- the moment its notification
+        # goes out (services.download_readiness). end() in `finally` says which.
+        pub = None
+        if event_type == "Download":
+            ep = first_episode or {}
+            pub = download_readiness.begin(
+                "series", tmdb_id, title,
+                f"S{ep.get('seasonNumber', 0):02d}E{ep.get('episodeNumber', 0):02d}" if ep else "", "sonarr")
+        ready = False
         try:
             scan_sonarr_library(db)
 
@@ -306,6 +317,7 @@ def sonarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
             jf_url = get_setting(db, "jellyfin_url")
             jf_key = get_setting(db, "jellyfin_api_key")
             jf_uid = get_setting(db, "jellyfin_user_id", "")
+            jf_item = None
             if jf_url and jf_key and db_series.tags:
                 jf = JellyfinService(jf_url, jf_key, jf_uid)
                 series_title = db_series.title or title
@@ -432,6 +444,7 @@ def sonarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
                                 notified_user_ids.add(uid)
                 except Exception as e:
                     logger.warning(f"[Sonarr webhook] Notification creation failed: {e}")
+            ready = bool(jf_item)
 
             # Activity log
             from models.database import log_activity as _log_act
@@ -451,6 +464,7 @@ def sonarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
         except Exception as e:
             logger.error(f"[Sonarr webhook] Background processing failed: {e}", exc_info=True)
         finally:
+            download_readiness.end(pub, ready)
             db.close()
 
     thread = threading.Thread(target=_webhook_background, args=(tmdb_id, title, event_type, first_episode), daemon=True)
