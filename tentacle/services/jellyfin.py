@@ -481,12 +481,21 @@ class JellyfinService:
                     min_rating: float = None, max_rating: float = None,
                     sort_by: str = None, sort_order: str = "Ascending",
                     limit: int = None, min_premiere_date: str = None,
-                    max_premiere_date: str = None) -> List[dict]:
-        """Query Jellyfin items with filters matching SmartList expression logic."""
+                    max_premiere_date: str = None, user_id: str = None) -> List[dict]:
+        """Query Jellyfin items with filters matching SmartList expression logic.
+
+        ``user_id`` asks as that user. On Jellyfin 10.11 a recursive query
+        without a user filters on metadata as it was several edits ago (the
+        same quirk as the stale Tags behind #107), so a playlist built for a
+        user should pass that user's id: it then sees current values and only
+        what that user may see.
+        """
         params = {
             "Recursive": "true",
             "Fields": "ProviderIds,Tags,Genres,CommunityRating",
         }
+        if user_id:
+            params["UserId"] = user_id
         if include_types:
             params["IncludeItemTypes"] = ",".join(include_types)
         if tags:

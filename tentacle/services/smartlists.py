@@ -1843,8 +1843,10 @@ def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats
 def _process_single_playlist_locked(jf, folder: Path, config: dict, user_id: str, stats: dict, db: Session = None):
     name = config.get("Name", "Unknown")
 
-    # Query Jellyfin for matching items
+    # Query Jellyfin for matching items, as the playlist's owner: without a
+    # user Jellyfin filters on stale metadata (see JellyfinService.query_items).
     query = _build_query_params(config)
+    query["user_id"] = user_id
 
     # Jellyfin Genres filter is OR — if we need AND post-filtering, remove the
     # query limit so we get ALL matching items before filtering. Apply MaxItems after.
