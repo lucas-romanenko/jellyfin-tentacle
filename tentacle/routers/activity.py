@@ -823,10 +823,17 @@ def get_activity(request: Request, db: Session = Depends(get_db),
         return ("series" if item.get("media_type") == "series" else "movie", item.get("tmdb_id"))
 
     # Remove items from unreleased that are already showing in downloads (prevents duplicates)
-    downloading_tmdb_ids = {d.get("tmdb_id") for d in downloads if d.get("tmdb_id")}
-    downloading_tvdb_ids = {d.get("tvdb_id") for d in downloads if d.get("tvdb_id")}
-    unreleased = [u for u in unreleased
-                  if not _same_title(u, downloading_tmdb_ids, downloading_tvdb_ids)]
+    # Keyed by media type too: movie N downloading is not show N.
+    downloading_keys = {req_key(d) for d in downloads if d.get("tmdb_id")}
+    downloading_tvdb_ids = {d.get("tvdb_id") for d in downloads
+                            if d.get("tvdb_id") and d.get("media_type") == "series"}
+
+    def _is_downloading(item: dict) -> bool:
+        return bool((item.get("tmdb_id") and req_key(item) in downloading_keys)
+                    or (item.get("media_type") == "series" and item.get("tvdb_id")
+                        and item["tvdb_id"] in downloading_tvdb_ids))
+
+    unreleased = [u for u in unreleased if not _is_downloading(u)]
     # Same for searching: the moment a grab lands in the queue it is a download.
     # A movie Tentacle already holds a Radarr file for is found, whatever the
     # cached list says.
@@ -835,7 +842,7 @@ def get_activity(request: Request, db: Session = Depends(get_db),
     have_movie_file = {tid for (tid,) in db.query(Movie.tmdb_id).filter(
         Movie.source == "radarr", Movie.tmdb_id.in_(searching_movie_ids)).all()} if searching_movie_ids else set()
     searching = [x for x in searching
-                 if not _same_title(x, downloading_tmdb_ids, downloading_tvdb_ids)
+                 if not _is_downloading(x)
                  and not (x.get("media_type") == "movie" and x.get("tmdb_id") in have_movie_file)]
 
     is_admin = user and user.is_admin

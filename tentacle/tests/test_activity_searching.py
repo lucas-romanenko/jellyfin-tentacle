@@ -272,6 +272,24 @@ class TestActivityEndpoint(_Base):
         by = {(x["media_type"], x["tmdb_id"]): x.get("requested_by") for x in out["searching"]}
         self.assertIsNone(by[("series", 101)], "Show B was not requested by the kid")
 
+    # A download hides the same title from Searching/Upcoming, not every title
+    # that happens to share its TMDB number.
+    @staticmethod
+    def _queue(tmdb, kind="movie"):
+        item = {"id": 78, "size": 100, "sizeleft": 50, "status": "downloading",
+                "trackedDownloadStatus": "ok", "trackedDownloadState": "downloading"}
+        item[kind] = {"tmdbId": tmdb, "title": f"{kind} {tmdb}"}
+        return [item]
+
+    def test_a_downloading_movie_does_not_hide_the_show_with_its_number(self):
+        out = self.activity(queue=self._queue(101))
+        self.assertIn(("series", 101), [(x["media_type"], x["tmdb_id"]) for x in out["searching"]],
+                      "movie 101 downloading is not Show B (series 101)")
+
+    def test_a_downloading_movie_still_leaves_searching(self):
+        out = self.activity(queue=self._queue(1))
+        self.assertNotIn(("movie", 1), [(x["media_type"], x["tmdb_id"]) for x in out["searching"]])
+
     def test_admin_sees_who_asked(self):
         self.db.add(mdb.DownloadRequest(tmdb_id=1, media_type="movie", user_id=self.kid.id))
         self.db.commit()
