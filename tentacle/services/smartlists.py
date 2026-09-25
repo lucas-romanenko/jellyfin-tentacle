@@ -1082,6 +1082,18 @@ def write_home_config(db: Session, user_id: int = None) -> dict:
                     f"({len(seeded.get('rows', []))} built-in rows) — no playlists yet")
         return seeded
 
+    # A user who has playlists but no home config yet — every user gets the
+    # YouTube channel playlists, so a new household member has at least one —
+    # used to get a config with no rows at all: the starter rows below were only
+    # built when the user had NO playlists, and once this empty file existed the
+    # starter seed never ran again. Seed first, so this regeneration keeps the
+    # starter built-in rows and toolbar exactly as for a user with no playlists.
+    if user_id is not None and not get_home_config(db, user_id=user_id):
+        from routers.smartlists import _seed_home_config_from_jellyfin
+        new_user = db.query(TentacleUser).filter(TentacleUser.id == user_id).first()
+        if new_user:
+            _seed_home_config_from_jellyfin(db, new_user)
+
     with home_config_lock:
         existing_config = get_home_config(db, user_id=user_id)
         existing_rows = existing_config.get("rows", []) if existing_config else []
