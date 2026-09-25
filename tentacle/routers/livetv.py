@@ -1923,11 +1923,13 @@ def _run_epg_sync_background(provider_data: dict):
                 seen_epg.add(key)
                 batch.append(EPGProgram(
                     channel_id=prog["channel_id"],
-                    title=prog["title"],
+                    title=prog["title"] or "",
+                    sub_title=prog.get("sub_title"),
                     description=prog.get("description"),
                     start=prog["start"],
                     stop=prog["stop"],
                     category=prog.get("category"),
+                    icon_url=prog.get("icon_url"),
                 ))
                 inserted += 1
                 if len(batch) >= 5000:
@@ -3308,10 +3310,14 @@ def hdhr_xmltv(db: Session = Depends(get_db)):
                 programs.append({
                     "channel_id": gn,
                     "title": p.title,
+                    "sub_title": p.sub_title,
                     "description": p.description,
                     "start": p.start,
                     "stop": p.stop,
                     "category": category,
+                    # Stored for YouTube Live and provider programmes alike, and
+                    # dropped here until #147: Jellyfin saves it as the art.
+                    "icon_url": p.icon_url,
                 })
 
     if inferred_categories:

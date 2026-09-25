@@ -705,6 +705,8 @@ class EPGProgram(Base):
     channel_id = Column(String, nullable=False, index=True)  # Matches epg_channel_id
 
     title = Column(String, nullable=False)
+    # The provider's <sub-title>: an episode or match name ("TOR vs MTL").
+    sub_title = Column(String, nullable=True)
     description = Column(Text, nullable=True)
     start = Column(DateTime, nullable=False)
     stop = Column(DateTime, nullable=False)

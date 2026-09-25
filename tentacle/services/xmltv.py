@@ -59,7 +59,7 @@ def generate_xmltv(channels: list[dict], programs: list[dict]) -> str:
     Generate XMLTV XML string from channel and program data.
 
     channels: [{"id": "TSN1.ca", "name": "TSN 1 HD", "logo_url": "http://..."}]
-    programs: [{"channel_id": "TSN1.ca", "title": "...", "description": "...",
+    programs: [{"channel_id": "TSN1.ca", "title": "...", "sub_title": "...", "description": "...",
                 "start": datetime, "stop": datetime, "category": "...", "icon_url": "..."}]
     """
     root = ET.Element("tv", attrib={"generator-name": "Tentacle"})
@@ -83,7 +83,9 @@ def generate_xmltv(channels: list[dict], programs: list[dict]) -> str:
             },
         )
         title_el = ET.SubElement(prog_el, "title")
-        title_el.text = prog.get("title", "")
+        title_el.text = prog.get("title") or ""
+        if prog.get("sub_title"):
+            ET.SubElement(prog_el, "sub-title").text = prog["sub_title"]
         if prog.get("description"):
             desc_el = ET.SubElement(prog_el, "desc")
             desc_el.text = prog["description"]
@@ -96,14 +98,45 @@ def generate_xmltv(channels: list[dict], programs: list[dict]) -> str:
     return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(root, encoding="unicode")
 
 
+def _programme_dict(prog_el, channel_id: str) -> Optional[dict]:
+    """One <programme> element as a dict, or None when its times are unusable.
+
+    `<title></title>` has text None, and epg_programs.title is NOT NULL: one
+    such programme in a feed failed the whole EPG sync for every channel of the
+    provider (#176), so an empty title stays an empty string. The provider's
+    <sub-title> and programme <icon> are kept (#148): Jellyfin shows the
+    sub-title as the episode title and saves the icon as the programme's art.
+    """
+    start = _parse_xmltv_time(prog_el.get("start", ""))
+    stop = _parse_xmltv_time(prog_el.get("stop", ""))
+    if not (start and stop):
+        return None
+    title_el = prog_el.find("title")
+    sub_el = prog_el.find("sub-title")
+    desc_el = prog_el.find("desc")
+    cat_el = prog_el.find("category")
+    icon_el = prog_el.find("icon")
+    return {
+        "channel_id": channel_id,
+        "title": (title_el.text if title_el is not None else "") or "",
+        "sub_title": ((sub_el.text or "").strip() or None) if sub_el is not None else None,
+        "description": desc_el.text if desc_el is not None else None,
+        "start": start,
+        "stop": stop,
+        "category": cat_el.text if cat_el is not None else None,
+        "icon_url": ((icon_el.get("src") or "").strip() or None) if icon_el is not None else None,
+    }
+
+
 def parse_xmltv(content: str) -> tuple[list[dict], list[dict]]:
     """
     Parse XMLTV XML string into channels and programs.
 
     Returns (channels, programs) where:
         channels: [{"id": str, "name": str, "logo_url": str|None}]
-        programs: [{"channel_id": str, "title": str, "description": str|None,
-                     "start": datetime, "stop": datetime, "category": str|None}]
+        programs: [{"channel_id": str, "title": str, "sub_title": str|None,
+                     "description": str|None, "start": datetime, "stop": datetime,
+                     "category": str|None, "icon_url": str|None}]
     """
     # Harden against XXE / entity-expansion: reject DOCTYPE/ENTITY in prologue.
     _reject_doctype_bytes(content[:4096].encode("utf-8", errors="ignore"))
@@ -122,22 +155,9 @@ def parse_xmltv(content: str) -> tuple[list[dict], list[dict]]:
         })
 
     for prog_el in root.findall("programme"):
-        title_el = prog_el.find("title")
-        desc_el = prog_el.find("desc")
-        cat_el = prog_el.find("category")
-
-        start = _parse_xmltv_time(prog_el.get("start", ""))
-        stop = _parse_xmltv_time(prog_el.get("stop", ""))
-
-        if start and stop:
-            programs.append({
-                "channel_id": prog_el.get("channel", ""),
-                "title": title_el.text if title_el is not None else "",
-                "description": desc_el.text if desc_el is not None else None,
-                "start": start,
-                "stop": stop,
-                "category": cat_el.text if cat_el is not None else None,
-            })
+        prog = _programme_dict(prog_el, prog_el.get("channel", ""))
+        if prog:
+            programs.append(prog)
 
     return channels, programs
 
@@ -275,29 +295,27 @@ def stream_parse_xmltv(
     parse_start = time.time()
 
     with open(cache_path, "rb") as f:
-        for event, elem in ET.iterparse(f, events=("end",)):
+        # A cleared element is still a child of <tv>, so clearing only the
+        # programme kept one empty element per programme read (plus every
+        # <channel> whole) and memory grew with the feed (#178). The root comes
+        # from the first "start" event and is emptied after each programme.
+        root = None
+        for event, elem in ET.iterparse(f, events=("start", "end")):
+            if event == "start":
+                if root is None:
+                    root = elem
+                continue
             if elem.tag == "programme":
                 total_seen += 1
                 ch_id = elem.get("channel", "")
 
                 if ch_id in channel_ids:
-                    title_el = elem.find("title")
-                    desc_el = elem.find("desc")
-                    cat_el = elem.find("category")
-                    start = _parse_xmltv_time(elem.get("start", ""))
-                    stop = _parse_xmltv_time(elem.get("stop", ""))
-
-                    if start and stop:
-                        programs.append({
-                            "channel_id": ch_id,
-                            "title": title_el.text if title_el is not None else "",
-                            "description": desc_el.text if desc_el is not None else None,
-                            "start": start,
-                            "stop": stop,
-                            "category": cat_el.text if cat_el is not None else None,
-                        })
+                    prog = _programme_dict(elem, ch_id)
+                    if prog:
+                        programs.append(prog)
 
                 elem.clear()
+                root.clear()
 
                 if total_seen % 50000 == 0:
                     logger.info(f"[XMLTV] Parsed {total_seen} programmes, {len(programs)} matched")
@@ -370,23 +388,33 @@ def download_xmltv(
     return content.decode("utf-8", errors="replace")
 
 
+_XMLTV_TIME_RE = re.compile(r"^\s*(\d{4,14})\s*(?:([+-])(\d{2}):?(\d{2})?)?")
+
+
 def _parse_xmltv_time(time_str: str) -> Optional[datetime]:
-    """Parse XMLTV time format: 20260324060000 +0100 → convert to UTC."""
+    """Parse an XMLTV time ("20260324060000 +0100") into naive UTC.
+
+    The XMLTV DTD allows any initial substring of YYYYMMDDhhmmss (its own
+    example is "200007281733 BST"), and some generators write minute
+    precision. Slicing a fixed 14 characters turned "202609241800 +0200" into
+    "202609241800 +", which failed to parse, so such a guide came out empty
+    (#177). Missing digits are padded as Jellyfin's own XMLTV reader does
+    (from 20000101000000), and a zone that is not a numeric offset counts as
+    UTC, as it does there.
+    """
     if not time_str:
         return None
-    try:
-        clean = time_str.strip()
-        # Parse the datetime portion
-        dt = datetime.strptime(clean[:14], "%Y%m%d%H%M%S")
-        # Parse timezone offset if present (e.g. +0100, -0500)
-        rest = clean[14:].strip()
-        if rest:
-            sign = 1 if rest[0] == '+' else -1
-            offset_str = rest[1:].replace(":", "")
-            offset_hours = int(offset_str[:2])
-            offset_minutes = int(offset_str[2:4]) if len(offset_str) >= 4 else 0
-            from datetime import timedelta
-            dt = dt - timedelta(hours=sign * offset_hours, minutes=sign * offset_minutes)
-        return dt
-    except (ValueError, IndexError):
+    m = _XMLTV_TIME_RE.match(time_str)
+    if not m:
         return None
+    digits, sign, hh, mm = m.groups()
+    digits += "20000101000000"[len(digits):]
+    try:
+        dt = datetime.strptime(digits, "%Y%m%d%H%M%S")
+    except ValueError:
+        return None
+    if sign:
+        from datetime import timedelta
+        offset = timedelta(hours=int(hh), minutes=int(mm or 0))
+        dt = dt - offset if sign == "+" else dt + offset
+    return dt
