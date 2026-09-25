@@ -157,7 +157,7 @@
         refreshIfChanged: function () {
             var self = this;
             if (!this.initialized || !this.apiClient || !this.isHomePage()) return Promise.resolve(false);
-            if (this._heroCfgInFlight) return this._heroCfgInFlight;
+            if (this._heroCfgInFlight && this._heroCfgInFlightUser === this.userId) return this._heroCfgInFlight;
             var gen = this.generation;
             var forUser = this.userId;
             var configUrl = this.apiClient.getUrl('TentacleHome/HeroConfig', { userId: forUser });
@@ -165,14 +165,23 @@
                 if (gen !== self.generation || forUser !== self.userId || !self.isHomePage()) return false;
                 var key = JSON.stringify(cfg || null);
                 if (key === self._heroConfigKey) return false;
+                var prevKey = self._heroConfigKey;
                 self._applyHeroConfig(cfg);
-                return self.loadContent().then(function () {
+                // If this load is cancelled (the user leaves Home before the hero
+                // items arrive) or fails, forget the new key again so the next
+                // Home visit retries instead of believing it is up to date.
+                var undo = function () { if (self._heroConfigKey === key) self._heroConfigKey = prevKey; return false; };
+                var loading = self.loadContent();
+                var loadGen = self.generation;
+                return loading.then(function () {
+                    if (self.generation !== loadGen) return undo();
                     if (!self.isHomePage()) return true;
                     if (self.items.length > 0 && self._autoAdvance) self.resetAutoAdvance();
                     return true;
-                });
+                }, undo);
             }).catch(function () { return false; });
             this._heroCfgInFlight = p;
+            this._heroCfgInFlightUser = forUser;
             var clear = function () { if (self._heroCfgInFlight === p) self._heroCfgInFlight = null; };
             p.then(clear, clear);
             return p;
@@ -717,17 +726,15 @@
                 }
                 // If container was detached/re-attached or the user switched,
                 // reload content to avoid showing stale or another user's hero
-                if ((wasDetached || userChanged) && this.apiClient) {
-                    // A user switch also replaces the remembered hero config, so
-                    // the next version bump does not see the previous user's key
-                    // as "changed" and reload (reshuffle) the hero a second time.
-                    if (userChanged) {
-                        var forUser = this.userId;
-                        this._heroConfigKey = undefined;
-                        this.apiClient.getJSON(this.apiClient.getUrl('TentacleHome/HeroConfig', { userId: forUser }))
-                            .then(function (cfg) { if (self.userId === forUser) self._applyHeroConfig(cfg); })
-                            .catch(function () {});
-                    }
+                if (userChanged && this.apiClient) {
+                    // Forget the previous user's hero config and load this user's
+                    // through refreshIfChanged: it stores the new key only once the
+                    // hero really loaded (retried on the next visit otherwise), so
+                    // the next bump neither misses the change nor reloads (and
+                    // reshuffles) a second time.
+                    this._heroConfigKey = undefined;
+                    this.refreshIfChanged();
+                } else if (wasDetached && this.apiClient) {
                     this.loadContent().then(function () {
                         if (!self.isHomePage()) return;
                         if (self.items.length > 0 && self._autoAdvance) {

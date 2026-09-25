@@ -58,7 +58,7 @@ class TestR1HeroNeverReloadsOffHome(unittest.TestCase):
         self.assertIn("var gen = this.generation", self.refresh)
 
     def test_no_timer_restart_after_leaving_during_the_reload(self):
-        tail = self.refresh[self.refresh.index("self.loadContent().then"):]
+        tail = self.refresh[self.refresh.index("return loading.then"):]
         self.assertLess(tail.index("if (!self.isHomePage()) return true"), tail.index("resetAutoAdvance"))
 
     def test_show_applies_a_change_skipped_while_away(self):
@@ -109,10 +109,25 @@ class TestR5HeroConfigState(unittest.TestCase):
 
     def test_a_user_switch_replaces_the_remembered_config(self):
         show = _method(self.bar, "show")
-        block = show[show.index("if (userChanged) {"):]
+        block = show[show.index("if (userChanged && this.apiClient) {"): show.index("} else if (wasDetached")]
         self.assertIn("this._heroConfigKey = undefined", block)
-        self.assertIn("TentacleHome/HeroConfig", block)
-        self.assertIn("self._applyHeroConfig(cfg)", block)
+        self.assertIn("this.refreshIfChanged()", block)
+
+    def test_the_in_flight_request_is_shared_only_for_the_same_user(self):
+        self.assertIn("this._heroCfgInFlightUser === this.userId", _method(self.bar, "refreshIfChanged"))
+
+
+class TestR1CancelledReloadIsRetried(unittest.TestCase):
+    """Live finding while re-running the review's repro: the key was stored, then hide() cancelled the hero load,
+    so the next Home visit saw 'no change' and kept the old hero for good."""
+
+    def test_a_cancelled_or_failed_load_restores_the_previous_key(self):
+        r = _method(MEDIABAR_JS.read_text(), "refreshIfChanged")
+        self.assertIn("var prevKey = self._heroConfigKey", r)
+        self.assertRegex(r, r"var undo = function \(\) \{ if \(self\._heroConfigKey === key\) self\._heroConfigKey = prevKey; return false; \}")
+        self.assertRegex(r.replace("\n", " "), r"var loading = self\.loadContent\(\);\s*var loadGen = self\.generation;")
+        self.assertIn("if (self.generation !== loadGen) return undo();", r)
+        self.assertRegex(r, r"\}, undo\);")
 
 
 class TestR3CorruptConfigIsNotSeededOver(unittest.TestCase):
