@@ -5873,11 +5873,28 @@ function renderLiveChannels(channels, total) {
   el.innerHTML = channels.map((ch, i) => `
     <div class="live-ch-row" data-ch-idx="${i}">
       ${ch.logo_url ? `<img class="live-ch-logo" src="${ch.logo_url}" loading="lazy" onerror="this.style.display='none'">` : `<div class="live-ch-logo"></div>`}
-      <span class="live-ch-name">${ch.name}</span>
-      <span class="live-ch-group">${ch.group_title || ''}</span>
+      <span class="live-ch-name">${escapeAttr(ch.name)}${ch.custom_name ? ` <span style="color:var(--text3);font-size:11px">(${escapeAttr(ch.provider_name)})</span>` : ''}</span>
+      <span class="live-ch-group">${escapeAttr(ch.group_title || '')}</span>
       <span class="live-ch-epg-badge ${ch.has_epg_data ? 'has-epg' : 'no-epg'}">${ch.has_epg_data ? 'Has EPG' : 'No EPG'}</span>
+      <button class="btn btn-secondary btn-sm" title="Rename this channel in Jellyfin's guide" onclick="renameLiveChannel(${i})" style="flex-shrink:0">Rename</button>
       <button class="live-toggle ${ch.enabled ? 'on' : ''}" onclick="toggleLiveChannel(${i}, this, event)" style="flex-shrink:0"></button>
     </div>`).join('');
+}
+
+// A custom name is kept across channel syncs (which rewrite the provider's
+// name every time) and is what Jellyfin's guide shows. Blank puts it back.
+async function renameLiveChannel(idx) {
+  const ch = liveState.pageChannels[idx];
+  if (!ch) return;
+  const entered = prompt(`Name for "${ch.provider_name}" in the guide (leave blank to use the provider's name):`, ch.custom_name || '');
+  if (entered === null) return;
+  try {
+    await api(`/api/live/channels/${ch.id}`, { method: 'PUT', body: { custom_name: entered } });
+    toast(entered.trim() ? `Renamed to "${entered.trim()}" — Jellyfin shows it after its next guide refresh` : 'Provider name restored', 'success');
+    loadLiveChannels();
+  } catch (e) {
+    toast(e.message, 'error');
+  }
 }
 
 function renderChPagination(total, page, perPage) {

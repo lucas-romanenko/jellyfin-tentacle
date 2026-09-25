@@ -35,6 +35,7 @@ from services.youtube import livetv as youtube_livetv
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from models.database import (
@@ -791,8 +792,13 @@ def _get_sync_status(provider_id: int, default: dict | None = None) -> dict:
 # ─── Pydantic models ────────────────────────────────────────────────────────
 
 
+CUSTOM_NAME_MAX = 64
+
+
 class ChannelUpdate(BaseModel):
     enabled: Optional[bool] = None
+    # "" clears it and puts the provider's name back.
+    custom_name: Optional[str] = None
     channel_number: Optional[int] = None
     epg_channel_id: Optional[str] = None
     sort_order: Optional[int] = None
@@ -1976,7 +1982,7 @@ def list_channels(
     if enabled is not None:
         q = q.filter(LiveChannel.enabled == enabled)
     if search:
-        q = q.filter(LiveChannel.name.ilike(f"%{search}%"))
+        q = q.filter(or_(LiveChannel.name.ilike(f"%{search}%"), LiveChannel.custom_name.ilike(f"%{search}%")))
     # Build set of epg_channel_ids that actually have programs in the DB
     # EPG sync stores data for ALL provider channels, so this is accurate after first sync
     epg_id_q = db.query(LiveChannel.epg_channel_id).filter(
@@ -2012,7 +2018,9 @@ def list_channels(
         "channels": [
             {
                 "id": ch.id,
-                "name": ch.name,
+                "name": ch.guide_name,
+                "provider_name": ch.name,
+                "custom_name": ch.custom_name,
                 "channel_number": ch.channel_number,
                 "stream_id": ch.stream_id,
                 "stream_url": ch.stream_url,
@@ -2046,6 +2054,11 @@ def update_channel(channel_id: int, update: ChannelUpdate, db: Session = Depends
         ch.epg_channel_id = update.epg_channel_id
     if update.sort_order is not None:
         ch.sort_order = update.sort_order
+    if update.custom_name is not None:
+        custom = " ".join(update.custom_name.split())
+        if len(custom) > CUSTOM_NAME_MAX:
+            raise HTTPException(400, f"Channel names are limited to {CUSTOM_NAME_MAX} characters")
+        ch.custom_name = custom or None
 
     ch.updated_at = datetime.utcnow()
     db.commit()
@@ -2085,7 +2098,7 @@ def bulk_update_channels_by_filter(update: BulkChannelFilter, db: Session = Depe
     if update.group:
         q = q.filter(LiveChannel.group_title == update.group)
     if update.search:
-        q = q.filter(LiveChannel.name.ilike(f"%{update.search}%"))
+        q = q.filter(or_(LiveChannel.name.ilike(f"%{update.search}%"), LiveChannel.custom_name.ilike(f"%{update.search}%")))
     if update.has_epg is not None:
         if update.has_epg:
             q = q.filter(LiveChannel.epg_channel_id.isnot(None), LiveChannel.epg_channel_id != "")
@@ -2371,7 +2384,7 @@ def hdhr_lineup(request: Request, db: Session = Depends(get_db)):
         number = ch.stream_id or str(ch.id)
         entry = {
             "GuideNumber": str(number),
-            "GuideName": ch.name,
+            "GuideName": ch.guide_name,
             "URL": f"{base_url}/api/live/stream/{ch.id}",
         }
         if ch.logo_url:
@@ -3201,7 +3214,7 @@ def live_playlist_m3u(request: Request, db: Session = Depends(get_db)):
         logo = f' tvg-logo="{ch.logo_url}"' if ch.logo_url else ""
         group = f' group-title="{ch.group_title}"' if ch.group_title else ""
         lines.append(
-            f'#EXTINF:-1 tvg-id="{epg_id}" tvg-chno="{number}"{logo}{group},{ch.name}'
+            f'#EXTINF:-1 tvg-id="{epg_id}" tvg-chno="{number}"{logo}{group},{ch.guide_name}'
         )
         lines.append(f"{base_url}/api/live/stream/{ch.id}")
 
@@ -3248,7 +3261,7 @@ def hdhr_xmltv(db: Session = Depends(get_db)):
         guide_number = str(ch.stream_id or ch.id)
         xmltv_channels.append({
             "id": guide_number,
-            "name": ch.name,
+            "name": ch.guide_name,
             "logo_url": ch.logo_url,
         })
         # Channel group feeds the category inference below when a programme

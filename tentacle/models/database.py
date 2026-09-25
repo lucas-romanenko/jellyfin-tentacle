@@ -652,6 +652,9 @@ class LiveChannel(Base):
 
     # Channel identity
     name = Column(String, nullable=False)
+    # The user's own name for the channel. Channel syncs rewrite `name` from
+    # the provider every time and never touch this, so a rename survives.
+    custom_name = Column(String, nullable=True)
     channel_number = Column(Integer, nullable=True)  # User-assignable
     stream_id = Column(String, nullable=True)  # Xtream stream_id or M3U index
 
@@ -675,6 +678,11 @@ class LiveChannel(Base):
     __table_args__ = (
         UniqueConstraint("provider_id", "stream_id", name="uq_live_channel_stream"),
     )
+
+    @property
+    def guide_name(self) -> str:
+        """The name Jellyfin's guide shows: the user's name, else the provider's."""
+        return (self.custom_name or "").strip() or self.name
 
 
 class LiveChannelGroup(Base):
