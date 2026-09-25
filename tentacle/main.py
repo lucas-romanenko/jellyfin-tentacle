@@ -219,6 +219,10 @@ def run_scheduled_sync():
         try:
             from models.database import LiveChannel
             from routers.livetv import _run_epg_sync_background
+            # The guide download is a provider request like any other; with
+            # recording protection on it waits for a running recording.
+            from services.provider_activity import wait_for_recordings
+            wait_for_recordings(db, "the scheduled EPG sync")
             live_providers = db.query(Provider).filter(Provider.live_tv_enabled == True, Provider.active == True).all()
             epg_synced = False
             for lp in live_providers:

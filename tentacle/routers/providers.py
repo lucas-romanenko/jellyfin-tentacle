@@ -391,6 +391,8 @@ def test_provider(provider_id: int, db: Session = Depends(get_db)):
     p = db.query(Provider).filter(Provider.id == provider_id).first()
     if not p:
         raise HTTPException(404, "Provider not found")
+    from services.provider_activity import refuse_while_recording
+    refuse_while_recording(db, "Testing the provider")
     try:
         data = test_provider_connection(p)
         info = data.get("user_info", {})
@@ -452,6 +454,8 @@ def fetch_categories(provider_id: int, db: Session = Depends(get_db)):
     p = db.query(Provider).filter(Provider.id == provider_id).first()
     if not p:
         raise HTTPException(404, "Provider not found")
+    from services.provider_activity import refuse_while_recording
+    refuse_while_recording(db, "Fetching the provider's categories")
 
     try:
         vod_cats, series_cats, vod_counts, series_counts = fetch_provider_categories(p)
@@ -591,6 +595,8 @@ def preview_sync(provider_id: int, db: Session = Depends(get_db)):
         }
 
     # Get stream counts per category
+    from services.provider_activity import refuse_while_recording
+    refuse_while_recording(db, "A sync preview")
     base = f"{p.server_url.rstrip('/')}/player_api.php?username={p.username}&password={p.password}"
     session = requests.Session()
     session.headers.update(HEADERS)

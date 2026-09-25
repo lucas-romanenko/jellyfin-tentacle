@@ -210,7 +210,11 @@ async def _playback_for(db, token: str, owner: str, client: str = "") -> _Playba
         pb.touch()
         return pb
     limit = livetv._max_concurrent_streams(db)
-    lease = await livetv._stream_slots.acquire_lease(limit, livetv._SLOT_WAIT_SECONDS, "vod", owner)
+    livetv._stream_slots.set_protect(livetv._protect_recordings(db))
+    try:
+        lease = await livetv._stream_slots.acquire_lease(limit, livetv._SLOT_WAIT_SECONDS, "vod", owner)
+    except livetv.RecordingProtected:
+        raise HTTPException(503, livetv.PROTECTED_REFUSAL_DETAIL)
     if lease is None:
         livetv._stream_slots.refused += 1
         logger.warning(f"[VOD] {owner}: refused — at capacity ({limit}) and every slot is held by "
@@ -336,8 +340,17 @@ def _resolve(db, kind: str, token_file: str):
 
 @router.head("/api/vod/{kind}/{token_file}")
 async def vod_head(kind: str, token_file: str, request: Request, db: Session = Depends(get_db)):
-    """Headers only; no lease -- a probe, not a play."""
+    """Headers only; no lease -- a probe, not a play. Still a provider
+    connection, so with recording protection on it is refused while a
+    recording runs, like a play would be."""
     url, guard, ua, owner = _resolve(db, kind, token_file)
+    slots = livetv._stream_slots
+    slots.set_protect(livetv._protect_recordings(db))
+    if slots.protect and slots.recording_active():
+        try:
+            slots._refuse_protected("vod", f"{owner} (HEAD)")
+        except livetv.RecordingProtected:
+            raise HTTPException(503, livetv.PROTECTED_REFUSAL_DETAIL)
     client = httpx.AsyncClient(follow_redirects=False,
                                timeout=httpx.Timeout(connect=10.0, read=20.0, write=10.0, pool=10.0))
     try:

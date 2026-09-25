@@ -40,6 +40,49 @@ def live_streams_active() -> bool:
     return _live_streams_active()
 
 
+def recording_protected(db) -> bool:
+    """Recording protection is on (livetv_protect_recordings) and a recording
+    is being pulled right now. Then background provider work waits for as
+    long as the recording runs -- whatever provider_jobs_defer_while_live_seconds
+    says, and without spending that budget: a recording ends by itself, and
+    on the accounts this setting is for, one provider request next to it is
+    what cuts it."""
+    try:
+        from routers import livetv
+        if not livetv._protect_recordings(db):
+            return False
+        return livetv._stream_slots.recording_active()
+    except Exception:
+        return False
+
+
+def refuse_while_recording(db, what: str) -> None:
+    """For a button that would contact the provider now: with recording
+    protection on and a recording running, answer 503 instead."""
+    if recording_protected(db):
+        from fastapi import HTTPException
+        logger.warning(f"[Provider] {what} refused: a recording is running and recording protection is on")
+        raise HTTPException(503, f"{what} would contact the provider while a recording is running, and "
+                                 f"recording protection is on (livetv_protect_recordings). Try again once "
+                                 f"the recording has finished.")
+
+
+def wait_for_recordings(db, what: str, cancel_check: Optional[Callable[[], bool]] = None,
+                        poll_seconds: float = POLL_SECONDS) -> bool:
+    """Block while recording_protected(). True when free to go (at once if
+    protection is off or nothing is recording), False if cancelled."""
+    if not recording_protected(db):
+        return True
+    started = time.monotonic()
+    logger.info(f"[Provider] {what} is waiting: a recording is running and recording protection is on")
+    while recording_protected(db):
+        if cancel_check and cancel_check():
+            return False
+        time.sleep(poll_seconds)
+    logger.info(f"[Provider] {what} resuming after {time.monotonic() - started:.0f}s: the recording has finished")
+    return True
+
+
 def defer_seconds(db) -> float:
     """The configured maximum wait; garbage keeps the default."""
     raw = get_setting(db, "provider_jobs_defer_while_live_seconds", "")
@@ -55,21 +98,25 @@ def wait_until_quiet(db, what: str, cancel_check: Optional[Callable[[], bool]] =
     quiet (immediately if it already was), False when the wait ran out or was
     cancelled and the caller should decide for itself."""
     limit = defer_seconds(db) if max_seconds is None else max_seconds
-    if limit <= 0 or not live_streams_active():
+    if not recording_protected(db) and (limit <= 0 or not live_streams_active()):
         return True
     started = time.monotonic()
     logger.info(f"[Provider] {what} is waiting: a live stream or recording is running "
                 f"(will wait up to {limit / 60:.0f} min)")
+    waited = 0.0        # time that counts against the limit (not a protected recording's)
     while True:
         if cancel_check and cancel_check():
             return False
-        waited = time.monotonic() - started
-        if waited >= limit:
+        protected = recording_protected(db)
+        if waited >= limit and not protected:
             logger.warning(f"[Provider] {what} waited {waited / 60:.0f} min for live TV to finish "
                            f"and is going ahead anyway")
             return False
-        time.sleep(min(poll_seconds, max(0.0, limit - waited)))
-        if not live_streams_active():
+        step = poll_seconds if protected else min(poll_seconds, max(0.0, limit - waited))
+        time.sleep(step)
+        if not protected:
+            waited += step
+        if not live_streams_active() and not recording_protected(db):
             logger.info(f"[Provider] {what} resuming after {time.monotonic() - started:.0f}s: "
                         f"no live stream is running")
             return True
@@ -86,6 +133,7 @@ class JobPause:
 
     def __init__(self, db, what: str, cancel_check: Optional[Callable[[], bool]] = None,
                  poll_seconds: float = POLL_SECONDS):
+        self.db = db
         self.what = what
         self.cancel_check = cancel_check
         self.limit = defer_seconds(db)
@@ -93,14 +141,22 @@ class JobPause:
         self.spent = 0.0
         self._exhausted_logged = False
 
+    def _protected(self) -> bool:
+        return recording_protected(self.db)
+
     def would_wait(self) -> bool:
-        """True when a call now would block: live TV is on and budget is left."""
-        return self.limit > 0 and self.spent < self.limit and live_streams_active()
+        """True when a call now would block: live TV is on and budget is left,
+        or a recording runs under recording protection."""
+        return self._protected() or (self.limit > 0 and self.spent < self.limit and live_streams_active())
 
     def __call__(self) -> bool:
         """Block while a live stream is active, within what is left of the
         budget. True when the provider is quiet, False when the job should go
-        ahead regardless (budget spent, or cancelled)."""
+        ahead regardless (budget spent, or cancelled). While a recording runs
+        under recording protection it waits regardless, spending no budget."""
+        if self._protected():
+            if not wait_for_recordings(self.db, self.what, self.cancel_check, self.poll_seconds):
+                return False            # cancelled
         if self.limit <= 0 or not live_streams_active():
             return True
         if self.spent >= self.limit:
@@ -118,6 +174,14 @@ class JobPause:
             remaining = self.limit - self.spent
             if remaining <= 0:
                 return self()          # logs "going ahead" once
+            if self._protected():
+                # A recording started while this job waited for a viewer:
+                # wait it out without spending the budget, then carry on.
+                if not wait_for_recordings(self.db, self.what, self.cancel_check, self.poll_seconds):
+                    return False
+                if not live_streams_active():
+                    return True
+                continue
             step = min(self.poll_seconds, remaining)
             time.sleep(step)
             self.spent += step
