@@ -914,6 +914,21 @@ def add_channel(body: ChannelCreate, request: Request, db: Session = Depends(get
     if existing:
         raise HTTPException(409, f"'{existing.title}' is already added")
 
+    # The title names the source's folder, playlist and home row, and the
+    # playlist builder skips a second source of the same name. A playlist is
+    # often named like its channel ("Bluey") or generically ("Favorites"), so
+    # a clash is told apart by the owner, then by a number.
+    taken = {t.casefold() for (t,) in db.query(YouTubeChannel.title).all() if t}
+    title = info["title"]
+    owner = info.get("owner")
+    if title.casefold() in taken and info.get("kind") == "playlist" and owner \
+            and owner.casefold() != title.casefold():
+        title = f"{title} ({owner})"
+    base_title, n = title, 2
+    while title.casefold() in taken:
+        title, n = f"{base_title} ({n})", n + 1
+    info["title"] = title
+
     slug = indexer.slugify(info["title"])
     if db.query(YouTubeChannel).filter(YouTubeChannel.slug == slug).first():
         slug = f"{slug}-{int(datetime.utcnow().timestamp()) % 10000}"

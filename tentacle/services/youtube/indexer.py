@@ -168,6 +168,9 @@ def resolve_channel(url: str) -> dict:
         "handle": parsed.get("handle"),
         "playlist_id": parsed.get("playlist_id"),
         "title": title,
+        # Who owns it: the channel's own name for a channel, the owner's for a
+        # playlist. Used to tell two same-named sources apart.
+        "owner": info.get("channel") or info.get("uploader"),
         "avatar_url": _pick("avatar"),
         "banner_url": _pick("banner"),
         "canonical": parsed["canonical"],
