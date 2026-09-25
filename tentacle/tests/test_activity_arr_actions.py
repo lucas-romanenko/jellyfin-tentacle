@@ -246,6 +246,33 @@ class TestRemove(_Base):
         self.remove(media_type="series", tmdb_id=300)
         self.assertEqual([(23, False)], self.sonarr.deleted)
 
+    def test_a_folder_of_the_same_name_in_the_vod_tree_keeps_its_files(self):
+        """TVDB-only in Sonarr, so Tentacle has no row under its id, but in a
+        merged setup its folder is the VOD folder with the .strm files."""
+        import tempfile, pathlib
+        root = pathlib.Path(tempfile.mkdtemp())
+        (root / "TVDB Only" / "Season 1").mkdir(parents=True)
+        (root / "TVDB Only" / "Season 1" / "TVDB Only S01E01.strm").write_text("http://x")
+        mdb.set_setting(self.db, "vod_shows_path", str(root))
+        self.remove(media_type="series", tvdb_id=3000)
+        self.assertEqual([(22, False)], self.sonarr.deleted)
+
+    def test_no_such_vod_folder_deletes_as_before(self):
+        import tempfile
+        mdb.set_setting(self.db, "vod_shows_path", tempfile.mkdtemp())
+        FakeSonarr.series[0]["statistics"] = {"episodeFileCount": 0}
+        self.remove(media_type="series", tmdb_id=200)
+        self.assertEqual([(21, True)], self.sonarr.deleted)
+
+    def test_a_confirmed_delete_that_keeps_files_says_so(self):
+        self.db.add(mdb.Series(tmdb_id=200, title="Slow Show", source="provider_1"))
+        self.db.commit()
+        FakeSonarr.series[0]["statistics"] = {"episodeFileCount": 3}
+        r = self.remove(media_type="series", tmdb_id=200, delete_downloaded=True)
+        self.assertEqual([(21, False)], self.sonarr.deleted)
+        self.assertFalse(r["files_deleted"])
+        self.assertIn("still on disk", r["message"])
+
     def test_partly_downloaded_goes_through_the_full_delete_when_confirmed(self):
         self.db.add(mdb.Series(tmdb_id=200, title="Slow Show", source="sonarr"))
         self.db.commit()
