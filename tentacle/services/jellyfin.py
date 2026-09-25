@@ -28,6 +28,54 @@ def is_youtube_video(item: dict) -> bool:
     return any(k.lower() == YOUTUBE_TAG for k in (item.get("ProviderIds") or {}))
 
 
+# Fields sent back as the GET returned them, and only when it returned one.
+# Jellyfin's ItemUpdate treats the body as a full replacement: a field left
+# out is cleared (checked live on 10.11.8 — CriticRating, CustomRating,
+# ForcedSortName, PreferredMetadataLanguage on a movie; Status, EndDate,
+# DisplayOrder, CustomRating on a series), and CustomRating feeds parental
+# ratings. Echoing only what is set keeps the body small; the full DTO is
+# what made some Jellyfin versions answer 500.
+_ECHOED_ITEM_FIELDS = (
+    "CustomRating", "CriticRating", "ForcedSortName", "PreferredMetadataLanguage",
+    "PreferredMetadataCountryCode", "Status", "EndDate", "DisplayOrder",
+    "AirDays", "AirTime", "RunTimeTicks", "AspectRatio", "Video3DFormat",
+    "ProductionLocations", "DateCreated",
+)
+
+
+def _item_update_payload(item: dict, **changes) -> dict:
+    """An ItemUpdate body that changes only `changes` and keeps everything else.
+
+    LockData is sent back as read: without it the item is unlocked, and on a
+    series the unlock cascades to every season and episode. LockedFields is
+    left out on purpose — Jellyfin leaves it alone when it is null. One thing
+    no body can avoid: on a series Jellyfin copies OfficialRating and
+    CustomRating to its seasons and episodes on every ItemUpdate.
+    """
+    payload = {
+        "Id": item["Id"],
+        "Name": item.get("Name", ""),
+        "OriginalTitle": item.get("OriginalTitle", ""),
+        "Overview": item.get("Overview", ""),
+        "Genres": item.get("Genres", []),
+        "Tags": item.get("Tags", []),
+        "Studios": item.get("Studios", []),
+        "People": item.get("People", []),
+        "ProviderIds": item.get("ProviderIds", {}),
+        "ProductionYear": item.get("ProductionYear"),
+        "PremiereDate": item.get("PremiereDate"),
+        "CommunityRating": item.get("CommunityRating"),
+        "OfficialRating": item.get("OfficialRating", ""),
+        "Taglines": item.get("Taglines", []),
+        "LockData": item.get("LockData"),
+    }
+    for field in _ECHOED_ITEM_FIELDS:
+        if item.get(field) is not None:
+            payload[field] = item[field]
+    payload.update(changes)
+    return payload
+
+
 class JellyfinService:
     def __init__(self, url: str, api_key: str, user_id: str = ""):
         self.url = url.rstrip("/")
@@ -347,27 +395,7 @@ class JellyfinService:
         old_tags = item.get("Tags", [])
         logger.debug(f"[Jellyfin] set_item_tags {item_id}: {old_tags} → {tags}")
 
-        minimal = {
-            "Id": item["Id"],
-            "Name": item.get("Name", ""),
-            "OriginalTitle": item.get("OriginalTitle", ""),
-            "Overview": item.get("Overview", ""),
-            "Genres": item.get("Genres", []),
-            "Tags": tags,
-            "Studios": item.get("Studios", []),
-            "People": item.get("People", []),
-            "ProviderIds": item.get("ProviderIds", {}),
-            "ProductionYear": item.get("ProductionYear"),
-            "PremiereDate": item.get("PremiereDate"),
-            "CommunityRating": item.get("CommunityRating"),
-            "OfficialRating": item.get("OfficialRating", ""),
-            "Taglines": item.get("Taglines", []),
-            # Sent back as it was: an ItemUpdate without LockData unlocks the
-            # item (Jellyfin 10.11.8), so every tag push used to clear the
-            # "Lock this item" a user had set and let the next metadata
-            # refresh overwrite their edits.
-            "LockData": item.get("LockData"),
-        }
+        minimal = _item_update_payload(item, Tags=tags)
 
         try:
             r = self.session.post(
@@ -400,23 +428,7 @@ class JellyfinService:
         if not item:
             logger.warning(f"[Jellyfin] Cannot GET item {item_id} — set_item_name aborted")
             return False
-        payload = {
-            "Id": item["Id"],
-            "Name": name,
-            "OriginalTitle": item.get("OriginalTitle", ""),
-            "Overview": item.get("Overview", ""),
-            "Genres": item.get("Genres", []),
-            "Tags": item.get("Tags", []),
-            "Studios": item.get("Studios", []),
-            "People": item.get("People", []),
-            "ProviderIds": item.get("ProviderIds", {}),
-            "ProductionYear": item.get("ProductionYear"),
-            "PremiereDate": item.get("PremiereDate"),
-            "CommunityRating": item.get("CommunityRating"),
-            "OfficialRating": item.get("OfficialRating", ""),
-            "Taglines": item.get("Taglines", []),
-            "LockData": item.get("LockData"),
-        }
+        payload = _item_update_payload(item, Name=name)
         try:
             r = self.session.post(f"{self.url}/Items/{item_id}", json=payload, timeout=15)
             self._check_401(r, f"/Items/{item_id}")
