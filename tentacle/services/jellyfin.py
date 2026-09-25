@@ -28,6 +28,10 @@ def is_youtube_video(item: dict) -> bool:
     return any(k.lower() == YOUTUBE_TAG for k in (item.get("ProviderIds") or {}))
 
 
+# Entries per DELETE /Playlists/{id}/Items call — see remove_from_playlist.
+REMOVE_CHUNK_SIZE = 150
+
+
 class JellyfinService:
     def __init__(self, url: str, api_key: str, user_id: str = ""):
         self.url = url.rstrip("/")
@@ -731,7 +735,7 @@ class JellyfinService:
             return None
 
     def remove_from_playlist(self, playlist_id: str, entry_ids: List[str]) -> bool:
-        """Remove items from a playlist by their PlaylistItemId, in chunks of 25.
+        """Remove items from a playlist by their PlaylistItemId, in chunks.
 
         UserId is REQUIRED for private (per-user) playlists — without it Jellyfin
         returns 204 but silently removes nothing, which is what bloated playlists
@@ -743,7 +747,14 @@ class JellyfinService:
         """
         if not entry_ids:
             return True
-        chunk_size = 25
+        # Jellyfin rewrites the whole playlist on every DELETE, so a call costs
+        # the same whether it removes 25 entries or 200 (measured on a
+        # 40k-entry playlist: ~23 s either way). At 25 a call, clearing a
+        # large playlist for an order-changing rebuild took many hours, with
+        # the playlist half-empty and the refresh lock held throughout. The
+        # ceiling is the URL: 400 ids (13 KB) is refused with 414, 200 (6.6 KB)
+        # is accepted, so 150 leaves headroom under Kestrel's 8 KB request line.
+        chunk_size = REMOVE_CHUNK_SIZE
         all_ok = True
         for i in range(0, len(entry_ids), chunk_size):
             chunk = entry_ids[i:i + chunk_size]
