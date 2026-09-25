@@ -720,7 +720,14 @@ def check_and_record_duplicate(
     # versions, where resolving deleted the row instead of converting it.
     if dup and dup.resolution == "keep_radarr" and existing.source and existing.source.startswith("provider_"):
         if existing.strm_path:
-            delete_vod_files(existing.strm_path)
+            if media_type == "movie":
+                delete_vod_files(existing.strm_path)
+            else:
+                # A series' strm_path is its show folder, which the movie
+                # helper ignores — the episodes' .strm files stayed on disk
+                # with nothing tracking them once the row was converted.
+                from services.media_files import delete_series_files
+                delete_series_files(existing.strm_path)
         convert_record_to_downloaded(existing, media_type)
         logger.info(f"[Sync] Enforced keep-downloaded resolution for tmdb:{tmdb_id} — provider copy suppressed")
         return True

@@ -19,26 +19,18 @@ logger = logging.getLogger(__name__)
 
 
 def delete_vod_files(strm_path: str):
-    """Delete a VOD .strm file and its companion .nfo, plus empty parent folder."""
-    try:
-        strm = Path(strm_path)
-        if strm.exists() and strm.suffix == ".strm":
-            strm.unlink()
-            logger.info(f"Deleted VOD strm: {strm_path}")
+    """Delete a VOD .strm file and its companion .nfo, plus empty parent folder.
 
-            # Delete companion .nfo file (same name, different extension)
-            nfo = strm.with_suffix(".nfo")
-            if nfo.exists():
-                nfo.unlink()
-                logger.info(f"Deleted companion NFO: {nfo}")
-
-            # Remove parent folder if empty
-            parent = strm.parent
-            if parent.exists() and not any(parent.iterdir()):
-                parent.rmdir()
-                logger.info(f"Removed empty folder: {parent}")
-    except Exception as e:
-        logger.warning(f"Could not delete VOD files at {strm_path}: {e}")
+    Delegates to media_files.delete_movie_files, which keeps the NFO when a
+    downloaded copy shares the .strm's stem in a merged folder ("Heat
+    (1995).mkv" + "Heat (1995).nfo"): that NFO then describes the download
+    the user chose to keep. This helper unlinked it unconditionally, and it is
+    what "Keep Downloaded" and the sync's enforcement of it call (#28 guarded
+    only the media_files path).
+    """
+    from services.media_files import delete_movie_files
+    if delete_movie_files(strm_path):
+        logger.info(f"Deleted VOD files for {strm_path}")
 
 
 def convert_record_to_downloaded(record, media_type: str):
