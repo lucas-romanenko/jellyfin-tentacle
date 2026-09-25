@@ -74,7 +74,7 @@ class _Resp:
         return self._data
 
 
-def _fake_get(queue_records=None, sonarr_series=None):
+def _fake_get(queue_records=None, sonarr_series=None, sonarr_queue=None):
     def get(url, headers=None, params=None, timeout=None):
         if ":7878" in url and url.endswith("/api/v3/movie"):
             return _Resp(RADARR_MOVIES)
@@ -85,7 +85,7 @@ def _fake_get(queue_records=None, sonarr_series=None):
         if ":8989" in url and url.endswith("/api/v3/series"):
             return _Resp(sonarr_series or [])
         if ":8989" in url and url.endswith("/api/v3/queue"):
-            return _Resp({"records": []})
+            return _Resp({"records": sonarr_queue or []})
         raise AssertionError(f"unexpected GET {url}")
     return get
 
@@ -116,8 +116,8 @@ class _Base(unittest.TestCase):
     def tearDown(self):
         self.db.close()
 
-    def activity(self, user=None, queue=None, sonarr_series=None):
-        with mock.patch.object(activity.requests, "get", side_effect=_fake_get(queue, sonarr_series)) as g:
+    def activity(self, user=None, queue=None, sonarr_series=None, sonarr_queue=None):
+        with mock.patch.object(activity.requests, "get", side_effect=_fake_get(queue, sonarr_series, sonarr_queue)) as g:
             out = activity.get_activity(request=None, db=self.db, user=user or self.admin)
         self.gets = [c.args[0] for c in g.call_args_list]
         return out
@@ -289,6 +289,19 @@ class TestActivityEndpoint(_Base):
     def test_a_downloading_movie_still_leaves_searching(self):
         out = self.activity(queue=self._queue(1))
         self.assertNotIn(("movie", 1), [(x["media_type"], x["tmdb_id"]) for x in out["searching"]])
+
+    def test_a_downloading_show_known_only_by_tvdb_leaves_searching(self):
+        tvdb_only = dict(SHOW_B, tmdbId=0)
+        queue = [{"id": 79, "size": 100, "sizeleft": 50, "status": "downloading",
+                  "trackedDownloadStatus": "ok", "trackedDownloadState": "downloading",
+                  "series": tvdb_only, "episode": {"seasonNumber": 1, "episodeNumber": 1}}]
+        missing = {"records": [dict(r, series=tvdb_only) if r["series"] is SHOW_B else r
+                               for r in SONARR_MISSING["records"]]}
+        with mock.patch.dict(SONARR_MISSING, missing):
+            out = self.activity(sonarr_queue=queue)
+        self.assertEqual([("series", 0, 1001)], [(d["media_type"], d["tmdb_id"], d.get("tvdb_id")) for d in out["downloads"]])
+        self.assertNotIn("Show B", [x["title"] for x in out["searching"]],
+                         "the show is downloading; it must not also be listed as searching")
 
     def test_admin_sees_who_asked(self):
         self.db.add(mdb.DownloadRequest(tmdb_id=1, media_type="movie", user_id=self.kid.id))

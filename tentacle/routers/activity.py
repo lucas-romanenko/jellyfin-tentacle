@@ -604,6 +604,9 @@ def _build_downloads(db: Session) -> list:
                         poster = _get_poster(db, tmdb_id, "series") or _extract_poster(series) or _fetch_tmdb_poster(tmdb_id, "series", db)
                         downloads.append({
                             "tmdb_id": tmdb_id,
+                            # A show Sonarr knows only by TVDB has tmdb_id 0; this
+                            # is what matches it against Searching/Upcoming.
+                            "tvdb_id": series.get("tvdbId") or 0,
                             "title": series.get("title", item.get("title", "")),
                             "year": str(series.get("year", "")),
                             "poster_path": poster,
