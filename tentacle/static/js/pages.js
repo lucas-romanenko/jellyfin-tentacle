@@ -846,6 +846,19 @@ let _addArrTvdbId = null;
 let _addArrMediaType = 'movie';
 let _epPickerSeasons = [];  // cached season list for current series
 let _epPickerLoaded = {};   // season_number -> episodes array
+// Add, Manage Episodes and Download More share one modal and one picker. Each
+// opening clears everything the picker knows about the last title and takes a
+// new token; an answer that arrives after the modal was opened again belongs to
+// the earlier title and is dropped.
+let _epPickerToken = 0;
+function _resetEpisodePicker() {
+  _epPickerSeasons = [];
+  _epPickerLoaded = {};
+  _vodEpisodes = {};
+  _dlEpisodes = {};
+  _unairedPerSeason = {};
+  return ++_epPickerToken;
+}
 
 // Helper: resolve poster/backdrop URLs (TVDB sends full URLs, TMDB sends relative paths)
 function _imgUrl(path, size) {
@@ -860,6 +873,7 @@ async function showAddToRadarrModal(tmdbId, title, year, posterPath) {
 
 async function showAddToArrModal(tmdbId, title, year, posterPath, mediaType, tvdbId) {
   _resetManageMode(); // ensure modal is in add mode
+  const tok = _resetEpisodePicker();
   _addArrTmdbId = tmdbId;
   _addArrTvdbId = tvdbId || 0;
   _addArrMediaType = mediaType || 'movie';
@@ -883,8 +897,10 @@ async function showAddToArrModal(tmdbId, title, year, posterPath, mediaType, tvd
   try {
     const endpoint = isSeries ? '/api/lists/sonarr-profiles' : '/api/lists/radarr-profiles';
     const profiles = await api(endpoint);
+    if (tok !== _epPickerToken) return;
     select.innerHTML = profiles.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
   } catch (e) {
+    if (tok !== _epPickerToken) return;
     select.innerHTML = '<option value="">Failed to load profiles</option>';
   }
 
@@ -893,8 +909,6 @@ async function showAddToArrModal(tmdbId, title, year, posterPath, mediaType, tvd
   if (monitorWrap) monitorWrap.style.display = 'none';
 
   // Reset episode picker state
-  _epPickerSeasons = [];
-  _epPickerLoaded = {};
   document.getElementById('episode-picker').style.display = 'none';
   document.getElementById('episode-picker-seasons').innerHTML = '';
   document.getElementById('add-sonarr-monitor').value = 'all';
@@ -976,6 +990,7 @@ async function onMonitorPresetChange(val) {
   picker.style.display = 'block';
   modalBox.classList.add('ep-expanded');
   if (_epPickerSeasons.length > 0) return; // already loaded
+  const tok = _epPickerToken;
   const loading = document.getElementById('episode-picker-loading');
   loading.style.display = 'block';
   try {
@@ -984,9 +999,11 @@ async function onMonitorPresetChange(val) {
       ? `/api/discover/seasons-tvdb/${_addArrTvdbId}`
       : `/api/discover/seasons/${_addArrTmdbId}`;
     const data = await api(seasonsUrl);
+    if (tok !== _epPickerToken) return;
     _epPickerSeasons = (data.seasons || []).filter(s => s.season_number > 0);
     _renderSeasons();
   } catch (e) {
+    if (tok !== _epPickerToken) return;
     document.getElementById('episode-picker-seasons').innerHTML = '<div style="padding:12px;color:var(--text3)">Failed to load seasons</div>';
   }
   loading.style.display = 'none';
@@ -1020,6 +1037,7 @@ async function toggleSeasonAccordion(seasonNum) {
   list.classList.add('open');
   arrow.classList.add('open');
   if (!_epPickerLoaded[seasonNum]) {
+    const tok = _epPickerToken;
     const tmdbId = _downloadMoreTmdbId || _addArrTmdbId;
     const isTvdbOnly = !tmdbId && _addArrTvdbId;
     list.innerHTML = '<div style="padding:8px 28px;color:var(--text3);font-size:12px">Loading...</div>';
@@ -1028,9 +1046,11 @@ async function toggleSeasonAccordion(seasonNum) {
         ? `/api/discover/season-tvdb/${_addArrTvdbId}/${seasonNum}`
         : `/api/discover/season/${tmdbId}/${seasonNum}`;
       const data = await api(epUrl);
+      if (tok !== _epPickerToken) return;
       _epPickerLoaded[seasonNum] = data.episodes || [];
       _renderEpisodes(seasonNum);
     } catch (e) {
+      if (tok !== _epPickerToken) return;
       list.innerHTML = '<div style="padding:8px 28px;color:var(--text3);font-size:12px">Failed to load</div>';
     }
   }
@@ -1152,8 +1172,7 @@ let _manageTmdbId = null;
 
 async function showManageEpisodesModal(tmdbId, title, year, posterPath) {
   _manageTmdbId = tmdbId;
-  _epPickerSeasons = [];
-  _epPickerLoaded = {};
+  const tok = _resetEpisodePicker();
 
   const modalBox = document.getElementById('add-arr-modal-box');
   modalBox.className = 'modal modal-arr ep-expanded';
@@ -1189,6 +1208,7 @@ async function showManageEpisodesModal(tmdbId, title, year, posterPath) {
   // Load episodes from Sonarr
   try {
     const data = await api(`/api/discover/sonarr-episodes/${tmdbId}`);
+    if (tok !== _epPickerToken) return;
     if (!data.in_sonarr) {
       container.innerHTML = '<div style="padding:12px;color:var(--text3)">Series not found in Sonarr</div>';
       loading.style.display = 'none';
@@ -1234,6 +1254,7 @@ async function showManageEpisodesModal(tmdbId, title, year, posterPath) {
       }).join('');
     }
   } catch (e) {
+    if (tok !== _epPickerToken) return;
     container.innerHTML = '<div style="padding:12px;color:var(--text3)">Failed to load episodes</div>';
   }
   loading.style.display = 'none';
@@ -1273,11 +1294,7 @@ let _unairedPerSeason = {};  // {season: count} unaired episodes from Sonarr
 
 async function showDownloadMoreModal(tmdbId, title, year, posterPath) {
   _downloadMoreTmdbId = tmdbId;
-  _vodEpisodes = {};
-  _dlEpisodes = {};
-  _unairedPerSeason = {};
-  _epPickerSeasons = [];
-  _epPickerLoaded = {};
+  const tok = _resetEpisodePicker();
 
   const modalBox = document.getElementById('add-arr-modal-box');
   modalBox.className = 'modal modal-arr ep-expanded';
@@ -1300,8 +1317,10 @@ async function showDownloadMoreModal(tmdbId, title, year, posterPath) {
   select.innerHTML = '<option value="">Loading...</option>';
   try {
     const profiles = await api('/api/lists/sonarr-profiles');
+    if (tok !== _epPickerToken) return;
     select.innerHTML = profiles.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
   } catch (e) {
+    if (tok !== _epPickerToken) return;
     select.innerHTML = '<option value="">Failed to load profiles</option>';
   }
 
@@ -1340,6 +1359,7 @@ async function showDownloadMoreModal(tmdbId, title, year, posterPath) {
       api(`/api/discover/vod-episodes/${tmdbId}`),
       api(`/api/discover/sonarr-episodes/${tmdbId}`).catch(() => ({ in_sonarr: false })),
     ]);
+    if (tok !== _epPickerToken) return;
 
     if (vodData.has_episodes) {
       _vodEpisodes = vodData.episodes;
@@ -1369,6 +1389,7 @@ async function showDownloadMoreModal(tmdbId, title, year, posterPath) {
     _epPickerSeasons = (seasonsData.seasons || []).filter(s => s.season_number > 0);
     _renderSeasonsWithVod();
   } catch (e) {
+    if (tok !== _epPickerToken) return;
     container.innerHTML = '<div style="padding:12px;color:var(--text3)">Failed to load seasons</div>';
   }
   loading.style.display = 'none';
