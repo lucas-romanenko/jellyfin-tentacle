@@ -1105,8 +1105,15 @@
       stopBtn.addEventListener('click', function () {
         var c = chosen();
         var body = arrTitleBody(item);
-        // All ticked = every missing episode (the list shows at most 50).
-        if (c && c.length < (item.missing_labels || []).length) body.episodes = c;
+        // Some unticked: just those. All ticked: the whole card (below).
+        if (c && c.length < (item.missing_labels || []).length) {
+          body.episodes = c;
+        } else if ((item.missing_labels || []).length) {
+          // The whole card: its labels plus its count (labels are capped at
+          // 50). The server stops what the card counted, never every episode.
+          body.episodes = item.missing_labels;
+          body.episode_count = item.missing_episodes || item.missing_labels.length;
+        }
         stopBtn.disabled = true;
         if (searchBtn) searchBtn.disabled = true;
         say('Telling Sonarr\u2026', true);

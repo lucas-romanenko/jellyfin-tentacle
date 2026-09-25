@@ -156,7 +156,8 @@ class TestStopMissing(_Base):
     def test_unmonitors_only_the_missing_aired_episodes(self):
         FakeSonarr.episodes = FakeSonarr.episodes + [
             {"id": 5, "seasonNumber": 2, "episodeNumber": 3, "monitored": True, "hasFile": False, "airDateUtc": PAST}]
-        r = self.stop(media_type="series", tmdb_id=200)
+        # The card's full list (every client sends it, with the card's count).
+        r = self.stop(media_type="series", tmdb_id=200, episodes=["S01E01", "S02E03"], episode_count=2)
         self.assertEqual([([1, 5], False)], self.sonarr.monitoring,
                          "not the downloaded one, not the unwanted one, not the unaired one")
         self.assertEqual(2, r["stopped"])
@@ -190,7 +191,7 @@ class TestStopMissing(_Base):
     def test_sonarr_refusing_is_502(self):
         self.sonarr.accept_monitoring = False
         with self.assertRaises(HTTPException) as e:
-            self.stop(media_type="series", tmdb_id=200)
+            self.stop(media_type="series", tmdb_id=200, episodes=["S01E01"], episode_count=1)
         self.assertEqual(502, e.exception.status_code)
 
     def test_non_admin_only_for_their_own_requests(self):

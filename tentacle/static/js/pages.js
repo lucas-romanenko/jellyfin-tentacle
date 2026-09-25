@@ -4736,14 +4736,19 @@ async function activityStopMissing(key) {
   if (!item || _actBusy[key]) return;
   const labels = item.missing_labels || [];
   if (labels.length > 1) { _openStopMissing(key, item); return; }
-  await _stopMissing(key, item, null);
+  // Always the labels shown, and the card's count: the server never widens
+  // "all" to episodes the card didn't count.
+  await _stopMissing(key, item, labels, item.missing_episodes || labels.length);
 }
 
-async function _stopMissing(key, item, episodes) {
+// episodes: the labels to stop; count: set when they are the whole card
+// (missing_labels is capped at 50, so the card's count says how many it meant).
+async function _stopMissing(key, item, episodes, count) {
   _actBusy[key] = 'stop'; renderActivity();
   try {
     const body = _actBody(item);
     if (episodes) body.episodes = episodes;
+    if (count != null) body.episode_count = count;
     const r = await api('/api/activity/arr/stop-missing', { method: 'POST', body });
     toast(r.message || 'Stopped looking');
     closeModal('modal-stop-missing');
@@ -4795,8 +4800,10 @@ function _smGo() {
   const item = _actItem(_smKey);
   if (!item) { closeModal('modal-stop-missing'); return; }
   const chosen = _smChosen();
-  // Everything ticked = "all missing": also covers episodes past the 50 listed.
-  _stopMissing(_smKey, item, chosen.length === (item.missing_labels || []).length ? null : chosen);
+  // Everything ticked = the whole card, even past the 50 listed: send the
+  // labels with the card's count (the server stops what the card counted).
+  const all = chosen.length === (item.missing_labels || []).length;
+  _stopMissing(_smKey, item, chosen, all ? (item.missing_episodes || chosen.length) : null);
 }
 
 // "Today 9 PM" / "Tomorrow" / "Thursday" for an air time, in the viewer's zone.

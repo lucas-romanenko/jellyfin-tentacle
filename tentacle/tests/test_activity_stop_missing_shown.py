@@ -43,19 +43,42 @@ class TestStopMissingShownOnly(_Base):
         self.stop(wanted, media_type="series", tvdb_id=3000)
         self.assertEqual([([1, 6], False)], self.sonarr.monitoring)
 
-    def test_no_card_keeps_the_old_meaning_every_missing_episode(self):
-        r = self.stop({"searching": [], "_missing_ids": {99: [5]}}, media_type="series", tmdb_id=200)
-        self.assertEqual([([1, 5, 6], False)], self.sonarr.monitoring)
-        self.assertEqual(3, r["stopped"])
+    def test_no_card_never_means_every_missing_episode(self):
+        with self.assertRaises(activity.HTTPException) as e:
+            self.stop({"searching": [], "_missing_ids": {99: [5]}}, media_type="series", tmdb_id=200)
+        self.assertEqual(409, e.exception.status_code)
+        self.assertIn("Refresh Activity", e.exception.detail)
+        self.assertEqual([], self.sonarr.monitoring)
+
+    def test_no_card_but_the_cards_full_list_is_sent(self):
+        r = self.stop({"searching": [], "_missing_ids": {}}, media_type="series", tmdb_id=200,
+                      episodes=["S02E03"], episode_count=1)
+        self.assertEqual([([5], False)], self.sonarr.monitoring)
+        self.assertEqual(1, r["stopped"])
+
+    def test_a_capped_list_without_the_card_is_refused(self):
+        # 81 counted, 50 labels sent (the cap): the other 31 are unknown.
+        with self.assertRaises(activity.HTTPException) as e:
+            self.stop({"searching": [], "_missing_ids": {}}, media_type="series", tmdb_id=200,
+                      episodes=["S02E03"], episode_count=81)
+        self.assertEqual(409, e.exception.status_code)
+        self.assertEqual([], self.sonarr.monitoring)
+
+    def test_the_cards_ids_win_over_its_label_list(self):
+        r = self.stop({"searching": [], "_missing_ids": {21: [5, 6]}}, media_type="series", tmdb_id=200,
+                      episodes=["S02E03"], episode_count=2)
+        self.assertEqual([([5, 6], False)], self.sonarr.monitoring)
+        self.assertEqual(2, r["stopped"])
 
     def test_an_explicit_list_is_unchanged(self):
         wanted = {"searching": [], "_missing_ids": {21: [5]}}
         self.stop(wanted, media_type="series", tmdb_id=200, episodes=["S02E04"])
         self.assertEqual([([6], False)], self.sonarr.monitoring, "a chosen label is honoured even if off the card")
 
-    def test_an_old_cache_without_the_map_behaves_as_before(self):
-        self.stop({"searching": []}, media_type="series", tmdb_id=200)
-        self.assertEqual([([1, 5, 6], False)], self.sonarr.monitoring)
+    def test_an_old_cache_without_the_map_is_refused(self):
+        with self.assertRaises(activity.HTTPException) as e:
+            self.stop({"searching": []}, media_type="series", tmdb_id=200)
+        self.assertEqual(409, e.exception.status_code)
 
 
 class TestStopMissingAfterARebuild(TestStopMissingShownOnly):
@@ -82,8 +105,16 @@ class TestStopMissingAfterARebuild(TestStopMissingShownOnly):
 
     def test_a_memory_older_than_a_day_is_not_used(self):
         activity._shown_ids[21] = (activity.time.time() - activity.SHOWN_IDS_KEEP - 5, [5])
-        r = self.stop({"searching": [], "_missing_ids": {}}, media_type="series", tmdb_id=200)
-        self.assertEqual(3, r["stopped"], "no card in a day: every missing episode, as before")
+        with self.assertRaises(activity.HTTPException) as e:
+            self.stop({"searching": [], "_missing_ids": {}}, media_type="series", tmdb_id=200)
+        self.assertEqual(409, e.exception.status_code, "no card in a day: refresh, never every episode")
+
+    def test_after_a_restart_the_card_is_refused_not_widened(self):
+        # The reviewer's case: memory gone (restart), the show out of the window.
+        activity._shown_ids.clear()
+        with self.assertRaises(activity.HTTPException):
+            self.stop({"searching": [], "_missing_ids": {}}, media_type="series", tmdb_id=200)
+        self.assertEqual([], self.sonarr.monitoring)
 
 
 class TestWantedCarriesTheMap(unittest.TestCase):

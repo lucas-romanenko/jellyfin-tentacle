@@ -7,6 +7,7 @@ dropped early whenever an item leaves the queue.
 """
 
 import time
+import threading
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -684,9 +685,11 @@ def _get_wanted(db: Session) -> dict:
         sid = x.pop("_sonarr_id", None)
         if x.get("media_type") == "series" and ids is not None and sid:
             missing_ids[sid] = ids
-            _shown_ids[sid] = (now, ids)
-    for sid in [k for k, (at, _) in _shown_ids.items() if now - at > SHOWN_IDS_KEEP]:
-        _shown_ids.pop(sid, None)
+            with _shown_lock:
+                _shown_ids[sid] = (now, ids)
+    with _shown_lock:
+        for sid in [k for k, (at, _) in _shown_ids.items() if now - at > SHOWN_IDS_KEEP]:
+            _shown_ids.pop(sid, None)
     result = {"unreleased": unreleased[:20], "searching": searching[:SEARCHING_LIMIT],
               "_missing_ids": missing_ids,
               # Whole lists, un-enriched, for a non-admin's own titles: the
@@ -707,6 +710,7 @@ def _get_unreleased(db: Session) -> list:
 
 SHOWN_IDS_KEEP = 24 * 3600
 _shown_ids: dict = {}  # Sonarr series id -> (when, episode ids its card last counted)
+_shown_lock = threading.Lock()
 
 
 def _missing_ids_for(db: Session, rec: dict) -> Optional[set]:
@@ -724,7 +728,8 @@ def _missing_ids_for(db: Session, rec: dict) -> Optional[set]:
     if got is None:
         # Not on a card any more (the list was rebuilt since): what its card
         # last counted. Never a card: None (every missing episode).
-        at, remembered = _shown_ids.get(sid, (0, None))
+        with _shown_lock:
+            at, remembered = _shown_ids.get(sid, (0, None))
         if remembered is not None and time.time() - at <= SHOWN_IDS_KEEP:
             got = remembered
     return set(got) if got is not None else None
@@ -920,6 +925,9 @@ class ArrTitle(BaseModel):
     # Stop-missing only: limit to these episodes, as "S01E02" labels (the
     # Searching row's missing_labels). Default: every missing episode.
     episodes: Optional[List[str]] = None
+    # Stop-missing only: sent with the card's labels when every one is ticked
+    # -- how many episodes the card counted (missing_labels is capped at 50).
+    episode_count: Optional[int] = None
     # Check only: search again even if a recent check exists.
     fresh: bool = False
     # Grab only: the release, from a check's list.
@@ -1074,15 +1082,20 @@ def stop_missing(title: ArrTitle, db: Session = Depends(get_db),
     svc, rec = _find_arr_record(db, title)
     name = rec.get("title", "")
     missing = _missing_aired(svc.get_episodes(rec["id"]))
-    if title.episodes is not None:
-        wanted = {e.strip().upper() for e in title.episodes}
-        missing = [ep for ep in missing if _ep_label(ep) in wanted]
+    labels = {e.strip().upper() for e in title.episodes} if title.episodes is not None else None
+    if labels is not None and title.episode_count is None:
+        missing = [ep for ep in missing if _ep_label(ep) in labels]  # the ones chosen
     else:
-        # "All" = every episode the card counted, not episodes beyond the page
-        # of Sonarr's wanted list it was built from. No card: all of them.
+        # "All" = exactly the episodes the card counted -- never every missing
+        # episode: Sonarr's wanted list is read one page deep, so a card saying
+        # "S12E03" can stand for 81 missing episodes it never showed.
         shown = _missing_ids_for(db, rec)
         if shown is not None:
             missing = [ep for ep in missing if ep.get("id") in shown]
+        elif labels is not None and len(labels) >= (title.episode_count or 0):
+            missing = [ep for ep in missing if _ep_label(ep) in labels]  # the card's full list
+        elif missing:
+            raise HTTPException(409, "Activity has changed since this was shown. Refresh Activity and try again.")
     if not missing:
         _after_arr_change(title)
         return {"ok": True, "title": name, "stopped": 0,
