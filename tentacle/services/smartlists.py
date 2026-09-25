@@ -1444,16 +1444,21 @@ def _build_query_params(config: dict) -> dict:
     return params
 
 
-def refresh_smartlist_playlists(db: Session, user_id: int = None, only_names: list = None) -> dict:
+def refresh_smartlist_playlists(db: Session, user_id: int = None, only_names: list = None,
+                                reorder_names: list = None) -> dict:
     """Read per-user SmartList configs from disk, query Jellyfin for matching items,
     and create/update playlists. This replaces the C# SmartLists plugin entirely.
 
     If user_id is None, refreshes for all users.
     If only_names is provided, only processes playlists with matching names.
+    reorder_names: playlists whose stored order must be rewritten from this
+    query even if their sort normally lets the stored order stand (a playlist
+    just switched to Random gets its one shuffle).
     Returns {processed, created, updated, changed, errors}.
     """
     with _playlist_refresh_lock:
-        result = _refresh_smartlist_playlists_inner(db, user_id, only_names=only_names)
+        result = _refresh_smartlist_playlists_inner(db, user_id, only_names=only_names,
+                                                    reorder_names=reorder_names)
         if "error" not in result:
             pruned = _prune_dead_entries_locked(db, user_id=user_id, only_names=only_names)
             if pruned:
@@ -1512,14 +1517,16 @@ def _prune_dead_entries_locked(db: Session, user_id: int = None, only_names: lis
     return removed
 
 
-def _refresh_smartlist_playlists_inner(db: Session, user_id: int = None, only_names: list = None) -> dict:
+def _refresh_smartlist_playlists_inner(db: Session, user_id: int = None, only_names: list = None,
+                                       reorder_names: list = None) -> dict:
     if user_id is None:
         users = db.query(TentacleUser).all()
         if not users:
             return {"processed": 0, "created": 0, "updated": 0, "changed": 0, "errors": 0}
         combined = {"processed": 0, "created": 0, "updated": 0, "changed": 0, "errors": 0}
         for u in users:
-            result = _refresh_smartlist_playlists_inner(db, user_id=u.id, only_names=only_names)
+            result = _refresh_smartlist_playlists_inner(db, user_id=u.id, only_names=only_names,
+                                                        reorder_names=reorder_names)
             for key in ("processed", "created", "updated", "changed", "errors"):
                 combined[key] += result.get(key, 0)
         return combined
@@ -1557,7 +1564,8 @@ def _refresh_smartlist_playlists_inner(db: Session, user_id: int = None, only_na
             continue
 
         try:
-            _process_single_playlist(jf, folder, config, jf_user_id, stats, db=db)
+            _process_single_playlist(jf, folder, config, jf_user_id, stats, db=db,
+                                     reorder=bool(reorder_names) and name in reorder_names)
         except Exception as e:
             logger.error(f"[SmartLists] Failed to process '{name}': {e}")
             stats["errors"] += 1
@@ -1826,7 +1834,8 @@ class PlaylistsBusy(RuntimeError):
     """A playlist refresh is running; the fast path could not get the lock."""
 
 
-def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats: dict, db: Session = None):
+def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats: dict, db: Session = None,
+                             reorder: bool = False):
     """Process a single SmartList config: query items, create/update playlist.
 
     Holds _playlist_refresh_lock so the toggle / sync-one fast paths can't
@@ -1835,12 +1844,13 @@ def _process_single_playlist(jf, folder: Path, config: dict, user_id: str, stats
     if not _playlist_refresh_lock.acquire(timeout=FAST_PATH_LOCK_TIMEOUT):
         raise PlaylistsBusy("Playlists are being refreshed right now — try again in a moment")
     try:
-        return _process_single_playlist_locked(jf, folder, config, user_id, stats, db=db)
+        return _process_single_playlist_locked(jf, folder, config, user_id, stats, db=db, reorder=reorder)
     finally:
         _playlist_refresh_lock.release()
 
 
-def _process_single_playlist_locked(jf, folder: Path, config: dict, user_id: str, stats: dict, db: Session = None):
+def _process_single_playlist_locked(jf, folder: Path, config: dict, user_id: str, stats: dict, db: Session = None,
+                                    reorder: bool = False):
     name = config.get("Name", "Unknown")
 
     # Query Jellyfin for matching items
@@ -1960,7 +1970,9 @@ def _process_single_playlist_locked(jf, folder: Path, config: dict, user_id: str
             stats["errors"] = stats.get("errors", 0) + 1
             return
         current_ordered_ids = [entry["Id"] for entry in current_entries]
-        order_matters = _playlist_order_matters(config)
+        # `reorder`: the caller wants this query's order stored even though the
+        # sort normally lets the stored order stand (see update_playlist_sort).
+        order_matters = reorder or _playlist_order_matters(config)
 
         # M5 guard: query_items() also returns [] when the underlying request
         # fails silently (timeout / connection reset → _get returns None). If
@@ -2574,9 +2586,15 @@ def update_playlist_sort(name: str, sort_by: str, sort_order: str, db, user_id: 
     config_file.write_text(json.dumps(config, indent=2), encoding="utf-8")
     logger.info(f"[SmartLists] Updated sort for '{name}': {config_sort_by} {sort_order}")
 
-    # Refresh this playlist so the new sort order takes effect immediately
+    # Refresh this playlist so the new sort order takes effect immediately.
+    # Random is the one sort nobody applies at read time: the plugin shows a
+    # Random row in its stored order (a shuffle fixed at populate time), and
+    # the refresh keeps that order whenever the set of items is unchanged. So
+    # switching an existing playlist to Random never shuffled it at all; ask
+    # for this refresh to store the new, shuffled query order once.
     try:
-        refresh_smartlist_playlists(db, user_id=user_id, only_names=[name])
+        refresh_smartlist_playlists(db, user_id=user_id, only_names=[name],
+                                    reorder_names=[name] if sort_by == "random" else None)
     except Exception as e:
         logger.warning(f"[SmartLists] Playlist refresh after sort change failed: {e}")
 
