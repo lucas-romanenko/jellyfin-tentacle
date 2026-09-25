@@ -1156,8 +1156,12 @@ def check_releases(title: ArrTitle, db: Session = Depends(get_db),
         raise HTTPException(403, "You can only check titles you requested")
     from services import arr_insight
     try:
+        # The list is for picking from, and Radarr/Sonarr only keep a search's
+        # releases for about half an hour: reuse a check only while its
+        # releases can still be downloaded. (The Searching card's short line
+        # keeps using the last check for longer.)
         return arr_insight.check(db, title.media_type, title.tmdb_id, title.tvdb_id,
-                                 max_age=0 if title.fresh else None)
+                                 max_age=0 if title.fresh else arr_insight.GRAB_FRESH)
     except arr_insight.InsightError as e:
         raise HTTPException(e.status, str(e))
 
