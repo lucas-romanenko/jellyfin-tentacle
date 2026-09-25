@@ -354,8 +354,22 @@ async function loadLibDownloads() {
     }
   } catch (e) {
     if (e && e.sessionExpired) return;
-    // If endpoint not available, hide section silently
     const el = document.getElementById('lib-downloads');
+    // Gave up after POLL_STALE_MS, or the connection failed: say so and let the
+    // poller fill the panel in, instead of hiding it until the next visit.
+    if (e && (e.name === 'AbortError' || e.name === 'TypeError')) {
+      const body = document.getElementById('lib-dl-body');
+      const countEl = document.getElementById('lib-dl-count');
+      if (el) el.style.display = '';
+      if (countEl) countEl.textContent = '';
+      if (body) body.innerHTML = '<div class="dl-item" style="color:var(--text3)">Couldn\'t load downloads — retrying…</div>';
+      if (!_dlPollTimer) {
+        _dlPollActive = true;
+        _dlPollTimer = setInterval(pollLibDownloads, 5000);
+      }
+      return;
+    }
+    // Endpoint not available: hide the section silently
     if (el) el.style.display = 'none';
   }
 }
