@@ -143,7 +143,13 @@ def resolve_channel(url: str) -> dict:
         listing_url = listing_url.rstrip("/") + "/videos"
 
     info = client.flat_listing(listing_url, 1)
-    title = info.get("channel") or info.get("uploader") or info.get("title") or "YouTube"
+    if parsed["kind"] == "playlist":
+        # A playlist listing names its owner in "channel"; the playlist's own
+        # name is "title". Titling it by the owner made every playlist of a
+        # channel look like the channel itself.
+        title = info.get("title") or info.get("channel") or info.get("uploader") or "YouTube"
+    else:
+        title = info.get("channel") or info.get("uploader") or info.get("title") or "YouTube"
     thumbs = info.get("thumbnails") or []
 
     def _pick(*keys):

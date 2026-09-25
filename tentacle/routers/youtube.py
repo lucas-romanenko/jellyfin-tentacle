@@ -16,6 +16,7 @@ from fastapi.responses import Response, StreamingResponse
 from starlette.background import BackgroundTask
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 from typing import Optional
 
 from models.database import YouTubeChannel, YouTubeVideo, get_db, get_setting
@@ -897,10 +898,19 @@ def add_channel(body: ChannelCreate, request: Request, db: Session = Depends(get
     except (YouTubeError, ValueError) as e:
         raise HTTPException(400, f"Could not read that channel: {e}")
 
+    # A playlist is its own source: its listing carries its OWNER's
+    # channel_id, so matching on that refused a playlist next to the channel
+    # it comes from (or a second playlist of the same owner) as "already
+    # added". Videos in both are handled by the indexer ("already indexed
+    # under another channel or playlist").
     existing = None
-    if info.get("channel_id"):
+    if info.get("kind") == "playlist" and info.get("playlist_id"):
         existing = db.query(YouTubeChannel).filter(
-            YouTubeChannel.channel_id == info["channel_id"]).first()
+            YouTubeChannel.playlist_id == info["playlist_id"]).first()
+    elif info.get("channel_id"):
+        existing = db.query(YouTubeChannel).filter(
+            YouTubeChannel.channel_id == info["channel_id"],
+            or_(YouTubeChannel.kind.is_(None), YouTubeChannel.kind != "playlist")).first()
     if existing:
         raise HTTPException(409, f"'{existing.title}' is already added")
 
