@@ -4,6 +4,7 @@ Writes complete Jellyfin-compatible NFO files from TMDB metadata.
 Tags are written here — this is the single source of truth for NFO content.
 """
 
+import hashlib
 import logging
 import re
 from pathlib import Path
@@ -254,5 +255,46 @@ def vod_folder_name(title: str, year: Optional[str]) -> str:
     name = make_folder_name(title, year).lstrip(". ")
     if not name or name.startswith("("):
         name = make_folder_name("Unknown", year)
-    return name
+    if len(name.encode("utf-8")) + _STEM_SUFFIX_BYTES <= MAX_NAME_BYTES:
+        return name
+    # Too long for the filesystem once ".strm" is added: ext4, XFS, btrfs and
+    # SMB cap one name at 255 BYTES, and sanitize_filename's 200-character cap
+    # is 600 bytes of CJK. mkdir raised ENAMETOOLONG and the title failed with
+    # an ERROR on every sync. Only such names change — every name that fits
+    # stays exactly as it was, so no existing Jellyfin item moves. The hash of
+    # the full name keeps two long titles that share a prefix apart, and is
+    # stable, so the same title lands in the same folder on every sync.
+    safe = name[:-len(f" ({year})")] if year and name.endswith(f" ({year})") else name
+    digest = hashlib.sha1(name.encode("utf-8")).hexdigest()[:8]
+    tail = f" {digest}" + (f" ({year})" if year else "")
+    budget = MAX_NAME_BYTES - _STEM_SUFFIX_BYTES - len(tail.encode("utf-8"))
+    return fit_bytes(safe, budget).rstrip(" .") + tail
+
+
+# One path component, in bytes, on ext4/XFS/btrfs/SMB.
+MAX_NAME_BYTES = 255
+# The longest suffix added to a VOD stem: ".strm" (".nfo" is shorter).
+_STEM_SUFFIX_BYTES = len(".strm")
+
+
+def fit_bytes(text: str, budget: int) -> str:
+    """Truncate to `budget` bytes of UTF-8 without splitting a character."""
+    encoded = text.encode("utf-8")
+    if len(encoded) <= budget:
+        return text
+    return encoded[:max(budget, 0)].decode("utf-8", errors="ignore")
+
+
+def fit_file_stem(stem: str, tail: str, suffix_bytes: int) -> str:
+    """stem + tail, unchanged if it fits in one name with the suffix.
+
+    Otherwise `stem` alone is shortened (plus a stable hash) and `tail` — an
+    episode's " S01E02", which Jellyfin parses the episode from — is kept whole.
+    """
+    full = f"{stem}{tail}"
+    if len(full.encode("utf-8")) + suffix_bytes <= MAX_NAME_BYTES:
+        return full
+    digest = hashlib.sha1(full.encode("utf-8")).hexdigest()[:8]
+    budget = MAX_NAME_BYTES - suffix_bytes - len(tail.encode("utf-8")) - len(digest) - 1
+    return f"{fit_bytes(stem, budget).rstrip(' .')} {digest}{tail}"
 
