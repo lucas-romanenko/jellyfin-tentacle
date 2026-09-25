@@ -8,6 +8,7 @@ dropped early whenever an item leaves the queue.
 
 import time
 import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import List, Optional
@@ -51,7 +52,13 @@ SEARCH_COMMANDS = {"EpisodeSearch", "SeasonSearch", "SeriesSearch", "MissingEpis
                    "MoviesSearch", "MissingMoviesSearch", "CutoffUnmetMoviesSearch",
                    "CutOffUnmetEpisodeSearch"}
 COMMAND_WATCH_INTERVAL = 5
-_command_watch: dict = {"ts": 0, "seen": None}
+# "seen": the last good reading per app ({"radarr": {(id, status), ...}}). An
+# app whose list could not be read keeps its previous reading and only its own
+# changes go unnoticed; the other app is still watched.
+_command_watch: dict = {"ts": 0, "seen": {}}
+# Held for a whole watch: a second request arriving meanwhile skips it rather
+# than reading the lists again (or waiting on a slow app).
+_command_watch_lock = threading.Lock()
 
 
 def _search_command_states(url: str, api_key: str) -> Optional[set]:
@@ -67,22 +74,31 @@ def _search_command_states(url: str, api_key: str) -> Optional[set]:
 
 def _watch_arr_searches(db: Session) -> None:
     """Drop the wanted cache when a search starts or finishes in Radarr/Sonarr."""
-    now = time.time()
-    if now - _command_watch["ts"] < COMMAND_WATCH_INTERVAL:
+    if not _command_watch_lock.acquire(blocking=False):
         return
-    _command_watch["ts"] = now
-    states = set()
-    for prefix in ("radarr", "sonarr"):
-        url, key = get_setting(db, f"{prefix}_url"), get_setting(db, f"{prefix}_api_key")
-        if url and key:
+    try:
+        now = time.time()
+        if now - _command_watch["ts"] < COMMAND_WATCH_INTERVAL:
+            return
+        _command_watch["ts"] = now
+        seen = _command_watch.get("seen") or {}
+        changed = False
+        for prefix in ("radarr", "sonarr"):
+            url, key = get_setting(db, f"{prefix}_url"), get_setting(db, f"{prefix}_api_key")
+            if not (url and key):
+                seen.pop(prefix, None)
+                continue
             got = _search_command_states(url, key)
             if got is None:
-                return  # unknown this time — don't mistake it for a change
-            states |= {(prefix,) + x for x in got}
-    seen = _command_watch["seen"]
-    _command_watch["seen"] = states
-    if seen is not None and states - seen:
-        invalidate_wanted_cache()
+                continue  # unknown for this app only: not a change, and its last reading stands
+            if prefix in seen and got - seen[prefix]:
+                changed = True
+            seen[prefix] = got
+        _command_watch["seen"] = seen
+        if changed:
+            invalidate_wanted_cache()
+    finally:
+        _command_watch_lock.release()
 
 
 def _trigger_refresh_throttled(key: str, url: str, api_key: str) -> None:

@@ -357,8 +357,14 @@ class TestCommandWatch(_Base):
         activity._command_watch.update(ts=0, seen=None)
         self.commands = {"radarr": [], "sonarr": []}
 
+        self.down = set()   # apps whose command list can't be read
+        self.reads = []
+
         def get(url, headers=None, params=None, timeout=None):
             which = "radarr" if ":7878" in url else "sonarr"
+            self.reads.append(which)
+            if which in self.down:
+                raise activity.requests.ConnectionError(f"{which} unreachable")
             return _Resp(self.commands[which])
         p = mock.patch.object(activity.requests, "get", side_effect=get)
         p.start()
@@ -392,3 +398,58 @@ class TestCommandWatch(_Base):
         activity._watch_arr_searches(self.db)
         with mock.patch.object(activity.requests, "get", side_effect=AssertionError("polled")):
             activity._watch_arr_searches(self.db)
+
+    # #135: one unreachable app must not switch the watch off for the other.
+    def test_a_radarr_search_is_noticed_while_sonarr_is_unreachable(self):
+        self.poll()
+        self.down = {"sonarr"}
+        self.assertFalse(self.poll(), "Sonarr unknown, Radarr unchanged: no change")
+        self.commands["radarr"] = [{"id": 2, "name": "MoviesSearch", "status": "started"}]
+        self.assertTrue(self.poll(), "Radarr's new search is seen although Sonarr is down")
+
+    def test_a_sonarr_search_is_noticed_while_radarr_is_unreachable(self):
+        self.poll()
+        self.down = {"radarr"}
+        self.commands["sonarr"] = [{"id": 7, "name": "EpisodeSearch", "status": "started"}]
+        self.assertTrue(self.poll())
+
+    def test_unreachable_from_the_start_the_other_app_still_counts(self):
+        self.down = {"sonarr"}
+        self.assertFalse(self.poll(), "first reading of Radarr is only a baseline")
+        self.commands["radarr"] = [{"id": 2, "name": "MoviesSearch", "status": "queued"}]
+        self.assertTrue(self.poll())
+
+    def test_an_outage_is_not_a_change(self):
+        self.poll()
+        self.commands["sonarr"] = [{"id": 7, "name": "EpisodeSearch", "status": "started"}]
+        self.poll()
+        self.down = {"sonarr"}
+        self.assertFalse(self.poll(), "an unreadable list is not an empty one")
+        self.down = set()
+        self.assertFalse(self.poll(), "back with the same commands: nothing new")
+
+    def test_a_search_during_the_outage_is_seen_when_it_comes_back(self):
+        self.poll()
+        self.down = {"sonarr"}
+        self.poll()
+        self.commands["sonarr"] = [{"id": 8, "name": "SeriesSearch", "status": "completed"}]
+        self.down = set()
+        self.assertTrue(self.poll())
+
+    def test_both_unreachable_changes_nothing(self):
+        self.poll()
+        self.down = {"radarr", "sonarr"}
+        self.assertFalse(self.poll())
+
+    def test_an_app_removed_from_settings_is_forgotten(self):
+        self.poll()
+        mdb.set_setting(self.db, "sonarr_url", "")
+        self.assertFalse(self.poll())
+        self.assertNotIn("sonarr", activity._command_watch["seen"])
+
+    def test_a_watch_in_progress_is_not_run_twice(self):
+        activity._command_watch["ts"] = 0
+        with activity._command_watch_lock:
+            activity._watch_arr_searches(self.db)
+        self.assertEqual([], self.reads, "a second request while one is reading skips it")
+        self.assertEqual(0, activity._command_watch["ts"], "and does not use up the next turn")
