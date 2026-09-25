@@ -242,18 +242,17 @@ def get_sync_status(db: Session = Depends(get_db)):
     # allowed to wait for live TV first (services.provider_activity), or a
     # nightly run that waited its full budget would be called stuck while
     # still running.
-    # Time spent waiting for a recording under recording protection does not
-    # count either (it has no budget), and a run waiting right now is not stuck.
-    from services.provider_activity import defer_seconds, protected_wait_state, reset_protected_wait_seconds
-    protected_waiting, protected_waited = protected_wait_state()
-    if not running_runs and not protected_waiting:
-        reset_protected_wait_seconds()
-        protected_waited = 0.0
-    stuck_hours = 4 + defer_seconds(db) / 3600.0 + protected_waited / 3600.0
-    stuck_cutoff = datetime.utcnow() - timedelta(hours=stuck_hours)
+    # Time a run spent waiting for a recording under recording protection
+    # does not count either (it has no budget), and a run waiting right now
+    # is not stuck -- per run: another job waiting says nothing about this one.
+    from services.provider_activity import defer_seconds, protected_wait_state, forget_protected_waits
+    forget_protected_waits(keep=[r.id for r in running_runs])
     actually_running = []
     for run in running_runs:
-        if run.started_at and run.started_at < stuck_cutoff and not protected_waiting:
+        waiting_now, waited = protected_wait_state(run.id)
+        stuck_hours = 4 + defer_seconds(db) / 3600.0 + waited / 3600.0
+        stuck_cutoff = datetime.utcnow() - timedelta(hours=stuck_hours)
+        if run.started_at and run.started_at < stuck_cutoff and not waiting_now:
             logger.warning(f"Auto-failing stuck sync run #{run.id} (started {run.started_at})")
             run.status = "failed"
             run.error_message = f"Automatically failed: exceeded {stuck_hours:g} hour timeout"

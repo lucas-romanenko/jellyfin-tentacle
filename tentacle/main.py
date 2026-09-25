@@ -121,6 +121,7 @@ def run_scheduled_sync():
                 _cancel_flags.pop(provider.id, None)
                 _sync_progress.pop(provider.id, None)
 
+        pause.run_id = None     # later waits (discovery) belong to no sync run
         logger.info("Scheduled Radarr scan starting")
         try:
             radarr_stats = scan_radarr_library(db)

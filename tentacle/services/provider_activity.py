@@ -68,36 +68,72 @@ def refuse_while_recording(db, what: str) -> None:
                                  f"the recording has finished.")
 
 
-# Time spent in wait_for_recordings, so the sync status route does not take
-# a run that is waiting for a protected recording for a stuck one
-# (routers.sync). `active`: waits in progress; `seconds`: waited since the
-# route last saw no sync running (it resets it then).
-_protected_wait = {"active": 0, "seconds": 0.0}
+# Wall time spent in wait_for_recordings, per sync run (key None = not
+# tied to a run: the nightly EPG wait, discovery), so the sync status route
+# does not take a run that waits for a protected recording for a stuck one
+# (routers.sync). WALL time: while any waiter of a run is active the clock
+# runs once, however many wait at the same moment. key -> {"active": waiters
+# in progress, "since": monotonic start of the current stretch, "seconds":
+# finished stretches}.
+_protected_wait: "dict" = {}
 _protected_wait_lock = threading.Lock()
 
 
-def protected_wait_state() -> tuple:
-    """(a job is waiting for a protected recording right now, seconds waited)."""
+def _wait_enter(key) -> None:
     with _protected_wait_lock:
-        return _protected_wait["active"] > 0, _protected_wait["seconds"]
+        e = _protected_wait.setdefault(key, {"active": 0, "since": None, "seconds": 0.0})
+        if e["active"] == 0:
+            e["since"] = time.monotonic()
+        e["active"] += 1
+
+
+def _wait_leave(key) -> None:
+    with _protected_wait_lock:
+        e = _protected_wait.get(key)
+        if e is None or e["active"] <= 0:
+            return
+        e["active"] -= 1
+        if e["active"] == 0 and e["since"] is not None:
+            e["seconds"] += max(0.0, time.monotonic() - e["since"])
+            e["since"] = None
+
+
+def protected_wait_state(run_id=None) -> tuple:
+    """(this run is waiting for a protected recording right now, wall
+    seconds it has waited so far, the current stretch included)."""
+    with _protected_wait_lock:
+        e = _protected_wait.get(run_id)
+        if e is None:
+            return False, 0.0
+        ongoing = (time.monotonic() - e["since"]) if e["active"] and e["since"] is not None else 0.0
+        return e["active"] > 0, e["seconds"] + max(0.0, ongoing)
+
+
+def forget_protected_waits(keep=()) -> None:
+    """Drop the tallies of runs that are no longer running (and not waiting)."""
+    keep = set(keep)
+    with _protected_wait_lock:
+        for key in [k for k, e in _protected_wait.items() if k not in keep and not e["active"]]:
+            del _protected_wait[key]
 
 
 def reset_protected_wait_seconds() -> None:
     with _protected_wait_lock:
-        _protected_wait["seconds"] = 0.0
+        _protected_wait.clear()
 
 
 def wait_for_recordings(db, what: str, cancel_check: Optional[Callable[[], bool]] = None,
-                        poll_seconds: float = POLL_SECONDS, max_seconds: Optional[float] = None) -> bool:
+                        poll_seconds: float = POLL_SECONDS, max_seconds: Optional[float] = None,
+                        run_id=None) -> bool:
     """Block while recording_protected(). True when free to go (at once if
     protection is off or nothing is recording), False if cancelled or --
-    with `max_seconds` -- if the recording is still running after that."""
+    with `max_seconds` -- if the recording is still running after that.
+    `run_id`: the sync run the wait is booked to (protected_wait_state)."""
     if not recording_protected(db):
         return True
     started = time.monotonic()
     logger.info(f"[Provider] {what} is waiting: a recording is running and recording protection is on")
-    with _protected_wait_lock:
-        _protected_wait["active"] += 1
+    _wait_enter(run_id)
     try:
         waited = 0.0
         while recording_protected(db):
@@ -110,11 +146,8 @@ def wait_for_recordings(db, what: str, cancel_check: Optional[Callable[[], bool]
             step = poll_seconds if max_seconds is None else min(poll_seconds, max(0.0, max_seconds - waited))
             time.sleep(step)
             waited += step
-            with _protected_wait_lock:
-                _protected_wait["seconds"] += step
     finally:
-        with _protected_wait_lock:
-            _protected_wait["active"] -= 1
+        _wait_leave(run_id)
     logger.info(f"[Provider] {what} resuming after {time.monotonic() - started:.0f}s: the recording has finished")
     return True
 
@@ -178,6 +211,7 @@ class JobPause:
                  poll_seconds: float = POLL_SECONDS):
         self.db = db
         self.what = what
+        self.run_id = None      # the sync run this job's waits are booked to (set by sync_provider)
         self.cancel_check = cancel_check
         self.limit = defer_seconds(db)
         self.poll_seconds = poll_seconds
@@ -198,7 +232,8 @@ class JobPause:
         ahead regardless (budget spent, or cancelled). While a recording runs
         under recording protection it waits regardless, spending no budget."""
         if self._protected():
-            if not wait_for_recordings(self.db, self.what, self.cancel_check, self.poll_seconds):
+            if not wait_for_recordings(self.db, self.what, self.cancel_check, self.poll_seconds,
+                                       run_id=self.run_id):
                 return False            # cancelled
         if self.limit <= 0 or not live_streams_active():
             return True
@@ -220,7 +255,8 @@ class JobPause:
             if self._protected():
                 # A recording started while this job waited for a viewer:
                 # wait it out without spending the budget, then carry on.
-                if not wait_for_recordings(self.db, self.what, self.cancel_check, self.poll_seconds):
+                if not wait_for_recordings(self.db, self.what, self.cancel_check, self.poll_seconds,
+                                       run_id=self.run_id):
                     return False
                 if not live_streams_active():
                     return True

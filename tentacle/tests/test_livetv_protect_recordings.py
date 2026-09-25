@@ -671,15 +671,16 @@ class BoundedWaits(unittest.TestCase):
         real_sleep = self.pa.time.sleep
 
         def sleep_and_look(s):
-            seen.append(self.pa.protected_wait_state()[0])
+            seen.append(self.pa.protected_wait_state(7)[0])
             real_sleep(s)
         self.ends_after = 3
         with mock.patch.object(self.pa.time, "sleep", sleep_and_look):
-            self.assertTrue(self.pa.wait_for_recordings(self.db, "sync"))
+            self.assertTrue(self.pa.wait_for_recordings(self.db, "sync", run_id=7))
         self.assertEqual([True, True, True], seen, "waiting while it sleeps")
-        self.assertEqual((False, 90.0), self.pa.protected_wait_state())
-        self.pa.reset_protected_wait_seconds()
-        self.assertEqual((False, 0.0), self.pa.protected_wait_state())
+        self.assertEqual((False, 90.0), self.pa.protected_wait_state(7))
+        self.assertEqual((False, 0.0), self.pa.protected_wait_state(8), "booked to its own run only")
+        self.pa.forget_protected_waits(keep=[])
+        self.assertEqual((False, 0.0), self.pa.protected_wait_state(7))
 
     def _stale_run(self, hours):
         from datetime import datetime, timedelta
@@ -695,18 +696,80 @@ class BoundedWaits(unittest.TestCase):
     def test_a_run_waiting_for_a_protected_recording_is_not_failed_as_stuck(self):
         from routers import sync as sync_router
         run = self._stale_run(10)          # past 4 h + the 60 s budget
-        with mock.patch.object(self.pa, "protected_wait_state", lambda: (True, 0.0)):
+        with mock.patch.object(self.pa, "protected_wait_state", lambda rid=None: (rid == run.id, 0.0)):
             sync_router.get_sync_status(self.db)
         self.db.refresh(run)
         self.assertEqual("running", run.status)
-        with mock.patch.object(self.pa, "protected_wait_state", lambda: (False, 7 * 3600.0)):
+        with mock.patch.object(self.pa, "protected_wait_state", lambda rid=None: (False, 7 * 3600.0 if rid == run.id else 0.0)):
             sync_router.get_sync_status(self.db)
         self.db.refresh(run)
         self.assertEqual("running", run.status, "7 h spent waiting for recordings extend the cutoff")
-        with mock.patch.object(self.pa, "protected_wait_state", lambda: (False, 0.0)):
+        with mock.patch.object(self.pa, "protected_wait_state", lambda rid=None: (False, 0.0)):
             sync_router.get_sync_status(self.db)
         self.db.refresh(run)
         self.assertEqual("failed", run.status, "without that it is stuck, as before")
+
+
+class ProtectedWaitIsWallTimePerRun(unittest.TestCase):
+    """Review R1: concurrent waiters count wall time once, per run; a run
+    that is stuck (not waiting) is still failed while another job waits."""
+
+    def setUp(self):
+        import services.provider_activity as pa
+        self.pa = pa
+        pa.reset_protected_wait_seconds()
+        self.addCleanup(pa.reset_protected_wait_seconds)
+
+    def test_three_concurrent_waiters_count_one_second(self):
+        import threading, time as _t
+        release = threading.Event()
+        with mock.patch.object(self.pa, "recording_protected", lambda db: not release.is_set()):
+            ts = [threading.Thread(target=self.pa.wait_for_recordings, args=(None, "sync"),
+                                   kwargs={"poll_seconds": 0.02, "run_id": 5}) for _ in range(3)]
+            t0 = _t.monotonic()
+            for t in ts:
+                t.start()
+            _t.sleep(1.0)
+            release.set()
+            for t in ts:
+                t.join(5)
+            wall = _t.monotonic() - t0
+        waiting, seconds = self.pa.protected_wait_state(5)
+        self.assertFalse(waiting)
+        self.assertAlmostEqual(1.0, seconds, delta=0.25)
+        self.assertLessEqual(seconds, wall + 0.01, "never more than the wall time")
+
+    def test_a_stuck_run_is_failed_while_another_run_waits(self):
+        from datetime import datetime, timedelta
+        from models.database import SyncRun, Provider
+        from routers import sync as sync_router
+        import threading
+        db = _fresh_db()
+        p = Provider(name="P", server_url="http://provider.test", username="u", password="p")
+        db.add(p)
+        db.commit()
+        stuck = SyncRun(provider_id=p.id, status="running", started_at=datetime.utcnow() - timedelta(hours=30))
+        waiter = SyncRun(provider_id=p.id, status="running", started_at=datetime.utcnow() - timedelta(hours=30))
+        db.add_all([stuck, waiter])
+        db.commit()
+        release = threading.Event()
+        with mock.patch.object(self.pa, "recording_protected", lambda d: not release.is_set()):
+            t = threading.Thread(target=self.pa.wait_for_recordings, args=(None, "sync"),
+                                 kwargs={"poll_seconds": 0.02, "run_id": waiter.id})
+            t.start()
+            try:
+                for _ in range(100):
+                    if self.pa.protected_wait_state(waiter.id)[0]:
+                        break
+                    import time as _t; _t.sleep(0.01)
+                sync_router.get_sync_status(db)
+            finally:
+                release.set()
+                t.join(5)
+        db.refresh(stuck)
+        db.refresh(waiter)
+        self.assertEqual("failed", stuck.status, "not waiting: stuck, whatever else waits")
+        self.assertEqual("running", waiter.status, "waiting for a protected recording right now")
 
 
 class ButtonsRefuse(unittest.TestCase):

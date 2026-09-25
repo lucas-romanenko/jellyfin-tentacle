@@ -1163,6 +1163,7 @@ def sync_provider(
         from services.provider_activity import JobPause
         client.job_pause = pause if pause is not None else JobPause(db, "the provider sync", cancel_check)
         client.job_pause.cancel_check = cancel_check
+        client.job_pause.run_id = run.id    # protected waits are booked to this run (routers.sync)
         client.vod_links = vod_links_for(db, provider)
         # Before the first provider call, with the run already visible (so a
         # waiting sync can be seen and cancelled from the dashboard).
