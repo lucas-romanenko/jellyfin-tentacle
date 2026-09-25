@@ -4902,9 +4902,34 @@ function _activityWaited(iso) {
   return Math.floor(hrs / 24) + 'd';
 }
 
+// A card opens the title's detail, the same one Discover shows. Movies need a
+// TMDB id; a show without one opens by its TVDB id.
+function _actOpenAttrs(item) {
+  const tmdb = parseInt(item.tmdb_id) || 0, tvdb = parseInt(item.tvdb_id) || 0;
+  const type = item.media_type === 'series' ? 'series' : 'movie';
+  if (!tmdb && !(type === 'series' && tvdb)) return '';
+  return ` role="button" tabindex="0" data-open="${type}:${tmdb}:${tvdb}"`;
+}
+// One listener for the whole tab: it re-renders every 3 seconds. The card's
+// own buttons and links keep their clicks.
+function _activityCardOpen(e) {
+  if (e.type === 'keydown' && e.key !== 'Enter' && e.key !== ' ') return;
+  const card = e.target.closest('.activity-card[data-open]');
+  if (!card) return;
+  if (e.type === 'keydown' ? e.target !== card : e.target.closest('button, a, input, label')) return;
+  e.preventDefault();
+  const [type, tmdb, tvdb] = card.dataset.open.split(':');
+  showDiscoverDetail(+tmdb, type, undefined, undefined, undefined, undefined, +tvdb);
+}
+
 function renderActivity(data) {
   const content = document.getElementById('activity-content');
   if (!content) return;
+  if (!content._actOpen) {
+    content._actOpen = true;
+    content.addEventListener('click', _activityCardOpen);
+    content.addEventListener('keydown', _activityCardOpen);
+  }
   if (!data) data = _activityData;
   if (!data) { content.innerHTML = '<div class="activity-empty">Loading…</div>'; return; }
 
@@ -4937,7 +4962,7 @@ function renderActivity(data) {
       const qualityLabel = dl.quality ? escapeAttr(dl.quality) : '';
       const reqByLabel = dl.requested_by ? `<span class="activity-requested-by">${escapeAttr(dl.requested_by)}</span>` : '';
       const metaParts = [qualityLabel, sizeLabel].filter(Boolean).join(' · ');
-      return `<div class="activity-card">
+      return `<div class="activity-card"${_actOpenAttrs(dl)}>
         <div class="activity-poster">${poster}</div>
         <div class="activity-info">
           <div class="activity-title">${escapeAttr(dl.title)}${epLabel}</div>
@@ -4970,7 +4995,7 @@ function renderActivity(data) {
         : (disk ? 'Delete show' : 'Remove');
       const removeTitle = disk ? `Delete the whole show from ${arr}, including ${disk} downloaded episode${disk === 1 ? '' : 's'}`
         : `Remove from ${arr}, folder included`;
-      return `<div class="activity-card">
+      return `<div class="activity-card"${_actOpenAttrs(item)}>
         <div class="activity-poster">${poster}</div>
         <div class="activity-info">
           <div class="activity-title">${escapeAttr(item.title)}${item.episode ? ' · ' + escapeAttr(item.episode) : ''}</div>
@@ -4998,7 +5023,7 @@ function renderActivity(data) {
     html += recent.map(item => {
       const poster = _activityPoster(item.poster_path);
       const hrs = item.hours_remaining != null ? `${item.hours_remaining}h left` : '';
-      return `<div class="activity-card">
+      return `<div class="activity-card"${_actOpenAttrs(item)}>
         <div class="activity-poster">${poster}</div>
         <div class="activity-info">
           <div class="activity-title">${escapeAttr(item.title)}${item.episode ? ' · ' + escapeAttr(item.episode) : ''}</div>
@@ -5013,7 +5038,7 @@ function renderActivity(data) {
   const coming = data.coming_up || [];
   if (coming.length > 0) {
     html += '<div class="activity-section-title">Coming up this week</div><div class="activity-grid">';
-    html += coming.map(item => `<div class="activity-card">
+    html += coming.map(item => `<div class="activity-card"${_actOpenAttrs(item)}>
         <div class="activity-poster">${_activityPoster(item.poster_path)}</div>
         <div class="activity-info">
           <div class="activity-title">${escapeAttr(item.title)} · ${escapeAttr(item.episode)}</div>
@@ -5035,7 +5060,7 @@ function renderActivity(data) {
         const diff = Math.ceil((rd - now) / 86400000);
         daysUntil = diff <= 0 ? 'Releasing soon' : diff === 1 ? 'Tomorrow' : diff + ' days';
       }
-      return `<div class="activity-card">
+      return `<div class="activity-card"${_actOpenAttrs(item)}>
         <div class="activity-poster">${poster}</div>
         <div class="activity-info">
           <div class="activity-title">${escapeAttr(item.title)}</div>
