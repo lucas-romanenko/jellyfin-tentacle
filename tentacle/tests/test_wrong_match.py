@@ -480,6 +480,23 @@ class TestFrames(_Base):
         self.assertEqual(502, e.exception.status)
         self.assertEqual(0, len(list(_RealPath(self.tmp).glob("frame_cache/*.jpg"))), "failures aren't cached")
 
+    def test_cached_pictures_need_no_provider_connection(self):
+        """Once grabbed, the pictures come from the cache even while something
+        plays from the provider (the button used to refuse for ~45 s after its
+        own grab, because its own VOD playback was still counted)."""
+        wrong_match.stream_frames(self.db, self.tmdb)
+        with mock.patch("services.provider_activity.live_streams_active", return_value=True):
+            r = wrong_match.stream_frames(self.db, self.tmdb)
+        self.assertEqual(3, len(r["frames"]))
+        self.assertEqual(3, len(self.grabs))
+
+    def test_uncached_pictures_still_wait_for_the_provider(self):
+        with mock.patch("services.provider_activity.live_streams_active", return_value=True), \
+                self.assertRaises(wrong_match.WrongMatchError) as e:
+            wrong_match.stream_frames(self.db, self.tmdb)
+        self.assertEqual(503, e.exception.status)
+        self.assertEqual(0, len(self.grabs))
+
     def test_no_ffmpeg(self):
         with mock.patch("shutil.which", return_value=None), \
                 self.assertRaises(wrong_match.WrongMatchError) as e:

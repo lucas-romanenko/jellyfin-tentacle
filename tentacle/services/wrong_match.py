@@ -676,15 +676,6 @@ def stream_frames(db: Session, tmdb_id: int) -> dict:
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         raise WrongMatchError(503, "ffmpeg is not available on the Tentacle server")
-    # Three ffmpeg seeks into the stream are three provider connections in a
-    # row. On a connection-limited account that cuts off whatever is already
-    # open -- usually a recording. A person pressed this button and can wait.
-    from services.provider_activity import live_streams_active
-    if live_streams_active():
-        raise WrongMatchError(503, "A live stream or recording is running right now. Grabbing pictures "
-                                   "would open another provider connection and can cut it off — "
-                                   "try again once it has finished.")
-
     provider = db.query(Provider).filter(Provider.id == row.provider_id).first() if row.provider_id else None
     user_agent = (provider.user_agent if provider else None) or "TiviMate/4.7.0 (Linux; Android 12)"
     minutes = probed_minutes(db, row) or row.runtime
@@ -693,6 +684,30 @@ def stream_frames(db: Session, tmdb_id: int) -> dict:
     key = hashlib.sha1(url.encode()).hexdigest()[:16]
     cache = _frame_cache_dir()
     _prune_frame_cache(cache)
+
+    def _cached(sec):
+        path = cache / f"{key}_{sec}.jpg"
+        try:
+            return path.read_bytes() if path.exists() and path.stat().st_size else None
+        except OSError:
+            return None
+
+    # Pictures grabbed before need no provider connection at all.
+    cached = [(sec, _cached(sec)) for sec in offsets]
+    if all(data for _, data in cached):
+        return {"frames": [{"at_minutes": round(sec / 60),
+                            "image": "data:image/jpeg;base64," + base64.b64encode(data).decode()}
+                           for sec, data in cached]}
+
+    # Three ffmpeg seeks into the stream are three provider connections in a
+    # row. On a connection-limited account that cuts off whatever is already
+    # open -- usually a recording. A person pressed this button and can wait.
+    from services.provider_activity import live_streams_active
+    if live_streams_active():
+        raise WrongMatchError(503, "Something is playing from your provider right now (live TV, a recording "
+                                   "or a film). Grabbing pictures would open another provider connection and "
+                                   "can cut it off — try again once it has finished.")
+
     frames = []
     # One grab at a time: IPTV providers often allow a single connection.
     with _frames_lock:
