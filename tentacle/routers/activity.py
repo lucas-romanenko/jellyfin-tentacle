@@ -683,7 +683,11 @@ def _get_wanted(db: Session) -> dict:
             if x.get("tvdb_id"):
                 missing_ids[("tvdb", x["tvdb_id"])] = ids
     result = {"unreleased": unreleased[:20], "searching": searching[:SEARCHING_LIMIT],
-              "_missing_ids": missing_ids}
+              "_missing_ids": missing_ids,
+              # Whole lists, un-enriched, for a non-admin's own titles: the
+              # library-wide first 20 can hold none of theirs.
+              "_unreleased_all": [dict(u) for u in unreleased],
+              "_searching_all": [dict(x) for x in searching]}
     _enrich_posters(db, result["unreleased"])
     _enrich_posters(db, result["searching"])
     _unreleased_cache["data"] = result
@@ -831,8 +835,24 @@ def get_activity(request: Request, db: Session = Depends(get_db),
     is_admin = user and user.is_admin
 
     if not is_admin and user:
-        # Non-admin: only show items they requested
+        # Non-admin: only show items they requested — picked from the whole
+        # lists, then capped, so an admin's backlog can't push them out.
         downloads = [d for d in downloads if d.get("tmdb_id") in user_requests]
+        if "_unreleased_all" in wanted:
+            unreleased = [dict(u) for u in wanted["_unreleased_all"]
+                          if u.get("tmdb_id") in user_requests
+                          and not _same_title(u, downloading_tmdb_ids, downloading_tvdb_ids)][:20]
+            _enrich_posters(db, unreleased)
+        if "_searching_all" in wanted:
+            searching = [dict(x) for x in wanted["_searching_all"]
+                         if x.get("tmdb_id") in user_requests
+                         and not _same_title(x, downloading_tmdb_ids, downloading_tvdb_ids)]
+            mine = [x["tmdb_id"] for x in searching if x.get("media_type") == "movie" and x.get("tmdb_id")]
+            have = {tid for (tid,) in db.query(Movie.tmdb_id).filter(
+                Movie.source == "radarr", Movie.tmdb_id.in_(mine)).all()} if mine else set()
+            searching = [x for x in searching
+                         if not (x.get("media_type") == "movie" and x.get("tmdb_id") in have)][:SEARCHING_LIMIT]
+            _enrich_posters(db, searching)
         unreleased = [u for u in unreleased if u.get("tmdb_id") in user_requests]
         searching = [x for x in searching if x.get("tmdb_id") in user_requests]
         recently_downloaded = [r for r in recently_downloaded if r.get("tmdb_id") in user_requests]
