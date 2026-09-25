@@ -27,7 +27,13 @@ router = APIRouter(prefix="/api/activity", tags=["activity"])
 
 # ── Separate cache for the wanted lists (expensive, rarely changes) ───────
 # Holds {"unreleased": [...], "searching": [...]}.
-_unreleased_cache: dict = {"data": None, "ts": 0}
+# "gen" counts invalidations, so a fetch that was running when the cache was
+# invalidated does not store what it read before the change.
+_unreleased_cache: dict = {"data": None, "ts": 0, "gen": 0}
+# One wanted fetch at a time. With a slow Radarr/Sonarr a fetch takes longer
+# than the Activity poll interval, and every request that found the cache empty
+# used to fetch everything again, piling more load onto the slow app.
+_wanted_lock = threading.Lock()
 # The wanted lists are two or three large Radarr/Sonarr reads, so they are
 # cached; searches started in Radarr/Sonarr themselves are noticed through
 # their command lists (see _watch_arr_searches) and refresh it at once.
@@ -641,12 +647,32 @@ def _same_title(a: dict, b_tmdb: set, b_tvdb: set) -> bool:
                 or (a.get("tvdb_id") and a["tvdb_id"] in b_tvdb))
 
 
-def _get_wanted(db: Session) -> dict:
-    """Unreleased and still-searching titles — cached for 5 minutes (expensive calls)."""
-    now = time.time()
-    if _unreleased_cache["data"] is not None and (now - _unreleased_cache["ts"]) < UNRELEASED_TTL:
+def _fresh_wanted() -> Optional[dict]:
+    if _unreleased_cache["data"] is not None and (time.time() - _unreleased_cache["ts"]) < UNRELEASED_TTL:
         return _unreleased_cache["data"]
+    return None
 
+
+def _get_wanted(db: Session) -> dict:
+    """Unreleased and still-searching titles — cached for UNRELEASED_TTL (expensive calls)."""
+    cached = _fresh_wanted()
+    if cached is not None:
+        return cached
+    with _wanted_lock:
+        cached = _fresh_wanted()  # fetched by the request we waited for
+        if cached is not None:
+            return cached
+        gen = _unreleased_cache.get("gen", 0)
+        result = _fetch_wanted(db)
+        # Counted from when the lists were read, not from when the fetch
+        # started: a fetch slower than the TTL was stored already expired.
+        if _unreleased_cache.get("gen", 0) == gen:
+            _unreleased_cache["data"] = result
+            _unreleased_cache["ts"] = time.time()
+        return result
+
+
+def _fetch_wanted(db: Session) -> dict:
     unreleased, searching = [], []
 
     radarr_url = get_setting(db, "radarr_url")
@@ -685,8 +711,6 @@ def _get_wanted(db: Session) -> dict:
     result = {"unreleased": unreleased[:20], "searching": searching[:SEARCHING_LIMIT]}
     _enrich_posters(db, result["unreleased"])
     _enrich_posters(db, result["searching"])
-    _unreleased_cache["data"] = result
-    _unreleased_cache["ts"] = now
     return result
 
 
@@ -698,6 +722,7 @@ def _get_unreleased(db: Session) -> list:
 def invalidate_wanted_cache() -> None:
     _unreleased_cache["data"] = None
     _unreleased_cache["ts"] = 0
+    _unreleased_cache["gen"] = _unreleased_cache.get("gen", 0) + 1
 
 
 def _note_queue(downloads: list) -> None:

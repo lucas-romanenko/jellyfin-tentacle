@@ -359,8 +359,13 @@ async function loadLibDownloads() {
   }
 }
 
+let _dlPollBusy = false;
 async function pollLibDownloads() {
   if (state.currentPage !== 'library') { stopDownloadPolling(); return; }
+  // A slow Radarr/Sonarr can make one answer take longer than the interval;
+  // don't stack another request behind it.
+  if (_dlPollBusy) return;
+  _dlPollBusy = true;
   try {
     const data = await api('/api/activity');
     renderLibDownloads(data);
@@ -368,6 +373,7 @@ async function pollLibDownloads() {
       stopDownloadPolling();
     }
   } catch (e) { stopDownloadPolling(); }
+  finally { _dlPollBusy = false; }
 }
 
 function stopDownloadPolling() {
@@ -4650,8 +4656,19 @@ let _activityData = null;
 
 function startActivityPolling() {
   stopActivityPolling();
-  loadActivity();
-  _activityPollTimer = setInterval(loadActivity, 3000);
+  _pollActivity();
+  _activityPollTimer = setInterval(_pollActivity, 3000);
+}
+
+// The tab polls every 3 s, but with a slow Radarr/Sonarr one answer can take a
+// minute. Polls used to pile up behind it (a dozen requests in flight, which
+// also held the browser's connections every other page needs); now a poll is
+// skipped while the last one is out.
+let _activityPollBusy = false;
+function _pollActivity() {
+  if (_activityPollBusy) return;
+  _activityPollBusy = true;
+  loadActivity().finally(() => { _activityPollBusy = false; });
 }
 
 function stopActivityPolling() {
@@ -4661,9 +4678,16 @@ function stopActivityPolling() {
   }
 }
 
+// Answers can arrive out of order (a poll and a refresh after an action); an
+// older one must not replace a newer one already shown.
+let _activitySeq = 0;
+let _activityShownSeq = 0;
 async function loadActivity() {
+  const seq = ++_activitySeq;
   try {
     const data = await api('/api/activity');
+    if (seq < _activityShownSeq) return;
+    _activityShownSeq = seq;
     _activityData = data;
     // Always update badge count
     const count = (data.downloads || []).length + (data.searching || []).length + (data.unreleased || []).length;
