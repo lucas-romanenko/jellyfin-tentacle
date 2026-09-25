@@ -55,6 +55,19 @@ def _notify_sync_progress(provider_id: int, phase: str, category: str, stats: di
                 pass
 
 
+def _finishing(provider_id, run_id=None, db=None) -> bool:
+    """A provider whose SyncRun is already "completed" but whose sync thread is
+    still running the trailing Jellyfin pipeline (scan wait up to 120 s, tag
+    push, playlists). The guard against a second sync rightly still holds
+    then; this lets every status say so instead of "completed" (A13)."""
+    if provider_id not in _running_syncs or db is None:
+        return False
+    latest = db.query(SyncRun).filter(SyncRun.provider_id == provider_id) \
+        .order_by(SyncRun.started_at.desc()).first()
+    return bool(latest and latest.status == "completed"
+                and (run_id is None or latest.id == run_id))
+
+
 def _run_sync_background(provider_id: int, sync_type: str):
     """Run sync in background thread. Always runs the full Jellyfin pipeline after VOD sync."""
     from models.database import SessionLocal
@@ -182,6 +195,9 @@ def trigger_sync(body: SyncRequest, db: Session = Depends(get_db)):
     # racing the nightly scheduler) can't both pass the check and start a sync.
     with _sync_lock:
         if body.provider_id in _running_syncs:
+            if _finishing(body.provider_id, db=db):
+                raise HTTPException(400, "The last sync is still updating Jellyfin (library scan, "
+                                         "tags, playlists) — try again when it has finished")
             raise HTTPException(400, "A sync is already running for this provider")
         db_running = db.query(SyncRun).filter(
             SyncRun.provider_id == body.provider_id,
@@ -293,11 +309,14 @@ def get_sync_status(db: Session = Depends(get_db)):
                 "movies_existing": last_run.movies_existing,
                 "series_new": last_run.series_new,
                 "series_existing": last_run.series_existing,
+                "finishing": _finishing(p.id, last_run.id, db),
             })
 
     # Get the very last run status (any status) for cancel detection
     last_run_any = db.query(SyncRun).order_by(SyncRun.id.desc()).first()
     last_status = last_run_any.status if last_run_any else None
+    if last_run_any and _finishing(last_run_any.provider_id, last_run_any.id, db):
+        last_status = "finishing"
 
     return {
         "running": running,
@@ -329,7 +348,7 @@ def get_sync_history(
                 "id": r.id,
                 "provider_id": r.provider_id,
                 "provider_name": r.provider.name if r.provider else "Unknown",
-                "status": r.status,
+                "status": "finishing" if _finishing(r.provider_id, r.id, db) else r.status,
                 "sync_type": r.sync_type,
                 "movies_new": r.movies_new,
                 "movies_existing": r.movies_existing,
@@ -421,7 +440,8 @@ def get_dashboard(db: Session = Depends(get_db)):
     ).order_by(SyncRun.completed_at.desc()).first()
     if last_vod_run:
         last_vod_sync = last_vod_run.completed_at.isoformat() if last_vod_run.completed_at else None
-        last_vod_status = last_vod_run.status
+        last_vod_status = ("finishing" if _finishing(last_vod_run.provider_id, last_vod_run.id, db)
+                           else last_vod_run.status)
         last_vod_new = (last_vod_run.movies_new or 0) + (last_vod_run.series_new or 0)
     else:
         last_vod_new = 0

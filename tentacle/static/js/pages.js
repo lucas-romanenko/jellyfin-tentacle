@@ -91,7 +91,7 @@ function renderHistoryRuns(runs) {
     const date = run.started_at ? new Date(run.started_at) : null;
     const dateStr = date ? date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '—';
     const duration = run.duration_seconds ? `${Math.round(run.duration_seconds/60)}m ${run.duration_seconds%60}s` : '—';
-    const statusColor = run.status === 'completed' ? 'green' : run.status === 'running' ? 'amber' : 'red';
+    const statusColor = run.status === 'completed' ? 'green' : (run.status === 'running' || run.status === 'finishing') ? 'amber' : 'red';
 
     const catStats = run.category_stats || {};
     const catPills = Object.entries(catStats)
