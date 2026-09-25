@@ -362,6 +362,11 @@ class JellyfinService:
             "CommunityRating": item.get("CommunityRating"),
             "OfficialRating": item.get("OfficialRating", ""),
             "Taglines": item.get("Taglines", []),
+            # Sent back as it was: an ItemUpdate without LockData unlocks the
+            # item (Jellyfin 10.11.8), so every tag push used to clear the
+            # "Lock this item" a user had set and let the next metadata
+            # refresh overwrite their edits.
+            "LockData": item.get("LockData"),
         }
 
         try:
