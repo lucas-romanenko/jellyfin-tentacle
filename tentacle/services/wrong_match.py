@@ -115,6 +115,12 @@ def block_and_remove_movie(db: Session, tmdb_id: int, user_name: str = None,
                              tmdb_id=tmdb_id, title=title, reason=reason, blocked_by=user_name))
 
     files = delete_movie_files(row.strm_path)
+    if Path(row.strm_path).exists():
+        # Still on disk (permissions, a read-only mount): Jellyfin would keep
+        # playing the wrong film while the row says it is gone.
+        db.rollback()
+        raise WrongMatchError(500, "Couldn't delete this copy's .strm file, so nothing was changed. "
+                                   "Check that Tentacle can write to the VOD folder.")
     db.delete(row)
     db.query(MatchSuspect).filter(MatchSuspect.tmdb_id == tmdb_id,
                                   MatchSuspect.media_type == "movie").delete()
@@ -137,7 +143,9 @@ def block_and_remove_movie(db: Session, tmdb_id: int, user_name: str = None,
 
 def _strm_tail(strm_path: Optional[str]) -> Optional[str]:
     """'<folder>/<file>.strm' -- what the .strm's path ends with in Jellyfin too
-    (Jellyfin mounts the VOD folder elsewhere, so the prefix differs)."""
+    (Jellyfin mounts the VOD folder elsewhere, so the prefix differs, and the
+    mount's own name differs too: /media/vod/movies here, e.g. /vod-movies in
+    Jellyfin -- so only two components can be compared)."""
     parts = Path(strm_path).parts if strm_path else ()
     return "/".join(parts[-2:]) if len(parts) >= 2 else None
 
@@ -182,7 +190,16 @@ def jellyfin_item_for_strm(jf, tmdb_id: int, strm_path: Optional[str],
 
 
 def _delete_from_jellyfin(db: Session, tmdb_id: int, jf_item_id: Optional[str],
-                          strm_path: Optional[str] = None) -> bool:
+                          strm_path: Optional[str] = None, cleanup_playlists: bool = True) -> bool:
+    """Let Jellyfin drop this copy's item. Never DELETE /Items: Jellyfin deletes
+    what IT sees -- for a .strm that is the primary of a multi-version item,
+    the item's whole folder, download included; otherwise every sidecar that
+    starts with the title -- and its view of the folder can hold files
+    Tentacle's doesn't (mergerfs/unionfs pools, separate mounts). Tentacle has
+    removed its .strm/.nfo, so a library scan drops the item and leaves every
+    other file alone. The item's playlist entries are removed by its own id
+    (never "the first movie with this TMDB id", which can be a download).
+    Returns False: nothing is deleted through Jellyfin."""
     url, key = get_setting(db, "jellyfin_url", ""), get_setting(db, "jellyfin_api_key", "")
     if not (url and key):
         return False
@@ -190,43 +207,20 @@ def _delete_from_jellyfin(db: Session, tmdb_id: int, jf_item_id: Optional[str],
         from services.jellyfin import JellyfinService
         jf = JellyfinService(url, key, get_setting(db, "jellyfin_user_id", ""))
         item = jellyfin_item_for_strm(jf, tmdb_id, strm_path, jf_item_id)
-        if item is None:
-            # Not found as this file: leave every other item alone. The .strm
-            # is gone from disk, so Jellyfin drops the item on its next scan.
-            logger.info(f"[WrongMatch] No Jellyfin item is this copy's .strm (tmdb:{tmdb_id}); "
-                        f"nothing deleted in Jellyfin, a library scan will drop it")
-            try:
-                jf.trigger_library_scan(None)
-            except Exception:
-                pass
-            return False
-        jf_item_id = item["Id"]
-        folder = Path(strm_path).parent if strm_path else None
-        if folder is not None and folder.is_dir():
-            # Something else still lives in this copy's folder: a download of
-            # the same film in a merged VOD/Radarr root, its NFO, subtitles or
-            # art, or the fixed copy a re-match just wrote there. Jellyfin's
-            # DELETE removes the item's whole folder when the .strm is the
-            # primary of a multi-version item (Video.GetDeletePaths returns
-            # ContainingFolderPath), and every sidecar starting with the
-            # title when it isn't. The .strm itself is gone, so a scan drops
-            # the item and leaves the rest alone.
-            logger.info(f"[WrongMatch] '{folder.name}' still holds other files; not deleting the Jellyfin "
-                        f"item (it would take them with it), scanning instead (tmdb:{tmdb_id})")
-            try:
-                jf.trigger_library_scan(None)
-            except Exception:
-                pass
-            return False
-        ok = jf.delete_item(jf_item_id)
+        try:
+            jf.trigger_library_scan(None)
+        except Exception:
+            pass
     except Exception as e:
-        logger.warning(f"[WrongMatch] Could not delete tmdb:{tmdb_id} from Jellyfin: {e}")
+        logger.warning(f"[WrongMatch] Jellyfin lookup/scan for tmdb:{tmdb_id} failed: {e}")
         return False
-    if ok:
+    logger.info(f"[WrongMatch] Removed this copy's files; a library scan drops its Jellyfin item "
+                f"(tmdb:{tmdb_id}, item {item['Id'] if item else 'not found'})")
+    if item is not None and cleanup_playlists:
         from routers.library import _cleanup_playlists_all_users
         threading.Thread(target=_cleanup_playlists_all_users,
-                         args=(tmdb_id, "movie", jf_item_id), daemon=True).start()
-    return ok
+                         args=(tmdb_id, "movie", item["Id"]), daemon=True).start()
+    return False
 
 
 def _refresh_caches() -> None:
@@ -601,8 +595,13 @@ def rematch_movie(db: Session, tmdb_id: int, new_tmdb_id: int, user_name: str = 
     chown_path(new_strm)
     write_movie_nfo(new_nfo, new, tags)
     chown_path(new_nfo)
-    if Path(old_strm) != new_strm:
+    moved = Path(old_strm) != new_strm
+    if moved:
         delete_movie_files(old_strm)
+        if Path(old_strm).exists():
+            delete_movie_files(str(new_strm))  # undo: one copy, not two
+            raise WrongMatchError(500, "Couldn't delete the old .strm file, so nothing was changed. "
+                                       "Check that Tentacle can write to the VOD folder.")
 
     # A duplicate record pairing the old film with THIS stream no longer holds.
     for dup in db.query(Duplicate).filter(Duplicate.tmdb_id == tmdb_id, Duplicate.media_type == "movie").all():
@@ -638,16 +637,11 @@ def rematch_movie(db: Session, tmdb_id: int, new_tmdb_id: int, user_name: str = 
     logger.info(f"[WrongMatch] Re-matched stream {key if key.isdigit() else '(URL)'}: '{old_title}' → "
                 f"'{row.title}' ({row.year}) by {user_name}")
 
-    # The old Jellyfin item's files are gone; remove it now (its delete hook finds
-    # nothing under the old id — the row carries the new one) and scan so the
-    # new folder comes in with the right metadata.
-    _delete_from_jellyfin(db, tmdb_id, old_jf, old_strm)
-    jf = _jf(db)
-    if jf is not None:
-        try:
-            jf.trigger_library_scan(None)
-        except Exception as e:
-            logger.debug(f"[WrongMatch] Library scan request failed: {e}")
+    # The old copy's files are gone: a scan drops its Jellyfin item (never a
+    # DELETE -- see _delete_from_jellyfin) and brings in the new folder.
+    # Same path (the right film has the same folder name): the item stays and
+    # becomes the fixed film on the scan, so it keeps its playlist entries.
+    _delete_from_jellyfin(db, tmdb_id, old_jf, old_strm, cleanup_playlists=moved)
     _refresh_caches()
     return {"ok": True, "title": row.title, "year": row.year, "tmdb_id": new_tmdb_id,
             "message": f"Fixed: this is {row.title} ({row.year}). Jellyfin is picking it up now."}

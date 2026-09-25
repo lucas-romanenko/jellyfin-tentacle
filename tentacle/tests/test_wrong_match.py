@@ -121,15 +121,26 @@ class _Base(NightlyHarness):
         mdb.set_setting(self.db, "jellyfin_url", "http://jf")
         mdb.set_setting(self.db, "jellyfin_api_key", "k")
         self.jf = FakeJf(self.db)
-        for p in (mock.patch("services.jellyfin.JellyfinService", self.jf),
-                  mock.patch("routers.library._cleanup_playlists_all_users")):
-            p.start()
-            self.addCleanup(p.stop)
+        mock.patch("services.jellyfin.JellyfinService", self.jf).start()
+        self.cleanup = mock.patch("routers.library._cleanup_playlists_all_users").start()
+        self.addCleanup(mock.patch.stopall)
         self.tmdb = FakeTMDB.ids["Movie 9"]   # the "mislabelled" one (stream id == tmdb id here)
         self.jf.sync_items()
 
     def report(self, tmdb_id=None):
         return wrong_match.block_and_remove_movie(self.db, tmdb_id or self.tmdb, user_name="Lucas")
+
+
+def _assert_cleaned(self, item_id):
+    import time as _t
+    for _ in range(50):
+        if self.cleanup.call_args_list:
+            break
+        _t.sleep(0.05)
+    self.assertEqual([(self.tmdb, "movie", item_id)], [c.args for c in self.cleanup.call_args_list])
+
+
+_Base.assertPlaylistsCleanedFor = _assert_cleaned
 
 
 class TestWrongMovie(_Base):
@@ -142,7 +153,8 @@ class TestWrongMovie(_Base):
         self.assertFalse(strm.exists())
         self.assertFalse(strm.with_suffix(".nfo").exists())
         self.assertEqual(str(self.tmdb), r["blocked"])
-        self.assertEqual([f"jf-{self.tmdb}"], self.jf.deleted)
+        self.assertEqual([], self.jf.deleted, "never DELETE /Items: a scan drops the item")
+        self.assertPlaylistsCleanedFor(f"jf-{self.tmdb}")
         b = self.db.query(BlockedStream).one()
         self.assertEqual((self.provider.id, "movie", str(self.tmdb), "Lucas"),
                          (b.provider_id, b.media_type, b.stream_key, b.blocked_by))
@@ -186,7 +198,7 @@ class TestWrongMovie(_Base):
         self.db.add(DownloadRequest(tmdb_id=self.tmdb, media_type="movie", user_id=admin.id))
         self.db.commit()
         self.report()
-        self.assertFalse(self.jf.row_present_at_delete, "Jellyfin item deleted before Tentacle's row")
+        self.assertEqual([], self.jf.deleted)
         self.assertEqual(1, self.db.query(DownloadRequest).count())
 
     def test_reporting_twice_does_not_duplicate_the_block(self):
@@ -220,7 +232,8 @@ class TestWrongMovie(_Base):
         self.jf.extra = [{"Id": f"dl-{self.tmdb}", "ProviderIds": {"Tmdb": str(self.tmdb)},
                           "Path": "/downloads/Movie 9 (2020)/Movie 9 (2020).mkv"}]
         self.report()
-        self.assertEqual([f"jf-{self.tmdb}"], self.jf.deleted)
+        self.assertEqual([], self.jf.deleted)
+        self.assertPlaylistsCleanedFor(f"jf-{self.tmdb}")
 
     def test_a_download_in_the_same_folder_is_not_deleted_through_jellyfin(self):
         """Merged VOD/Radarr root: Jellyfin 10.11.8 groups "Movie (Year).strm"
@@ -254,7 +267,8 @@ class TestWrongMovie(_Base):
         row.jellyfin_item_id = f"dl-{self.tmdb}"
         self.db.commit()
         self.report()
-        self.assertEqual([f"jf-{self.tmdb}"], self.jf.deleted)
+        self.assertEqual([], self.jf.deleted)
+        self.assertPlaylistsCleanedFor(f"jf-{self.tmdb}")
 
     def test_no_item_for_this_strm_deletes_nothing(self):
         self.jf.items.clear()
@@ -265,6 +279,17 @@ class TestWrongMovie(_Base):
         self.assertEqual([], self.jf.deleted)
         self.assertFalse(r["jellyfin_deleted"])
         self.assertIsNone(self.movie(self.tmdb), "Tentacle's copy is still removed")
+
+    def test_a_strm_that_cannot_be_deleted_changes_nothing(self):
+        strm = _RealPath(self.movie(self.tmdb).strm_path)
+        with mock.patch("services.media_files.Path.unlink", side_effect=PermissionError("read-only")):
+            with self.assertRaises(wrong_match.WrongMatchError) as e:
+                self.report()
+        self.assertEqual(500, e.exception.status)
+        self.assertTrue(strm.exists())
+        self.db.expire_all()
+        self.assertIsNotNone(self.movie(self.tmdb), "the row stays: the copy still plays")
+        self.assertEqual(0, self.db.query(BlockedStream).count())
 
     def test_it_is_audited(self):
         self.report()
@@ -654,6 +679,20 @@ class TestRematch(_Base):
         self.assertIn("Tag1 Movies", row.tags, "source category tags are kept")
         self.jf.trigger_library_scan.assert_called_once()
 
+    def test_an_old_strm_that_cannot_be_deleted_changes_nothing(self):
+        import services.media_files as mf
+        old = self.movie(self.tmdb).strm_path
+        real = mf.delete_movie_files
+        with mock.patch.object(mf, "delete_movie_files", side_effect=lambda p: 0 if str(p) == old else real(p)):
+            with self.assertRaises(wrong_match.WrongMatchError) as e:
+                self.rematch()
+        self.assertEqual(500, e.exception.status)
+        self.db.expire_all()
+        self.assertIsNotNone(self.movie(self.tmdb), "unchanged")
+        self.assertIsNone(self.movie(674607))
+        self.assertTrue(_RealPath(old).exists())
+        self.assertFalse(any(_RealPath(old).parent.parent.glob("The Decline*/*.strm")), "the new copy is undone")
+
     def test_it_stays_fixed_every_night(self):
         self.rematch()
         for _ in range(3):
@@ -687,7 +726,8 @@ class TestRematch(_Base):
         self.jf.extra = [{"Id": f"dl-{self.tmdb}", "ProviderIds": {"Tmdb": str(self.tmdb)},
                           "Path": "/downloads/Movie 9 (2020)/Movie 9 (2020).mkv"}]
         self.rematch()
-        self.assertEqual([f"jf-{self.tmdb}"], self.jf.deleted)
+        self.assertEqual([], self.jf.deleted)
+        self.assertPlaylistsCleanedFor(f"jf-{self.tmdb}")
 
     def test_tmdb_down_while_rebuilding_a_fixed_copy_neither_fails_the_sync_nor_imports_the_wrong_label(self):
         self.rematch()
