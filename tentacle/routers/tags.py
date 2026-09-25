@@ -83,10 +83,13 @@ def _refuse_taken_tag(db: Session, tag: str, user_id) -> None:
     users' playlists. The same user's own list or rule on the tag is fine.
     Existing collisions are left as they are.
     """
-    from services.tagger import tag_taken_by_another_user
+    from services.tagger import tag_taken_by_another_user, youtube_title_taken
     if tag_taken_by_another_user(db, tag, user_id):
         raise HTTPException(400, f"The tag '{tag}' is already used by another user's list or "
                                  f"playlist rule — choose a different tag")
+    if youtube_title_taken(db, tag):
+        raise HTTPException(400, f"'{tag}' is already the name of a YouTube playlist — "
+                                 f"choose a different tag")
 
 
 @router.get("/rules")
@@ -138,7 +141,11 @@ def update_rule(rule_id: int, body: TagRuleUpdate, db: Session = Depends(get_db)
     if body.name is not None:
         rule.name = body.name
     if body.output_tag is not None:
-        if body.output_tag != rule.output_tag:
+        # Compared as the checks compare, so a stored tag that differs only in
+        # case or surrounding space (the dashboard trims) is not a "rename"
+        # that a pre-existing collision would then refuse.
+        from services.tagger import name_key
+        if name_key(body.output_tag) != name_key(rule.output_tag):
             _refuse_taken_tag(db, body.output_tag, user.id)
         rule.output_tag = body.output_tag
     if body.active is not None:

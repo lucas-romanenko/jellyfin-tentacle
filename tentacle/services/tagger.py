@@ -174,16 +174,34 @@ def rules_giving(tag: str, db: Session) -> list:
     return db.query(TagRule).filter(TagRule.active == True, TagRule.output_tag == tag).all()  # noqa: E712
 
 
-def rule_gives(rules: list, row, media_type: str) -> bool:
-    """Whether any of `rules` matches this library row."""
+_bad_rules_logged: set = set()
+
+
+def rule_gives(rules: list, row, media_type: str, tag: str = None) -> bool:
+    """Whether any of `rules` matches this library row.
+
+    `tag` is left out of the row's tags while evaluating: a rule whose own
+    condition is "has tag T" and whose output is T would otherwise keep T on a
+    title for ever once it had it. A rule that cannot be evaluated (a
+    hand-edited or imported row with a malformed condition) counts as not
+    matching and is logged once — it must not abort the caller's refresh.
+    """
     meta = rule_metadata(row, media_type)
+    if tag:
+        meta["tags"] = [t for t in meta["tags"] if t != tag]
     for rule in rules:
         if rule.apply_to == "movies" and media_type != "movie":
             continue
         if rule.apply_to == "series" and media_type != "series":
             continue
-        if _evaluate_conditions(rule.conditions, meta, row.source or "", row.source_tag):
-            return True
+        try:
+            if _evaluate_conditions(rule.conditions, meta, row.source or "", row.source_tag):
+                return True
+        except Exception as e:
+            if rule.id not in _bad_rules_logged:
+                _bad_rules_logged.add(rule.id)
+                logger.warning(f"[Tags] Tag rule {rule.id} ('{rule.name}') could not be evaluated "
+                               f"and is ignored: {e}")
     return False
 
 
@@ -335,6 +353,41 @@ def tentacle_owned_tags(db: Session) -> set:
         if tag:
             owned.add(tag)
     return owned
+
+
+def name_key(name) -> str:
+    """How two playlist names are compared: NFC-normalised and case-folded.
+
+    Jellyfin compares tags case-insensitively, and the same visible text can
+    arrive composed (NFC) or decomposed (NFD) — "Šeimos" typed on one device,
+    pasted from another.
+    """
+    import unicodedata
+    return unicodedata.normalize("NFC", (name or "").strip()).casefold()
+
+
+def youtube_title_taken(db: Session, name: str) -> bool:
+    """Whether a YouTube source already has this name. Its playlist comes
+    before list and rule playlists in get_desired_smartlists(), so a list or
+    rule of the same name would silently get no playlist."""
+    from models.database import YouTubeChannel
+    key = name_key(name)
+    return any(name_key(t) == key for (t,) in db.query(YouTubeChannel.title).all() if t)
+
+
+def smartlist_names_in_use(db: Session) -> set:
+    """name_key of every name a SmartList playlist can have.
+
+    get_desired_smartlists() builds ONE name space, in order: source tags,
+    built-ins, per-user Downloads, YouTube sources, lists, tag rules — and
+    silently skips any later entry whose name is already taken. So a new name
+    has to be checked against all of them, not only its own kind.
+    """
+    from models.database import TentacleUser, YouTubeChannel
+    names = set(tentacle_owned_tags(db))
+    names |= {f"{u.display_name}'s Downloads" for u in db.query(TentacleUser).all() if u.display_name}
+    names |= {t for (t,) in db.query(YouTubeChannel.title).all() if t}
+    return {name_key(n) for n in names if n}
 
 
 def merge_owned_tags(existing, desired, owned) -> list:

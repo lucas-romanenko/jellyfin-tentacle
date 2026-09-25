@@ -756,7 +756,7 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
             continue
         if (movie.tmdb_id, "movie") in valid_ids or (movie.tmdb_id, "") in valid_ids:
             continue
-        if sharing_rules and rule_gives(sharing_rules, movie, "movie"):
+        if sharing_rules and rule_gives(sharing_rules, movie, "movie", tag):
             continue
         tags = [t for t in movie.tags if t != tag]
         movie.tags = tags
@@ -769,7 +769,7 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
             continue
         if (series.tmdb_id, "series") in valid_ids or (series.tmdb_id, "") in valid_ids:
             continue
-        if sharing_rules and rule_gives(sharing_rules, series, "series"):
+        if sharing_rules and rule_gives(sharing_rules, series, "series", tag):
             continue
         tags = [t for t in series.tags if t != tag]
         series.tags = tags
@@ -878,8 +878,9 @@ def create_list(body: ListCreate, db: Session = Depends(get_db), user: TentacleU
         own = {t for (t,) in db.query(ListSubscription.tag).filter(
             ListSubscription.user_id == user.id)}
         own |= {t for (t,) in db.query(TagRule.output_tag).filter(TagRule.user_id == user.id)}
-        taken = {t.casefold() for t in tentacle_owned_tags(db) - own}
-        if tag.casefold() in taken:
+        from services.tagger import name_key, youtube_title_taken
+        taken = {name_key(t) for t in tentacle_owned_tags(db) - own}
+        if name_key(tag) in taken or youtube_title_taken(db, tag):
             raise HTTPException(400, f"The tag '{tag}' is already used by Tentacle or by another "
                                      f"user's list — choose a different tag")
     if body.type == "imdb_rss" and _parse_imdb_url(body.url or "")["type"] == "unknown":

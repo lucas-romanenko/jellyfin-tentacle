@@ -918,15 +918,29 @@ def add_channel(body: ChannelCreate, request: Request, db: Session = Depends(get
     # playlist builder skips a second source of the same name. A playlist is
     # often named like its channel ("Bluey") or generically ("Favorites"), so
     # a clash is told apart by the owner, then by a number.
-    taken = {t.casefold() for (t,) in db.query(YouTubeChannel.title).all() if t}
+    # The name space is shared with every other SmartList (lists, tag rules,
+    # source and built-in playlists, Downloads): a YouTube "Christmas" next
+    # to a "Christmas" rule displaced the rule's playlist. And two titles that
+    # differ only past the 120 characters safe_name() keeps would share one
+    # folder, so the folder name has to be free too.
+    from services.tagger import name_key, smartlist_names_in_use
+    taken = smartlist_names_in_use(db)
+    taken_folders = {name_key(library.safe_name(t)) for (t,) in db.query(YouTubeChannel.title).all() if t}
+
+    def _clash(t):
+        return name_key(t) in taken or name_key(library.safe_name(t)) in taken_folders
+
     title = info["title"]
     owner = info.get("owner")
-    if title.casefold() in taken and info.get("kind") == "playlist" and owner \
-            and owner.casefold() != title.casefold():
+    if _clash(title) and info.get("kind") == "playlist" and owner \
+            and name_key(owner) != name_key(title):
         title = f"{title} ({owner})"
     base_title, n = title, 2
-    while title.casefold() in taken:
-        title, n = f"{base_title} ({n})", n + 1
+    while _clash(title):
+        # Keep the number inside what the folder name keeps.
+        suffix = f" ({n})"
+        title = base_title[:120 - len(suffix)].rstrip() + suffix
+        n += 1
     info["title"] = title
 
     slug = indexer.slugify(info["title"])
