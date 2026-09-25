@@ -342,7 +342,7 @@ let _dlPollActive = false;
 
 async function loadLibDownloads() {
   try {
-    const data = await api('/api/activity');
+    const data = await _fetchActivity();
     renderLibDownloads(data);
     // Start polling only if there are active downloads
     const hasActive = data.downloads && data.downloads.length > 0;
@@ -359,32 +359,98 @@ async function loadLibDownloads() {
   }
 }
 
-// A poll still out after this long is given up on: api() has no timeout, and
-// a request that never answers must not stop the polling for good.
+// ── One request at a time, per poller ──
+// A slow Radarr/Sonarr can make one /api/activity answer take longer than the
+// poll interval, so a poller skips its tick while its last request is out.
+// api() has no timeout: a request still out after POLL_STALE_MS is given up on
+// and CANCELLED. Merely dropping its answer would leave the connection open,
+// and six open requests to one host (HTTP/1.1) block every other request the
+// page makes. Without AbortController (very old browsers) an abandoned request
+// can't be cancelled, so a poller keeps at most one of them.
 const POLL_STALE_MS = 90000;
-let _dlPollSince = 0;   // when the outstanding poll started, 0 = none
-let _dlPollToken = 0;
+const _canAbort = typeof AbortController === 'function';
+function _pollClock() {
+  return Date.now();
+}
+// GET /api/activity. Never through the HTTP cache: while a request for a URL is
+// out, Chromium makes later identical GETs wait behind it (the cache lock), so
+// one stuck request stalled every poll after it. A call without its own signal
+// (a one-off refresh) gets one that gives up after POLL_STALE_MS.
+function _fetchActivity(signal) {
+  let timer = null;
+  if (!signal && _canAbort) {
+    const ctrl = new AbortController();
+    timer = setTimeout(() => ctrl.abort(), POLL_STALE_MS);
+    signal = ctrl.signal;
+  }
+  const opts = signal ? { signal, cache: 'no-store' } : { cache: 'no-store' };
+  return api('/api/activity', opts).finally(() => { if (timer) clearTimeout(timer); });
+}
+function _newPoller() { return { since: 0, token: 0, ctrl: null, current: null, abandoned: 0 }; }
+// A new request for this tick ({ req, signal }), or null to skip the tick.
+function _pollStart(p) {
+  if (p.current) {
+    if (_pollClock() - p.since < POLL_STALE_MS || !_pollAbandon(p)) return null;
+  }
+  const ctrl = _canAbort ? new AbortController() : null;
+  const req = { tok: ++p.token, abandoned: false };
+  p.current = req; p.ctrl = ctrl; p.since = _pollClock();
+  return { req, signal: ctrl ? ctrl.signal : undefined };
+}
+// Give up on the outstanding request. False when it can't be (no
+// AbortController and one abandoned request is already out).
+function _pollAbandon(p) {
+  if (!p.current) return true;
+  if (p.ctrl) p.ctrl.abort();
+  else if (p.abandoned >= 1) return false;
+  else { p.abandoned++; p.current.abandoned = true; }
+  p.current = null; p.ctrl = null; p.since = 0;
+  return true;
+}
+// A request finished (answer, error or abort). True when its answer is still wanted.
+function _pollEnd(p, req) {
+  if (req.abandoned) { p.abandoned--; return false; }
+  if (p.current === req) { p.current = null; p.ctrl = null; p.since = 0; }
+  return req.tok === p.token;
+}
+// Stop: an answer still on its way belongs to the stopped poller.
+function _pollStop(p) {
+  p.token++;
+  _pollAbandon(p);   // if it can't be abandoned it keeps the slot; its answer is ignored
+}
+
+const _dlPoller = _newPoller();
+let _dlPollErrors = 0;    // failed polls in a row
+let _dlPollRetryAt = 0;   // _pollClock() before which a tick is skipped after an error
 async function pollLibDownloads() {
   if (state.currentPage !== 'library') { stopDownloadPolling(); return; }
-  // A slow Radarr/Sonarr can make one answer take longer than the interval;
-  // don't stack another request behind it.
-  if (_dlPollSince && Date.now() - _dlPollSince < POLL_STALE_MS) return;
-  const tok = ++_dlPollToken;
-  _dlPollSince = Date.now();
+  if (_dlPollErrors && _pollClock() < _dlPollRetryAt) return;
+  const start = _pollStart(_dlPoller);
+  if (!start) return;
+  let data = null, failed = false;
   try {
-    const data = await api('/api/activity');
-    if (tok !== _dlPollToken) return;   // given up on; a newer poll owns the panel
-    renderLibDownloads(data);
-    if (!data.downloads || data.downloads.length === 0) {
-      stopDownloadPolling();
-    }
-  } catch (e) { if (tok === _dlPollToken) stopDownloadPolling(); }
-  finally { if (tok === _dlPollToken) _dlPollSince = 0; }
+    data = await _fetchActivity(start.signal);
+  } catch (e) { failed = true; }
+  if (!_pollEnd(_dlPoller, start.req)) return;   // given up on, or polling stopped
+  if (failed) {
+    // A backend restart or a dropped connection: keep polling, backing off to
+    // one try a minute, instead of freezing the panel until the next visit.
+    _dlPollErrors++;
+    _dlPollRetryAt = _pollClock() + Math.min(5000 * 2 ** (_dlPollErrors - 1), 60000);
+    return;
+  }
+  _dlPollErrors = 0;
+  renderLibDownloads(data);
+  if (!data.downloads || data.downloads.length === 0) {
+    stopDownloadPolling();
+  }
 }
 
 function stopDownloadPolling() {
   if (_dlPollTimer) { clearInterval(_dlPollTimer); _dlPollTimer = null; }
   _dlPollActive = false;
+  _dlPollErrors = 0;
+  _pollStop(_dlPoller);
 }
 
 function renderLibDownloads(data) {
@@ -4669,16 +4735,14 @@ function startActivityPolling() {
 // The tab polls every 3 s, but with a slow Radarr/Sonarr one answer can take a
 // minute. Polls used to pile up behind it (a dozen requests in flight, which
 // also held the browser's connections every other page needs); now a poll is
-// skipped while the last one is out — unless it has been out for
-// POLL_STALE_MS, so one request that never answers can't stop the tab updating.
-// loadActivity() drops an answer older than one already shown.
-let _activityPollSince = 0;
-let _activityPollToken = 0;
+// skipped while the last one is out, and one out for POLL_STALE_MS is
+// cancelled and retried (see _pollStart). loadActivity() drops an answer older
+// than one already shown.
+const _activityPoller = _newPoller();
 function _pollActivity() {
-  if (_activityPollSince && Date.now() - _activityPollSince < POLL_STALE_MS) return;
-  const tok = ++_activityPollToken;
-  _activityPollSince = Date.now();
-  loadActivity().finally(() => { if (tok === _activityPollToken) _activityPollSince = 0; });
+  const start = _pollStart(_activityPoller);
+  if (!start) return;
+  loadActivity(start.signal).finally(() => { _pollEnd(_activityPoller, start.req); });
 }
 
 function stopActivityPolling() {
@@ -4686,16 +4750,17 @@ function stopActivityPolling() {
     clearInterval(_activityPollTimer);
     _activityPollTimer = null;
   }
+  _pollStop(_activityPoller);
 }
 
 // Answers can arrive out of order (a poll and a refresh after an action); an
 // older one must not replace a newer one already shown.
 let _activitySeq = 0;
 let _activityShownSeq = 0;
-async function loadActivity() {
+async function loadActivity(signal) {
   const seq = ++_activitySeq;
   try {
-    const data = await api('/api/activity');
+    const data = await _fetchActivity(signal);
     if (seq < _activityShownSeq) return;
     _activityShownSeq = seq;
     _activityData = data;
@@ -6790,7 +6855,7 @@ async function loadHealthDownloads() {
   const el = document.getElementById('health-downloads');
   if (!el) return;
   try {
-    const data = await api('/api/activity');
+    const data = await _fetchActivity();
     const downloads = data.downloads || [];
     if (!downloads.length) {
       el.innerHTML = '<div class="empty-state"><p>No active downloads</p></div>';
