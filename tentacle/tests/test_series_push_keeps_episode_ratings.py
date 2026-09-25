@@ -1,0 +1,160 @@
+"""A tag push to a Series must not overwrite its episodes' own ratings.
+
+Jellyfin 10.11.8 ItemUpdateController.UpdateItem copies a Series' (or
+Season's) OfficialRating (unless the child locked it) and CustomRating
+(always) onto every season and episode on EVERY update. A tag push therefore
+rated a TV-MA episode as the series (TV-14): a TV-14 profile could play it.
+On 755ea67 a DisplayOrder mismatch in the body also queued a ReplaceAll
+refresh that re-read episode NFOs and hid this for NFO-rated episodes; with
+DisplayOrder echoed (7444a25) the flattening stuck. set_item_tags now puts
+each child's own ratings back after the push.
+
+The fake below implements the cascade exactly as the 10.11.8 source does.
+Run from tentacle/:  python -m unittest discover -s tests -p "test_series_push_keeps_episode_ratings.py"
+"""
+import unittest
+
+
+class _FakeJellyfin:
+    """Items + the UpdateItem cascade of Jellyfin 10.11.8."""
+
+    def __init__(self):
+        self.items = {
+            "s1": {"Id": "s1", "Type": "Series", "Name": "Show", "Tags": ["Netflix TV"],
+                   "OfficialRating": "TV-14", "CustomRating": "TV-KIDS", "DisplayOrder": "absolute"},
+            "se1": {"Id": "se1", "Type": "Season", "ParentId": "s1", "IndexNumber": 1,
+                    "OfficialRating": "TV-14", "CustomRating": "TV-KIDS", "Tags": []},
+            "e1": {"Id": "e1", "Type": "Episode", "ParentId": "se1", "IndexNumber": 1,
+                   "ParentIndexNumber": 1, "OfficialRating": "TV-PG", "CustomRating": "EP1", "Tags": []},
+            "e2": {"Id": "e2", "Type": "Episode", "ParentId": "se1", "IndexNumber": 2,
+                   "ParentIndexNumber": 1, "OfficialRating": "TV-MA", "CustomRating": None, "Tags": [],
+                   "LockedFields": []},
+            "e3": {"Id": "e3", "Type": "Episode", "ParentId": "se1", "IndexNumber": 3,
+                   "ParentIndexNumber": 1, "OfficialRating": "TV-Y", "CustomRating": None, "Tags": [],
+                   "LockedFields": ["OfficialRating"]},
+        }
+        self.posts = []
+        self.list_fails = False
+
+    def children(self, pid, kinds):
+        out = []
+        for it in self.items.values():
+            p = it.get("ParentId")
+            while p and p != pid:
+                p = self.items[p].get("ParentId")
+            if p == pid and it["Type"] in kinds:
+                out.append(it)
+        return out
+
+    def get(self, path, params=None):
+        if path == "/Items":
+            if self.list_fails:
+                return None
+            kids = self.children(params["ParentId"], params["IncludeItemTypes"].split(","))
+            page = kids[params["StartIndex"]:params["StartIndex"] + params["Limit"]]
+            return {"Items": [dict(k) for k in page], "TotalRecordCount": len(kids)}
+        return dict(self.items[path.rsplit("/", 1)[-1]])
+
+    def post(self, item_id, body):
+        self.posts.append(item_id)
+        it = self.items[item_id]
+        official = (body.get("OfficialRating") or "").strip() or None
+        custom = body.get("CustomRating")
+        it.update(Tags=body.get("Tags", []), OfficialRating=official, CustomRating=custom)
+        if it["Type"] in ("Series", "Season"):
+            for child in self.children(item_id, ("Season", "Episode")):
+                if "OfficialRating" not in (child.get("LockedFields") or []):
+                    child["OfficialRating"] = official
+                child["CustomRating"] = custom
+
+
+def _service(fake):
+    from unittest import mock
+    from services.jellyfin import JellyfinService
+    jf = JellyfinService("http://jf.invalid:8096", "k", "u1")
+    jf._get = fake.get
+    jf.session = mock.Mock()
+    jf.session.post.side_effect = lambda url, json=None, timeout=None: (
+        fake.post(url.rsplit("/", 1)[-1], json), mock.Mock(status_code=204, text=""))[1]
+    jf._post = lambda path, data=None: fake.post(path.rsplit("/", 1)[-1], data) or True
+    return jf
+
+
+class TestSeriesPush(unittest.TestCase):
+    @staticmethod
+    def _effective(fake, iid, field):
+        """Jellyfin's *ForComparison: an empty rating inherits the display parent's."""
+        while iid:
+            v = fake.items[iid].get(field)
+            if v:
+                return v
+            iid = fake.items[iid].get("ParentId")
+        return None
+
+    def test_episode_and_season_ratings_survive_a_tag_push(self):
+        fake = _FakeJellyfin()
+        own = {k: (v["OfficialRating"], v["CustomRating"]) for k, v in fake.items.items()}
+        eff = {k: tuple(self._effective(fake, k, f) for f in ("OfficialRating", "CustomRating"))
+               for k in fake.items}
+        self.assertTrue(_service(fake).set_item_tags("s1", ["Netflix TV", "Watchlist"]))
+        for k, (o, c) in own.items():
+            with self.subTest(item=k):
+                # every rating an item had of its own is kept exactly
+                if o:
+                    self.assertEqual(fake.items[k]["OfficialRating"], o)
+                if c:
+                    self.assertEqual(fake.items[k]["CustomRating"], c)
+                # and what parental control compares is unchanged for all
+                self.assertEqual(tuple(self._effective(fake, k, f)
+                                       for f in ("OfficialRating", "CustomRating")), eff[k])
+        self.assertEqual(fake.items["s1"]["Tags"], ["Netflix TV", "Watchlist"])
+
+    def test_no_extra_writes_when_nothing_differs(self):
+        fake = _FakeJellyfin()
+        for k in ("se1", "e1", "e2", "e3"):
+            fake.items[k].update(OfficialRating="TV-14", CustomRating="TV-KIDS")
+        _service(fake).set_item_tags("s1", ["x"])
+        self.assertEqual(fake.posts, ["s1"])
+
+    def test_unrated_children_are_not_rewritten(self):
+        """The usual library: episodes carry no rating and inherit the series'."""
+        fake = _FakeJellyfin()
+        for k in ("se1", "e1", "e2"):
+            fake.items[k].update(OfficialRating=None, CustomRating=None)
+        _service(fake).set_item_tags("s1", ["x"])
+        self.assertEqual(fake.posts, ["s1"])
+
+    def test_an_episode_rated_stricter_than_its_series_keeps_it(self):
+        fake = _FakeJellyfin()
+        for k in ("se1", "e1"):
+            fake.items[k].update(OfficialRating=None, CustomRating=None)
+        _service(fake).set_item_tags("s1", ["x"])
+        self.assertEqual(fake.items["e2"]["OfficialRating"], "TV-MA")
+        self.assertEqual(fake.posts, ["s1", "e2"])
+
+    def test_a_series_whose_children_cannot_be_read_is_left_alone(self):
+        fake = _FakeJellyfin()
+        fake.list_fails = True
+        self.assertFalse(_service(fake).set_item_tags("s1", ["x"]))
+        self.assertEqual(fake.posts, [])
+
+    def test_a_movie_push_reads_no_children(self):
+        fake = _FakeJellyfin()
+        fake.items["m1"] = {"Id": "m1", "Type": "Movie", "Name": "M", "Tags": [], "OfficialRating": "R"}
+        fake.list_fails = True           # would make a series push fail
+        self.assertTrue(_service(fake).set_item_tags("m1", ["x"]))
+
+
+class TestEpisodeNumberingIsEchoed(unittest.TestCase):
+    def test_restoring_an_episode_keeps_its_numbering(self):
+        from services.jellyfin import _item_update_payload
+        body = _item_update_payload({"Id": "e1", "IndexNumber": 3, "ParentIndexNumber": 1,
+                                     "AirsBeforeSeasonNumber": 2, "AirsBeforeEpisodeNumber": 1,
+                                     "AirsAfterSeasonNumber": 1, "Album": "A"})
+        for f in ("IndexNumber", "ParentIndexNumber", "AirsBeforeSeasonNumber",
+                  "AirsBeforeEpisodeNumber", "AirsAfterSeasonNumber", "Album"):
+            self.assertIn(f, body)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -40,6 +40,11 @@ _ECHOED_ITEM_FIELDS = (
     "PreferredMetadataCountryCode", "Status", "EndDate", "DisplayOrder",
     "AirDays", "AirTime", "RunTimeTicks", "AspectRatio", "Video3DFormat",
     "ProductionLocations", "DateCreated",
+    # Numbering: cleared on an Episode/Season/track when omitted, and a
+    # child's own rating is restored through this same body (see
+    # _restore_child_ratings).
+    "IndexNumber", "ParentIndexNumber", "AirsBeforeSeasonNumber",
+    "AirsBeforeEpisodeNumber", "AirsAfterSeasonNumber", "Album",
 )
 
 
@@ -395,26 +400,125 @@ class JellyfinService:
         old_tags = item.get("Tags", [])
         logger.debug(f"[Jellyfin] set_item_tags {item_id}: {old_tags} → {tags}")
 
-        minimal = _item_update_payload(item, Tags=tags)
+        return self._post_item_update(item, _item_update_payload(item, Tags=tags), "set tags on")
 
+    # ── ItemUpdate and Jellyfin's rating cascade ──────────────────────────
+    # Jellyfin 10.11.8 ItemUpdateController.UpdateItem: for a Series it sets
+    # every Season's and Episode's OfficialRating (unless that child has
+    # OfficialRating in LockedFields) and CustomRating (always) to the values
+    # in the body; for a Season it does the same to its Episodes. There is no
+    # condition — it happens on every update, a tags-only one included. A tag
+    # push to a series therefore rated every TV-MA episode as the series (e.g.
+    # TV-14), and a profile limited to TV-14 could then play it. Until 7444a25
+    # a DisplayOrder mismatch in the body queued a ReplaceAllMetadata refresh
+    # that re-read the episode NFOs and hid this for NFO-rated episodes.
+    # _post_item_update snapshots the children first and writes back, child
+    # by child, any rating of the child's OWN that the cascade changed.
+    #
+    # A child with no rating of its own is left with the copy: Jellyfin rates
+    # an unrated item by its display parent (OfficialRatingForComparison /
+    # GetCustomRatingForComparision walk up to the season, then the series),
+    # so the copy is the rating it already had for parental control. Restoring
+    # those too would cost a write per episode — on a live library 156,053 of
+    # 158,485 seasons/episodes have no rating of their own, and only 2 have
+    # one that differs from their series.
+
+    _CASCADING_TYPES = ("Series", "Season")
+
+    def _child_ratings(self, parent_id: str) -> Optional[dict]:
+        """{id: (type, OfficialRating, CustomRating)} for every season and
+        episode under parent_id, or None if the listing could not be read
+        completely."""
+        out = {}
+        start, page = 0, 1000
+        params = {"ParentId": parent_id, "Recursive": "true",
+                  "IncludeItemTypes": "Season,Episode",
+                  "Fields": "CustomRating,Settings", "EnableImages": "false",
+                  "EnableUserData": "false"}
+        if self.user_id:
+            params["UserId"] = self.user_id
+        while True:
+            params.update(StartIndex=start, Limit=page)
+            data = self._get("/Items", params=dict(params))
+            if not data:
+                return None
+            items = data.get("Items") or []
+            for it in items:
+                out[it["Id"]] = (it.get("Type"), it.get("OfficialRating") or None,
+                                 it.get("CustomRating") or None)
+            start += len(items)
+            total = data.get("TotalRecordCount") or 0
+            if not items or start >= total:
+                return out if start >= total else None
+
+    @staticmethod
+    def _own_rating_changed(own: tuple, now: tuple) -> bool:
+        """Whether a child's own (non-empty) OfficialRating/CustomRating differs
+        from what it has now. An empty own value inherits, so it never counts."""
+        return any(o is not None and o != n for o, n in zip(own, now))
+
+    def _restore_child_ratings(self, parent_id: str, before: dict) -> int:
+        """Write back the ratings the cascade overwrote. Seasons first: a
+        season's own update cascades again to its episodes."""
+        restored = 0
+        for kind in ("Season", "Episode"):
+            after = self._child_ratings(parent_id)
+            if after is None:
+                logger.warning(f"[Jellyfin] Could not re-read the children of {parent_id}; "
+                               f"their ratings may now be the series' own")
+                return restored
+            for cid, (ctype, official, custom) in before.items():
+                if ctype != kind or cid not in after:
+                    continue
+                if not self._own_rating_changed((official, custom), after[cid][1:]):
+                    continue
+                child = self._get(self._item_path(cid))
+                if not child:
+                    continue
+                payload = _item_update_payload(child, OfficialRating=official or "",
+                                               CustomRating=custom)
+                if self._post(f"/Items/{cid}", payload):
+                    restored += 1
+        if restored:
+            logger.info(f"[Jellyfin] Restored the own ratings of {restored} season(s)/episode(s) "
+                        f"under {parent_id} after Jellyfin's rating cascade")
+        return restored
+
+    def _post_item_update(self, item: dict, payload: dict, what: str) -> bool:
+        """POST an ItemUpdate; for a Series/Season keep the children's ratings."""
+        item_id = item["Id"]
+        before = None
+        if item.get("Type") in self._CASCADING_TYPES:
+            before = self._child_ratings(item_id)
+            if before is None:
+                # Without the snapshot the children's ratings could not be put
+                # back, and a flattened rating can loosen parental control.
+                # Skip this item; the next push retries.
+                logger.warning(f"[Jellyfin] Not updating {item.get('Type')} {item_id}: could not "
+                               f"read its seasons/episodes to keep their ratings")
+                return False
+            # Nothing to restore unless some child has a rating of its own
+            # that the cascade will overwrite with a different one.
+            cascaded = ((payload.get("OfficialRating") or "").strip() or None,
+                        payload.get("CustomRating") or None)
+            if not any(self._own_rating_changed((o, c), cascaded) for _t, o, c in before.values()):
+                before = None
         try:
-            r = self.session.post(
-                f"{self.url}/Items/{item_id}",
-                json=minimal,
-                timeout=15
-            )
+            r = self.session.post(f"{self.url}/Items/{item_id}", json=payload, timeout=15)
             self._check_401(r, f"/Items/{item_id}")
             if r.status_code >= 400:
                 body = r.text[:200] if r.text else "(empty)"
                 logger.error(f"[Jellyfin] POST /Items/{item_id} returned {r.status_code}: {body}")
                 return False
             logger.debug(f"[Jellyfin] POST /Items/{item_id} returned {r.status_code} OK")
-            return True
         except requests.HTTPError:
             raise
         except Exception as e:
-            logger.error(f"[Jellyfin] Failed to set tags on {item_id}: {e}")
+            logger.error(f"[Jellyfin] Failed to {what} {item_id}: {e}")
             return False
+        if before:
+            self._restore_child_ratings(item_id, before)
+        return True
 
     def set_item_name(self, item_id: str, name: str) -> bool:
         """Rename a Jellyfin item in place — same item, same id, same user data.
@@ -428,20 +532,7 @@ class JellyfinService:
         if not item:
             logger.warning(f"[Jellyfin] Cannot GET item {item_id} — set_item_name aborted")
             return False
-        payload = _item_update_payload(item, Name=name)
-        try:
-            r = self.session.post(f"{self.url}/Items/{item_id}", json=payload, timeout=15)
-            self._check_401(r, f"/Items/{item_id}")
-            if r.status_code >= 400:
-                logger.error(f"[Jellyfin] POST /Items/{item_id} returned {r.status_code}: "
-                             f"{(r.text or '(empty)')[:200]}")
-                return False
-            return True
-        except requests.HTTPError:
-            raise
-        except Exception as e:
-            logger.error(f"[Jellyfin] Failed to rename {item_id}: {e}")
-            return False
+        return self._post_item_update(item, _item_update_payload(item, Name=name), "rename")
 
     def add_tag_to_item(self, item_id: str, tag: str) -> bool:
         """Add a single tag without removing existing tags"""
