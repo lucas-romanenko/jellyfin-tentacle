@@ -383,6 +383,49 @@ class JellyfinService:
             logger.error(f"[Jellyfin] Failed to set tags on {item_id}: {e}")
             return False
 
+    def set_item_name(self, item_id: str, name: str) -> bool:
+        """Rename a Jellyfin item in place — same item, same id, same user data.
+
+        Same minimal ItemUpdate payload as set_item_tags, plus LockData: an
+        update that leaves it out unlocks the item (checked on 10.11.8), and a
+        YouTube item's lock is what keeps remote providers from re-identifying
+        it as some film of the same name.
+        """
+        item = self._get(self._item_path(item_id))
+        if not item:
+            logger.warning(f"[Jellyfin] Cannot GET item {item_id} — set_item_name aborted")
+            return False
+        payload = {
+            "Id": item["Id"],
+            "Name": name,
+            "OriginalTitle": item.get("OriginalTitle", ""),
+            "Overview": item.get("Overview", ""),
+            "Genres": item.get("Genres", []),
+            "Tags": item.get("Tags", []),
+            "Studios": item.get("Studios", []),
+            "People": item.get("People", []),
+            "ProviderIds": item.get("ProviderIds", {}),
+            "ProductionYear": item.get("ProductionYear"),
+            "PremiereDate": item.get("PremiereDate"),
+            "CommunityRating": item.get("CommunityRating"),
+            "OfficialRating": item.get("OfficialRating", ""),
+            "Taglines": item.get("Taglines", []),
+            "LockData": item.get("LockData"),
+        }
+        try:
+            r = self.session.post(f"{self.url}/Items/{item_id}", json=payload, timeout=15)
+            self._check_401(r, f"/Items/{item_id}")
+            if r.status_code >= 400:
+                logger.error(f"[Jellyfin] POST /Items/{item_id} returned {r.status_code}: "
+                             f"{(r.text or '(empty)')[:200]}")
+                return False
+            return True
+        except requests.HTTPError:
+            raise
+        except Exception as e:
+            logger.error(f"[Jellyfin] Failed to rename {item_id}: {e}")
+            return False
+
     def add_tag_to_item(self, item_id: str, tag: str) -> bool:
         """Add a single tag without removing existing tags"""
         current = self.get_item_tags(item_id)

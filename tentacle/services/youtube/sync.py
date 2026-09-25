@@ -218,6 +218,7 @@ def sync_channel(db: Session, channel: YouTubeChannel, base: str, on_progress=No
         return result
 
     written, art = 0, 0
+    retitled = set(result.get("retitled") or ())
     for video in db.query(YouTubeVideo).filter(
         YouTubeVideo.channel_fk == channel.id,
         YouTubeVideo.removed_at.is_(None),
@@ -229,6 +230,8 @@ def sync_channel(db: Session, channel: YouTubeChannel, base: str, on_progress=No
             # videos indexed before it exist with no images — pick those up
             # instead of leaving them blank until something rewrites them.
             if video.folder_path:
+                if video.video_id in retitled:
+                    library.rewrite_nfo(video, channel, base)
                 art += library.fetch_artwork(video, Path(video.folder_path))
             continue
         try:
@@ -237,6 +240,8 @@ def sync_channel(db: Session, channel: YouTubeChannel, base: str, on_progress=No
         except OSError as e:
             logger.warning(f"[YouTube] Could not write files for {video.video_id}: {e}")
     db.commit()
+    if retitled:
+        retitle_in_jellyfin(db, channel, retitled)
 
     # Guide entries for live/upcoming streams when the channel is on Live TV.
     guide = 0
@@ -248,6 +253,41 @@ def sync_channel(db: Session, channel: YouTubeChannel, base: str, on_progress=No
     result.update({"written": written, "retired": removed, "guide": guide,
                    "artwork": art})
     return result
+
+
+def retitle_in_jellyfin(db: Session, channel: YouTubeChannel, video_ids) -> int:
+    """Give Jellyfin the repaired titles of videos it has already imported.
+
+    The rewritten NFO is not enough on its own. It carries
+    <lockdata>true</lockdata>, and Jellyfin does not re-read a locked item's
+    NFO — not on a scan, not even on a full "replace all metadata" refresh
+    (checked on 10.11.8) — so it only helps an item not imported yet. One
+    already in the library is renamed through the API instead, which keeps the
+    item, and every user's watched state and playlist entries with it.
+    Best effort: a failure leaves the old title showing, nothing else.
+    """
+    from services.jellyfin import JellyfinService
+
+    url = get_setting(db, "jellyfin_url", "")
+    key = get_setting(db, "jellyfin_api_key", "")
+    if not (url and key and video_ids):
+        return 0
+    titles = {v.video_id: v.title for v in db.query(YouTubeVideo).filter(
+        YouTubeVideo.channel_fk == channel.id,
+        YouTubeVideo.video_id.in_(list(video_ids))).all()}
+    renamed = 0
+    try:
+        jf = JellyfinService(url, key, get_setting(db, "jellyfin_user_id", ""))
+        for item in jf.query_items(include_types=["Movie"], tags=[f"yt:{channel.slug}"]) or []:
+            ids = {k.lower(): v for k, v in (item.get("ProviderIds") or {}).items()}
+            title = titles.get(ids.get("youtube"))
+            if title and item.get("Name") != title and jf.set_item_name(item["Id"], title):
+                renamed += 1
+    except Exception as e:
+        logger.warning(f"[YouTube] Could not pass repaired titles to Jellyfin: {e}")
+    if renamed:
+        logger.info(f"[YouTube] Renamed {renamed} video(s) in Jellyfin for '{channel.title}'")
+    return renamed
 
 
 def apply_retention(db: Session, channel: YouTubeChannel) -> int:

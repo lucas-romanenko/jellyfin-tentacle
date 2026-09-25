@@ -43,6 +43,33 @@ STREAM_PREFERENCE_REASON = "finished live stream and past live streams are not i
 
 
 
+# A title that is really a video id: the bare id today's fallback stores when
+# neither the details nor the listing had one, and "youtube video #<id>" from
+# an earlier build. Such a row is repaired from the listing on a later refresh
+# rather than kept for ever (#131).
+_PLACEHOLDER_TITLE_RE = re.compile(r"^youtube video #[A-Za-z0-9_-]{11}$", re.IGNORECASE)
+# What yt-dlp lists in place of a title for an entry it cannot show. Never a
+# replacement for anything.
+_UNAVAILABLE_TITLE_RE = re.compile(r"^\[(private|deleted|unavailable)[^\]]*\]$", re.IGNORECASE)
+# Details fetches spent per run on placeholders the listing could not repair.
+# Each is rate-limited, and new videos come first.
+TITLE_REPAIRS_PER_RUN = 3
+
+
+def is_placeholder_title(title, video_id: str) -> bool:
+    """Whether a stored title is a stand-in rather than the video's name."""
+    title = (title or "").strip()
+    return not title or title == video_id or bool(_PLACEHOLDER_TITLE_RE.match(title))
+
+
+def _usable_title(title, video_id: str):
+    """`title` if it names the video, else None."""
+    title = (title or "").strip()
+    if is_placeholder_title(title, video_id) or _UNAVAILABLE_TITLE_RE.match(title):
+        return None
+    return title
+
+
 def is_library_status(column):
     """SQL filter for "this is a library item, not a pending broadcast".
 
@@ -328,6 +355,15 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
         is_library_status(YouTubeVideo.live_status),
     ).all()}
     keep = channel.keep_count or 10
+    # Rows whose title is a stand-in, repaired below if the listing names them.
+    from sqlalchemy import or_
+    placeholders = {v.video_id: v for v in db.query(YouTubeVideo).filter(
+        YouTubeVideo.channel_fk == channel.id,
+        or_(YouTubeVideo.title.is_(None), YouTubeVideo.title == "",
+            YouTubeVideo.title == YouTubeVideo.video_id,
+            YouTubeVideo.title.ilike("youtube video #%")),
+    ).all() if is_placeholder_title(v.title, v.video_id)}
+    retitled, repairs_left = [], TITLE_REPAIRS_PER_RUN
 
     # Every listed entry in listing order, tagged with whether its tab feeds
     # the library. The streams tab does only when finished broadcasts are
@@ -450,6 +486,27 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
             _note_skip("already indexed under another channel or playlist")
             continue
         if vid in known:
+            if vid in placeholders:
+                title = _usable_title(entry.get("title"), vid)
+                # Details only when the listing gave no title at all. A listing
+                # that names the video by its id (or "[Private video]") has
+                # nothing better behind it, and re-fetching such a row on
+                # every run would spend the rate-limited budget for nothing.
+                if not title and not entry.get("title") and repairs_left > 0:
+                    repairs_left -= 1
+                    try:
+                        title = _usable_title(client.video_details(vid).get("title"), vid)
+                    except YouTubeBlocked:
+                        raise
+                    except YouTubeError as e:
+                        logger.debug(f"[YouTube] Could not re-read the title of {vid}: {e}")
+                    time.sleep(DETAIL_SPACING_SECONDS)
+                if title:
+                    video = placeholders[vid]
+                    logger.info(f"[YouTube] Retitled {vid}: '{video.title}' → '{title}'")
+                    video.title = title
+                    retitled.append(vid)
+                    db.commit()
             if library_tab and vid in kept_ids:
                 seen_kept += 1
                 _report()
@@ -549,7 +606,8 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
     if skips:
         logger.info(f"[YouTube] '{channel.title}' skips: {skips}")
     return {"skipped": False, "new": added, "seen": len(seen_ids),
-            "filtered": skipped, "skips": skips, "listing": listing, "beyond": beyond}
+            "filtered": skipped, "skips": skips, "listing": listing, "beyond": beyond,
+            "retitled": retitled}
 
 
 def _published(details: dict):
