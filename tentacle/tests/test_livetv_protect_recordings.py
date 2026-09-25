@@ -643,7 +643,70 @@ class BackgroundWork(unittest.TestCase):
         radarr_src = (root / "routers" / "radarr.py").read_text()
         for what in ("A provider migration preview", "A provider migration"):
             self.assertIn(f'refuse_while_recording(db, "{what}")', radarr_src)
-        self.assertIn('wait_for_recordings(db, "the scheduled EPG sync")', (root / "main.py").read_text())
+        main_src = (root / "main.py").read_text()
+        self.assertIn('wait_for_recordings(db, "the scheduled EPG sync",', main_src)
+        self.assertIn("max_seconds=EPG_WAIT_FOR_RECORDING_SECONDS", main_src)
+        # the wait sits just before the download, not before the whole EPG step
+        self.assertLess(main_src.index('wait_for_recordings(db, "the scheduled EPG sync"'),
+                        main_src.index("if _run_epg_sync_background(provider_data):"))
+        self.assertLess(main_src.index("for lp in live_providers:"),
+                        main_src.index('wait_for_recordings(db, "the scheduled EPG sync"'))
+
+
+class BoundedWaits(unittest.TestCase):
+    """Review F4: the nightly EPG wait is capped; a protected wait is not a
+    stuck sync."""
+    setUp = BackgroundWork.setUp
+    _off = BackgroundWork._off
+
+    def test_wait_for_recordings_gives_up_after_its_cap(self):
+        self.assertFalse(self.pa.wait_for_recordings(self.db, "EPG", max_seconds=90))
+        self.assertAlmostEqual(90.0, sum(self.slept), delta=0.1)
+        self.ends_after = len(self.slept) + 1
+        self.assertTrue(self.pa.wait_for_recordings(self.db, "EPG", max_seconds=90))
+
+    def test_the_protected_wait_is_accounted(self):
+        self.pa.reset_protected_wait_seconds()
+        seen = []
+        real_sleep = self.pa.time.sleep
+
+        def sleep_and_look(s):
+            seen.append(self.pa.protected_wait_state()[0])
+            real_sleep(s)
+        self.ends_after = 3
+        with mock.patch.object(self.pa.time, "sleep", sleep_and_look):
+            self.assertTrue(self.pa.wait_for_recordings(self.db, "sync"))
+        self.assertEqual([True, True, True], seen, "waiting while it sleeps")
+        self.assertEqual((False, 90.0), self.pa.protected_wait_state())
+        self.pa.reset_protected_wait_seconds()
+        self.assertEqual((False, 0.0), self.pa.protected_wait_state())
+
+    def _stale_run(self, hours):
+        from datetime import datetime, timedelta
+        from models.database import SyncRun, Provider
+        p = Provider(name="P", server_url="http://provider.test", username="u", password="p")
+        self.db.add(p)
+        self.db.commit()
+        run = SyncRun(provider_id=p.id, status="running", started_at=datetime.utcnow() - timedelta(hours=hours))
+        self.db.add(run)
+        self.db.commit()
+        return run
+
+    def test_a_run_waiting_for_a_protected_recording_is_not_failed_as_stuck(self):
+        from routers import sync as sync_router
+        run = self._stale_run(10)          # past 4 h + the 60 s budget
+        with mock.patch.object(self.pa, "protected_wait_state", lambda: (True, 0.0)):
+            sync_router.get_sync_status(self.db)
+        self.db.refresh(run)
+        self.assertEqual("running", run.status)
+        with mock.patch.object(self.pa, "protected_wait_state", lambda: (False, 7 * 3600.0)):
+            sync_router.get_sync_status(self.db)
+        self.db.refresh(run)
+        self.assertEqual("running", run.status, "7 h spent waiting for recordings extend the cutoff")
+        with mock.patch.object(self.pa, "protected_wait_state", lambda: (False, 0.0)):
+            sync_router.get_sync_status(self.db)
+        self.db.refresh(run)
+        self.assertEqual("failed", run.status, "without that it is stuck, as before")
 
 
 class ButtonsRefuse(unittest.TestCase):

@@ -20,6 +20,7 @@ pause. Both are safe to call from the scheduler's threads: the live-stream
 check only reads module state.
 """
 import logging
+import threading
 import time
 from typing import Callable, Optional
 
@@ -67,20 +68,62 @@ def refuse_while_recording(db, what: str) -> None:
                                  f"the recording has finished.")
 
 
+# Time spent in wait_for_recordings, so the sync status route does not take
+# a run that is waiting for a protected recording for a stuck one
+# (routers.sync). `active`: waits in progress; `seconds`: waited since the
+# route last saw no sync running (it resets it then).
+_protected_wait = {"active": 0, "seconds": 0.0}
+_protected_wait_lock = threading.Lock()
+
+
+def protected_wait_state() -> tuple:
+    """(a job is waiting for a protected recording right now, seconds waited)."""
+    with _protected_wait_lock:
+        return _protected_wait["active"] > 0, _protected_wait["seconds"]
+
+
+def reset_protected_wait_seconds() -> None:
+    with _protected_wait_lock:
+        _protected_wait["seconds"] = 0.0
+
+
 def wait_for_recordings(db, what: str, cancel_check: Optional[Callable[[], bool]] = None,
-                        poll_seconds: float = POLL_SECONDS) -> bool:
+                        poll_seconds: float = POLL_SECONDS, max_seconds: Optional[float] = None) -> bool:
     """Block while recording_protected(). True when free to go (at once if
-    protection is off or nothing is recording), False if cancelled."""
+    protection is off or nothing is recording), False if cancelled or --
+    with `max_seconds` -- if the recording is still running after that."""
     if not recording_protected(db):
         return True
     started = time.monotonic()
     logger.info(f"[Provider] {what} is waiting: a recording is running and recording protection is on")
-    while recording_protected(db):
-        if cancel_check and cancel_check():
-            return False
-        time.sleep(poll_seconds)
+    with _protected_wait_lock:
+        _protected_wait["active"] += 1
+    try:
+        waited = 0.0
+        while recording_protected(db):
+            if cancel_check and cancel_check():
+                return False
+            if max_seconds is not None and waited >= max_seconds:
+                logger.warning(f"[Provider] {what} waited {waited / 60:.0f} min for a protected recording "
+                               f"and is skipped this time")
+                return False
+            step = poll_seconds if max_seconds is None else min(poll_seconds, max(0.0, max_seconds - waited))
+            time.sleep(step)
+            waited += step
+            with _protected_wait_lock:
+                _protected_wait["seconds"] += step
+    finally:
+        with _protected_wait_lock:
+            _protected_wait["active"] -= 1
     logger.info(f"[Provider] {what} resuming after {time.monotonic() - started:.0f}s: the recording has finished")
     return True
+
+
+# The nightly EPG download waits at most this long for a protected
+# recording, then is skipped until the next night: everything after it in
+# the nightly job (sweeps, playlists, home rows) must not be held for a
+# whole evening of recordings, and yesterday's guide still covers days.
+EPG_WAIT_FOR_RECORDING_SECONDS = 3600.0
 
 
 def defer_seconds(db) -> float:
