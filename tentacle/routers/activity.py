@@ -350,6 +350,7 @@ def _fetch_sonarr_searching(url: str, api_key: str, file_counts: Optional[dict] 
             # this card counts, so "stop looking" (no list = all of them)
             # never reaches past what the person was shown.
             "_missing_ids": list(entry["ids"]),
+            "_sonarr_id": sid,
         })
     return searching
 
@@ -673,15 +674,19 @@ def _get_wanted(db: Session) -> dict:
     searching.sort(key=lambda x: x.get("waiting_since") or "", reverse=True)
 
     # What each series' Searching card counts, for every series in the window
-    # (not only the first SEARCHING_LIMIT), keyed like _missing_ids_for().
+    # (not only the first SEARCHING_LIMIT), by Sonarr series id: two Sonarr
+    # shows can share a TMDB number. Also remembered past this cache, so a
+    # card someone is looking at still means the same episodes after a
+    # rebuild pushed its show out of the one-page window.
     missing_ids = {}
     for x in searching:
         ids = x.pop("_missing_ids", None)
-        if x.get("media_type") == "series" and ids is not None:
-            if x.get("tmdb_id"):
-                missing_ids[("tmdb", x["tmdb_id"])] = ids
-            if x.get("tvdb_id"):
-                missing_ids[("tvdb", x["tvdb_id"])] = ids
+        sid = x.pop("_sonarr_id", None)
+        if x.get("media_type") == "series" and ids is not None and sid:
+            missing_ids[sid] = ids
+            _shown_ids[sid] = (now, ids)
+    for sid in [k for k, (at, _) in _shown_ids.items() if now - at > SHOWN_IDS_KEEP]:
+        _shown_ids.pop(sid, None)
     result = {"unreleased": unreleased[:20], "searching": searching[:SEARCHING_LIMIT],
               "_missing_ids": missing_ids,
               # Whole lists, un-enriched, for a non-admin's own titles: the
@@ -700,6 +705,10 @@ def _get_unreleased(db: Session) -> list:
     return _get_wanted(db)["unreleased"]
 
 
+SHOWN_IDS_KEEP = 24 * 3600
+_shown_ids: dict = {}  # Sonarr series id -> (when, episode ids its card last counted)
+
+
 def _missing_ids_for(db: Session, rec: dict) -> Optional[set]:
     """The episode ids a series' Searching card counts, or None if it has no card.
 
@@ -707,15 +716,17 @@ def _missing_ids_for(db: Session, rec: dict) -> Optional[set]:
     show's older missing episodes are not on its card: "S12E03" can stand for
     81 missing episodes. "Stop looking" without a list means "the ones shown".
     """
+    sid = rec.get("id")
     try:
-        ids = (_get_wanted(db).get("_missing_ids") or {})
+        got = (_get_wanted(db).get("_missing_ids") or {}).get(sid)
     except Exception:
-        return None
-    got = None
-    if rec.get("tmdbId"):
-        got = ids.get(("tmdb", rec.get("tmdbId")))
-    if got is None and rec.get("tvdbId"):
-        got = ids.get(("tvdb", rec.get("tvdbId")))
+        got = None
+    if got is None:
+        # Not on a card any more (the list was rebuilt since): what its card
+        # last counted. Never a card: None (every missing episode).
+        at, remembered = _shown_ids.get(sid, (0, None))
+        if remembered is not None and time.time() - at <= SHOWN_IDS_KEEP:
+            got = remembered
     return set(got) if got is not None else None
 
 
