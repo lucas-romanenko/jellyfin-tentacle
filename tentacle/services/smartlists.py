@@ -1021,7 +1021,10 @@ def _backup_home_config(path: Path) -> None:
             return
         backups = path.parent / "backups"
         backups.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.utcnow().strftime("%Y%m%dT%H%M%S")
+        # Microseconds: two writes in the same second (a seed then a
+        # regeneration) used to share one name, so the second backup replaced
+        # the first — which could be the only copy of a corrupt original.
+        stamp = datetime.utcnow().strftime("%Y%m%dT%H%M%S%f")
         shutil.copy2(path, backups / f"{path.stem}-{stamp}.json")
         old = sorted(backups.glob(f"{path.stem}-*.json"))
         for stale in old[:-HOME_CONFIG_BACKUPS]:
@@ -1088,7 +1091,11 @@ def write_home_config(db: Session, user_id: int = None) -> dict:
     # built when the user had NO playlists, and once this empty file existed the
     # starter seed never ran again. Seed first, so this regeneration keeps the
     # starter built-in rows and toolbar exactly as for a user with no playlists.
-    if user_id is not None and not get_home_config(db, user_id=user_id):
+    # Gate on the FILE, not on its contents: get_home_config() also answers {}
+    # for an unreadable file, and seeding over that destroyed the only copy of
+    # the user's old rows. (Users already given `rows: []` by the old code keep
+    # it: that cannot be told apart from rows removed on purpose.)
+    if user_id is not None and not _home_config_exists(db, user_id):
         from routers.smartlists import _seed_home_config_from_jellyfin
         new_user = db.query(TentacleUser).filter(TentacleUser.id == user_id).first()
         if new_user:
@@ -1309,6 +1316,18 @@ def write_home_config(db: Session, user_id: int = None) -> dict:
                 logger.debug(f"Could not restore Jellyfin home sections: {e}")
 
     return config
+
+
+def _home_config_exists(db: Session, user_id: int) -> bool:
+    """Whether the user has a home config file at all, readable or not — with
+    the same legacy-global-file fallback for the admin as get_home_config()."""
+    path = _user_home_config_path(db, user_id)
+    if path.exists():
+        return True
+    user = db.query(TentacleUser).filter(TentacleUser.id == user_id).first()
+    if user and user.is_admin:
+        return Path(get_setting(db, "home_config_path", "/data/tentacle-home.json")).exists()
+    return False
 
 
 def get_home_config(db: Session, user_id: int = None) -> dict:
