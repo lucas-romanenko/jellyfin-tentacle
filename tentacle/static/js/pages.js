@@ -1572,13 +1572,20 @@ function filterByTag(tag) {
   loadLibrary();
 }
 
+// The detail modal is shared by every title. Each opening takes a number; an
+// answer for an earlier opening (a slow one, then another title clicked) is
+// dropped instead of replacing the title on screen.
+let _detailSeq = 0;
+
 async function showMediaDetail(tmdbId, mediaType) {
+  const seq = ++_detailSeq;
   showModal('modal-media-detail');
   document.getElementById('detail-title').textContent = 'Loading...';
   document.getElementById('detail-body').innerHTML = '<div class="loading-state"><div class="spinner"></div></div>';
 
   try {
     const data = await api(`/api/library/item/${mediaType}/${tmdbId}`);
+    if (seq !== _detailSeq) return;
     document.getElementById('detail-title').textContent = data.title;
     const isSeries = mediaType === 'series';
     document.getElementById('detail-body').innerHTML = `
@@ -1618,10 +1625,12 @@ async function showMediaDetail(tmdbId, mediaType) {
 
     // Fetch trailer URL from TMDB in background
     api(`/api/library/tmdb/${mediaType}/${tmdbId}`).then(tmdbData => {
+      if (seq !== _detailSeq) return;
       const slot = document.getElementById('detail-trailer-slot');
       if (slot && tmdbData.trailer_url) slot.innerHTML = _trailerBtn(tmdbData.trailer_url);
     }).catch(() => {});
   } catch (e) {
+    if (seq !== _detailSeq) return;
     document.getElementById('detail-body').innerHTML = '<div class="empty-state"><p>Failed to load details</p></div>';
   }
 }
@@ -1855,6 +1864,7 @@ let _detailEpState = {}; // { vodEps, dlEps, tmdbId, loaded: {sn: true} }
 async function _loadSeriesEpisodes(tmdbId, seriesData) {
   const container = document.getElementById('detail-episodes');
   if (!container) return;
+  const seq = _detailSeq;
 
   try {
     const [seasonsData, vodData, sonarrData] = await Promise.all([
@@ -1862,6 +1872,8 @@ async function _loadSeriesEpisodes(tmdbId, seriesData) {
       api(`/api/discover/vod-episodes/${tmdbId}`),
       api(`/api/discover/sonarr-episodes/${tmdbId}`).catch(() => ({ in_sonarr: false })),
     ]);
+    // Another title's detail since: its episode state must not become this one's.
+    if (seq !== _detailSeq) return;
 
     const seasons = (seasonsData.seasons || []).filter(s => s.season_number > 0);
     const vodEps = vodData.episodes || {};
@@ -1964,6 +1976,7 @@ async function _loadSeriesEpisodes(tmdbId, seriesData) {
 
     container.innerHTML = html;
   } catch (e) {
+    if (seq !== _detailSeq) return;
     container.innerHTML = '<div style="font-size:13px;color:var(--text3);padding:8px 0">Could not load episode data</div>';
   }
 }
@@ -1977,10 +1990,12 @@ async function detailToggleSeason(sn) {
 
   const list = document.getElementById(`detail-ep-list-${sn}`);
   if (_detailEpState.loaded[sn]) return; // already loaded
+  const st = _detailEpState;
 
   list.innerHTML = '<div style="padding:8px 12px;color:var(--text3);font-size:12px">Loading...</div>';
   try {
     const data = await api(`/api/discover/season/${_detailEpState.tmdbId}/${sn}`);
+    if (st !== _detailEpState || !list.isConnected) return;
     _detailEpState.loaded[sn] = true;
     const tmdbEps = data.episodes || [];
     const vodEps = _detailEpState.vodEps;
@@ -2045,12 +2060,14 @@ async function detailToggleSeason(sn) {
 }
 
 async function showCoverageDetail(tmdbId, mediaType, title, year, posterPath) {
+  const seq = ++_detailSeq;
   showModal('modal-media-detail');
   document.getElementById('detail-title').textContent = 'Loading...';
   document.getElementById('detail-body').innerHTML = '<div class="loading-state"><div class="spinner"></div></div>';
 
   try {
     const data = await api(`/api/library/item/${mediaType}/${tmdbId}`);
+    if (seq !== _detailSeq) return;
     document.getElementById('detail-title').textContent = data.title;
     document.getElementById('detail-body').innerHTML = `
       <div class="detail-layout" style="display:flex;gap:20px">
@@ -2071,9 +2088,11 @@ async function showCoverageDetail(tmdbId, mediaType, title, year, posterPath) {
         </div>
       </div>`;
   } catch {
+    if (seq !== _detailSeq) return;
     // Item not in library — fetch from TMDB for overview
     try {
       const data = await api(`/api/library/tmdb/${mediaType}/${tmdbId}`);
+      if (seq !== _detailSeq) return;
       const isSeries = mediaType === 'series';
       const arrLabel = isSeries ? 'Sonarr' : 'Radarr';
       document.getElementById('detail-title').textContent = data.title || title || 'Unknown';
@@ -2095,6 +2114,7 @@ async function showCoverageDetail(tmdbId, mediaType, title, year, posterPath) {
           </div>
         </div>`;
     } catch {
+      if (seq !== _detailSeq) return;
       document.getElementById('detail-title').textContent = title || 'Unknown';
       document.getElementById('detail-body').innerHTML = `
         <div class="detail-layout" style="display:flex;gap:20px">
@@ -5365,6 +5385,7 @@ function renderDiscoverGrid(items) {
 }
 
 async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, inLibrary, tvdbId) {
+  const seq = ++_detailSeq;
   showModal('modal-media-detail');
   document.getElementById('detail-title').textContent = 'Loading...';
   document.getElementById('detail-body').innerHTML = '<div class="loading-state"><div class="spinner"></div></div>';
@@ -5375,6 +5396,7 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
       ? `/api/discover/detail-tvdb/${tvdbId}`
       : `/api/discover/detail/${mediaType}/${tmdbId}`;
     const data = await api(detailUrl);
+    if (seq !== _detailSeq) return;
     const isSeries = mediaType === 'series';
     const arrLabel = isSeries ? 'Sonarr' : 'Radarr';
     const detailTvdbId = data.tvdb_id || tvdbId || 0;
@@ -5428,6 +5450,7 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
         </div>
       </div>`;
   } catch {
+    if (seq !== _detailSeq) return;
     document.getElementById('detail-title').textContent = title || 'Unknown';
     document.getElementById('detail-body').innerHTML = `
       <div class="detail-layout" style="display:flex;gap:20px">
