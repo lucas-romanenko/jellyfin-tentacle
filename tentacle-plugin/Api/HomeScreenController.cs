@@ -322,6 +322,20 @@ public class TentacleHomeController : ControllerBase
             };
 
             finalItems = sorted.Take(limit).ToList();
+            // Every save of a playlist makes a new key, and /Tentacle/Refresh is the only
+            // other thing that clears the cache, so drop expired entries as new ones come in.
+            if (_sectionCache.Count > 256)
+            {
+                var now = DateTime.UtcNow;
+                foreach (var entry in _sectionCache)
+                {
+                    if (entry.Value.Expiry <= now)
+                    {
+                        _sectionCache.TryRemove(entry.Key, out _);
+                    }
+                }
+            }
+
             _sectionCache[sectionCacheKey] = (DateTime.UtcNow.Add(SectionCacheDuration), finalItems.Select(i => i.Id).ToList());
         }
 
