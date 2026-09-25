@@ -921,35 +921,37 @@ def refresh_tags(db: Session = Depends(get_db)):
     else:
         logger.info("[Refresh Tags] Jellyfin not configured — skipping tag push")
 
-    # Rewrite NFOs for VOD content so Jellyfin picks up new tags
-    from services.nfo import write_movie_nfo, write_series_nfo
+    # Bring the tags in each non-Radarr NFO in line with the DB. Only the
+    # <tag> lines are replaced: rebuilding the whole NFO from the DB row, as
+    # this used to, erased what the row does not hold — <imdbid>, cast,
+    # directors, studios and tagline from the sync's full TMDB details, a
+    # Sonarr show's <tvdbid> — and reset <dateadded> to now.
+    # An NFO that is missing altogether is still written from the row, as
+    # before — there is nothing in it to lose.
+    from services.nfo import update_nfo_tags, write_movie_nfo, write_series_nfo
     nfos_written = 0
-    vod_movies = db.query(Movie).filter(Movie.source != "radarr", Movie.nfo_path.isnot(None)).all()
-    for movie in vod_movies:
-        try:
-            metadata = {
-                "tmdb_id": movie.tmdb_id, "title": movie.title, "year": movie.year,
-                "overview": movie.overview, "runtime": movie.runtime, "rating": movie.rating,
-                "genres": movie.genres or [], "poster_path": movie.poster_path,
-                "backdrop_path": movie.backdrop_path,
-            }
-            write_movie_nfo(Path(movie.nfo_path), metadata, movie.tags or [])
-            nfos_written += 1
-        except Exception:
-            pass
-    vod_series = db.query(Series).filter(Series.source != "radarr", Series.nfo_path.isnot(None)).all()
-    for series in vod_series:
-        try:
-            metadata = {
-                "tmdb_id": series.tmdb_id, "title": series.title, "year": series.year,
-                "overview": series.overview, "genres": series.genres or [],
-                "poster_path": series.poster_path, "backdrop_path": series.backdrop_path,
-                "status": getattr(series, "status", None),
-            }
-            write_series_nfo(Path(series.nfo_path), metadata, series.tags or [])
-            nfos_written += 1
-        except Exception:
-            pass
+    for model in (Movie, Series):
+        for row in db.query(model).filter(model.source != "radarr", model.nfo_path.isnot(None)).all():
+            try:
+                nfo = Path(row.nfo_path)
+                if nfo.exists():
+                    if update_nfo_tags(nfo, row.tags or []):
+                        nfos_written += 1
+                    continue
+                metadata = {
+                    "tmdb_id": row.tmdb_id, "title": row.title, "year": row.year,
+                    "overview": row.overview, "genres": row.genres or [],
+                    "poster_path": row.poster_path, "backdrop_path": row.backdrop_path,
+                }
+                if model is Movie:
+                    metadata.update(runtime=row.runtime, rating=row.rating)
+                    write_movie_nfo(nfo, metadata, row.tags or [])
+                else:
+                    metadata["status"] = getattr(row, "status", None)
+                    write_series_nfo(nfo, metadata, row.tags or [])
+                nfos_written += 1
+            except Exception:
+                pass
     if nfos_written:
         logger.info(f"[Refresh Tags] Rewrote {nfos_written} NFO files")
 
