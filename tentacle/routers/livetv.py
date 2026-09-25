@@ -1008,14 +1008,79 @@ _PUMP_RECANCEL_SECONDS = 1.0
 _stream_status: "dict[int, dict]" = {}
 
 
-def _status_open(channel_id: int) -> dict:
+def _status_open(channel_id: int, health: "dict | None" = None) -> dict:
     """A new upstream for this channel: a fresh entry, returned so that the
     stream which made it clears only its own (a channel closed and reopened
     within the same second must not lose the new entry to the old finally)."""
     now = asyncio.get_running_loop().time()
-    entry = {"state": "streaming", "since": now, "opened_at": now, "last_error": None}
+    entry = {"state": "streaming", "since": now, "opened_at": now, "last_error": None,
+             "health": health if health is not None else _new_health()}
     _stream_status[channel_id] = entry
     return entry
+
+
+# What went wrong during a stream's life (#137). Counted where the stream
+# code already knows it -- a re-dial, a wait on a failing provider, a segment
+# given up on -- so the figures are facts, not inferences. A recording that
+# lost content looked exactly like a good one until it was played; now its
+# end is logged with these numbers, and an Activity line says so.
+_RECENT_STREAMS_MAX = 50
+_recent_streams: "list[dict]" = []
+
+
+def _new_health() -> dict:
+    return {"reconnects": 0,              # raw TS: connections re-established
+            "reconnecting_seconds": 0.0,  # time spent with the provider failing
+            "segments_skipped": 0,        # HLS: segments that never arrived
+            "errors": 0}                  # failed requests that were retried
+
+
+def _stream_ended(channel_id: int, entry: dict, recording: bool) -> None:
+    """Log (and keep, for /api/live/streams) how a finished stream went.
+    Synchronous and cheap: it runs from a generator's finally."""
+    from datetime import timezone
+    h = entry.get("health") or _new_health()
+    try:
+        seconds = asyncio.get_running_loop().time() - entry["opened_at"]
+    except RuntimeError:
+        seconds = 0.0
+    summary = {"channel_id": channel_id,
+               "ended_at": datetime.now(timezone.utc).isoformat(),
+               "seconds": round(seconds, 1), "recording": bool(recording),
+               "reconnects": h["reconnects"],
+               "reconnecting_seconds": round(h["reconnecting_seconds"], 1),
+               "segments_skipped": h["segments_skipped"], "errors": h["errors"]}
+    _recent_streams.append(summary)
+    del _recent_streams[:-_RECENT_STREAMS_MAX]
+    damaged = h["reconnects"] or h["segments_skipped"] or h["reconnecting_seconds"] >= 1.0
+    what = "recording" if recording else "stream"
+    text = (f"{h['reconnects']} reconnect(s), {h['reconnecting_seconds']:.0f}s waiting on the "
+            f"provider, {h['segments_skipped']} segment(s) skipped, {h['errors']} failed request(s)")
+    if not damaged:
+        logger.info(f"[LiveTV] Channel {channel_id}: {what} ran {seconds:.0f}s with no upstream trouble")
+        return
+    logger.warning(f"[LiveTV] Channel {channel_id}: {what} ran {seconds:.0f}s — {text}")
+    if not recording:
+        return
+
+    def _write():
+        db = None
+        try:
+            db = SessionLocal()
+            ch = db.query(LiveChannel).filter(LiveChannel.id == channel_id).first()
+            label = f"'{ch.name}'" if ch else f"channel {channel_id}"
+            log_activity(db, "livetv_recording_damaged",
+                         f"Live TV: a recording of {label} may be missing content — {text}",
+                         detail=summary)
+        except Exception as e:
+            logger.debug(f"[LiveTV] Could not record the stream summary in Activity: {e}")
+        finally:
+            if db is not None:
+                db.close()
+    try:
+        asyncio.get_running_loop().run_in_executor(None, _write)
+    except RuntimeError:
+        pass
 
 
 def _status_set(channel_id: int, state: str, last_error: "str | None" = None):
@@ -1536,6 +1601,8 @@ def _stream_snapshot(db) -> list:
             "open_seconds": round(max(0.0, now - st["opened_at"]), 1),
             "last_error": st.get("last_error"),
             "subscribers": len(shared.subscribers) if shared is not None else None,
+            # reconnects / seconds waiting on the provider / segments skipped (#137)
+            "health": dict(st.get("health") or {}),
         })
     # Provider VOD played through Tentacle holds a slot too (routers.vod).
     try:
@@ -1578,6 +1645,8 @@ def live_streams(db: Session = Depends(get_db)):
         # of the channel since Tentacle started, and how often (#140).
         "placeholders": [{"channel_id": cid, **info} for cid, info in sorted(_placeholders.items())],
         **_protection_snapshot(db),
+        # the last streams that ended, and how they went (#137)
+        "recent": list(_recent_streams),
     }
 
 
@@ -3502,6 +3571,8 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
             align = "mp2t" in upstream_ct.lower()
             first = True
             status_entry = _status_open(channel_id)
+            health = status_entry["health"]
+            dropped_at = None   # while re-dialling: when the data stopped
             try:
                 while True:
                     opened_at = loop.time()
@@ -3533,6 +3604,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         yield pending[:cut]
                     if loop.time() - opened_at >= HEALTHY_AFTER:
                         failing_since, slept, backoff, backoff_cap = None, 0.0, 1.0, _BACKOFF_CAP
+                    dropped_at = loop.time()
                     await raw_resp.aclose()
 
                     # Re-open, waiting out refusals, until it works or the budget is spent.
@@ -3579,6 +3651,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                             status = e.response.status_code if isinstance(e, httpx.HTTPStatusError) else None
                             if isinstance(e, httpx.TransportError) or status in _OPEN_RETRYABLE_STATUS:
                                 reason = str(e) or type(e).__name__
+                                health["errors"] += 1
                                 if status in _REFUSAL_STATUS:
                                     backoff_cap = _REFUSAL_BACKOFF_CAP
                                 continue
@@ -3586,8 +3659,15 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                                          f"re-opened, stopping: {e}")
                             return
                         raw_resp = new_resp
+                        health["reconnects"] += 1
+                        health["reconnecting_seconds"] += loop.time() - dropped_at
+                        dropped_at = None
                         break
             finally:
+                if dropped_at is not None:     # ended while still re-dialling
+                    health["reconnecting_seconds"] += loop.time() - dropped_at
+                _stream_ended(channel_id, status_entry,
+                              bool(is_recording is not None and is_recording()))
                 _status_clear(channel_id, status_entry)
                 await raw_resp.aclose()
                 await raw_client.aclose()
@@ -3618,13 +3698,17 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
 
     logger.info(f"[LiveTV] HLS stream for channel {channel_id} — proxying chunks as MPEG-TS")
 
+    health = _new_health()
+
     async def hls_to_mpegts():
         """Wrapper that releases the concurrency slot once the stream ends."""
-        status_entry = _status_open(channel_id)
+        status_entry = _status_open(channel_id, health)
         try:
             async for chunk in _hls_worker():
                 yield chunk
         finally:
+            _stream_ended(channel_id, status_entry,
+                          bool(is_recording is not None and is_recording()))
             _status_clear(channel_id, status_entry)
             _release_sem()
             logger.info(f"[LiveTV] Stream ended for channel {channel_id}")
@@ -3698,6 +3782,8 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 # failure budget, run on until a real segment arrives.
                 return
             in_placeholder = False
+            if failing_since is not None:
+                health["reconnecting_seconds"] += asyncio.get_running_loop().time() - failing_since
             failing_since = None
             backoff = BACKOFF_START
             backoff_cap = _BACKOFF_CAP
@@ -3713,12 +3799,14 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                              f"{channel_id}, stopping: {exc}")
                 return True
             now = asyncio.get_running_loop().time()
+            health["errors"] += 1
             if failing_since is None:
                 failing_since = now
             waited = now - failing_since
             if _budget_spent(waited):
                 logger.error(f"[LiveTV] {what} still failing after {waited:.0f}s "
                              f"for channel {channel_id}, stopping: {exc}")
+                health["reconnecting_seconds"] += waited
                 return True
             logger.warning(f"[LiveTV] {what} failed for channel {channel_id} "
                            f"(retry in {backoff:.0f}s, {waited:.0f}s so far): {exc}")
@@ -3852,6 +3940,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     if payload is None:
                         if not _is_retryable(chunk_error):
                             fatal_chunk_skips += 1
+                            health["segments_skipped"] += 1
                             seen_chunks.add(chunk_url)
                             if fatal_chunk_skips > MAX_FATAL_CHUNK_SKIPS:
                                 logger.error(f"[LiveTV] {fatal_chunk_skips} segments in a row are gone for "
