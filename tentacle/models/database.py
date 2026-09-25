@@ -913,7 +913,34 @@ def _migrate_columns():
     _migrate_home_row_order(cursor, conn)
     _migrate_auto_playlist_toggles(cursor, conn)
     _drop_retired_tables(cursor, conn)
+    _reset_guessed_made_for_kids(cursor, conn)
     conn.close()
+
+
+def _reset_guessed_made_for_kids(cursor, conn):
+    """Forget the Made for Kids values the age_limit guess wrote (#130).
+
+    Until this fix the indexer stored True for any unrestricted video whose
+    details came back without is_live, which is not what the designation
+    means, and never stored False. yt-dlp does not report the designation, so
+    none of the stored True values came from YouTube: reset them to NULL
+    ("unknown"). Runs once, recorded in settings, so values a later extractor
+    supplies for real are never touched.
+    """
+    import sqlite3
+    marker = "migrated_youtube_made_for_kids_reset"
+    try:
+        cursor.execute("SELECT 1 FROM settings WHERE key = ?", (marker,))
+        if cursor.fetchone():
+            return
+        cursor.execute("UPDATE youtube_videos SET is_made_for_kids = NULL "
+                       "WHERE is_made_for_kids IS NOT NULL")
+        if cursor.rowcount:
+            logger.info(f"[migrate] Cleared {cursor.rowcount} guessed youtube_videos.is_made_for_kids value(s)")
+        cursor.execute("INSERT INTO settings (key, value) VALUES (?, ?)", (marker, "1"))
+        conn.commit()
+    except sqlite3.OperationalError as e:
+        logger.error(f"[migrate] Could not reset youtube_videos.is_made_for_kids: {e}")
 
 
 def _drop_retired_tables(cursor, conn):

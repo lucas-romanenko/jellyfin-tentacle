@@ -223,6 +223,20 @@ def _should_index(details: dict, channel: YouTubeChannel) -> tuple:
     return True, ""
 
 
+def made_for_kids(details: dict):
+    """YouTube's Made for Kids designation: True, False, or None when unknown.
+
+    Read only from a field that actually carries it. age_limit is not that
+    field: yt-dlp sets it to 0 for every video without an age restriction and
+    to 18 for the rest, so "age_limit == 0" flagged ordinary videos as made
+    for kids, and the old `a and b or None` expression could never produce
+    False either (#130). yt-dlp 2026.8.19 does not report the designation at
+    all, so this is None — "not known" — unless a future extractor supplies it.
+    """
+    value = details.get("is_made_for_kids")
+    return None if value is None else bool(value)
+
+
 def is_library_item(video) -> bool:
     """Whether this video should get .strm/NFO files.
 
@@ -495,7 +509,7 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
             live_status=details.get("live_status"),
             media_type="livestream" if details.get("live_status") else "video",
             thumbnail_url=details.get("thumbnail"),
-            is_made_for_kids=details.get("age_limit") == 0 and details.get("is_live") is None or None,
+            is_made_for_kids=made_for_kids(details),
             first_seen=now,
             last_seen=now,
         ))
