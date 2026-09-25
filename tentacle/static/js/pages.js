@@ -820,7 +820,7 @@ function renderLibCard(item) {
 
   // Normal in-library card
   const poster = item.poster_path
-    ? `<img src="https://image.tmdb.org/t/p/w185${item.poster_path}" loading="lazy" onerror="this.parentElement.innerHTML='<div class=\\'lib-card-poster-placeholder\\'>◫</div>'">`
+    ? `<img src="https://image.tmdb.org/t/p/w185${item.poster_path}" loading="lazy" onerror="this.outerHTML='<div class=\\'lib-card-poster-placeholder\\'>◫</div>'">`
     : `<div class="lib-card-poster-placeholder">◫</div>`;
 
   let badges = '';
@@ -5277,7 +5277,7 @@ function renderDiscoverGrid(items) {
   grid.innerHTML = items.map(item => {
     const posterSrc = _imgUrl(item.poster_path, 'w185');
     const poster = posterSrc
-      ? `<img src="${posterSrc}" loading="lazy" onerror="this.parentElement.innerHTML='<div class=\\'lib-card-poster-placeholder\\'>◫</div>'">`
+      ? `<img src="${posterSrc}" loading="lazy" onerror="this.outerHTML='<div class=\\'lib-card-poster-placeholder\\'>◫</div>'">`
       : `<div class="lib-card-poster-placeholder">◫</div>`;
     const tvdbId = item.tvdb_id || 0;
     const tmdbId = item.tmdb_id || 0;
