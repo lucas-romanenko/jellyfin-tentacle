@@ -38,6 +38,9 @@ def _livetv():
 
 
 class ProtectedBroker(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        _livetv()._recording_cache.pop("answer_issued_at", None)
+
     def _slots(self, protect=True):
         s = _livetv()._StreamSlots()
         s.protect = protect
@@ -281,6 +284,8 @@ class TunerOpens(unittest.IsolatedAsyncioTestCase):
         livetv._pending_opens.clear()
         livetv._reserved_channels.clear()
         livetv._recording_cache.update(at=-1e9, sids=set(), pending=None, failures=0, retry_at=-1e9)
+        livetv._recording_cache.pop("answer_issued_at", None)
+        livetv._recording_cache.pop("pending_issued", None)
         self.db = _fresh_db()
         from models.database import LiveChannel, Provider, set_setting
         prov = Provider(name="P", server_url="http://provider.test", username="u", password="p")
