@@ -5132,6 +5132,12 @@ function switchDiscoverSection(sectionId) {
     loadGenreSection();
     return;
   }
+  if (sectionId === 'missing') {
+    // From My Lists: All plus one tab per list (the picker loadListsSection builds).
+    if (pills) pills.style.display = 'flex';
+    loadListsSection();
+    return;
+  }
   if (pills) pills.style.display = 'none';
   const section = _discoverSections.find(s => s.id === sectionId);
   if (section) renderDiscoverGrid(section.items);
