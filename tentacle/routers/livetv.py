@@ -1522,6 +1522,24 @@ def _sync_groups(provider_id: int, categories: list[dict], db: Session, channel_
     db.flush()
 
 
+def _enabled_group_names(db: Session, provider_id: int) -> set:
+    """Names of this provider's groups the user has switched on.
+
+    A NEW channel starts with its group's state (#158). The page says "enable
+    the groups you want, then sync channels", but every new channel was created
+    disabled and the group toggle only cascades to channels that already exist,
+    so the first sync reported "N channels (0 enabled)" and a channel a provider
+    added later to an enabled group stayed off. Existing channels keep the
+    user's own setting either way.
+    """
+    return {
+        name for (name,) in db.query(LiveChannelGroup.name).filter(
+            LiveChannelGroup.provider_id == provider_id,
+            LiveChannelGroup.enabled == True,  # noqa: E712
+        )
+    }
+
+
 def _upsert_channels(
     provider_id: int,
     streams: list[dict],
@@ -1542,6 +1560,7 @@ def _upsert_channels(
     new_count = 0
     updated_count = 0
     seen_ids = set()
+    enabled_groups = _enabled_group_names(db, provider_id)
 
     for stream in streams:
         sid = str(stream.get("stream_id", ""))
@@ -1571,7 +1590,7 @@ def _upsert_channels(
                 logo_url=stream.get("stream_icon") or None,
                 group_title=group,
                 epg_channel_id=stream.get("epg_channel_id") or None,
-                enabled=False,
+                enabled=bool(group) and group in enabled_groups,
             ))
             new_count += 1
 
@@ -1598,6 +1617,38 @@ def _m3u_stable_id(name: str, stream_url: str) -> str:
     return hashlib.sha256(f"{name}|{stream_url}".encode()).hexdigest()[:16]
 
 
+def _m3u_channel_number(value) -> Optional[int]:
+    """tvg-chno as a channel number, when it is a plain whole number.
+
+    Providers write sub-channels ("5.1") and text there, and int() on those
+    raised, which failed the whole M3U sync (#175). Anything else is left
+    unnumbered.
+    """
+    text = str(value or "").strip()
+    return int(text) if text.isdigit() else None
+
+
+def _dedupe_m3u(parsed_channels: list[dict]) -> list[dict]:
+    """The first entry of each channel; later copies of it are dropped.
+
+    Provider M3Us often list one channel under two groups ("Sports" and
+    "Favourites"): same name, same URL, so the same stable id. Both were added
+    and the flush failed on uq_live_channel_stream, so no channel of the
+    playlist was saved (#175).
+    """
+    seen, kept = set(), []
+    for ch in parsed_channels:
+        sid = _m3u_stable_id(ch["name"], ch["stream_url"])
+        if sid in seen:
+            continue
+        seen.add(sid)
+        kept.append(ch)
+    dropped = len(parsed_channels) - len(kept)
+    if dropped:
+        logger.info(f"[LiveTV] M3U lists {dropped} channel(s) more than once; the first entry of each is used")
+    return kept
+
+
 def _upsert_channels_from_m3u(
     provider_id: int,
     parsed_channels: list[dict],
@@ -1610,6 +1661,9 @@ def _upsert_channels_from_m3u(
     sort_order, channel_number) across syncs. Removes channels no longer in
     the M3U file.
     """
+    parsed_channels = _dedupe_m3u(parsed_channels)
+    enabled_groups = _enabled_group_names(db, provider_id)
+
     # Build lookup of existing channels by stream_id
     existing = {
         ch.stream_id: ch
@@ -1664,8 +1718,9 @@ def _upsert_channels_from_m3u(
             row.logo_url = ch.get("logo_url") or row.logo_url
             row.group_title = group or row.group_title
             row.epg_channel_id = ch.get("epg_channel_id") or row.epg_channel_id
-            if ch.get("tvg_chno") and not row.channel_number:
-                row.channel_number = int(ch["tvg_chno"])
+            number = _m3u_channel_number(ch.get("tvg_chno"))
+            if number is not None and not row.channel_number:
+                row.channel_number = number
             row.updated_at = datetime.utcnow()
             updated_count += 1
         else:
@@ -1677,8 +1732,8 @@ def _upsert_channels_from_m3u(
                 logo_url=ch.get("logo_url"),
                 group_title=group,
                 epg_channel_id=ch.get("epg_channel_id"),
-                channel_number=int(ch["tvg_chno"]) if ch.get("tvg_chno") else None,
-                enabled=False,
+                channel_number=_m3u_channel_number(ch.get("tvg_chno")),
+                enabled=bool(group) and group in enabled_groups,
             ))
             new_count += 1
 
