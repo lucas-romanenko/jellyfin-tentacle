@@ -40,23 +40,49 @@ class TestStreamKey(unittest.TestCase):
         self.assertFalse(wrong_match.is_blocked({"7"}, 8, "http://u"))
         self.assertFalse(wrong_match.is_blocked(set(), 7))
 
-
 class FakeJf:
-    """Records deletes, and what Tentacle's DB looked like at that moment."""
+    """Records deletes, and what Tentacle's DB looked like at that moment.
+
+    Lists one Jellyfin item per VOD .strm it has seen (Jellyfin mounts the
+    VOD folder at another prefix), plus `extra` items -- e.g. a Radarr download
+    of the same film, listed FIRST as Jellyfin may well list it."""
 
     def __init__(self, db):
         self.db = db
         self.deleted = []
         self.row_present_at_delete = None
+        self.items = {}
+        self.extra = []
 
     def __call__(self, *a, **k):
         return self
 
+    def sync_items(self):
+        for m in self.db.query(Movie).filter(Movie.strm_path.isnot(None)).all():
+            tail = "/".join(_RealPath(m.strm_path).parts[-2:])
+            self.items.setdefault(f"jf-{m.tmdb_id}", {
+                "Id": f"jf-{m.tmdb_id}", "ProviderIds": {"Tmdb": str(m.tmdb_id)}, "Path": "/jfvod/" + tail})
+
+    def _all(self):
+        self.sync_items()
+        return list(self.extra) + list(self.items.values())
+
+    def _get(self, path, params=None):
+        items = self._all()
+        start = int((params or {}).get("StartIndex") or 0)
+        return {"Items": items[start:], "TotalRecordCount": len(items)}
+
+    def get_item_by_id(self, item_id):
+        return next((i for i in self._all() if i["Id"] == item_id), None)
+
+    def trigger_library_scan(self, *a, **k):
+        return True
+
     def search_by_tmdb_id(self, tmdb_id, media_type="Movie", **k):
-        return {"Id": f"jf-{tmdb_id}"}
+        return next((i for i in self._all() if i["ProviderIds"]["Tmdb"] == str(tmdb_id)), None)
 
     def delete_item(self, item_id):
-        tmdb = int(item_id.split("-")[1])
+        tmdb = int(item_id.split("-")[-1])
         self.row_present_at_delete = self.db.query(Movie).filter(Movie.tmdb_id == tmdb).first() is not None
         self.deleted.append(item_id)
         return True
@@ -79,6 +105,7 @@ class _Base(NightlyHarness):
             p.start()
             self.addCleanup(p.stop)
         self.tmdb = FakeTMDB.ids["Movie 9"]   # the "mislabelled" one (stream id == tmdb id here)
+        self.jf.sync_items()
 
     def report(self, tmdb_id=None):
         return wrong_match.block_and_remove_movie(self.db, tmdb_id or self.tmdb, user_name="Lucas")
@@ -164,6 +191,36 @@ class TestWrongMovie(_Base):
         self.assertEqual(409, e.exception.status)
         self.assertIsNotNone(self.movie(self.tmdb))
         self.assertEqual(0, self.db.query(BlockedStream).count())
+
+    def test_a_download_of_the_same_film_is_never_deleted_in_jellyfin(self):
+        """The same film is in Jellyfin twice: a Radarr download (listed first)
+        and this IPTV copy. Deleting "the first movie with this TMDB id" through
+        Jellyfin deleted the DOWNLOAD's folder from disk."""
+        self.jf.extra = [{"Id": f"dl-{self.tmdb}", "ProviderIds": {"Tmdb": str(self.tmdb)},
+                          "Path": "/downloads/Movie 9 (2020)/Movie 9 (2020).mkv"}]
+        self.report()
+        self.assertEqual([f"jf-{self.tmdb}"], self.jf.deleted)
+
+    def test_a_stored_id_of_the_download_is_not_trusted(self):
+        """Discover backfills jellyfin_item_id from a TMDB lookup -- it can be
+        the download's id."""
+        self.jf.extra = [{"Id": f"dl-{self.tmdb}", "ProviderIds": {"Tmdb": str(self.tmdb)},
+                          "Path": "/downloads/Movie 9 (2020)/Movie 9 (2020).mkv"}]
+        row = self.movie(self.tmdb)
+        row.jellyfin_item_id = f"dl-{self.tmdb}"
+        self.db.commit()
+        self.report()
+        self.assertEqual([f"jf-{self.tmdb}"], self.jf.deleted)
+
+    def test_no_item_for_this_strm_deletes_nothing(self):
+        self.jf.items.clear()
+        self.jf.sync_items = lambda: None
+        self.jf.extra = [{"Id": f"dl-{self.tmdb}", "ProviderIds": {"Tmdb": str(self.tmdb)},
+                          "Path": "/downloads/Movie 9 (2020)/Movie 9 (2020).mkv"}]
+        r = self.report()
+        self.assertEqual([], self.jf.deleted)
+        self.assertFalse(r["jellyfin_deleted"])
+        self.assertIsNone(self.movie(self.tmdb), "Tentacle's copy is still removed")
 
     def test_it_is_audited(self):
         self.report()
@@ -462,6 +519,12 @@ class TestRematch(_Base):
         self.assertIsNotNone(row)
         self.assertEqual("The Decline", row.title)
         self.assertIsNone(self.movie(self.tmdb))
+
+    def test_a_download_of_the_labelled_film_survives_in_jellyfin(self):
+        self.jf.extra = [{"Id": f"dl-{self.tmdb}", "ProviderIds": {"Tmdb": str(self.tmdb)},
+                          "Path": "/downloads/Movie 9 (2020)/Movie 9 (2020).mkv"}]
+        self.rematch()
+        self.assertEqual([f"jf-{self.tmdb}"], self.jf.deleted)
 
     def test_the_request_for_the_labelled_film_survives(self):
         admin = mdb.TentacleUser(jellyfin_user_id="a" * 32, display_name="Lucas", is_admin=True)

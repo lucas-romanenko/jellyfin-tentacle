@@ -99,7 +99,7 @@ def block_and_remove_movie(db: Session, tmdb_id: int, user_name: str = None,
         raise WrongMatchError(409, "Could not read which provider stream this title plays, so it "
                                    "cannot be blocked (its .strm file is missing)")
 
-    title, provider_id, jf_item_id = row.title, row.provider_id, row.jellyfin_item_id
+    title, provider_id, jf_item_id, strm_path = row.title, row.provider_id, row.jellyfin_item_id, row.strm_path
     exists = db.query(BlockedStream).filter(
         BlockedStream.provider_id == provider_id,
         BlockedStream.media_type == "movie",
@@ -123,25 +123,79 @@ def block_and_remove_movie(db: Session, tmdb_id: int, user_name: str = None,
     logger.info(f"[WrongMatch] '{title}' (tmdb:{tmdb_id}): blocked provider {provider_id} "
                 f"stream {shown_key}, removed {files} file(s) — by {user_name}")
 
-    jf_deleted = _delete_from_jellyfin(db, tmdb_id, jf_item_id)
+    jf_deleted = _delete_from_jellyfin(db, tmdb_id, jf_item_id, strm_path)
     _refresh_caches()
     return {"ok": True, "title": title, "blocked": shown_key, "files_removed": files,
             "jellyfin_deleted": jf_deleted,
             "message": f"Removed the wrong copy of {title} and blocked that stream"}
 
 
-def _delete_from_jellyfin(db: Session, tmdb_id: int, jf_item_id: Optional[str]) -> bool:
+def _strm_tail(strm_path: Optional[str]) -> Optional[str]:
+    """'<folder>/<file>.strm' -- what the .strm's path ends with in Jellyfin too
+    (Jellyfin mounts the VOD folder elsewhere, so the prefix differs)."""
+    parts = Path(strm_path).parts if strm_path else ()
+    return "/".join(parts[-2:]) if len(parts) >= 2 else None
+
+
+def _is_item_for_strm(item: Optional[dict], tail: Optional[str]) -> bool:
+    path = ((item or {}).get("Path") or "").replace("\\", "/")
+    return bool(tail) and path.endswith("/" + tail)
+
+
+def jellyfin_item_for_strm(jf, tmdb_id: int, strm_path: Optional[str],
+                           jf_item_id: Optional[str] = None) -> Optional[dict]:
+    """The Jellyfin item that plays THIS .strm -- never just "the first movie
+    with this TMDB id". The same film is often in Jellyfin twice: a Radarr
+    download next to the IPTV copy (or the owner's own file), and deleting
+    the wrong one through Jellyfin deletes that download from disk. A stored
+    id is only trusted when it is this file (Discover backfills the id from a
+    TMDB lookup, which can be the download's)."""
+    tail = _strm_tail(strm_path)
+    if not tail:
+        return None
+    if jf_item_id:
+        try:
+            item = jf.get_item_by_id(jf_item_id)
+        except Exception:
+            item = None
+        if _is_item_for_strm(item, tail):
+            return item
+    tmdb_str, start = str(tmdb_id), 0
+    while True:
+        data = jf._get("/Items", params={
+            "IncludeItemTypes": "Movie", "Recursive": "true", "Fields": "ProviderIds,Path",
+            "EnableImages": "false", "EnableUserData": "false", "StartIndex": start, "Limit": 10000})
+        if not isinstance(data, dict):
+            return None
+        page = data.get("Items") or []
+        for item in page:
+            if (item.get("ProviderIds") or {}).get("Tmdb") == tmdb_str and _is_item_for_strm(item, tail):
+                return item
+        start += len(page)
+        if not page or start >= (data.get("TotalRecordCount") or 0):
+            return None
+
+
+def _delete_from_jellyfin(db: Session, tmdb_id: int, jf_item_id: Optional[str],
+                          strm_path: Optional[str] = None) -> bool:
     url, key = get_setting(db, "jellyfin_url", ""), get_setting(db, "jellyfin_api_key", "")
     if not (url and key):
         return False
     try:
         from services.jellyfin import JellyfinService
         jf = JellyfinService(url, key, get_setting(db, "jellyfin_user_id", ""))
-        if not jf_item_id:
-            found = jf.search_by_tmdb_id(tmdb_id, media_type="Movie")
-            jf_item_id = found["Id"] if found else None
-        if not jf_item_id:
+        item = jellyfin_item_for_strm(jf, tmdb_id, strm_path, jf_item_id)
+        if item is None:
+            # Not found as this file: leave every other item alone. The .strm
+            # is gone from disk, so Jellyfin drops the item on its next scan.
+            logger.info(f"[WrongMatch] No Jellyfin item is this copy's .strm (tmdb:{tmdb_id}); "
+                        f"nothing deleted in Jellyfin, a library scan will drop it")
+            try:
+                jf.trigger_library_scan(None)
+            except Exception:
+                pass
             return False
+        jf_item_id = item["Id"]
         ok = jf.delete_item(jf_item_id)
     except Exception as e:
         logger.warning(f"[WrongMatch] Could not delete tmdb:{tmdb_id} from Jellyfin: {e}")
@@ -304,13 +358,10 @@ def probe_info(db: Session, row: Movie) -> dict:
     if jf is None:
         return empty
     try:
-        item_id = row.jellyfin_item_id
-        if not item_id:
-            found = jf.search_by_tmdb_id(row.tmdb_id, media_type="Movie")
-            item_id = found["Id"] if found else None
-        if not item_id:
+        found = jellyfin_item_for_strm(jf, row.tmdb_id, row.strm_path, row.jellyfin_item_id)
+        if not found:
             return empty
-        item = jf.get_item_by_id(item_id) or {}
+        item = jf.get_item_by_id(found["Id"]) or {}
         sources = item.get("MediaSources") or []
         ticks = (sources[0].get("RunTimeTicks") if sources else None) or 0
         langs = []
@@ -519,7 +570,7 @@ def rematch_movie(db: Session, tmdb_id: int, new_tmdb_id: int, user_name: str = 
     # The old Jellyfin item's files are gone; remove it now (its delete hook finds
     # nothing under the old id — the row carries the new one) and scan so the
     # new folder comes in with the right metadata.
-    _delete_from_jellyfin(db, tmdb_id, old_jf)
+    _delete_from_jellyfin(db, tmdb_id, old_jf, old_strm)
     jf = _jf(db)
     if jf is not None:
         try:
