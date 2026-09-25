@@ -411,10 +411,16 @@ class TMDBService:
         """Look up a movie or series by IMDb ID using TMDB's /find endpoint.
 
         Returns the same metadata dict as get_movie_details/get_series_details,
-        or None if not found.
+        or None if not found. A lookup that could not complete (429/5xx/timeout)
+        also returns None but is never cached as "not found", and leaves
+        lookup_failed() True so the caller can tell the two apart — the same
+        rule search_movie follows. Without it a list refresh during a TMDB
+        hiccup could not tell a failure from a title TMDB lacks, dropped the
+        title from the list and stripped the list's tag from it.
         """
         if not self.enabled or not imdb_id:
             return None
+        self._tl.failed = False
 
         cache_key = f"find_imdb:{imdb_id}"
         cached = self._cache_get(cache_key)
@@ -423,8 +429,7 @@ class TMDBService:
 
         data = self._request(f"find/{imdb_id}", {"external_source": "imdb_id"})
         if not data:
-            self._cache_set(cache_key, None)
-            return None
+            return self._no_match(cache_key, imdb_id, False)
 
         # Check movie results first, then TV
         movie_results = data.get("movie_results", [])
@@ -432,6 +437,8 @@ class TMDBService:
             tmdb_id = movie_results[0].get("id")
             if tmdb_id:
                 result = self.get_movie_details(tmdb_id)
+                if result is None:
+                    return self._no_match(cache_key, imdb_id, False)
                 self._cache_set(cache_key, result)
                 return result
 
@@ -440,11 +447,17 @@ class TMDBService:
             tmdb_id = tv_results[0].get("id")
             if tmdb_id:
                 result = self.get_series_details(tmdb_id)
+                if result is None:
+                    return self._no_match(cache_key, imdb_id, False)
                 self._cache_set(cache_key, result)
                 return result
 
         self._cache_set(cache_key, None)
         return None
+
+    def lookup_failed(self) -> bool:
+        """Whether the last lookup on this thread failed rather than found nothing."""
+        return self._lookup_failed()
 
     def find_images_by_tvdb_id(self, tvdb_id: int) -> Optional[dict]:
         """Look up TMDB poster/backdrop by TheTVDB ID. Returns {'poster': '/path.jpg', 'backdrop': '/path.jpg'} or None."""

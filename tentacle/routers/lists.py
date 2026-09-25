@@ -662,6 +662,16 @@ def refresh_list(lst: ListSubscription, db: Session, bearer_token: str = "",
         return None, None
     if tmdb:
         enrich_items_with_tmdb(items, tmdb)
+        failed = sum(1 for i in items if i.get("_lookup_failed"))
+        if failed:
+            # Those items cannot be matched this time, so nothing not
+            # re-matched can be judged gone: keep the stored list as it was.
+            note = getattr(items, "note", "")
+            items = ListFetch(items, source=getattr(items, "source", ""), complete=False,
+                              missing_types=getattr(items, "missing_types", ()),
+                              note=" ".join(filter(None, [note, (
+                                  f"TMDB did not answer for {failed} item(s); the rest of the "
+                                  f"list was kept as it was.")])))
     items = keep_unread_items(lst, items, db)
     store_stats = store_list_items(lst, items, db)
     store_stats["tagged"] = apply_list_tags_to_library(items, lst.tag, db)
@@ -1207,6 +1217,9 @@ def enrich_items_with_tmdb(items: list, tmdb: TMDBService):
 
         if not tid and imdb_id:
             details = tmdb.find_by_imdb_id(imdb_id)
+            if not details and getattr(tmdb, "lookup_failed", lambda: False)():
+                # TMDB did not answer: not the same as "no TMDB entry".
+                item["_lookup_failed"] = True
             if details:
                 item["tmdb_id"] = details.get("tmdb_id")
                 item.setdefault("title", details.get("title"))
