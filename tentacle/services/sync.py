@@ -1422,6 +1422,9 @@ def _sync_movies(
                     metadata = {"tmdb_id": override_id}
                 else:
                     tmdb_down = False
+                    tl = getattr(tmdb, "_tl", None)
+                    if tl is not None:
+                        tl.failed = False  # get_movie_details doesn't reset it; a stale flag isn't this lookup's
                     try:
                         metadata = tmdb.get_movie_details(override_id)
                         failed = getattr(tmdb, "_lookup_failed", None)

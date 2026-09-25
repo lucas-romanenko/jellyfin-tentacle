@@ -722,6 +722,21 @@ class TestRematch(_Base):
         self.assertIsNone(self.movie(FakeTMDB.ids["Movie 5"]), "the provider dropped Movie 5; it is pruned")
         self.assertIsNone(self.movie(self.tmdb), "the wrong label is not imported either")
 
+    def test_a_stale_failure_flag_does_not_make_a_404_look_like_tmdb_down(self):
+        import threading as _th
+        self.rematch()
+        self.db.query(Movie).filter(Movie.tmdb_id == 674607).delete()
+        self.db.commit()
+        FakeTMDB.get_movie_details = lambda _self, tid: None      # a plain 404
+        FakeTMDB._tl = _th.local()
+        FakeTMDB._lookup_failed = lambda _self: getattr(_self._tl, "failed", False)
+        self.addCleanup(lambda: [delattr(FakeTMDB, a) for a in ("_tl", "_lookup_failed") if hasattr(FakeTMDB, a)])
+        self.client.movies["1"] = [(t, s) for t, s in self.client.movies["1"] if t != "Movie 5"]
+        for _ in range(3):
+            FakeTMDB._tl.failed = True   # left over from an earlier failed call on this thread
+            self.night()
+        self.assertIsNone(self.movie(FakeTMDB.ids["Movie 5"]), "pruned: the 404 is not an outage")
+
     def test_a_download_of_the_labelled_film_survives_in_jellyfin(self):
         self.jf.extra = [{"Id": f"dl-{self.tmdb}", "ProviderIds": {"Tmdb": str(self.tmdb)},
                           "Path": "/downloads/Movie 9 (2020)/Movie 9 (2020).mkv"}]
