@@ -716,12 +716,20 @@ def add_row(req: AddRowRequest, db: Session = Depends(get_db), user: TentacleUse
             home_row_limit = int(get_setting(db, "home_row_limit", "20") or "20")
             for r in config["rows"]:
                 r["order"] = r.get("order", 0) + 1
+            # Carry the SmartList's sort and the row's starting shape, as
+            # write_home_config() does for every row. Without them the plugin
+            # reads the unset sort as "keep the stored playlist order" (#59), so
+            # a release-date row showed a newly appended title last, and a
+            # YouTube row drew cropped poster cards, until the next regeneration.
             config["rows"].insert(0, {
                 "type": "playlist",
                 "playlist_id": req.playlist_id,
                 "display_name": match["name"],
                 "order": 1,
                 "max_items": home_row_limit,
+                "sort_by": match.get("sort_by", "releasedate"),
+                "sort_order": match.get("sort_order", "Descending"),
+                "shape": "wide" if match.get("is_youtube") else "poster",
             })
         else:
             return {"success": False, "message": "Must provide playlist_id or section_id"}
