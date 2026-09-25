@@ -38,6 +38,9 @@ class _FakeJellyfin:
         self.list_fails = False
         self.down = False
         self.fail_posts = set()
+        self.always_fail = set()
+        self.before_series_post = None
+        self.after_series_post = None
 
     def children(self, pid, kinds):
         out = []
@@ -74,10 +77,15 @@ class _FakeJellyfin:
         return dict(self.items[path.rsplit("/", 1)[-1]])
 
     def post(self, item_id, body):
+        if item_id in self.always_fail:
+            import requests
+            raise requests.HTTPError("500 Server Error")
         if item_id in self.fail_posts:
             self.fail_posts.discard(item_id)
             import requests
             raise requests.HTTPError("500 Server Error")
+        if self.before_series_post and self.items[item_id]["Type"] == "Series":
+            self.before_series_post()
         self.posts.append(item_id)
         it = self.items[item_id]
         official = (body.get("OfficialRating") or "").strip() or None
@@ -88,6 +96,8 @@ class _FakeJellyfin:
                 if "OfficialRating" not in (child.get("LockedFields") or []):
                     child["OfficialRating"] = official
                 child["CustomRating"] = custom
+        if self.after_series_post and it["Type"] == "Series":
+            self.after_series_post()
 
 
 def _service(fake):
@@ -219,7 +229,7 @@ class TestAFailedRestoreIsRetried(_PendingDir):
         with self.assertLogs("services.jellyfin", level="WARNING"):
             self.assertTrue(jf.set_item_tags("s1", ["Netflix TV", "Watchlist"]))
         self.assertEqual(fake.items["e2"]["OfficialRating"], "TV-MA")   # the rest went on
-        self.assertIn("e1", self._pending()["s1"])
+        self.assertIn("e1", self._pending()["s1"]["children"])
         # The tags are right now, so no later push rewrites the series; the
         # retry alone has to put e1 back — from the saved values.
         self.assertEqual(jf.retry_pending_rating_restores(), 0)
@@ -262,6 +272,135 @@ class TestAFailedRestoreIsRetried(_PendingDir):
         j._pending_restores_set("s1", {"e1": ["Episode", "TV-MA", None]})
         j._retry_pending_rating_restores(jf, "test")
         jf.retry_pending_rating_restores.assert_called_once()
+
+
+def _with_second_season(fake, season_rating, ep_official, ep_custom=None):
+    fake.items["se2"] = {"Id": "se2", "Type": "Season", "ParentId": "s1", "IndexNumber": 2,
+                         "OfficialRating": season_rating, "CustomRating": None, "Tags": []}
+    fake.items["e4"] = {"Id": "e4", "Type": "Episode", "ParentId": "se2", "IndexNumber": 1,
+                        "ParentIndexNumber": 2, "OfficialRating": ep_official,
+                        "CustomRating": ep_custom, "Tags": []}
+    return fake
+
+
+class TestRound3(_PendingDir):
+    """Round-3 review: a failed SEASON restore, the race, the pending file."""
+
+    def test_a_failed_season_restore_is_retried_without_flattening_its_episodes(self):
+        for season_rating, ep in (("TV-PG", ("TV-MA", None)), ("TV-MA", ("TV-PG", "TV-MA"))):
+            with self.subTest(season=season_rating, episode=ep):
+                fake = _with_second_season(_FakeJellyfin(), season_rating, *ep)
+                fake.fail_posts = {"se2"}
+                jf = _service(fake)
+                with self.assertLogs("services.jellyfin", level="WARNING"):
+                    jf.set_item_tags("s1", ["Netflix TV", "Watchlist"])
+                self.assertIn("e4", self._pending()["s1"]["children"])     # kept while se2 is pending
+                self.assertEqual(jf.retry_pending_rating_restores(), 0)
+                self.assertEqual(fake.items["se2"]["OfficialRating"], season_rating)
+                self.assertEqual((fake.items["e4"]["OfficialRating"], fake.items["e4"]["CustomRating"]), ep)
+                self.assertEqual(self._pending(), {})
+
+    def test_a_rating_changed_while_pending_is_not_overwritten(self):
+        fake = _FakeJellyfin()
+        fake.fail_posts = {"e2"}
+        jf = _service(fake)
+        with self.assertLogs("services.jellyfin", level="WARNING"):
+            jf.set_item_tags("s1", ["Netflix TV", "Watchlist"])
+        fake.items["e2"]["OfficialRating"] = "TV-Y"                    # someone set it by hand
+        jf.retry_pending_rating_restores()
+        self.assertEqual(fake.items["e2"]["OfficialRating"], "TV-Y")
+        self.assertEqual(self._pending(), {})
+
+    def test_retries_are_capped(self):
+        import services.jellyfin as j
+        fake = _FakeJellyfin()
+        fake.always_fail = {"e2"}
+        jf = _service(fake)
+        with self.assertLogs("services.jellyfin", level="WARNING"):
+            jf.set_item_tags("s1", ["Netflix TV", "Watchlist"])
+        with self.assertLogs("services.jellyfin", level="WARNING") as logs:
+            for _ in range(j.PENDING_MAX_ATTEMPTS):
+                jf.retry_pending_rating_restores()
+        errors = [r for r in logs.records if r.levelname == "ERROR"]
+        self.assertEqual(len(errors), 1)
+        self.assertIn("Giving up", errors[0].getMessage())
+        self.assertEqual(self._pending(), {})
+
+    def test_a_corrupt_pending_file_is_kept_aside_not_dropped(self):
+        import os
+        import services.jellyfin as j
+        path = j._pending_restores_path()
+        path.write_text('{"s1": {"children": {"e2": {"type": "Episode", "offic', encoding="utf-8")
+        with self.assertLogs("services.jellyfin", level="WARNING"):
+            self.assertEqual(j._pending_restores_load(), {})
+        self.assertTrue(any(n.startswith(path.name + ".corrupt-") for n in os.listdir(self.data_dir)))
+
+    def test_a_wrong_shaped_file_does_not_break_pushes(self):
+        import services.jellyfin as j
+        path = j._pending_restores_path()
+        for bad in ('[1, 2]', '"text"', '{"s1": 5}', '{"s1": {"children": {"e1": 7}}}'):
+            with self.subTest(content=bad):
+                path.write_text(bad, encoding="utf-8")
+                fake = _FakeJellyfin()
+                with self.assertLogs("services.jellyfin", level="WARNING"):
+                    self.assertTrue(_service(fake).set_item_tags("s1", ["Netflix TV", "x"]))
+                self.assertEqual(fake.items["e2"]["OfficialRating"], "TV-MA")
+
+    def test_two_pushes_of_one_series_at_once_do_not_flatten_it(self):
+        """Refresh Tags beside the nightly push, forced into the reviewer's order:
+        B reads the pending file before A saves it; A saves, updates the series;
+        B lists the children now (it sees A's copies, so it needs nothing); A
+        restores; B updates the series — flattening everything with nothing
+        pending. With the lock B runs wholly before or after A."""
+        import threading
+        import services.jellyfin as j
+        fake = _FakeJellyfin()
+        b_read, a_updated, b_listed, a_done = (threading.Event() for _ in range(4))
+        real_load, real_get = j._pending_restores_load, fake.get
+
+        def load():
+            out = real_load()
+            if threading.current_thread().name == "B":
+                b_read.set()
+            return out
+
+        def get(path, params=None):
+            if path == "/Items" and "ParentId" in (params or {}) and threading.current_thread().name == "B":
+                a_updated.wait(1.0)
+                out = real_get(path, params)
+                b_listed.set()
+                return out
+            return real_get(path, params)
+        fake.get = get
+
+        def after():
+            if threading.current_thread().name == "A":
+                a_updated.set()
+                b_listed.wait(1.0)
+        fake.after_series_post = after
+
+        def before():
+            if threading.current_thread().name == "B":
+                a_done.wait(1.0)
+        fake.before_series_post = before
+
+        jf_a, jf_b = _service(fake), _service(fake)
+
+        def run_a():
+            b_read.wait(1.0)
+            jf_a.set_item_tags("s1", ["Netflix TV", "A"])
+            a_done.set()
+        from unittest import mock
+        with mock.patch.object(j, "_pending_restores_load", load):
+            tb = threading.Thread(target=jf_b.set_item_tags, args=("s1", ["Netflix TV", "A", "B"]), name="B")
+            ta = threading.Thread(target=run_a, name="A")
+            tb.start()
+            ta.start()
+            ta.join(10)
+            tb.join(10)
+        self.assertEqual(fake.items["e2"]["OfficialRating"], "TV-MA")
+        self.assertEqual(fake.items["e1"]["OfficialRating"], "TV-PG")
+        self.assertEqual(self._pending(), {})
 
 
 class TestEpisodeNumberingIsEchoed(unittest.TestCase):
