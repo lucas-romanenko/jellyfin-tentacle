@@ -97,7 +97,9 @@ class _Base(unittest.TestCase):
         ]
         for p in (mock.patch("services.radarr.RadarrService", lambda *a: self.radarr),
                   mock.patch("services.sonarr.SonarrService", lambda *a: self.sonarr),
-                  mock.patch.object(activity, "invalidate_wanted_cache")):
+                  mock.patch.object(activity, "invalidate_wanted_cache"),
+                  # No Searching card unless a test sets one (stop-missing reads them).
+                  mock.patch.object(activity, "_get_wanted", return_value={"unreleased": [], "searching": []})):
             p.start()
             self.addCleanup(p.stop)
 

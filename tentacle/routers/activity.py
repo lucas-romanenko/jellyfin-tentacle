@@ -310,11 +310,13 @@ def _fetch_sonarr_searching(url: str, api_key: str, file_counts: Optional[dict] 
         entry = by_series.get(sid)
         if entry is None:
             entry = by_series[sid] = {
-                "series": series, "episodes": [], "wanted_since": wanted_since, "last_searched": None,
+                "series": series, "episodes": [], "ids": [], "wanted_since": wanted_since, "last_searched": None,
             }
         key = (ep.get("seasonNumber", 0), ep.get("episodeNumber", 0))
         if key not in entry["episodes"]:
             entry["episodes"].append(key)
+            if ep.get("id") is not None:
+                entry["ids"].append(ep["id"])
         searched = _parse_dt(ep.get("lastSearchTime"))
         if searched and (entry["last_searched"] is None or searched > entry["last_searched"]):
             entry["last_searched"] = searched
@@ -344,6 +346,10 @@ def _fetch_sonarr_searching(url: str, api_key: str, file_counts: Optional[dict] 
             "waiting_since": entry["wanted_since"].strftime("%Y-%m-%dT%H:%M:%SZ"),
             "last_searched": entry["last_searched"].strftime("%Y-%m-%dT%H:%M:%SZ") if entry["last_searched"] else None,
             "sonarr_poster": _extract_poster(series),
+            # Server-side only (stripped from the API): exactly the episodes
+            # this card counts, so "stop looking" (no list = all of them)
+            # never reaches past what the person was shown.
+            "_missing_ids": list(entry["ids"]),
         })
     return searching
 
@@ -666,7 +672,18 @@ def _get_wanted(db: Session) -> dict:
             x["waiting_since"] = x["last_searched"]
     searching.sort(key=lambda x: x.get("waiting_since") or "", reverse=True)
 
-    result = {"unreleased": unreleased[:20], "searching": searching[:SEARCHING_LIMIT]}
+    # What each series' Searching card counts, for every series in the window
+    # (not only the first SEARCHING_LIMIT), keyed like _missing_ids_for().
+    missing_ids = {}
+    for x in searching:
+        ids = x.pop("_missing_ids", None)
+        if x.get("media_type") == "series" and ids is not None:
+            if x.get("tmdb_id"):
+                missing_ids[("tmdb", x["tmdb_id"])] = ids
+            if x.get("tvdb_id"):
+                missing_ids[("tvdb", x["tvdb_id"])] = ids
+    result = {"unreleased": unreleased[:20], "searching": searching[:SEARCHING_LIMIT],
+              "_missing_ids": missing_ids}
     _enrich_posters(db, result["unreleased"])
     _enrich_posters(db, result["searching"])
     _unreleased_cache["data"] = result
@@ -677,6 +694,25 @@ def _get_wanted(db: Session) -> dict:
 def _get_unreleased(db: Session) -> list:
     """Get unreleased movies and series — cached for 5 minutes (expensive call)."""
     return _get_wanted(db)["unreleased"]
+
+
+def _missing_ids_for(db: Session, rec: dict) -> Optional[set]:
+    """The episode ids a series' Searching card counts, or None if it has no card.
+
+    Sonarr's wanted/missing is read one page deep, so on a large library a
+    show's older missing episodes are not on its card: "S12E03" can stand for
+    81 missing episodes. "Stop looking" without a list means "the ones shown".
+    """
+    try:
+        ids = (_get_wanted(db).get("_missing_ids") or {})
+    except Exception:
+        return None
+    got = None
+    if rec.get("tmdbId"):
+        got = ids.get(("tmdb", rec.get("tmdbId")))
+    if got is None and rec.get("tvdbId"):
+        got = ids.get(("tvdb", rec.get("tvdbId")))
+    return set(got) if got is not None else None
 
 
 def invalidate_wanted_cache() -> None:
@@ -1010,6 +1046,12 @@ def stop_missing(title: ArrTitle, db: Session = Depends(get_db),
     if title.episodes is not None:
         wanted = {e.strip().upper() for e in title.episodes}
         missing = [ep for ep in missing if _ep_label(ep) in wanted]
+    else:
+        # "All" = every episode the card counted, not episodes beyond the page
+        # of Sonarr's wanted list it was built from. No card: all of them.
+        shown = _missing_ids_for(db, rec)
+        if shown is not None:
+            missing = [ep for ep in missing if ep.get("id") in shown]
     if not missing:
         _after_arr_change(title)
         return {"ok": True, "title": name, "stopped": 0,
