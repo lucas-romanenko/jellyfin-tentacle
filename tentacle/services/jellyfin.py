@@ -573,6 +573,14 @@ class JellyfinService:
             params["StartIndex"] = start
             data = self._get("/Items", params=params)
             if not data:
+                if all_items:
+                    # A later page failed (timeout, reset). What arrived is
+                    # the start of the answer, not all of it, and a playlist
+                    # diffed against it lost every entry past this page.
+                    # Callers already treat an exception as "leave it be".
+                    raise RuntimeError(
+                        f"Jellyfin /Items page at {start} failed; "
+                        f"only {len(all_items)} item(s) read")
                 break
             items = data.get("Items", [])
             all_items.extend(items)
