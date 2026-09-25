@@ -877,6 +877,8 @@ def refresh_tags(db: Session = Depends(get_db)):
     if jellyfin_url and jellyfin_key:
         from services.jellyfin import JellyfinService
         jf = JellyfinService(jellyfin_url, jellyfin_key, jellyfin_uid)
+        from services.jellyfin import _retry_pending_rating_restores
+        _retry_pending_rating_restores(jf, "Refresh Tags")
         # Only Tentacle's own tags are replaced; a tag from a TMDB keyword
         # import or one a user added by hand in Jellyfin survives (#107).
         owned = tentacle_owned_tags(db)

@@ -34,7 +34,10 @@ class _FakeJellyfin:
                    "LockedFields": ["OfficialRating"]},
         }
         self.posts = []
+        self.gets = []
         self.list_fails = False
+        self.down = False
+        self.fail_posts = set()
 
     def children(self, pid, kinds):
         out = []
@@ -46,16 +49,35 @@ class _FakeJellyfin:
                 out.append(it)
         return out
 
+    def _dto(self, it):
+        d = dict(it)
+        if d["Type"] == "Episode":
+            d["SeasonId"] = d["ParentId"]
+        return d
+
     def get(self, path, params=None):
+        self.gets.append((path, dict(params or {})))
+        if path == "/Items" and "Ids" in (params or {}):
+            if self.down:
+                return None
+            it = self.items.get(params["Ids"])
+            return {"Items": [self._dto(it)] if it else [], "TotalRecordCount": 1 if it else 0}
         if path == "/Items":
-            if self.list_fails:
+            if self.list_fails == "http":
+                import requests
+                raise requests.HTTPError("500 Server Error")
+            if self.list_fails or self.down:
                 return None
             kids = self.children(params["ParentId"], params["IncludeItemTypes"].split(","))
             page = kids[params["StartIndex"]:params["StartIndex"] + params["Limit"]]
-            return {"Items": [dict(k) for k in page], "TotalRecordCount": len(kids)}
+            return {"Items": [self._dto(k) for k in page], "TotalRecordCount": len(kids)}
         return dict(self.items[path.rsplit("/", 1)[-1]])
 
     def post(self, item_id, body):
+        if item_id in self.fail_posts:
+            self.fail_posts.discard(item_id)
+            import requests
+            raise requests.HTTPError("500 Server Error")
         self.posts.append(item_id)
         it = self.items[item_id]
         official = (body.get("OfficialRating") or "").strip() or None
@@ -80,7 +102,22 @@ def _service(fake):
     return jf
 
 
-class TestSeriesPush(unittest.TestCase):
+class _PendingDir(unittest.TestCase):
+    def setUp(self):
+        import os
+        import tempfile
+        from unittest import mock
+        self.data_dir = tempfile.mkdtemp()
+        patcher = mock.patch.dict(os.environ, {"DATA_DIR": self.data_dir})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _pending(self):
+        from services.jellyfin import _pending_restores_load
+        return _pending_restores_load()
+
+
+class TestSeriesPush(_PendingDir):
     @staticmethod
     def _effective(fake, iid, field):
         """Jellyfin's *ForComparison: an empty rating inherits the display parent's."""
@@ -132,17 +169,99 @@ class TestSeriesPush(unittest.TestCase):
         self.assertEqual(fake.items["e2"]["OfficialRating"], "TV-MA")
         self.assertEqual(fake.posts, ["s1", "e2"])
 
-    def test_a_series_whose_children_cannot_be_read_is_left_alone(self):
+    def test_a_series_whose_children_cannot_be_listed_still_gets_its_tags(self):
+        """Blocking it would keep it out of its playlists for good (round-2 review)."""
+        for how in (True, "http"):
+            with self.subTest(listing_fails=how):
+                fake = _FakeJellyfin()
+                fake.list_fails = how
+                with self.assertLogs("services.jellyfin", level="WARNING"):
+                    self.assertTrue(_service(fake).set_item_tags("s1", ["Netflix TV", "x"]))
+                self.assertEqual(fake.items["s1"]["Tags"], ["Netflix TV", "x"])
+
+    def test_an_episode_rated_like_the_series_survives_its_seasons_restore(self):
+        """Restoring a season cascades its rating to its episodes; an episode whose
+        own rating equals the series' (so the series cascade left it alone) must
+        not end up with the season's."""
         fake = _FakeJellyfin()
-        fake.list_fails = True
-        self.assertFalse(_service(fake).set_item_tags("s1", ["x"]))
-        self.assertEqual(fake.posts, [])
+        fake.items["se1"].update(OfficialRating="TV-Y7", CustomRating=None)
+        fake.items["e1"].update(OfficialRating="TV-14", CustomRating="TV-KIDS")
+        _service(fake).set_item_tags("s1", ["x"])
+        self.assertEqual(fake.items["se1"]["OfficialRating"], "TV-Y7")
+        self.assertEqual((fake.items["e1"]["OfficialRating"], fake.items["e1"]["CustomRating"]),
+                         ("TV-14", "TV-KIDS"))
+        self.assertEqual(fake.items["e2"]["OfficialRating"], "TV-MA")
+
+    def test_the_child_listing_is_not_user_scoped(self):
+        fake = _FakeJellyfin()
+        _service(fake).set_item_tags("s1", ["x"])
+        listings = [p for path, p in fake.gets if path == "/Items"]
+        self.assertTrue(listings)
+        self.assertFalse(any("UserId" in p for p in listings))
 
     def test_a_movie_push_reads_no_children(self):
         fake = _FakeJellyfin()
         fake.items["m1"] = {"Id": "m1", "Type": "Movie", "Name": "M", "Tags": [], "OfficialRating": "R"}
         fake.list_fails = True           # would make a series push fail
         self.assertTrue(_service(fake).set_item_tags("m1", ["x"]))
+
+
+class TestAFailedRestoreIsRetried(_PendingDir):
+    def _own(self, fake):
+        return {k: (v["OfficialRating"], v["CustomRating"]) for k, v in fake.items.items()
+                if k in ("se1", "e1", "e2")}
+
+    def test_one_failing_child_does_not_stop_the_others_and_is_retried(self):
+        fake = _FakeJellyfin()
+        want = self._own(fake)
+        fake.fail_posts = {"e1"}                       # a 500 on one episode's restore
+        jf = _service(fake)
+        with self.assertLogs("services.jellyfin", level="WARNING"):
+            self.assertTrue(jf.set_item_tags("s1", ["Netflix TV", "Watchlist"]))
+        self.assertEqual(fake.items["e2"]["OfficialRating"], "TV-MA")   # the rest went on
+        self.assertIn("e1", self._pending()["s1"])
+        # The tags are right now, so no later push rewrites the series; the
+        # retry alone has to put e1 back — from the saved values.
+        self.assertEqual(jf.retry_pending_rating_restores(), 0)
+        self.assertEqual(self._own(fake), want)
+        self.assertEqual(self._pending(), {})
+
+    def test_jellyfin_going_away_after_the_series_update_is_retried(self):
+        fake = _FakeJellyfin()
+        want = self._own(fake)
+        jf = _service(fake)
+        real_post = fake.post
+
+        def post_then_down(item_id, body):
+            real_post(item_id, body)
+            fake.down = True                           # every later request fails
+        fake.post = post_then_down
+        with self.assertLogs("services.jellyfin", level="WARNING"):
+            jf.set_item_tags("s1", ["Netflix TV", "Watchlist"])
+        self.assertEqual(fake.items["e2"]["OfficialRating"], "TV-14")  # flattened for now
+        fake.post, fake.down = real_post, False
+        jf.retry_pending_rating_restores()
+        self.assertEqual(self._own(fake), want)
+
+    def test_a_later_push_uses_the_saved_values_not_the_flattened_ones(self):
+        fake = _FakeJellyfin()
+        fake.fail_posts = {"e2"}
+        jf = _service(fake)
+        with self.assertLogs("services.jellyfin", level="WARNING"):
+            jf.set_item_tags("s1", ["Netflix TV", "Watchlist"])
+        self.assertEqual(fake.items["e2"]["OfficialRating"], "TV-14")
+        jf.set_item_tags("s1", ["Netflix TV", "Watchlist", "Other"])
+        self.assertEqual(fake.items["e2"]["OfficialRating"], "TV-MA")
+        self.assertEqual(self._pending(), {})
+
+    def test_the_push_pipeline_retries_pending_restores(self):
+        from unittest import mock
+        import services.jellyfin as j
+        jf = mock.Mock()
+        jf.retry_pending_rating_restores.return_value = 0
+        j._pending_restores_set("s1", {"e1": ["Episode", "TV-MA", None]})
+        j._retry_pending_rating_restores(jf, "test")
+        jf.retry_pending_rating_restores.assert_called_once()
 
 
 class TestEpisodeNumberingIsEchoed(unittest.TestCase):
