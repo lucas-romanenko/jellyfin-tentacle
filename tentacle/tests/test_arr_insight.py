@@ -211,6 +211,30 @@ class TestCheck(_Db):
         arr_insight.check(self.db, "movie", 100)
         self.assertEqual(1, len(self.calls))
 
+    def test_waiters_share_a_failure_instead_of_searching_again(self):
+        import requests, threading
+        gate = threading.Event()
+
+        def slow_fail(url, headers=None, params=None, timeout=None):
+            self.calls.append(url)
+            gate.wait(5)
+            raise requests.Timeout()
+        errs = []
+
+        def go():
+            try:
+                arr_insight.check(self.db, "movie", 100, max_age=0)
+            except arr_insight.InsightError as e:
+                errs.append(e.status)
+        with mock.patch.object(arr_insight.requests, "get", side_effect=slow_fail):
+            ts = [threading.Thread(target=go) for _ in range(4)]
+            [t.start() for t in ts]
+            time.sleep(0.3)
+            gate.set()
+            [t.join(10) for t in ts]
+        self.assertEqual([504] * 4, errs)
+        self.assertEqual(1, len(self.calls), "one failing search, not one per caller in turn")
+
     def test_unknown_title(self):
         activity._find_arr_record.side_effect = HTTPException(404, "This movie is not in Radarr")
         with self.assertRaises(arr_insight.InsightError) as e:

@@ -36,7 +36,7 @@ MAX_RELEASES = 40
 _checks: dict = {}            # title key -> {"at": ts, "data": {...}, "ids": {...}}
 _checks_lock = threading.Lock()
 _running: set = set()
-_inflight: dict = {}          # title key -> Event set when its search ends
+_inflight: dict = {}          # title key -> {"done": Event, "error": InsightError|None} of the running search
 _auto_failed: dict = {}       # title key -> when its last automatic check failed
 AUTO_FAIL_BACKOFF = 2 * 3600  # don't retry a failing automatic check every run
 
@@ -233,21 +233,30 @@ def check(db: Session, media_type: str, tmdb_id: int = 0, tvdb_id: int = 0,
             # indexer again.
             running = _inflight.get(k)
             if running is None:
-                _inflight[k] = done = threading.Event()
+                _inflight[k] = mine = {"done": threading.Event(), "error": None}
                 break
-        running.wait(SEARCH_TIMEOUT + 15)
+        running["done"].wait(SEARCH_TIMEOUT + 15)
         with _checks_lock:
             hit = _checks.get(k)
         if hit and hit["at"] >= asked:
             return hit["data"]
-        if hit is None or hit["at"] < asked:
-            ttl = min(ttl, time.time() - asked)  # it failed: search ourselves
+        if running["done"].is_set() and running["error"] is not None:
+            # The search we waited for failed; asking every indexer again
+            # right away would fail the same way and make this caller wait
+            # twice as long (past the clients' timeouts).
+            raise running["error"]
     try:
         return _search(db, k, media_type, tmdb_id, tvdb_id)
+    except InsightError as e:
+        mine["error"] = e
+        raise
+    except Exception:
+        mine["error"] = InsightError(502, "The release check failed")
+        raise
     finally:
         with _checks_lock:
             _inflight.pop(k, None)
-        done.set()
+        mine["done"].set()
 
 
 def _search(db: Session, k: str, media_type: str, tmdb_id: int, tvdb_id: int) -> dict:
