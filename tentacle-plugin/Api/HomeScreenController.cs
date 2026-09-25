@@ -30,6 +30,19 @@ public class TentacleHomeController : ControllerBase
     private readonly IDtoService _dtoService;
     private readonly IAuthorizationContext _authContext;
     private readonly ILogger<TentacleHomeController> _logger;
+
+    // Which titles a home row shows, per (playlist + its last save, user, limit, sort).
+    // Jellyfin walks every entry of a playlist whenever it is read — a 56k-entry playlist
+    // took 13 s per row request and 26 s just to fetch the playlist's own details (test
+    // stack), and on a live server Disney+ TV (16.7k entries) took 5.6 s alone and 20-26 s
+    // when the Android app loads all rows at once, next to its 30 s timeout. The ids are
+    // cached, not the DTOs, so played/progress state is still read fresh per request, and the
+    // key carries the playlist's DateLastSaved so any change to the playlist misses the cache.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTime Expiry, List<Guid> Ids)> _sectionCache = new();
+    private static readonly TimeSpan SectionCacheDuration = TimeSpan.FromMinutes(5);
+
+    /// <summary>Drops cached home-row contents (called by POST /Tentacle/Refresh).</summary>
+    public static void ClearSectionCache() => _sectionCache.Clear();
     private static readonly HttpClient ProxyClient = new() { Timeout = TimeSpan.FromSeconds(15) };
 
     // The home JS polls Version every 5 s without waiting for the previous answer.
@@ -258,45 +271,60 @@ public class TentacleHomeController : ControllerBase
             ImageTypeLimit = 1,
         };
 
-        // Group episodes by series
-        var grouped = playlist.GetManageableItems()
-            .Where(i => i.Item2.IsVisible(user))
-            .GroupBy(x => x.Item2 is Episode ep ? (BaseItem)ep.Series : x.Item2)
-            .Select(g => g.Key)
-            .Where(i => i != null)
-            .ToList();
-
-        // Apply sort from home config (same pattern as hero sort)
-        // For "datecreated", trust the playlist order set by the Python backend
-        // (which uses Tentacle's date_added — more reliable than Jellyfin's DateCreated
-        // which can shift after metadata refreshes or library rescans).
-        // No sort_by configured means "leave it as the backend populated it", the same
-        // as an explicit "random". Defaulting to releasedate here silently re-sorted
-        // every row that the dashboard had not given an explicit sort.
-        var sortBy = row?.SortBy?.ToLowerInvariant() ?? "none";
-        var descending = !string.Equals(row?.SortOrder, "Ascending", StringComparison.OrdinalIgnoreCase);
-        IEnumerable<BaseItem> sorted = sortBy switch
+        var sectionCacheKey = $"{playlist.Id:N}:{playlist.DateLastSaved.Ticks}:{userId:N}:{limit}:{row?.SortBy}:{row?.SortOrder}";
+        List<BaseItem> finalItems;
+        if (_sectionCache.TryGetValue(sectionCacheKey, out var cachedSection) && DateTime.UtcNow < cachedSection.Expiry)
         {
-            "communityrating" => descending
-                ? grouped.OrderByDescending(i => i.CommunityRating ?? 0)
-                : grouped.OrderBy(i => i.CommunityRating ?? 0),
-            "releasedate" => descending
-                ? grouped.OrderByDescending(i => i.PremiereDate ?? DateTime.MinValue)
-                : grouped.OrderBy(i => i.PremiereDate ?? DateTime.MinValue),
-            "name" => descending
-                ? grouped.OrderByDescending(i => i.SortName)
-                : grouped.OrderBy(i => i.SortName),
-            "datecreated" => grouped,
-            // "random" and any unspecified/unknown sort: trust the playlist order the
-            // Python backend already populated. It stores a STABLE order (including a
-            // fixed random shuffle applied once at populate time). Re-shuffling here on
-            // every request made rows swap items and re-order on each home refresh
-            // ("order changed while it was open" / "doesn't match Tentacle"), and the
-            // per-request .Take(limit) over a fresh shuffle also dropped items.
-            _ => grouped,
-        };
+            finalItems = cachedSection.Ids
+                .Select(id => _libraryManager.GetItemById(id))
+                .OfType<BaseItem>()
+                .Where(i => i.IsVisible(user))
+                .ToList();
+        }
+        else
+        {
+            // Group episodes by series
+            var grouped = playlist.GetManageableItems()
+                .Where(i => i.Item2.IsVisible(user))
+                .GroupBy(x => x.Item2 is Episode ep ? (BaseItem)ep.Series : x.Item2)
+                .Select(g => g.Key)
+                .Where(i => i != null)
+                .ToList();
 
-        var finalItems = sorted.Take(limit).ToList();
+            // Apply sort from home config (same pattern as hero sort)
+            // For "datecreated", trust the playlist order set by the Python backend
+            // (which uses Tentacle's date_added — more reliable than Jellyfin's DateCreated
+            // which can shift after metadata refreshes or library rescans).
+            // No sort_by configured means "leave it as the backend populated it", the same
+            // as an explicit "random". Defaulting to releasedate here silently re-sorted
+            // every row that the dashboard had not given an explicit sort.
+            var sortBy = row?.SortBy?.ToLowerInvariant() ?? "none";
+            var descending = !string.Equals(row?.SortOrder, "Ascending", StringComparison.OrdinalIgnoreCase);
+            IEnumerable<BaseItem> sorted = sortBy switch
+            {
+                "communityrating" => descending
+                    ? grouped.OrderByDescending(i => i.CommunityRating ?? 0)
+                    : grouped.OrderBy(i => i.CommunityRating ?? 0),
+                "releasedate" => descending
+                    ? grouped.OrderByDescending(i => i.PremiereDate ?? DateTime.MinValue)
+                    : grouped.OrderBy(i => i.PremiereDate ?? DateTime.MinValue),
+                "name" => descending
+                    ? grouped.OrderByDescending(i => i.SortName)
+                    : grouped.OrderBy(i => i.SortName),
+                "datecreated" => grouped,
+                // "random" and any unspecified/unknown sort: trust the playlist order the
+                // Python backend already populated. It stores a STABLE order (including a
+                // fixed random shuffle applied once at populate time). Re-shuffling here on
+                // every request made rows swap items and re-order on each home refresh
+                // ("order changed while it was open" / "doesn't match Tentacle"), and the
+                // per-request .Take(limit) over a fresh shuffle also dropped items.
+                _ => grouped,
+            };
+
+            finalItems = sorted.Take(limit).ToList();
+            _sectionCache[sectionCacheKey] = (DateTime.UtcNow.Add(SectionCacheDuration), finalItems.Select(i => i.Id).ToList());
+        }
+
         var dtos = _dtoService.GetBaseItemDtos(finalItems, dtoOptions, user);
 
         return Ok(new QueryResult<BaseItemDto>(dtos));
