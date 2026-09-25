@@ -859,6 +859,11 @@ def list_channels(db: Session = Depends(get_db)):
     return out
 
 
+# A bound on "<title> (n)" numbering, so a naming bug can only ever fail an
+# add, never spin a request thread.
+_MAX_TITLE_NUMBER = 1000
+
+
 @router.post("/channels", dependencies=[Depends(require_admin)])
 def add_channel(body: ChannelCreate, request: Request, db: Session = Depends(get_db)):
     """Add a channel. This is the only step; the rest is automatic.
@@ -937,9 +942,17 @@ def add_channel(body: ChannelCreate, request: Request, db: Session = Depends(get
         title = f"{title} ({owner})"
     base_title, n = title, 2
     while _clash(title):
-        # Keep the number inside what the folder name keeps.
+        if n > _MAX_TITLE_NUMBER:
+            raise HTTPException(409, f"Could not find a free name for '{info['title']}': "
+                                     f"{_MAX_TITLE_NUMBER - 1} numbered copies already exist")
+        # Keep the number inside what the folder name keeps: safe_name() cuts
+        # at 120 characters AND at 255 bytes. Sized in characters only, a long
+        # CJK or emoji title lost its " (n)" to the byte cut, the folder name
+        # never changed, and this loop never ended.
         suffix = f" ({n})"
-        title = base_title[:120 - len(suffix)].rstrip() + suffix
+        cut = base_title[:120 - len(suffix)]
+        cut = library._fit_bytes(cut, library.MAX_NAME_BYTES - len(suffix.encode("utf-8")))
+        title = cut.rstrip() + suffix
         n += 1
     info["title"] = title
 
