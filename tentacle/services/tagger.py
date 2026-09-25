@@ -302,6 +302,13 @@ def refresh_recently_added_tags(db: Session):
     updated_movies = 0
     updated_series = 0
 
+    # Tags a list or a tag rule applies. The clean-up below drops any other
+    # tag that merely contains "Recently Added", as a stale form of Tentacle's
+    # own recency tags — but a list or rule named e.g. "Recently Added on
+    # Netflix" is not one, and nothing here would put it back.
+    protected = {t for (t,) in db.query(ListSubscription.tag).distinct() if t}
+    protected |= {t for (t,) in db.query(TagRule.output_tag).distinct() if t}
+
     # Movies
     movies = db.query(Movie).all()
     for movie in movies:
@@ -318,6 +325,7 @@ def refresh_recently_added_tags(db: Session):
             old_format_tags.append(f"{movie.source_tag} Recently Added")
         bad_tags = [t for t in tags if t in old_format_tags or (
             "Recently Added" in t and t != recent_tag and t != source_combo
+            and t not in protected
         )]
         if bad_tags:
             tags = [t for t in tags if t not in bad_tags]
@@ -368,6 +376,7 @@ def refresh_recently_added_tags(db: Session):
             old_format_tags.append(f"{series.source_tag} Recently Added")
         bad_tags = [t for t in tags if t in old_format_tags or (
             "Recently Added" in t and t != recent_tag and t != source_combo
+            and t not in protected
         )]
         if bad_tags:
             tags = [t for t in tags if t not in bad_tags]
