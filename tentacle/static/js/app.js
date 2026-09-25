@@ -448,12 +448,13 @@ async function api(url, options = {}) {
 
 // ── Toast ─────────────────────────────────────────────────────────────────
 function toast(msg, type = 'success', duration = 3500) {
-  const icons = { success: '✓', error: '✕', info: 'ℹ', loading: '' };
+  const icons = { success: '✓', error: '✕', info: 'ℹ', warning: '⚠', loading: '' };
+  const colors = { success: 'green', error: 'red', warning: 'amber' };
   const el = document.createElement('div');
   el.className = `toast ${type}`;
   const icon = type === 'loading'
     ? '<span class="toast-spinner"></span>'
-    : `<span style="color:var(--${type === 'success' ? 'green' : type === 'error' ? 'red' : 'blue'})">${icons[type]}</span>`;
+    : `<span style="color:var(--${colors[type] || 'blue'})">${icons[type] ?? ''}</span>`;
   el.innerHTML = `${icon} ${msg}`;
   document.getElementById('toasts').appendChild(el);
   if (duration > 0) setTimeout(() => el.remove(), duration);
