@@ -235,20 +235,29 @@ var MdbList = {
 // Load TentacleConfig early — mdblist.js is the first injected script.
 // Other scripts (tentacle-tmdb.js, tentacle-details.js) depend on window.TentacleConfig.
 (function() {
+    // Signed out (the login page), the request can only answer 401 -- and
+    // jellyfin-web does not reload the page after sign-in, so a failure cached
+    // here used to leave MDBList/TMDB switched off for the whole session. Wait
+    // for a token, and on a failed request keep a safe default but try again.
+    var attempts = 0;
     function loadTentacleConfig() {
-        if (!window.ApiClient) {
-            setTimeout(loadTentacleConfig, 500);
+        if (!window.ApiClient || !window.ApiClient.accessToken()) {
+            setTimeout(loadTentacleConfig, 1000);
             return;
         }
         var serverUrl = window.ApiClient.serverAddress();
         var token = window.ApiClient.accessToken();
         fetch(serverUrl + '/Tentacle/Config', {
             headers: { 'Authorization': 'MediaBrowser Token="' + token + '"' }
-        }).then(function(r) { return r.json(); }).then(function(cfg) {
+        }).then(function(r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.json();
+        }).then(function(cfg) {
             window.TentacleConfig = cfg;
             console.log('[Tentacle] Config loaded early:', cfg.mdblistEnabled ? 'MDBList ON' : 'MDBList OFF', cfg.tmdbEnabled ? 'TMDB ON' : 'TMDB OFF');
         }).catch(function() {
-            window.TentacleConfig = { mdblistEnabled: false, tmdbEnabled: false };
+            if (!window.TentacleConfig) window.TentacleConfig = { mdblistEnabled: false, tmdbEnabled: false };
+            if (++attempts < 10) setTimeout(loadTentacleConfig, 5000);
         });
     }
     if (document.readyState === 'loading') {
