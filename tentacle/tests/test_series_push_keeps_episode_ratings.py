@@ -38,6 +38,8 @@ class _FakeJellyfin:
         self.list_fails = False
         self.down = False
         self.fail_posts = set()
+        self.fail_once = set()
+        self._failed = {}
         self.always_fail = set()
         self.before_series_post = None
         self.after_series_post = None
@@ -80,8 +82,16 @@ class _FakeJellyfin:
         if item_id in self.always_fail:
             import requests
             raise requests.HTTPError("500 Server Error")
+        if item_id in self.fail_once:
+            self.fail_once.discard(item_id)
+            import requests
+            raise requests.HTTPError("500 Server Error")
         if item_id in self.fail_posts:
-            self.fail_posts.discard(item_id)
+            # Fails on the push's pass and on its in-run retry, so it is left
+            # for the next run's retry.
+            self._failed[item_id] = self._failed.get(item_id, 0) + 1
+            if self._failed[item_id] >= 2:
+                self.fail_posts.discard(item_id)
             import requests
             raise requests.HTTPError("500 Server Error")
         if self.before_series_post and self.items[item_id]["Type"] == "Series":
@@ -121,6 +131,10 @@ class _PendingDir(unittest.TestCase):
         patcher = mock.patch.dict(os.environ, {"DATA_DIR": self.data_dir})
         patcher.start()
         self.addCleanup(patcher.stop)
+        import services.jellyfin as j
+        delay = mock.patch.object(j, "IN_RUN_RETRY_DELAY", 0)
+        delay.start()
+        self.addCleanup(delay.stop)
 
     def _pending(self):
         from services.jellyfin import _pending_restores_load
@@ -401,6 +415,111 @@ class TestRound3(_PendingDir):
         self.assertEqual(fake.items["e2"]["OfficialRating"], "TV-MA")
         self.assertEqual(fake.items["e1"]["OfficialRating"], "TV-PG")
         self.assertEqual(self._pending(), {})
+
+
+class TestRound4(_PendingDir):
+    """Round-4 review: a season-restore cascade is not a hand edit; bounded lock
+    wait; an in-run retry; a give-up on the Activity page."""
+
+    def test_an_episode_failing_after_its_season_was_restored_is_retried(self):
+        for season_rating, ep in (("TV-PG", ("TV-MA", None)), ("TV-MA", ("TV-PG", "TV-MA"))):
+            with self.subTest(season=season_rating, episode=ep):
+                fake = _with_second_season(_FakeJellyfin(), season_rating, *ep)
+                fake.fail_posts = {"e4"}              # the season succeeds, its episode fails
+                jf = _service(fake)
+                with self.assertLogs("services.jellyfin", level="WARNING"):
+                    jf.set_item_tags("s1", ["Netflix TV", "Watchlist"])
+                self.assertEqual(fake.items["se2"]["OfficialRating"], season_rating)
+                self.assertEqual(fake.items["e4"]["OfficialRating"], season_rating)   # the cascade's copy
+                self.assertEqual(jf.retry_pending_rating_restores(), 0)
+                self.assertEqual((fake.items["e4"]["OfficialRating"], fake.items["e4"]["CustomRating"]), ep)
+                self.assertEqual(self._pending(), {})
+
+    def test_a_one_off_failure_is_fixed_in_the_same_run(self):
+        fake = _FakeJellyfin()
+        fake.fail_once = {"e2"}
+        with self.assertLogs("services.jellyfin", level="WARNING"):
+            _service(fake).set_item_tags("s1", ["Netflix TV", "Watchlist"])
+        self.assertEqual(fake.items["e2"]["OfficialRating"], "TV-MA")
+        self.assertEqual(self._pending(), {})
+
+    def test_no_pause_when_nothing_fails(self):
+        from unittest import mock
+        import services.jellyfin as j
+        with mock.patch.object(j, "_in_run_retry_wait") as wait:
+            _service(_FakeJellyfin()).set_item_tags("s1", ["Netflix TV", "Watchlist"])
+        wait.assert_not_called()
+
+    def test_a_push_waits_for_the_lock_only_so_long(self):
+        import threading
+        import time
+        from unittest import mock
+        import services.jellyfin as j
+        fake = _FakeJellyfin()
+        holder_in, release = threading.Event(), threading.Event()
+
+        def hold():
+            with j._CASCADE_LOCK:
+                holder_in.set()
+                release.wait(5)
+        t = threading.Thread(target=hold)
+        t.start()
+        holder_in.wait(2)
+        try:
+            with mock.patch.object(j, "CASCADE_LOCK_TIMEOUT", 0.3), \
+                    self.assertLogs("services.jellyfin", level="WARNING") as logs:
+                started = time.monotonic()
+                self.assertFalse(_service(fake).set_item_tags("s1", ["Netflix TV", "Watchlist"]))
+                self.assertLess(time.monotonic() - started, 2)
+            self.assertIn("next push", logs.output[-1])
+            self.assertEqual(fake.posts, [])                # nothing changed, nothing to save
+        finally:
+            release.set()
+            t.join(5)
+
+    def test_the_retry_pass_releases_the_lock_between_series(self):
+        from unittest import mock
+        import services.jellyfin as j
+        j._pending_restores_set("s1", {"e1": ["Episode", "TV-PG", None]})
+        j._pending_restores_set("s9", {"x9": ["Episode", "TV-MA", None]})
+        fake = _FakeJellyfin()
+        jf = _service(fake)
+        with mock.patch.object(j, "_CASCADE_LOCK", wraps=j._CASCADE_LOCK) as lock:
+            jf.retry_pending_rating_restores()
+        self.assertEqual(lock.acquire.call_count, 2)
+        self.assertEqual(lock.release.call_count, 2)
+
+    def test_a_give_up_is_written_to_the_activity_log(self):
+        from unittest import mock
+        import services.jellyfin as j
+        fake = _FakeJellyfin()
+        fake.always_fail = {"e2"}
+        jf = _service(fake)
+        with mock.patch.object(j, "_log_restore_given_up") as activity, \
+                self.assertLogs("services.jellyfin", level="WARNING"):
+            jf.set_item_tags("s1", ["Netflix TV", "Watchlist"])
+            for _ in range(j.PENDING_MAX_ATTEMPTS):
+                jf.retry_pending_rating_restores()
+        activity.assert_called_once()
+        self.assertEqual(activity.call_args.args[0], "s1")
+        self.assertIn("e2", activity.call_args.args[1])
+
+    def test_the_activity_entry_names_the_series_and_episodes(self):
+        import tempfile
+        from unittest import mock
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        import models.database as mdb
+        import services.jellyfin as j
+        engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db")
+        mdb.Base.metadata.create_all(engine)
+        Session = sessionmaker(bind=engine)
+        with mock.patch.object(mdb, "SessionLocal", Session):
+            j._log_restore_given_up("s1", {"e2": {"type": "Episode", "official": "TV-MA", "custom": None}})
+        row = Session().query(mdb.ActivityLog).one()
+        self.assertEqual(row.event, "rating_restore_failed")
+        self.assertIn("s1", row.message)
+        self.assertIn("e2 (TV-MA/-)", row.message)
 
 
 class TestEpisodeNumberingIsEchoed(unittest.TestCase):

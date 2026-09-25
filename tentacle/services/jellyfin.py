@@ -54,6 +54,36 @@ _PENDING_RESTORES_LOCK = threading.RLock()
 _CASCADE_LOCK = threading.RLock()
 PENDING_MAX_ATTEMPTS = 10
 PENDING_MAX_AGE_SECONDS = 7 * 86400
+# How long a push waits for another series' cascading update to finish before
+# it skips this series (its tags are still wrong, so the next run pushes it).
+CASCADE_LOCK_TIMEOUT = 90
+# A failed restore is tried once more after this pause, in the same run: most
+# failures are transient, and the next run can be a day away.
+IN_RUN_RETRY_DELAY = 5
+
+
+def _in_run_retry_wait() -> None:
+    if IN_RUN_RETRY_DELAY > 0:
+        time.sleep(IN_RUN_RETRY_DELAY)
+
+
+def _log_restore_given_up(parent_id: str, left: dict) -> None:
+    """Put a give-up on the Activity page, not only in the log."""
+    try:
+        from models.database import SessionLocal, log_activity
+        from services.log_redaction import redact
+        ids = ", ".join(f"{cid} ({c['official'] or '-'}/{c['custom'] or '-'})"
+                        for cid, c in list(left.items())[:20])
+        db = SessionLocal()
+        try:
+            log_activity(db, "rating_restore_failed", redact(
+                f"Could not restore the own ratings of {len(left)} season(s)/episode(s) of "
+                f"Jellyfin series {parent_id} after a tag push; Jellyfin gave them the series' "
+                f"rating. Set these by hand in Jellyfin: {ids}"))
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"[Jellyfin] Could not write the rating-restore give-up to the Activity log: {e}")
 
 
 def _pending_restores_path() -> Path:
@@ -79,8 +109,12 @@ def _valid_pending_entry(entry) -> Optional[dict]:
         if not all(v is None or isinstance(v, str)
                    for v in (c.get("official"), c.get("custom"), c.get("season"))):
             continue
+        sr = c.get("season_rating")
+        if not (isinstance(sr, list) and len(sr) == 2 and all(x is None or isinstance(x, str) for x in sr)):
+            sr = None
         out[str(cid)] = {"type": c["type"], "official": c.get("official"),
-                         "custom": c.get("custom"), "season": c.get("season")}
+                         "custom": c.get("custom"), "season": c.get("season"),
+                         "season_rating": sr}
     def _pair(v):
         return v if isinstance(v, list) and len(v) == 2 and all(
             x is None or isinstance(x, str) for x in v) else None
@@ -650,6 +684,11 @@ class JellyfinService:
                         copies = [series_copy]
                         if entry.get("prev_copy"):
                             copies.append(tuple(entry["prev_copy"]))
+                        # The season's own rating, as recorded at push time: a
+                        # season restored successfully is no longer in the
+                        # entry, but its update cascaded that rating here.
+                        if c.get("season_rating"):
+                            copies.append(tuple(c["season_rating"]))
                         season = children.get(c.get("season") or "")
                         if season:
                             copies.append((season["official"], season["custom"]))
@@ -688,8 +727,13 @@ class JellyfinService:
         return failed
 
     def _finish_restore(self, parent_id: str, entry: dict) -> None:
-        """Run one restore pass for `entry` and store what is left, if anything."""
+        """Run one restore pass for `entry` and store what is left, if anything.
+        A pass that leaves failures is followed, after a short pause, by one
+        more pass over only those — costing nothing when nothing failed."""
         left = self._restore_from_snapshot(parent_id, entry)
+        if left:
+            _in_run_retry_wait()
+            left = self._restore_from_snapshot(parent_id, dict(entry, children=left))
         if not left:
             _pending_restores_set(parent_id, None)
             return
@@ -701,6 +745,7 @@ class JellyfinService:
                 f"under {parent_id} after {attempts} attempt(s) over {int(age // 3600)} h; set them by "
                 f"hand: " + ", ".join(f"{cid}={c['official'] or '-'}/{c['custom'] or '-'}"
                                       for cid, c in list(left.items())[:20]))
+            _log_restore_given_up(parent_id, left)
             _pending_restores_set(parent_id, None)
             return
         _pending_restores_set(parent_id, dict(entry, children=left, attempts=attempts))
@@ -708,17 +753,36 @@ class JellyfinService:
     def retry_pending_rating_restores(self) -> int:
         """Retry every restore a previous push could not finish. Returns how
         many series are still pending afterwards."""
-        with _CASCADE_LOCK:
-            for parent_id, entry in _pending_restores_load().items():
-                self._finish_restore(parent_id, entry)
-            return len(_pending_restores_load())
+        # The lock is taken per series and released in between, so a long
+        # retry list never holds up a push for its whole length.
+        for parent_id in list(_pending_restores_load()):
+            if not _CASCADE_LOCK.acquire(timeout=CASCADE_LOCK_TIMEOUT):
+                logger.warning(f"[Jellyfin] Another series update is still running; the rating "
+                               f"restore of {parent_id} stays pending for the next run")
+                continue
+            try:
+                entry = _pending_restores_load().get(parent_id)
+                if entry:
+                    self._finish_restore(parent_id, entry)
+            finally:
+                _CASCADE_LOCK.release()
+        return len(_pending_restores_load())
 
     def _post_item_update(self, item: dict, payload: dict, what: str) -> bool:
         """POST an ItemUpdate; for a Series/Season keep the children's ratings."""
         if item.get("Type") not in self._CASCADING_TYPES:
             return self._post_update(item["Id"], payload, what)
-        with _CASCADE_LOCK:
+        if not _CASCADE_LOCK.acquire(timeout=CASCADE_LOCK_TIMEOUT):
+            # Nothing was changed, so nothing needs saving: the tags are still
+            # wrong and the next push updates this series.
+            logger.warning(f"[Jellyfin] Not updating {item.get('Type')} {item['Id']} now: another "
+                           f"series update has held the lock for {CASCADE_LOCK_TIMEOUT} s; the next "
+                           f"push will do it")
+            return False
+        try:
             return self._post_cascading_update(item, payload, what)
+        finally:
+            _CASCADE_LOCK.release()
 
     def _post_cascading_update(self, item: dict, payload: dict, what: str) -> bool:
         item_id = item["Id"]
@@ -750,6 +814,15 @@ class JellyfinService:
             for cid, (ctype, o, c, season) in children.items():
                 if cid in need and need[cid].get("season") is None and season:
                     need[cid]["season"] = season
+            # Each episode also keeps its season's own rating as read now: if
+            # the season is restored and the episode is not, the season's
+            # cascade leaves that rating on the episode, and a retry must
+            # recognise it as a copy, not a hand edit.
+            for cid, e in need.items():
+                if e["type"] == "Episode" and not e.get("season_rating"):
+                    s_row = children.get(e.get("season") or "")
+                    if s_row and s_row[0] == "Season":
+                        e["season_rating"] = [s_row[1], s_row[2]]
         entry = None
         if need:
             prev = pending.get("copy") if pending else None
