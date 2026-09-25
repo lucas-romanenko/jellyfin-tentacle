@@ -9,6 +9,7 @@ Determines which tags to apply to a piece of content based on:
 import logging
 from datetime import datetime, timedelta
 from typing import List, Optional
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from models.database import Movie, Series, ListSubscription, ListItem, TagRule, get_setting
@@ -151,6 +152,58 @@ def apply_tag_rules(
                 matched_tags.append(rule.output_tag)
 
     return matched_tags
+
+
+def rule_metadata(row, media_type: str) -> dict:
+    """The metadata a tag rule is evaluated against, for a library row.
+
+    The same shape the nightly pass builds, so every caller that asks "does a
+    rule give this row its tag" answers it the way the nightly pass does.
+    """
+    return {
+        "genres": row.genres or [],
+        "rating": getattr(row, "rating", None),
+        "year": row.year,
+        "runtime": getattr(row, "runtime", None) if media_type == "movie" else None,
+        "tags": row.tags or [],
+    }
+
+
+def rules_giving(tag: str, db: Session) -> list:
+    """Active tag rules whose output is `tag` (any user)."""
+    return db.query(TagRule).filter(TagRule.active == True, TagRule.output_tag == tag).all()  # noqa: E712
+
+
+def rule_gives(rules: list, row, media_type: str) -> bool:
+    """Whether any of `rules` matches this library row."""
+    meta = rule_metadata(row, media_type)
+    for rule in rules:
+        if rule.apply_to == "movies" and media_type != "movie":
+            continue
+        if rule.apply_to == "series" and media_type != "series":
+            continue
+        if _evaluate_conditions(rule.conditions, meta, row.source or "", row.source_tag):
+            return True
+    return False
+
+
+def tag_taken_by_another_user(db: Session, tag: str, user_id) -> bool:
+    """Whether another user's list or tag rule already applies `tag`.
+
+    Tags are library-wide while lists and rules are per user, so a second
+    user's list or rule on the same tag merges both users' playlists and lets
+    one user's refresh undo the other's. The same user may point a list and a
+    rule at one tag (one playlist fed by both). Case-insensitive, as Jellyfin
+    compares tags.
+    """
+    wanted = (tag or "").strip().casefold()
+    if not wanted:
+        return False
+    for model, column in ((ListSubscription, ListSubscription.tag), (TagRule, TagRule.output_tag)):
+        for (t,) in db.query(column).filter(or_(model.user_id != user_id, model.user_id.is_(None))):
+            if (t or "").strip().casefold() == wanted:
+                return True
+    return False
 
 
 def _evaluate_conditions(

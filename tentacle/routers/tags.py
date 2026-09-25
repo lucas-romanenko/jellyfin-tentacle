@@ -76,6 +76,19 @@ class TagRuleUpdate(BaseModel):
     conditions: Optional[List[ConditionSchema]] = None
 
 
+def _refuse_taken_tag(db: Session, tag: str, user_id) -> None:
+    """400 if another user's list or rule already applies this tag.
+
+    A rule's tag is library-wide; sharing it with another user merges both
+    users' playlists. The same user's own list or rule on the tag is fine.
+    Existing collisions are left as they are.
+    """
+    from services.tagger import tag_taken_by_another_user
+    if tag_taken_by_another_user(db, tag, user_id):
+        raise HTTPException(400, f"The tag '{tag}' is already used by another user's list or "
+                                 f"playlist rule — choose a different tag")
+
+
 @router.get("/rules")
 def list_rules(db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     rules = db.query(TagRule).filter(
@@ -99,6 +112,7 @@ def list_rules(db: Session = Depends(get_db), user: TentacleUser = Depends(get_u
 def create_rule(body: TagRuleCreate, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     if not body.conditions:
         raise HTTPException(400, "At least one condition is required")
+    _refuse_taken_tag(db, body.output_tag, user.id)
 
     rule = TagRule(
         name=body.name,
@@ -124,6 +138,8 @@ def update_rule(rule_id: int, body: TagRuleUpdate, db: Session = Depends(get_db)
     if body.name is not None:
         rule.name = body.name
     if body.output_tag is not None:
+        if body.output_tag != rule.output_tag:
+            _refuse_taken_tag(db, body.output_tag, user.id)
         rule.output_tag = body.output_tag
     if body.active is not None:
         rule.active = body.active

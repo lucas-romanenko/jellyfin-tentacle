@@ -742,11 +742,21 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
     tagged = 0
     cleaned = 0
 
+    # An active tag rule with the same output tag gives titles this tag too (a
+    # user may point a list and a rule at one playlist). A title the rule
+    # matches is not stale just because it is not on the list: stripping it
+    # here only for the nightly rule pass to add it back hours later meant
+    # every such title left the tag, its NFO and its playlist each night.
+    from services.tagger import rule_gives, rules_giving
+    sharing_rules = rules_giving(tag, db)
+
     # --- Strip stale tags from items that no longer belong ---
     for movie in db.query(Movie).all():
         if not movie.tags or tag not in movie.tags:
             continue
         if (movie.tmdb_id, "movie") in valid_ids or (movie.tmdb_id, "") in valid_ids:
+            continue
+        if sharing_rules and rule_gives(sharing_rules, movie, "movie"):
             continue
         tags = [t for t in movie.tags if t != tag]
         movie.tags = tags
@@ -758,6 +768,8 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
         if not series.tags or tag not in series.tags:
             continue
         if (series.tmdb_id, "series") in valid_ids or (series.tmdb_id, "") in valid_ids:
+            continue
+        if sharing_rules and rule_gives(sharing_rules, series, "series"):
             continue
         tags = [t for t in series.tags if t != tag]
         series.tags = tags
@@ -858,9 +870,14 @@ def create_list(body: ListCreate, db: Session = Depends(get_db), user: TentacleU
         # sets: another user's list (each refresh would undo the other's, and
         # both users' playlists would show both lists), a tag rule's output, a
         # provider source tag or a built-in like "Recently Added Movies".
+        from models.database import TagRule
         from services.tagger import tentacle_owned_tags
+        # The user's own list and rule tags are not "taken": one user may
+        # feed one playlist from a list and a rule, and stripping is
+        # producer-aware for both.
         own = {t for (t,) in db.query(ListSubscription.tag).filter(
             ListSubscription.user_id == user.id)}
+        own |= {t for (t,) in db.query(TagRule.output_tag).filter(TagRule.user_id == user.id)}
         taken = {t.casefold() for t in tentacle_owned_tags(db) - own}
         if tag.casefold() in taken:
             raise HTTPException(400, f"The tag '{tag}' is already used by Tentacle or by another "
