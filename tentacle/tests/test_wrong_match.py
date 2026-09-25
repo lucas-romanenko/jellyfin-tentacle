@@ -40,6 +40,27 @@ class TestStreamKey(unittest.TestCase):
         self.assertFalse(wrong_match.is_blocked({"7"}, 8, "http://u"))
         self.assertFalse(wrong_match.is_blocked(set(), 7))
 
+    def test_an_m3u_export_of_an_xtream_panel_is_blocked_by_its_url_key(self):
+        """An M3U provider's entries carry a hashed stream_id, but a panel's
+        m3u_plus export lists VOD as /movie/<user>/<pass>/<id>.<ext>: the block
+        is stored as that <id> (stream_key_for_url of the .strm), so the entry
+        has to be compared the same way or the block never matches again."""
+        url = "http://panel.example:8080/movie/user/pass/5003.mkv"
+        key = wrong_match.stream_key_for_url(url)
+        self.assertEqual("5003", key)
+        hashed_id = 918273645   # what M3UClient gives the same entry
+        self.assertTrue(wrong_match.is_blocked({key}, hashed_id, url))
+        self.assertEqual(674607, wrong_match.override_for({key: 674607}, hashed_id, url))
+        self.assertFalse(wrong_match.is_blocked({key}, hashed_id, "http://panel.example:8080/movie/user/pass/5004.mkv"))
+        self.assertIsNone(wrong_match.override_for({key: 674607}, hashed_id,
+                                                   "http://panel.example:8080/movie/user/pass/5004.mkv"))
+
+    def test_override_by_whole_url_still_works(self):
+        url = "http://m3u.example/vod/some-film.m3u8?token=abc"
+        self.assertEqual(5, wrong_match.override_for({url: 5}, 123, url))
+        self.assertIsNone(wrong_match.override_for({url: 5}, 123, ""))
+
+
 class FakeJf:
     """Records deletes, and what Tentacle's DB looked like at that moment.
 

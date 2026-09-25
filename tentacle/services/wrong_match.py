@@ -63,12 +63,17 @@ def blocked_keys(db: Session, provider_id: int, media_type: str = "movie") -> se
 
 
 def is_blocked(keys: set, stream_id, url: str = "") -> bool:
-    """Whether a catalogue entry is blocked — by id, or by URL for M3U."""
+    """Whether a catalogue entry is blocked — by id, or by URL for M3U.
+
+    A block is stored under stream_key_for_url() of the .strm, so the entry's
+    URL is compared the same way: an M3U export of an Xtream panel lists VOD
+    as /movie/<user>/<pass>/<id>.<ext>, which is stored as the bare <id>
+    while the M3U client's own stream_id is a hash of the URL."""
     if not keys:
         return False
     if stream_id is not None and str(stream_id) in keys:
         return True
-    return bool(url) and url in keys
+    return bool(url) and (url in keys or stream_key_for_url(url) in keys)
 
 
 class WrongMatchError(Exception):
@@ -593,7 +598,12 @@ def override_for(overrides: dict, stream_id, url: str = "") -> Optional[int]:
         return None
     if stream_id is not None and str(stream_id) in overrides:
         return overrides[str(stream_id)]
-    return overrides.get(url) if url else None
+    if not url:
+        return None
+    if url in overrides:
+        return overrides[url]
+    # Keyed like is_blocked(): an M3U entry's key is derived from its URL.
+    return overrides.get(stream_key_for_url(url))
 
 
 # ── Stills from the stream ────────────────────────────────────────────────
