@@ -44,6 +44,12 @@ class _Base(unittest.TestCase):
                      ("sonarr_url", "http://sonarr:8989"), ("sonarr_api_key", "k"), ("data_dir", self.tmp)):
             mdb.set_setting(self.db, k, v)
         self.db.commit()
+        # The scan enriches new titles from TMDB with the built-in token; keep the
+        # test offline instead of sending real requests to api.themoviedb.org.
+        import services.tmdb as tmdb
+        p = mock.patch.object(tmdb.TMDBService, "_request", lambda *a, **k: None)
+        p.start()
+        self.addCleanup(p.stop)
 
 
 class RadarrScan(_Base):
