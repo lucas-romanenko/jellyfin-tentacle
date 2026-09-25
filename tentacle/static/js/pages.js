@@ -2131,6 +2131,7 @@ async function loadListCards() {
                 ${typeLabel} · Last fetched: ${lastFetched}${list.last_item_count ? ` · ${list.last_item_count} items` : ''}
               </div>
               <div style="font-size:12px;color:var(--text3);margin-top:2px">Tag: ${list.tag}</div>
+              ${list.last_fetch_note ? `<div class="list-fetch-note" style="font-size:12px;color:var(--amber);margin-top:4px">⚠️ ${escapeHtml(list.last_fetch_note)}</div>` : ''}
             </div>
           </div>
           ${list.last_item_count ? `
@@ -2664,7 +2665,8 @@ async function fetchList(id) {
     if (r.skipped_no_tmdb) msg += `, ${r.skipped_no_tmdb} skipped (no TMDB match)`;
     if (r.skipped_duplicate) msg += `, ${r.skipped_duplicate} skipped (duplicate)`;
     if (r.tagged) msg += `, ${r.tagged} tagged in library`;
-    toast(msg, 'success', 8000);
+    if (r.note) msg += `. ${r.note}`;
+    toast(msg, r.note ? 'info' : 'success', r.note ? 12000 : 8000);
     loadListCards();
   } catch (e) {
     loading.remove();

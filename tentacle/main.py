@@ -34,7 +34,7 @@ def run_scheduled_sync():
     db = SessionLocal()
     try:
         from models.database import ListSubscription
-        from routers.lists import fetch_list_tmdb_ids, store_list_items, apply_list_tags_to_library, enrich_items_with_tmdb, _get_tmdb_service
+        from routers.lists import refresh_list, _get_tmdb_service
         from services.tmdb import get_tmdb_token
         bearer = get_tmdb_token(db)
         trakt_cid = get_setting(db, "trakt_client_id") or ""
@@ -42,14 +42,8 @@ def run_scheduled_sync():
         active_lists = db.query(ListSubscription).filter(ListSubscription.active == True).all()
         for lst in active_lists:
             try:
-                items = fetch_list_tmdb_ids(lst, bearer_token=bearer, trakt_client_id=trakt_cid)
+                items, store_stats = refresh_list(lst, db, bearer, trakt_cid, tmdb)
                 if items:
-                    if tmdb:
-                        enrich_items_with_tmdb(items, tmdb)
-                    store_stats = store_list_items(lst, items, db)
-                    apply_list_tags_to_library(items, lst.tag, db)
-                    lst.last_fetched = datetime.utcnow()
-                    lst.last_item_count = len(items)
                     stored = store_stats.get("stored", len(items)) if store_stats else len(items)
                     new_count = store_stats.get("new", 0) if store_stats else 0
                     removed_count = store_stats.get("removed", 0) if store_stats else 0

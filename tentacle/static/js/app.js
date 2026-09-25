@@ -1523,7 +1523,8 @@ async function refreshLists(btn) {
   btn.textContent = 'Refreshing...';
   try {
     const r = await api('/api/lists/refresh-all', { method: 'POST' });
-    toast(`Refreshed ${r.refreshed} lists${r.errors.length ? ` (${r.errors.length} errors)` : ''}`, 'success');
+    const warned = (r.warnings || []).length;
+    toast(`Refreshed ${r.refreshed} lists${r.errors.length ? ` (${r.errors.length} errors)` : ''}${warned ? ` — ${warned} only partly read, see the Lists page` : ''}`, r.errors.length ? 'error' : warned ? 'info' : 'success');
   } catch (e) {
     toast(e.message, 'error');
   } finally {

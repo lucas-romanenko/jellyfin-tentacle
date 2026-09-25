@@ -201,6 +201,35 @@ def fetch_list_tmdb_ids(lst: ListSubscription, bearer_token: str = "", trakt_cli
     return []
 
 
+class ListFetch(list):
+    """Fetched list items, plus how much of the list they actually are.
+
+    A plain list cannot say "this is only part of it", and every refresh
+    replaces the stored items with what it is given and strips the list's tag
+    from anything missing. So a source that could only return part of a list
+    (IMDb's GraphQL refusing page 2, or the movies-only Servarr fallback)
+    silently deleted the rest (#145). Callers that do not care still get an
+    ordinary list.
+
+    complete:      False when the fetch stopped part-way, so anything not in
+                   it may still be on the list.
+    missing_types: media types the source cannot return at all; Servarr only
+                   knows movies, so {"series"}.
+    note:          what to tell the user when either applies.
+    """
+
+    def __init__(self, items=(), source="", complete=True, missing_types=(), note=""):
+        super().__init__(items)
+        self.source = source
+        self.complete = complete
+        self.missing_types = set(missing_types)
+        self.note = note
+
+    @property
+    def partial(self) -> bool:
+        return not self.complete or bool(self.missing_types)
+
+
 _IMDB_GQL_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
 # Map IMDb chart URL slugs → GraphQL ChartTitleType enum values
@@ -280,6 +309,7 @@ def _fetch_imdb_graphql_list(list_id: str) -> list:
     tv_types = {"tvSeries", "tvMiniSeries", "tvMovie", "tvSpecial"}
     result = []
     after = ""
+    error = ""
 
     while True:
         after_arg = f', after: "{after}"' if after else ""
@@ -328,12 +358,39 @@ def _fetch_imdb_graphql_list(list_id: str) -> list:
                 break
         except Exception as e:
             logger.warning(f"IMDb GraphQL list {list_id} failed: {e}")
+            error = _imdb_error_text(e)
             break
 
     movies = sum(1 for i in result if i["media_type"] == "movie")
     series = sum(1 for i in result if i["media_type"] == "series")
     logger.info(f"IMDb GraphQL list: {len(result)} items ({movies} movies, {series} series)")
-    return result
+    if error and result:
+        # A later page failed. What came back is the start of the list, not
+        # all of it — never let it stand in for the whole list.
+        return ListFetch(result, source="imdb", complete=False, note=(
+            f"Only the first {len(result)} items could be read: IMDb stopped "
+            f"answering ({error}). The rest of the list was kept as it was."))
+    fetched = ListFetch(result, source="imdb")
+    fetched.error = error
+    return fetched
+
+
+def _imdb_error_text(e: Exception) -> str:
+    """A short reason for the list card: "HTTP 403" rather than a traceback."""
+    status = getattr(getattr(e, "response", None), "status_code", None)
+    if status:
+        return f"HTTP {status}"
+    return type(e).__name__
+
+
+def _servarr_fallback(servarr_id: str, reason: str) -> list:
+    """The Servarr fallback, marked as the movies-only view it is."""
+    items = _fetch_imdb_servarr(servarr_id)
+    if not items:
+        return items
+    return ListFetch(items, source="servarr", missing_types={"series"}, note=(
+        f"TV shows unavailable: {reason}, so only movies were read. "
+        f"TV shows already on this list were kept."))
 
 
 def _fetch_imdb_servarr(list_id: str) -> list:
@@ -377,18 +434,21 @@ def fetch_imdb_rss(url: str, bearer_token: str = "") -> list:
                 return items
         # Unknown chart or GraphQL failed → try Servarr
         servarr_id = "top250" if parsed["id"] == "top" else parsed["id"]
-        return _fetch_imdb_servarr(servarr_id)
+        return _servarr_fallback(servarr_id, "IMDb did not answer the chart request")
 
     if parsed["type"] == "list":
         # User list → GraphQL list query, Servarr fallback
         items = _fetch_imdb_graphql_list(parsed["id"])
         if items:
             return items
-        return _fetch_imdb_servarr(parsed["id"])
+        error = getattr(items, "error", "")
+        return _servarr_fallback(parsed["id"], f"IMDb blocked the request ({error})" if error
+                                 else "IMDb returned no items")
 
     if parsed["type"] == "user":
         # User watchlist/ratings → try Servarr
-        return _fetch_imdb_servarr(parsed["id"])
+        return _servarr_fallback(parsed["id"], "IMDb watchlists and ratings are only "
+                                               "available through a movies-only source")
 
     logger.error(f"Unrecognized IMDb URL format: {url}")
     return []
@@ -552,6 +612,65 @@ def store_list_items(lst: ListSubscription, items: list, db: Session) -> dict:
     return {"stored": stored, "new": new_count, "removed": removed_count, "skipped_no_tmdb": skipped_no_tmdb, "skipped_duplicate": skipped_duplicate}
 
 
+def keep_unread_items(lst: ListSubscription, items: list, db: Session) -> list:
+    """Add back the stored items a partial fetch could not have seen.
+
+    Storing a fetch replaces the list and strips its tag from everything not in
+    it, which is only right when the fetch read the whole list. After a page
+    failure nothing not re-read can be judged gone, so every stored item stays;
+    after a movies-only fallback, the stored TV shows do. Items are matched on
+    tmdb_id, the key store_list_items de-duplicates on.
+    """
+    missing = getattr(items, "missing_types", set())
+    complete = getattr(items, "complete", True)
+    if complete and not missing:
+        return items
+    merged = ListFetch(items, source=getattr(items, "source", ""),
+                       complete=complete, missing_types=missing,
+                       note=getattr(items, "note", ""))
+    have = {i.get("tmdb_id") for i in items if i.get("tmdb_id")}
+    kept = 0
+    for row in db.query(ListItem).filter(ListItem.list_id == lst.id).all():
+        if not row.tmdb_id or row.tmdb_id in have:
+            continue
+        if complete and (row.media_type or "movie") not in missing:
+            continue
+        merged.append({
+            "tmdb_id": row.tmdb_id, "imdb_id": row.imdb_id,
+            "media_type": row.media_type, "title": row.title,
+            "year": row.year, "poster_path": row.poster_path,
+        })
+        have.add(row.tmdb_id)
+        kept += 1
+    if kept:
+        logger.info(f"List '{lst.name}': kept {kept} stored item(s) the partial fetch could not see")
+    return merged
+
+
+def refresh_list(lst: ListSubscription, db: Session, bearer_token: str = "",
+                 trakt_client_id: str = "", tmdb: Optional[TMDBService] = None):
+    """Fetch, enrich, store and tag one list. The one path every refresh takes.
+
+    Returns (items, store_stats), or (None, None) when the fetch came back
+    empty — which is never stored, because an empty answer is far more often a
+    failure than a list that was emptied. Either way lst.last_fetch_note says
+    what the user needs to know about the last attempt.
+    """
+    items = fetch_list_tmdb_ids(lst, bearer_token=bearer_token, trakt_client_id=trakt_client_id)
+    if not items:
+        lst.last_fetch_note = "The last refresh returned nothing, so the previous items were kept."
+        return None, None
+    if tmdb:
+        enrich_items_with_tmdb(items, tmdb)
+    items = keep_unread_items(lst, items, db)
+    store_stats = store_list_items(lst, items, db)
+    store_stats["tagged"] = apply_list_tags_to_library(items, lst.tag, db)
+    lst.last_fetched = datetime.utcnow()
+    lst.last_item_count = store_stats["stored"]
+    lst.last_fetch_note = getattr(items, "note", "") or None
+    return items, store_stats
+
+
 def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
     """Match list items to library content and apply/remove tags via NFO update.
 
@@ -669,6 +788,7 @@ def get_lists(db: Session = Depends(get_db), user: TentacleUser = Depends(get_us
             "playlist_enabled": l.playlist_enabled,
             "last_fetched": l.last_fetched,
             "last_item_count": l.last_item_count,
+            "last_fetch_note": l.last_fetch_note,
             "created_at": l.created_at,
         }
         for l in lists
@@ -680,6 +800,12 @@ def create_list(body: ListCreate, db: Session = Depends(get_db), user: TentacleU
     if not list_url_is_allowed(body.type, body.url or ""):
         raise HTTPException(400, f"A {body.type} list URL must be a public "
                                  f"{'/'.join(sorted(LIST_ALLOWED_HOSTS[body.type]))} address")
+    if body.type == "imdb_rss" and _parse_imdb_url(body.url or "")["type"] == "unknown":
+        # Otherwise accepted and then never fetched: every refresh logs
+        # "Unrecognized IMDb URL" and the list stays empty (#145) — most often
+        # the name and URL fields swapped.
+        raise HTTPException(400, "Not an IMDb list, chart or user URL "
+                                 "(for example https://www.imdb.com/list/ls055592025/)")
     lst = ListSubscription(
         name=body.name,
         type=body.type,
@@ -942,18 +1068,15 @@ def refresh_all_lists(db: Session = Depends(get_db), user: TentacleUser = Depend
 
     refreshed = 0
     errors = []
+    warnings = []
     for lst in active_lists:
         try:
-            items = fetch_list_tmdb_ids(lst, bearer_token=bearer, trakt_client_id=trakt_cid)
-            if not items:
+            items, store_stats = refresh_list(lst, db, bearer, trakt_cid, tmdb)
+            if items is None:
                 errors.append(f"{lst.name}: empty or failed")
                 continue
-            if tmdb:
-                enrich_items_with_tmdb(items, tmdb)
-            store_stats = store_list_items(lst, items, db)
-            apply_list_tags_to_library(items, lst.tag, db)
-            lst.last_fetched = datetime.utcnow()
-            lst.last_item_count = store_stats["stored"]
+            if lst.last_fetch_note:
+                warnings.append(f"{lst.name}: {lst.last_fetch_note}")
             refreshed += 1
             logger.info(f"Refreshed list '{lst.name}': {store_stats['stored']} items")
         except Exception as e:
@@ -962,7 +1085,7 @@ def refresh_all_lists(db: Session = Depends(get_db), user: TentacleUser = Depend
 
     db.commit()
     log_activity(db, "lists_refresh", f"Refreshed {refreshed} lists")
-    return {"success": True, "refreshed": refreshed, "errors": errors}
+    return {"success": True, "refreshed": refreshed, "errors": errors, "warnings": warnings}
 
 
 @router.post("/{list_id}/fetch")
@@ -978,22 +1101,12 @@ def fetch_list(list_id: int, db: Session = Depends(get_db), user: TentacleUser =
     from services.tmdb import get_tmdb_token
     bearer_token = get_tmdb_token(db)
     trakt_client_id = get_setting(db, "trakt_client_id") or ""
-    items = fetch_list_tmdb_ids(lst, bearer_token=bearer_token, trakt_client_id=trakt_client_id)
-    if not items:
-        raise HTTPException(400, "Failed to fetch list or list is empty")
-
-    # Enrich items with metadata from TMDB (poster, title, year)
     tmdb = _get_tmdb_service(db)
-    if tmdb:
-        enrich_items_with_tmdb(items, tmdb)
-
-    # Store items with metadata
-    store_stats = store_list_items(lst, items, db)
-
-    tagged = apply_list_tags_to_library(items, lst.tag, db)
-
-    lst.last_fetched = datetime.utcnow()
-    lst.last_item_count = store_stats["stored"]
+    items, store_stats = refresh_list(lst, db, bearer_token, trakt_client_id, tmdb)
+    if items is None:
+        db.commit()
+        raise HTTPException(400, "Failed to fetch list or list is empty")
+    tagged = store_stats.get("tagged", 0)
     db.commit()
 
     # Auto-add missing to Radarr
@@ -1046,6 +1159,7 @@ def fetch_list(list_id: int, db: Session = Depends(get_db), user: TentacleUser =
         "skipped_no_tmdb": store_stats["skipped_no_tmdb"],
         "skipped_duplicate": store_stats["skipped_duplicate"],
         "tagged": tagged,
+        "note": lst.last_fetch_note,
         "radarr_added": radarr_added,
         "radarr_error": radarr_error,
     }

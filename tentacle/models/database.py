@@ -397,6 +397,9 @@ class ListSubscription(Base):
     playlist_enabled = Column(Boolean, default=False)  # Generate a Jellyfin playlist from this list
     last_fetched = Column(DateTime, nullable=True)
     last_item_count = Column(Integer, default=0)
+    # What the user needs to know about the last refresh when it did not read
+    # the whole list (a movies-only fallback, a page that failed), else NULL.
+    last_fetch_note = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("TentacleUser", backref="list_subscriptions")
