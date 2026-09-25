@@ -672,6 +672,17 @@ class TestRematch(_Base):
         self.assertEqual("The Decline", row.title)
         self.assertIsNone(self.movie(self.tmdb))
 
+    def test_a_fix_to_a_film_tmdb_no_longer_has_does_not_stop_pruning(self):
+        self.rematch()
+        self.db.query(Movie).filter(Movie.tmdb_id == 674607).delete()
+        self.db.commit()
+        FakeTMDB.get_movie_details = lambda _self, tid: None   # a plain 404: the id is gone from TMDB
+        self.client.movies["1"] = [(t, s) for t, s in self.client.movies["1"] if t != "Movie 5"]
+        for _ in range(3):
+            self.night()
+        self.assertIsNone(self.movie(FakeTMDB.ids["Movie 5"]), "the provider dropped Movie 5; it is pruned")
+        self.assertIsNone(self.movie(self.tmdb), "the wrong label is not imported either")
+
     def test_a_download_of_the_labelled_film_survives_in_jellyfin(self):
         self.jf.extra = [{"Id": f"dl-{self.tmdb}", "ProviderIds": {"Tmdb": str(self.tmdb)},
                           "Path": "/downloads/Movie 9 (2020)/Movie 9 (2020).mkv"}]

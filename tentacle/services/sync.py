@@ -1421,16 +1421,26 @@ def _sync_movies(
                 if override_id in existing_provider_tmdb_ids or override_id in seen_tmdb_ids:
                     metadata = {"tmdb_id": override_id}
                 else:
+                    tmdb_down = False
                     try:
                         metadata = tmdb.get_movie_details(override_id)
+                        failed = getattr(tmdb, "_lookup_failed", None)
+                        tmdb_down = bool(not metadata and callable(failed) and failed())  # 429/5xx
                     except TMDBConnectionError:
-                        metadata = None
+                        metadata, tmdb_down = None, True
                     if not metadata:
-                        # The right film's details didn't come: like a failed
-                        # lookup, the seen set is incomplete, so nothing may be
-                        # pruned -- and one unreachable lookup must not fail
-                        # the sync, nor import the stream under its wrong label.
-                        fetch_ok = False
+                        # The right film's details didn't come. Skip the stream
+                        # for tonight (never import it under its wrong label,
+                        # never fail the sync). Only an unreachable TMDB makes
+                        # the seen set doubtful enough to hold back pruning: a
+                        # plain "no such film" (TMDB removed or merged the id)
+                        # comes back every night and would stop this
+                        # provider's pruning for good.
+                        if tmdb_down:
+                            fetch_ok = False
+                        else:
+                            logger.warning(f"[Sync] Stream {stream.get('stream_id')} is fixed to TMDB {override_id}, "
+                                           f"which TMDB no longer has; skipped (fix it again to a film TMDB knows)")
                         cat_skipped += 1
                         stats["skipped"] += 1
                         continue
