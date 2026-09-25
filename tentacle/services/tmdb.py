@@ -748,6 +748,7 @@ class TMDBService:
             })
         all_results = []
         seen = set()
+        self._tl.failed = False
         for page in range(1, pages + 1):
             params = dict(base, page=page)
             data = self._request(endpoint, params)
@@ -758,7 +759,10 @@ class TMDBService:
                 all_results.append(m)
             if not data or not data.get("results"):
                 break
-        self._cache_set(cache_key, all_results)
+        # A rate limit or server error is not an empty genre: keep it out of
+        # the 12 h cache so the next visit asks again.
+        if not self._lookup_failed():
+            self._cache_set(cache_key, all_results)
         return all_results
 
     def get_new_on_provider(self, media_type: str, provider_id: int, region: str = "CA",
@@ -787,6 +791,7 @@ class TMDBService:
 
         all_results = []
         seen = set()
+        self._tl.failed = False
         for page in range(1, pages + 1):
             params = {
                 "page": page,
@@ -812,7 +817,8 @@ class TMDBService:
                 all_results.append(m)
             if not items:
                 break
-        self._cache_set(cache_key, all_results)
+        if not self._lookup_failed():  # a failed page is not the end of the row
+            self._cache_set(cache_key, all_results)
         logger.info(f"TMDB new-on-provider {provider_id} {media_type} ({region}): {len(all_results)} items")
         return all_results
 
