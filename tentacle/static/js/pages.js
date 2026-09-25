@@ -359,21 +359,27 @@ async function loadLibDownloads() {
   }
 }
 
-let _dlPollBusy = false;
+// A poll still out after this long is given up on: api() has no timeout, and
+// a request that never answers must not stop the polling for good.
+const POLL_STALE_MS = 90000;
+let _dlPollSince = 0;   // when the outstanding poll started, 0 = none
+let _dlPollToken = 0;
 async function pollLibDownloads() {
   if (state.currentPage !== 'library') { stopDownloadPolling(); return; }
   // A slow Radarr/Sonarr can make one answer take longer than the interval;
   // don't stack another request behind it.
-  if (_dlPollBusy) return;
-  _dlPollBusy = true;
+  if (_dlPollSince && Date.now() - _dlPollSince < POLL_STALE_MS) return;
+  const tok = ++_dlPollToken;
+  _dlPollSince = Date.now();
   try {
     const data = await api('/api/activity');
+    if (tok !== _dlPollToken) return;   // given up on; a newer poll owns the panel
     renderLibDownloads(data);
     if (!data.downloads || data.downloads.length === 0) {
       stopDownloadPolling();
     }
-  } catch (e) { stopDownloadPolling(); }
-  finally { _dlPollBusy = false; }
+  } catch (e) { if (tok === _dlPollToken) stopDownloadPolling(); }
+  finally { if (tok === _dlPollToken) _dlPollSince = 0; }
 }
 
 function stopDownloadPolling() {
@@ -4663,12 +4669,16 @@ function startActivityPolling() {
 // The tab polls every 3 s, but with a slow Radarr/Sonarr one answer can take a
 // minute. Polls used to pile up behind it (a dozen requests in flight, which
 // also held the browser's connections every other page needs); now a poll is
-// skipped while the last one is out.
-let _activityPollBusy = false;
+// skipped while the last one is out — unless it has been out for
+// POLL_STALE_MS, so one request that never answers can't stop the tab updating.
+// loadActivity() drops an answer older than one already shown.
+let _activityPollSince = 0;
+let _activityPollToken = 0;
 function _pollActivity() {
-  if (_activityPollBusy) return;
-  _activityPollBusy = true;
-  loadActivity().finally(() => { _activityPollBusy = false; });
+  if (_activityPollSince && Date.now() - _activityPollSince < POLL_STALE_MS) return;
+  const tok = ++_activityPollToken;
+  _activityPollSince = Date.now();
+  loadActivity().finally(() => { if (tok === _activityPollToken) _activityPollSince = 0; });
 }
 
 function stopActivityPolling() {

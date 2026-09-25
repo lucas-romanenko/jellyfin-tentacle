@@ -50,7 +50,12 @@
     active: false,
     loaded: false,
     timer: null,
+    pollSince: 0,   // when the outstanding Activity poll started, 0 = none
+    pollToken: 0,
   };
+  // A poll still out after this long is given up on, so one request that
+  // never answers can't stop the polling for good.
+  var POLL_STALE_MS = 90000;
 
   // ── Bootstrap ───────────────────────────────────────────────────────
   function waitForReady() {
@@ -2207,7 +2212,14 @@
         stopActivityPolling();
         return;
       }
+      // One poll at a time: behind a slow backend every 3 s tick used to add
+      // another request on top of the ones still outstanding.
+      if (ACT.pollSince && Date.now() - ACT.pollSince < POLL_STALE_MS) return;
+      var tok = ++ACT.pollToken;
+      ACT.pollSince = Date.now();
       apiGet('TentacleDiscover/Activity?userId=' + window.ApiClient.getCurrentUserId()).then(function (data) {
+        if (tok !== ACT.pollToken) return;   // given up on; a newer poll owns the page
+        ACT.pollSince = 0;
         MD.activityData = data;
         var count = activityCount(data);
         window.dispatchEvent(new CustomEvent('tentacle-activity-count', { detail: count }));
@@ -2216,7 +2228,7 @@
         if (ACT.active) {
           renderActivityContent(data);
         }
-      }).catch(function () {});
+      }).catch(function () { if (tok === ACT.pollToken) ACT.pollSince = 0; });
     }, 3000);
   }
 
@@ -2225,6 +2237,8 @@
       clearInterval(ACT.timer);
       ACT.timer = null;
     }
+    ACT.pollSince = 0;
+    ACT.pollToken++;   // an answer still on its way belongs to the stopped poller
   }
 
   // Background badge polling — runs on home page even when overlays are closed
