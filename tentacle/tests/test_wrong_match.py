@@ -222,6 +222,29 @@ class TestWrongMovie(_Base):
         self.report()
         self.assertEqual([f"jf-{self.tmdb}"], self.jf.deleted)
 
+    def test_a_download_in_the_same_folder_is_not_deleted_through_jellyfin(self):
+        """Merged VOD/Radarr root: Jellyfin 10.11.8 groups "Movie (Year).strm"
+        and "Movie (Year) - Bluray-1080p.mkv" as versions of one item with the
+        .strm as primary; DELETE /Items then removes the whole folder."""
+        strm = _RealPath(self.movie(self.tmdb).strm_path)
+        mkv = strm.parent / (strm.parent.name + " - Bluray-1080p.mkv")
+        mkv.write_bytes(b"x")
+        r = self.report()
+        self.assertTrue(mkv.exists())
+        self.assertEqual([], self.jf.deleted, "no DELETE /Items while the folder holds a download")
+        self.assertFalse(r["jellyfin_deleted"])
+        self.assertIsNone(self.movie(self.tmdb), "Tentacle's copy is still removed")
+
+    def test_subtitles_and_art_beside_the_strm_are_not_deleted_through_jellyfin(self):
+        """Not grouped (IsInMixedFolder): Jellyfin deletes every sidecar whose
+        name starts with the item's -- the download's subtitles, NFO, art."""
+        strm = _RealPath(self.movie(self.tmdb).strm_path)
+        srt = strm.parent / (strm.stem + ".en.srt")
+        srt.write_text("1")
+        self.report()
+        self.assertTrue(srt.exists())
+        self.assertEqual([], self.jf.deleted)
+
     def test_a_stored_id_of_the_download_is_not_trusted(self):
         """Discover backfills jellyfin_item_id from a TMDB lookup -- it can be
         the download's id."""
@@ -284,6 +307,18 @@ class TestRuntimeCheck(_Base):
                   "MediaSources": [{"RunTimeTicks": 83 * 600_000_000}]}]
         self.assertEqual(1, self.run_check(items)["flagged"])
         self.assertEqual(f"jf-{self.tmdb}", self.db.query(MatchSuspect).one().jellyfin_item_id)
+
+    def test_a_download_grouped_with_the_strm_is_not_read_as_its_length(self):
+        """Same folder: Jellyfin groups the .mkv and the .strm as versions of one
+        item (the .strm primary) and lists the widest source first."""
+        self.set_runtime(self.tmdb, 100)
+        items = [{"Id": f"jf-{self.tmdb}", "ProviderIds": {"Tmdb": str(self.tmdb)},
+                  "Path": "/vod/Movie 9 (2020)/Movie 9 (2020).strm",
+                  "MediaSources": [{"Id": "mkv-version", "RunTimeTicks": 100 * 600_000_000},
+                                   {"Id": f"jf-{self.tmdb}", "RunTimeTicks": 8 * 600_000_000}]}]
+        r = self.run_check(items)
+        self.assertEqual(1, r["flagged"], "the stream plays 8 min, not the download's 100")
+        self.assertEqual(8, self.db.query(MatchSuspect).one().actual_minutes)
 
     def test_a_different_film_is_flagged(self):
         self.set_runtime(self.tmdb, 100)          # TMDB: the 1981 documentary
@@ -497,6 +532,17 @@ class TestProbeInfo(_Base):
             "MediaStreams": [{"Type": "Video"}, {"Type": "Audio", "Language": "fre"},
                              {"Type": "Audio", "Language": "fra"}, {"Type": "Subtitle", "Language": "eng"},
                              {"Type": "Audio", "Language": "und"}]}]}
+        info = wrong_match.probe_info(self.db, self.movie(self.tmdb))
+        self.assertEqual({"minutes": 83, "audio_languages": ["fr"]}, info)
+
+    def test_the_strm_version_not_a_grouped_download(self):
+        item_id = f"jf-{self.tmdb}"
+        self.jf.get_item_by_id = lambda _id: {"Id": item_id, "Path": "/vod/Movie 9 (2020)/Movie 9 (2020).strm",
+            "MediaSources": [
+                {"Id": "mkv-version", "RunTimeTicks": 120 * 600_000_000,
+                 "MediaStreams": [{"Type": "Audio", "Language": "eng"}]},
+                {"Id": item_id, "RunTimeTicks": 83 * 600_000_000,
+                 "MediaStreams": [{"Type": "Audio", "Language": "fre"}]}]}
         info = wrong_match.probe_info(self.db, self.movie(self.tmdb))
         self.assertEqual({"minutes": 83, "audio_languages": ["fr"]}, info)
 

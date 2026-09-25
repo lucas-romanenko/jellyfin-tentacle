@@ -201,6 +201,23 @@ def _delete_from_jellyfin(db: Session, tmdb_id: int, jf_item_id: Optional[str],
                 pass
             return False
         jf_item_id = item["Id"]
+        folder = Path(strm_path).parent if strm_path else None
+        if folder is not None and folder.is_dir():
+            # Something else still lives in this copy's folder: a download of
+            # the same film in a merged VOD/Radarr root, its NFO, subtitles or
+            # art, or the fixed copy a re-match just wrote there. Jellyfin's
+            # DELETE removes the item's whole folder when the .strm is the
+            # primary of a multi-version item (Video.GetDeletePaths returns
+            # ContainingFolderPath), and every sidecar starting with the
+            # title when it isn't. The .strm itself is gone, so a scan drops
+            # the item and leaves the rest alone.
+            logger.info(f"[WrongMatch] '{folder.name}' still holds other files; not deleting the Jellyfin "
+                        f"item (it would take them with it), scanning instead (tmdb:{tmdb_id})")
+            try:
+                jf.trigger_library_scan(None)
+            except Exception:
+                pass
+            return False
         ok = jf.delete_item(jf_item_id)
     except Exception as e:
         logger.warning(f"[WrongMatch] Could not delete tmdb:{tmdb_id} from Jellyfin: {e}")
@@ -267,8 +284,8 @@ def check_runtime_mismatches(db: Session) -> dict:
         path = (item.get("Path") or "").lower()
         if path and not path.endswith(".strm"):
             continue
-        sources = item.get("MediaSources") or []
-        ticks = (sources[0].get("RunTimeTicks") if sources else None) or 0
+        src = strm_source(item)
+        ticks = ((src or {}).get("RunTimeTicks")) or 0
         actual = round(ticks / 600_000_000) if ticks else 0
         runtime, title = expected[tmdb_id]
         if not actual or not runtime:
@@ -381,6 +398,21 @@ def language_code(code: Optional[str]) -> Optional[str]:
     return _LANG_3_TO_1.get(c[:3])
 
 
+def strm_source(item: dict) -> Optional[dict]:
+    """The media source that is the .strm itself. With a download of the same
+    film in the same folder, Jellyfin groups the two as versions of one item
+    and lists the widest first -- MediaSources[0] is then the download."""
+    sources = (item or {}).get("MediaSources") or []
+    item_id = (item or {}).get("Id")
+    for src in sources:
+        if (src.get("Path") or "").lower().endswith(".strm"):
+            return src
+    for src in sources:
+        if item_id and src.get("Id") == item_id:
+            return src
+    return None if len(sources) > 1 else (sources[0] if sources else None)
+
+
 def probe_info(db: Session, row: Movie) -> dict:
     """What Jellyfin's probe learned about the stream, if it has been played:
     its real length in minutes and the languages of its audio tracks."""
@@ -393,10 +425,10 @@ def probe_info(db: Session, row: Movie) -> dict:
         if not found:
             return empty
         item = jf.get_item_by_id(found["Id"]) or {}
-        sources = item.get("MediaSources") or []
-        ticks = (sources[0].get("RunTimeTicks") if sources else None) or 0
+        src = strm_source(item) or {}
+        ticks = src.get("RunTimeTicks") or 0
         langs = []
-        for s in (sources[0].get("MediaStreams") or []) if sources else []:
+        for s in (src.get("MediaStreams") or []):
             if s.get("Type") == "Audio":
                 code = language_code(s.get("Language"))
                 if code and code not in langs:
