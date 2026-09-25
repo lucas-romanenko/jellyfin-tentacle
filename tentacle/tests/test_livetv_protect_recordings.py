@@ -640,6 +640,9 @@ class BackgroundWork(unittest.TestCase):
         for what in ("Testing the provider", "Fetching the provider's categories", "A sync preview"):
             self.assertIn(f'refuse_while_recording(db, "{what}")', providers_src)
         self.assertIn('refuse_while_recording(db, "A stream check")', (root / "routers" / "health.py").read_text())
+        radarr_src = (root / "routers" / "radarr.py").read_text()
+        for what in ("A provider migration preview", "A provider migration"):
+            self.assertIn(f'refuse_while_recording(db, "{what}")', radarr_src)
         self.assertIn('wait_for_recordings(db, "the scheduled EPG sync")', (root / "main.py").read_text())
 
 
@@ -655,14 +658,20 @@ class ButtonsRefuse(unittest.TestCase):
         db.commit()
         fake_slots = types.SimpleNamespace(recording_active=lambda: True)
         with mock.patch.object(livetv, "_stream_slots", fake_slots), \
-                mock.patch("requests.get", side_effect=AssertionError("provider contacted")):
+                mock.patch("requests.get", side_effect=AssertionError("provider contacted")), \
+                mock.patch("requests.Session.get", side_effect=AssertionError("provider contacted")):
             for call in (lambda: livetv.test_live_provider(db), lambda: livetv.sync_live_groups(1, db),
                          lambda: livetv.sync_live_channels(1, db), lambda: livetv.sync_epg(1, db)):
                 with self.assertRaises(HTTPException) as cm:
                     call()
                 self.assertEqual(503, cm.exception.status_code)
-            from routers import providers
-            for call in (lambda: providers.test_provider(1, db), lambda: providers.fetch_categories(1, db)):
+            from routers import providers, radarr
+            db.add(Provider(name="Q", server_url="http://provider2.test", username="u", password="p"))
+            db.commit()
+            for call in (lambda: providers.test_provider(1, db), lambda: providers.fetch_categories(1, db),
+                         lambda: radarr.preview_migration_endpoint(1, 2, db),
+                         lambda: radarr.run_migration(radarr.MigrateRequest(from_provider_id=1, to_provider_id=2,
+                                                                            dry_run=True), db)):
                 with self.assertRaises(HTTPException) as cm:
                     call()
                 self.assertEqual(503, cm.exception.status_code)

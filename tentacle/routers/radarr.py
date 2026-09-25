@@ -548,6 +548,8 @@ def preview_migration_endpoint(
 
     if not from_provider or not to_provider:
         raise HTTPException(404, "Provider not found")
+    from services.provider_activity import refuse_while_recording
+    refuse_while_recording(db, "A provider migration preview")
 
     return preview_migration(from_provider, to_provider, db)
 
@@ -555,6 +557,8 @@ def preview_migration_endpoint(
 @router.post("/migration/run")
 def run_migration(body: MigrateRequest, db: Session = Depends(get_db)):
     """Migrate content from one provider to another"""
+    from services.provider_activity import refuse_while_recording
+    refuse_while_recording(db, "A provider migration")
     result = migrate_provider(
         body.from_provider_id,
         body.to_provider_id,
