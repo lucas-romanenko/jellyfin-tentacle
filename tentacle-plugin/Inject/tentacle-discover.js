@@ -56,6 +56,10 @@
   // A poll still out after this long is given up on, so one request that
   // never answers can't stop the polling for good.
   var POLL_STALE_MS = 90000;
+  // Monotonic where available, so a wall-clock jump can't stall the poll.
+  function pollClock() {
+    return (window.performance && window.performance.now) ? window.performance.now() : Date.now();
+  }
 
   // ── Bootstrap ───────────────────────────────────────────────────────
   function waitForReady() {
@@ -2214,9 +2218,9 @@
       }
       // One poll at a time: behind a slow backend every 3 s tick used to add
       // another request on top of the ones still outstanding.
-      if (ACT.pollSince && Date.now() - ACT.pollSince < POLL_STALE_MS) return;
+      if (ACT.pollSince && pollClock() - ACT.pollSince < POLL_STALE_MS) return;
       var tok = ++ACT.pollToken;
-      ACT.pollSince = Date.now();
+      ACT.pollSince = pollClock();
       apiGet('TentacleDiscover/Activity?userId=' + window.ApiClient.getCurrentUserId()).then(function (data) {
         if (tok !== ACT.pollToken) return;   // given up on; a newer poll owns the page
         ACT.pollSince = 0;

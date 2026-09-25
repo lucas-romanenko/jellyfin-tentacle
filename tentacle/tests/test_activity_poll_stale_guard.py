@@ -51,7 +51,7 @@ async function flush() { for (var i = 0; i < 5; i++) await null; }
 
 DASHBOARD = r"""
 var cacheable = 0, now = 1000, timers = {}, nextId = 1, calls = 0, inflight = 0, maxInflight = 0, pending = [], rendered = [];
-Date.now = function () { return now; };
+Date.now = function () { return %FROZEN% ? 1000 : now; };
 Object.defineProperty(globalThis, 'performance', { value: { now: function () { return now; } }, configurable: true });
 if (%NO_ABORT%) Object.defineProperty(globalThis, 'AbortController', { value: undefined, configurable: true });
 function setInterval(fn) { var id = nextId++; timers[id] = fn; return id; }
@@ -138,16 +138,19 @@ FUNCS = ("_pollClock", "_fetchActivity", "_newPoller", "_pollStart", "_pollAband
          "stopActivityPolling")
 
 
-def _dashboard(no_abort: bool) -> dict:
+def _dashboard(no_abort: bool, frozen_wall_clock: bool = False) -> dict:
     src = PAGES_JS.read_text(encoding="utf-8")
     decls = "\n".join(_line(src, p) for p in DECLS)
     funcs = "\n".join(_function(src, n) for n in FUNCS)
     return _node(DASHBOARD.replace("%NO_ABORT%", "true" if no_abort else "false")
+                 .replace("%FROZEN%", "true" if frozen_wall_clock else "false")
                  .replace("%DECLS%", decls).replace("%FUNCS%", funcs))
 
 
 PLUGIN = COMMON + r"""
-var window = { ApiClient: { getCurrentUserId: function () { return 'u'; } }, dispatchEvent: function () {} };
+var window = { ApiClient: { getCurrentUserId: function () { return 'u'; } }, dispatchEvent: function () {},
+               performance: { now: function () { return now; } } };
+Date.now = function () { return 1000; };   // frozen wall clock: timing must come from performance.now()
 function CustomEvent() {}
 var MD = { active: false, activityData: null };
 function apiGet() { return hang(); }
@@ -239,13 +242,26 @@ class DashboardPollersWithoutAbortController(unittest.TestCase):
 
 
 @unittest.skipUnless(shutil.which("node"), "node is not installed")
+class DashboardPollersUseAMonotonicClock(unittest.TestCase):
+    """A wall-clock jump (NTP setting the time after boot) must not stall the
+    pollers: the timing runs on performance.now(). Here Date.now() is frozen."""
+    @classmethod
+    def setUpClass(cls):
+        cls.r = _dashboard(no_abort=False, frozen_wall_clock=True)
+
+    def test_the_stale_give_up_still_happens(self):
+        self.assertEqual(2, self.r["afterStale"])
+        self.assertEqual(["lib:2"], self.r["rendered"])
+
+
+@unittest.skipUnless(shutil.which("node"), "node is not installed")
 class PluginActivityOverlayPoller(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         src = DISCOVER_JS.read_text(encoding="utf-8")
         start = src.index("  var ACT = {")
         decls = src[start:src.index("};", start) + 2] + "\n" + (_line(src, "var POLL_STALE_MS") or "var POLL_STALE_MS;")
-        funcs = _function(src, "startActivityPolling") + "\n" + _function(src, "stopActivityPolling")
+        funcs = "\n".join(_function(src, n) for n in ("pollClock", "startActivityPolling", "stopActivityPolling"))
         cls.r = _node(PLUGIN.replace("%DECLS%", decls).replace("%FUNCS%", funcs))
 
     def test_no_second_request_while_one_is_out(self):

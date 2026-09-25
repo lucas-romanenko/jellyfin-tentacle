@@ -369,8 +369,10 @@ async function loadLibDownloads() {
 // can't be cancelled, so a poller keeps at most one of them.
 const POLL_STALE_MS = 90000;
 const _canAbort = typeof AbortController === 'function';
+// Monotonic where available: a wall-clock jump (NTP fixing the time after
+// boot) must not stall or rush the pollers.
 function _pollClock() {
-  return Date.now();
+  return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
 }
 // GET /api/activity. Never through the HTTP cache: while a request for a URL is
 // out, Chromium makes later identical GETs wait behind it (the cache lock), so
