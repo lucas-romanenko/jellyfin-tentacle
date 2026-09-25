@@ -806,16 +806,21 @@ def get_activity(request: Request, db: Session = Depends(get_db),
     searching = [dict(x) for x in wanted["searching"]]
     recently_downloaded = _get_recently_downloaded(db)
 
-    # Build lookup: tmdb_id -> requester display name
+    # Build lookup: (media_type, tmdb_id) -> requester display name. TMDB
+    # numbers movies and shows separately, so movie 1399 and show 1399 are two
+    # different titles; a request is for one of them.
     all_requests = db.query(DownloadRequest, TentacleUser.display_name).join(
         TentacleUser, DownloadRequest.user_id == TentacleUser.id
     ).all()
-    requester_map: dict[int, str] = {}
-    user_requests: set[int] = set()
+    requester_map: dict[tuple, str] = {}
+    user_requests: set[tuple] = set()
     for dr, display_name in all_requests:
-        requester_map[dr.tmdb_id] = display_name
+        requester_map[(dr.media_type, dr.tmdb_id)] = display_name
         if user and dr.user_id == user.id:
-            user_requests.add(dr.tmdb_id)
+            user_requests.add((dr.media_type, dr.tmdb_id))
+
+    def req_key(item: dict) -> tuple:
+        return ("series" if item.get("media_type") == "series" else "movie", item.get("tmdb_id"))
 
     # Remove items from unreleased that are already showing in downloads (prevents duplicates)
     downloading_tmdb_ids = {d.get("tmdb_id") for d in downloads if d.get("tmdb_id")}
@@ -837,21 +842,21 @@ def get_activity(request: Request, db: Session = Depends(get_db),
 
     if not is_admin and user:
         # Non-admin: only show items they requested
-        downloads = [d for d in downloads if d.get("tmdb_id") in user_requests]
-        unreleased = [u for u in unreleased if u.get("tmdb_id") in user_requests]
-        searching = [x for x in searching if x.get("tmdb_id") in user_requests]
-        recently_downloaded = [r for r in recently_downloaded if r.get("tmdb_id") in user_requests]
+        downloads = [d for d in downloads if req_key(d) in user_requests]
+        unreleased = [u for u in unreleased if req_key(u) in user_requests]
+        searching = [x for x in searching if req_key(x) in user_requests]
+        recently_downloaded = [r for r in recently_downloaded if req_key(r) in user_requests]
 
     if is_admin:
         # Admin: attach requester name to each item
         for d in downloads:
-            d["requested_by"] = requester_map.get(d.get("tmdb_id"))
+            d["requested_by"] = requester_map.get(req_key(d))
         for u in unreleased:
-            u["requested_by"] = requester_map.get(u.get("tmdb_id"))
+            u["requested_by"] = requester_map.get(req_key(u))
         for x in searching:
-            x["requested_by"] = requester_map.get(x.get("tmdb_id"))
+            x["requested_by"] = requester_map.get(req_key(x))
         for r in recently_downloaded:
-            r["requested_by"] = requester_map.get(r.get("tmdb_id"))
+            r["requested_by"] = requester_map.get(req_key(r))
 
     # Why each title is still searching (the last release check, if any), what
     # in Radarr/Sonarr is stopping downloads, and the week ahead.
@@ -867,7 +872,7 @@ def get_activity(request: Request, db: Session = Depends(get_db),
         unreleased_series = {u.get("tmdb_id") for u in unreleased if u.get("media_type") == "series"}
         coming_up = [dict(c) for c in arr_insight.coming_up(db)
                      if c.get("tmdb_id") not in unreleased_series
-                     and (is_admin or c.get("tmdb_id") in user_requests)]
+                     and (is_admin or req_key(c) in user_requests)]
         _enrich_posters(db, coming_up)
     except Exception as e:
         logger.debug(f"Activity: calendar failed: {e}")

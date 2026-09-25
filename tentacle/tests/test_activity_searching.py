@@ -257,6 +257,21 @@ class TestActivityEndpoint(_Base):
         out = self.activity(user=self.kid)
         self.assertEqual(["Show B"], [x["title"] for x in out["searching"]])
 
+    # TMDB numbers movies and shows separately: movie 101 and show 101 are
+    # different titles. A request is for one media type only.
+    def test_a_movie_request_does_not_show_the_series_with_the_same_number(self):
+        self.db.add(mdb.DownloadRequest(tmdb_id=101, media_type="movie", user_id=self.kid.id))
+        self.db.commit()
+        out = self.activity(user=self.kid)
+        self.assertEqual([], [x["title"] for x in out["searching"]], "the kid asked for movie 101, not Show B")
+
+    def test_requester_is_matched_by_media_type_too(self):
+        self.db.add(mdb.DownloadRequest(tmdb_id=101, media_type="movie", user_id=self.kid.id))
+        self.db.commit()
+        out = self.activity()
+        by = {(x["media_type"], x["tmdb_id"]): x.get("requested_by") for x in out["searching"]}
+        self.assertIsNone(by[("series", 101)], "Show B was not requested by the kid")
+
     def test_admin_sees_who_asked(self):
         self.db.add(mdb.DownloadRequest(tmdb_id=1, media_type="movie", user_id=self.kid.id))
         self.db.commit()
