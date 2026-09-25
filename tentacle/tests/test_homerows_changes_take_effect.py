@@ -272,7 +272,9 @@ class TestWebHomeLiveUpdates(unittest.TestCase):
         self.assertIn("TentacleHome/HeroConfig", block)
         self.assertRegex(block, r"if \(key === self\._heroConfigKey\) return false")
         self.assertIn("self.loadContent()", block)
-        self.assertIn("self._heroConfigKey = JSON.stringify(cfg || null)", self.bar[: i])
+        # the key is remembered from the first HeroConfig answer (init) onwards
+        self.assertIn("self._applyHeroConfig(cfg)", self.bar[: i])
+        self.assertIn("this._heroConfigKey = JSON.stringify(cfg || null)", self.bar)
 
 
 if __name__ == "__main__":

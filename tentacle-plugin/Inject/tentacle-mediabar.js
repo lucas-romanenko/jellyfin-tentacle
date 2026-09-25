@@ -71,16 +71,10 @@
             // Fetch hero config to get trailerAudio default
             var self = this;
             var configUrl = this.apiClient.getUrl('TentacleHome/HeroConfig', { userId: this.userId });
+            var initUser = this.userId;
             this.apiClient.getJSON(configUrl).then(function (cfg) {
-                self._heroConfigKey = JSON.stringify(cfg || null);
-                if (cfg && cfg.trailerAudio === false) {
-                    self._defaultMuted = true;
-                    self._isMuted = true;
-                } else if (cfg && cfg.trailerAudio === true) {
-                    self._defaultMuted = false;
-                    self._isMuted = false;
-                }
-                self._updateMuteButton();
+                if (self.userId !== initUser) return; // user switched meanwhile
+                self._applyHeroConfig(cfg);
             }).catch(function () {});
 
             this.loadContent().then(function () {
@@ -154,19 +148,49 @@
         // reload the hero only when its configuration (playlist, sort, filters,
         // count) changed. Reloading on every version bump would reshuffle a
         // Random hero whenever any playlist anywhere changed.
+        //
+        // Only ever acts on Home. If the user leaves Home (hide() bumps the
+        // generation) or switches user while HeroConfig is in flight, the answer
+        // is dropped WITHOUT storing its key, so show() picks the change up on
+        // the next Home visit. Reloading off Home started the slide timer and
+        // trailer lookups in the hidden media bar.
         refreshIfChanged: function () {
             var self = this;
-            if (!this.initialized || !this.apiClient) return Promise.resolve(false);
-            var configUrl = this.apiClient.getUrl('TentacleHome/HeroConfig', { userId: this.userId });
-            return this.apiClient.getJSON(configUrl).then(function (cfg) {
+            if (!this.initialized || !this.apiClient || !this.isHomePage()) return Promise.resolve(false);
+            if (this._heroCfgInFlight) return this._heroCfgInFlight;
+            var gen = this.generation;
+            var forUser = this.userId;
+            var configUrl = this.apiClient.getUrl('TentacleHome/HeroConfig', { userId: forUser });
+            var p = this.apiClient.getJSON(configUrl).then(function (cfg) {
+                if (gen !== self.generation || forUser !== self.userId || !self.isHomePage()) return false;
                 var key = JSON.stringify(cfg || null);
                 if (key === self._heroConfigKey) return false;
-                self._heroConfigKey = key;
+                self._applyHeroConfig(cfg);
                 return self.loadContent().then(function () {
+                    if (!self.isHomePage()) return true;
                     if (self.items.length > 0 && self._autoAdvance) self.resetAutoAdvance();
                     return true;
                 });
             }).catch(function () { return false; });
+            this._heroCfgInFlight = p;
+            var clear = function () { if (self._heroCfgInFlight === p) self._heroCfgInFlight = null; };
+            p.then(clear, clear);
+            return p;
+        },
+
+        // Remember the hero config the media bar was built from and apply its
+        // trailer-audio default (a dashboard change to it used to keep the old
+        // mute state until a full reload).
+        _applyHeroConfig: function (cfg) {
+            this._heroConfigKey = JSON.stringify(cfg || null);
+            if (cfg && cfg.trailerAudio === false) {
+                this._defaultMuted = true;
+                this._isMuted = true;
+            } else if (cfg && cfg.trailerAudio === true) {
+                this._defaultMuted = false;
+                this._isMuted = false;
+            }
+            this._updateMuteButton();
         },
 
         loadContent: function () {
@@ -694,14 +718,30 @@
                 // If container was detached/re-attached or the user switched,
                 // reload content to avoid showing stale or another user's hero
                 if ((wasDetached || userChanged) && this.apiClient) {
+                    // A user switch also replaces the remembered hero config, so
+                    // the next version bump does not see the previous user's key
+                    // as "changed" and reload (reshuffle) the hero a second time.
+                    if (userChanged) {
+                        var forUser = this.userId;
+                        this._heroConfigKey = undefined;
+                        this.apiClient.getJSON(this.apiClient.getUrl('TentacleHome/HeroConfig', { userId: forUser }))
+                            .then(function (cfg) { if (self.userId === forUser) self._applyHeroConfig(cfg); })
+                            .catch(function () {});
+                    }
                     this.loadContent().then(function () {
+                        if (!self.isHomePage()) return;
                         if (self.items.length > 0 && self._autoAdvance) {
                             self.resetAutoAdvance();
                         }
                     }).catch(function () {});
-                } else if (this.items && this.items.length > 0 && this._autoAdvance) {
-                    // Restart the timer stopped by hide()
-                    this.resetAutoAdvance();
+                } else {
+                    if (this.items && this.items.length > 0 && this._autoAdvance) {
+                        // Restart the timer stopped by hide()
+                        this.resetAutoAdvance();
+                    }
+                    // A hero change that arrived while the user was away from
+                    // Home (refreshIfChanged drops it there) applies now.
+                    this.refreshIfChanged();
                 }
             }
         },

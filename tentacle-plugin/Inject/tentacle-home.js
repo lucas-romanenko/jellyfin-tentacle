@@ -998,6 +998,8 @@
       apiGet('TentacleHome/Version')
         .then(function (data) {
           MH.versionPollInFlight = false;
+          // Left Home (or re-rendered) while the poll was in flight: nothing to refresh.
+          if (gen !== MH.generation) return;
           var newVersion = data.version || 0;
           if (newVersion === MH.lastVersion) return;
           console.log('[TH] Playlist version changed: ' + MH.lastVersion + ' → ' + newVersion);
