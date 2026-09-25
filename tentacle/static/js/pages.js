@@ -4657,10 +4657,34 @@ function _morphNode(from, to) {
   for (const a of [...to.attributes]) if (from.getAttribute(a.name) !== a.value) from.setAttribute(a.name, a.value);
   _morphChildren(from, to);
 }
+// Cards carry data-morph-key: a card whose title moved (one arrived above it,
+// or one above it left) is moved, not rewritten — patching by position gave
+// every card below a new poster src, and each of those flashed.
+function _morphKey(n) { return n.nodeType === 1 ? n.getAttribute('data-morph-key') : null; }
 function _morphChildren(from, to) {
-  const fc = [...from.childNodes], tc = [...to.childNodes];
-  tc.forEach((n, i) => (i < fc.length ? _morphNode(fc[i], n) : from.appendChild(n)));
-  fc.slice(tc.length).forEach(n => from.removeChild(n));
+  const keyed = new Map();
+  [...from.childNodes].forEach(n => { const k = _morphKey(n); if (k && !keyed.has(k)) keyed.set(k, n); });
+  const tc = [...to.childNodes];
+  const wanted = new Set(tc.map(_morphKey).filter(Boolean));
+  tc.forEach((n, i) => {
+    let cur = from.childNodes[i] || null;
+    // A card that is gone: drop it here rather than moving every card after it.
+    while (cur && _morphKey(cur) && !wanted.has(_morphKey(cur))) {
+      from.removeChild(cur); cur = from.childNodes[i] || null;
+    }
+    const k = _morphKey(n);
+    const match = k ? keyed.get(k) : null;
+    if (match) {
+      keyed.delete(k);
+      if (match !== cur) from.insertBefore(match, cur);
+      _morphNode(match, n);
+    } else if (!k && cur && !_morphKey(cur)) {
+      _morphNode(cur, n);
+    } else {
+      from.insertBefore(n, cur);
+    }
+  });
+  while (from.childNodes.length > tc.length) from.removeChild(from.childNodes[tc.length]);
 }
 function _morphInto(el, html) {
   const tpl = document.createElement('div');
@@ -4937,7 +4961,7 @@ function renderActivity(data) {
       const qualityLabel = dl.quality ? escapeAttr(dl.quality) : '';
       const reqByLabel = dl.requested_by ? `<span class="activity-requested-by">${escapeAttr(dl.requested_by)}</span>` : '';
       const metaParts = [qualityLabel, sizeLabel].filter(Boolean).join(' · ');
-      return `<div class="activity-card">
+      return `<div class="activity-card" data-morph-key="dl:${escapeAttr(String(dl.source || ''))}:${escapeAttr(String(dl.queue_id ?? dl.title ?? ''))}">
         <div class="activity-poster">${poster}</div>
         <div class="activity-info">
           <div class="activity-title">${escapeAttr(dl.title)}${epLabel}</div>
@@ -4970,7 +4994,7 @@ function renderActivity(data) {
         : (disk ? 'Delete show' : 'Remove');
       const removeTitle = disk ? `Delete the whole show from ${arr}, including ${disk} downloaded episode${disk === 1 ? '' : 's'}`
         : `Remove from ${arr}, folder included`;
-      return `<div class="activity-card">
+      return `<div class="activity-card" data-morph-key="s:${escapeAttr(key)}">
         <div class="activity-poster">${poster}</div>
         <div class="activity-info">
           <div class="activity-title">${escapeAttr(item.title)}${item.episode ? ' · ' + escapeAttr(item.episode) : ''}</div>
@@ -4998,7 +5022,7 @@ function renderActivity(data) {
     html += recent.map(item => {
       const poster = _activityPoster(item.poster_path);
       const hrs = item.hours_remaining != null ? `${item.hours_remaining}h left` : '';
-      return `<div class="activity-card">
+      return `<div class="activity-card" data-morph-key="r:${escapeAttr(item.media_type || '')}:${escapeAttr(String(item.tmdb_id || 0))}:${escapeAttr(item.episode || '')}">
         <div class="activity-poster">${poster}</div>
         <div class="activity-info">
           <div class="activity-title">${escapeAttr(item.title)}${item.episode ? ' · ' + escapeAttr(item.episode) : ''}</div>
@@ -5013,7 +5037,7 @@ function renderActivity(data) {
   const coming = data.coming_up || [];
   if (coming.length > 0) {
     html += '<div class="activity-section-title">Coming up this week</div><div class="activity-grid">';
-    html += coming.map(item => `<div class="activity-card">
+    html += coming.map(item => `<div class="activity-card" data-morph-key="c:${escapeAttr(String(item.tmdb_id || item.tvdb_id || 0))}:${escapeAttr(item.episode || '')}">
         <div class="activity-poster">${_activityPoster(item.poster_path)}</div>
         <div class="activity-info">
           <div class="activity-title">${escapeAttr(item.title)} · ${escapeAttr(item.episode)}</div>
@@ -5035,7 +5059,7 @@ function renderActivity(data) {
         const diff = Math.ceil((rd - now) / 86400000);
         daysUntil = diff <= 0 ? 'Releasing soon' : diff === 1 ? 'Tomorrow' : diff + ' days';
       }
-      return `<div class="activity-card">
+      return `<div class="activity-card" data-morph-key="u:${escapeAttr(item.media_type || '')}:${escapeAttr(String(item.tmdb_id || item.tvdb_id || 0))}">
         <div class="activity-poster">${poster}</div>
         <div class="activity-info">
           <div class="activity-title">${escapeAttr(item.title)}</div>

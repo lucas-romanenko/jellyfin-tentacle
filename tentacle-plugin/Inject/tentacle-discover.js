@@ -1799,14 +1799,42 @@
     }
     morphChildren(from, to);
   }
+  // Cards carry data-morph-key: a card whose title moved (one arrived above it,
+  // or one above it left) is moved, not rewritten — patching by position gave
+  // every card below a new poster src, and each of those flashed.
+  function morphKey(n) { return n.nodeType === 1 ? n.getAttribute('data-morph-key') : null; }
+  function actKey() {
+    return Array.prototype.map.call(arguments, function (x) {
+      return String(x == null ? '' : x).replace(/[^A-Za-z0-9_-]/g, '');
+    }).join(':');
+  }
   function morphChildren(from, to) {
-    var fc = Array.prototype.slice.call(from.childNodes);
+    var keyed = {};
+    Array.prototype.forEach.call(from.childNodes, function (n) {
+      var k = morphKey(n);
+      if (k && !keyed.hasOwnProperty(k)) keyed[k] = n;
+    });
     var tc = Array.prototype.slice.call(to.childNodes);
+    var wanted = {};
+    tc.forEach(function (n) { var k = morphKey(n); if (k) wanted[k] = 1; });
     for (var i = 0; i < tc.length; i++) {
-      if (i < fc.length) morphNode(fc[i], tc[i]);
-      else from.appendChild(tc[i]);
+      var n = tc[i], cur = from.childNodes[i] || null, k = morphKey(n);
+      // A card that is gone: drop it here rather than moving every card after it.
+      while (cur && morphKey(cur) && !wanted.hasOwnProperty(morphKey(cur))) {
+        from.removeChild(cur); cur = from.childNodes[i] || null;
+      }
+      var match = k && keyed.hasOwnProperty(k) ? keyed[k] : null;
+      if (match) {
+        delete keyed[k];
+        if (match !== cur) from.insertBefore(match, cur);
+        morphNode(match, n);
+      } else if (!k && cur && !morphKey(cur)) {
+        morphNode(cur, n);
+      } else {
+        from.insertBefore(n, cur);
+      }
     }
-    for (var j = tc.length; j < fc.length; j++) from.removeChild(fc[j]);
+    while (from.childNodes.length > tc.length) from.removeChild(from.childNodes[tc.length]);
   }
   function morphInto(el, html) {
     var tpl = document.createElement('div');
@@ -1935,7 +1963,7 @@
           var sizeLabel = dl.size_remaining ? esc(dl.size_remaining) + ' left' : '';
           var qualityLabel = dl.quality ? esc(dl.quality) : '';
 
-          return '<div class="md-act-card md-act-status-' + statusClass + '">' +
+          return '<div class="md-act-card md-act-status-' + statusClass + '" data-morph-key="' + actKey('dl', dl.source, dl.queue_id) + '">' +
             '<div class="md-act-poster">' + poster + '</div>' +
             '<div class="md-act-info">' +
               '<div class="md-act-card-title">' + esc(dl.title) + epLabel + '</div>' +
@@ -1967,7 +1995,7 @@
           var poster = actPoster(item.poster_path, 'md-act-upcoming-ph');
           var waited = waitedFor(item.waiting_since);
           var epLabel = item.episode ? '<div class="md-act-upcoming-type">' + esc(item.episode) + '</div>' : '';
-          return '<div class="md-act-upcoming-card" data-searching-idx="' + idx + '" style="cursor:pointer">' +
+          return '<div class="md-act-upcoming-card" data-searching-idx="' + idx + '" data-morph-key="' + actKey('s', item.media_type, item.tmdb_id, item.tvdb_id) + '" style="cursor:pointer">' +
             '<div class="md-act-upcoming-poster">' + poster +
               '<div class="md-act-countdown-badge md-act-cd-searching">' + (waited ? 'Searching \u00b7 ' + esc(waited) : 'Searching') + '</div>' +
             '</div>' +
@@ -1997,7 +2025,7 @@
           var hrs = item.hours_remaining;
           var chip = (hrs != null) ? '<div class="md-act-countdown-badge md-act-cd-ready">' + hrs + 'h</div>' : '';
           var epLabel = item.episode ? '<div class="md-act-upcoming-type">' + esc(item.episode) + '</div>' : '';
-          return '<div class="md-act-upcoming-card" data-recent-idx="' + idx + '" style="cursor:pointer">' +
+          return '<div class="md-act-upcoming-card" data-recent-idx="' + idx + '" data-morph-key="' + actKey('r', item.media_type, item.tmdb_id, item.episode) + '" style="cursor:pointer">' +
             '<div class="md-act-upcoming-poster">' + poster + chip + '</div>' +
             '<div class="md-act-upcoming-info">' +
               '<div class="md-act-upcoming-title">' + esc(item.title) + '</div>' +
@@ -2019,7 +2047,7 @@
         '</div>' +
         '<div class="md-act-upcoming-grid">' +
         coming.map(function (item) {
-          return '<div class="md-act-upcoming-card">' +
+          return '<div class="md-act-upcoming-card" data-morph-key="' + actKey('c', item.tmdb_id || item.tvdb_id, item.episode) + '">' +
             '<div class="md-act-upcoming-poster">' + actPoster(item.poster_path, 'md-act-upcoming-ph') +
               '<div class="md-act-countdown-badge md-act-cd-week">' + esc(airDay(item.air_date_utc)) + '</div>' +
             '</div>' +
@@ -2055,7 +2083,7 @@
             else { countdown = diff + ' days'; countdownClass = 'md-act-cd-later'; }
           }
           var releaseLabel = item.release_type ? '<div class="md-act-upcoming-type">' + esc(item.release_type) + '</div>' : '';
-          return '<div class="md-act-upcoming-card" data-upcoming-idx="' + idx + '" style="cursor:pointer">' +
+          return '<div class="md-act-upcoming-card" data-upcoming-idx="' + idx + '" data-morph-key="' + actKey('u', item.media_type, item.tmdb_id || item.tvdb_id) + '" style="cursor:pointer">' +
             '<div class="md-act-upcoming-poster">' + poster +
               (countdown ? '<div class="md-act-countdown-badge ' + countdownClass + '">' + countdown + '</div>' : '') +
             '</div>' +
