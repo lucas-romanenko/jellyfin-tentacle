@@ -1120,20 +1120,27 @@ def _series_files_on_disk(db: Session, title: ArrTitle, row) -> int:
     return 1 if row is not None and getattr(row, "source", None) == "sonarr" else 0
 
 
-def _has_vod_folder(db: Session, media_type: str, arr_path: Optional[str]) -> bool:
+def _has_vod_folder(media_type: str, arr_path: Optional[str]) -> bool:
     """Does Tentacle's VOD tree hold a folder of this name with .strm files in
     it? Radarr/Sonarr see the folder under their own mount, so the path can't
     be compared, but in a merged setup the folder name is the same. Catches a
     VOD title Tentacle has no row for under this id (a show Sonarr knows only
-    by its TVDB number)."""
+    by its TVDB number). The roots are fixed (services.sync); names are tried
+    as given and in both Unicode normal forms (Sonarr on macOS/APFS reports
+    NFD, Tentacle writes NFC)."""
+    import unicodedata
+    from pathlib import Path
+    from services import sync
     name = (arr_path or "").replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
-    root = get_setting(db, "vod_movies_path" if media_type == "movie" else "vod_shows_path")
-    if not name or not root:
+    if not name:
         return False
+    root = Path(sync.VOD_MOVIES_ROOT if media_type == "movie" else sync.VOD_SERIES_ROOT)
     try:
-        from pathlib import Path
-        folder = Path(root) / name
-        return folder.is_dir() and next(folder.rglob("*.strm"), None) is not None
+        for n in dict.fromkeys((name, unicodedata.normalize("NFC", name), unicodedata.normalize("NFD", name))):
+            folder = root / n
+            if folder.is_dir() and next(folder.rglob("*.strm"), None) is not None:
+                return True
+        return False
     except OSError:
         return True  # can't tell: keep the files
 
@@ -1179,7 +1186,7 @@ def remove_from_arr(title: ArrTitle, request: Request, db: Session = Depends(get
     # though nothing was downloaded. Nothing is on disk for a searching title
     # anyway, so keep the folder.
     vod_copy = row is not None and (getattr(row, "source", None) or "").startswith("provider_")
-    keep_files = hybrid or vod_copy or "/vod/" in path or _has_vod_folder(db, title.media_type, rec.get("path"))
+    keep_files = hybrid or vod_copy or "/vod/" in path or _has_vod_folder(title.media_type, rec.get("path"))
     if title.media_type == "movie":
         ok = svc.delete_movie_by_id(rec["id"], delete_files=not keep_files)
     else:
@@ -1204,5 +1211,7 @@ def remove_from_arr(title: ArrTitle, request: Request, db: Session = Depends(get
     logger.info(f"Activity: removed '{name}' from {arr} (deleteFiles={not keep_files}) by {user.display_name}")
     return {"ok": True, "title": name, "files_deleted": not keep_files,
             "message": f"Removed {name} from {arr}" + (
-                " (files kept: its folder also holds VOD files, so any downloaded episodes are still on disk)"
+                (" (files kept: Tentacle's VOD library has a folder of this name, so "
+                 + ("any downloaded episodes are" if title.media_type == "series" else "a downloaded file, if any, is")
+                 + f" still on disk; delete it in {arr} if you meant to)")
                 if keep_files and title.delete_downloaded else " (VOD files kept)" if keep_files else "")}
