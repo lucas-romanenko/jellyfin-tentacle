@@ -226,6 +226,22 @@ class TestRemove(_Base):
         self.assertFalse(row.sonarr_monitored)
         self.assertIsNotNone(row, "the VOD series itself stays in the library")
 
+    def test_a_vod_movie_searching_in_radarr_keeps_its_folder(self):
+        # Merged setup: Radarr's folder for the movie is the VOD folder holding the .strm.
+        self.db.add(mdb.Movie(tmdb_id=100, title="Rare Film", source="provider_1",
+                              strm_path="/data/movies/Rare Film (1998)/Rare Film (1998).strm"))
+        self.db.commit()
+        r = self.remove(media_type="movie", tmdb_id=100)
+        self.assertEqual([(11, False)], self.radarr.deleted, "deleteFiles would take the .strm with the folder")
+        self.assertFalse(r["files_deleted"])
+        self.assertIsNotNone(self.db.query(mdb.Movie).filter_by(tmdb_id=100).first(), "the VOD title stays")
+
+    def test_a_vod_series_added_whole_to_sonarr_keeps_its_folder(self):
+        self.db.add(mdb.Series(tmdb_id=200, title="Slow Show", source="provider_1"))
+        self.db.commit()
+        self.remove(media_type="series", tmdb_id=200)
+        self.assertEqual([(21, False)], self.sonarr.deleted)
+
     def test_anything_under_the_vod_tree_keeps_its_files_even_without_a_db_row(self):
         self.remove(media_type="series", tmdb_id=300)
         self.assertEqual([(23, False)], self.sonarr.deleted)

@@ -1123,7 +1123,14 @@ def remove_from_arr(title: ArrTitle, request: Request, db: Session = Depends(get
     name = rec.get("title", "")
     path = (rec.get("path") or "").lower()
     hybrid = title.media_type == "series" and row is not None and bool(getattr(row, "sonarr_path", None))
-    keep_files = hybrid or "/vod/" in path
+    # A title Tentacle also serves from VOD (the documented way to get a proper
+    # download of a VOD title is to add it to Radarr/Sonarr): in the merged
+    # setup the docs describe, Radarr/Sonarr's folder IS the VOD folder, and
+    # deleteFiles removes the whole folder — .strm and .nfo included — even
+    # though nothing was downloaded. Nothing is on disk for a searching title
+    # anyway, so keep the folder.
+    vod_copy = row is not None and (getattr(row, "source", None) or "").startswith("provider_")
+    keep_files = hybrid or vod_copy or "/vod/" in path
     if title.media_type == "movie":
         ok = svc.delete_movie_by_id(rec["id"], delete_files=not keep_files)
     else:
