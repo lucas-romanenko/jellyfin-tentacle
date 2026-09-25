@@ -124,10 +124,11 @@ class TestR1CancelledReloadIsRetried(unittest.TestCase):
     def test_a_cancelled_or_failed_load_restores_the_previous_key(self):
         r = _method(MEDIABAR_JS.read_text(), "refreshIfChanged")
         self.assertIn("var prevKey = self._heroConfigKey", r)
-        self.assertRegex(r, r"var undo = function \(\) \{ if \(self\._heroConfigKey === key\) self\._heroConfigKey = prevKey; return false; \}")
+        self.assertIn("var myTok = self._heroKeyTok = (self._heroKeyTok || 0) + 1;", r)
+        self.assertIn("var undo = function () { if (self._heroKeyTok === myTok) { self._heroConfigKey = prevKey; self._heroKeyTok++; } return false; };", r)
         self.assertRegex(r.replace("\n", " "), r"var loading = self\.loadContent\(\);\s*var loadGen = self\.generation;")
         self.assertIn("if (self.generation !== loadGen) return undo();", r)
-        self.assertRegex(r, r"\}, undo\);")
+        self.assertIn("function () { settled(); return undo(); }", r)
 
 
 class TestR3CorruptConfigIsNotSeededOver(unittest.TestCase):
@@ -222,3 +223,16 @@ class TestRound2HeroFollowUps(unittest.TestCase):
         r = _method(self.bar, "refreshIfChanged")
         self.assertIn("this._heroCfgInFlightGen === this.generation", r)
         self.assertIn("this._heroCfgInFlightGen = gen", r)
+
+
+class TestRound2QuickReturnDuringHeroLoad(unittest.TestCase):
+    """Round 2, S2: leaving and returning within a second while the hero ITEMS load. The cancelled load only put
+    the old key back when it settled, after the new Home visit had already seen the new key as up to date."""
+
+    def test_hide_rolls_the_key_back_at_once(self):
+        bar = MEDIABAR_JS.read_text()
+        hide = _method(bar, "hide")
+        self.assertRegex(hide.replace("\n", " "), r"if \(this\._pendingHeroUndo\) \{\s*this\._pendingHeroUndo\(\);\s*this\._pendingHeroUndo = null;")
+        r = _method(bar, "refreshIfChanged")
+        self.assertLess(r.index("var loading = self.loadContent()"), r.index("self._pendingHeroUndo = undo"))
+        self.assertIn("function () { settled(); return undo(); }", r)

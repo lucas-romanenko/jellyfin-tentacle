@@ -174,15 +174,23 @@
                 // If this load is cancelled (the user leaves Home before the hero
                 // items arrive) or fails, forget the new key again so the next
                 // Home visit retries instead of believing it is up to date.
-                var undo = function () { if (self._heroConfigKey === key) self._heroConfigKey = prevKey; return false; };
+                // Only while no later refresh has applied a config since (it may
+                // carry the very same key and have loaded fine).
+                var myTok = self._heroKeyTok = (self._heroKeyTok || 0) + 1;
+                var undo = function () { if (self._heroKeyTok === myTok) { self._heroConfigKey = prevKey; self._heroKeyTok++; } return false; };
                 var loading = self.loadContent();
                 var loadGen = self.generation;
+                // hide() calls this at once, so a Home visit that starts before
+                // this load settles already sees the old key and asks again.
+                self._pendingHeroUndo = undo;
+                var settled = function () { if (self._pendingHeroUndo === undo) self._pendingHeroUndo = null; };
                 return loading.then(function () {
+                    settled();
                     if (self.generation !== loadGen) return undo();
                     if (!self.isHomePage()) return true;
                     if (self.items.length > 0 && self._autoAdvance) self.resetAutoAdvance();
                     return true;
-                }, undo);
+                }, function () { settled(); return undo(); });
             }).catch(function () { return false; });
             this._heroCfgInFlight = p;
             this._heroCfgInFlightUser = forUser;
@@ -780,6 +788,12 @@
 
         hide: function () {
             this.generation++; // cancel any in-flight API calls
+            // A hero reload cancelled by this hide must not leave its new key
+            // behind for the next show() to trust (review round 2, S2).
+            if (this._pendingHeroUndo) {
+                this._pendingHeroUndo();
+                this._pendingHeroUndo = null;
+            }
             if (this.container) {
                 this.container.classList.add('hidden');
                 document.body.classList.remove('moonfin-mediabar-active');
