@@ -23,7 +23,7 @@ PROVIDER_NAME = "US: TORONTO MAPLE LEAFS"
 
 
 class _Client:
-    def live_stream_url(self, sid):
+    def live_stream_url(self, sid, extension="m3u8"):
         return f"http://192.0.2.10/live/u/p/{sid}.ts"
 
 

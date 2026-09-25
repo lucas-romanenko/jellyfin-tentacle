@@ -6898,7 +6898,7 @@ async function loadHealthDeletions() {
     loadLiveTV, showLiveTab, onLiveTypeChange, saveLiveProvider, testLiveProvider,
     liveSyncGroups, liveSyncChannels, liveSyncEpg, fillSetupUrls, updateSetupUrls, copyLiveSetup, saveSetupAddress, editSetupAddress,
     toggleLiveGroup, toggleAllGroups, saveLiveGroups, filterLiveGroups,
-    loadLiveChannels, toggleLiveChannel, toggleAllChannels, saveLiveChannels, searchLiveChannels, filterLiveChannels, filterLiveChannelsByEpg, liveChPage,
+    loadLiveChannels, toggleLiveChannel, renameLiveChannel, toggleAllChannels, saveLiveChannels, searchLiveChannels, filterLiveChannels, filterLiveChannelsByEpg, liveChPage,
   ];
   for (const fn of fns) {
     if (typeof fn === 'function') window[fn.name] = fn;
