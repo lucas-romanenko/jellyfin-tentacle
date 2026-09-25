@@ -28,7 +28,7 @@ from services.m3u_parser import episode_from_title, container_from_url
 from services.duplicates import delete_vod_files, convert_record_to_downloaded
 from services.media_files import delete_movie_files, delete_series_files
 from services.tagger import compute_tags, get_list_tags_for_tmdb_id, apply_tag_rules
-from services.exceptions import ProviderConnectionError, SyncCancelledError, SyncError
+from services.exceptions import ProviderConnectionError, SyncCancelledError, SyncError, TMDBConnectionError
 
 logger = logging.getLogger(__name__)
 
@@ -1421,7 +1421,19 @@ def _sync_movies(
                 if override_id in existing_provider_tmdb_ids or override_id in seen_tmdb_ids:
                     metadata = {"tmdb_id": override_id}
                 else:
-                    metadata = tmdb.get_movie_details(override_id)
+                    try:
+                        metadata = tmdb.get_movie_details(override_id)
+                    except TMDBConnectionError:
+                        metadata = None
+                    if not metadata:
+                        # The right film's details didn't come: like a failed
+                        # lookup, the seen set is incomplete, so nothing may be
+                        # pruned -- and one unreachable lookup must not fail
+                        # the sync, nor import the stream under its wrong label.
+                        fetch_ok = False
+                        cat_skipped += 1
+                        stats["skipped"] += 1
+                        continue
                 known_id = None
             if not metadata and known_id:
                 # Known title but not in batch — it's existing, merge tags

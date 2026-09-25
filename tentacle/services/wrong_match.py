@@ -315,6 +315,26 @@ def _tmdb(db: Session):
     return TMDBService(token, get_setting(db, "data_dir", "/data"))
 
 
+TMDB_DOWN = "TMDB can't be reached right now, so films can't be looked up. Try again in a minute."
+
+
+def _tmdb_call(tmdb, fn, *args):
+    """One TMDB lookup: (result, failed). An unreachable TMDB raises
+    TMDBConnectionError and a 429/5xx answers None -- neither means "no such
+    film", and neither may surface as an unhandled 500."""
+    from services.exceptions import TMDBConnectionError
+    try:
+        tmdb._tl.failed = False
+    except AttributeError:
+        pass
+    try:
+        result = fn(*args)
+    except TMDBConnectionError:
+        return None, True
+    failed = bool(getattr(tmdb, "_lookup_failed", lambda: False)())
+    return result, failed and not result
+
+
 def _jf(db: Session):
     url, key = get_setting(db, "jellyfin_url", ""), get_setting(db, "jellyfin_api_key", "")
     if not (url and key):
@@ -417,9 +437,11 @@ def suggest_matches(db: Session, tmdb_id: int, query: Optional[str] = None) -> d
     audio = probe["audio_languages"]
     queries = [query.strip()] if query and query.strip() else _title_queries(row.title)
 
-    seen, found = {tmdb_id}, []
+    seen, found, failures = {tmdb_id}, [], 0
     for q in queries:
-        data = tmdb._request("search/movie", {"query": q}) or {}
+        data, failed = _tmdb_call(tmdb, tmdb._request, "search/movie", {"query": q})
+        failures += failed
+        data = data or {}
         for r in (data.get("results") or [])[:10]:
             if r.get("id") in seen:
                 continue
@@ -428,11 +450,14 @@ def suggest_matches(db: Session, tmdb_id: int, query: Optional[str] = None) -> d
         if len(found) >= 24:
             break
 
+    if not found and failures:
+        raise WrongMatchError(503, TMDB_DOWN)
+
     in_lib = {t for (t,) in db.query(Movie.tmdb_id).filter(Movie.tmdb_id.in_([r["id"] for r in found])).all()} if found else set()
     label = (row.title or "").lower()
     candidates = []
     for r in found[:24]:
-        details = tmdb.get_movie_details(r["id"]) or {}
+        details = _tmdb_call(tmdb, tmdb.get_movie_details, r["id"])[0] or {}
         runtime = details.get("runtime") or None
         title = r.get("title") or details.get("title") or ""
         close = bool(actual and runtime and abs(runtime - actual) <= RUNTIME_CLOSE)
@@ -509,8 +534,11 @@ def rematch_movie(db: Session, tmdb_id: int, new_tmdb_id: int, user_name: str = 
         result["merged"] = True
         return result
 
-    new = _tmdb(db).get_movie_details(new_tmdb_id)
+    tmdb = _tmdb(db)
+    new, failed = _tmdb_call(tmdb, tmdb.get_movie_details, new_tmdb_id)
     if not new:
+        if failed:
+            raise WrongMatchError(503, TMDB_DOWN)
         raise WrongMatchError(404, "TMDB has no movie with that id")
 
     old_meta = {"tmdb_id": row.tmdb_id, "title": row.title, "year": row.year, "genres": row.genres or [],

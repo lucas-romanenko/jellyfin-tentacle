@@ -435,6 +435,53 @@ class TestSuggestions(_Base):
         self.assertNotIn(self.tmdb, [c["tmdb_id"] for c in r["candidates"]])
 
 
+class TestTmdbDown(_Base):
+    """TMDB unreachable (TMDBConnectionError) or failing (429/5xx -> None) is
+    not "no such film", and must never be an unhandled 500."""
+    def setUp(self):
+        super().setUp()
+        from services.exceptions import TMDBConnectionError
+        self.err = TMDBConnectionError
+        self.fake = FakeRealTMDB()
+        p = mock.patch.object(wrong_match, "_tmdb", lambda db: self.fake)
+        p.start()
+        self.addCleanup(p.stop)
+        self.jf.trigger_library_scan = mock.Mock(return_value=True)
+
+    def down(self, *a, **k):
+        raise self.err("Cannot reach TMDB API")
+
+    def test_suggestions_say_tmdb_is_down(self):
+        self.fake._request = self.down
+        with self.assertRaises(wrong_match.WrongMatchError) as e:
+            wrong_match.suggest_matches(self.db, self.tmdb)
+        self.assertEqual(503, e.exception.status)
+
+    def test_fix_match_says_tmdb_is_down_and_changes_nothing(self):
+        self.fake.get_movie_details = self.down
+        with self.assertRaises(wrong_match.WrongMatchError) as e:
+            wrong_match.rematch_movie(self.db, self.tmdb, 674607)
+        self.assertEqual(503, e.exception.status)
+        self.assertIsNotNone(self.movie(self.tmdb))
+
+    def test_a_failing_tmdb_answer_is_not_a_missing_film(self):
+        def failing(_tid):
+            self.fake._tl.failed = True
+            return None
+        import threading
+        self.fake._tl = threading.local()
+        self.fake._lookup_failed = lambda: getattr(self.fake._tl, "failed", False)
+        self.fake.get_movie_details = failing
+        with self.assertRaises(wrong_match.WrongMatchError) as e:
+            wrong_match.rematch_movie(self.db, self.tmdb, 674607)
+        self.assertEqual(503, e.exception.status)
+
+    def test_an_unknown_id_is_still_404(self):
+        with self.assertRaises(wrong_match.WrongMatchError) as e:
+            wrong_match.rematch_movie(self.db, self.tmdb, 999999999)
+        self.assertEqual(404, e.exception.status)
+
+
 class TestLanguageCodes(unittest.TestCase):
     def test_jellyfin_and_tmdb_codes_meet(self):
         for jf, tmdb in (("fre", "fr"), ("fra", "fr"), ("eng", "en"), ("ger", "de"), ("jpn", "ja"), ("en", "en")):
@@ -584,6 +631,22 @@ class TestRematch(_Base):
                           "Path": "/downloads/Movie 9 (2020)/Movie 9 (2020).mkv"}]
         self.rematch()
         self.assertEqual([f"jf-{self.tmdb}"], self.jf.deleted)
+
+    def test_tmdb_down_while_rebuilding_a_fixed_copy_neither_fails_the_sync_nor_imports_the_wrong_label(self):
+        self.rematch()
+        self.db.query(Movie).filter(Movie.tmdb_id == 674607).delete()
+        self.db.commit()
+        from services.exceptions import TMDBConnectionError
+        def down(_self, tid):
+            raise TMDBConnectionError("Cannot reach TMDB API")
+        FakeTMDB.get_movie_details = down
+        others = self.db.query(Movie).count()
+        self.night()
+        self.assertIsNone(self.movie(674607))
+        self.assertIsNone(self.movie(self.tmdb), "imported under the wrong label")
+        self.assertEqual(others, self.db.query(Movie).count(), "nothing pruned or added")
+        run = self.db.query(mdb.SyncRun).order_by(mdb.SyncRun.id.desc()).first()
+        self.assertEqual("completed", run.status)
 
     def test_the_request_for_the_labelled_film_survives(self):
         admin = mdb.TentacleUser(jellyfin_user_id="a" * 32, display_name="Lucas", is_admin=True)
