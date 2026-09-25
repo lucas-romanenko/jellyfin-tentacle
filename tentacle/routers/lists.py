@@ -544,11 +544,22 @@ def fetch_letterboxd_rss(url: str) -> list:
         return []
 
 
+_trakt_unconfigured_logged = False
+
+
 def fetch_trakt_list(url: str, client_id: str = "") -> list:
     """Fetch Trakt list via API"""
     if not client_id:
-        logger.error("Trakt client ID not configured — add it in Settings → Connections")
-        return []
+        # A setup gap, not a failure: said once per run of the process at
+        # WARNING, not at ERROR on every refresh, and shown on the list card.
+        global _trakt_unconfigured_logged
+        if not _trakt_unconfigured_logged:
+            logger.warning("Trakt client ID not configured — Trakt lists are not refreshed. "
+                           "Add it in Settings → Connections")
+            _trakt_unconfigured_logged = True
+        return ListFetch([], source="trakt", note=(
+            "Not refreshed: no Trakt client ID is configured (Settings → Connections). "
+            "The previous items were kept."))
     try:
         # Convert URL to API endpoint
         # e.g. https://trakt.tv/users/username/lists/listname
@@ -677,7 +688,8 @@ def refresh_list(lst: ListSubscription, db: Session, bearer_token: str = "",
     """
     items = fetch_list_tmdb_ids(lst, bearer_token=bearer_token, trakt_client_id=trakt_client_id)
     if not items:
-        lst.last_fetch_note = "The last refresh returned nothing, so the previous items were kept."
+        lst.last_fetch_note = (getattr(items, "note", "")
+                               or "The last refresh returned nothing, so the previous items were kept.")
         return None, None
     if tmdb:
         enrich_items_with_tmdb(items, tmdb)
