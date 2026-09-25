@@ -218,8 +218,10 @@ def run_scheduled_sync():
         logger.info("Syncing Live TV EPG data")
         try:
             from models.database import LiveChannel
-            from routers.livetv import _run_epg_sync_background
-            live_providers = db.query(Provider).filter(Provider.live_tv_enabled == True, Provider.active == True).all()
+            from routers.livetv import _run_epg_sync_background, live_tv_providers
+            live_providers = live_tv_providers(db)
+            if not live_providers:
+                logger.info("No Live TV provider — nothing to sync")
             epg_synced = False
             for lp in live_providers:
                 all_channels = db.query(LiveChannel).filter(LiveChannel.provider_id == lp.id).all()

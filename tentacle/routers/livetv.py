@@ -867,6 +867,17 @@ def get_live_provider(db: Session = Depends(get_db)):
     }
 
 
+def live_tv_providers(db: Session) -> list:
+    """Every provider that serves Live TV.
+
+    Selected on `live_tv_enabled` alone. `active` is the VOD sync switch, and
+    save_live_provider() creates its provider with active=False because a Live
+    TV provider must never get a VOD sync, so a filter on `active` matched no
+    provider set up the normal way: the nightly guide refresh never ran (#174).
+    """
+    return db.query(Provider).filter(Provider.live_tv_enabled == True).all()  # noqa: E712
+
+
 @router.post("/api/live/provider", dependencies=_admin)
 def save_live_provider(body: LiveProviderConfig, db: Session = Depends(get_db)):
     """Create or update the live TV provider."""
