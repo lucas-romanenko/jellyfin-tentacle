@@ -261,6 +261,12 @@ def check_runtime_mismatches(db: Session) -> dict:
             continue
         if tmdb_id not in expected:
             continue
+        # Only the IPTV copy itself. The same film is often in Jellyfin as a
+        # real file too (a Radarr download, possibly another cut); its length
+        # says nothing about what the provider's stream plays.
+        path = (item.get("Path") or "").lower()
+        if path and not path.endswith(".strm"):
+            continue
         sources = item.get("MediaSources") or []
         ticks = (sources[0].get("RunTimeTicks") if sources else None) or 0
         actual = round(ticks / 600_000_000) if ticks else 0

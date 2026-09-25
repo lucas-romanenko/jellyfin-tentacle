@@ -264,6 +264,27 @@ class TestRuntimeCheck(_Base):
         self.movie(tmdb).runtime = minutes
         self.db.commit()
 
+    def test_a_download_of_the_same_film_is_not_the_stream(self):
+        """A Radarr download of the film (here an 8-minute sample, or another
+        cut) is not what the IPTV copy plays -- it must not flag it."""
+        self.set_runtime(self.tmdb, 83)
+        items = [{"Id": "dl", "ProviderIds": {"Tmdb": str(self.tmdb)}, "Path": "/downloads/Movie 9 (2020)/Movie 9.mkv",
+                  "MediaSources": [{"RunTimeTicks": 8 * 600_000_000}]},
+                 {"Id": f"jf-{self.tmdb}", "ProviderIds": {"Tmdb": str(self.tmdb)}, "Path": "/vod/Movie 9/Movie 9.strm",
+                  "MediaSources": [{"RunTimeTicks": 0}]}]
+        r = self.run_check(items)
+        self.assertEqual(0, r["flagged"])
+        self.assertEqual(0, self.db.query(MatchSuspect).count())
+
+    def test_the_strm_is_still_checked_next_to_a_download(self):
+        self.set_runtime(self.tmdb, 100)
+        items = [{"Id": "dl", "ProviderIds": {"Tmdb": str(self.tmdb)}, "Path": "/downloads/Movie 9/Movie 9.mkv",
+                  "MediaSources": [{"RunTimeTicks": 100 * 600_000_000}]},
+                 {"Id": f"jf-{self.tmdb}", "ProviderIds": {"Tmdb": str(self.tmdb)}, "Path": "/vod/Movie 9/Movie 9.strm",
+                  "MediaSources": [{"RunTimeTicks": 83 * 600_000_000}]}]
+        self.assertEqual(1, self.run_check(items)["flagged"])
+        self.assertEqual(f"jf-{self.tmdb}", self.db.query(MatchSuspect).one().jellyfin_item_id)
+
     def test_a_different_film_is_flagged(self):
         self.set_runtime(self.tmdb, 100)          # TMDB: the 1981 documentary
         r = self.run_check(self.listing(**{str(self.tmdb): 83}))   # the stream: 83 min
