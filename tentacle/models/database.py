@@ -751,6 +751,17 @@ def create_notification(db, user_id: int, tmdb_id: int, media_type: str,
     return notif
 
 
+# Settings whose readers parse or compare the stored value and need one: an
+# empty string is not "unset" to them (int("") raises). Seeded with these, and
+# a Save that sends an empty field stores these back instead of "".
+NON_EMPTY_DEFAULTS = {
+    "sync_schedule": "0 3 * * *",
+    "recently_added_days": "30",
+    "tmdb_match_threshold": "0.7",
+    "hybrid_series_layout": "vod_root",
+}
+
+
 def get_setting(db, key: str, default: str = "") -> str:
     """Get a single setting value by key"""
     s = db.query(Setting).filter(Setting.key == key).first()
@@ -1036,9 +1047,9 @@ def seed_defaults(db):
         "sonarr_api_key": "",
         "jellyfin_url": "",
         "jellyfin_api_key": "",
-        "sync_schedule": "0 3 * * *",
-        "recently_added_days": "30",
-        "tmdb_match_threshold": "0.7",
+        "sync_schedule": NON_EMPTY_DEFAULTS["sync_schedule"],
+        "recently_added_days": NON_EMPTY_DEFAULTS["recently_added_days"],
+        "tmdb_match_threshold": NON_EMPTY_DEFAULTS["tmdb_match_threshold"],
         "smartlists_path": "/data/smartlists",
         "jellyfin_user_id": "",
         "jellyfin_user_name": "",
@@ -1051,7 +1062,7 @@ def seed_defaults(db):
         #   shared_library - Sonarr downloads to its own root using the SAME
         #                    folder name as the VOD show; Jellyfin merges the
         #                    two folders (both must be in ONE Jellyfin library)
-        "hybrid_series_layout": "vod_root",
+        "hybrid_series_layout": NON_EMPTY_DEFAULTS["hybrid_series_layout"],
         "setup_complete": "false",
         "data_dir": os.getenv("DATA_DIR", "/data"),
         "hdhr_tuner_count": "3",
