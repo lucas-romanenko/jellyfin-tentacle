@@ -553,6 +553,13 @@ async def lifespan(app: FastAPI):
 
         setup_scheduler(db)
 
+        # One-time: the stored Made for Kids flags never came from YouTube (#130).
+        try:
+            from services.youtube.indexer import reset_made_for_kids_once
+            reset_made_for_kids_once(db)
+        except Exception as e:
+            logger.warning(f"Made for Kids reset failed: {e}")
+
         # One-time migration: move global smartlists to per-user directories
         from models.database import get_setting, TentacleUser as _TU
         from services.smartlists import migrate_global_smartlists_to_user

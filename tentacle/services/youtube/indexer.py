@@ -35,6 +35,58 @@ _CHANNEL_ID_RE = re.compile(r"^UC[A-Za-z0-9_-]{22}$")
 # Guest extraction is rate-limited at roughly 300 videos/hour, so details are
 # fetched slowly. The listing call is cheap and unmetered by comparison.
 DETAIL_SPACING_SECONDS = 5.0
+
+# Titles an earlier build stored when a details fetch came back without one:
+# the bare video id, or "youtube video #<id>". Baked into the NFO and the
+# Jellyfin item, and never repaired, because known videos were never re-read (#131).
+_PLACEHOLDER_TITLE_RE = re.compile(r"^youtube video #", re.IGNORECASE)
+# What a flat listing shows for a video it cannot describe. Never a title.
+_LISTING_MARKERS = {"[private video]", "[deleted video]"}
+# Details fetches spent per refresh on re-titling, when the listing has no title.
+MAX_RETITLE_FETCHES = 3
+
+
+def is_placeholder_title(title, video_id: str) -> bool:
+    text = (title or "").strip()
+    return not text or text == video_id or bool(_PLACEHOLDER_TITLE_RE.match(text))
+
+
+def usable_title(title, video_id: str):
+    """A title fit to show, or None."""
+    text = (title or "").strip()
+    if text.lower() in _LISTING_MARKERS or is_placeholder_title(text, video_id):
+        return None
+    return text
+
+
+def made_for_kids(details: dict):
+    """YouTube's Made for Kids designation: True / False, or None when the
+    extractor does not report it (#130).
+
+    Not age_limit: yt-dlp sets that to 0 for anything family-safe, which is
+    nearly every video, so "no age restriction" was being stored as "made for
+    kids". The old expression also parsed as ((age_limit == 0) and (is_live
+    is None)) or None, so False could never be stored at all.
+    """
+    value = details.get("is_made_for_kids")
+    return None if value is None else bool(value)
+
+
+MADE_FOR_KIDS_RESET = "migrated_youtube_made_for_kids_reset"
+
+
+def reset_made_for_kids_once(db: Session) -> int:
+    """Clear is_made_for_kids once: none of the stored values came from YouTube
+    (#130). NULL is what the column means by "not known"."""
+    from models.database import get_setting, set_setting
+    if get_setting(db, MADE_FOR_KIDS_RESET, "") == "true":
+        return 0
+    cleared = db.query(YouTubeVideo).filter(YouTubeVideo.is_made_for_kids.isnot(None)).update(
+        {YouTubeVideo.is_made_for_kids: None}, synchronize_session=False)
+    set_setting(db, MADE_FOR_KIDS_RESET, "true")
+    if cleared:
+        logger.info(f"[YouTube] Cleared a Made for Kids flag that was never YouTube's on {cleared} video(s)")
+    return cleared
 # How long to stand down after a bot check. Retrying into one makes it worse.
 BLOCK_BACKOFF_HOURS = 6
 # Recorded verbatim on skipped rows so the restore path can find exactly the
@@ -314,6 +366,16 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
         is_library_status(YouTubeVideo.live_status),
     ).all()}
     keep = channel.keep_count or 10
+    # Known videos still wearing a placeholder title, to re-title from this
+    # listing (#131).
+    needs_title = {
+        v.video_id: v for v in db.query(YouTubeVideo).filter(
+            YouTubeVideo.channel_fk == channel.id,
+            YouTubeVideo.removed_at.is_(None),
+        ).all() if is_placeholder_title(v.title, v.video_id)
+    }
+    retitled: list = []
+    retitle_fetches = 0
 
     # Every listed entry in listing order, tagged with whether its tab feeds
     # the library. The streams tab does only when finished broadcasts are
@@ -436,6 +498,25 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
             _note_skip("already indexed under another channel or playlist")
             continue
         if vid in known:
+            row = needs_title.pop(vid, None)
+            if row is not None:
+                # The listing already in hand usually has the title; only
+                # when it does not is a (rate-limited) details fetch spent.
+                title = usable_title(entry.get("title"), vid)
+                if title is None and retitle_fetches < MAX_RETITLE_FETCHES:
+                    retitle_fetches += 1
+                    try:
+                        title = usable_title(client.video_details(vid).get("title"), vid)
+                    except YouTubeBlocked:
+                        raise
+                    except YouTubeError as e:
+                        logger.debug(f"[YouTube] Re-title details failed for {vid}: {e}")
+                    time.sleep(DETAIL_SPACING_SECONDS)
+                if title:
+                    logger.info(f"[YouTube] Re-titled {vid}: '{row.title}' → '{title}'")
+                    row.title = title
+                    retitled.append(vid)
+                    db.commit()
             if library_tab and vid in kept_ids:
                 seen_kept += 1
                 _report()
@@ -485,17 +566,25 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
             time.sleep(DETAIL_SPACING_SECONDS)
             continue
 
+        title = usable_title(details.get("title"), vid) or usable_title(entry.get("title"), vid)
+        if not title:
+            # Its id would become the title, the folder name and the Jellyfin
+            # item's name, for good (#131). Left unrecorded, so the next
+            # refresh tries it again.
+            _note_skip("no title yet (tried again next refresh)")
+            time.sleep(DETAIL_SPACING_SECONDS)
+            continue
         db.add(YouTubeVideo(
             channel_fk=channel.id,
             video_id=vid,
-            title=details.get("title") or entry.get("title") or vid,
+            title=title,
             description=details.get("description"),
             published_at=_published(details),
             duration=details.get("duration"),
             live_status=details.get("live_status"),
             media_type="livestream" if details.get("live_status") else "video",
             thumbnail_url=details.get("thumbnail"),
-            is_made_for_kids=details.get("age_limit") == 0 and details.get("is_live") is None or None,
+            is_made_for_kids=made_for_kids(details),
             first_seen=now,
             last_seen=now,
         ))
@@ -534,7 +623,9 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
                 + (f", {beyond} past the newest {keep} not fetched" if beyond else ""))
     if skips:
         logger.info(f"[YouTube] '{channel.title}' skips: {skips}")
-    return {"skipped": False, "new": added, "seen": len(seen_ids),
+    if retitled:
+        logger.info(f"[YouTube] '{channel.title}': re-titled {len(retitled)} video(s) that had a placeholder title")
+    return {"skipped": False, "new": added, "seen": len(seen_ids), "retitled": retitled,
             "filtered": skipped, "skips": skips, "listing": listing, "beyond": beyond}
 
 

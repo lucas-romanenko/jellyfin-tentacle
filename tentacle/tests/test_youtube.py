@@ -1655,7 +1655,9 @@ class TestKeepNewestStopsFetching(unittest.TestCase):
         self.calls, self.progress = [], []
         self._real = (client.flat_listing, client.video_details, indexer.time.sleep)
         client.flat_listing = lambda url, limit: {
-            "entries": [{"id": v, "title": v} for v in self.tabs[url.rsplit("/", 1)[-1]][:limit]]}
+            # A real title: an id used as a title is the placeholder that is
+            # never indexed (#131).
+            "entries": [{"id": v, "title": f"Video {v[0]}"} for v in self.tabs[url.rsplit("/", 1)[-1]][:limit]]}
 
         def _details(vid):
             self.calls.append(vid)

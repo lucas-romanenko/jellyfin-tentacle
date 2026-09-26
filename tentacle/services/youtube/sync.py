@@ -218,10 +218,22 @@ def sync_channel(db: Session, channel: YouTubeChannel, base: str, on_progress=No
         return result
 
     written, art = 0, 0
+    retitled = set(result.get("retitled") or ())
+    renamed = []
     for video in db.query(YouTubeVideo).filter(
         YouTubeVideo.channel_fk == channel.id,
         YouTubeVideo.removed_at.is_(None),
     ).all():
+        if video.video_id in retitled and video.folder_path:
+            # The folder keeps its old name on purpose: a new path is a new
+            # Jellyfin item, which loses every user's watched state and
+            # playlist entries. The NFO and the item's name are fixed in place.
+            try:
+                (Path(video.folder_path) / "movie.nfo").write_text(
+                    library.build_nfo(video, channel, base), encoding="utf-8")
+                renamed.append(video)
+            except OSError as e:
+                logger.warning(f"[YouTube] Could not rewrite the NFO of {video.video_id}: {e}")
         if not indexer.is_library_item(video):
             continue
         if video.strm_path:
@@ -237,6 +249,8 @@ def sync_channel(db: Session, channel: YouTubeChannel, base: str, on_progress=No
         except OSError as e:
             logger.warning(f"[YouTube] Could not write files for {video.video_id}: {e}")
     db.commit()
+    if renamed:
+        _rename_in_jellyfin(db, channel, renamed)
 
     # Guide entries for live/upcoming streams when the channel is on Live TV.
     guide = 0
@@ -248,6 +262,40 @@ def sync_channel(db: Session, channel: YouTubeChannel, base: str, on_progress=No
     result.update({"written": written, "retired": removed, "guide": guide,
                    "artwork": art})
     return result
+
+
+def _rename_in_jellyfin(db: Session, channel: YouTubeChannel, videos: list) -> int:
+    """Give Jellyfin items already imported under a placeholder title the real one.
+
+    The YouTube NFO carries <lockdata>, and Jellyfin does not re-read a locked
+    item's NFO on a scan or even a full refresh, so the item has to be renamed
+    through its API (#131). Items not imported yet read the fixed NFO."""
+    from models.database import get_setting
+    from services.jellyfin import JellyfinService
+    url, key = get_setting(db, "jellyfin_url", ""), get_setting(db, "jellyfin_api_key", "")
+    if not (url and key):
+        return 0
+    jf = JellyfinService(url, key, get_setting(db, "jellyfin_user_id", ""))
+    try:
+        items = jf.query_items(include_types=["Movie"], tags=[f"yt:{channel.slug}"]) or []
+    except Exception as e:
+        logger.warning(f"[YouTube] Could not list '{channel.title}' in Jellyfin to rename items: {e}")
+        return 0
+    by_video = {}
+    for item in items:
+        for k, v in (item.get("ProviderIds") or {}).items():
+            if k.lower() == "youtube" and v:
+                by_video[v] = item
+    done = 0
+    for video in videos:
+        item = by_video.get(video.video_id)
+        if item is None or item.get("Name") == video.title:
+            continue
+        if jf.set_item_name(item["Id"], video.title):
+            done += 1
+    if done:
+        logger.info(f"[YouTube] Renamed {done} Jellyfin item(s) in '{channel.title}' in place")
+    return done
 
 
 def apply_retention(db: Session, channel: YouTubeChannel) -> int:
