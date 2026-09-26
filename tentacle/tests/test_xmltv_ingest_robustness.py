@@ -154,15 +154,38 @@ class EpgSyncStoresAndServes(unittest.TestCase):
         titles = sorted(p.title for p in self.db.query(mdb.EPGProgram).all())
         self.assertEqual(["", "NHL Hockey"], titles)
 
-    def test_icon_and_sub_title_reach_the_served_guide_for_every_channel(self):
-        self.assertTrue(self._sync())
+    def _served(self):
         app = FastAPI()
         app.include_router(livetv_router.router)
         app.dependency_overrides[mdb.get_db] = lambda: self.db
         self.db.expire_all()
-        xml = TestClient(app).get("/hdhr/xmltv.xml").text
-        self.assertEqual(2, xml.count('<icon src="http://img.example/nhl.png" />'))
-        self.assertEqual(2, xml.count("<sub-title>TOR vs MTL</sub-title>"))
+        return TestClient(app).get("/hdhr/xmltv.xml").text
+
+    def test_icon_reaches_the_served_guide_for_every_channel(self):
+        self.assertTrue(self._sync())
+        self.assertEqual(2, self._served().count('<icon src="http://img.example/nhl.png" />'))
+
+    def test_sub_title_is_stored_but_served_only_when_asked_for(self):
+        """Jellyfin 10.11 files a programme with an episode title as a series,
+        renaming its recordings: serving sub-titles is opt-in (#148)."""
+        self.assertTrue(self._sync())
+        self.assertEqual(["TOR vs MTL"], [p.sub_title for p in self.db.query(mdb.EPGProgram).all() if p.sub_title])
+        self.assertNotIn("<sub-title>", self._served())
+        mdb.set_setting(self.db, "livetv_emit_subtitles", "true")
+        self.assertEqual(2, self._served().count("<sub-title>TOR vs MTL</sub-title>"))
+
+    def test_an_icon_on_the_providers_own_host_is_not_served(self):
+        """Jellyfin fetches a programme's icon as a recording starts: one more
+        connection to the panel carrying it (#147)."""
+        self.assertTrue(self._sync())
+        start = datetime.utcnow() + timedelta(hours=5)
+        self.db.add(mdb.EPGProgram(channel_id="a.ca", title="Own art", start=start,
+                                   stop=start + timedelta(hours=1), icon_url="http://192.0.2.10/logos/x.png"))
+        self.db.commit()
+        xml = self._served()
+        self.assertIn("Own art", xml)
+        self.assertNotIn("192.0.2.10/logos", xml)
+        self.assertIn('<icon src="http://img.example/nhl.png" />', xml)
 
     def test_a_stored_icon_is_served_without_a_provider_sync(self):
         """#147 on its own: YouTube Live stores icon_url directly."""

@@ -3918,6 +3918,45 @@ def live_playlist_m3u(request: Request, db: Session = Depends(get_db)):
     )
 
 
+def _emit_sub_titles(db) -> bool:
+    """Whether the served guide carries each programme's <sub-title> (setting
+    `livetv_emit_subtitles`, default off). Jellyfin 10.11 treats a programme
+    with an episode title as a series: its recordings are named
+    "<title> - <sub-title>" and get tvshow/episodedetails NFOs instead of a
+    <movie> one, so serving sub-titles by default would re-file every recording
+    of a feed that sends them (#148). They are always stored."""
+    return (get_setting(db, "livetv_emit_subtitles", "") or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _provider_hosts(db, channels) -> "set[str]":
+    """Hosts that belong to a Live TV provider: its server and its channels'
+    stream hosts."""
+    from urllib.parse import urlparse
+    hosts = set()
+    for url in [p.server_url for p in live_tv_providers(db)] + [ch.stream_url for ch in channels]:
+        try:
+            host = urlparse(url or "").hostname
+        except ValueError:
+            host = None
+        if host:
+            hosts.add(host.lower())
+    return hosts
+
+
+def _third_party_icon(url: Optional[str], provider_hosts: "set[str]") -> Optional[str]:
+    """A programme icon the provider hosts itself is dropped: Jellyfin fetches
+    it as a recording starts, one more connection to a panel that may be
+    carrying that recording (#147). Art from elsewhere (TMDB, YouTube) is kept."""
+    if not url:
+        return None
+    from urllib.parse import urlparse
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return None
+    return None if host in provider_hosts else url
+
+
 @router.get("/hdhr/xmltv.xml")
 @router.get("/api/live/xmltv.xml")
 def hdhr_xmltv(db: Session = Depends(get_db)):
@@ -3968,6 +4007,8 @@ def hdhr_xmltv(db: Session = Depends(get_db)):
     # When multiple channels share an EPG ID, duplicate programs for each
     programs = []
     inferred_categories = 0
+    emit_sub_titles = _emit_sub_titles(db)
+    provider_hosts = _provider_hosts(db, channels)
     if epg_ids:
         db_programs = (
             db.query(EPGProgram)
@@ -3990,14 +4031,14 @@ def hdhr_xmltv(db: Session = Depends(get_db)):
                 programs.append({
                     "channel_id": gn,
                     "title": p.title,
-                    "sub_title": p.sub_title,
+                    "sub_title": p.sub_title if emit_sub_titles else None,
                     "description": p.description,
                     "start": p.start,
                     "stop": p.stop,
                     "category": category,
                     # Stored for YouTube Live and provider programmes alike, and
                     # dropped here until #147: Jellyfin saves it as the art.
-                    "icon_url": p.icon_url,
+                    "icon_url": _third_party_icon(p.icon_url, provider_hosts),
                 })
 
     if inferred_categories:
