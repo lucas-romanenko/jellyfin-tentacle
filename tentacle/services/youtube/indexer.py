@@ -193,6 +193,9 @@ def resolve_channel(url: str) -> dict:
         "handle": parsed.get("handle"),
         "playlist_id": parsed.get("playlist_id"),
         "title": title,
+        # Who the channel or playlist belongs to: names a playlist whose title
+        # another source already has (see add_channel).
+        "owner": info.get("channel") or info.get("uploader"),
         "avatar_url": _pick("avatar"),
         "banner_url": _pick("banner"),
         "canonical": parsed["canonical"],

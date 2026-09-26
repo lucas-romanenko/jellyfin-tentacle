@@ -861,6 +861,27 @@ def list_channels(db: Session = Depends(get_db)):
     return out
 
 
+def _unique_source_title(db: Session, title: str, kind: str, owner: Optional[str]) -> str:
+    """A title no other source has, ignoring case. Tentacle keys a source's
+    playlist, home row, folder and collection on its title, and a playlist is
+    often named like its channel ("Bluey") or generically across owners
+    ("Favorites"): the second source then silently got no playlist and no row
+    (#169). A playlist takes its owner's name, "Favorites (Owner B)"; anything
+    else, or a second clash, a number: "Bluey (2)". Existing sources are never
+    renamed — their title also names folders and watched state."""
+    taken = {(t or "").casefold() for (t,) in db.query(YouTubeChannel.title).all()}
+    if title.casefold() not in taken:
+        return title
+    if kind == "playlist" and owner and owner.casefold() != title.casefold():
+        named = f"{title} ({owner})"
+        if named.casefold() not in taken:
+            return named
+    n = 2
+    while f"{title} ({n})".casefold() in taken:
+        n += 1
+    return f"{title} ({n})"
+
+
 @router.post("/channels", dependencies=[Depends(require_admin)])
 def add_channel(body: ChannelCreate, request: Request, db: Session = Depends(get_db)):
     """Add a channel. This is the only step; the rest is automatic.
@@ -917,7 +938,8 @@ def add_channel(body: ChannelCreate, request: Request, db: Session = Depends(get
     if existing:
         raise HTTPException(409, f"'{existing.title}' is already added")
 
-    slug = indexer.slugify(info["title"])
+    title = _unique_source_title(db, info["title"], info["kind"], info.get("owner"))
+    slug = indexer.slugify(title)
     if db.query(YouTubeChannel).filter(YouTubeChannel.slug == slug).first():
         slug = f"{slug}-{int(datetime.utcnow().timestamp()) % 10000}"
 
@@ -927,7 +949,7 @@ def add_channel(body: ChannelCreate, request: Request, db: Session = Depends(get
     channel = YouTubeChannel(
         input_url=body.url, kind=info["kind"], channel_id=info.get("channel_id"),
         handle=info.get("handle"), playlist_id=info.get("playlist_id"),
-        title=info["title"], slug=slug,
+        title=title, slug=slug,
         avatar_url=info.get("avatar_url"), banner_url=info.get("banner_url"),
         include_videos=True,
         # A channel that only ever broadcasts live has an empty uploads tab;
