@@ -473,6 +473,12 @@ def fetch_categories(provider_id: int, db: Session = Depends(get_db)):
 
     new_count = 0
     for cat_type, cats, counts in [("movie", vod_cats, vod_counts), ("series", series_cats, series_counts)]:
+        # Not a single title of this type in the provider's answer is a blip, not
+        # every category emptying at once. A category's count is also the sync's
+        # memory that it held titles; writing 0 into every one disarmed the
+        # guard against empty answers everywhere, and the next two empty answers
+        # pruned whole categories (#25). Existing counts stay; new ones are 0.
+        blip = not any(counts.values())
         for cat in cats:
             cid = str(cat["category_id"])
             cname = cat["category_name"]
@@ -481,7 +487,8 @@ def fetch_categories(provider_id: int, db: Session = Depends(get_db)):
 
             if key in existing:
                 existing[key].category_name = cname
-                existing[key].title_count = count
+                if not (blip and existing[key].title_count):
+                    existing[key].title_count = count
                 existing[key].last_seen = datetime.utcnow()
             else:
                 new_cat = ProviderCategory(

@@ -1451,6 +1451,8 @@ def _sync_movies(
             continue
 
         _prev_count = cat.title_count
+        # Some TMDB lookup in this category failed tonight (see the count below).
+        cat_lookup_failed = False
         if _category_went_empty(db, cat, len(streams)):
             logger.warning(
                 f"Category '{cat.category_name}' returned 0 titles but held "
@@ -1515,6 +1517,7 @@ def _sync_movies(
                     elif metadata:
                         tmdb_results[idx] = metadata
             if lookup_failed:
+                cat_lookup_failed = True
                 # A stream whose lookup errored is neither matched nor "seen", so
                 # the seen set is incomplete — exactly like a failed category fetch.
                 logger.warning(
@@ -1581,6 +1584,7 @@ def _sync_movies(
                         # provider's pruning for good.
                         if tmdb_down:
                             fetch_ok = False
+                            cat_lookup_failed = True
                         else:
                             logger.warning(f"[Sync] Stream {stream.get('stream_id')} is fixed to TMDB {override_id}, "
                                            f"which TMDB no longer has; skipped (fix it again to a film TMDB knows)")
@@ -1748,7 +1752,14 @@ def _sync_movies(
                 logger.info(f"  {cat.category_name} ({item_idx}/{total_in_cat}) — {cat_new} new, {cat_existing} existing")
 
         # Commit all new movies for this category at once
-        cat.title_count = cat_new + cat_existing
+        # The count is also the guard's memory (_category_went_empty): a category
+        # at 0 is not protected from an empty provider answer. On a night some
+        # lookups failed, what matched undercounts what the category holds — a
+        # TMDB outage could take it to 0, and two empty answers later every title
+        # in it was pruned (#25). Keep the higher count then; the snapshot below
+        # records what was really matched.
+        cat.title_count = max(_prev_count or 0, cat_new + cat_existing) if cat_lookup_failed \
+            else cat_new + cat_existing
         cat.last_sync_matched = cat_new + cat_existing
         cat.last_sync_skipped = cat_skipped
         snapshot = CategorySnapshot(
@@ -1850,6 +1861,8 @@ def _sync_series(
             continue
 
         _prev_count = cat.title_count
+        # Some TMDB lookup in this category failed tonight (see the count below).
+        cat_lookup_failed = False
         if _category_went_empty(db, cat, len(series_list)):
             logger.warning(
                 f"Category '{cat.category_name}' returned 0 series but held "
@@ -1902,6 +1915,7 @@ def _sync_series(
                     elif metadata:
                         tmdb_results[idx] = metadata
             if lookup_failed:
+                cat_lookup_failed = True
                 # A stream whose lookup errored is neither matched nor "seen", so
                 # the seen set is incomplete — exactly like a failed category fetch.
                 logger.warning(
@@ -2098,7 +2112,14 @@ def _sync_series(
                 logger.info(f"  {cat.category_name} ({item_idx}/{total_in_cat}) — {cat_new} new, {cat_existing} existing")
 
         # Commit all new series for this category at once
-        cat.title_count = cat_new + cat_existing
+        # The count is also the guard's memory (_category_went_empty): a category
+        # at 0 is not protected from an empty provider answer. On a night some
+        # lookups failed, what matched undercounts what the category holds — a
+        # TMDB outage could take it to 0, and two empty answers later every title
+        # in it was pruned (#25). Keep the higher count then; the snapshot below
+        # records what was really matched.
+        cat.title_count = max(_prev_count or 0, cat_new + cat_existing) if cat_lookup_failed \
+            else cat_new + cat_existing
         cat.last_sync_matched = cat_new + cat_existing
         cat.last_sync_skipped = cat_skipped
         snapshot = CategorySnapshot(
