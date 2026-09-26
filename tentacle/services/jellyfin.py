@@ -28,6 +28,10 @@ def is_youtube_video(item: dict) -> bool:
     return any(k.lower() == YOUTUBE_TAG for k in (item.get("ProviderIds") or {}))
 
 
+# Seconds to wait for the plugin's PruneDead answer (see prune_dead_playlist_entries).
+PRUNE_DEAD_READ_TIMEOUT = 900
+
+
 class PartialListing(Exception):
     """A paged Jellyfin listing lost a page after the first: it is incomplete."""
 
@@ -783,7 +787,13 @@ class JellyfinService:
             return {"checkedPlaylists": 0, "prunedPlaylists": 0, "removed": 0}
         path = "/Tentacle/Playlists/PruneDead"
         try:
-            r = self.session.post(f"{self.url}{path}", json={"Ids": list(playlist_ids)}, timeout=60)
+            # One call for every playlist: the plugin's storage-offline guard
+            # works across the whole run. On a large library that takes longer
+            # than a minute (~80 s for 30 playlists of up to 16k entries), and a
+            # 60 s timeout gave up every hour while the plugin carried on, with
+            # the refresh lock released under it and the summary lost (#181).
+            r = self.session.post(f"{self.url}{path}", json={"Ids": list(playlist_ids)},
+                                  timeout=(10, PRUNE_DEAD_READ_TIMEOUT))
             self._check_401(r, path)
             if r.status_code in (404, 405):
                 logger.debug("[Jellyfin] Tentacle plugin has no PruneDead route — dead playlist entries not cleaned")
