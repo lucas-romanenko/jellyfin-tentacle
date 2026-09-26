@@ -642,14 +642,50 @@ class JellyfinService:
         return any(o is not None and o != n for o, n in zip(own, now))
 
     @staticmethod
-    def _carries_a_copy(own: tuple, now: tuple, copies: list) -> bool:
-        """Whether every field that differs from the child's own value holds one
-        of the values a cascade can have written (the series' or its season's).
-        Anything else is an edit made since — never overwrite that."""
+    def _copy_candidates(entry: dict, c: dict) -> Optional[list]:
+        """The (official, custom) pairs a cascade can have left on child `c`:
+        this push's series rating, an earlier push's (the series' rating may
+        have changed in between), and its season's own — as recorded at push
+        time, and as saved if the season itself is still pending. None for an
+        entry of the first on-disk form, which did not record them."""
+        if not entry.get("copy"):
+            return None
+        copies = [tuple(entry["copy"])]
+        if entry.get("prev_copy"):
+            copies.append(tuple(entry["prev_copy"]))
+        if c.get("season_rating"):
+            copies.append(tuple(c["season_rating"]))
+        season = entry["children"].get(c.get("season") or "")
+        if season:
+            copies.append((season["official"], season["custom"]))
+        return copies
+
+    @staticmethod
+    def _resolve_own(own: tuple, now: tuple, copies: Optional[list]) -> tuple:
+        """Per field, what the child should carry: its saved own value (None =
+        inherits) where it now shows that or a cascade's copy, the current value
+        where that was set by hand since. Without recorded copies (first
+        on-disk form) the saved value wins."""
+        out = []
         for i, (o, n) in enumerate(zip(own, now)):
-            if o is not None and o != n and not any(c is not None and c[i] == n for c in copies):
-                return False
-        return True
+            if n == o or n is None or copies is None or any(cp[i] == n for cp in copies):
+                out.append(o)          # the saved value, "inherit" (None) included
+            else:
+                out.append(n)          # set by hand since: keep it
+        return tuple(out)
+
+    @staticmethod
+    def _own_after(own: tuple, shown: tuple, copies: Optional[list]) -> tuple:
+        """A saved child's own rating in view of what it shows now: per field,
+        a value no cascade can have written was set by hand and becomes the
+        own value — also where the snapshot had none (it inherited then)."""
+        out = []
+        for i, (o, n) in enumerate(zip(own, shown)):
+            if n == o or n is None or copies is None or any(cp[i] == n for cp in copies):
+                out.append(o)
+            else:
+                out.append(n)
+        return tuple(out)
 
     def _restore_from_snapshot(self, parent_id: str, entry: dict) -> dict:
         """Write back each child's own ratings from a pending entry. Seasons
@@ -663,13 +699,66 @@ class JellyfinService:
         is left alone.
         """
         children = entry["children"]
-        series_copy = tuple(entry["copy"]) if entry.get("copy") else None
         failed_seasons, failed, restored, skipped = set(), {}, 0, 0
+        # Writing a season below cascades its rating onto its episodes — over
+        # a rating someone set by hand on one of them since. So those episodes
+        # are read first, and a hand edit found there becomes the episode's own
+        # rating (saved as such if it has to stay pending). If one of them
+        # cannot be read, its season is not written in this pass: its cascade
+        # could destroy an edit nobody has seen.
+        def own_now(c, shown):
+            return self._own_after((c["official"], c["custom"]), shown, self._copy_candidates(entry, c))
+
+        work = {cid: dict(c) for cid, c in children.items()}
+        seasons = {cid for cid, c in work.items() if c["type"] == "Season"}
+        unreadable = set()
+        # Episodes of a season about to be written that are NOT in the entry
+        # (unrated when the snapshot was taken) may have been given a rating
+        # since, by hand. The season's cascade would overwrite it, so any
+        # episode there showing a value no cascade wrote joins the entry.
+        for sid in sorted(seasons):
+            try:
+                eps = self._child_ratings(sid)
+            except Exception:
+                eps = None
+            if eps is None:
+                unreadable.add(sid)
+                continue
+            season_own = [work[sid]["official"], work[sid]["custom"]]
+            for eid, (etype, o, c, _s) in eps.items():
+                if etype != "Episode" or eid in work:
+                    continue
+                probe = {"type": "Episode", "official": None, "custom": None,
+                         "season": sid, "season_rating": season_own}
+                copies = self._copy_candidates(entry, probe) or []
+                own = tuple(v if v is not None and not any(cp[i] == v for cp in copies) else None
+                            for i, v in enumerate((o, c)))
+                if own != (None, None):
+                    work[eid] = dict(probe, official=own[0], custom=own[1])
+        for cid, c in work.items():
+            if c["type"] == "Episode" and c.get("season") in seasons:
+                try:
+                    child = self._get_child(cid)
+                except Exception:
+                    child = None
+                if child is None:
+                    unreadable.add(c["season"])
+                elif child:
+                    c["official"], c["custom"] = own_now(c, (child.get("OfficialRating") or None,
+                                                             child.get("CustomRating") or None))
+        if work != children and _pending_restores_load().get(parent_id):
+            # A hand edit found above is saved before any season is written: if
+            # the process dies after that season's cascade, the retry must not
+            # read the cascade's copy and put back the old value.
+            _pending_restores_set(parent_id, dict(_pending_restores_load()[parent_id], children=work))
         for kind in ("Season", "Episode"):
-            for cid, c in children.items():
+            for cid, c in work.items():
                 if c["type"] != kind:
                     continue
-                own = (c["official"], c["custom"])
+                if kind == "Season" and cid in unreadable:
+                    failed[cid] = c
+                    failed_seasons.add(cid)
+                    continue
                 try:
                     child = self._get_child(cid)
                     if child is None:
@@ -680,29 +769,22 @@ class JellyfinService:
                     if not child:
                         continue                  # gone from the library: nothing to restore
                     now = (child.get("OfficialRating") or None, child.get("CustomRating") or None)
+                    if kind == "Season" or c.get("season") not in seasons:
+                        # Not pre-read: decide on what it shows now.
+                        c["official"], c["custom"] = own_now(c, now)
+                    own = (c["official"], c["custom"])
                     if not self._own_rating_changed(own, now):
                         continue
-                    if series_copy is not None:
-                        # The copy this push's cascade wrote, the one an
-                        # earlier push's wrote (the series' rating may have
-                        # changed in between), and the season's own.
-                        copies = [series_copy]
-                        if entry.get("prev_copy"):
-                            copies.append(tuple(entry["prev_copy"]))
-                        # The season's own rating, as recorded at push time: a
-                        # season restored successfully is no longer in the
-                        # entry, but its update cascaded that rating here.
-                        if c.get("season_rating"):
-                            copies.append(tuple(c["season_rating"]))
-                        season = children.get(c.get("season") or "")
-                        if season:
-                            copies.append((season["official"], season["custom"]))
-                        if not self._carries_a_copy(own, now, copies):
-                            skipped += 1
-                            logger.info(f"[Jellyfin] Not restoring {cid}: its rating was changed to "
-                                        f"{now[0] or '-'}/{now[1] or '-'} since the push")
-                            continue
-                    payload = _item_update_payload(child, OfficialRating=own[0] or "", CustomRating=own[1])
+                    # Field by field: a field still holding a cascade's copy
+                    # gets its own value back; a field set by hand since is
+                    # kept (and has already become the own value above).
+                    target = self._resolve_own(own, now, self._copy_candidates(entry, c))
+                    if target == now:
+                        skipped += 1
+                        logger.info(f"[Jellyfin] Not restoring {cid}: its rating was changed to "
+                                    f"{now[0] or '-'}/{now[1] or '-'} since the push")
+                        continue
+                    payload = _item_update_payload(child, OfficialRating=target[0] or "", CustomRating=target[1])
                     if self._post(f"/Items/{cid}", payload):
                         restored += 1
                     else:
@@ -716,7 +798,7 @@ class JellyfinService:
                         failed_seasons.add(cid)
         # A season still pending will cascade onto its episodes when it is
         # finally written, so every saved episode of it stays pending too.
-        for cid, c in children.items():
+        for cid, c in work.items():
             if c["type"] == "Episode" and c.get("season") in failed_seasons:
                 failed.setdefault(cid, c)
         if restored:
@@ -796,13 +878,21 @@ class JellyfinService:
         # An earlier push that could not finish its restore: those values are
         # the children's real ones — a fresh read now would only see copies.
         pending = _pending_restores_load().get(item_id)
-        need = dict(pending["children"]) if pending else {}
+        need = {cid: dict(c) for cid, c in pending["children"].items()} if pending else {}
         children = self._child_ratings(item_id)
         if children is None:
             # Usually transient: one more look after a short pause before
             # updating without a snapshot.
             _in_run_retry_wait()
             children = self._child_ratings(item_id)
+        if children is not None and pending:
+            # A pending child that was set by hand since the failed restore:
+            # the edit is now its own rating, not the saved one.
+            for cid, c in need.items():
+                if cid in children:
+                    now = (children[cid][1], children[cid][2])
+                    c["official"], c["custom"] = self._own_after(
+                        (c["official"], c["custom"]), now, self._copy_candidates(pending, c))
         if children is None:
             logger.warning(
                 f"[Jellyfin] Could not list the seasons/episodes of {item.get('Type')} {item_id}; "
@@ -837,9 +927,15 @@ class JellyfinService:
             # recognise it as a copy, not a hand edit.
             for cid, e in need.items():
                 if e["type"] == "Episode" and not e.get("season_rating"):
-                    s_row = children.get(e.get("season") or "")
-                    if s_row and s_row[0] == "Season":
-                        e["season_rating"] = [s_row[1], s_row[2]]
+                    sid = e.get("season") or ""
+                    if sid in need:
+                        # The season is itself being restored (or still pending):
+                        # what it shows now may be a copy — use its own rating.
+                        e["season_rating"] = [need[sid]["official"], need[sid]["custom"]]
+                    else:
+                        s_row = children.get(sid)
+                        if s_row and s_row[0] == "Season":
+                            e["season_rating"] = [s_row[1], s_row[2]]
         entry = None
         if need:
             prev = pending.get("copy") if pending else None
