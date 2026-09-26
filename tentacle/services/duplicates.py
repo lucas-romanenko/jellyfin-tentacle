@@ -19,26 +19,14 @@ logger = logging.getLogger(__name__)
 
 
 def delete_vod_files(strm_path: str):
-    """Delete a VOD .strm file and its companion .nfo, plus empty parent folder."""
-    try:
-        strm = Path(strm_path)
-        if strm.exists() and strm.suffix == ".strm":
-            strm.unlink()
-            logger.info(f"Deleted VOD strm: {strm_path}")
+    """Delete a VOD movie's .strm and its own .nfo, plus the folder if emptied.
 
-            # Delete companion .nfo file (same name, different extension)
-            nfo = strm.with_suffix(".nfo")
-            if nfo.exists():
-                nfo.unlink()
-                logger.info(f"Deleted companion NFO: {nfo}")
-
-            # Remove parent folder if empty
-            parent = strm.parent
-            if parent.exists() and not any(parent.iterdir()):
-                parent.rmdir()
-                logger.info(f"Removed empty folder: {parent}")
-    except Exception as e:
-        logger.warning(f"Could not delete VOD files at {strm_path}: {e}")
+    Delegates to media_files.delete_movie_files, whose merged-folder guard
+    (#28) this copy never had: in a folder where Radarr's "Heat (1995).mkv"
+    sits beside the provider's "Heat (1995).strm", the .nfo of that name is
+    Radarr's and describes the download the user chose to keep (#166)."""
+    from services.media_files import delete_movie_files
+    delete_movie_files(strm_path)
 
 
 def convert_record_to_downloaded(record, media_type: str):
