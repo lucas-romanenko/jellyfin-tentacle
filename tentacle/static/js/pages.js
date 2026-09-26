@@ -91,7 +91,7 @@ function renderHistoryRuns(runs) {
     const date = run.started_at ? new Date(run.started_at) : null;
     const dateStr = date ? date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '—';
     const duration = run.duration_seconds ? `${Math.round(run.duration_seconds/60)}m ${run.duration_seconds%60}s` : '—';
-    const statusColor = run.status === 'completed' ? 'green' : run.status === 'running' ? 'amber' : 'red';
+    const statusColor = run.status === 'completed' ? 'green' : (run.status === 'running' || run.status === 'finishing') ? 'amber' : 'red';
 
     const catStats = run.category_stats || {};
     const catPills = Object.entries(catStats)
@@ -108,6 +108,7 @@ function renderHistoryRuns(runs) {
           <div class="dot dot-${statusColor}"></div>
           <span style="font-size:13px;font-weight:500">${run.provider_name}</span>
           <span class="badge badge-gray">${run.sync_type}</span>
+          ${run.status === 'finishing' ? '<span class="badge badge-amber" title="The VOD part is done; Jellyfin is still being updated (library scan, tags, playlists)">updating Jellyfin</span>' : ''}
           <span style="font-size:12px;color:var(--text3);font-family:'DM Mono',monospace">${dateStr}</span>
           <span style="font-size:11px;color:var(--text3);margin-left:auto">⏱ ${duration}</span>
         </div>

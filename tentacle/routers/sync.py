@@ -31,6 +31,27 @@ router = APIRouter(prefix="/api/sync", tags=["sync"], dependencies=[Depends(requ
 
 # Track running syncs and their progress
 _running_syncs: dict = {}
+# Work still running after a run was marked completed: the Jellyfin half of a
+# manual sync (library-scan wait, tag push, playlists) and the rest of the
+# nightly job (scans, tags, EPG, per-user playlist rebuilds; over an hour on a
+# big library). The run read "completed" all that time and a new sync was
+# refused as "already running" (#159). {provider_id: since} for a manual sync,
+# {"nightly": when the nightly job started} while it is past its provider syncs.
+_after_sync: dict = {}
+
+
+def _finishing(run) -> bool:
+    """True for a completed run whose sync is still updating Jellyfin."""
+    if run is None or run.status != "completed":
+        return False
+    if run.provider_id in _after_sync:
+        return True
+    nightly = _after_sync.get("nightly")
+    return bool(nightly and run.started_at and run.started_at >= nightly)
+
+
+def _shown_status(run) -> str:
+    return "finishing" if _finishing(run) else run.status
 _sync_progress: dict = {}  # provider_id -> {phase, category, stats}
 _sync_subscribers: dict = {}  # provider_id -> [queue.Queue]
 _cancel_flags: dict = {}  # provider_id -> threading.Event (set = cancelled)
@@ -125,6 +146,7 @@ def _run_sync_background(provider_id: int, sync_type: str):
 
         # Full pipeline: Jellyfin library scan → wait for indexing → push tags → refresh playlists
         if run.status == "completed" and not cancel_event.is_set():
+            _after_sync[provider_id] = datetime.utcnow()
             _notify_sync_progress(provider_id, "jellyfin_scan", "Scanning Jellyfin library...", cumulative)
             try:
                 from services.jellyfin import run_full_jellyfin_pipeline
@@ -156,6 +178,7 @@ def _run_sync_background(provider_id: int, sync_type: str):
         logger.error(f"Background sync failed: {e}", exc_info=True)
         _notify_sync_progress(provider_id, "error", "", {"error": str(e)})
     finally:
+        _after_sync.pop(provider_id, None)
         _running_syncs.pop(provider_id, None)
         _cancel_flags.pop(provider_id, None)
         db.close()
@@ -181,6 +204,9 @@ def trigger_sync(body: SyncRequest, db: Session = Depends(get_db)):
     # in-memory flag under _sync_lock so two concurrent requests (or a request
     # racing the nightly scheduler) can't both pass the check and start a sync.
     with _sync_lock:
+        if body.provider_id in _after_sync:
+            raise HTTPException(400, "The last sync is still updating Jellyfin (library scan, tags, "
+                                     "playlists) — try again when it has finished")
         if body.provider_id in _running_syncs:
             raise HTTPException(400, "A sync is already running for this provider")
         db_running = db.query(SyncRun).filter(
@@ -293,11 +319,12 @@ def get_sync_status(db: Session = Depends(get_db)):
                 "movies_existing": last_run.movies_existing,
                 "series_new": last_run.series_new,
                 "series_existing": last_run.series_existing,
+                "finishing": _finishing(last_run),
             })
 
     # Get the very last run status (any status) for cancel detection
     last_run_any = db.query(SyncRun).order_by(SyncRun.id.desc()).first()
-    last_status = last_run_any.status if last_run_any else None
+    last_status = _shown_status(last_run_any) if last_run_any else None
 
     return {
         "running": running,
@@ -329,7 +356,7 @@ def get_sync_history(
                 "id": r.id,
                 "provider_id": r.provider_id,
                 "provider_name": r.provider.name if r.provider else "Unknown",
-                "status": r.status,
+                "status": _shown_status(r),
                 "sync_type": r.sync_type,
                 "movies_new": r.movies_new,
                 "movies_existing": r.movies_existing,
@@ -421,7 +448,7 @@ def get_dashboard(db: Session = Depends(get_db)):
     ).order_by(SyncRun.completed_at.desc()).first()
     if last_vod_run:
         last_vod_sync = last_vod_run.completed_at.isoformat() if last_vod_run.completed_at else None
-        last_vod_status = last_vod_run.status
+        last_vod_status = _shown_status(last_vod_run)
         last_vod_new = (last_vod_run.movies_new or 0) + (last_vod_run.series_new or 0)
     else:
         last_vod_new = 0

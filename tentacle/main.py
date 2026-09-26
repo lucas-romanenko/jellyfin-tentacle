@@ -31,6 +31,8 @@ def run_scheduled_sync():
     from services.radarr import scan_radarr_library
     from services.tmdb import TMDBService
     from models.database import get_setting, log_activity
+    from routers.sync import _after_sync
+    nightly_started = datetime.utcnow()
     db = SessionLocal()
     try:
         from models.database import ListSubscription
@@ -113,6 +115,10 @@ def run_scheduled_sync():
                 _running_syncs.pop(provider.id, None)
                 _cancel_flags.pop(provider.id, None)
                 _sync_progress.pop(provider.id, None)
+
+        # The provider runs above read "completed" from here on while the rest
+        # of the job runs for a long while yet: report them as finishing (#159).
+        _after_sync["nightly"] = nightly_started
 
         logger.info("Scheduled Radarr scan starting")
         try:
@@ -343,6 +349,7 @@ def run_scheduled_sync():
         except Exception:
             pass
     finally:
+        _after_sync.pop("nightly", None)
         db.close()
 
 
