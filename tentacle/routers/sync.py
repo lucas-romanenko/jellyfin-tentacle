@@ -920,12 +920,20 @@ def refresh_tags(db: Session = Depends(get_db)):
     else:
         logger.info("[Refresh Tags] Jellyfin not configured — skipping tag push")
 
-    # Rewrite NFOs for VOD content so Jellyfin picks up new tags
-    from services.nfo import write_movie_nfo, write_series_nfo
+    # Bring the VOD NFOs' tags in line so Jellyfin picks them up. An existing
+    # NFO gets only its <tag> lines rewritten: rebuilding it from the row threw
+    # away what the sync had written from full TMDB details (imdbid, cast,
+    # directors, studios, tagline), a Sonarr show's tvdbid, and reset
+    # <dateadded> to now (#165). A missing NFO is still written from the row.
+    from services.nfo import update_nfo_tags, write_movie_nfo, write_series_nfo
     nfos_written = 0
     vod_movies = db.query(Movie).filter(Movie.source != "radarr", Movie.nfo_path.isnot(None)).all()
     for movie in vod_movies:
         try:
+            if Path(movie.nfo_path).exists():
+                if update_nfo_tags(Path(movie.nfo_path), movie.tags or []):
+                    nfos_written += 1
+                continue
             metadata = {
                 "tmdb_id": movie.tmdb_id, "title": movie.title, "year": movie.year,
                 "overview": movie.overview, "runtime": movie.runtime, "rating": movie.rating,
@@ -939,6 +947,10 @@ def refresh_tags(db: Session = Depends(get_db)):
     vod_series = db.query(Series).filter(Series.source != "radarr", Series.nfo_path.isnot(None)).all()
     for series in vod_series:
         try:
+            if Path(series.nfo_path).exists():
+                if update_nfo_tags(Path(series.nfo_path), series.tags or []):
+                    nfos_written += 1
+                continue
             metadata = {
                 "tmdb_id": series.tmdb_id, "title": series.title, "year": series.year,
                 "overview": series.overview, "genres": series.genres or [],
@@ -950,7 +962,7 @@ def refresh_tags(db: Session = Depends(get_db)):
         except Exception:
             pass
     if nfos_written:
-        logger.info(f"[Refresh Tags] Rewrote {nfos_written} NFO files")
+        logger.info(f"[Refresh Tags] Updated the tags of {nfos_written} NFO files")
 
     # Refresh playlist contents so new tags take effect (don't rebuild configs/home)
     try:

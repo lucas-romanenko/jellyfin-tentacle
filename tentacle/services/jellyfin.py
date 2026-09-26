@@ -1257,46 +1257,33 @@ def push_tags_to_jellyfin(db, log_prefix: str = "Pipeline") -> int:
 
     jf = JellyfinService(jf_url, jf_key, jf_uid)
     jf_tagged = 0
+    # Tentacle's tags on an item are REPLACED with the row's, and everything
+    # else on it is kept (#107). The push used to only add: a tag taken off a
+    # row (an expired "Recently Added", a list the title left) stayed in
+    # Jellyfin for ever, so on a live install 5,860 titles still said
+    # "Recently Added" (#180). A row with no tags is pushed too: empty means
+    # "none of Tentacle's".
+    from services.tagger import merge_owned_tags, tentacle_owned_tags
+    owned = tentacle_owned_tags(db)
 
-    # Push movie tags
-    jf_movie_lookup, jf_movie_title_lookup = jf.get_tmdb_lookup_with_fallback("Movie")
-    for movie in db.query(Movie).filter(Movie.tags.isnot(None)).all():
-        try:
-            jf_item = jf_movie_lookup.get(movie.tmdb_id)
-            if not jf_item and movie.title:
-                norm = JellyfinService._normalize_title(movie.title)
-                jf_item = jf_movie_title_lookup.get((norm, str(movie.year or "")))
+    for media_type, model in (("Movie", Movie), ("Series", Series)):
+        lookup, title_lookup = jf.get_tmdb_lookup_with_fallback(media_type)
+        for row in db.query(model).all():
+            try:
+                jf_item = lookup.get(row.tmdb_id)
+                if not jf_item and row.title:
+                    norm = JellyfinService._normalize_title(row.title)
+                    jf_item = title_lookup.get((norm, str(row.year or "")))
+                    if not jf_item:
+                        jf_item = title_lookup.get((norm, ""))
                 if not jf_item:
-                    jf_item = jf_movie_title_lookup.get((norm, ""))
-            if jf_item:
-                existing_tags = set(jf_item.get("Tags", []))
-                desired_tags = set(movie.tags)
-                if not desired_tags.issubset(existing_tags):
-                    merged = list(existing_tags | desired_tags)
-                    if jf.set_item_tags(jf_item["Id"], merged):
-                        jf_tagged += 1
-        except Exception:
-            pass
-
-    # Push series tags
-    jf_series_lookup, jf_series_title_lookup = jf.get_tmdb_lookup_with_fallback("Series")
-    for series in db.query(Series).filter(Series.tags.isnot(None)).all():
-        try:
-            jf_item = jf_series_lookup.get(series.tmdb_id)
-            if not jf_item and series.title:
-                norm = JellyfinService._normalize_title(series.title)
-                jf_item = jf_series_title_lookup.get((norm, str(series.year or "")))
-                if not jf_item:
-                    jf_item = jf_series_title_lookup.get((norm, ""))
-            if jf_item:
-                existing_tags = set(jf_item.get("Tags", []))
-                desired_tags = set(series.tags)
-                if not desired_tags.issubset(existing_tags):
-                    merged = list(existing_tags | desired_tags)
-                    if jf.set_item_tags(jf_item["Id"], merged):
-                        jf_tagged += 1
-        except Exception:
-            pass
+                    continue
+                current = jf_item.get("Tags") or []
+                merged = merge_owned_tags(current, row.tags or [], owned)
+                if sorted(merged) != sorted(current) and jf.set_item_tags(jf_item["Id"], merged):
+                    jf_tagged += 1
+            except Exception:
+                pass
 
     logger.info(f"[{log_prefix}] Pushed tags to Jellyfin for {jf_tagged} items")
     return jf_tagged

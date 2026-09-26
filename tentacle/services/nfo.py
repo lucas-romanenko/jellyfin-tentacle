@@ -209,14 +209,17 @@ def update_nfo_tags(nfo_path: Path, tags: List[str]) -> bool:
     try:
         content = nfo_path.read_text(encoding='utf-8')
 
-        # Remove existing tags
+        # Remove existing tags, whole lines only. The old pattern also ate the
+        # newline BEFORE each tag, so tags in the middle of the file glued the
+        # lines around them together, a little more on every rewrite.
         import re
-        content = re.sub(r'\s*<tag>.*?</tag>\n?', '', content)
+        content = re.sub(r'^[ \t]*<tag>.*?</tag>[ \t]*(?:\r?\n|$)', '', content, flags=re.MULTILINE)
 
         # Insert new tags before closing tag
-        tag_xml = '\n'.join(f'  <tag>{_x(t)}</tag>' for t in tags)
         close_tag = '</movie>' if '</movie>' in content else '</tvshow>'
-        content = content.replace(close_tag, f'{tag_xml}\n{close_tag}')
+        if tags:
+            tag_xml = '\n'.join(f'  <tag>{_x(t)}</tag>' for t in tags)
+            content = content.replace(close_tag, f'{tag_xml}\n{close_tag}')
 
         nfo_path.write_text(content, encoding='utf-8')
         return True
