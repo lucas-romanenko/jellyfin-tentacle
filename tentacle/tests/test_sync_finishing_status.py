@@ -115,6 +115,11 @@ class NightlySync(_Db):
 
         def radarr_scan(db):
             during.update(self.seen())
+            try:
+                sync_router.trigger_sync(sync_router.SyncRequest(provider_id=self.pid, sync_type="full"), db=db)
+                during["trigger"] = "started"
+            except HTTPException as e:
+                during["trigger"] = e.detail
             return {}
 
         patches = [
@@ -142,6 +147,8 @@ class NightlySync(_Db):
         main.run_scheduled_sync()
         self.assertEqual("finishing", during["history"])
         self.assertEqual("finishing", during["status"])
+        # A manual sync then would run a second Jellyfin pipeline alongside.
+        self.assertIn("still updating Jellyfin", during["trigger"])
         self.assertEqual("completed", self.seen()["history"])
 
 

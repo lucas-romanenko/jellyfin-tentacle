@@ -204,7 +204,9 @@ def trigger_sync(body: SyncRequest, db: Session = Depends(get_db)):
     # in-memory flag under _sync_lock so two concurrent requests (or a request
     # racing the nightly scheduler) can't both pass the check and start a sync.
     with _sync_lock:
-        if body.provider_id in _after_sync:
+        # The nightly job's own tail counts too: a manual sync started then ran
+        # a second Jellyfin pipeline alongside the nightly rebuild.
+        if body.provider_id in _after_sync or "nightly" in _after_sync:
             raise HTTPException(400, "The last sync is still updating Jellyfin (library scan, tags, "
                                      "playlists) — try again when it has finished")
         if body.provider_id in _running_syncs:
