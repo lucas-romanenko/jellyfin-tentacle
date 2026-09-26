@@ -151,6 +151,18 @@ class NewChannelsFollowTheirGroup(_Base):
         self.assertTrue(chans["TSN 1"].enabled)
         self.assertFalse(chans["Treehouse"].enabled)
 
+    def test_a_separator_row_in_an_enabled_group_starts_off(self):
+        """A heading dressed as a channel plays nothing; Jellyfin would list it."""
+        self._group("Sports", True)
+        names = ["##### EVENTS #####", "=== SPORTS ===", "-----", "|||| PPV ||||",
+                 "#1 Hits", "C-SPAN", "***Premium*** Movies", "TSN 1"]
+        self._xtream([{"stream_id": i + 1, "name": n, "category_id": "1"} for i, n in enumerate(names)])
+        chans = self._channels()
+        for name in names[:4]:
+            self.assertFalse(chans[name].enabled, name)
+        for name in names[4:]:
+            self.assertTrue(chans[name].enabled, name)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2007,6 +2007,17 @@ def _sync_groups(provider_id: int, categories: list[dict], db: Session, channel_
     db.flush()
 
 
+# A provider's separator rows: "##### EVENTS #####", "=== SPORTS ===", "-----".
+_SEPARATOR_RE = re.compile(r"^\s*(?:[#=*~_|\-]{3,}.*[#=*~_|\-]{3,}|[#=*~_|\-\s]+)\s*$")
+
+
+def _is_separator(name: str) -> bool:
+    """A lineup heading dressed as a channel. A NEW one is created switched
+    off even in an enabled group (#158): it plays nothing, and Jellyfin would
+    list it. "#1 Hits", "C-SPAN" and "***Premium*** Movies" are channels."""
+    return bool(_SEPARATOR_RE.match(name or ""))
+
+
 def _enabled_group_names(db: Session, provider_id: int) -> set:
     """Names of this provider's groups the user has switched on.
 
@@ -2075,7 +2086,7 @@ def _upsert_channels(
                 logo_url=stream.get("stream_icon") or None,
                 group_title=group,
                 epg_channel_id=stream.get("epg_channel_id") or None,
-                enabled=bool(group) and group in enabled_groups,
+                enabled=bool(group) and group in enabled_groups and not _is_separator(name),
             ))
             new_count += 1
 
@@ -2219,7 +2230,7 @@ def _upsert_channels_from_m3u(
                 group_title=group,
                 epg_channel_id=ch.get("epg_channel_id"),
                 channel_number=_m3u_channel_number(ch.get("tvg_chno")),
-                enabled=bool(group) and group in enabled_groups,
+                enabled=bool(group) and group in enabled_groups and not _is_separator(name),
             ))
             new_count += 1
 
