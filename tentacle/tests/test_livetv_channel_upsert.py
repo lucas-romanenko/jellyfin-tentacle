@@ -93,11 +93,15 @@ class M3uOddLines(_Base):
         self._sync("#EXTM3U\n"
                    '#EXTINF:-1 tvg-chno="5.1",Five\nhttp://x/5.ts\n'
                    '#EXTINF:-1 tvg-chno="Sports",Six\nhttp://x/6.ts\n'
-                   '#EXTINF:-1 tvg-chno="7",Seven\nhttp://x/7.ts\n')
+                   '#EXTINF:-1 tvg-chno="7",Seven\nhttp://x/7.ts\n'
+                   '#EXTINF:-1 tvg-chno="²",Squared\nhttp://x/8.ts\n'      # "²".isdigit(), int() raises
+                   '#EXTINF:-1 tvg-chno="５",Wide\nhttp://x/9.ts\n')
         chans = self._channels()
         self.assertIsNone(chans["Five"].channel_number)
         self.assertIsNone(chans["Six"].channel_number)
         self.assertEqual(7, chans["Seven"].channel_number)
+        self.assertIsNone(chans["Squared"].channel_number)
+        self.assertIsNone(chans["Wide"].channel_number)
 
     def test_an_existing_channel_is_not_renumbered_from_a_bad_value(self):
         self._sync('#EXTM3U\n#EXTINF:-1,Five\nhttp://x/5.ts\n')

@@ -2107,10 +2107,11 @@ def _m3u_channel_number(value) -> Optional[int]:
 
     Providers write sub-channels ("5.1") and text there, and int() on those
     raised, which failed the whole M3U sync (#175). Anything else is left
-    unnumbered.
+    unnumbered. ASCII digits only: "²".isdigit() is true and int("²") raises,
+    and a full-width "５" is no channel number either.
     """
     text = str(value or "").strip()
-    return int(text) if text.isdigit() else None
+    return int(text) if text.isascii() and text.isdigit() else None
 
 
 def _dedupe_m3u(parsed_channels: list[dict]) -> list[dict]:
