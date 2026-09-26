@@ -394,14 +394,24 @@ def reschedule_main_sync(cron: str = None) -> bool:
     """(Re)schedule the daily sync from a 5-field cron string. Reads the
     sync_schedule setting when cron is None. Safe to call at runtime — the job is
     replaced in place, so schedule changes take effect without a restart."""
-    if cron is None:
+    from models.database import NON_EMPTY_DEFAULTS, get_setting
+    default = NON_EMPTY_DEFAULTS["sync_schedule"]
+    from_settings = cron is None
+    if from_settings:
         db = SessionLocal()
         try:
-            s = db.query(Setting).filter(Setting.key == "sync_schedule").first()
-            cron = s.value if s and s.value else "0 3 * * *"
+            # Through get_setting: a stored blank or whitespace value reads as
+            # the default. Read raw, "  " was truthy, failed the 5-field check
+            # below, and no nightly job was scheduled at all (#157).
+            cron = get_setting(db, "sync_schedule", default)
         finally:
             db.close()
     parts = (cron or "").strip().split()
+    if len(parts) != 5 and from_settings and cron != default:
+        # A stored value that is no schedule must not leave the install with
+        # no nightly job: run at the default time and say so.
+        logger.warning(f"Invalid sync schedule '{cron}' in settings — using the default '{default}'")
+        cron, parts = default, default.split()
     if len(parts) != 5:
         logger.warning(f"Invalid sync schedule '{cron}' — expected 5 cron fields")
         return False
@@ -421,10 +431,10 @@ def reschedule_main_sync(cron: str = None) -> bool:
 def get_schedule_info() -> dict:
     """Current sync schedule as a friendly time + the effective timezone + next run."""
     from datetime import datetime
+    from models.database import NON_EMPTY_DEFAULTS, get_setting
     db = SessionLocal()
     try:
-        s = db.query(Setting).filter(Setting.key == "sync_schedule").first()
-        cron = s.value if s and s.value else "0 3 * * *"
+        cron = get_setting(db, "sync_schedule", NON_EMPTY_DEFAULTS["sync_schedule"])
     finally:
         db.close()
     parts = cron.strip().split()
