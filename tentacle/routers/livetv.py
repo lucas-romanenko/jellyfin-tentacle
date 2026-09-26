@@ -142,7 +142,7 @@ class _Lease:
         self.kind = kind
         self.priority = _LEASE_PRIORITY.get(kind, _LEASE_PRIORITY["live"])
         self.owner = owner
-        self.stream_key = stream_key   # the channel's GuideNumber, for upgrade_recordings
+        self.stream_key = stream_key   # the channel's GuideNumber, for sync_recordings
         self.started = asyncio.get_running_loop().time()
         self.preempted = False
         # Set by the owner once its pump exists: called (may be async) when
@@ -168,7 +168,15 @@ class _StreamSlots:
         self.preempted_since_start = 0
         self.last_refused: "dict | None" = None
         self._next_id = 1
+        # Replaced (not cleared) each time it fires, so a waiter that took a
+        # reference before checking can never miss a wake-up.
         self._freed: "asyncio.Event | None" = None
+        # Pulls waiting for a slot: id -> (priority, arrival). When a slot
+        # frees, the most important, earliest waiter gets it -- a recording
+        # that is waiting is never beaten to a freed slot by a viewer that
+        # happened to start waiting first.
+        self._waiting: "dict[int, tuple]" = {}
+        self._next_waiter = 1
 
     @property
     def active(self) -> int:
@@ -207,7 +215,14 @@ class _StreamSlots:
                 lease.kind, lease.priority = "live", _LEASE_PRIORITY["live"]
                 n += 1
                 logger.info(f"[LiveTV] '{lease.owner}' is no longer being recorded — back to viewer priority")
+        if n:
+            self._wake()        # a demoted pull may now be a waiting recording's to take
         return n
+
+    def _wake(self):
+        if self._freed is not None:
+            self._freed.set()
+            self._freed = asyncio.Event()
 
     def _victim_for(self, kind: str) -> "_Lease | None":
         """The least important running pull this kind may take a slot from:
@@ -218,9 +233,14 @@ class _StreamSlots:
             return None
         return max(candidates, key=lambda l: (l.priority, l.started))
 
-    async def _preempt(self, victim: _Lease, kind: str, owner: "str | None"):
+    async def _take_from(self, victim: _Lease, kind: str, owner: "str | None",
+                         stream_key: "str | None") -> _Lease:
+        """Move the victim's slot to the newcomer in one step -- the slot is
+        never free in between, so nobody woken meanwhile can take it and put
+        the count over the limit -- then stop the victim."""
         victim.preempted = True
-        self.leases.pop(victim.id, None)   # the slot is free from this moment
+        self.leases.pop(victim.id, None)
+        lease = self._grant(kind, owner, stream_key)
         self.preempted_since_start += 1
         logger.warning(f"[LiveTV] At capacity: {kind} '{owner}' takes the slot of {victim.kind} "
                        f"'{victim.owner}', which is stopped")
@@ -229,32 +249,61 @@ class _StreamSlots:
                 result = victim.on_preempt()
                 if asyncio.iscoroutine(result):
                     await result
+            except asyncio.CancelledError:
+                # The newcomer went away while the victim was being stopped:
+                # nobody owns this lease, give the slot back.
+                self.leases.pop(lease.id, None)
+                self._wake()
+                raise
             except Exception as e:
                 logger.error(f"[LiveTV] Stopping pre-empted {victim.kind} '{victim.owner}' failed: {e}")
+        return lease
+
+    def _first_in_line(self, waiter_id: int) -> bool:
+        best = min(self._waiting.items(), key=lambda kv: kv[1])[0] if self._waiting else None
+        return best == waiter_id
 
     async def acquire_lease(self, limit: int, wait: float, kind: str = "live",
                             owner: "str | None" = None, stream_key: "str | None" = None) -> "_Lease | None":
-        if limit <= 0 or len(self.leases) < limit:
+        prio = _LEASE_PRIORITY.get(kind, _LEASE_PRIORITY["live"])
+        if limit <= 0:
+            return self._grant(kind, owner, stream_key)
+        # A free slot goes to the newcomer only if nobody as important is
+        # already waiting for one.
+        if len(self.leases) < limit and not any(p <= prio for p, _ in self._waiting.values()):
             return self._grant(kind, owner, stream_key)
         victim = self._victim_for(kind)
         if victim is not None:
-            await self._preempt(victim, kind, owner)
-            return self._grant(kind, owner, stream_key)
+            return await self._take_from(victim, kind, owner, stream_key)
         if self._freed is None:
             self._freed = asyncio.Event()
         loop = asyncio.get_running_loop()
         deadline = loop.time() + wait
-        while True:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                return None
-            self._freed.clear()
-            try:
-                await asyncio.wait_for(self._freed.wait(), timeout=remaining)
-            except asyncio.TimeoutError:
-                return None
-            if len(self.leases) < limit:
-                return self._grant(kind, owner, stream_key)
+        me = self._next_waiter
+        self._next_waiter += 1
+        self._waiting[me] = (prio, me)
+        try:
+            while True:
+                freed = self._freed          # before checking: a set after this is not missed
+                if len(self.leases) < limit and self._first_in_line(me):
+                    return self._grant(kind, owner, stream_key)
+                # Something may have become takeable while we waited (a
+                # recording demoted back to a viewer when its timer ended).
+                victim = self._victim_for(kind)
+                if victim is not None and self._first_in_line(me):
+                    return await self._take_from(victim, kind, owner, stream_key)
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    return None
+                try:
+                    await asyncio.wait_for(freed.wait(), timeout=remaining)
+                except asyncio.TimeoutError:
+                    return None
+        finally:
+            self._waiting.pop(me, None)
+            # The queue changed: whoever is first in line now re-checks.
+            if self._waiting:
+                self._wake()
 
     async def acquire(self, limit: int, wait: float) -> bool:
         """The original shape: an anonymous viewer-priority slot."""
@@ -263,8 +312,7 @@ class _StreamSlots:
     def release_lease(self, lease: "_Lease | None"):
         if lease is not None:
             self.leases.pop(lease.id, None)
-        if self._freed is not None:
-            self._freed.set()
+        self._wake()
 
     def release(self):
         """The original shape: frees the most recent anonymous slot."""
@@ -376,15 +424,29 @@ _RECORDING_LOOKUP_TTL = 5.0
 # up a stream open (Jellyfin's own tuner timeout is what it would hit); past
 # this the lookup finishes in the background and the last answer is used.
 _RECORDING_LOOKUP_WAIT = 3.0
-_recording_cache = {"at": -1e9, "sids": set(), "pending": None}
+_recording_cache = {"at": -1e9, "sids": set(), "pending": None, "failures": 0, "retry_at": -1e9}
 _reserved_channels: "dict[int, float]" = {}   # channel id -> loop time the reservation ends
+
+
+def _jellyfin_timers(url: str, key: str):
+    """GET /LiveTv/Timers with a short timeout of its own (a tuner open may
+    be waiting on the answer) and without JellyfinService's per-call ERROR
+    log for a bad key -- this runs every few seconds while live TV plays;
+    failures are reported once per streak by _recording_lookup_done."""
+    import requests
+    with requests.get(f"{url.rstrip('/')}/LiveTv/Timers", headers={"X-Emby-Token": key},
+                      timeout=(3.0, 5.0)) as r:
+        if r.status_code != 200:
+            raise RuntimeError(f"Jellyfin answered HTTP {r.status_code} for /LiveTv/Timers"
+                               + (" (API key invalid?)" if r.status_code == 401 else ""))
+        return r.json()
 
 
 def _recording_stream_ids_from_jellyfin(url: str, key: str) -> "set[str] | None":
     """GuideNumbers of the channels Jellyfin is recording, or None if it
-    could not be asked. Blocking; run it off the event loop."""
-    from services.jellyfin import JellyfinService
-    data = JellyfinService(url, key, "")._get("/LiveTv/Timers")
+    gave no usable answer. Blocking; run it off the event loop. Raises when
+    Jellyfin cannot be asked at all."""
+    data = _jellyfin_timers(url, key)
     if not isinstance(data, dict):
         return None
     out = set()
@@ -411,21 +473,31 @@ _RECORDING_IMMINENT_SECONDS = 120.0
 
 def _timer_is_imminent(timer: dict, now: "datetime") -> bool:
     """A New timer whose recording (start minus pre-padding) begins within
-    _RECORDING_IMMINENT_SECONDS, or should already have begun."""
-    raw = (timer.get("StartDate") or "")[:19]
-    try:
-        start = datetime.strptime(raw, "%Y-%m-%dT%H:%M:%S")
-    except ValueError:
+    _RECORDING_IMMINENT_SECONDS, or should already have begun -- and has
+    not already ended (a timer Jellyfin never started stays "New" for ever;
+    it must not keep its channel ranked as a recording)."""
+    def _parse(value):
+        try:
+            return datetime.strptime((value or "")[:19], "%Y-%m-%dT%H:%M:%S")
+        except ValueError:
+            return None
+
+    def _seconds(value):
+        try:
+            return float(value or 0)
+        except (TypeError, ValueError):
+            return 0.0
+    start = _parse(timer.get("StartDate"))
+    if start is None:
         return False
-    try:
-        pre = float(timer.get("PrePaddingSeconds") or 0)
-    except (TypeError, ValueError):
-        pre = 0.0
-    rec_start = start - timedelta(seconds=pre)
+    rec_start = start - timedelta(seconds=_seconds(timer.get("PrePaddingSeconds")))
+    end = _parse(timer.get("EndDate"))
+    if end is not None and end + timedelta(seconds=_seconds(timer.get("PostPaddingSeconds"))) <= now:
+        return False
     return (rec_start - now).total_seconds() <= _RECORDING_IMMINENT_SECONDS
 
 
-async def _recording_channel_ids(db, force: bool = False) -> "set[int]":
+async def _recording_channel_ids(db, force: bool = False, background: bool = False) -> "set[int]":
     """LiveChannel ids being recorded now: reservations plus Jellyfin's
     in-progress timers (cached for _RECORDING_LOOKUP_TTL; `force` asks
     again regardless -- used when a slot is about to be taken from someone,
@@ -436,7 +508,14 @@ async def _recording_channel_ids(db, force: bool = False) -> "set[int]":
         del _reserved_channels[cid]
     reserved = set(_reserved_channels)
     cache = _recording_cache
-    if (force or now - cache["at"] >= _RECORDING_LOOKUP_TTL) and cache["pending"] is None:
+    # After a failed lookup, routine asks (the TTL path and the background
+    # refresher) wait 5 s doubling to a minute. The at-capacity ask (`force`
+    # from a tuner open) never does: a recording's own tuner open comes from
+    # Jellyfin, so Jellyfin is up at that moment even if it was not a minute
+    # ago -- and a stale "nothing is recording" there would refuse it.
+    backed_off = now < cache.get("retry_at", -1e9) and (background or not force)
+    if (force or now - cache["at"] >= _RECORDING_LOOKUP_TTL) and cache["pending"] is None \
+            and not backed_off:
         url = (get_setting(db, "jellyfin_url", "") or "").strip()
         key = (get_setting(db, "jellyfin_api_key", "") or "").strip()
         if url and key:
@@ -467,10 +546,10 @@ _recording_refresher: "asyncio.Task | None" = None
 
 
 async def _refresh_recordings_once() -> None:
-    """One fresh lookup, applied to the running leases (upgrade_recordings)."""
+    """One fresh lookup, applied to the running leases (sync_recordings)."""
     db = SessionLocal()
     try:
-        await _recording_channel_ids(db, force=True)
+        await _recording_channel_ids(db, force=True, background=True)
     finally:
         db.close()
 
@@ -511,12 +590,25 @@ def _recording_lookup_done(task):
     if cache["pending"] is not task:
         return      # already applied (or superseded by a newer lookup)
     cache["pending"] = None
+    failure = None
     try:
         sids = task.result()
+        if sids is None:
+            failure = "no usable answer"
     except Exception as e:
-        logger.debug(f"[LiveTV] Could not ask Jellyfin which channels are recording: {e}")
-        sids = None
-    cache["at"] = asyncio.get_running_loop().time()
+        sids, failure = None, str(e) or type(e).__name__
+    now = asyncio.get_running_loop().time()
+    cache["at"] = now
+    if failure is not None:
+        cache["failures"] = cache.get("failures", 0) + 1
+        cache["retry_at"] = now + min(60.0, _RECORDING_LOOKUP_TTL * 2 ** (cache["failures"] - 1))
+        if cache["failures"] == 1:
+            logger.warning(f"[LiveTV] Could not ask Jellyfin which channels are recording ({failure}); "
+                           f"keeping the last answer and retrying at most once a minute")
+    else:
+        if cache.get("failures"):
+            logger.info("[LiveTV] Jellyfin is answering again about which channels are recording")
+        cache["failures"], cache["retry_at"] = 0, -1e9
     if sids is not None:
         cache["sids"] = set(sids)
         reserved_keys = {r["stream_key"] for r in _reserved_channels.values() if r.get("stream_key")}
@@ -1052,7 +1144,7 @@ def _stream_snapshot(db) -> list:
     import time
     now = time.monotonic()
     out = []
-    for channel_id, st in sorted(_stream_status.items()):
+    for channel_id, st in sorted(list(_stream_status.items())):
         ch = db.query(LiveChannel).filter(LiveChannel.id == channel_id).first()
         shared = _shared_streams.get(channel_id)
         lease = _stream_slots.lease_for(f"channel:{channel_id}")
@@ -1079,7 +1171,7 @@ def _stream_snapshot(db) -> list:
                 "client": pb.client,
                 "stream_id": None,
                 "kind": "vod",
-                "state": "streaming" if pb.active_bodies else ("stopped" if pb.stopped.is_set() else "idle"),
+                "state": "stopped" if pb.stopped.is_set() else ("streaming" if pb.active_bodies else "idle"),
                 "for_seconds": round(max(0.0, now - pb.last_used), 1),
                 "open_seconds": round(max(0.0, now - pb.started), 1),
                 "last_error": None,
@@ -1105,7 +1197,7 @@ def live_streams(db: Session = Depends(get_db)):
         "active": _stream_slots.active,
         "preempted_since_start": _stream_slots.preempted_since_start,
         "reconnect_budget_seconds": _reconnect_budget(db),
-        "reserved_channel_ids": sorted(_reserved_channels),
+        "reserved_channel_ids": sorted(list(_reserved_channels)),
     }
 
 
@@ -2572,7 +2664,7 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
     # this pull is one comes from Jellyfin's own timers, or a reservation.
     # When a slot would have to be taken from someone, ask afresh so the
     # victim is chosen on current information (a recording that opened a
-    # moment ago may still be classified as a viewer: upgrade_recordings).
+    # moment ago may still be classified as a viewer: sync_recordings).
     at_capacity = limit > 0 and _stream_slots.active >= limit
     recording_ids = await _recording_channel_ids(db, force=at_capacity)
     kind = "recording" if channel_id in recording_ids else "live"
