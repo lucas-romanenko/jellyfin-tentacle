@@ -12,7 +12,9 @@ process restart (all state but the pending file on disk is gone). Between
 steps it runs Refresh-Tags / nightly passes (sometimes two at once), makes
 hand edits, and now and then corrupts the pending file.
 
-Invariants, checked after every step:
+Invariants, checked after every step, on the rating Jellyfin's parental
+filter actually compares (an empty rating inherits its season's, then its
+series'):
   I1  once a fault-free settle phase has run and nothing is pending, every
       child with a rating of its own has it (hand edits count as own);
   I2  at any moment, a child whose visible rating differs from its own is in
@@ -22,7 +24,12 @@ Invariants, checked after every step:
       "rating_restore_failed", and (c) entries a corrupted pending file lost,
       which must have been reported and kept as a .corrupt copy;
   I3  a hand edit is never overwritten by Tentacle;
-  I4  no push is blocked for good: after the faults stop, a push succeeds.
+  I4  no push is blocked for good: after the faults stop, a push succeeds;
+  I5  at settle, an UNRATED episode effectively carries its season's own
+      rating (the series' where the season has none). Only documented
+      exemption: a season with OfficialRating locked — Jellyfin's own cascade,
+      the same on 755ea67 — which still writes the series' rating onto its
+      unrated episodes.
 
 Deterministic per seed. Concurrent passes are modelled the way the code's
 own lock serialises them (the threaded interleaving itself is covered by
@@ -51,7 +58,11 @@ CUSTOMS = ["C-KIDS", "C-TEEN", "C-ADULT"]
 # restore's cascade, to a restart between that cascade and the next save, or
 # on a field the snapshot had as "inherits"; a partial hand edit dropping the
 # other field's restore; a season's copy recorded as its own. Always run.
-REGRESSION_SEEDS = [1, 2, 9, 13, 17, 18, 119, 176, 331, 387]
+REGRESSION_SEEDS = [1, 2, 9, 13, 17, 18, 119, 176, 331, 387,
+                    # a56696b: an unrated episode's copy recorded as its own
+                    # rating by the season rule (seed 76 = the final review's
+                    # live repro), found by the effective-rating checks / I5.
+                    76, 3, 43, 54, 85, 280, 516, 780, 2391, 2714]
 
 
 class _Restart(BaseException):
@@ -253,23 +264,52 @@ class Scenario:
         e = self.pending().get("s1")
         return set((e or {}).get("children", {}) if isinstance(e, dict) else ())
 
+    def _chain(self, cid, values):
+        """(child, its season if an episode, the series) through `values`."""
+        it = self.model.items[cid]
+        out = [values(cid)]
+        if it["Type"] == "Episode":
+            out.append(values(it["ParentId"]))
+        out.append(self.model.visible("s1"))
+        return out
+
+    def effective(self, cid, i, intended):
+        """The rating Jellyfin's parental filter compares (its *ForComparison:
+        an empty value inherits the display parent's). `intended` walks the own
+        ratings, else what Jellyfin shows now."""
+        values = (lambda k: self.model.own[k]) if intended else self.model.visible
+        return next((v[i] for v in self._chain(cid, values) if v[i] is not None), None)
+
+    def locked_season_exempt(self, cid):
+        """Jellyfin's own behaviour, the same on 755ea67: a season with
+        OfficialRating in LockedFields keeps its rating on a series update, but
+        the cascade still writes the series' rating onto its unrated episodes,
+        which then no longer inherit the season's (pr-notes-161.md)."""
+        it = self.model.items[cid]
+        return (it["Type"] == "Episode" and self.model.own[cid][0] is None
+                and "OfficialRating" in self.model.items[it["ParentId"]]["LockedFields"])
+
     def fields(self, cid):
-        """The fields (0 = OfficialRating, 1 = CustomRating) where the child
-        shows something other than its own value, less those a documented,
-        reported loss has exempted."""
-        own, vis = self.model.own[cid], self.model.visible(cid)
-        return {i for i, (o, v) in enumerate(zip(own, vis)) if o is not None and o != v} \
-            - self.exempt_fields.get(cid, set())
+        """The fields (0 = OfficialRating, 1 = CustomRating) where what the
+        child effectively carries differs from what it should — for rated and
+        unrated children alike (I5) — less documented, reported losses."""
+        out = {i for i in (0, 1) if self.effective(cid, i, False) != self.effective(cid, i, True)}
+        if self.locked_season_exempt(cid):
+            out.discard(0)
+        return out - self.exempt_fields.get(cid, set())
 
     def exempt_child(self, cid, why):
-        own, vis = self.model.own[cid], self.model.visible(cid)
-        lost = {i for i, (o, v) in enumerate(zip(own, vis)) if o is not None and o != v}
+        lost = {i for i in (0, 1) if self.effective(cid, i, False) != self.effective(cid, i, True)}
         if lost:
             self.exempt_fields.setdefault(cid, set()).update(lost)
             self.exempt.setdefault(cid, why)
 
     def differs(self, cid):
         return bool(self.fields(cid))
+
+    def season_pending(self, cid, pend):
+        it = self.model.items[cid]
+        return it["Type"] == "Episode" and it["ParentId"] in pend
 
     def fail(self, msg):
         raise AssertionError(f"seed {self.seed}: {msg}\n  steps: {self.log[-12:]}\n"
@@ -301,6 +341,9 @@ class Scenario:
             for cid in re.findall(r"(\w+) \([^)]*\)", message.split("by hand in Jellyfin:", 1)[-1]):
                 if cid in self.model.own:
                     self.exempt_child(cid, "retry cap gave up")
+                    for k in self.model.own:          # its unrated episodes, if a season
+                        if self.model.items[k].get("ParentId") == cid:
+                            self.exempt_child(k, "retry cap gave up")
         if event == "rating_cascade_unprotected":
             # Logged just before the unprotected update: whatever that update
             # flattens is the reported loss.
@@ -379,15 +422,18 @@ class Scenario:
         path.write_text(self.rng.choice(['{"s1": {"children": {"e1', '[1, 2]', 'null', '{"s1": 5}']),
                         encoding="utf-8")
         self.corrupted = True
-        for cid in lost:
-            self.exempt_child(cid, "corrupt pending file")
+        for cid in self.model.own:
+            if cid in lost or self.season_pending(cid, lost):
+                self.exempt_child(cid, "corrupt pending file")
         self.log.append("corrupt")
 
     # ── invariants ─────────────────────────────────────────────────────────
     def check_step(self):
         pend = self.pending_children()
         for cid in self.model.own:
-            if self.differs(cid) and cid not in pend:
+            # While a season is pending, its unrated episodes carry its
+            # temporary copy (the documented window until the retry).
+            if self.differs(cid) and cid not in pend and not self.season_pending(cid, pend):
                 self.fail(f"I2: {cid} shows {self.model.visible(cid)} but its own is "
                           f"{self.model.own[cid]} and nothing is pending for it")
         for cid, value in self.hand.items():
@@ -431,7 +477,10 @@ class Scenario:
             self.fail(f"I1: still pending after a fault-free pass: {sorted(self.pending_children())}")
         for cid in self.model.own:
             if self.differs(cid):
-                self.fail(f"I1: {cid} settled at {self.model.visible(cid)}, own {self.model.own[cid]}")
+                inv = "I1" if any(o is not None for o in self.model.own[cid]) else "I5"
+                self.fail(f"{inv}: {cid} settled at {self.model.visible(cid)}, own {self.model.own[cid]} "
+                          f"(effective {[self.effective(cid, i, False) for i in (0, 1)]}, should be "
+                          f"{[self.effective(cid, i, True) for i in (0, 1)]})")
         self.check_step()
 
     def run(self, steps):
