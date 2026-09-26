@@ -178,7 +178,13 @@ set with `POST /api/smartlists/card-previews` `{"mode": "all" | "local_only" | "
 channel or VOD playback: `channel_id`, `channel`, `client`, `stream_id` (the GuideNumber), `kind`
 (`recording` | `live` | `vod`), `state` (`streaming` | `reconnecting` | `idle` | `stopped`),
 `for_seconds` (in that state), `open_seconds`, `last_error`, `subscribers`. Not listed = no
-upstream any more. `POST /api/live/reserve` `{channel_id|stream_id, seconds}` holds recording
+upstream any more. Alongside `streams`, `placeholders` lists every channel the provider answered
+with a placeholder segment instead of the channel since Tentacle started (`channel_id`, `count`,
+`segment`, `at`). A placeholder (`black.ts`, tuliprox's `channel_unavailable.ts` family) is never
+fetched: while the channel is opening it is refused with a 503, so Jellyfin fails the timer and
+retries it a minute later instead of recording minutes of black, and a running stream waits it out
+like a 509. Each one is logged, and gets an Activity line at most once an hour per channel.
+`POST /api/live/reserve` `{channel_id|stream_id, seconds}` holds recording
 priority for a channel ahead of a timer (for schedulers that know the start time before Jellyfin
 does); `DELETE /api/live/reserve/{channel_id}` drops it. Recording identity otherwise comes from
 Jellyfin's timers (InProgress, or due within 120 s), asked for at most every 5 s while a live

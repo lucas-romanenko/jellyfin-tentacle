@@ -128,6 +128,90 @@ _BACKOFF_CAP = 5.0
 _REFUSAL_STATUS = {429, 509}
 _REFUSAL_BACKOFF_CAP = 15.0
 
+# Stand-ins a provider (or a re-streamer in front of it, e.g. tuliprox) serves
+# when it has nothing for a channel: 200 OK and a few seconds of valid MPEG-TS,
+# usually black. Proxied as the channel, a scheduled recording "succeeds" with
+# ten minutes of black that Jellyfin never retries, or dies on its own buffer
+# with an error that says nothing about the cause (#140). Recognised by file
+# name, never fetched, and refused with a 503 while the channel is opening, so
+# Jellyfin fails the timer honestly and tries again a minute later.
+_PLACEHOLDER_STEMS = {
+    "black",
+    "channel_unavailable",
+    "user_connections_exhausted",
+    "provider_connections_exhausted",
+    "user_account_expired",
+}
+# Placeholder refusals since start, per channel: {"count", "segment", "at"}.
+_placeholders: "dict[int, dict]" = {}
+# When each channel last got an Activity line for one (at most once an hour).
+_placeholder_activity_at: "dict[int, float]" = {}
+_PLACEHOLDER_ACTIVITY_EVERY = 3600.0
+
+
+def _placeholder_name(url: str) -> "str | None":
+    """The file name, when `url` is a known placeholder segment."""
+    from urllib.parse import urlparse
+    try:
+        base = urlparse(url).path.rsplit("/", 1)[-1].lower()
+    except ValueError:
+        return None
+    stem, dot, ext = base.rpartition(".")
+    return base if dot and ext == "ts" and stem in _PLACEHOLDER_STEMS else None
+
+
+class _ProviderPlaceholder(Exception):
+    """The provider answered with a placeholder instead of the channel."""
+
+    def __init__(self, segment: str):
+        super().__init__(f"the provider served a placeholder ({segment}) instead of the channel")
+        self.segment = segment
+
+
+def _record_activity_for_placeholder(channel_id: int, segment: str) -> None:
+    db = SessionLocal()
+    try:
+        ch = db.query(LiveChannel).filter(LiveChannel.id == channel_id).first()
+        name = ch.guide_name if ch else f"channel {channel_id}"
+        log_activity(db, "livetv_placeholder",
+                     f"{name}: the provider served a placeholder ({segment}) instead of the "
+                     f"channel, so it is unavailable right now. Recordings are refused and "
+                     f"retried rather than saved as black.")
+    except Exception as e:
+        logger.debug(f"[LiveTV] Could not log the placeholder for channel {channel_id}: {e}")
+    finally:
+        db.close()
+
+
+async def _note_placeholder(channel_id: int, segment: str) -> None:
+    """Count, log and (at most hourly) put a placeholder in Activity."""
+    loop = asyncio.get_running_loop()
+    entry = _placeholders.setdefault(channel_id, {"count": 0})
+    entry.update(count=entry["count"] + 1, segment=segment,
+                 at=datetime.utcnow().isoformat() + "Z")
+    logger.warning(f"[LiveTV] Channel {channel_id}: the provider served a placeholder ({segment}) "
+                   f"— channel unavailable")
+    last = _placeholder_activity_at.get(channel_id)
+    if last is None or loop.time() - last >= _PLACEHOLDER_ACTIVITY_EVERY:
+        _placeholder_activity_at[channel_id] = loop.time()
+        await asyncio.to_thread(_record_activity_for_placeholder, channel_id, segment)
+
+
+class _PlaceholderRefusal(HTTPException):
+    """The 503 a channel open answers when the provider served a placeholder."""
+
+
+async def _refuse_placeholder(channel_id: int, segment: str):
+    await _note_placeholder(channel_id, segment)
+    raise _PlaceholderRefusal(503, f"Channel unavailable: the provider served a placeholder ({segment})")
+
+
+def _media_segments(playlist_text: str, base_url: str) -> list:
+    """Segment URLs of an HLS media playlist, resolved against its URL."""
+    return [urljoin(base_url, line.strip()) for line in playlist_text.splitlines()
+            if line.strip() and not line.strip().startswith("#")]
+
+
 # What an upstream pull is for. Lower number = more important. A recording
 # outranks a viewer (tvheadend: 300 vs 100): a viewer who is cut off changes
 # channel; a recording that is cut off is gone for good.
@@ -1123,6 +1207,9 @@ def live_streams(db: Session = Depends(get_db)):
         "preempted_since_start": _stream_slots.preempted_since_start,
         "reconnect_budget_seconds": _reconnect_budget(db),
         "reserved_channel_ids": sorted(_reserved_channels),
+        # Channels the provider answered with a placeholder (black.ts) instead
+        # of the channel since Tentacle started, and how often (#140).
+        "placeholders": [{"channel_id": cid, **info} for cid, info in sorted(_placeholders.items())],
     }
 
 
@@ -2829,6 +2916,9 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
 
         tokenized_url = str(resp.url)
         logger.info(f"[LiveTV] Resolved tokenized URL for channel {channel_id}: {tokenized_url}")
+        placeholder = _placeholder_name(tokenized_url)
+        if placeholder:
+            await _refuse_placeholder(channel_id, placeholder)
 
         content_type = resp.headers.get("content-type", "")
         is_hls = "mpegurl" in content_type.lower()
@@ -2836,6 +2926,47 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
         if is_hls:
             # HLS playlist — read the playlist text, then we're done with this client
             playlist_text = (await resp.aread()).decode("utf-8", errors="replace")
+            playlist_base = tokenized_url
+            # Look at the media playlist before answering: a provider with
+            # nothing for the channel serves one that holds only a placeholder
+            # segment, and once the response has started it can only end, not
+            # fail. The first variant is read here rather than by the worker
+            # (the same request, earlier); if it does not come back quickly
+            # the worker reads it on its usual retry terms.
+            for _hop in range(_MAX_VARIANT_HOPS):
+                variant = _select_hls_variant(playlist_text, playlist_base)
+                if not variant or not guard(variant):
+                    break
+                placeholder = _placeholder_name(variant)
+                if placeholder:
+                    await _refuse_placeholder(channel_id, placeholder)
+                v_resp = None
+                try:
+                    v_resp = await asyncio.wait_for(
+                        _send_checked(client, variant, {"User-Agent": user_agent}, guard), 10.0)
+                    v_resp.raise_for_status()
+                    placeholder = _placeholder_name(str(v_resp.url))
+                    if placeholder:
+                        await _refuse_placeholder(channel_id, placeholder)
+                    variant_text = (await asyncio.wait_for(v_resp.aread(), 10.0)).decode(
+                        "utf-8", errors="replace")
+                except _PlaceholderRefusal:
+                    raise
+                except Exception as e:
+                    # Anything else (a refusal, a blocked redirect) is the
+                    # stream's to handle, on the terms it always had.
+                    logger.info(f"[LiveTV] Variant for channel {channel_id} not read at open ({e}); "
+                                f"the stream reads it")
+                    break
+                finally:
+                    if v_resp is not None:
+                        await v_resp.aclose()
+                playlist_text, playlist_base = variant_text, variant
+            if not _select_hls_variant(playlist_text, playlist_base):
+                segments = _media_segments(playlist_text, playlist_base)
+                placeholders = [_placeholder_name(u) for u in segments]
+                if segments and all(placeholders):
+                    await _refuse_placeholder(channel_id, placeholders[0])
     except BaseException:
         if resp is not None:
             await resp.aclose()
@@ -2930,8 +3061,19 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         try:
                             new_resp = await _send_checked(raw_client, stream_url, ua, guard)
                             new_resp.raise_for_status()
+                            placeholder = _placeholder_name(str(new_resp.url))
+                            if placeholder:
+                                raise _ProviderPlaceholder(placeholder)
                             if "mpegurl" in new_resp.headers.get("content-type", "").lower():
                                 raise httpx.HTTPError("the channel now answers with a playlist")
+                        except _ProviderPlaceholder as e:
+                            # Not the channel: waited out like a refusal, and
+                            # its bytes never reach the recording (#140).
+                            await new_resp.aclose()
+                            reason = str(e)
+                            backoff_cap = _REFUSAL_BACKOFF_CAP
+                            await _note_placeholder(channel_id, e.segment)
+                            continue
                         except HTTPException as e:
                             logger.error(f"[LiveTV] Raw stream for channel {channel_id} cannot be "
                                          f"re-opened, stopping: {e.detail}")
@@ -2979,7 +3121,6 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
         response.close_upstream = close_upstream
         return response
 
-    playlist_base = tokenized_url
     logger.info(f"[LiveTV] HLS stream for channel {channel_id} — proxying chunks as MPEG-TS")
 
     async def hls_to_mpegts():
@@ -3042,14 +3183,26 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
         # When the playlist now in hand was read; reloads are timed from here.
         playlist_loaded_at = asyncio.get_running_loop().time()
 
+        # A playlist that holds nothing but a placeholder is the provider
+        # saying "not now": waited out like a 509, never fetched or recorded.
+        in_placeholder = False
+
         def _is_retryable(exc) -> bool:
+            if isinstance(exc, _ProviderPlaceholder):
+                return True
             if isinstance(exc, httpx.HTTPStatusError):
                 return exc.response.status_code in RETRYABLE_STATUS
             # Timeouts, resets and refused connections are all worth another go.
             return isinstance(exc, httpx.TransportError)
 
-        def _note_success():
-            nonlocal failing_since, backoff, backoff_cap
+        def _note_success(real_data: bool = False):
+            nonlocal failing_since, backoff, backoff_cap, in_placeholder
+            if in_placeholder and not real_data:
+                # A playlist that answers is not the channel coming back while
+                # it still holds only the placeholder: the spell, and its
+                # failure budget, run on until a real segment arrives.
+                return
+            in_placeholder = False
             failing_since = None
             backoff = BACKOFF_START
             backoff_cap = _BACKOFF_CAP
@@ -3154,6 +3307,24 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                             continue
                         chunk_urls.append(chunk_url)
 
+                # Placeholder segments are never fetched. A playlist of nothing
+                # else means the channel is unavailable right now (#140).
+                placeholder_segments = [u for u in chunk_urls if _placeholder_name(u)]
+                if placeholder_segments:
+                    chunk_urls = [u for u in chunk_urls if not _placeholder_name(u)]
+                    if not any(u not in seen_chunks for u in chunk_urls):
+                        segment = _placeholder_name(placeholder_segments[0])
+                        if not in_placeholder:
+                            in_placeholder = True
+                            await _note_placeholder(channel_id, segment)
+                        if not is_live:
+                            logger.error(f"[LiveTV] Channel {channel_id}: the provider ended the "
+                                         f"stream with a placeholder ({segment}), stopping")
+                            return
+                        if _note_failure(_ProviderPlaceholder(segment), "Channel"):
+                            return
+                        await _backoff_sleep()
+
                 # Fetch new chunks
                 got_new = False
                 chunk_pending = False
@@ -3208,7 +3379,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     got_new = True
                     fatal_chunk_skips = 0
                     yield payload
-                    _note_success()
+                    _note_success(real_data=True)
 
                 if not is_live:
                     # VOD-style playlist — we're done after all chunks
