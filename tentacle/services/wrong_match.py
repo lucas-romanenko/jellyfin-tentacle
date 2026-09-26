@@ -63,12 +63,17 @@ def blocked_keys(db: Session, provider_id: int, media_type: str = "movie") -> se
 
 
 def is_blocked(keys: set, stream_id, url: str = "") -> bool:
-    """Whether a catalogue entry is blocked — by id, or by URL for M3U."""
+    """Whether a catalogue entry is blocked — by id, or by URL for M3U.
+
+    A block is stored under stream_key_for_url() of the .strm, so the entry's
+    URL is compared the same way: an M3U export of an Xtream panel lists VOD
+    as /movie/<user>/<pass>/<id>.<ext>, which is stored as the bare <id>
+    while the M3U client's own stream_id is a hash of the URL."""
     if not keys:
         return False
     if stream_id is not None and str(stream_id) in keys:
         return True
-    return bool(url) and url in keys
+    return bool(url) and (url in keys or stream_key_for_url(url) in keys)
 
 
 class WrongMatchError(Exception):
@@ -99,7 +104,7 @@ def block_and_remove_movie(db: Session, tmdb_id: int, user_name: str = None,
         raise WrongMatchError(409, "Could not read which provider stream this title plays, so it "
                                    "cannot be blocked (its .strm file is missing)")
 
-    title, provider_id, jf_item_id = row.title, row.provider_id, row.jellyfin_item_id
+    title, provider_id, jf_item_id, strm_path = row.title, row.provider_id, row.jellyfin_item_id, row.strm_path
     exists = db.query(BlockedStream).filter(
         BlockedStream.provider_id == provider_id,
         BlockedStream.media_type == "movie",
@@ -110,6 +115,12 @@ def block_and_remove_movie(db: Session, tmdb_id: int, user_name: str = None,
                              tmdb_id=tmdb_id, title=title, reason=reason, blocked_by=user_name))
 
     files = delete_movie_files(row.strm_path)
+    if Path(row.strm_path).exists():
+        # Still on disk (permissions, a read-only mount): Jellyfin would keep
+        # playing the wrong film while the row says it is gone.
+        db.rollback()
+        raise WrongMatchError(500, "Couldn't delete this copy's .strm file, so nothing was changed. "
+                                   "Check that Tentacle can write to the VOD folder.")
     db.delete(row)
     db.query(MatchSuspect).filter(MatchSuspect.tmdb_id == tmdb_id,
                                   MatchSuspect.media_type == "movie").delete()
@@ -123,34 +134,93 @@ def block_and_remove_movie(db: Session, tmdb_id: int, user_name: str = None,
     logger.info(f"[WrongMatch] '{title}' (tmdb:{tmdb_id}): blocked provider {provider_id} "
                 f"stream {shown_key}, removed {files} file(s) — by {user_name}")
 
-    jf_deleted = _delete_from_jellyfin(db, tmdb_id, jf_item_id)
+    jf_deleted = _delete_from_jellyfin(db, tmdb_id, jf_item_id, strm_path)
     _refresh_caches()
     return {"ok": True, "title": title, "blocked": shown_key, "files_removed": files,
             "jellyfin_deleted": jf_deleted,
             "message": f"Removed the wrong copy of {title} and blocked that stream"}
 
 
-def _delete_from_jellyfin(db: Session, tmdb_id: int, jf_item_id: Optional[str]) -> bool:
+def _strm_tail(strm_path: Optional[str]) -> Optional[str]:
+    """'<folder>/<file>.strm' -- what the .strm's path ends with in Jellyfin too
+    (Jellyfin mounts the VOD folder elsewhere, so the prefix differs, and the
+    mount's own name differs too: /media/vod/movies here, e.g. /vod-movies in
+    Jellyfin -- so only two components can be compared)."""
+    parts = Path(strm_path).parts if strm_path else ()
+    return "/".join(parts[-2:]) if len(parts) >= 2 else None
+
+
+def _is_item_for_strm(item: Optional[dict], tail: Optional[str]) -> bool:
+    path = ((item or {}).get("Path") or "").replace("\\", "/")
+    return bool(tail) and path.endswith("/" + tail)
+
+
+def jellyfin_item_for_strm(jf, tmdb_id: int, strm_path: Optional[str],
+                           jf_item_id: Optional[str] = None) -> Optional[dict]:
+    """The Jellyfin item that plays THIS .strm -- never just "the first movie
+    with this TMDB id". The same film is often in Jellyfin twice: a Radarr
+    download next to the IPTV copy (or the owner's own file), and deleting
+    the wrong one through Jellyfin deletes that download from disk. A stored
+    id is only trusted when it is this file (Discover backfills the id from a
+    TMDB lookup, which can be the download's)."""
+    tail = _strm_tail(strm_path)
+    if not tail:
+        return None
+    if jf_item_id:
+        try:
+            item = jf.get_item_by_id(jf_item_id)
+        except Exception:
+            item = None
+        if _is_item_for_strm(item, tail):
+            return item
+    tmdb_str, start = str(tmdb_id), 0
+    while True:
+        data = jf._get("/Items", params={
+            "IncludeItemTypes": "Movie", "Recursive": "true", "Fields": "ProviderIds,Path",
+            "EnableImages": "false", "EnableUserData": "false", "StartIndex": start, "Limit": 10000})
+        if not isinstance(data, dict):
+            return None
+        page = data.get("Items") or []
+        for item in page:
+            if (item.get("ProviderIds") or {}).get("Tmdb") == tmdb_str and _is_item_for_strm(item, tail):
+                return item
+        start += len(page)
+        if not page or start >= (data.get("TotalRecordCount") or 0):
+            return None
+
+
+def _delete_from_jellyfin(db: Session, tmdb_id: int, jf_item_id: Optional[str],
+                          strm_path: Optional[str] = None, cleanup_playlists: bool = True) -> bool:
+    """Let Jellyfin drop this copy's item. Never DELETE /Items: Jellyfin deletes
+    what IT sees -- for a .strm that is the primary of a multi-version item,
+    the item's whole folder, download included; otherwise every sidecar that
+    starts with the title -- and its view of the folder can hold files
+    Tentacle's doesn't (mergerfs/unionfs pools, separate mounts). Tentacle has
+    removed its .strm/.nfo, so a library scan drops the item and leaves every
+    other file alone. The item's playlist entries are removed by its own id
+    (never "the first movie with this TMDB id", which can be a download).
+    Returns False: nothing is deleted through Jellyfin."""
     url, key = get_setting(db, "jellyfin_url", ""), get_setting(db, "jellyfin_api_key", "")
     if not (url and key):
         return False
     try:
         from services.jellyfin import JellyfinService
         jf = JellyfinService(url, key, get_setting(db, "jellyfin_user_id", ""))
-        if not jf_item_id:
-            found = jf.search_by_tmdb_id(tmdb_id, media_type="Movie")
-            jf_item_id = found["Id"] if found else None
-        if not jf_item_id:
-            return False
-        ok = jf.delete_item(jf_item_id)
+        item = jellyfin_item_for_strm(jf, tmdb_id, strm_path, jf_item_id)
+        try:
+            jf.trigger_library_scan(None)
+        except Exception:
+            pass
     except Exception as e:
-        logger.warning(f"[WrongMatch] Could not delete tmdb:{tmdb_id} from Jellyfin: {e}")
+        logger.warning(f"[WrongMatch] Jellyfin lookup/scan for tmdb:{tmdb_id} failed: {e}")
         return False
-    if ok:
+    logger.info(f"[WrongMatch] Removed this copy's files; a library scan drops its Jellyfin item "
+                f"(tmdb:{tmdb_id}, item {item['Id'] if item else 'not found'})")
+    if item is not None and cleanup_playlists:
         from routers.library import _cleanup_playlists_all_users
         threading.Thread(target=_cleanup_playlists_all_users,
-                         args=(tmdb_id, "movie", jf_item_id), daemon=True).start()
-    return ok
+                         args=(tmdb_id, "movie", item["Id"]), daemon=True).start()
+    return False
 
 
 def _refresh_caches() -> None:
@@ -202,8 +272,14 @@ def check_runtime_mismatches(db: Session) -> dict:
             continue
         if tmdb_id not in expected:
             continue
-        sources = item.get("MediaSources") or []
-        ticks = (sources[0].get("RunTimeTicks") if sources else None) or 0
+        # Only the IPTV copy itself. The same film is often in Jellyfin as a
+        # real file too (a Radarr download, possibly another cut); its length
+        # says nothing about what the provider's stream plays.
+        path = (item.get("Path") or "").lower()
+        if path and not path.endswith(".strm"):
+            continue
+        src = strm_source(item)
+        ticks = ((src or {}).get("RunTimeTicks")) or 0
         actual = round(ticks / 600_000_000) if ticks else 0
         runtime, title = expected[tmdb_id]
         if not actual or not runtime:
@@ -248,6 +324,26 @@ def _tmdb(db: Session):
     if not token:
         raise WrongMatchError(503, "TMDB is not available")
     return TMDBService(token, get_setting(db, "data_dir", "/data"))
+
+
+TMDB_DOWN = "TMDB can't be reached right now, so films can't be looked up. Try again in a minute."
+
+
+def _tmdb_call(tmdb, fn, *args):
+    """One TMDB lookup: (result, failed). An unreachable TMDB raises
+    TMDBConnectionError and a 429/5xx answers None -- neither means "no such
+    film", and neither may surface as an unhandled 500."""
+    from services.exceptions import TMDBConnectionError
+    try:
+        tmdb._tl.failed = False
+    except AttributeError:
+        pass
+    try:
+        result = fn(*args)
+    except TMDBConnectionError:
+        return None, True
+    failed = bool(getattr(tmdb, "_lookup_failed", lambda: False)())
+    return result, failed and not result
 
 
 def _jf(db: Session):
@@ -296,6 +392,21 @@ def language_code(code: Optional[str]) -> Optional[str]:
     return _LANG_3_TO_1.get(c[:3])
 
 
+def strm_source(item: dict) -> Optional[dict]:
+    """The media source that is the .strm itself. With a download of the same
+    film in the same folder, Jellyfin groups the two as versions of one item
+    and lists the widest first -- MediaSources[0] is then the download."""
+    sources = (item or {}).get("MediaSources") or []
+    item_id = (item or {}).get("Id")
+    for src in sources:
+        if (src.get("Path") or "").lower().endswith(".strm"):
+            return src
+    for src in sources:
+        if item_id and src.get("Id") == item_id:
+            return src
+    return None if len(sources) > 1 else (sources[0] if sources else None)
+
+
 def probe_info(db: Session, row: Movie) -> dict:
     """What Jellyfin's probe learned about the stream, if it has been played:
     its real length in minutes and the languages of its audio tracks."""
@@ -304,17 +415,14 @@ def probe_info(db: Session, row: Movie) -> dict:
     if jf is None:
         return empty
     try:
-        item_id = row.jellyfin_item_id
-        if not item_id:
-            found = jf.search_by_tmdb_id(row.tmdb_id, media_type="Movie")
-            item_id = found["Id"] if found else None
-        if not item_id:
+        found = jellyfin_item_for_strm(jf, row.tmdb_id, row.strm_path, row.jellyfin_item_id)
+        if not found:
             return empty
-        item = jf.get_item_by_id(item_id) or {}
-        sources = item.get("MediaSources") or []
-        ticks = (sources[0].get("RunTimeTicks") if sources else None) or 0
+        item = jf.get_item_by_id(found["Id"]) or {}
+        src = strm_source(item) or {}
+        ticks = src.get("RunTimeTicks") or 0
         langs = []
-        for s in (sources[0].get("MediaStreams") or []) if sources else []:
+        for s in (src.get("MediaStreams") or []):
             if s.get("Type") == "Audio":
                 code = language_code(s.get("Language"))
                 if code and code not in langs:
@@ -355,9 +463,11 @@ def suggest_matches(db: Session, tmdb_id: int, query: Optional[str] = None) -> d
     audio = probe["audio_languages"]
     queries = [query.strip()] if query and query.strip() else _title_queries(row.title)
 
-    seen, found = {tmdb_id}, []
+    seen, found, failures = {tmdb_id}, [], 0
     for q in queries:
-        data = tmdb._request("search/movie", {"query": q}) or {}
+        data, failed = _tmdb_call(tmdb, tmdb._request, "search/movie", {"query": q})
+        failures += failed
+        data = data or {}
         for r in (data.get("results") or [])[:10]:
             if r.get("id") in seen:
                 continue
@@ -366,11 +476,14 @@ def suggest_matches(db: Session, tmdb_id: int, query: Optional[str] = None) -> d
         if len(found) >= 24:
             break
 
+    if not found and failures:
+        raise WrongMatchError(503, TMDB_DOWN)
+
     in_lib = {t for (t,) in db.query(Movie.tmdb_id).filter(Movie.tmdb_id.in_([r["id"] for r in found])).all()} if found else set()
     label = (row.title or "").lower()
     candidates = []
     for r in found[:24]:
-        details = tmdb.get_movie_details(r["id"]) or {}
+        details = _tmdb_call(tmdb, tmdb.get_movie_details, r["id"])[0] or {}
         runtime = details.get("runtime") or None
         title = r.get("title") or details.get("title") or ""
         close = bool(actual and runtime and abs(runtime - actual) <= RUNTIME_CLOSE)
@@ -447,8 +560,11 @@ def rematch_movie(db: Session, tmdb_id: int, new_tmdb_id: int, user_name: str = 
         result["merged"] = True
         return result
 
-    new = _tmdb(db).get_movie_details(new_tmdb_id)
+    tmdb = _tmdb(db)
+    new, failed = _tmdb_call(tmdb, tmdb.get_movie_details, new_tmdb_id)
     if not new:
+        if failed:
+            raise WrongMatchError(503, TMDB_DOWN)
         raise WrongMatchError(404, "TMDB has no movie with that id")
 
     old_meta = {"tmdb_id": row.tmdb_id, "title": row.title, "year": row.year, "genres": row.genres or [],
@@ -479,8 +595,13 @@ def rematch_movie(db: Session, tmdb_id: int, new_tmdb_id: int, user_name: str = 
     chown_path(new_strm)
     write_movie_nfo(new_nfo, new, tags)
     chown_path(new_nfo)
-    if Path(old_strm) != new_strm:
+    moved = Path(old_strm) != new_strm
+    if moved:
         delete_movie_files(old_strm)
+        if Path(old_strm).exists():
+            delete_movie_files(str(new_strm))  # undo: one copy, not two
+            raise WrongMatchError(500, "Couldn't delete the old .strm file, so nothing was changed. "
+                                       "Check that Tentacle can write to the VOD folder.")
 
     # A duplicate record pairing the old film with THIS stream no longer holds.
     for dup in db.query(Duplicate).filter(Duplicate.tmdb_id == tmdb_id, Duplicate.media_type == "movie").all():
@@ -516,16 +637,11 @@ def rematch_movie(db: Session, tmdb_id: int, new_tmdb_id: int, user_name: str = 
     logger.info(f"[WrongMatch] Re-matched stream {key if key.isdigit() else '(URL)'}: '{old_title}' → "
                 f"'{row.title}' ({row.year}) by {user_name}")
 
-    # The old Jellyfin item's files are gone; remove it now (its delete hook finds
-    # nothing under the old id — the row carries the new one) and scan so the
-    # new folder comes in with the right metadata.
-    _delete_from_jellyfin(db, tmdb_id, old_jf)
-    jf = _jf(db)
-    if jf is not None:
-        try:
-            jf.trigger_library_scan(None)
-        except Exception as e:
-            logger.debug(f"[WrongMatch] Library scan request failed: {e}")
+    # The old copy's files are gone: a scan drops its Jellyfin item (never a
+    # DELETE -- see _delete_from_jellyfin) and brings in the new folder.
+    # Same path (the right film has the same folder name): the item stays and
+    # becomes the fixed film on the scan, so it keeps its playlist entries.
+    _delete_from_jellyfin(db, tmdb_id, old_jf, old_strm, cleanup_playlists=moved)
     _refresh_caches()
     return {"ok": True, "title": row.title, "year": row.year, "tmdb_id": new_tmdb_id,
             "message": f"Fixed: this is {row.title} ({row.year}). Jellyfin is picking it up now."}
@@ -542,7 +658,12 @@ def override_for(overrides: dict, stream_id, url: str = "") -> Optional[int]:
         return None
     if stream_id is not None and str(stream_id) in overrides:
         return overrides[str(stream_id)]
-    return overrides.get(url) if url else None
+    if not url:
+        return None
+    if url in overrides:
+        return overrides[url]
+    # Keyed like is_blocked(): an M3U entry's key is derived from its URL.
+    return overrides.get(stream_key_for_url(url))
 
 
 # ── Stills from the stream ────────────────────────────────────────────────
@@ -615,15 +736,6 @@ def stream_frames(db: Session, tmdb_id: int) -> dict:
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         raise WrongMatchError(503, "ffmpeg is not available on the Tentacle server")
-    # Three ffmpeg seeks into the stream are three provider connections in a
-    # row. On a connection-limited account that cuts off whatever is already
-    # open -- usually a recording. A person pressed this button and can wait.
-    from services.provider_activity import live_streams_active
-    if live_streams_active():
-        raise WrongMatchError(503, "A live stream or recording is running right now. Grabbing pictures "
-                                   "would open another provider connection and can cut it off — "
-                                   "try again once it has finished.")
-
     provider = db.query(Provider).filter(Provider.id == row.provider_id).first() if row.provider_id else None
     user_agent = (provider.user_agent if provider else None) or "TiviMate/4.7.0 (Linux; Android 12)"
     minutes = probed_minutes(db, row) or row.runtime
@@ -632,6 +744,30 @@ def stream_frames(db: Session, tmdb_id: int) -> dict:
     key = hashlib.sha1(url.encode()).hexdigest()[:16]
     cache = _frame_cache_dir()
     _prune_frame_cache(cache)
+
+    def _cached(sec):
+        path = cache / f"{key}_{sec}.jpg"
+        try:
+            return path.read_bytes() if path.exists() and path.stat().st_size else None
+        except OSError:
+            return None
+
+    # Pictures grabbed before need no provider connection at all.
+    cached = [(sec, _cached(sec)) for sec in offsets]
+    if all(data for _, data in cached):
+        return {"frames": [{"at_minutes": round(sec / 60),
+                            "image": "data:image/jpeg;base64," + base64.b64encode(data).decode()}
+                           for sec, data in cached]}
+
+    # Three ffmpeg seeks into the stream are three provider connections in a
+    # row. On a connection-limited account that cuts off whatever is already
+    # open -- usually a recording. A person pressed this button and can wait.
+    from services.provider_activity import live_streams_active
+    if live_streams_active():
+        raise WrongMatchError(503, "Something is playing from your provider right now (live TV, a recording "
+                                   "or a film). Grabbing pictures would open another provider connection and "
+                                   "can cut it off — try again once it has finished.")
+
     frames = []
     # One grab at a time: IPTV providers often allow a single connection.
     with _frames_lock:
