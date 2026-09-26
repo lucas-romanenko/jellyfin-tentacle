@@ -119,6 +119,7 @@ def run_scheduled_sync():
         # The provider runs above read "completed" from here on while the rest
         # of the job runs for a long while yet: report them as finishing (#159).
         _after_sync["nightly"] = nightly_started
+        pause.run_id = None     # later waits (discovery) belong to no sync run
 
         logger.info("Scheduled Radarr scan starting")
         try:
@@ -218,6 +219,8 @@ def run_scheduled_sync():
         try:
             from models.database import LiveChannel
             from routers.livetv import _run_epg_sync_background, live_tv_providers
+            from services.provider_activity import wait_for_recordings, EPG_WAIT_FOR_RECORDING_SECONDS
+            epg_may_download = True
             live_providers = live_tv_providers(db)
             if not live_providers:
                 logger.info("No Live TV provider — nothing to sync")
@@ -245,6 +248,14 @@ def run_scheduled_sync():
                 # Only trigger the Jellyfin guide refresh if the sync actually
                 # produced data — refreshing after a failed sync makes Jellyfin
                 # re-ingest a draining/stale guide for nothing.
+                # The guide download is a provider request like any other; with
+                # recording protection on it waits for a running recording --
+                # for a bounded time, then this night's download is skipped.
+                if epg_may_download:
+                    epg_may_download = wait_for_recordings(db, "the scheduled EPG sync",
+                                                           max_seconds=EPG_WAIT_FOR_RECORDING_SECONDS)
+                if not epg_may_download:
+                    continue
                 if _run_epg_sync_background(provider_data):
                     epg_synced = True
 

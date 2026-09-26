@@ -332,6 +332,8 @@ def check_stream_now(body: StreamCheckRequest, db: Session = Depends(get_db)):
     """On-demand stream check for one library title."""
     if body.media_type not in ("movie", "series"):
         raise HTTPException(400, "media_type must be movie or series")
+    from services.provider_activity import refuse_while_recording
+    refuse_while_recording(db, "A stream check")
     from services.stream_health import check_title
     result = check_title(db, body.media_type, body.tmdb_id)
     if not result.get("ok"):

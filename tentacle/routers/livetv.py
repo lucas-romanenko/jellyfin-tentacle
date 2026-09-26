@@ -217,6 +217,52 @@ def _media_segments(playlist_text: str, base_url: str) -> list:
 # channel; a recording that is cut off is gone for good.
 _LEASE_PRIORITY = {"recording": 0, "live": 10, "vod": 20}
 
+# Recording protection (setting `livetv_protect_recordings`, default off).
+#
+# Some accounts carry ONE heavy connection well and punish a second one on
+# the stream that is already open, whatever max_connections says. Measured
+# on one household's Xtream account (2026-09-23/24): one continuous-TS
+# channel alone dropped once in 30 min; two TS recordings at once were
+# closed by the provider every ~8 s, in turn, for 1 h 45 min; a TV episode
+# played next to a TS recording closed the recording every ~20 s for as
+# long as it played; and every new connection (a film, a card preview, the
+# nightly sync) put a running HLS recording into a 509 storm of 30 s to
+# 3 min. A connection limit cannot express that -- "2" still lets a film
+# open next to a recording. With protection on, while a recording is being
+# pulled:
+#   * a NEW upstream for a viewer ("live") or a film ("vod") is refused
+#     with 503 -- except a viewer of a channel that is already being pulled,
+#     who attaches to that pull (_SharedUpstream) and costs the provider
+#     nothing;
+#   * a recording always opens, and when it does, every running viewer or
+#     film upstream is stopped first (cleanly: the viewer's stream ends, the
+#     film's connection closes) -- on that account a film left running cuts
+#     the recording every ~20 s until it ends;
+#   * Tentacle's own background provider work waits (services.provider_activity).
+# It errs towards the recording: when Jellyfin cannot say right now what is
+# being recorded, a live open is let through rather than refused (it may
+# BE the next recording) and only films are stopped for a recording.
+def _protect_recordings(db) -> bool:
+    return (get_setting(db, "livetv_protect_recordings", "") or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+class RecordingProtected(Exception):
+    """acquire_lease refused a viewer or film because a recording runs and
+    recording protection is on."""
+
+    def __init__(self, kind: str, owner: "str | None"):
+        super().__init__(f"{kind} '{owner}' refused: a recording is running and recording protection is on")
+        self.kind = kind
+        self.owner = owner
+
+
+# Refusals are logged at most this often (a player retrying every few
+# seconds must not flood the log); the rest are counted.
+_PROTECT_LOG_EVERY = 60.0
+PROTECTED_REFUSAL_DETAIL = ("A recording is running and recording protection is on "
+                            "(livetv_protect_recordings): no other provider connection is opened "
+                            "until it ends. Channels already being recorded can still be watched.")
+
 
 class _Lease:
     """One upstream pull's claim on a connection slot."""
@@ -262,10 +308,127 @@ class _StreamSlots:
         # happened to start waiting first.
         self._waiting: "dict[int, tuple]" = {}
         self._next_waiter = 1
+        # Recording protection (see _protect_recordings). The setting is
+        # read by whoever opens a pull and by the recording refresher, and
+        # kept here for the synchronous paths (sync_recordings).
+        self.protect = False
+        self.protected_refusals = 0
+        self.protected_preemptions = 0
+        self.last_protected_refusal: "dict | None" = None
+        self._protect_logged_at = -1e9
+        self._protect_unlogged = 0
+        self._enforcing: "set[asyncio.Task]" = set()
 
     @property
     def active(self) -> int:
         return len(self.leases)
+
+    def recording_active(self) -> bool:
+        """A recording is being pulled right now. Safe from worker threads."""
+        return any(l.kind == "recording" and not l.preempted for l in list(self.leases.values()))
+
+    def set_protect(self, on: bool) -> None:
+        """Apply the current setting. Turned on while a recording runs, it
+        clears the way for it at once, not at the next open."""
+        on = bool(on)
+        was, self.protect = self.protect, on
+        if on and not was:
+            self._enforce_soon()
+
+    def _refuse_protected(self, kind: str, owner: "str | None"):
+        self.protected_refusals += 1
+        self.last_protected_refusal = {"kind": kind, "owner": owner,
+                                       "at": datetime.utcnow().isoformat() + "Z"}
+        now = asyncio.get_running_loop().time()
+        if now - self._protect_logged_at >= _PROTECT_LOG_EVERY:
+            more = f" ({self._protect_unlogged} more refused since the last message)" if self._protect_unlogged else ""
+            logger.warning(f"[LiveTV] Recording protection: refused {kind} '{owner}' — a recording is "
+                           f"running, so no other provider connection is opened until it ends{more}")
+            self._protect_logged_at, self._protect_unlogged = now, 0
+        else:
+            self._protect_unlogged += 1
+        raise RecordingProtected(kind, owner)
+
+    def _protect_victims(self, films_only: bool, live_before: "float | None" = None) -> "list[_Lease]":
+        """Take every running viewer and film pull off the books (recording
+        protection). `films_only` when it is not certain which live pulls are
+        recordings: a film never is. `live_before`: only live pulls that were
+        already running then -- a lookup answer issued at that time cannot
+        know about a pull (maybe a recording) that opened after it."""
+        victims = [l for l in self.leases.values()
+                   if l.kind != "recording" and not l.preempted
+                   and (l.kind == "vod" or (not films_only and (live_before is None or l.started < live_before)))]
+        for victim in victims:
+            victim.preempted = True
+            self.leases.pop(victim.id, None)
+        self.protected_preemptions += len(victims)
+        self.preempted_since_start += len(victims)
+        return victims
+
+    async def _clear_and_grant(self, kind: str, owner: "str | None", stream_key: "str | None",
+                               films_only: bool) -> "_Lease | None":
+        """A recording under protection: stop every viewer and film pull and
+        take a slot in the same step, before anything is awaited -- so a
+        waiter woken while the victims stop finds a recording running (and
+        is refused), never a free slot. None when there was nothing to stop
+        (the ordinary path decides then). Every victim freed a slot, so the
+        count never goes over the limit."""
+        victims = self._protect_victims(films_only, _recording_cache.get("answer_issued_at"))
+        if not victims:
+            return None
+        lease = self._grant(kind, owner, stream_key)
+        try:
+            await self._stop_victims(victims, owner)
+        except asyncio.CancelledError:
+            self.leases.pop(lease.id, None)
+            self._wake()
+            raise
+        self._wake()
+        return lease
+
+    async def _clear_for_recording(self, owner: "str | None", films_only: bool = False,
+                                   live_before: "float | None" = None) -> int:
+        """Stop every running viewer and film pull because a recording is
+        running (it was recognised after it opened, a current answer came in,
+        or protection was just turned on)."""
+        victims = self._protect_victims(films_only, live_before)
+        await self._stop_victims(victims, owner)
+        return len(victims)
+
+    async def _stop_victims(self, victims, owner: "str | None") -> None:
+        for victim in victims:
+            logger.warning(f"[LiveTV] Recording protection: {victim.kind} '{victim.owner}' is stopped — "
+                           f"recording '{owner}' has the provider connection to itself")
+            if victim.on_preempt is not None:
+                try:
+                    result = victim.on_preempt()
+                    if asyncio.iscoroutine(result):
+                        await result
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.error(f"[LiveTV] Stopping {victim.kind} '{victim.owner}' failed: {e}")
+
+    def _enforce_soon(self, live_before: "float | None" = None) -> None:
+        """From a synchronous path (a recording was just recognised, or the
+        setting was just turned on): clear the way in a task of its own."""
+        if not (self.protect and self.recording_active()):
+            return
+        if not any(l.kind != "recording" and not l.preempted for l in self.leases.values()):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        rec = next((l.owner for l in self.leases.values() if l.kind == "recording" and not l.preempted), None)
+        # Which live pulls are recordings is only as good as the last answer
+        # from Jellyfin: if that is not current, stop films only.
+        if live_before is None:
+            live_before = _recording_cache.get("answer_issued_at")
+        task = loop.create_task(self._clear_for_recording(rec, films_only=not _recording_answer_is_current(),
+                                                          live_before=live_before))
+        self._enforcing.add(task)
+        task.add_done_callback(self._enforcing.discard)
 
     def _grant(self, kind: str, owner: "str | None", stream_key: "str | None" = None) -> _Lease:
         lease = _Lease(self._next_id, kind, owner, stream_key)
@@ -273,7 +436,7 @@ class _StreamSlots:
         self.leases[lease.id] = lease
         return lease
 
-    def sync_recordings(self, stream_keys) -> int:
+    def sync_recordings(self, stream_keys, issued_at: "float | None" = None) -> int:
         """Bring running pulls into line with which channels are recorded NOW.
 
         Promote: Jellyfin marks a timer InProgress only AFTER its tuner
@@ -302,6 +465,12 @@ class _StreamSlots:
                 logger.info(f"[LiveTV] '{lease.owner}' is no longer being recorded — back to viewer priority")
         if n:
             self._wake()        # a demoted pull may now be a waiting recording's to take
+        if self.protect:
+            # Every current answer, not only one that changed a rank: a
+            # viewer let through while Jellyfin could not answer, or left
+            # running because protection was switched on from a stale answer,
+            # is stopped as soon as Jellyfin says it is not a recording.
+            self._enforce_soon(live_before=issued_at)
         return n
 
     def _wake(self):
@@ -349,8 +518,24 @@ class _StreamSlots:
         return best == waiter_id
 
     async def acquire_lease(self, limit: int, wait: float, kind: str = "live",
-                            owner: "str | None" = None, stream_key: "str | None" = None) -> "_Lease | None":
+                            owner: "str | None" = None, stream_key: "str | None" = None,
+                            certain: bool = True) -> "_Lease | None":
+        """A slot for one upstream pull, or None when refused at capacity.
+
+        With recording protection on (self.protect): a recording first stops
+        every viewer and film pull; a viewer or film is refused with
+        RecordingProtected while a recording runs. `certain` is False when
+        the caller could not learn from Jellyfin just now what is being
+        recorded -- then a live pull is not refused (it may be the next
+        recording) and a recording stops films only."""
         prio = _LEASE_PRIORITY.get(kind, _LEASE_PRIORITY["live"])
+        if self.protect:
+            if kind == "recording":
+                lease = await self._clear_and_grant(kind, owner, stream_key, films_only=not certain)
+                if lease is not None:
+                    return lease
+            elif self.recording_active() and (certain or kind == "vod"):
+                self._refuse_protected(kind, owner)
         if limit <= 0:
             return self._grant(kind, owner, stream_key)
         # A free slot goes to the newcomer only if nobody as important is
@@ -370,6 +555,9 @@ class _StreamSlots:
         try:
             while True:
                 freed = self._freed          # before checking: a set after this is not missed
+                if self.protect and kind != "recording" and self.recording_active() \
+                        and (certain or kind == "vod"):
+                    self._refuse_protected(kind, owner)     # a recording started while we waited
                 if len(self.leases) < limit and self._first_in_line(me):
                     return self._grant(kind, owner, stream_key)
                 # Something may have become takeable while we waited (a
@@ -582,17 +770,42 @@ def _timer_is_imminent(timer: dict, now: "datetime") -> bool:
     return (rec_start - now).total_seconds() <= _RECORDING_IMMINENT_SECONDS
 
 
-async def _recording_channel_ids(db, force: bool = False, background: bool = False) -> "set[int]":
+async def _recording_channel_ids(db, force: bool = False, background: bool = False,
+                                 fresh_after: "float | None" = None) -> "set[int]":
     """LiveChannel ids being recorded now: reservations plus Jellyfin's
     in-progress timers (cached for _RECORDING_LOOKUP_TTL; `force` asks
     again regardless -- used when a slot is about to be taken from someone,
-    so the victim is chosen on current information)."""
+    so the victim is chosen on current information).
+
+    `fresh_after` (recording protection): the answer must come from a
+    lookup issued at or after that loop time. A lookup already in flight
+    that was issued earlier -- the refresher's, say -- may predate a
+    "record now" timer whose tuner open is asking right now; it is waited
+    for, then a fresh one is issued. If that cannot be had in time the
+    answer is not current (_recording_answer_is_current(since=...)) and
+    the caller treats it as uncertain."""
     loop = asyncio.get_running_loop()
     now = loop.time()
+    cache = _recording_cache
+    stale = cache.get("pending")
+    if fresh_after is not None and stale is not None and cache.get("pending_issued", -1e9) < fresh_after:
+        try:
+            await asyncio.wait_for(asyncio.shield(stale), _RECORDING_LOOKUP_WAIT)
+        except Exception:
+            pass
+        if stale.done():
+            _recording_lookup_done(stale)
+        else:
+            # Still no answer: do not wait a second time for the new one;
+            # the caller sees an answer that is not current.
+            sids = cache["sids"]
+            reserved = {c for c, r in _reserved_channels.items() if r["until"] > loop.time()}
+            ids = {row.id for row in db.query(LiveChannel).filter(LiveChannel.stream_id.in_(list(sids))).all()} if sids else set()
+            return reserved | ids
+        now = loop.time()
     for cid in [c for c, r in _reserved_channels.items() if r["until"] <= now]:
         del _reserved_channels[cid]
     reserved = set(_reserved_channels)
-    cache = _recording_cache
     # After a failed lookup, routine asks (the TTL path and the background
     # refresher) wait 5 s doubling to a minute. The at-capacity ask (`force`
     # from a tuner open) never does: a recording's own tuner open comes from
@@ -604,11 +817,12 @@ async def _recording_channel_ids(db, force: bool = False, background: bool = Fal
         url = (get_setting(db, "jellyfin_url", "") or "").strip()
         key = (get_setting(db, "jellyfin_api_key", "") or "").strip()
         if url and key:
+            cache["pending_issued"] = now
             cache["pending"] = asyncio.ensure_future(
                 asyncio.to_thread(_recording_stream_ids_from_jellyfin, url, key))
             cache["pending"].add_done_callback(_recording_lookup_done)
         else:
-            cache["at"], cache["sids"] = now, set()
+            cache["at"], cache["sids"], cache["answer_issued_at"] = now, set(), now
     pending = cache["pending"]
     if pending is not None:
         try:
@@ -627,6 +841,24 @@ async def _recording_channel_ids(db, force: bool = False, background: bool = Fal
     return reserved | ids
 
 
+def _recording_answer_is_current(since: "float | None" = None) -> bool:
+    """The last lookup of what is being recorded succeeded and is recent:
+    nothing pending, no failure streak, within the cache TTL -- and, with
+    `since`, issued at or after that loop time. Recording protection only
+    refuses a live open, or stops a live pull, on such an answer -- a stale
+    "not recording" must never cost a recording."""
+    cache = _recording_cache
+    if cache.get("pending") is not None or cache.get("failures"):
+        return False
+    if since is not None and cache.get("answer_issued_at", -1e9) < since:
+        return False
+    try:
+        now = asyncio.get_running_loop().time()
+    except RuntimeError:
+        return False
+    return now - cache.get("at", -1e9) <= _RECORDING_LOOKUP_TTL
+
+
 _recording_refresher: "asyncio.Task | None" = None
 
 
@@ -634,6 +866,7 @@ async def _refresh_recordings_once() -> None:
     """One fresh lookup, applied to the running leases (sync_recordings)."""
     db = SessionLocal()
     try:
+        _stream_slots.set_protect(_protect_recordings(db))
         await _recording_channel_ids(db, force=True, background=True)
     finally:
         db.close()
@@ -675,6 +908,7 @@ def _recording_lookup_done(task):
     if cache["pending"] is not task:
         return      # already applied (or superseded by a newer lookup)
     cache["pending"] = None
+    issued = cache.get("pending_issued")
     failure = None
     try:
         sids = task.result()
@@ -696,8 +930,9 @@ def _recording_lookup_done(task):
         cache["failures"], cache["retry_at"] = 0, -1e9
     if sids is not None:
         cache["sids"] = set(sids)
+        cache["answer_issued_at"] = issued if issued is not None else now
         reserved_keys = {r["stream_key"] for r in _reserved_channels.values() if r.get("stream_key")}
-        _stream_slots.sync_recordings(cache["sids"] | reserved_keys)
+        _stream_slots.sync_recordings(cache["sids"] | reserved_keys, issued_at=cache["answer_issued_at"])
 
 
 # One upstream pull per channel, fanned out to every client watching it.
@@ -1119,6 +1354,8 @@ def save_live_provider(body: LiveProviderConfig, db: Session = Depends(get_db)):
 @router.post("/api/live/provider/test", dependencies=_admin)
 def test_live_provider(db: Session = Depends(get_db)):
     """Test connection to the live TV provider."""
+    from services.provider_activity import refuse_while_recording
+    refuse_while_recording(db, "Testing the provider")
     provider = db.query(Provider).filter(Provider.live_tv_enabled == True).first()
     if not provider:
         provider = db.query(Provider).first()
@@ -1179,6 +1416,8 @@ def test_live_provider(db: Session = Depends(get_db)):
 @router.post("/api/live/sync/{provider_id}", dependencies=_admin)
 def sync_live_groups(provider_id: int, db: Session = Depends(get_db)):
     """Phase 1: Fetch categories/groups only (fast). No channels downloaded."""
+    from services.provider_activity import refuse_while_recording
+    refuse_while_recording(db, "A channel group sync")
     provider = db.query(Provider).filter(Provider.id == provider_id).first()
     if not provider:
         raise HTTPException(404, "Provider not found")
@@ -1201,6 +1440,8 @@ def sync_live_groups(provider_id: int, db: Session = Depends(get_db)):
 @router.post("/api/live/sync-channels/{provider_id}", dependencies=_admin)
 def sync_live_channels(provider_id: int, db: Session = Depends(get_db)):
     """Phase 2: Fetch channels only for enabled groups. Call after enabling groups."""
+    from services.provider_activity import refuse_while_recording
+    refuse_while_recording(db, "A channel sync")
     provider = db.query(Provider).filter(Provider.id == provider_id).first()
     if not provider:
         raise HTTPException(404, "Provider not found")
@@ -1240,6 +1481,7 @@ def live_capacity(db: Session = Depends(get_db)):
         "last_refused": _stream_slots.last_refused,
         "reconnect_budget_seconds": _reconnect_budget(db),
         "streams": _stream_snapshot(db),
+        **_protection_snapshot(db),
     }
 
 
@@ -1305,6 +1547,18 @@ def live_streams(db: Session = Depends(get_db)):
         # Channels the provider answered with a placeholder (black.ts) instead
         # of the channel since Tentacle started, and how often (#140).
         "placeholders": [{"channel_id": cid, **info} for cid, info in sorted(_placeholders.items())],
+        **_protection_snapshot(db),
+    }
+
+
+def _protection_snapshot(db) -> dict:
+    """Recording protection, for /api/live/streams and /api/live/capacity."""
+    return {
+        "protect_recordings": _protect_recordings(db),
+        "recording_active": _stream_slots.recording_active(),
+        "protected_refusals": _stream_slots.protected_refusals,
+        "protected_preemptions": _stream_slots.protected_preemptions,
+        "last_protected_refusal": _stream_slots.last_protected_refusal,
     }
 
 
@@ -2007,6 +2261,8 @@ def _update_group_counts(provider_id: int, db: Session):
 @router.post("/api/live/sync-epg/{provider_id}", dependencies=_admin)
 def sync_epg(provider_id: int, db: Session = Depends(get_db)):
     """Sync EPG data for enabled channels only (runs in background)."""
+    from services.provider_activity import refuse_while_recording
+    refuse_while_recording(db, "An EPG sync")
     provider = db.query(Provider).filter(Provider.id == provider_id).first()
     if not provider:
         raise HTTPException(404, "Provider not found")
@@ -2588,6 +2844,11 @@ def refresh_jellyfin_guide(db: Session = Depends(get_db)):
         }
         missing = enabled_epg_ids - epg_with_data
         if missing:
+            from services.provider_activity import recording_protected
+            if recording_protected(db):
+                logger.warning(f"[LiveTV] {len(missing)} enabled channels have no EPG data, but a recording is "
+                               f"running and recording protection is on — not downloading the guide now")
+                continue
             logger.info(f"[LiveTV] {len(missing)} enabled channels missing EPG data for provider {pid} — triggering EPG sync")
             # Trigger EPG sync synchronously (inline, not background thread)
             # so Jellyfin gets fresh data when we refresh
@@ -2909,10 +3170,25 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
     # victim is chosen on current information (a recording that opened a
     # moment ago may still be classified as a viewer: sync_recordings).
     at_capacity = limit > 0 and _stream_slots.active >= limit
-    recording_ids = await _recording_channel_ids(db, force=at_capacity)
+    # Recording protection decides on current information too: whether this
+    # open is a recording (refused if not, while one runs), and which running
+    # pulls are (the others are stopped for it).
+    _stream_slots.set_protect(_protect_recordings(db))
+    protect_decides = _stream_slots.protect and _stream_slots.active > 0
+    open_began = asyncio.get_running_loop().time()
+    recording_ids = await _recording_channel_ids(db, force=at_capacity or protect_decides,
+                                                 fresh_after=open_began if protect_decides else None)
     kind = "recording" if channel_id in recording_ids else "live"
-    lease = await _stream_slots.acquire_lease(limit, _SLOT_WAIT_SECONDS, kind, f"channel:{channel_id}",
-                                              stream_key=(ch.stream_id or str(ch.id)) if ch else None)
+    certain = _recording_answer_is_current(since=open_began if protect_decides else None)
+    if protect_decides and not certain:
+        logger.warning(f"[LiveTV] Recording protection: Jellyfin did not say in time what is being "
+                       f"recorded — channel {channel_id} is opened as a {kind} and no viewer is stopped for it")
+    try:
+        lease = await _stream_slots.acquire_lease(limit, _SLOT_WAIT_SECONDS, kind, f"channel:{channel_id}",
+                                                  stream_key=(ch.stream_id or str(ch.id)) if ch else None,
+                                                  certain=certain)
+    except RecordingProtected:
+        raise HTTPException(503, PROTECTED_REFUSAL_DETAIL)
     if lease is None:
         name = ch.name if ch else f"channel {channel_id}"
         _stream_slots.refused += 1
