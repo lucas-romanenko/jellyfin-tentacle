@@ -4,6 +4,7 @@ Unified view of movies and series
 """
 
 import threading
+import requests
 import logging
 import re
 
@@ -404,6 +405,28 @@ def _cleanup_playlists_all_users(tmdb_id: int, media_type: str, jellyfin_item_id
         cleanup_db.close()
 
 
+def _deletion_authorised(request: Request, db: Session, media_type: str, tmdb_id: int) -> bool:
+    """Internal secret, an admin, or Jellyfin confirming it forwarded this deletion."""
+    from routers.auth import _has_internal_secret, get_user_from_request
+    if _has_internal_secret(request, db):
+        return True
+    try:
+        if get_user_from_request(request, db).is_admin:
+            return True
+    except HTTPException:
+        pass
+    jf_url, jf_key = get_setting(db, "jellyfin_url", ""), get_setting(db, "jellyfin_api_key", "")
+    if not (jf_url and jf_key):
+        return False
+    try:
+        r = requests.post(f"{jf_url.rstrip('/')}/Tentacle/Deletions/{media_type}/{tmdb_id}/Confirm",
+                          headers={"X-Emby-Token": jf_key}, timeout=5)
+        return r.status_code == 200
+    except Exception as e:
+        logger.warning(f"[Library] Could not ask Jellyfin to confirm a deletion: {e}")
+        return False
+
+
 @router.delete("/item/{media_type}/{tmdb_id}")
 def delete_library_item(
     media_type: str,
@@ -414,13 +437,22 @@ def delete_library_item(
     """Lightweight: remove from Tentacle DB + playlists only (Jellyfin item already gone).
 
     Called by the C# plugin's ItemRemoved handler (a server-side hosted service with no
-    user context) when items are deleted through Jellyfin's native UI. Left unauthenticated
-    to keep the plugin zero-config; it's self-healing if abused — the Jellyfin item still
-    exists, so the next Radarr/Sonarr/VOD scan re-creates the DB record and the nightly
-    orphan sweep reconciles anything stale. Keep the backend on the internal network.
+    user context) when items are deleted through Jellyfin's native UI. It took no
+    authentication, so one stray request on the LAN removed a title from the catalogue
+    and from every user's playlists, and deleted request history a scan cannot rebuild
+    (#139). The plugin has no shared secret, so the backend asks Jellyfin instead:
+    the plugin records each deletion it forwards and confirms it once (POST
+    /Tentacle/Deletions/{type}/{id}/Confirm, with the server's API key). The internal
+    secret or an admin session is also accepted; the "no users yet" bootstrap pass is
+    not. Anything else is refused with 403 before the catalogue is looked at, so the
+    answer cannot be used to probe it.
     """
     if media_type not in ("movie", "series"):
         raise HTTPException(400, "Invalid media type")
+    if not _deletion_authorised(request, db, media_type, tmdb_id):
+        logger.warning(f"[Library] Refused a delete of {media_type} tmdb:{tmdb_id} that Jellyfin "
+                       f"did not report (from {request.client.host if request.client else '?'})")
+        raise HTTPException(403, "Not a deletion Jellyfin reported")
 
     model = Movie if media_type == "movie" else Series
     item = db.query(model).filter(model.tmdb_id == tmdb_id).first()

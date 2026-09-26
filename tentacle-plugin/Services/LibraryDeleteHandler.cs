@@ -133,6 +133,10 @@ public class LibraryDeleteHandler : IHostedService, IDisposable
         // Debug, not Info: a bulk removal produced one Info line per item.
         _logger.LogDebug("[Tentacle] Detected deletion: {Type} '{Name}' (TMDB:{TmdbId})", mediaType, item.Name, tmdbId);
 
+        // The backend asks this server to confirm the deletion before it acts on
+        // the notification (#139); see RecentDeletions.
+        RecentDeletions.Record(mediaType, tmdbId);
+
         lock (_lock)
         {
             _pendingDeletes.Add((mediaType, tmdbId));

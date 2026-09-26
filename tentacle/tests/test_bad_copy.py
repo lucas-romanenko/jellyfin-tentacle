@@ -170,13 +170,15 @@ class TestReplacingKeepsTheRequest(_Base):
     def test_jellyfin_delete_hook_keeps_it_while_replacing(self):
         from routers.library import delete_library_item
         bad_copy.mark_replacing(self.db, "movie", 100)
-        with mock.patch("routers.library._cleanup_playlists_all_users"), mock.patch("threading.Thread"):
+        with mock.patch("routers.library._cleanup_playlists_all_users"), mock.patch("threading.Thread"), \
+                mock.patch("routers.library._deletion_authorised", lambda *a: True):
             delete_library_item("movie", 100, request=mock.Mock(), db=self.db)
         self.assertEqual(1, self.requests_left())
 
     def test_jellyfin_delete_hook_drops_it_otherwise(self):
         from routers.library import delete_library_item
-        with mock.patch("routers.library._cleanup_playlists_all_users"), mock.patch("threading.Thread"):
+        with mock.patch("routers.library._cleanup_playlists_all_users"), mock.patch("threading.Thread"), \
+                mock.patch("routers.library._deletion_authorised", lambda *a: True):
             delete_library_item("movie", 100, request=mock.Mock(), db=self.db)
         self.assertEqual(0, self.requests_left())
 
