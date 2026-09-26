@@ -28,6 +28,10 @@ def is_youtube_video(item: dict) -> bool:
     return any(k.lower() == YOUTUBE_TAG for k in (item.get("ProviderIds") or {}))
 
 
+class PartialListing(Exception):
+    """A paged Jellyfin listing lost a page after the first: it is incomplete."""
+
+
 # Entries per DELETE /Playlists/{id}/Items call — see remove_from_playlist.
 REMOVE_CHUNK_SIZE = 150
 
@@ -600,6 +604,15 @@ class JellyfinService:
             params["StartIndex"] = start
             data = self._get("/Items", params=params)
             if not data:
+                if start:
+                    # A later page that timed out (or was reset) used to end the
+                    # loop, and the pages that did arrive were returned as the
+                    # whole answer: the playlist rebuild then removed every entry
+                    # after them (1,600 of a 3,600-entry playlist, #167). Every
+                    # playlist caller leaves the playlist unchanged on an error.
+                    # A failed FIRST page still returns [] for the empty-result
+                    # guard the callers already have.
+                    raise PartialListing(f"Jellyfin stopped answering after {start} items")
                 break
             items = data.get("Items", [])
             all_items.extend(items)

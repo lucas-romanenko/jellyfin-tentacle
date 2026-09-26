@@ -570,7 +570,11 @@ def preview_count(body: PreviewRequest, db: Session = Depends(get_db), user: Ten
 
     jf = JellyfinService(jf_url, jf_key)
     query = _build_query_params(config)
-    items = jf.query_items(**query)
+    try:
+        items = jf.query_items(**query)
+    except Exception as e:
+        logger.warning(f"[SmartLists] Preview count query failed: {e}")
+        return {"count": -1}  # "can't preview", not a wrong number
 
     # AND filter for multiple genres (skip if OR mode)
     required_genres = query.get("genres") or []
