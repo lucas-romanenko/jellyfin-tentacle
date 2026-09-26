@@ -208,10 +208,13 @@
             if (typeof api.accessToken === 'function') token = api.accessToken();
             else if (api._accessToken) token = api._accessToken;
 
-            var url = serverUrl + '/TentacleHome/Toolbar?userId=' + userId;
-            if (token) url += '&api_key=' + token;
+            var url = serverUrl + '/TentacleHome/Toolbar?userId=' + encodeURIComponent(userId);
+            // The token goes in a header, not the URL: this runs on every page
+            // load, and a URL lands in reverse-proxy/CDN access logs and in the
+            // browser history (#149). Same header form as the other plugin calls.
+            var headers = token ? { 'Authorization': 'MediaBrowser Token="' + token + '"' } : {};
 
-            return fetch(url).then(function (resp) {
+            return fetch(url, { headers: headers }).then(function (resp) {
                 if (!resp.ok) throw new Error('HTTP ' + resp.status);
                 return resp.json();
             }).then(function (data) {
