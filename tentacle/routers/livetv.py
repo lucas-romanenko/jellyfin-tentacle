@@ -197,13 +197,43 @@ async def _note_placeholder(channel_id: int, segment: str) -> None:
         await asyncio.to_thread(_record_activity_for_placeholder, channel_id, segment)
 
 
-class _PlaceholderRefusal(HTTPException):
+# Jellyfin retries a failed recording open 60 s later (at most 10 times, and
+# only until the timer ends).
+TUNER_RETRY_AFTER_SECONDS = 60
+
+
+class _TunerRefusal(HTTPException):
+    """A refused tuner open: no free slot, a recording needed the slot,
+    recording protection, or a placeholder. Answered as a 503 with NO body by
+    tuner_refusal_handler (registered on the app in main.py).
+
+    Jellyfin's tuner (SharedHttpStream.Open) never looks at the status: it
+    copies whatever body arrives. FastAPI's JSON error body "opened" as a
+    stream, was probed for 3 s, and left a recording .nfo and show folder
+    behind on every retry. An empty body fails at once ("Zero bytes copied")
+    and Jellyfin retries (#140). The reason goes in X-Tentacle-Reason."""
+
+    def __init__(self, detail: str):
+        super().__init__(503, detail)
+
+
+async def tuner_refusal_handler(request, exc: "_TunerRefusal") -> Response:
+    reason = str(exc.detail or "unavailable").encode("ascii", "replace").decode("ascii")[:300]
+    return Response(status_code=503, content=b"", headers={
+        "X-Tentacle-Reason": reason,
+        "Retry-After": str(TUNER_RETRY_AFTER_SECONDS),
+        "Cache-Control": "no-cache, no-store",
+        "Connection": "close",
+    })
+
+
+class _PlaceholderRefusal(_TunerRefusal):
     """The 503 a channel open answers when the provider served a placeholder."""
 
 
 async def _refuse_placeholder(channel_id: int, segment: str):
     await _note_placeholder(channel_id, segment)
-    raise _PlaceholderRefusal(503, f"Channel unavailable: the provider served a placeholder ({segment})")
+    raise _PlaceholderRefusal(f"Channel unavailable: the provider served a placeholder ({segment})")
 
 
 def _media_segments(playlist_text: str, base_url: str) -> list:
@@ -3188,7 +3218,7 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
                                                   stream_key=(ch.stream_id or str(ch.id)) if ch else None,
                                                   certain=certain)
     except RecordingProtected:
-        raise HTTPException(503, PROTECTED_REFUSAL_DETAIL)
+        raise _TunerRefusal(PROTECTED_REFUSAL_DETAIL)
     if lease is None:
         name = ch.name if ch else f"channel {channel_id}"
         _stream_slots.refused += 1
@@ -3197,7 +3227,7 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
         logger.error(f"[LiveTV] At capacity ({limit} streams) — REFUSED {kind} '{name}' (channel {channel_id}). "
                      f"If this was a recording it is lost. Raise livetv_max_concurrent_streams "
                      f"(0 = no limit) if this server and provider can carry more.")
-        raise HTTPException(503, f"Too many concurrent live streams (limit {limit})")
+        raise _TunerRefusal(f"Too many concurrent live streams (limit {limit})")
     sem = _stream_slots
     # Ownership of the release is handed to the streaming generator on the
     # success paths; on every early-exit / error path below we release here.
@@ -3243,7 +3273,7 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
             close = getattr(upstream, "close_upstream", None)
             if close is not None:
                 await close()
-            raise HTTPException(503, "A recording needed this connection slot")
+            raise _TunerRefusal("A recording needed this connection slot")
         if not isinstance(upstream, StreamingResponse):
             # A raw-TS channel is answered with a redirect; Jellyfin then talks
             # to the provider directly and there is nothing here to share.

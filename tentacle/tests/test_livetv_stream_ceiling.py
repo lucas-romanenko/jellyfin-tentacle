@@ -125,6 +125,8 @@ class RefusalIsVisible(_Base):
 
         exc, text = asyncio.run(go())
         self.assertEqual(503, exc.status_code)
+        # Answered with no body (#140): see test_tuner_refusal_empty_body.
+        self.assertIsInstance(exc, livetv._TunerRefusal)
         self.assertIn("TSN 4", text, "the refusal must name the channel, not just its id")
         self.assertEqual(1, slots.refused)
         self.assertEqual("TSN 4", slots.last_refused["channel"])

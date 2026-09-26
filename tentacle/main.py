@@ -671,6 +671,9 @@ app.include_router(smartlists_router.router)
 app.include_router(discover_router.router)
 app.include_router(activity_router.router)
 app.include_router(livetv_router.router)
+# A refused tuner open answers 503 with no body: Jellyfin's tuner copies any
+# body as if it were the stream (#140).
+app.add_exception_handler(livetv_router._TunerRefusal, livetv_router.tuner_refusal_handler)
 from routers import vod as vod_router
 app.include_router(vod_router.router)
 app.include_router(notifications_router.router)
