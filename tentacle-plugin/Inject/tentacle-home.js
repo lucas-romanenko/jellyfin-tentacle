@@ -115,6 +115,9 @@
       MH.userId = currentUserId;
       MH.lastVersion = -1;
       cleanupHome();
+      // The navbar keeps the toolbar it fetched for the previous user; the
+      // rows below are re-fetched for the new one, the toolbar must be too.
+      refreshChrome();
     }
     if (document.getElementById('tentacle-home')) return;
 
@@ -237,6 +240,7 @@
 
         // Store sections for live-update polling and start it
         MH.activeSections = contentSections;
+        MH.activeMerge = mergeCW;
         startVersionPolling(gen);
       })
       .catch(function (err) {
@@ -969,9 +973,17 @@
   function startVersionPolling(gen) {
     stopVersionPolling();
     MH.versionPollInFlight = false;
-    // Seed initial version
+    // Seed initial version. The rows were just fetched fresh, but the toolbar
+    // and the hero were not: if the version moved while the user was on
+    // another page, a change made then (toolbar, hero) was never applied,
+    // because polling only runs on Home and re-seeding swallowed the change.
     apiGet('TentacleHome/Version')
-      .then(function (data) { MH.lastVersion = data.version || 0; })
+      .then(function (data) {
+        var v = data.version || 0;
+        var movedWhileAway = MH.lastVersion !== -1 && v !== MH.lastVersion;
+        MH.lastVersion = v;
+        if (movedWhileAway && gen === MH.generation) refreshChrome();
+      })
       .catch(function () {});
 
     MH.versionPollTimer = setInterval(function () {
@@ -986,18 +998,29 @@
       apiGet('TentacleHome/Version')
         .then(function (data) {
           MH.versionPollInFlight = false;
+          // Left Home (or re-rendered) while the poll was in flight: nothing to refresh.
+          if (gen !== MH.generation) return;
           var newVersion = data.version || 0;
           if (newVersion === MH.lastVersion) return;
           console.log('[TH] Playlist version changed: ' + MH.lastVersion + ' → ' + newVersion);
           MH.lastVersion = newVersion;
           refreshPlaylistRows(gen);
-          // Also refresh toolbar in case toolbar config changed
-          if (window.TentacleNavbar && window.TentacleNavbar.refreshToolbar) {
-            window.TentacleNavbar.refreshToolbar();
-          }
+          // Also refresh the toolbar and the hero in case their config changed
+          refreshChrome();
         })
         .catch(function () { MH.versionPollInFlight = false; });
     }, 5000);
+  }
+
+  // The parts of the page the rows refresh does not rebuild: the navbar's
+  // toolbar buttons and the media bar hero. Both re-read their own config.
+  function refreshChrome() {
+    if (window.TentacleNavbar && window.TentacleNavbar.refreshToolbar) {
+      window.TentacleNavbar.refreshToolbar();
+    }
+    if (window.TentacleMediaBar && window.TentacleMediaBar.refreshIfChanged) {
+      window.TentacleMediaBar.refreshIfChanged();
+    }
   }
 
   function stopVersionPolling() {
@@ -1025,11 +1048,16 @@
         // to the row's structure, not to its items, and comparing IDs alone
         // left it invisible until a full page reload — unlike a reorder, which
         // the same backend push made appear at once.
+        // The title and the "merge Continue Watching" flag are structure too:
+        // neither changes any row's items, so leaving them out of the key kept
+        // a renamed row's old title, and a merge toggle, until the next
+        // navigation to Home.
         var keyOf = function (s) {
-          return ((s.type === 'row' ? s.playlistId : s.sectionId) || '') + ':' + (s.shape || '');
+          return ((s.type === 'row' ? s.playlistId : s.sectionId) || '') + ':' + (s.shape || '') +
+            ':' + (s.displayText || '');
         };
-        var oldKeys = MH.activeSections.map(keyOf).join(',');
-        var newKeys = newSections.map(keyOf).join(',');
+        var oldKeys = MH.activeSections.map(keyOf).join(',') + '|merge:' + !!MH.activeMerge;
+        var newKeys = newSections.map(keyOf).join(',') + '|merge:' + mergeCW;
 
         if (oldKeys !== newKeys) {
           // Structure changed — rebuild rows container
@@ -1052,6 +1080,7 @@
             }
           });
           MH.activeSections = newSections;
+          MH.activeMerge = mergeCW;
           return;
         }
 

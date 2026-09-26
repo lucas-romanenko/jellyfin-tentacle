@@ -242,12 +242,18 @@ public class TentacleHomeController : ControllerBase
 
         var dtoOptions = new DtoOptions
         {
+            // Path lets a client tell a local file from a provider .strm (the
+            // card-previews "local_only" policy); without it every row card
+            // counted as not local. It is the item's own file path, which any
+            // user can already read from /Items?Fields=Path; MediaSources is
+            // deliberately left out (for a .strm it carries the provider URL).
             Fields = new[]
             {
                 ItemFields.PrimaryImageAspectRatio,
                 ItemFields.MediaSourceCount,
                 ItemFields.Overview,
                 ItemFields.Genres,
+                ItemFields.Path,
             },
             ImageTypes = new[]
             {
@@ -385,6 +391,7 @@ public class TentacleHomeController : ControllerBase
                 ItemFields.Overview,
                 ItemFields.Genres,
                 ItemFields.MediaSourceCount,
+                ItemFields.Path, // see GetSectionItems
             },
             ImageTypes = new[]
             {
@@ -564,7 +571,21 @@ public class TentacleHomeController : ControllerBase
         var homeConfig = _homeScreenManager.GetHomeConfig(caller.UserId, GetApiKey());
         if (homeConfig?.Hero is { Enabled: true } hero && !string.IsNullOrEmpty(hero.PlaylistId))
         {
-            return Ok(new { enabled = true, playlistId = hero.PlaylistId, displayName = hero.DisplayName, trailerAudio = hero.TrailerAudio, itemCount = hero.ItemCount });
+            // The sort and filters are here too so a client can tell that the
+            // hero's content changed, not only its playlist (a sort change used
+            // to reach the web home only after a full page reload).
+            return Ok(new
+            {
+                enabled = true,
+                playlistId = hero.PlaylistId,
+                displayName = hero.DisplayName,
+                trailerAudio = hero.TrailerAudio,
+                itemCount = hero.ItemCount,
+                sortBy = hero.SortBy,
+                sortOrder = hero.SortOrder,
+                requireLogo = hero.RequireLogo,
+                requireTrailer = hero.RequireTrailer,
+            });
         }
 
         // Return whatever the backend has — defaults are set by the Tentacle dashboard, not the plugin

@@ -71,15 +71,10 @@
             // Fetch hero config to get trailerAudio default
             var self = this;
             var configUrl = this.apiClient.getUrl('TentacleHome/HeroConfig', { userId: this.userId });
+            var initUser = this.userId;
             this.apiClient.getJSON(configUrl).then(function (cfg) {
-                if (cfg && cfg.trailerAudio === false) {
-                    self._defaultMuted = true;
-                    self._isMuted = true;
-                } else if (cfg && cfg.trailerAudio === true) {
-                    self._defaultMuted = false;
-                    self._isMuted = false;
-                }
-                self._updateMuteButton();
+                if (self.userId !== initUser) return; // user switched meanwhile
+                self._applyHeroConfig(cfg);
             }).catch(function () {});
 
             this.loadContent().then(function () {
@@ -147,6 +142,77 @@
 
             // Fixed position hero — append to body, rows scroll over it
             document.body.appendChild(this.container);
+        },
+
+        // Called by the home page when the dashboard's settings version moves:
+        // reload the hero only when its configuration (playlist, sort, filters,
+        // count) changed. Reloading on every version bump would reshuffle a
+        // Random hero whenever any playlist anywhere changed.
+        //
+        // Only ever acts on Home. If the user leaves Home (hide() bumps the
+        // generation) or switches user while HeroConfig is in flight, the answer
+        // is dropped WITHOUT storing its key, so show() picks the change up on
+        // the next Home visit. Reloading off Home started the slide timer and
+        // trailer lookups in the hidden media bar.
+        refreshIfChanged: function () {
+            var self = this;
+            if (!this.initialized || !this.apiClient || !this.isHomePage()) return Promise.resolve(false);
+            // Share an in-flight request only while it can still succeed: one
+            // started before hide() (an older generation) would resolve false
+            // and drop a change on a quick Home -> away -> Home trip.
+            if (this._heroCfgInFlight && this._heroCfgInFlightUser === this.userId &&
+                    this._heroCfgInFlightGen === this.generation) return this._heroCfgInFlight;
+            var gen = this.generation;
+            var forUser = this.userId;
+            var configUrl = this.apiClient.getUrl('TentacleHome/HeroConfig', { userId: forUser });
+            var p = this.apiClient.getJSON(configUrl).then(function (cfg) {
+                if (gen !== self.generation || forUser !== self.userId || !self.isHomePage()) return false;
+                var key = JSON.stringify(cfg || null);
+                if (key === self._heroConfigKey) return false;
+                var prevKey = self._heroConfigKey;
+                self._applyHeroConfig(cfg);
+                // If this load is cancelled (the user leaves Home before the hero
+                // items arrive) or fails, forget the new key again so the next
+                // Home visit retries instead of believing it is up to date.
+                // Only while no later refresh has applied a config since (it may
+                // carry the very same key and have loaded fine).
+                var myTok = self._heroKeyTok = (self._heroKeyTok || 0) + 1;
+                var undo = function () { if (self._heroKeyTok === myTok) { self._heroConfigKey = prevKey; self._heroKeyTok++; } return false; };
+                var loading = self.loadContent();
+                var loadGen = self.generation;
+                // hide() calls this at once, so a Home visit that starts before
+                // this load settles already sees the old key and asks again.
+                self._pendingHeroUndo = undo;
+                var settled = function () { if (self._pendingHeroUndo === undo) self._pendingHeroUndo = null; };
+                return loading.then(function () {
+                    settled();
+                    if (self.generation !== loadGen) return undo();
+                    if (!self.isHomePage()) return true;
+                    if (self.items.length > 0 && self._autoAdvance) self.resetAutoAdvance();
+                    return true;
+                }, function () { settled(); return undo(); });
+            }).catch(function () { return false; });
+            this._heroCfgInFlight = p;
+            this._heroCfgInFlightUser = forUser;
+            this._heroCfgInFlightGen = gen;
+            var clear = function () { if (self._heroCfgInFlight === p) self._heroCfgInFlight = null; };
+            p.then(clear, clear);
+            return p;
+        },
+
+        // Remember the hero config the media bar was built from and apply its
+        // trailer-audio default (a dashboard change to it used to keep the old
+        // mute state until a full reload).
+        _applyHeroConfig: function (cfg) {
+            this._heroConfigKey = JSON.stringify(cfg || null);
+            if (cfg && cfg.trailerAudio === false) {
+                this._defaultMuted = true;
+                this._isMuted = true;
+            } else if (cfg && cfg.trailerAudio === true) {
+                this._defaultMuted = false;
+                this._isMuted = false;
+            }
+            this._updateMuteButton();
         },
 
         loadContent: function () {
@@ -673,21 +739,61 @@
                 }
                 // If container was detached/re-attached or the user switched,
                 // reload content to avoid showing stale or another user's hero
-                if ((wasDetached || userChanged) && this.apiClient) {
+                if (userChanged && this.apiClient) {
+                    // Forget the previous user's hero config and load this user's
+                    // through refreshIfChanged: it stores the new key only once the
+                    // hero really loaded (retried on the next visit otherwise), so
+                    // the next bump neither misses the change nor reloads (and
+                    // reshuffles) a second time.
+                    // Drop the previous user's hero NOW, before any request: if
+                    // the new user's HeroConfig fails, their hero must not be the
+                    // previous user's items cycling on (review R6-1).
+                    this.generation++;          // cancel the old user's in-flight loads
+                    this.stopTrailer();
+                    this.stopAutoAdvance();
+                    this.items = [];
+                    this.currentIndex = 0;
+                    this.container.classList.add('empty');
+                    document.body.classList.remove('moonfin-mediabar-active');
+                    this._heroConfigKey = undefined;
+                    var switchedTo = this.userId;
+                    this.refreshIfChanged().then(function (loaded) {
+                        // HeroConfig failed (or was dropped): load the hero itself,
+                        // as before; the key stays unset so the next visit retries.
+                        if (loaded || self.userId !== switchedTo || !self.isHomePage() ||
+                                self._heroConfigKey !== undefined) return;
+                        self.loadContent().then(function () {
+                            if (!self.isHomePage() || self.userId !== switchedTo) return;
+                            if (self.items.length > 0 && self._autoAdvance) self.resetAutoAdvance();
+                        }).catch(function () {});
+                    });
+                } else if (wasDetached && this.apiClient) {
                     this.loadContent().then(function () {
+                        if (!self.isHomePage()) return;
                         if (self.items.length > 0 && self._autoAdvance) {
                             self.resetAutoAdvance();
                         }
                     }).catch(function () {});
-                } else if (this.items && this.items.length > 0 && this._autoAdvance) {
-                    // Restart the timer stopped by hide()
-                    this.resetAutoAdvance();
+                } else {
+                    if (this.items && this.items.length > 0 && this._autoAdvance) {
+                        // Restart the timer stopped by hide()
+                        this.resetAutoAdvance();
+                    }
+                    // A hero change that arrived while the user was away from
+                    // Home (refreshIfChanged drops it there) applies now.
+                    this.refreshIfChanged();
                 }
             }
         },
 
         hide: function () {
             this.generation++; // cancel any in-flight API calls
+            // A hero reload cancelled by this hide must not leave its new key
+            // behind for the next show() to trust (review round 2, S2).
+            if (this._pendingHeroUndo) {
+                this._pendingHeroUndo();
+                this._pendingHeroUndo = null;
+            }
             if (this.container) {
                 this.container.classList.add('hidden');
                 document.body.classList.remove('moonfin-mediabar-active');
