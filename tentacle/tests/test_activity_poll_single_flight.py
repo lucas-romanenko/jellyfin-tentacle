@@ -1,11 +1,13 @@
-"""The dashboard's Activity poll must not pile up behind a slow answer (#171).
+"""An older Activity answer never replaces a newer one (#171).
 
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 
-setInterval(loadActivity, 3000) did not wait for the previous answer: behind
-an 8 s Sonarr one answer took 64 s and eighteen requests were in flight at
-once, holding every other dashboard request behind the browser's six
-connections. Runs the real loadActivity() from pages.js under node.
+With a slow Radarr/Sonarr one /api/activity answer took a minute. The pollers
+now skip a tick while their request is out and cancel one out for too long
+(test_activity_poll_stale_guard.py). An action (Search again, Remove, Stop
+looking) still asks for a fresh read at once, so two answers can be out
+together and land in either order: the one asked for last must win. Runs the
+real loadActivity() from pages.js under node.
 """
 import json
 import shutil
@@ -18,8 +20,8 @@ PAGES = Path(__file__).resolve().parents[1] / "static" / "js" / "pages.js"
 
 def _loader_source():
     src = PAGES.read_text(encoding="utf-8")
-    start = src.index("let _activityPromise = null;")
-    end = src.index("\n}\n", src.index("function loadActivity(")) + 2
+    start = src.index("let _activitySeq = 0;")
+    end = src.index("\n}\n", src.index("async function loadActivity(")) + 2
     return src[start:end]
 
 
@@ -27,37 +29,31 @@ SCRIPT = """
 let _activityData = null;
 const rendered = [];
 const pending = [];
-let requests = 0;
-function api(path) { requests++; return new Promise(res => pending.push(res)); }
+function _fetchActivity(signal) { return new Promise(res => pending.push(res)); }
 function renderActivity(d) { rendered.push(d.tag); }
 const document = { getElementById(id) { return id === 'discover-tab-activity' ? { style: { display: '' } } : null; } };
 %s
 (async () => {
   const out = {};
-  // Five polls while the first answer is out: one request.
-  const polls = [1, 2, 3, 4, 5].map(() => loadActivity());
-  out.after_polls = requests;
-  out.same_promise = polls.every(p => p === polls[0]);
-  // An action asks for a fresh read while the poll is still out.
-  const fresh = loadActivity(true);
-  out.after_fresh = requests;
-  // The fresh answer lands first, then the old poll's answer arrives late.
+  const poll = loadActivity();       // a poll, still out
+  const action = loadActivity();     // an action's refresh, asked for after it
+  out.requests = pending.length;
   pending[1]({ tag: 'fresh', downloads: [] });
-  await fresh;
+  await action;
   pending[0]({ tag: 'stale', downloads: [] });
-  await polls[0];
-  out.rendered = rendered;
+  await poll;
+  out.rendered = rendered.slice();
   out.data = _activityData.tag;
-  // Once nothing is out, the next poll makes a new request.
-  loadActivity();
-  out.after_next = requests;
+  // In order, every answer is shown.
+  const a = loadActivity(); pending[2]({ tag: 'next', downloads: [] }); await a;
+  out.after = rendered.slice();
   process.stdout.write(JSON.stringify(out));
 })();
 """
 
 
 @unittest.skipUnless(shutil.which("node"), "node is not installed")
-class ActivityPollSingleFlight(unittest.TestCase):
+class ActivityAnswersInOrder(unittest.TestCase):
     def setUp(self):
         run = subprocess.run(["node", "-e", SCRIPT % _loader_source()],
                              capture_output=True, text=True, timeout=30)
@@ -65,26 +61,15 @@ class ActivityPollSingleFlight(unittest.TestCase):
             raise AssertionError(run.stderr)
         self.out = json.loads(run.stdout)
 
-    def test_polls_join_the_request_already_out(self):
-        self.assertEqual(1, self.out["after_polls"])
-        self.assertTrue(self.out["same_promise"])
-
-    def test_an_action_gets_a_fresh_read(self):
-        self.assertEqual(2, self.out["after_fresh"])
+    def test_an_action_asks_even_while_a_poll_is_out(self):
+        self.assertEqual(2, self.out["requests"])
 
     def test_an_older_answer_never_replaces_a_newer_one(self):
         self.assertEqual(["fresh"], self.out["rendered"])
         self.assertEqual("fresh", self.out["data"])
 
-    def test_the_next_poll_asks_again(self):
-        self.assertEqual(3, self.out["after_next"])
-
-    def test_the_library_panel_poll_waits_too(self):
-        src = PAGES.read_text(encoding="utf-8")
-        body = src[src.index("async function pollLibDownloads()"):]
-        body = body[:body.index("\n}\n")]
-        self.assertIn("if (_dlPollInFlight) return;", body)
-        self.assertIn("finally { _dlPollInFlight = false; }", body)
+    def test_answers_in_order_are_all_shown(self):
+        self.assertEqual(["fresh", "next"], self.out["after"])
 
 
 if __name__ == "__main__":

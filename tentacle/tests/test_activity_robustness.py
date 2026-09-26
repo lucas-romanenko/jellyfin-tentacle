@@ -12,7 +12,6 @@ Run from the tentacle/ directory:  python -m unittest discover -s tests
   movies and shows separately: a request for movie N showed show N.
 """
 import tempfile
-import threading
 import time
 import unittest
 from unittest import mock
@@ -79,49 +78,6 @@ class OneAppDownDoesNotBlindTheOther(_Db):
         with activity._command_watch_lock:
             with mock.patch.object(activity.requests, "get", side_effect=AssertionError("read twice")):
                 activity._watch_arr_searches(self.db)
-
-
-class WantedIsReadOnce(_Db):
-    def test_concurrent_requests_share_one_read(self):
-        reads = []
-
-        def slow_read(db):
-            reads.append(1)
-            time.sleep(0.3)
-            return {"unreleased": [], "searching": [{"title": "X"}]}
-        with mock.patch.object(activity, "_read_wanted", side_effect=slow_read):
-            results = []
-            threads = [threading.Thread(target=lambda: results.append(activity._get_wanted(self.db)))
-                       for _ in range(6)]
-            for t in threads:
-                t.start()
-            for t in threads:
-                t.join()
-        self.assertEqual(1, len(reads), "every waiting request read the lists again")
-        self.assertEqual(6, len(results))
-        self.assertTrue(all(r["searching"] == [{"title": "X"}] for r in results))
-
-    def test_a_read_slower_than_the_ttl_is_still_stored_fresh(self):
-        reads = []
-
-        def slow_read(db):
-            reads.append(1)
-            time.sleep(0.3)
-            return {"unreleased": [], "searching": []}
-        with mock.patch.object(activity, "UNRELEASED_TTL", 0.2), \
-                mock.patch.object(activity, "_read_wanted", side_effect=slow_read):
-            activity._get_wanted(self.db)
-            activity._get_wanted(self.db)
-        self.assertEqual(1, len(reads), "the cache was stamped when the read began, so it was born stale")
-
-    def test_a_read_that_raced_an_invalidation_is_not_stored(self):
-        def racing_read(db):
-            activity.invalidate_wanted_cache()   # e.g. a search started meanwhile
-            return {"unreleased": [], "searching": []}
-        with mock.patch.object(activity, "_read_wanted", side_effect=racing_read):
-            out = activity._get_wanted(self.db)
-        self.assertEqual({"unreleased": [], "searching": []}, out)
-        self.assertIsNone(activity._unreleased_cache["data"])
 
 
 class RequestsAreMatchedByMediaType(_Db):

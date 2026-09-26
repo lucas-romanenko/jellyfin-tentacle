@@ -16,10 +16,10 @@ class PosterFailure(unittest.TestCase):
         self.assertNotIn("this.parentElement.innerHTML", PAGES)
 
     def test_only_the_image_is_replaced(self):
-        fn = PAGES[PAGES.index("function _posterFailed(img) {"):]
-        fn = fn[:fn.index("\n}\n")]
-        self.assertIn("img.outerHTML = '<div class=\"lib-card-poster-placeholder\">◫</div>'", fn)
-        self.assertGreaterEqual(PAGES.count('onerror="_posterFailed(this)"'), 2)
+        for card in ("function renderLibCard(", "function renderDiscoverGrid("):
+            body = PAGES[PAGES.index(card):]
+            body = body[:body.index("\n}\n")]
+            self.assertIn("""onerror="this.outerHTML='<div class=\\\\'lib-card-poster-placeholder\\\\'>◫</div>'\"""", body, card)
 
 
 if __name__ == "__main__":
