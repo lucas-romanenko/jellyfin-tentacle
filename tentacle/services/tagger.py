@@ -342,6 +342,32 @@ def set_row_tags(row, tags: list) -> bool:
     return True
 
 
+def tag_conflict(db: Session, tag: str, user_id: Optional[int], list_id: Optional[int] = None,
+                 rule_id: Optional[int] = None) -> Optional[str]:
+    """Why `tag` cannot name this user's list or custom playlist, or None.
+
+    Tags live on the shared library items, so two users' lists or rules with
+    one tag feed one another's playlists (#153, #162), and a list named after
+    one of Tentacle's own tags ("Netflix Movies") would compete with it. The
+    same user's list and rule may share a name: that is one playlist, their
+    union. Compared case-insensitively. Rows with no user are the pre-multi-user
+    owner's, and count as this user's.
+    """
+    wanted = (tag or "").strip().lower()
+    if not wanted:
+        return "A name is required"
+    if wanted in {t.lower() for t in builtin_tags(db)}:
+        return f"'{tag}' is one of Tentacle's own playlists — pick a different name"
+    for lst in db.query(ListSubscription).filter(ListSubscription.tag.isnot(None)).all():
+        if (lst.tag or "").strip().lower() == wanted and lst.id != list_id and lst.user_id not in (None, user_id):
+            return f"Another user already has a list or playlist called '{tag}' — pick a different name"
+    for rule in db.query(TagRule).filter(TagRule.output_tag.isnot(None)).all():
+        if (rule.output_tag or "").strip().lower() == wanted and rule.id != rule_id \
+                and rule.user_id not in (None, user_id):
+            return f"Another user already has a list or playlist called '{tag}' — pick a different name"
+    return None
+
+
 def tentacle_owned_tags(db: Session) -> set:
     """Every tag name Tentacle itself can put on a Jellyfin item.
 

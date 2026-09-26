@@ -187,5 +187,46 @@ class RecencyCleanUpScope(_Db):
                          self.tags(1))
 
 
+class TagCollisionsAreRefused(_Db):
+    """#153/#162: a second user's list or rule may not reuse a tag."""
+
+    def _create_list(self, user, tag):
+        from routers.lists import ListCreate, create_list
+        return create_list(ListCreate(name=tag, type="trakt", url="https://trakt.tv/users/x/lists/y", tag=tag),
+                           db=self.db, user=user)
+
+    def _create_rule(self, user, tag):
+        from routers.tags import TagRuleCreate, create_rule
+        return create_rule(TagRuleCreate(name=tag, output_tag=tag, conditions=[
+            {"field": "genre", "operator": "contains", "value": "Drama"}]), db=self.db, user=user)
+
+    def test_another_users_list_tag_is_refused_for_a_list_and_a_rule(self):
+        from fastapi import HTTPException
+        self._create_list(self.a, "Watchlist")
+        for create in (self._create_list, self._create_rule):
+            with self.assertRaises(HTTPException) as cm:
+                create(self.b, "watchlist")
+            self.assertEqual(400, cm.exception.status_code)
+
+    def test_the_same_user_may_share_a_name_between_a_list_and_a_rule(self):
+        self._create_list(self.a, "Rom-Com")
+        self.assertTrue(self._create_rule(self.a, "Rom-Com")["success"])
+
+    def test_tentacles_own_tags_are_refused(self):
+        from fastapi import HTTPException
+        self.movie(1)  # gives the source tag "Netflix"
+        for tag in ("Netflix Movies", "Recently Added TV", "downloaded movies"):
+            with self.assertRaises(HTTPException):
+                self._create_list(self.a, tag)
+
+    def test_renaming_a_rule_onto_another_users_tag_is_refused(self):
+        from fastapi import HTTPException
+        from routers.tags import TagRuleUpdate, update_rule
+        self._create_list(self.a, "Watchlist")
+        rid = self._create_rule(self.b, "Mine")["id"]
+        with self.assertRaises(HTTPException):
+            update_rule(rid, TagRuleUpdate(output_tag="Watchlist"), db=self.db, user=self.b)
+
+
 if __name__ == "__main__":
     unittest.main()

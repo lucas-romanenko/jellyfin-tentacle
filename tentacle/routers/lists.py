@@ -688,6 +688,10 @@ def create_list(body: ListCreate, db: Session = Depends(get_db), user: TentacleU
     if not list_url_is_allowed(body.type, body.url or ""):
         raise HTTPException(400, f"A {body.type} list URL must be a public "
                                  f"{'/'.join(sorted(LIST_ALLOWED_HOSTS[body.type]))} address")
+    from services.tagger import tag_conflict
+    conflict = tag_conflict(db, body.tag, user.id)
+    if conflict:
+        raise HTTPException(400, conflict)
     lst = ListSubscription(
         name=body.name,
         type=body.type,

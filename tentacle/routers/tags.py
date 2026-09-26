@@ -99,6 +99,10 @@ def list_rules(db: Session = Depends(get_db), user: TentacleUser = Depends(get_u
 def create_rule(body: TagRuleCreate, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     if not body.conditions:
         raise HTTPException(400, "At least one condition is required")
+    from services.tagger import tag_conflict
+    conflict = tag_conflict(db, body.output_tag, user.id)
+    if conflict:
+        raise HTTPException(400, conflict)
 
     rule = TagRule(
         name=body.name,
@@ -125,7 +129,10 @@ def update_rule(rule_id: int, body: TagRuleUpdate, db: Session = Depends(get_db)
         rule.name = body.name
     if body.output_tag is not None:
         if body.output_tag != rule.output_tag:
-            from services.tagger import retire_tag
+            from services.tagger import retire_tag, tag_conflict
+            conflict = tag_conflict(db, body.output_tag, user.id, rule_id=rule.id)
+            if conflict:
+                raise HTTPException(400, conflict)
             retire_tag(db, rule.output_tag)
         rule.output_tag = body.output_tag
     if body.active is not None:
