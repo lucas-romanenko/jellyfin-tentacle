@@ -489,6 +489,9 @@ def _after_scan(db, tmdb_id, title, event_type, first_episode=None, episode_coun
         })
     except Exception as e:
         logger.error(f"[Sonarr webhook] Background processing failed: {e}", exc_info=True)
+        # The batch's other series share this session: a failed flush must not
+        # fail every one after it.
+        db.rollback()
 
 
 # ── Webhook coalescing (#182) ─────────────────────────────────────────────
@@ -516,10 +519,13 @@ def _queue_webhook_event(tmdb_id, title, event_type, episodes) -> None:
         entry = _webhook_pending.get(key)
         if entry is None:
             _webhook_pending[key] = {"tmdb_id": tmdb_id, "title": title, "event_type": event_type,
-                                     "episodes": list(episodes or [])}
+                                     "episodes": list(episodes or []) if event_type == "Download" else []}
         else:
             # A Download outranks the others: it carries the episodes and the
-            # ready-to-watch notification.
+            # ready-to-watch notification. Only a Download's episodes count: a
+            # deleted episode is not a new one.
+            if event_type == "Download" and entry["event_type"] != "Download":
+                entry["episodes"] = []
             if event_type == "Download" or entry["event_type"] != "Download":
                 entry["event_type"] = event_type
             if event_type == "Download":
@@ -568,9 +574,16 @@ def _drain_webhook_batches() -> None:
             logger.info(f"[Sonarr webhook] One scan for {len(batch)} series")
             scan_sonarr_library(db)
             for entry in batch:
+                # A file deleted or a series added downloaded nothing: the scan
+                # is all it needs. Its tail used to push tags, refresh the item
+                # (waiting 30 s for images), add it to playlists and log
+                # "Sonarr downloaded" for a deletion (#182).
+                if entry["event_type"] != "Download":
+                    logger.info(f"[Sonarr webhook] {entry['event_type']} for '{entry['title']}': library rescanned")
+                    continue
                 eps = entry["episodes"]
                 _after_scan(db, entry["tmdb_id"], entry["title"], entry["event_type"],
-                            eps[-1] if eps else None, episode_count=max(1, len(eps)))
+                            eps[0] if eps else None, episode_count=max(1, len(eps)))
         except Exception as e:
             logger.error(f"[Sonarr webhook] Processing failed: {e}", exc_info=True)
         finally:

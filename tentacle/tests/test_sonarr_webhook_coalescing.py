@@ -75,11 +75,14 @@ class Coalescing(unittest.TestCase):
             self.assertEqual("processing", self._post(_event("EpisodeFileDelete", 1399, "Friends"))["status"])
         self._wait()
         self.assertEqual(1, len(self.scans))
-        self.assertEqual([(1399, "EpisodeFileDelete", 1, None)], self.after)
+        # A deletion downloaded nothing: no tag push, image wait, playlist add,
+        # "Sonarr downloaded" line or series_added event — the scan is all.
+        self.assertEqual([], self.after)
 
     def test_two_series_share_one_scan_and_each_gets_its_follow_up(self):
         self._post(_event("Download", 1399, "Friends", [1]))
-        self._post(_event("SeriesAdd", 1668, "Other"))
+        self._post(_event("Download", 1668, "Other", [2]))
+        self._post(_event("SeriesAdd", 1100, "Added"))
         self._wait()
         self.assertEqual(1, len(self.scans))
         self.assertEqual({1399, 1668}, {a[0] for a in self.after})
@@ -89,7 +92,13 @@ class Coalescing(unittest.TestCase):
         self._post(_event("Download", 1399, "Friends", [3]))
         self._post(_event("Download", 1399, "Friends", [4]))
         self._wait()
-        self.assertEqual([(1399, "Download", 2, 4)], self.after)
+        self.assertEqual([(1399, "Download", 2, 3)], self.after)
+
+    def test_a_deleted_episode_is_not_counted_as_a_new_one(self):
+        self._post(_event("EpisodeFileDelete", 1399, "Friends", [1]))
+        self._post(_event("Download", 1399, "Friends", [5]))
+        self._wait()
+        self.assertEqual([(1399, "Download", 1, 5)], self.after)
 
     def test_events_during_a_scan_make_the_next_batch(self):
         started, release = threading.Event(), threading.Event()
@@ -107,7 +116,7 @@ class Coalescing(unittest.TestCase):
             release.set()
             self._wait()
         self.assertEqual(2, len(self.scans))
-        self.assertEqual([(1399, "Download", 1, 1), (1399, "Download", 2, 3)], self.after)
+        self.assertEqual([(1399, "Download", 1, 1), (1399, "Download", 2, 2)], self.after)
 
     def test_a_failed_batch_does_not_strand_later_events(self):
         calls = []
