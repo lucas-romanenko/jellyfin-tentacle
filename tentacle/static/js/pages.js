@@ -4922,6 +4922,41 @@ function _activityWaited(iso) {
   return Math.floor(hrs / 24) + 'd';
 }
 
+// Every Activity card opens the title's detail (#143). The tab re-renders
+// every 3 s, so one delegated listener serves them all; a card's own buttons
+// (Search again, Why? / Pick, …) keep doing only their own thing, and a card
+// with neither a TMDB nor a TVDB id stays inert.
+let _actOpenable = {};
+function _actOpenAttrs(item) {
+  if (!item || (!item.tmdb_id && !item.tvdb_id)) return '';
+  const key = _actKey(item);
+  _actOpenable[key] = item;
+  return ` role="button" tabindex="0" data-act-open="${escapeAttr(key)}"`;
+}
+function _activityOpen(key) {
+  const item = _actOpenable[key];
+  if (!item) return;
+  showDiscoverDetail(item.tmdb_id || 0, item.media_type === 'series' ? 'series' : 'movie', item.title || '',
+                     String(item.year || ''), item.poster_path || '', false, item.tvdb_id || 0);
+}
+function _bindActivityCards(content) {
+  if (content._actBound) return;
+  content._actBound = true;
+  content.addEventListener('click', e => {
+    if (e.target.closest('button, a, input, select, textarea')) return;
+    const card = e.target.closest('[data-act-open]');
+    if (card && content.contains(card)) _activityOpen(card.dataset.actOpen);
+  });
+  content.addEventListener('keydown', e => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const card = e.target;
+    if (card && card.matches && card.matches('[data-act-open]')) {
+      e.preventDefault();
+      _activityOpen(card.dataset.actOpen);
+    }
+  });
+}
+
 function renderActivity(data) {
   const content = document.getElementById('activity-content');
   if (!content) return;
@@ -4931,6 +4966,8 @@ function renderActivity(data) {
   const downloads = data.downloads || [];
   const unreleased = data.unreleased || [];
   let html = '';
+  _actOpenable = {};
+  _bindActivityCards(content);
 
   // What in Radarr/Sonarr is stopping downloads (indexers, download client, disk).
   const problems = data.problems || [];
@@ -4957,7 +4994,7 @@ function renderActivity(data) {
       const qualityLabel = dl.quality ? escapeAttr(dl.quality) : '';
       const reqByLabel = dl.requested_by ? `<span class="activity-requested-by">${escapeAttr(dl.requested_by)}</span>` : '';
       const metaParts = [qualityLabel, sizeLabel].filter(Boolean).join(' · ');
-      return `<div class="activity-card">
+      return `<div class="activity-card"${_actOpenAttrs(dl)}>
         <div class="activity-poster">${poster}</div>
         <div class="activity-info">
           <div class="activity-title">${escapeAttr(dl.title)}${epLabel}</div>
@@ -4990,7 +5027,7 @@ function renderActivity(data) {
         : (disk ? 'Delete show' : 'Remove');
       const removeTitle = disk ? `Delete the whole show from ${arr}, including ${disk} downloaded episode${disk === 1 ? '' : 's'}`
         : `Remove from ${arr}, folder included`;
-      return `<div class="activity-card">
+      return `<div class="activity-card"${_actOpenAttrs(item)}>
         <div class="activity-poster">${poster}</div>
         <div class="activity-info">
           <div class="activity-title">${escapeAttr(item.title)}${item.episode ? ' · ' + escapeAttr(item.episode) : ''}</div>
@@ -5018,7 +5055,7 @@ function renderActivity(data) {
     html += recent.map(item => {
       const poster = _activityPoster(item.poster_path);
       const hrs = item.hours_remaining != null ? `${item.hours_remaining}h left` : '';
-      return `<div class="activity-card">
+      return `<div class="activity-card"${_actOpenAttrs(item)}>
         <div class="activity-poster">${poster}</div>
         <div class="activity-info">
           <div class="activity-title">${escapeAttr(item.title)}${item.episode ? ' · ' + escapeAttr(item.episode) : ''}</div>
@@ -5033,7 +5070,7 @@ function renderActivity(data) {
   const coming = data.coming_up || [];
   if (coming.length > 0) {
     html += '<div class="activity-section-title">Coming up this week</div><div class="activity-grid">';
-    html += coming.map(item => `<div class="activity-card">
+    html += coming.map(item => `<div class="activity-card"${_actOpenAttrs(item)}>
         <div class="activity-poster">${_activityPoster(item.poster_path)}</div>
         <div class="activity-info">
           <div class="activity-title">${escapeAttr(item.title)} · ${escapeAttr(item.episode)}</div>
@@ -5055,7 +5092,7 @@ function renderActivity(data) {
         const diff = Math.ceil((rd - now) / 86400000);
         daysUntil = diff <= 0 ? 'Releasing soon' : diff === 1 ? 'Tomorrow' : diff + ' days';
       }
-      return `<div class="activity-card">
+      return `<div class="activity-card"${_actOpenAttrs(item)}>
         <div class="activity-poster">${poster}</div>
         <div class="activity-info">
           <div class="activity-title">${escapeAttr(item.title)}</div>
