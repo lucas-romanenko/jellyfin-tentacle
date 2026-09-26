@@ -665,6 +665,12 @@ class LiveChannel(Base):
     logo_url = Column(String, nullable=True)
     group_title = Column(String, nullable=True)  # Category/group from provider
     epg_channel_id = Column(String, nullable=True)  # tvg-id for EPG matching
+    # The admin's own guide id for the channel. Channel syncs never touch it,
+    # and it wins over everything below (#141).
+    epg_id_override = Column(String, nullable=True)
+    # The feed channel the last EPG sync matched by NAME, because the tvg-id
+    # was missing or the feed did not carry it (#141). Recomputed every sync.
+    epg_name_match = Column(String, nullable=True)
 
     # Management
     enabled = Column(Boolean, default=False)  # User must enable channels
@@ -683,6 +689,22 @@ class LiveChannel(Base):
     def guide_name(self) -> str:
         """The name Jellyfin's guide shows: the user's name, else the provider's."""
         return (self.custom_name or "").strip() or self.name
+
+    @property
+    def guide_epg_id(self):
+        """The guide id this channel's programmes are stored and served under:
+        the override, else a name match, else the provider's tvg-id."""
+        return ((self.epg_id_override or "").strip() or self.epg_name_match
+                or (self.epg_channel_id or "").strip() or None)
+
+    @property
+    def epg_match(self):
+        """How guide_epg_id was chosen: "override", "name", "tvg-id" or None."""
+        if (self.epg_id_override or "").strip():
+            return "override"
+        if self.epg_name_match:
+            return "name"
+        return "tvg-id" if (self.epg_channel_id or "").strip() else None
 
 
 class LiveChannelGroup(Base):

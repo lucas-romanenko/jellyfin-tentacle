@@ -65,16 +65,29 @@ Some IPTV providers are behind Cloudflare. In those cases, `.ts` streams may be 
 
 ## EPG SYNC FLOW
 
-1. Get ALL provider channels (not just enabled) with `epg_channel_id` values
+1. Get ALL provider channels (not just enabled)
 2. Determine XMLTV URL (provider's `epg_url` override, or Xtream `get_xmltv_url()`)
-3. Clear old EPG data for ALL provider channels (by provider_id, not just enabled EPG IDs)
-4. Stream-parse XMLTV (memory-efficient `ET.iterparse()`):
+3. Stream-parse XMLTV (memory-efficient `ET.iterparse()`, the root emptied after each programme):
    - Download full XMLTV from provider (8-hour disk cache at `/data/xmltv_cache/`)
-   - Keep programs matching ALL provider channels' `epg_channel_id` (not just enabled)
+   - Read the feed's `<channel>` list first (the DTD puts it before the programmes) and match
+     every channel to a feed channel (`services/epg_match.py`), in this order:
+     1. `epg_id_override`, the admin's own guide id (never touched by a sync);
+     2. the provider's tvg-id (`epg_channel_id`), when the feed carries it;
+     3. the channel name, normalised by `services/channel_names.py` (country tag, superscripts,
+        accents and HD/FHD/RAW markers folded), and only when the normalised name is unique on both
+        sides. An ambiguous name is reported, never guessed. The match is stored in `epg_name_match`.
+   - Keep programs for every matched channel (not just enabled), with `<sub-title>` and `<icon>`
    - Handle gzip decompression automatically
    - Progress callback updates UI
-5. Batch insert programs into `EPGProgram` table (chunks of 5000)
+4. Replace the old guide data for those channels (including ids a channel no longer maps to) and
+   batch insert programs into `EPGProgram` (chunks of 5000)
+5. Store a coverage report (`GET /api/live/epg-coverage`): how many enabled channels have a guide,
+   by which rule, and which do not and why (no tvg-id, a tvg-id the feed lacks, an ambiguous name,
+   one tvg-id shared by unrelated channels). Its summary is in the sync status and Activity.
 6. Auto-trigger Jellyfin guide refresh if server address configured
+
+A channel's guide id is `LiveChannel.guide_epg_id`: the override, else the name match, else the
+tvg-id. The lineup's XMLTV, the M3U's `tvg-id` and the EPG badge all use it.
 
 **Why all channels?** Storing EPG for all channels means newly-enabled channels already have guide data. Users can enable more channels and click "Refresh Jellyfin" without needing a separate EPG sync.
 
@@ -120,7 +133,9 @@ The intended flow for users adding channels incrementally:
 ### LiveChannel
 ```
 id, provider_id (FK), name, channel_number (nullable), stream_id (unique per provider)
-stream_url, logo_url, group_title, epg_channel_id (for EPG matching)
+stream_url, logo_url, group_title, epg_channel_id (the provider's tvg-id)
+custom_name (the admin's name for the guide), epg_id_override (the admin's guide id),
+epg_name_match (feed channel matched by name at the last EPG sync)
 enabled (default False), sort_order, created_at, updated_at
 ```
 
@@ -132,7 +147,7 @@ Unique: (provider_id, name)
 
 ### EPGProgram
 ```
-id, channel_id (matches epg_channel_id), title, description
+id, channel_id (a channel's guide_epg_id), title, sub_title, description
 start, stop, category, icon_url
 Unique: (channel_id, start)
 ```
@@ -200,6 +215,7 @@ POST     /api/live/sync/{provider_id}    — Phase 1: fetch groups with channel 
 POST     /api/live/sync-channels/{id}    — Phase 2: fetch channels for enabled groups
 POST     /api/live/sync-epg/{id}         — Fetch EPG data (XMLTV, cached 8h)
 GET      /api/live/sync-status           — Sync progress polling
+GET      /api/live/epg-coverage          — Last EPG sync's matching report per provider
 GET      /api/live/channels              — List channels (filter: group, enabled, search, has_epg)
 PUT      /api/live/channels/{id}         — Update channel
 POST     /api/live/channels/bulk         — Bulk enable/disable by ID list
@@ -229,7 +245,8 @@ GET      /hdhr/device.xml                — UPnP device descriptor
 
 ### Channels tab
 - Paginated list (100/page) with logos, EPG badges, toggle switches
-- EPG badge = "Has EPG" if actual program data exists in the DB for that channel's `epg_channel_id` (accurate after first EPG sync, which auto-chains from channel sync)
+- EPG badge = "Has EPG" / "EPG (by name)" / "EPG (set)" if program data exists in the DB for the channel's guide id (accurate after first EPG sync, which auto-chains from channel sync). Its tooltip says how the guide was found; clicking it sets `epg_id_override`
+- "Rename" sets the name Jellyfin's guide shows (`custom_name`), kept across syncs
 - Filters: search, group dropdown, EPG status dropdown
 - Shift-click for range selection
 - "Sync EPG" button downloads guide data and auto-refreshes Jellyfin
@@ -258,6 +275,8 @@ GET      /hdhr/device.xml                — UPnP device descriptor
 ## XMLTV TIMEZONE PARSING
 
 `_parse_xmltv_time()` in `services/xmltv.py` correctly handles timezone offsets:
+- Any initial substring of `YYYYMMDDhhmmss` is accepted and padded as Jellyfin's own reader
+  pads it (`202609241800 +0200` is minute precision); a zone that is not a numeric offset is UTC
 - Input: `20260324060000 +0100`
 - Parses datetime portion: `2026-03-24 06:00:00`
 - Parses offset: `+0100` → 1 hour ahead of UTC

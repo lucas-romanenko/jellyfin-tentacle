@@ -35,7 +35,7 @@ from services.youtube import livetv as youtube_livetv
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from models.database import (
@@ -877,12 +877,15 @@ def _get_sync_status(provider_id: int, default: dict | None = None) -> dict:
 
 
 CUSTOM_NAME_MAX = 64
+EPG_ID_OVERRIDE_MAX = 200
 
 
 class ChannelUpdate(BaseModel):
     enabled: Optional[bool] = None
     # "" clears it and puts the provider's name back.
     custom_name: Optional[str] = None
+    # The XMLTV channel id to take the guide from; "" = match automatically.
+    epg_id_override: Optional[str] = None
     channel_number: Optional[int] = None
     epg_channel_id: Optional[str] = None
     sort_order: Optional[int] = None
@@ -1211,6 +1214,25 @@ def live_streams(db: Session = Depends(get_db)):
         # of the channel since Tentacle started, and how often (#140).
         "placeholders": [{"channel_id": cid, **info} for cid, info in sorted(_placeholders.items())],
     }
+
+
+@router.get("/api/live/epg-coverage", dependencies=_admin)
+def epg_coverage(provider_id: Optional[int] = None, db: Session = Depends(get_db)):
+    """What the last EPG sync matched: how many channels have a guide, by which
+    rule, and which do not and why (no tvg-id, a tvg-id the feed lacks, an
+    ambiguous name). One report per Live TV provider (#141)."""
+    import json
+    out = []
+    for p in live_tv_providers(db):
+        if provider_id and p.id != provider_id:
+            continue
+        raw = get_setting(db, f"livetv_epg_coverage_{p.id}", "")
+        try:
+            report = json.loads(raw) if raw else None
+        except ValueError:
+            report = None
+        out.append({"provider_id": p.id, "provider": p.name, "report": report})
+    return {"providers": out}
 
 
 class ReserveRequest(BaseModel):
@@ -1952,15 +1974,29 @@ def _run_epg_sync_background(provider_data: dict):
     try:
         db = SessionLocal()
         try:
-            # Build set of EPG IDs for ALL provider channels (not just enabled)
-            # This ensures newly-enabled channels already have EPG data available
-            epg_ids = {ch["epg_channel_id"] for ch in channels if ch.get("epg_channel_id")}
-            if not epg_ids:
+            # Guide data is kept for ALL of the provider's channels, not just
+            # the enabled ones, so a channel enabled later already has a guide.
+            # Ids known before the feed is read: overrides and tvg-ids. Channels
+            # with neither (or a tvg-id the feed lacks) are matched by name once
+            # the feed's own channel list is in hand (#141).
+            from services.epg_match import resolve_guide_ids
+            rows = db.query(LiveChannel).filter(LiveChannel.provider_id == pid).all()
+            chan_info = [{"id": r.id, "name": r.name, "tvg_id": r.epg_channel_id,
+                          "override": r.epg_id_override, "enabled": bool(r.enabled)} for r in rows]
+            epg_ids = ({(c["override"] or "").strip() for c in chan_info}
+                       | {(c["tvg_id"] or "").strip() for c in chan_info}) - {""}
+            if not chan_info:
                 _set_sync_status(pid, {
                     "phase": "epg", "status": "error", "progress": 0,
-                    "message": "No enabled channels have EPG IDs. Cannot fetch guide data.",
+                    "message": "No channels yet. Sync channels first, then the guide.",
                 })
                 return False
+            resolved: dict = {}
+
+            def _resolve(feed_channels):
+                resolved.clear()
+                resolved.update(resolve_guide_ids(chan_info, feed_channels))
+                return {r["guide_id"] for r in resolved.values() if r["guide_id"]}
 
             # Determine XMLTV URL
             epg_url = provider_data.get("epg_url")
@@ -2013,6 +2049,7 @@ def _run_epg_sync_background(provider_data: dict):
                         user_agent=provider_data["user_agent"],
                         on_progress=on_progress,
                         force_download=attempt > 1,
+                        resolve_channels=_resolve,
                     )
                     if programs:
                         break
@@ -2025,12 +2062,12 @@ def _run_epg_sync_background(provider_data: dict):
                     _drop_xmltv_cache()  # don't let a bad cached file poison the retry
                     _time.sleep(30 * attempt)
 
+            # Everything this provider's channels were, or are about to be,
+            # stored under: a name match that moved leaves nothing behind.
             provider_channel_epg_ids = {
-                ch.epg_channel_id
-                for ch in db.query(LiveChannel).filter(
-                    LiveChannel.provider_id == pid,
-                    LiveChannel.epg_channel_id.isnot(None),
-                ).all()
+                gid for r in rows
+                for gid in (r.guide_epg_id, r.epg_name_match, (r.epg_channel_id or "").strip())
+                if gid
             }
             old_count = (
                 db.query(EPGProgram).filter(EPGProgram.channel_id.in_(provider_channel_epg_ids)).count()
@@ -2058,6 +2095,10 @@ def _run_epg_sync_background(provider_data: dict):
                 return False
 
             # Replace guide data — quick transaction, no network inside it
+            if resolved:
+                for r in rows:
+                    r.epg_name_match = (resolved.get(r.id) or {}).get("name_match")
+                provider_channel_epg_ids |= {v["guide_id"] for v in resolved.values() if v["guide_id"]}
             if provider_channel_epg_ids:
                 db.query(EPGProgram).filter(
                     EPGProgram.channel_id.in_(provider_channel_epg_ids)
@@ -2093,14 +2134,26 @@ def _run_epg_sync_background(provider_data: dict):
                 db.add_all(batch)
                 db.flush()
 
+            # How many channels actually have a guide, and why the rest do not:
+            # "success" alone hid that most channels had nothing (#141).
+            coverage_note = ""
+            if resolved:
+                import json
+                from services.epg_match import coverage_report, coverage_summary
+                report = coverage_report(chan_info, resolved, {p["channel_id"] for p in programs})
+                report["at"] = datetime.utcnow().isoformat() + "Z"
+                set_setting(db, f"livetv_epg_coverage_{pid}", json.dumps(report))
+                coverage_note = f" — {coverage_summary(report)}"
+
             db.commit()
-            log_activity(db, "epg_sync", f"EPG sync: {inserted} programs for {total} channels ({enabled_count} enabled)")
+            log_activity(db, "epg_sync", f"EPG sync: {inserted} programs for {total} channels "
+                                         f"({enabled_count} enabled){coverage_note}")
 
             _set_sync_status(pid, {
                 "phase": "epg",
                 "status": "complete",
                 "progress": 100,
-                "message": f"{inserted} programs synced for {total} channels ({enabled_count} enabled)",
+                "message": f"{inserted} programs synced for {total} channels ({enabled_count} enabled){coverage_note}",
                 "programs": inserted,
                 "channels": total,
             })
@@ -2115,6 +2168,23 @@ def _run_epg_sync_background(provider_data: dict):
 
 
 # ─── Channel management ────────────────────────────────────────────────────
+
+
+def _guide_id_expr():
+    """LiveChannel.guide_epg_id as SQL: override, else name match, else tvg-id."""
+    return func.coalesce(
+        func.nullif(func.trim(LiveChannel.epg_id_override), ""),
+        LiveChannel.epg_name_match,
+        func.nullif(func.trim(LiveChannel.epg_channel_id), ""),
+    )
+
+
+def _ids_with_programmes(db: Session, ids) -> set:
+    found = set()
+    for chunk in _chunked(ids):
+        found |= {row[0] for row in db.query(EPGProgram.channel_id)
+                  .filter(EPGProgram.channel_id.in_(chunk)).distinct()}
+    return found
 
 
 @router.get("/api/live/channels", dependencies=_admin)
@@ -2138,32 +2208,26 @@ def list_channels(
         q = q.filter(LiveChannel.enabled == enabled)
     if search:
         q = q.filter(or_(LiveChannel.name.ilike(f"%{search}%"), LiveChannel.custom_name.ilike(f"%{search}%")))
-    # Build set of epg_channel_ids that actually have programs in the DB
-    # EPG sync stores data for ALL provider channels, so this is accurate after first sync
-    epg_id_q = db.query(LiveChannel.epg_channel_id).filter(
-        LiveChannel.epg_channel_id.isnot(None), LiveChannel.epg_channel_id != ""
-    )
+    # Guide ids that actually have programs in the DB. EPG sync stores data
+    # for ALL provider channels, so this is accurate after the first sync.
+    # A channel's guide id is its override, a name match or its tvg-id (#141).
+    guide_id = _guide_id_expr()
+    epg_id_q = db.query(guide_id).filter(guide_id.isnot(None))
     if provider_id:
         epg_id_q = epg_id_q.filter(LiveChannel.provider_id == provider_id)
     all_epg_ids = {row[0] for row in epg_id_q.distinct().all()}
-    epg_ids_with_programs = set()
-    if all_epg_ids:
-        epg_ids_with_programs = {
-            row[0] for row in db.query(EPGProgram.channel_id)
-            .filter(EPGProgram.channel_id.in_(all_epg_ids))
-            .distinct().all()
-        }
+    epg_ids_with_programs = _ids_with_programmes(db, all_epg_ids) if all_epg_ids else set()
 
     # Filter by whether channel actually has EPG program data in the DB
     if has_epg is not None:
         if has_epg:
             if epg_ids_with_programs:
-                q = q.filter(LiveChannel.epg_channel_id.in_(epg_ids_with_programs))
+                q = q.filter(guide_id.in_(epg_ids_with_programs))
             else:
                 q = q.filter(LiveChannel.id < 0)  # no results — no EPG data exists yet
         else:
             if epg_ids_with_programs:
-                q = q.filter((LiveChannel.epg_channel_id.is_(None)) | (LiveChannel.epg_channel_id == "") | ~LiveChannel.epg_channel_id.in_(epg_ids_with_programs))
+                q = q.filter(guide_id.is_(None) | ~guide_id.in_(epg_ids_with_programs))
             # else: all channels have no EPG, no filter needed
 
     total = q.count()
@@ -2182,7 +2246,11 @@ def list_channels(
                 "logo_url": ch.logo_url,
                 "group_title": ch.group_title,
                 "epg_channel_id": ch.epg_channel_id,
-                "has_epg_data": ch.epg_channel_id in epg_ids_with_programs if ch.epg_channel_id else False,
+                "epg_id_override": ch.epg_id_override,
+                "epg_name_match": ch.epg_name_match,
+                "guide_epg_id": ch.guide_epg_id,
+                "epg_match": ch.epg_match,
+                "has_epg_data": ch.guide_epg_id in epg_ids_with_programs if ch.guide_epg_id else False,
                 "enabled": ch.enabled,
                 "sort_order": ch.sort_order,
             }
@@ -2214,6 +2282,13 @@ def update_channel(channel_id: int, update: ChannelUpdate, db: Session = Depends
         if len(custom) > CUSTOM_NAME_MAX:
             raise HTTPException(400, f"Channel names are limited to {CUSTOM_NAME_MAX} characters")
         ch.custom_name = custom or None
+    if update.epg_id_override is not None:
+        # The feed's channel id to take the guide from; "" goes back to
+        # matching automatically. Applied at the next EPG sync.
+        override = update.epg_id_override.strip()
+        if len(override) > EPG_ID_OVERRIDE_MAX:
+            raise HTTPException(400, f"Guide ids are limited to {EPG_ID_OVERRIDE_MAX} characters")
+        ch.epg_id_override = override or None
 
     ch.updated_at = datetime.utcnow()
     db.commit()
@@ -2255,10 +2330,11 @@ def bulk_update_channels_by_filter(update: BulkChannelFilter, db: Session = Depe
     if update.search:
         q = q.filter(or_(LiveChannel.name.ilike(f"%{update.search}%"), LiveChannel.custom_name.ilike(f"%{update.search}%")))
     if update.has_epg is not None:
+        guide_id = _guide_id_expr()
         if update.has_epg:
-            q = q.filter(LiveChannel.epg_channel_id.isnot(None), LiveChannel.epg_channel_id != "")
+            q = q.filter(guide_id.isnot(None))
         else:
-            q = q.filter((LiveChannel.epg_channel_id.is_(None)) | (LiveChannel.epg_channel_id == ""))
+            q = q.filter(guide_id.is_(None))
     count = q.update({LiveChannel.enabled: update.enabled}, synchronize_session=False)
     db.commit()
     return {"success": True, "updated": count}
@@ -2402,13 +2478,12 @@ def refresh_jellyfin_guide(db: Session = Depends(get_db)):
     )
     for (pid,) in providers_with_channels:
         enabled_epg_ids = {
-            ch.epg_channel_id
+            ch.guide_epg_id
             for ch in db.query(LiveChannel).filter(
                 LiveChannel.provider_id == pid,
                 LiveChannel.enabled == True,
-                LiveChannel.epg_channel_id.isnot(None),
             ).all()
-        }
+        } - {None}
         if not enabled_epg_ids:
             continue
         # Check if any enabled channel has zero EPG programs
@@ -3449,7 +3524,7 @@ def live_playlist_m3u(request: Request, db: Session = Depends(get_db)):
     lines = ["#EXTM3U"]
     for ch in channels:
         number = ch.stream_id or str(ch.id)
-        epg_id = ch.epg_channel_id or f"tentacle-{ch.id}"
+        epg_id = ch.guide_epg_id or f"tentacle-{ch.id}"
         logo = f' tvg-logo="{ch.logo_url}"' if ch.logo_url else ""
         group = f' group-title="{ch.group_title}"' if ch.group_title else ""
         lines.append(
@@ -3506,9 +3581,9 @@ def hdhr_xmltv(db: Session = Depends(get_db)):
         # Channel group feeds the category inference below when a programme
         # title says nothing about its genre.
         guide_number_group[guide_number] = ch.group_title
-        if ch.epg_channel_id:
-            epg_ids.add(ch.epg_channel_id)
-            epg_id_to_guide_numbers.setdefault(ch.epg_channel_id, []).append(guide_number)
+        if ch.guide_epg_id:
+            epg_ids.add(ch.guide_epg_id)
+            epg_id_to_guide_numbers.setdefault(ch.guide_epg_id, []).append(guide_number)
 
     # YouTube Live TV channels, with their own guide ids.
     for yt in youtube_livetv.live_channels(db):

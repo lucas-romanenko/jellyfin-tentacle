@@ -5875,7 +5875,7 @@ function renderLiveChannels(channels, total) {
       ${ch.logo_url ? `<img class="live-ch-logo" src="${ch.logo_url}" loading="lazy" onerror="this.style.display='none'">` : `<div class="live-ch-logo"></div>`}
       <span class="live-ch-name">${escapeAttr(ch.name)}${ch.custom_name ? ` <span style="color:var(--text3);font-size:11px">(${escapeAttr(ch.provider_name)})</span>` : ''}</span>
       <span class="live-ch-group">${escapeAttr(ch.group_title || '')}</span>
-      <span class="live-ch-epg-badge ${ch.has_epg_data ? 'has-epg' : 'no-epg'}">${ch.has_epg_data ? 'Has EPG' : 'No EPG'}</span>
+      <button type="button" class="live-ch-epg-badge ${ch.has_epg_data ? 'has-epg' : 'no-epg'}" title="${escapeAttr(_liveGuideTitle(ch))}" onclick="setLiveChannelGuideId(${i})">${ch.has_epg_data ? (ch.epg_match === 'name' ? 'EPG (by name)' : ch.epg_match === 'override' ? 'EPG (set)' : 'Has EPG') : 'No EPG'}</button>
       <button class="btn btn-secondary btn-sm" title="Rename this channel in Jellyfin's guide" onclick="renameLiveChannel(${i})" style="flex-shrink:0">Rename</button>
       <button class="live-toggle ${ch.enabled ? 'on' : ''}" onclick="toggleLiveChannel(${i}, this, event)" style="flex-shrink:0"></button>
     </div>`).join('');
@@ -5883,6 +5883,34 @@ function renderLiveChannels(channels, total) {
 
 // A custom name is kept across channel syncs (which rewrite the provider's
 // name every time) and is what Jellyfin's guide shows. Blank puts it back.
+// How the channel's guide was found (#141): the admin's own id, a match on
+// the channel's name, or the provider's tvg-id.
+function _liveGuideTitle(ch) {
+  const how = { override: 'set by you', name: 'matched by channel name', 'tvg-id': "the provider's tvg-id" };
+  const lines = [];
+  if (ch.guide_epg_id) lines.push(`Guide id: ${ch.guide_epg_id} (${how[ch.epg_match] || 'unknown'})`);
+  else lines.push(ch.epg_channel_id ? `tvg-id ${ch.epg_channel_id} is not in the guide feed` : 'No tvg-id and no match by name');
+  if (!ch.has_epg_data && ch.guide_epg_id) lines.push('No programmes stored for it yet');
+  lines.push('Click to set the guide id yourself');
+  return lines.join('\n');
+}
+
+// The XMLTV channel id to take this channel's guide from. Kept across channel
+// syncs; blank goes back to matching by tvg-id, then by name.
+async function setLiveChannelGuideId(idx) {
+  const ch = liveState.pageChannels[idx];
+  if (!ch) return;
+  const entered = prompt(`Guide id (XMLTV channel id) for "${ch.provider_name}".\nLeave blank to match automatically (tvg-id, then channel name):`, ch.epg_id_override || '');
+  if (entered === null) return;
+  try {
+    await api(`/api/live/channels/${ch.id}`, { method: 'PUT', body: { epg_id_override: entered } });
+    toast(entered.trim() ? `Guide id set — applied at the next guide sync` : 'Back to automatic matching — applied at the next guide sync', 'success');
+    loadLiveChannels();
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
 async function renameLiveChannel(idx) {
   const ch = liveState.pageChannels[idx];
   if (!ch) return;
@@ -6898,7 +6926,7 @@ async function loadHealthDeletions() {
     loadLiveTV, showLiveTab, onLiveTypeChange, saveLiveProvider, testLiveProvider,
     liveSyncGroups, liveSyncChannels, liveSyncEpg, fillSetupUrls, updateSetupUrls, copyLiveSetup, saveSetupAddress, editSetupAddress,
     toggleLiveGroup, toggleAllGroups, saveLiveGroups, filterLiveGroups,
-    loadLiveChannels, toggleLiveChannel, renameLiveChannel, toggleAllChannels, saveLiveChannels, searchLiveChannels, filterLiveChannels, filterLiveChannelsByEpg, liveChPage,
+    loadLiveChannels, toggleLiveChannel, renameLiveChannel, setLiveChannelGuideId, toggleAllChannels, saveLiveChannels, searchLiveChannels, filterLiveChannels, filterLiveChannelsByEpg, liveChPage,
   ];
   for (const fn of fns) {
     if (typeof fn === 'function') window[fn.name] = fn;

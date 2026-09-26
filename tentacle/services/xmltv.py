@@ -190,10 +190,15 @@ def stream_parse_xmltv(
     timeout: int = 600,
     on_progress: callable = None,
     force_download: bool = False,
+    resolve_channels: callable = None,
 ) -> list[dict]:
     """
     Download XMLTV (cached to disk for 8h), then stream-parse for matching channels.
     Uses iterparse to avoid loading full XML tree into memory.
+
+    `resolve_channels`, when given, is called with the feed's own channel list
+    ([{"id", "names"}], see read_feed_channels) before any programme is read,
+    and returns further channel ids to keep: how channels are matched by name.
     """
     import os, time
 
@@ -289,6 +294,9 @@ def stream_parse_xmltv(
     with open(cache_path, "rb") as f:
         _reject_doctype_bytes(f.read(4096))
 
+    if resolve_channels is not None:
+        channel_ids = set(channel_ids) | set(resolve_channels(read_feed_channels(cache_path)) or ())
+
     # Stream-parse from cached file — only keep matching channels
     programs = []
     total_seen = 0
@@ -325,6 +333,29 @@ def stream_parse_xmltv(
     elapsed = time.time() - parse_start
     logger.info(f"[XMLTV] Done: {total_seen} total, kept {len(programs)} for {len(channel_ids)} channels in {elapsed:.1f}s")
     return programs
+
+
+def read_feed_channels(path: str) -> list[dict]:
+    """The <channel> elements of a cached feed: [{"id", "names": [display-names]}].
+
+    The DTD puts every <channel> before the first <programme>, so reading stops
+    there: a pass over the head of the file, not the whole guide.
+    """
+    out = []
+    root = None
+    with open(path, "rb") as f:
+        for event, elem in ET.iterparse(f, events=("start", "end")):
+            if event == "start":
+                if root is None:
+                    root = elem
+                elif elem.tag == "programme":
+                    break
+                continue
+            if elem.tag == "channel":
+                names = [(n.text or "").strip() for n in elem.findall("display-name")]
+                out.append({"id": elem.get("id", ""), "names": [n for n in names if n]})
+                root.clear()
+    return out
 
 
 def download_xmltv(

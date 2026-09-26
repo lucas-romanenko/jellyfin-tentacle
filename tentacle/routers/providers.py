@@ -344,9 +344,10 @@ def delete_provider(provider_id: int, db: Session = Depends(get_db)):
     db.query(ProviderCategory).filter(ProviderCategory.provider_id == provider_id).delete()
     db.query(SyncRun).filter(SyncRun.provider_id == provider_id).delete()
     # Delete EPG programs for channels belonging to this provider, then channels/groups
-    channel_epg_ids = [c.epg_channel_id for c in db.query(LiveChannel.epg_channel_id).filter(
-        LiveChannel.provider_id == provider_id, LiveChannel.epg_channel_id.isnot(None)
-    ).all()]
+    channel_epg_ids = list({
+        gid for ch in db.query(LiveChannel).filter(LiveChannel.provider_id == provider_id)
+        for gid in (ch.guide_epg_id, ch.epg_channel_id) if gid
+    })
     if channel_epg_ids:
         db.query(EPGProgram).filter(EPGProgram.channel_id.in_(channel_epg_ids)).delete(synchronize_session=False)
     db.query(LiveChannel).filter(LiveChannel.provider_id == provider_id).delete()
