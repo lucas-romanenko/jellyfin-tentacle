@@ -168,7 +168,13 @@ def resolve_channel(url: str) -> dict:
         listing_url = listing_url.rstrip("/") + "/videos"
 
     info = client.flat_listing(listing_url, 1)
-    title = info.get("channel") or info.get("uploader") or info.get("title") or "YouTube"
+    if parsed["kind"] == "playlist":
+        # For a playlist, yt-dlp fills channel/uploader with its OWNER, so the
+        # playlist took the owner's name for its folder, playlist and home
+        # row (#169). Its own title is what it is called.
+        title = info.get("title") or info.get("channel") or info.get("uploader") or "YouTube"
+    else:
+        title = info.get("channel") or info.get("uploader") or info.get("title") or "YouTube"
     thumbs = info.get("thumbnails") or []
 
     def _pick(*keys):
