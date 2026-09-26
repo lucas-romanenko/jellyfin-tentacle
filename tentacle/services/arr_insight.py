@@ -63,24 +63,38 @@ def _get(url: str, key: str, path: str, timeout: float = 15, **params):
 
 # Radarr/Sonarr word rejections precisely but tersely ("720p is not wanted in
 # profile"); group them into a few reasons a person can act on.
+# Checked in order; the first match wins. The patterns follow Radarr's and
+# Sonarr v4's own rejection messages (#142). Order matters where one message
+# holds another's words: the delay profile's "Waiting for better quality
+# release" and a queued release "meeting quality cutoff" are not quality
+# problems, and a custom format NAMED "Language: Not English" is a score
+# rejection, not a language one. The label set is what the apps display, so a
+# rewording in Radarr/Sonarr falls through to "other reasons", never to a
+# wrong label.
 _REASONS = [
-    ("delay", r"delay", "waiting out your delay profile"),
+    ("delay", r"delay|waiting for better quality", "waiting out your delay profile"),
     ("blocklist", r"blocklist", "blocklisted"),
-    ("existing", r"existing file|not an upgrade|already meets cutoff|is not a .*upgrade", "not better than what you have"),
+    ("existing", r"existing file|not an upgrade|already meets cutoff|is not a .*upgrade"
+                 r"|in queue|is queued|already (?:been )?imported", "not better than what you have"),
+    ("format", r"custom formats? .*\bscore\b|\bhave score\b", "custom format score too low"),
     # Language before quality: both say "... is not wanted in profile".
-    ("language", r"language", "wrong language"),
-    ("quality", r"not wanted in profile|quality", "quality not in your profile"),
-    ("size", r"size|too large|too small", "wrong size"),
-    ("seeders", r"seeder|peers", "not enough seeders"),
-    ("format", r"custom format", "custom format score too low"),
-    ("age", r"retention|older than|minimum age|age", "too old or too new"),
+    ("language", r"\blanguages?\b|is wanted, but found", "wrong language"),
+    ("size", r"\bsize\b|too large|too small|too big|larger than maximum|smaller than minimum",
+     "wrong size"),
+    ("quality", r"not wanted in profile|\bquality\b", "quality not in your profile"),
+    ("seeders", r"seeder|\bpeers\b", "not enough seeders"),
+    ("age", r"retention|older than|younger than|minimum age|\bage\b", "too old or too new"),
     ("match", r"unknown|wasn't requested|not requested|does not match|doesn't match|unable to|parse|wrong",
      "doesn't match this title"),
 ]
 
+# Radarr ends a size rejection with the title it was judged for, and titles
+# say anything: "(for Rampage)" read as an AGE rejection.
+_FOR_TITLE_RE = re.compile(r"\s*\(for [^()]*(?:\([^()]*\)[^()]*)*\)\s*$", re.IGNORECASE)
+
 
 def reason_of(text: str) -> tuple:
-    t = (text or "").lower()
+    t = _FOR_TITLE_RE.sub("", (text or "")).lower()
     for key, pattern, label in _REASONS:
         if re.search(pattern, t):
             return key, label
