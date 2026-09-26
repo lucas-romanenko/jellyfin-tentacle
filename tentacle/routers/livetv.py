@@ -2474,8 +2474,18 @@ def _run_epg_sync_background(provider_data: dict):
 
             # Replace guide data — quick transaction, no network inside it
             if resolved:
+                with_programmes = {p["channel_id"] for p in programs}
                 for r in rows:
-                    r.epg_name_match = (resolved.get(r.id) or {}).get("name_match")
+                    match = (resolved.get(r.id) or {}).get("name_match")
+                    tvg = (r.epg_channel_id or "").strip()
+                    if match and tvg in with_programmes:
+                        # The channel's own tvg-id brought programmes (a feed can
+                        # carry a schedule it lists no <channel> for): that is its
+                        # guide, and a name match must not replace it (#141).
+                        match = None
+                        resolved[r.id] = {**resolved[r.id], "method": "tvg-id", "guide_id": tvg,
+                                          "name_match": None}
+                    r.epg_name_match = match
                 provider_channel_epg_ids |= {v["guide_id"] for v in resolved.values() if v["guide_id"]}
             if provider_channel_epg_ids:
                 db.query(EPGProgram).filter(

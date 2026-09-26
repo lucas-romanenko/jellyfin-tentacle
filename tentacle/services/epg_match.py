@@ -8,14 +8,18 @@ channels had no guide.
 Ordered passes, most reliable first:
   1. the admin's override (LiveChannel.epg_id_override), which syncs never touch;
   2. the provider's tvg-id, when the feed has that channel;
-  3. the channel NAME, reduced by channel_name_key(), and only when the key is
-     unique on both sides. A key two feed channels share, or two channels that
-     still need a match share, is reported as ambiguous and never guessed:
-     for a guide, a wrong programme is worse than none.
+  3. the channel NAME, reduced by channel_name_key(), and only when it names
+     exactly one feed channel of the channel's own country (or one that names
+     no country), and no other channel takes that feed channel by name. The
+     key strips the "CA:" / "UK:" tag, so a channel whose only namesake in the
+     feed was foreign took that foreign guide ("UK: SKY ONE" -> SkyOne.de),
+     and DVR rules booked from it. Anything else is reported ("ambiguous",
+     "foreign") and never guessed: for a guide, a wrong programme is worse
+     than none.
 """
-from collections import defaultdict
+from collections import Counter, defaultdict
 
-from services.channel_names import channel_name_key
+from services.channel_names import channel_country, channel_name_key, feed_countries
 
 # How many unmatched / ambiguous channels a coverage report lists by name.
 _LIST_LIMIT = 200
@@ -30,10 +34,11 @@ def resolve_guide_ids(channels: list, feed_channels: list) -> dict:
     Returns {channel id: {"method": "override" | "tvg-id" | "name" | None,
                           "guide_id": str | None,    # what programmes are kept under
                           "name_match": str | None,  # set only for method "name"
-                          "reason": None | "no-tvg-id" | "tvg-id-not-in-feed" | "ambiguous",
-                          "candidates": [feed ids]}} # for "ambiguous"
+                          "reason": None | "no-tvg-id" | "tvg-id-not-in-feed" | "ambiguous" | "foreign",
+                          "candidates": [feed ids]}} # for "ambiguous" and "foreign"
     """
     feed_ids = {f["id"] for f in feed_channels if f.get("id")}
+    countries = {f["id"]: feed_countries(f["id"], f.get("names")) for f in feed_channels if f.get("id")}
     feed_by_key = defaultdict(set)
     for f in feed_channels:
         for name in f.get("names") or []:
@@ -56,26 +61,38 @@ def resolve_guide_ids(channels: list, feed_channels: list) -> dict:
         else:
             needs_name.append(ch)
 
-    ours_by_key = defaultdict(list)
-    for ch in needs_name:
-        key = channel_name_key(ch.get("name") or "")
-        if key:
-            ours_by_key[key].append(ch["id"])
-
+    tentative = {}
     for ch in needs_name:
         tvg = (ch.get("tvg_id") or "").strip()
         key = channel_name_key(ch.get("name") or "")
         candidates = sorted(feed_by_key.get(key, ())) if key else []
         miss = "tvg-id-not-in-feed" if tvg else "no-tvg-id"
-        if len(candidates) == 1 and len(ours_by_key[key]) == 1:
-            out[ch["id"]] = {"method": "name", "guide_id": candidates[0], "name_match": candidates[0],
-                             "reason": None, "candidates": []}
+        country = channel_country(ch.get("name") or "")
+        if country and candidates:
+            local = [c for c in candidates if not countries.get(c) or country in countries[c]]
+            if not local:
+                out[ch["id"]] = {"method": None, "guide_id": None, "name_match": None,
+                                 "reason": "foreign", "candidates": candidates}
+                continue
+            candidates = local
+        if len(candidates) == 1:
+            tentative[ch["id"]] = candidates[0]
         elif candidates:
             out[ch["id"]] = {"method": None, "guide_id": None, "name_match": None,
                              "reason": "ambiguous", "candidates": candidates}
         else:
             out[ch["id"]] = {"method": None, "guide_id": None, "name_match": None,
                              "reason": miss, "candidates": []}
+
+    # Two channels that would take one feed channel by name: neither does.
+    takers = Counter(tentative.values())
+    for cid, guide_id in tentative.items():
+        if takers[guide_id] == 1:
+            out[cid] = {"method": "name", "guide_id": guide_id, "name_match": guide_id,
+                        "reason": None, "candidates": []}
+        else:
+            out[cid] = {"method": None, "guide_id": None, "name_match": None,
+                        "reason": "ambiguous", "candidates": [guide_id]}
     return out
 
 
@@ -87,7 +104,8 @@ def coverage_report(channels: list, resolved: dict, ids_with_programmes: set) ->
     """
     def tally(rows):
         t = {"channels": len(rows), "with_guide": 0, "by_override": 0, "by_tvg_id": 0, "by_name": 0,
-             "no_tvg_id": 0, "tvg_id_not_in_feed": 0, "ambiguous": 0, "matched_but_no_programmes": 0}
+             "no_tvg_id": 0, "tvg_id_not_in_feed": 0, "ambiguous": 0, "foreign": 0,
+             "matched_but_no_programmes": 0}
         for ch in rows:
             r = resolved.get(ch["id"]) or {}
             if r.get("guide_id"):
@@ -122,9 +140,15 @@ def coverage_report(channels: list, resolved: dict, ids_with_programmes: set) ->
                      for tvg, names in by_tvg.items() if len(names) >= 3),
                     key=lambda s: -s["channels"])
 
+    # Every guide taken by name, for the admin to check: feeds mislabel
+    # channels in ways no rule sees, and the per-channel override fixes those.
+    by_name = [{"channel_id": ch["id"], "name": ch.get("name"), "guide_id": resolved[ch["id"]]["guide_id"]}
+               for ch in enabled if (resolved.get(ch["id"]) or {}).get("method") == "name"]
+
     return {
         "enabled": tally(enabled),
         "all": tally(channels),
+        "by_name": by_name[:_LIST_LIMIT],
         "without_guide": without[:_LIST_LIMIT],
         "shared_tvg_ids": shared[:20],
     }
@@ -143,6 +167,8 @@ def coverage_summary(report: dict) -> str:
         missing.append(f"{e['tvg_id_not_in_feed']} a tvg-id the feed lacks")
     if e["ambiguous"]:
         missing.append(f"{e['ambiguous']} an ambiguous name")
+    if e["foreign"]:
+        missing.append(f"{e['foreign']} a name the feed has only for another country")
     if e["matched_but_no_programmes"]:
         missing.append(f"{e['matched_but_no_programmes']} no programmes in the feed")
     text = ", ".join(parts)

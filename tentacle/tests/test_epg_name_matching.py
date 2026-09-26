@@ -122,6 +122,52 @@ class Resolve(unittest.TestCase):
         self.assertEqual(3, report["shared_tvg_ids"][0]["channels"])
 
 
+class CountryCheck(unittest.TestCase):
+    """The key strips "UK:", so a channel whose only namesake in the feed was
+    another country's took that guide, and DVR rules booked from it (#141)."""
+
+    def test_a_single_foreign_namesake_is_not_taken(self):
+        feed = [{"id": "SkyOne.de", "names": ["Sky One"]}, {"id": "beINSports.us", "names": ["beIN Sports"]}]
+        r = resolve_guide_ids([_ch(1, "UK: SKY ONE"), _ch(2, "CA EN: BEIN SPORTS")], feed)
+        self.assertEqual(("foreign", None), (r[1]["reason"], r[1]["guide_id"]))
+        self.assertEqual(["SkyOne.de"], r[1]["candidates"])
+        self.assertEqual("foreign", r[2]["reason"])
+
+    def test_the_own_country_wins_where_both_exist(self):
+        feed = [{"id": "CTV.ca", "names": ["CTV"]}, {"id": "CTV.us", "names": ["CTV"]}]
+        r = resolve_guide_ids([_ch(1, "CA: CTV")], feed)
+        self.assertEqual(("name", "CTV.ca"), (r[1]["method"], r[1]["guide_id"]))
+
+    def test_uk_and_gb_are_one_country(self):
+        r = resolve_guide_ids([_ch(1, "UK: BBC One"), _ch(2, "|GB| ITV")],
+                              [{"id": "BBCOne.gb", "names": ["BBC One"]}, {"id": "ITV.uk", "names": ["ITV"]}])
+        self.assertEqual(("BBCOne.gb", "ITV.uk"), (r[1]["guide_id"], r[2]["guide_id"]))
+
+    def test_a_display_name_tag_names_the_country_too(self):
+        feed = [{"id": "sky1", "names": ["UK: Sky One"]}]
+        self.assertEqual("foreign", resolve_guide_ids([_ch(1, "DE: SKY ONE")], feed)[1]["reason"])
+        self.assertEqual("sky1", resolve_guide_ids([_ch(1, "UK: SKY ONE")], feed)[1]["guide_id"])
+
+    def test_no_country_on_either_side_matches_as_before(self):
+        r = resolve_guide_ids([_ch(1, "Sky One"), _ch(2, "UK: Discovery")],
+                              [{"id": "SkyOne.de", "names": ["Sky One"]}, {"id": "disc", "names": ["Discovery"]}])
+        self.assertEqual(("SkyOne.de", "disc"), (r[1]["guide_id"], r[2]["guide_id"]))
+
+    def test_two_channels_never_share_one_guide_by_name(self):
+        feed = [{"id": "SkyOne.uk", "names": ["Sky One", "Sky 1"]}]
+        r = resolve_guide_ids([_ch(1, "UK: Sky One"), _ch(2, "UK: Sky 1 HD")], feed)
+        self.assertEqual({"ambiguous"}, {r[1]["reason"], r[2]["reason"]})
+
+    def test_the_report_lists_name_matches_and_counts_foreign_ones(self):
+        chans = [_ch(1, "UK: SKY ONE"), _ch(2, "LT: BTV")]
+        feed = [{"id": "SkyOne.de", "names": ["Sky One"]}, {"id": "btv.lt", "names": ["BTV"]}]
+        r = resolve_guide_ids(chans, feed)
+        report = coverage_report(chans, r, {"SkyOne.de", "btv.lt"})
+        self.assertEqual(1, report["enabled"]["foreign"])
+        self.assertEqual([{"channel_id": 2, "name": "LT: BTV", "guide_id": "btv.lt"}], report["by_name"])
+        self.assertIn("1 a name the feed has only for another country", coverage_summary(report))
+
+
 def _stamp(dt):
     return dt.strftime("%Y%m%d%H%M%S +0000")
 
@@ -196,6 +242,23 @@ class EpgSyncMatchesByName(unittest.TestCase):
         for title in ("A film", "Žinios", "Hockey"):
             self.assertIn(f"<title>{title}</title>", xml)
         self.assertNotIn("<title>F1</title>", xml)
+
+    def test_a_tvg_id_that_brought_programmes_keeps_its_guide(self):
+        """The feed carries the channel's own schedule without a <channel>
+        element for it: a name match must not replace that guide."""
+        path = xmltv._get_cache_path(self.url)
+        feed = open(path, encoding="utf-8").read()
+        start = datetime.utcnow() + timedelta(hours=1)
+        feed = feed.replace("</tv>", f'<programme start="{_stamp(start)}" stop="{_stamp(start + timedelta(hours=1))}" '
+                                     f'channel="old-tsn.ca"><title>Own schedule</title></programme></tv>')
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(feed)
+        self.assertTrue(self._sync())
+        self.db.expire_all()
+        tsn = self.db.query(mdb.LiveChannel).filter(mdb.LiveChannel.stream_id == "3").one()
+        self.assertEqual("old-tsn.ca", tsn.guide_epg_id)
+        self.assertIsNone(tsn.epg_name_match)
+        self.assertIn("<title>Own schedule</title>", self._client().get("/hdhr/xmltv.xml").text)
 
     def test_the_channel_list_shows_how_each_guide_was_found(self):
         self._sync()

@@ -7,6 +7,7 @@ lookups by name (#137) both need the two reduced to one form first.
 """
 import re
 import unicodedata
+from typing import Optional
 
 # A leading country / language tag: "CA:", "CA EN:", "US|", "|US|", "[UK]".
 # Two-letter codes (plus a few longer ones panels use), so a brand such as
@@ -37,3 +38,34 @@ def channel_name_key(name: str) -> str:
     words = [w for w in re.split(r"[^0-9a-z]+", text) if w and w not in _MARKERS]
     # Spaces are dropped too, so "TSN 5" and "TSN5" meet.
     return "".join(words)
+
+
+# The country a provider's leading tag names: "CA:", "CA EN:", "|UK|", "[US]".
+_COUNTRY_RE = re.compile(r"^\s*[|\[(]?\s*([A-Za-z]{2}|USA)(?:[ /-][A-Za-z]{2})?\s*[|\]):]")
+# One country, two spellings.
+_SAME_COUNTRY = {"uk": "gb", "usa": "us"}
+_ID_COUNTRY_RE = re.compile(r"\.([A-Za-z]{2})$")
+
+
+def channel_country(name: str) -> Optional[str]:
+    """"CA EN: DISCOVERY HD" -> "ca", "|UK| SKY ONE" -> "gb"; None without a tag."""
+    m = _COUNTRY_RE.match(unicodedata.normalize("NFKC", name or ""))
+    if not m:
+        return None
+    code = m.group(1).lower()
+    return _SAME_COUNTRY.get(code, code)
+
+
+def feed_countries(feed_id: str, names) -> set:
+    """The countries an XMLTV channel belongs to: its id's two-letter suffix
+    ("SkyOne.de") and any tag its display names carry. Empty when it says none."""
+    out = set()
+    m = _ID_COUNTRY_RE.search(feed_id or "")
+    if m:
+        code = m.group(1).lower()
+        out.add(_SAME_COUNTRY.get(code, code))
+    for name in names or []:
+        country = channel_country(name)
+        if country:
+            out.add(country)
+    return out
