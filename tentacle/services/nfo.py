@@ -244,7 +244,30 @@ def make_folder_name(title: str, year: Optional[str]) -> str:
     return f"{safe} ({year})" if year else safe
 
 
-def vod_folder_name(title: str, year: Optional[str]) -> str:
+# One path component is at most 255 BYTES on ext4, XFS, btrfs and SMB, while
+# sanitize_filename caps characters: 200 characters of CJK is 600 bytes, and
+# such a title raised ENAMETOOLONG on every sync and never imported (#156).
+MAX_NAME_BYTES = 255
+_STRM_SUFFIX = ".strm"
+
+
+def _cut_utf8(text: str, max_bytes: int) -> str:
+    """The longest prefix of `text` that fits in `max_bytes` of UTF-8."""
+    return text.encode("utf-8")[:max(0, max_bytes)].decode("utf-8", errors="ignore").rstrip()
+
+
+def _fit(head: str, tail: str, key: str, budget: int) -> str:
+    """head + tail within `budget` bytes. Shortened names get a stable 8-hex
+    hash of `key`, so a title keeps its folder from sync to sync and two long
+    titles that share a prefix still get two folders."""
+    if len((head + tail).encode("utf-8")) <= budget:
+        return head + tail
+    import hashlib
+    marker = " ~" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:8]
+    return _cut_utf8(head, budget - len((marker + tail).encode("utf-8"))) + marker + tail
+
+
+def vod_folder_name(title: str, year: Optional[str], tag: str = "") -> str:
     """Folder (and file-stem) name for a title Tentacle writes into a VOD folder.
 
     Never starts with a dot. Jellyfin's library scanner ignores every path
@@ -253,9 +276,23 @@ def vod_folder_name(title: str, year: Optional[str]) -> str:
     was written to disk and then never appeared in Jellyfin, with no error
     anywhere. Only for Tentacle's own VOD output: make_folder_name is also used
     to find folders Radarr/Sonarr named, which must not change.
+
+    Always fits a path component with ".strm" on the end (#156): a name that
+    fits is returned unchanged, so no existing folder moves; a longer one is
+    cut on a UTF-8 boundary and given a stable hash, keeping " (year)" and
+    `tag` (e.g. " [tmdbid-2002]", see sync._claim_vod_name).
     """
-    name = make_folder_name(title, year).lstrip(". ")
-    if not name or name.startswith("("):
-        name = make_folder_name("Unknown", year)
-    return name
+    safe = sanitize_filename(title).lstrip(". ")
+    if not safe:
+        # (The old check tested the whole name for a leading "(", which also
+        # turned "(500) Days of Summer" into "Unknown (2009)".)
+        safe = "Unknown"
+    tail = (f" ({year})" if year else "") + tag
+    return _fit(safe, tail, f"{safe}{tail}", MAX_NAME_BYTES - len(_STRM_SUFFIX))
+
+
+def episode_file_stem(show_folder: str, marker: str) -> str:
+    """"<show folder> S01E03", shortened in its show part only when the file
+    name would not fit, so " SxxEyy" stays whole for Jellyfin to parse."""
+    return _fit(show_folder, f" {marker}", show_folder, MAX_NAME_BYTES - len(_STRM_SUFFIX))
 

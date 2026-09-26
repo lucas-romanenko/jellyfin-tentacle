@@ -12,7 +12,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
 import requests
 
 from sqlalchemy.orm import Session
@@ -22,7 +22,7 @@ from models.database import (
     SyncRun, CategorySnapshot, Duplicate, get_setting, log_deletion
 )
 from services.tmdb import TMDBService
-from services.nfo import write_movie_nfo, write_series_nfo, make_folder_name, vod_folder_name
+from services.nfo import write_movie_nfo, write_series_nfo, make_folder_name, vod_folder_name, episode_file_stem
 from services.cleaner import clean_title
 from services.m3u_parser import episode_from_title, container_from_url
 from services.duplicates import delete_vod_files, convert_record_to_downloaded
@@ -522,12 +522,15 @@ def _merge_source_tag(tmdb_id: int, media_type: str, source_tag: str, provider_i
             pass  # NFO update is best-effort
 
 
-def _write_episode_strms(client: "XtreamClient", episodes: dict, show_dir: Path, folder_name: str) -> int:
+def _write_episode_strms(client: "XtreamClient", episodes: dict, show_dir: Path, folder_name: str,
+                         overwrite: bool = False) -> int:
     """Write .strm files for any episodes that don't already exist on disk.
 
     Returns the number of NEW episode files written. Safe to call on an
     existing series to back-fill newly-added seasons/episodes (idempotent —
-    existing .strm files are left untouched).
+    existing .strm files are left untouched). With `overwrite`, an existing
+    file that plays anything else is rewritten: a higher-priority provider
+    took the series over (#154).
     """
     ep_count = 0
     for season_num, eps in episodes.items():
@@ -552,7 +555,7 @@ def _write_episode_strms(client: "XtreamClient", episodes: dict, show_dir: Path,
             ep_num = ep.get("episode_num", 0)
             container = ep.get("container_extension", "mp4")
             try:
-                ep_filename = f"{folder_name} S{season_int:02d}E{int(ep_num):02d}"
+                ep_filename = episode_file_stem(folder_name, f"S{season_int:02d}E{int(ep_num):02d}")
             except (TypeError, ValueError):
                 continue
             strm_file = season_dir / f"{ep_filename}.strm"
@@ -561,6 +564,9 @@ def _write_episode_strms(client: "XtreamClient", episodes: dict, show_dir: Path,
                 strm_file.write_text(expected, encoding='utf-8')
                 chown_path(strm_file)
                 ep_count += 1
+            elif overwrite and strm_file.read_text(encoding="utf-8", errors="replace").strip() != expected:
+                strm_file.write_text(expected, encoding='utf-8')
+                chown_path(strm_file)
             elif _strm_needs_rewrite(strm_file, expected, client):
                 strm_file.write_text(expected, encoding='utf-8')
                 chown_path(strm_file)
@@ -621,6 +627,7 @@ def _backfill_series_episodes(
     tmdb_id: int,
     provider: Provider,
     db: Session,
+    overwrite: bool = False,
 ) -> int:
     """For an EXISTING VOD series owned by this provider, fetch series info and
     write any newly-added season/episode .strm files. Returns count of new files.
@@ -672,7 +679,7 @@ def _backfill_series_episodes(
             chown_path(nfo)
             logger.info(f"[Sync] Restored missing folder for existing series '{record.title}'")
         folder_name = show_dir.name
-        new_eps = _write_episode_strms(client, episodes, show_dir, folder_name)
+        new_eps = _write_episode_strms(client, episodes, show_dir, folder_name, overwrite=overwrite)
         if new_eps:
             record.date_updated = datetime.utcnow()
             logger.info(f"[Sync] Back-filled {new_eps} new episode(s) for existing series '{record.title}'")
@@ -683,6 +690,74 @@ def _backfill_series_episodes(
 
 
 # ── Duplicate Detection ───────────────────────────────────────────────────
+
+# What check_and_record_duplicate answers when a higher-priority provider has
+# just taken a title over: truthy (the caller still creates no new row), and
+# the caller must point the title's files at the new provider (#154).
+TAKEOVER = "takeover"
+
+
+def _take_over_files(db: Session, media_type: str, tmdb_id: int, client, item: dict,
+                     provider: Provider, source_tag: Optional[str]) -> None:
+    """Point a title a higher-priority provider took over at that provider.
+
+    The row already says provider_2, but the .strm still played the lower-
+    priority provider, and _strm_needs_rewrite never rewrites a file that plays
+    a different stream: when the backup provider then expired, the title
+    stopped playing and nothing repaired it (#154)."""
+    Model = Movie if media_type == "movie" else Series
+    row = db.query(Model).filter(Model.tmdb_id == tmdb_id).first()
+    if row is None or row.strm_disabled:
+        return
+    try:
+        if media_type == "movie" and row.strm_path:
+            strm = Path(row.strm_path)
+            strm.parent.mkdir(parents=True, exist_ok=True)
+            strm.write_text(client.movie_stream_url(item.get("stream_id"), item.get("container_extension", "mp4")),
+                            encoding="utf-8")
+            chown_path(strm)
+        elif media_type == "series":
+            _backfill_series_episodes(client, item, tmdb_id, provider, db, overwrite=True)
+    except Exception as e:
+        logger.warning(f"[Sync] Could not point '{row.title}' at {provider.name}: {e}")
+        return
+    old = row.source_tag
+    if source_tag and old != source_tag:
+        label = "Movies" if media_type == "movie" else "TV"
+        swap = {f"{old} {label}": f"{source_tag} {label}",
+                f"{old} Recently Added {label}": f"{source_tag} Recently Added {label}"} if old else {}
+        tags = [swap.get(t, t) for t in (row.tags or [])]
+        if not old and f"{source_tag} {label}" not in tags:
+            tags.insert(0, f"{source_tag} {label}")
+        row.source_tag = source_tag
+        from services.tagger import set_row_tags
+        set_row_tags(row, tags)
+    logger.info(f"[Sync] '{row.title}' now plays from {provider.name} (higher priority)")
+
+
+def _claim_vod_name(db: Session, media_type: str, output_dir: Path, title: str, year: Optional[str],
+                    tmdb_id: int) -> str:
+    """The folder name for a new VOD title, clear of other titles' files.
+
+    Two different titles can map to one folder: namesakes with the same
+    year, or names sanitize_filename reduces to the same string. The second
+    import overwrote the first one's .strm and NFO, and pruning either
+    deleted both (#155). When another row owns the path, this title gets a
+    " [tmdbid-N]" folder, which Jellyfin also reads as the TMDB id."""
+    Model = Movie if media_type == "movie" else Series
+
+    def target(name):
+        return output_dir / name / f"{name}.strm" if media_type == "movie" else output_dir / name
+
+    name = vod_folder_name(title, year)
+    taken = db.query(Model).filter(Model.strm_path == str(target(name)), Model.tmdb_id != tmdb_id).first()
+    if taken is None:
+        return name
+    tag = f" [tmdbid-{tmdb_id}]" if tmdb_id > 0 else f" [id-{abs(tmdb_id)}]"
+    claimed = vod_folder_name(title, year, tag=tag)
+    logger.info(f"[Sync] '{name}' already holds '{taken.title}' (tmdb:{taken.tmdb_id}); "
+                f"writing tmdb:{tmdb_id} to '{claimed}'")
+    return claimed
 
 def check_and_record_duplicate(
     tmdb_id: int,
@@ -766,11 +841,12 @@ def check_and_record_duplicate(
             return True  # Existing provider has equal or higher priority, skip
 
         # New provider is higher priority (lower number) — take over the
-        # existing row instead of inserting a duplicate tmdb_id.
+        # existing row instead of inserting a duplicate tmdb_id. The caller
+        # points the files at it (see TAKEOVER).
         existing.provider_id = provider.id
         existing.source = source
         existing.date_updated = datetime.utcnow()
-        return True
+        return TAKEOVER
 
     # Same provider (e.g. re-sync / appears in a second category of the same
     # provider): the existing row already belongs to us — don't insert again.
@@ -937,7 +1013,13 @@ def _prune_removed_content(db: Session, provider: Provider, media_type: str, see
 
     removed = 0
     for record in confirmed:
-        if media_type == "movie":
+        # Two titles that were written to one folder before #155 share its
+        # files: removing one row must not delete what the other plays.
+        shared = record.strm_path and db.query(Model).filter(
+            Model.strm_path == record.strm_path, Model.id != record.id).first()
+        if shared:
+            logger.info(f"[Sync] Keeping the files of '{record.title}': '{shared.title}' still uses them")
+        elif media_type == "movie":
             # strm_path points at the .strm file itself.
             delete_movie_files(record.strm_path)
         else:
@@ -1494,13 +1576,17 @@ def _sync_movies(
             # Compute file path early so duplicate record has it
             title = metadata["title"]
             year_str = metadata.get("year")
-            folder_name = vod_folder_name(title, year_str)
+            folder_name = _claim_vod_name(db, "movie", output_dir, title, year_str, tmdb_id)
             movie_dir = output_dir / folder_name
             strm_file = movie_dir / f"{folder_name}.strm"
             nfo_file = movie_dir / f"{folder_name}.nfo"
 
             # Check if exists from another provider (duplicate)
-            if check_and_record_duplicate(tmdb_id, "movie", f"provider_{provider.id}", str(strm_file), provider, db):
+            dup_answer = check_and_record_duplicate(tmdb_id, "movie", f"provider_{provider.id}", str(strm_file),
+                                                    provider, db)
+            if dup_answer == TAKEOVER:
+                _take_over_files(db, "movie", tmdb_id, client, stream, provider, cat.source_tag)
+            if dup_answer:
                 cat_existing += 1
                 stats["existing"] += 1
                 if item_idx % 10 == 0 or item_idx == total_in_cat:
@@ -1837,10 +1923,14 @@ def _sync_series(
             # Compute file path early so duplicate record has it
             title = metadata["title"]
             year_str = metadata.get("year")
-            folder_name = vod_folder_name(title, year_str)
+            folder_name = _claim_vod_name(db, "series", output_dir, title, year_str, tmdb_id)
             show_dir = output_dir / folder_name
 
-            if check_and_record_duplicate(tmdb_id, "series", f"provider_{provider.id}", str(show_dir), provider, db):
+            dup_answer = check_and_record_duplicate(tmdb_id, "series", f"provider_{provider.id}", str(show_dir),
+                                                    provider, db)
+            if dup_answer == TAKEOVER:
+                _take_over_files(db, "series", tmdb_id, client, series, provider, cat.source_tag)
+            if dup_answer:
                 cat_existing += 1
                 stats["existing"] += 1
                 if item_idx % 10 == 0 or item_idx == total_in_cat:
