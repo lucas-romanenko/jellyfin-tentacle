@@ -327,7 +327,7 @@ def reconcile_dynamic_tags(row, media_type: str, tags: list, dynamic: set, holde
     return kept
 
 
-def set_row_tags(row, tags: list) -> bool:
+def set_row_tags(row, tags: list, owned: Optional[set] = None) -> bool:
     """Store `tags` on a Movie/Series row and in its NFO. True if they changed.
 
     For .strm titles the NFO is what Jellyfin reads tags from: a tag taken off
@@ -338,7 +338,7 @@ def set_row_tags(row, tags: list) -> bool:
     row.tags = list(tags)
     if getattr(row, "nfo_path", None):
         from services.nfo import update_nfo_tags
-        update_nfo_tags(Path(row.nfo_path), row.tags)
+        update_nfo_tags(Path(row.nfo_path), row.tags, owned)
     return True
 
 
@@ -492,6 +492,7 @@ def refresh_recently_added_tags(db: Session):
     dynamic = dynamic_tags(db)
     holders = list_tag_holders(db)
     rules = db.query(TagRule).filter(TagRule.active == True).all()  # noqa: E712
+    owned = tentacle_owned_tags(db)
     changed = {"movie": 0, "series": 0}
 
     for media_type, model, type_label in (("movie", Movie, "Movies"), ("series", Series, "TV")):
@@ -500,7 +501,7 @@ def refresh_recently_added_tags(db: Session):
             is_recent = bool(row.date_added and row.date_added >= cutoff)
             tags = _recency_pass(list(before), is_recent, row.source_tag, type_label, dynamic)
             tags = reconcile_dynamic_tags(row, media_type, tags, dynamic, holders, rules, db)
-            if set_row_tags(row, tags):
+            if set_row_tags(row, tags, owned):
                 changed[media_type] += 1
 
     db.commit()

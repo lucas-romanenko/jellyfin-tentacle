@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from models.database import get_db, Series, ListItem, ListSubscription, DownloadRequest, Duplicate, get_setting, log_activity
 from services.sonarr import scan_sonarr_library, SonarrService
 from services.nfo import update_nfo_tags, write_series_nfo
+from services.tagger import tentacle_owned_tags
 from services.logstream import emit_library_event
 
 from routers.auth import require_admin, _has_internal_secret
@@ -330,7 +331,7 @@ def _after_scan(db, tmdb_id, title, event_type, first_episode=None, episode_coun
                 db_series.tags = tags
                 if db_series.nfo_path:
                     from pathlib import Path
-                    update_nfo_tags(Path(db_series.nfo_path), tags)
+                    update_nfo_tags(Path(db_series.nfo_path), tags, tentacle_owned_tags(db))
                 db.commit()
                 logger.info(f"[Sonarr webhook] Tagged '{title}' with {tagged_from}")
             else:

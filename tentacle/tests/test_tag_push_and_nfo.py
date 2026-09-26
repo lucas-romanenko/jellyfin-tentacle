@@ -100,7 +100,7 @@ class RefreshTagsKeepsNfoMetadata(_Db):
         mpath = Path(self.tmp) / "movie.nfo"
         spath = Path(self.tmp) / "tvshow.nfo"
         write_movie_nfo(mpath, {"tmdb_id": 603, "title": "The Matrix", "year": 1999, "imdb_id": "tt0133093"},
-                        ["Old Tag"])
+                        ["Old Tag", "Recently Added Movies"])
         write_series_nfo(spath, {"tmdb_id": 1399, "title": "Friends", "year": 1994, "tvdb_id": 79168},
                          ["Old Tag"])
         before_m, before_s = mpath.read_text(), spath.read_text()
@@ -117,7 +117,8 @@ class RefreshTagsKeepsNfoMetadata(_Db):
             sync_router.refresh_tags(db=self.db)
         movie, show = mpath.read_text(), spath.read_text()
         self.assertIn("<tag>Netflix Movies</tag>", movie)
-        self.assertNotIn("Old Tag", movie)
+        self.assertNotIn("Recently Added Movies", movie, "Tentacle's stale tag comes off")
+        self.assertIn("<tag>Old Tag</tag>", movie, "a tag Tentacle does not own stays")
         self.assertIn("tt0133093", movie)
         self.assertIn("<tag>Downloaded TV</tag>", show)
         self.assertIn("79168", show)
@@ -143,6 +144,37 @@ class UpdateNfoTags(unittest.TestCase):
         update_nfo_tags(nfo, [])
         update_nfo_tags(nfo, [])
         self.assertIn("</dateadded>\n</movie>", nfo.read_text(), "an empty tag list adds blank lines")
+
+
+class NfoTagWrites(unittest.TestCase):
+    """#165: only Tentacle's own tags are replaced, and a file whose tags
+    already match is not rewritten (Jellyfin re-reads every rewritten NFO)."""
+
+    def setUp(self):
+        from services.nfo import write_movie_nfo
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.path = Path(self.tmp) / "movie.nfo"
+        write_movie_nfo(self.path, {"tmdb_id": 603, "title": "The Matrix", "year": 1999},
+                        ["Netflix Movies", "cyberpunk", "Tom & Jerry's"])
+
+    def test_an_nfo_whose_tags_match_is_not_written(self):
+        import os
+        from services.nfo import update_nfo_tags
+        os.utime(self.path, (1_000_000, 1_000_000))
+        self.assertFalse(update_nfo_tags(self.path, ["Netflix Movies"], owned={"Netflix Movies", "Recently Added Movies"}))
+        self.assertEqual(1_000_000, self.path.stat().st_mtime)
+        self.assertFalse(update_nfo_tags(self.path, ["Netflix Movies", "cyberpunk", "Tom & Jerry's"]))
+        self.assertEqual(1_000_000, self.path.stat().st_mtime)
+
+    def test_only_owned_tags_are_replaced(self):
+        from services.nfo import update_nfo_tags
+        self.assertTrue(update_nfo_tags(self.path, ["Netflix Movies", "IMDB TOP 250"],
+                                        owned={"Netflix Movies", "IMDB TOP 250"}))
+        text = self.path.read_text()
+        for tag in ("Netflix Movies", "IMDB TOP 250", "cyberpunk", "Tom &amp; Jerry&apos;s"):
+            self.assertIn(f"<tag>{tag}</tag>", text)
+        self.assertEqual(4, text.count("<tag>"))
 
 
 if __name__ == "__main__":

@@ -910,12 +910,14 @@ def refresh_tags(db: Session = Depends(get_db)):
     # directors, studios, tagline), a Sonarr show's tvdbid, and reset
     # <dateadded> to now (#165). A missing NFO is still written from the row.
     from services.nfo import update_nfo_tags, write_movie_nfo, write_series_nfo
+    from services.tagger import tentacle_owned_tags
+    owned = tentacle_owned_tags(db)
     nfos_written = 0
     vod_movies = db.query(Movie).filter(Movie.source != "radarr", Movie.nfo_path.isnot(None)).all()
     for movie in vod_movies:
         try:
             if Path(movie.nfo_path).exists():
-                if update_nfo_tags(Path(movie.nfo_path), movie.tags or []):
+                if update_nfo_tags(Path(movie.nfo_path), movie.tags or [], owned):
                     nfos_written += 1
                 continue
             metadata = {
@@ -932,7 +934,7 @@ def refresh_tags(db: Session = Depends(get_db)):
     for series in vod_series:
         try:
             if Path(series.nfo_path).exists():
-                if update_nfo_tags(Path(series.nfo_path), series.tags or []):
+                if update_nfo_tags(Path(series.nfo_path), series.tags or [], owned):
                     nfos_written += 1
                 continue
             metadata = {

@@ -694,6 +694,8 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
     Also removes the tag from any library items that are no longer on the list,
     so stale tags get cleaned up on every list refresh.
     """
+    from services.tagger import tentacle_owned_tags
+    owned = tentacle_owned_tags(db)   # an NFO's other tags stay (#165)
     # Build set of (tmdb_id, media_type) that should have this tag
     valid_ids = set()
     for item in items:
@@ -733,7 +735,7 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
             tags = [t for t in row.tags if t != tag]
             row.tags = tags
             if row.nfo_path:
-                update_nfo_tags(Path(row.nfo_path), tags)
+                update_nfo_tags(Path(row.nfo_path), tags, owned)
             cleaned += 1
 
     if cleaned:
@@ -755,7 +757,7 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
                     tags.append(tag)
                     series.tags = tags
                     if series.nfo_path:
-                        update_nfo_tags(Path(series.nfo_path), tags)
+                        update_nfo_tags(Path(series.nfo_path), tags, owned)
                     tagged += 1
         elif media_type == "movie":
             movie = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
@@ -765,7 +767,7 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
                     tags.append(tag)
                     movie.tags = tags
                     if movie.nfo_path:
-                        update_nfo_tags(Path(movie.nfo_path), tags)
+                        update_nfo_tags(Path(movie.nfo_path), tags, owned)
                     tagged += 1
         else:
             movie = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
@@ -775,7 +777,7 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
                     tags.append(tag)
                     movie.tags = tags
                     if movie.nfo_path:
-                        update_nfo_tags(Path(movie.nfo_path), tags)
+                        update_nfo_tags(Path(movie.nfo_path), tags, owned)
                     tagged += 1
                 continue
 
@@ -786,7 +788,7 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
                     tags.append(tag)
                     series.tags = tags
                     if series.nfo_path:
-                        update_nfo_tags(Path(series.nfo_path), tags)
+                        update_nfo_tags(Path(series.nfo_path), tags, owned)
                     tagged += 1
 
     db.commit()
