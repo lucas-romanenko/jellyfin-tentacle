@@ -67,23 +67,28 @@ def _in_run_retry_wait() -> None:
         time.sleep(IN_RUN_RETRY_DELAY)
 
 
-def _log_restore_given_up(parent_id: str, left: dict) -> None:
-    """Put a give-up on the Activity page, not only in the log."""
+def _log_activity_safe(event: str, message: str) -> None:
+    """Write an Activity entry (redacted); never fail the caller over it."""
     try:
         from models.database import SessionLocal, log_activity
         from services.log_redaction import redact
-        ids = ", ".join(f"{cid} ({c['official'] or '-'}/{c['custom'] or '-'})"
-                        for cid, c in list(left.items())[:20])
         db = SessionLocal()
         try:
-            log_activity(db, "rating_restore_failed", redact(
-                f"Could not restore the own ratings of {len(left)} season(s)/episode(s) of "
-                f"Jellyfin series {parent_id} after a tag push; Jellyfin gave them the series' "
-                f"rating. Set these by hand in Jellyfin: {ids}"))
+            log_activity(db, event, redact(message))
         finally:
             db.close()
     except Exception as e:
-        logger.warning(f"[Jellyfin] Could not write the rating-restore give-up to the Activity log: {e}")
+        logger.warning(f"[Jellyfin] Could not write '{event}' to the Activity log: {e}")
+
+
+def _log_restore_given_up(parent_id: str, left: dict) -> None:
+    """Put a give-up on the Activity page, not only in the log."""
+    ids = ", ".join(f"{cid} ({c['official'] or '-'}/{c['custom'] or '-'})"
+                    for cid, c in list(left.items())[:20])
+    _log_activity_safe("rating_restore_failed",
+                       f"Could not restore the own ratings of {len(left)} season(s)/episode(s) of "
+                       f"Jellyfin series {parent_id} after a tag push; Jellyfin gave them the series' "
+                       f"rating. Set these by hand in Jellyfin: {ids}")
 
 
 def _pending_restores_path() -> Path:
@@ -794,10 +799,22 @@ class JellyfinService:
         need = dict(pending["children"]) if pending else {}
         children = self._child_ratings(item_id)
         if children is None:
+            # Usually transient: one more look after a short pause before
+            # updating without a snapshot.
+            _in_run_retry_wait()
+            children = self._child_ratings(item_id)
+        if children is None:
             logger.warning(
                 f"[Jellyfin] Could not list the seasons/episodes of {item.get('Type')} {item_id}; "
                 f"updating it anyway, so Jellyfin may give them its rating"
                 + (" (a pending restore will still be applied)" if need else ""))
+            _log_activity_safe(
+                "rating_cascade_unprotected",
+                f"Updated the tags of Jellyfin {item.get('Type', 'item').lower()} '{item.get('Name', '')}' "
+                f"({item_id}) without being able to list its seasons and episodes first. Jellyfin "
+                f"copies a series' parental rating onto all of them on every update, so episodes "
+                f"with a rating of their own may now carry the series' rating — check them in Jellyfin."
+                + (" A saved restore was still applied." if need else ""))
         else:
             seasons_to_restore = {cid for cid, c in need.items() if c["type"] == "Season"}
             for cid, (ctype, o, c, season) in children.items():
@@ -833,11 +850,20 @@ class JellyfinService:
             # Saved before the update, so a failure from here on is retried
             # from these values instead of being lost.
             _pending_restores_set(item_id, entry)
-        if not self._post_update(item_id, payload, what):
-            return False
-        if entry:
-            self._finish_restore(item_id, _pending_restores_load().get(item_id) or _valid_pending_entry(entry))
-        return True
+        try:
+            ok = self._post_update(item_id, payload, what)
+        except requests.HTTPError:
+            ok = None
+            raise
+        finally:
+            # Also when the update call failed: Jellyfin may have applied it
+            # and lost only the response. The restore compares each child with
+            # its saved rating, so if nothing was cascaded nothing is written
+            # and the saved entry is simply cleared.
+            if entry:
+                self._finish_restore(item_id, _pending_restores_load().get(item_id)
+                                     or _valid_pending_entry(entry))
+        return ok
 
     def _post_update(self, item_id: str, payload: dict, what: str) -> bool:
         try:

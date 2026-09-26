@@ -36,6 +36,7 @@ class _FakeJellyfin:
         self.posts = []
         self.gets = []
         self.list_fails = False
+        self.list_fail_times = 0
         self.down = False
         self.fail_posts = set()
         self.fail_once = set()
@@ -71,6 +72,9 @@ class _FakeJellyfin:
             if self.list_fails == "http":
                 import requests
                 raise requests.HTTPError("500 Server Error")
+            if self.list_fail_times > 0:
+                self.list_fail_times -= 1
+                return None
             if self.list_fails or self.down:
                 return None
             kids = self.children(params["ParentId"], params["IncludeItemTypes"].split(","))
@@ -197,9 +201,12 @@ class TestSeriesPush(_PendingDir):
         """Blocking it would keep it out of its playlists for good (round-2 review)."""
         for how in (True, "http"):
             with self.subTest(listing_fails=how):
+                from unittest import mock
+                import services.jellyfin as j
                 fake = _FakeJellyfin()
                 fake.list_fails = how
-                with self.assertLogs("services.jellyfin", level="WARNING"):
+                with mock.patch.object(j, "_log_activity_safe"), \
+                        self.assertLogs("services.jellyfin", level="WARNING"):
                     self.assertTrue(_service(fake).set_item_tags("s1", ["Netflix TV", "x"]))
                 self.assertEqual(fake.items["s1"]["Tags"], ["Netflix TV", "x"])
 
@@ -520,6 +527,74 @@ class TestRound4(_PendingDir):
         self.assertEqual(row.event, "rating_restore_failed")
         self.assertIn("s1", row.message)
         self.assertIn("e2 (TV-MA/-)", row.message)
+
+
+class TestRound5(_PendingDir):
+    """Round-5 sweep: retry a failed child listing once; restore from the saved
+    snapshot even when the series update call itself fails."""
+
+    def test_a_listing_that_fails_once_is_retried_and_the_restore_happens(self):
+        from unittest import mock
+        import services.jellyfin as j
+        fake = _FakeJellyfin()
+        fake.list_fail_times = 1
+        with mock.patch.object(j, "_log_activity_safe") as activity:
+            self.assertTrue(_service(fake).set_item_tags("s1", ["Netflix TV", "x"]))
+        self.assertEqual(fake.items["e2"]["OfficialRating"], "TV-MA")
+        activity.assert_not_called()
+
+    def test_a_listing_that_keeps_failing_is_reported_on_the_activity_page(self):
+        from unittest import mock
+        import services.jellyfin as j
+        fake = _FakeJellyfin()
+        fake.list_fails = True
+        with mock.patch.object(j, "_log_activity_safe") as activity, \
+                self.assertLogs("services.jellyfin", level="WARNING"):
+            self.assertTrue(_service(fake).set_item_tags("s1", ["Netflix TV", "x"]))
+        self.assertEqual(fake.items["s1"]["Tags"], ["Netflix TV", "x"])
+        activity.assert_called_once()
+        event, message = activity.call_args.args
+        self.assertEqual(event, "rating_cascade_unprotected")
+        self.assertIn("s1", message)
+        self.assertIn("Show", message)
+
+    def _lose_the_response(self, fake, applied, how):
+        """The series update reaches Jellyfin (or not) and its answer is lost."""
+        import requests
+        from unittest import mock
+        jf = _service(fake)
+
+        def post(url, json=None, timeout=None):
+            item_id = url.rsplit("/", 1)[-1]
+            if fake.items[item_id]["Type"] == "Series":
+                if applied:
+                    fake.post(item_id, json)
+                if how == "timeout":
+                    raise requests.ConnectionError("read timed out")
+                return mock.Mock(status_code=500, text="Internal Server Error")
+            fake.post(item_id, json)
+            return mock.Mock(status_code=204, text="")
+        jf.session.post.side_effect = post
+        return jf
+
+    def test_an_applied_update_whose_answer_was_lost_is_still_restored(self):
+        for how in ("timeout", "500"):
+            with self.subTest(how=how):
+                fake = _FakeJellyfin()
+                jf = self._lose_the_response(fake, applied=True, how=how)
+                with self.assertLogs("services.jellyfin", level="ERROR"):
+                    self.assertFalse(jf.set_item_tags("s1", ["Netflix TV", "x"]))
+                self.assertEqual(fake.items["e2"]["OfficialRating"], "TV-MA")
+                self.assertEqual(fake.items["e1"]["OfficialRating"], "TV-PG")
+                self.assertEqual(self._pending(), {})
+
+    def test_an_update_that_never_arrived_writes_no_children(self):
+        fake = _FakeJellyfin()
+        jf = self._lose_the_response(fake, applied=False, how="timeout")
+        with self.assertLogs("services.jellyfin", level="ERROR"):
+            self.assertFalse(jf.set_item_tags("s1", ["Netflix TV", "x"]))
+        self.assertEqual(fake.posts, [])            # nothing to restore, nothing written
+        self.assertEqual(self._pending(), {})
 
 
 class TestEpisodeNumberingIsEchoed(unittest.TestCase):
