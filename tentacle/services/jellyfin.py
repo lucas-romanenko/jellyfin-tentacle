@@ -128,8 +128,12 @@ def _valid_pending_entry(entry) -> Optional[dict]:
         attempts, since = int(entry.get("attempts") or 0), float(entry.get("since") or time.time())
     except (TypeError, ValueError):
         attempts, since = 0, time.time()
+    known = {}
+    for cid, v in (entry.get("known") or {}).items() if isinstance(entry.get("known"), dict) else ():
+        if isinstance(v, list) and len(v) == 2 and all(x is None or isinstance(x, str) for x in v):
+            known[str(cid)] = v
     return ({"copy": copy, "prev_copy": prev_copy, "attempts": attempts, "since": since,
-             "children": out} if out else None)
+             "children": out, "known": known} if out else None)
 
 
 def _pending_restores_load() -> dict:
@@ -750,7 +754,10 @@ class JellyfinService:
             # A hand edit found above is saved before any season is written: if
             # the process dies after that season's cascade, the retry must not
             # read the cascade's copy and put back the old value.
-            _pending_restores_set(parent_id, dict(_pending_restores_load()[parent_id], children=work))
+            saved = _pending_restores_load()[parent_id]
+            known = dict(saved.get("known") or {})
+            known.update({cid: [c["official"], c["custom"]] for cid, c in work.items()})
+            _pending_restores_set(parent_id, dict(saved, children=work, known=known))
         for kind in ("Season", "Episode"):
             for cid, c in work.items():
                 if c["type"] != kind:
@@ -907,17 +914,44 @@ class JellyfinService:
                 + (" A saved restore was still applied." if need else ""))
         else:
             seasons_to_restore = {cid for cid, c in need.items() if c["type"] == "Season"}
+            # Values an earlier, unfinished push's cascade wrote. A child that
+            # is not in that push's entry but shows one of them did not choose
+            # it: it had no rating of its own then (every rated child the
+            # cascade changed was saved), so it is an unrated child holding
+            # the copy. Recording the copy as its "own" rating would pin it: a
+            # season restored now cascades its rating onto the episode, and the
+            # episode's "restore" would then write the series' copy back — a
+            # TV-14 copy on an episode of a TV-MA season, for good.
+            # This push's own cascaded value is NOT treated so: before any
+            # cascade, an episode rated like its series is its real rating.
+            copies = [tuple(pending[k]) for k in ("copy", "prev_copy") if pending and pending.get(k)]
+            # Own ratings this unfinished entry already recorded, for children
+            # restored since (and so no longer in its children): those are the
+            # authority — an episode rated like its series keeps that rating.
+            recorded = (pending or {}).get("known") or {}
+
+            def own_of(cid, o, c):
+                if cid in recorded:
+                    return self._own_after(tuple(recorded[cid]), (o, c), copies)
+                return tuple(None if v is not None and any(k[i] == v for k in copies) else v
+                             for i, v in enumerate((o, c)))
+
             for cid, (ctype, o, c, season) in children.items():
-                if cid not in need and self._own_rating_changed((o, c), tuple(cascaded)):
-                    need[cid] = {"type": ctype, "official": o, "custom": c, "season": season}
+                if cid in need:
+                    continue
+                own = own_of(cid, o, c)
+                if self._own_rating_changed(own, tuple(cascaded)):
+                    need[cid] = {"type": ctype, "official": own[0], "custom": own[1], "season": season}
                     if ctype == "Season":
                         seasons_to_restore.add(cid)
             # Restoring a season cascades its rating onto its episodes, so
             # every episode there with a rating of its own is restored too,
             # even one the series' cascade itself would not have changed.
             for cid, (ctype, o, c, season) in children.items():
-                if ctype == "Episode" and season in seasons_to_restore and (o or c) and cid not in need:
-                    need[cid] = {"type": ctype, "official": o, "custom": c, "season": season}
+                if ctype == "Episode" and season in seasons_to_restore and cid not in need:
+                    own = own_of(cid, o, c)
+                    if own != (None, None):
+                        need[cid] = {"type": ctype, "official": own[0], "custom": own[1], "season": season}
             for cid, (ctype, o, c, season) in children.items():
                 if cid in need and need[cid].get("season") is None and season:
                     need[cid]["season"] = season
@@ -939,8 +973,10 @@ class JellyfinService:
         entry = None
         if need:
             prev = pending.get("copy") if pending else None
+            known = dict((pending or {}).get("known") or {})
+            known.update({cid: [c["official"], c["custom"]] for cid, c in need.items()})
             entry = {"copy": cascaded, "prev_copy": prev if prev != cascaded else pending.get("prev_copy") if pending else None,
-                     "children": need,
+                     "children": need, "known": known,
                      "attempts": pending["attempts"] if pending else 0,
                      "since": pending["since"] if pending else time.time()}
             # Saved before the update, so a failure from here on is retried
