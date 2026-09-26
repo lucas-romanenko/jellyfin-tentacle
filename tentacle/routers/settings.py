@@ -75,11 +75,22 @@ def get_settings_raw(db: Session = Depends(get_db)):
 
 @router.post("")
 def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
+    from models.database import NON_EMPTY_DEFAULTS, Setting
     sensitive_keys = {"tmdb_bearer_token", "tmdb_api_key", "radarr_api_key", "sonarr_api_key", "jellyfin_api_key", "trakt_client_id", "mdblist_api_key", "vod_token_secret"}
+    existing = {k for (k,) in db.query(Setting.key).all()}
     for key, value in body.settings.items():
         # Don't overwrite sensitive keys if they look masked
         if key in sensitive_keys and value and "..." in value:
             continue
+        if isinstance(value, str) and not value.strip():
+            # A cleared field shows its placeholder, so it looks like the
+            # default: store the default for a key that must hold a value
+            # (#157). A blank for a key never set stores nothing; an existing
+            # value can still be cleared.
+            if key in NON_EMPTY_DEFAULTS:
+                value = NON_EMPTY_DEFAULTS[key]
+            elif key not in existing:
+                continue
         set_setting(db, key, value)
 
     # Mark setup complete if all required fields are filled
@@ -92,7 +103,7 @@ def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
     if "sync_schedule" in body.settings:
         try:
             from main import reschedule_main_sync
-            reschedule_main_sync(body.settings["sync_schedule"])
+            reschedule_main_sync(get_setting(db, "sync_schedule"))
         except Exception:
             import logging
             logging.getLogger(__name__).warning("Could not reschedule sync after settings save", exc_info=True)
