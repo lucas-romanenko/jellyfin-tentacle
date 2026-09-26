@@ -819,13 +819,20 @@ async function fetchLibraryPage() {
   }
 }
 
+// A poster that fails to load is replaced by the placeholder, and only the
+// poster: replacing its PARENT also wiped the card's status badge and, on
+// Discover, the "+" button (#173). Same markup as the no-poster branch.
+function _posterFailed(img) {
+  img.outerHTML = '<div class="lib-card-poster-placeholder">◫</div>';
+}
+
 function renderLibCard(item) {
   // Library is browse-only — skip missing items entirely
   if (item.in_library === false) return '';
 
   // Normal in-library card
   const poster = item.poster_path
-    ? `<img src="https://image.tmdb.org/t/p/w185${item.poster_path}" loading="lazy" onerror="this.parentElement.innerHTML='<div class=\\'lib-card-poster-placeholder\\'>◫</div>'">`
+    ? `<img src="https://image.tmdb.org/t/p/w185${item.poster_path}" loading="lazy" onerror="_posterFailed(this)">`
     : `<div class="lib-card-poster-placeholder">◫</div>`;
 
   let badges = '';
@@ -5334,7 +5341,7 @@ function renderDiscoverGrid(items) {
   grid.innerHTML = items.map(item => {
     const posterSrc = _imgUrl(item.poster_path, 'w185');
     const poster = posterSrc
-      ? `<img src="${posterSrc}" loading="lazy" onerror="this.parentElement.innerHTML='<div class=\\'lib-card-poster-placeholder\\'>◫</div>'">`
+      ? `<img src="${posterSrc}" loading="lazy" onerror="_posterFailed(this)">`
       : `<div class="lib-card-poster-placeholder">◫</div>`;
     const tvdbId = item.tvdb_id || 0;
     const tmdbId = item.tmdb_id || 0;
@@ -6927,7 +6934,7 @@ async function loadHealthDeletions() {
 (function exposeGlobals() {
   const fns = [
     // Activity (inline handlers)
-    _activityPosterFailed, activitySearchAgain, activityRemove, activityStopMissing, _smAll, _smCount, _smGo, openReleaseCheck, _rcLoad, _rcGrab, replaceCopy,
+    _activityPosterFailed, _posterFailed, activitySearchAgain, activityRemove, activityStopMissing, _smAll, _smCount, _smGo, openReleaseCheck, _rcLoad, _rcGrab, replaceCopy,
     // Wrong movie (mislabelled provider streams)
     reportWrongMovie, dismissMatchSuspect, unblockStream, openFixMatch, _fmLoad, _fmFrames, _fmPick, _fmRemove,
     // Lists page
