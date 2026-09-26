@@ -7,6 +7,7 @@ dropped early whenever an item leaves the queue.
 """
 
 import time
+import threading
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -310,11 +311,13 @@ def _fetch_sonarr_searching(url: str, api_key: str, file_counts: Optional[dict] 
         entry = by_series.get(sid)
         if entry is None:
             entry = by_series[sid] = {
-                "series": series, "episodes": [], "wanted_since": wanted_since, "last_searched": None,
+                "series": series, "episodes": [], "ids": [], "wanted_since": wanted_since, "last_searched": None,
             }
         key = (ep.get("seasonNumber", 0), ep.get("episodeNumber", 0))
         if key not in entry["episodes"]:
             entry["episodes"].append(key)
+            if ep.get("id") is not None:
+                entry["ids"].append(ep["id"])
         searched = _parse_dt(ep.get("lastSearchTime"))
         if searched and (entry["last_searched"] is None or searched > entry["last_searched"]):
             entry["last_searched"] = searched
@@ -344,6 +347,11 @@ def _fetch_sonarr_searching(url: str, api_key: str, file_counts: Optional[dict] 
             "waiting_since": entry["wanted_since"].strftime("%Y-%m-%dT%H:%M:%SZ"),
             "last_searched": entry["last_searched"].strftime("%Y-%m-%dT%H:%M:%SZ") if entry["last_searched"] else None,
             "sonarr_poster": _extract_poster(series),
+            # Server-side only (stripped from the API): exactly the episodes
+            # this card counts, so "stop looking" (no list = all of them)
+            # never reaches past what the person was shown.
+            "_missing_ids": list(entry["ids"]),
+            "_sonarr_id": sid,
         })
     return searching
 
@@ -666,7 +674,28 @@ def _get_wanted(db: Session) -> dict:
             x["waiting_since"] = x["last_searched"]
     searching.sort(key=lambda x: x.get("waiting_since") or "", reverse=True)
 
-    result = {"unreleased": unreleased[:20], "searching": searching[:SEARCHING_LIMIT]}
+    # What each series' Searching card counts, for every series in the window
+    # (not only the first SEARCHING_LIMIT), by Sonarr series id: two Sonarr
+    # shows can share a TMDB number. Also remembered past this cache, so a
+    # card someone is looking at still means the same episodes after a
+    # rebuild pushed its show out of the one-page window.
+    missing_ids = {}
+    for x in searching:
+        ids = x.pop("_missing_ids", None)
+        sid = x.pop("_sonarr_id", None)
+        if x.get("media_type") == "series" and ids is not None and sid:
+            missing_ids[sid] = ids
+            with _shown_lock:
+                _shown_ids[sid] = (now, ids)
+    with _shown_lock:
+        for sid in [k for k, (at, _) in _shown_ids.items() if now - at > SHOWN_IDS_KEEP]:
+            _shown_ids.pop(sid, None)
+    result = {"unreleased": unreleased[:20], "searching": searching[:SEARCHING_LIMIT],
+              "_missing_ids": missing_ids,
+              # Whole lists, un-enriched, for a non-admin's own titles: the
+              # library-wide first 20 can hold none of theirs.
+              "_unreleased_all": [dict(u) for u in unreleased],
+              "_searching_all": [dict(x) for x in searching]}
     _enrich_posters(db, result["unreleased"])
     _enrich_posters(db, result["searching"])
     _unreleased_cache["data"] = result
@@ -677,6 +706,33 @@ def _get_wanted(db: Session) -> dict:
 def _get_unreleased(db: Session) -> list:
     """Get unreleased movies and series — cached for 5 minutes (expensive call)."""
     return _get_wanted(db)["unreleased"]
+
+
+SHOWN_IDS_KEEP = 24 * 3600
+_shown_ids: dict = {}  # Sonarr series id -> (when, episode ids its card last counted)
+_shown_lock = threading.Lock()
+
+
+def _missing_ids_for(db: Session, rec: dict) -> Optional[set]:
+    """The episode ids a series' Searching card counts, or None if it has no card.
+
+    Sonarr's wanted/missing is read one page deep, so on a large library a
+    show's older missing episodes are not on its card: "S12E03" can stand for
+    81 missing episodes. "Stop looking" without a list means "the ones shown".
+    """
+    sid = rec.get("id")
+    try:
+        got = (_get_wanted(db).get("_missing_ids") or {}).get(sid)
+    except Exception:
+        got = None
+    if got is None:
+        # Not on a card any more (the list was rebuilt since): what its card
+        # last counted. Never a card: None (every missing episode).
+        with _shown_lock:
+            at, remembered = _shown_ids.get(sid, (0, None))
+        if remembered is not None and time.time() - at <= SHOWN_IDS_KEEP:
+            got = remembered
+    return set(got) if got is not None else None
 
 
 def invalidate_wanted_cache() -> None:
@@ -795,8 +851,24 @@ def get_activity(request: Request, db: Session = Depends(get_db),
     is_admin = user and user.is_admin
 
     if not is_admin and user:
-        # Non-admin: only show items they requested
+        # Non-admin: only show items they requested — picked from the whole
+        # lists, then capped, so an admin's backlog can't push them out.
         downloads = [d for d in downloads if d.get("tmdb_id") in user_requests]
+        if "_unreleased_all" in wanted:
+            unreleased = [dict(u) for u in wanted["_unreleased_all"]
+                          if u.get("tmdb_id") in user_requests
+                          and not _same_title(u, downloading_tmdb_ids, downloading_tvdb_ids)][:20]
+            _enrich_posters(db, unreleased)
+        if "_searching_all" in wanted:
+            searching = [dict(x) for x in wanted["_searching_all"]
+                         if x.get("tmdb_id") in user_requests
+                         and not _same_title(x, downloading_tmdb_ids, downloading_tvdb_ids)]
+            mine = [x["tmdb_id"] for x in searching if x.get("media_type") == "movie" and x.get("tmdb_id")]
+            have = {tid for (tid,) in db.query(Movie.tmdb_id).filter(
+                Movie.source == "radarr", Movie.tmdb_id.in_(mine)).all()} if mine else set()
+            searching = [x for x in searching
+                         if not (x.get("media_type") == "movie" and x.get("tmdb_id") in have)][:SEARCHING_LIMIT]
+            _enrich_posters(db, searching)
         unreleased = [u for u in unreleased if u.get("tmdb_id") in user_requests]
         searching = [x for x in searching if x.get("tmdb_id") in user_requests]
         recently_downloaded = [r for r in recently_downloaded if r.get("tmdb_id") in user_requests]
@@ -853,6 +925,9 @@ class ArrTitle(BaseModel):
     # Stop-missing only: limit to these episodes, as "S01E02" labels (the
     # Searching row's missing_labels). Default: every missing episode.
     episodes: Optional[List[str]] = None
+    # Stop-missing only: sent with the card's labels when every one is ticked
+    # -- how many episodes the card counted (missing_labels is capped at 50).
+    episode_count: Optional[int] = None
     # Check only: search again even if a recent check exists.
     fresh: bool = False
     # Grab only: the release, from a check's list.
@@ -1007,9 +1082,20 @@ def stop_missing(title: ArrTitle, db: Session = Depends(get_db),
     svc, rec = _find_arr_record(db, title)
     name = rec.get("title", "")
     missing = _missing_aired(svc.get_episodes(rec["id"]))
-    if title.episodes is not None:
-        wanted = {e.strip().upper() for e in title.episodes}
-        missing = [ep for ep in missing if _ep_label(ep) in wanted]
+    labels = {e.strip().upper() for e in title.episodes} if title.episodes is not None else None
+    if labels is not None and title.episode_count is None:
+        missing = [ep for ep in missing if _ep_label(ep) in labels]  # the ones chosen
+    else:
+        # "All" = exactly the episodes the card counted -- never every missing
+        # episode: Sonarr's wanted list is read one page deep, so a card saying
+        # "S12E03" can stand for 81 missing episodes it never showed.
+        shown = _missing_ids_for(db, rec)
+        if shown is not None:
+            missing = [ep for ep in missing if ep.get("id") in shown]
+        elif labels is not None and len(labels) >= (title.episode_count or 0):
+            missing = [ep for ep in missing if _ep_label(ep) in labels]  # the card's full list
+        elif missing:
+            raise HTTPException(409, "Activity has changed since this was shown. Refresh Activity and try again.")
     if not missing:
         _after_arr_change(title)
         return {"ok": True, "title": name, "stopped": 0,
@@ -1047,6 +1133,31 @@ def _series_files_on_disk(db: Session, title: ArrTitle, row) -> int:
     return 1 if row is not None and getattr(row, "source", None) == "sonarr" else 0
 
 
+def _has_vod_folder(media_type: str, arr_path: Optional[str]) -> bool:
+    """Does Tentacle's VOD tree hold a folder of this name with .strm files in
+    it? Radarr/Sonarr see the folder under their own mount, so the path can't
+    be compared, but in a merged setup the folder name is the same. Catches a
+    VOD title Tentacle has no row for under this id (a show Sonarr knows only
+    by its TVDB number). The roots are fixed (services.sync); names are tried
+    as given and in both Unicode normal forms (Sonarr on macOS/APFS reports
+    NFD, Tentacle writes NFC)."""
+    import unicodedata
+    from pathlib import Path
+    from services import sync
+    name = (arr_path or "").replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    if not name:
+        return False
+    root = Path(sync.VOD_MOVIES_ROOT if media_type == "movie" else sync.VOD_SERIES_ROOT)
+    try:
+        for n in dict.fromkeys((name, unicodedata.normalize("NFC", name), unicodedata.normalize("NFD", name))):
+            folder = root / n
+            if folder.is_dir() and next(folder.rglob("*.strm"), None) is not None:
+                return True
+        return False
+    except OSError:
+        return True  # can't tell: keep the files
+
+
 @router.post("/arr/remove")
 def remove_from_arr(title: ArrTitle, request: Request, db: Session = Depends(get_db),
                     user: TentacleUser = Depends(get_user_from_request)):
@@ -1081,7 +1192,14 @@ def remove_from_arr(title: ArrTitle, request: Request, db: Session = Depends(get
     name = rec.get("title", "")
     path = (rec.get("path") or "").lower()
     hybrid = title.media_type == "series" and row is not None and bool(getattr(row, "sonarr_path", None))
-    keep_files = hybrid or "/vod/" in path
+    # A title Tentacle also serves from VOD (the documented way to get a proper
+    # download of a VOD title is to add it to Radarr/Sonarr): in the merged
+    # setup the docs describe, Radarr/Sonarr's folder IS the VOD folder, and
+    # deleteFiles removes the whole folder — .strm and .nfo included — even
+    # though nothing was downloaded. Nothing is on disk for a searching title
+    # anyway, so keep the folder.
+    vod_copy = row is not None and (getattr(row, "source", None) or "").startswith("provider_")
+    keep_files = hybrid or vod_copy or "/vod/" in path or _has_vod_folder(title.media_type, rec.get("path"))
     if title.media_type == "movie":
         ok = svc.delete_movie_by_id(rec["id"], delete_files=not keep_files)
     else:
@@ -1105,4 +1223,8 @@ def remove_from_arr(title: ArrTitle, request: Request, db: Session = Depends(get
     _after_arr_change(title)
     logger.info(f"Activity: removed '{name}' from {arr} (deleteFiles={not keep_files}) by {user.display_name}")
     return {"ok": True, "title": name, "files_deleted": not keep_files,
-            "message": f"Removed {name} from {arr}" + (" (VOD files kept)" if keep_files else "")}
+            "message": f"Removed {name} from {arr}" + (
+                (" (files kept: Tentacle's VOD library has a folder of this name, so "
+                 + ("any downloaded episodes are" if title.media_type == "series" else "a downloaded file, if any, is")
+                 + f" still on disk; delete it in {arr} if you meant to)")
+                if keep_files and title.delete_downloaded else " (VOD files kept)" if keep_files else "")}

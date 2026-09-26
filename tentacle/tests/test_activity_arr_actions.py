@@ -97,7 +97,9 @@ class _Base(unittest.TestCase):
         ]
         for p in (mock.patch("services.radarr.RadarrService", lambda *a: self.radarr),
                   mock.patch("services.sonarr.SonarrService", lambda *a: self.sonarr),
-                  mock.patch.object(activity, "invalidate_wanted_cache")):
+                  mock.patch.object(activity, "invalidate_wanted_cache"),
+                  # No Searching card unless a test sets one (stop-missing reads them).
+                  mock.patch.object(activity, "_get_wanted", return_value={"unreleased": [], "searching": []})):
             p.start()
             self.addCleanup(p.stop)
 
@@ -154,7 +156,8 @@ class TestStopMissing(_Base):
     def test_unmonitors_only_the_missing_aired_episodes(self):
         FakeSonarr.episodes = FakeSonarr.episodes + [
             {"id": 5, "seasonNumber": 2, "episodeNumber": 3, "monitored": True, "hasFile": False, "airDateUtc": PAST}]
-        r = self.stop(media_type="series", tmdb_id=200)
+        # The card's full list (every client sends it, with the card's count).
+        r = self.stop(media_type="series", tmdb_id=200, episodes=["S01E01", "S02E03"], episode_count=2)
         self.assertEqual([([1, 5], False)], self.sonarr.monitoring,
                          "not the downloaded one, not the unwanted one, not the unaired one")
         self.assertEqual(2, r["stopped"])
@@ -188,7 +191,7 @@ class TestStopMissing(_Base):
     def test_sonarr_refusing_is_502(self):
         self.sonarr.accept_monitoring = False
         with self.assertRaises(HTTPException) as e:
-            self.stop(media_type="series", tmdb_id=200)
+            self.stop(media_type="series", tmdb_id=200, episodes=["S01E01"], episode_count=1)
         self.assertEqual(502, e.exception.status_code)
 
     def test_non_admin_only_for_their_own_requests(self):
@@ -224,9 +227,79 @@ class TestRemove(_Base):
         self.assertFalse(row.sonarr_monitored)
         self.assertIsNotNone(row, "the VOD series itself stays in the library")
 
+    def test_a_vod_movie_searching_in_radarr_keeps_its_folder(self):
+        # Merged setup: Radarr's folder for the movie is the VOD folder holding the .strm.
+        self.db.add(mdb.Movie(tmdb_id=100, title="Rare Film", source="provider_1",
+                              strm_path="/data/movies/Rare Film (1998)/Rare Film (1998).strm"))
+        self.db.commit()
+        r = self.remove(media_type="movie", tmdb_id=100)
+        self.assertEqual([(11, False)], self.radarr.deleted, "deleteFiles would take the .strm with the folder")
+        self.assertFalse(r["files_deleted"])
+        self.assertIsNotNone(self.db.query(mdb.Movie).filter_by(tmdb_id=100).first(), "the VOD title stays")
+
+    def test_a_vod_series_added_whole_to_sonarr_keeps_its_folder(self):
+        self.db.add(mdb.Series(tmdb_id=200, title="Slow Show", source="provider_1"))
+        self.db.commit()
+        self.remove(media_type="series", tmdb_id=200)
+        self.assertEqual([(21, False)], self.sonarr.deleted)
+
     def test_anything_under_the_vod_tree_keeps_its_files_even_without_a_db_row(self):
         self.remove(media_type="series", tmdb_id=300)
         self.assertEqual([(23, False)], self.sonarr.deleted)
+
+    def _vod_root(self):
+        """Redirect the fixed VOD roots (services.sync) -- a fresh install has
+        no vod_*_path setting, and the check must not need one."""
+        import tempfile, pathlib
+        from services import sync
+        root = pathlib.Path(tempfile.mkdtemp())
+        saved = sync.VOD_MOVIES_ROOT, sync.VOD_SERIES_ROOT
+        sync.VOD_MOVIES_ROOT, sync.VOD_SERIES_ROOT = root / "movies", root / "shows"
+        self.addCleanup(lambda: setattr(sync, "VOD_MOVIES_ROOT", saved[0]) or setattr(sync, "VOD_SERIES_ROOT", saved[1]))
+        return root
+
+    def test_a_folder_of_the_same_name_in_the_vod_tree_keeps_its_files(self):
+        """TVDB-only in Sonarr, so Tentacle has no row under its id, but in a
+        merged setup its folder is the VOD folder with the .strm files."""
+        root = self._vod_root()
+        (root / "shows" / "TVDB Only" / "Season 1").mkdir(parents=True)
+        (root / "shows" / "TVDB Only" / "Season 1" / "TVDB Only S01E01.strm").write_text("http://x")
+        self.assertFalse(mdb.get_setting(self.db, "vod_shows_path"), "fresh-install state: no setting")
+        self.remove(media_type="series", tvdb_id=3000)
+        self.assertEqual([(22, False)], self.sonarr.deleted)
+
+    def test_a_decomposed_unicode_name_is_the_same_folder(self):
+        import unicodedata
+        root = self._vod_root()
+        nfc = "Šventė Vilniuje"
+        (root / "shows" / unicodedata.normalize("NFC", nfc) / "Season 1").mkdir(parents=True)
+        (root / "shows" / nfc / "Season 1" / "x S01E01.strm").write_text("http://x")
+        FakeSonarr.series[1]["path"] = "/tv/" + unicodedata.normalize("NFD", nfc)
+        self.remove(media_type="series", tvdb_id=3000)
+        self.assertEqual([(22, False)], self.sonarr.deleted)
+
+    def test_no_such_vod_folder_deletes_as_before(self):
+        self._vod_root()
+        FakeSonarr.series[0]["statistics"] = {"episodeFileCount": 0}
+        self.remove(media_type="series", tmdb_id=200)
+        self.assertEqual([(21, True)], self.sonarr.deleted)
+
+    def test_a_confirmed_delete_that_keeps_files_says_so(self):
+        self.db.add(mdb.Series(tmdb_id=200, title="Slow Show", source="provider_1"))
+        self.db.commit()
+        FakeSonarr.series[0]["statistics"] = {"episodeFileCount": 3}
+        r = self.remove(media_type="series", tmdb_id=200, delete_downloaded=True)
+        self.assertEqual([(21, False)], self.sonarr.deleted)
+        self.assertFalse(r["files_deleted"])
+        self.assertIn("still on disk", r["message"])
+        self.assertIn("episodes", r["message"])
+
+    def test_the_kept_files_message_for_a_movie_does_not_say_episodes(self):
+        self.db.add(mdb.Movie(tmdb_id=100, title="Rare Film", source="provider_1"))
+        self.db.commit()
+        r = self.remove(media_type="movie", tmdb_id=100, delete_downloaded=True)
+        self.assertNotIn("episodes", r["message"])
+        self.assertIn("still on disk", r["message"])
 
     def test_partly_downloaded_goes_through_the_full_delete_when_confirmed(self):
         self.db.add(mdb.Series(tmdb_id=200, title="Slow Show", source="sonarr"))
