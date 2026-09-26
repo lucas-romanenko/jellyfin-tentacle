@@ -5999,7 +5999,7 @@ function renderLiveChannels(channels, total) {
       <span class="live-ch-name">${escapeAttr(ch.name)}${ch.custom_name ? ` <span style="color:var(--text3);font-size:11px">(${escapeAttr(ch.provider_name)})</span>` : ''}</span>
       <span class="live-ch-group">${escapeAttr(ch.group_title || '')}</span>
       <button type="button" class="live-ch-epg-badge ${ch.has_epg_data ? 'has-epg' : 'no-epg'}" title="${escapeAttr(_liveGuideTitle(ch))}" onclick="setLiveChannelGuideId(${i})">${ch.has_epg_data ? (ch.epg_match === 'name' ? 'EPG (by name)' : ch.epg_match === 'override' ? 'EPG (set)' : 'Has EPG') : 'No EPG'}</button>
-      <button class="btn btn-secondary btn-sm" title="Rename this channel in Jellyfin's guide" onclick="renameLiveChannel(${i})" style="flex-shrink:0">Rename</button>
+      <button class="btn btn-secondary btn-sm live-ch-rename" title="Rename this channel in Jellyfin's guide" onclick="renameLiveChannel(${i})" style="flex-shrink:0">Rename</button>
       <button class="live-toggle ${ch.enabled ? 'on' : ''}" onclick="toggleLiveChannel(${i}, this, event)" style="flex-shrink:0"></button>
     </div>`).join('');
 }
