@@ -31,6 +31,7 @@
     loadedAt: 0,          // timestamp of last render — stale after 5 min
     activityData: null,   // shared — used for download badges on discover cards
     generation: 0,        // incremented on navigation, stale API responses check this
+    view: 0,              // incremented whenever the grid is repainted for another tab/pill
     _pendingAction: null, // 'manage' or 'downloadMore' — auto-trigger after modal render
     streamingProviders: null, // [{slug,name}] once loaded
     streamingActive: null,    // active provider slug
@@ -311,6 +312,7 @@
   // ── Fetch discover sections ─────────────────────────────────────────
   function fetchDiscoverData() {
     var gen = MD.generation;
+    MD.view++;
     var content = document.getElementById('mdDiscoverContent');
     if (content) content.innerHTML = '<div class="md-loading"><div class="md-spinner"></div><br>Loading...</div>';
 
@@ -386,6 +388,7 @@
 
   function switchSection(sectionId) {
     MD.activeSection = sectionId;
+    MD.view++;
 
     document.querySelectorAll('.md-section-tab').forEach(function (btn) {
       btn.classList.toggle('md-section-active', btn.getAttribute('data-section') === sectionId);
@@ -428,14 +431,18 @@
         });
       });
       var typeParam = MD.mediaFilter === 'series' ? 'series' : 'movies';
+      // A later pill, tab or type switch reuses #mdStreamGrid: an answer for
+      // the earlier one must not land in it.
+      var view = ++MD.view;
       apiGet('TentacleDiscover/Streaming?provider=' + encodeURIComponent(MD.streamingActive) + '&type=' + typeParam + '&userId=' + window.ApiClient.getCurrentUserId())
         .then(function (data) {
-          if (gen !== MD.generation) return;
+          if (gen !== MD.generation || view !== MD.view) return;
           MD.streamingSection = { id: 'streaming', items: (data && data.items) || [], failure: failureMessage(data) };
           var wrap = document.getElementById('mdStreamGrid');
           if (wrap) renderGrid(MD.streamingSection, wrap);
         })
         .catch(function () {
+          if (gen !== MD.generation || view !== MD.view) return;
           var wrap = document.getElementById('mdStreamGrid');
           if (wrap) wrap.innerHTML = '<div class="md-loading">Failed to load.</div>';
         });
@@ -443,8 +450,8 @@
 
     if (!MD.streamingProviders) {
       apiGet('TentacleDiscover/Providers?userId=' + window.ApiClient.getCurrentUserId())
-        .then(function (data) { MD.streamingProviders = (data && data.providers) || []; if (gen === MD.generation) paint(); })
-        .catch(function () { MD.streamingProviders = []; if (gen === MD.generation) paint(); });
+        .then(function (data) { MD.streamingProviders = (data && data.providers) || []; if (gen === MD.generation && MD.activeSection === 'streaming') paint(); })
+        .catch(function () { MD.streamingProviders = []; if (gen === MD.generation && MD.activeSection === 'streaming') paint(); });
     } else {
       paint();
     }
@@ -507,7 +514,7 @@
         if (e.target.closest('.md-card-add')) return;
         var tmdb = parseInt(card.getAttribute('data-tmdb'), 10) || 0;
         var tvdb = parseInt(card.getAttribute('data-tvdb'), 10) || 0;
-        var item = findItem(tmdb, tvdb);
+        var item = findItem(tmdb, tvdb, card.getAttribute('data-type'));
         if (item) showDetailModal(item);
       });
     });
@@ -518,7 +525,8 @@
         e.stopPropagation();
         var tmdb = parseInt(btn.getAttribute('data-tmdb'), 10) || 0;
         var tvdb = parseInt(btn.getAttribute('data-tvdb'), 10) || 0;
-        var item = findItem(tmdb, tvdb);
+        var card = btn.closest('.md-card');
+        var item = findItem(tmdb, tvdb, card && card.getAttribute('data-type'));
         if (item) showDetailModal(item);
       });
     });
@@ -546,14 +554,16 @@
           renderLists();
         });
       });
+      var view = ++MD.view;
       apiGet('TentacleDiscover/ListMissing?list_id=' + encodeURIComponent(MD.missingActive) + '&type=' + typeParam + '&userId=' + window.ApiClient.getCurrentUserId())
         .then(function (data) {
-          if (gen !== MD.generation) return;
+          if (gen !== MD.generation || view !== MD.view) return;
           MD.missingSection = { id: 'missing', items: (data && data.items) || [], failure: failureMessage(data) };
           var wrap = document.getElementById('mdStreamGrid');
           if (wrap) renderGrid(MD.missingSection, wrap);
         })
         .catch(function () {
+          if (gen !== MD.generation || view !== MD.view) return;
           var wrap = document.getElementById('mdStreamGrid');
           if (wrap) wrap.innerHTML = '<div class="md-loading">Failed to load.</div>';
         });
@@ -561,8 +571,8 @@
 
     if (!MD.missingLists || MD.missingListType !== typeParam) {
       apiGet('TentacleDiscover/Lists?type=' + typeParam + '&userId=' + window.ApiClient.getCurrentUserId())
-        .then(function (data) { MD.missingLists = (data && data.lists) || []; MD.missingListType = typeParam; if (gen === MD.generation) paint(); })
-        .catch(function () { MD.missingLists = []; MD.missingListType = typeParam; if (gen === MD.generation) paint(); });
+        .then(function (data) { MD.missingLists = (data && data.lists) || []; MD.missingListType = typeParam; if (gen === MD.generation && MD.activeSection === 'missing') paint(); })
+        .catch(function () { MD.missingLists = []; MD.missingListType = typeParam; if (gen === MD.generation && MD.activeSection === 'missing') paint(); });
     } else {
       paint();
     }
@@ -607,14 +617,16 @@
           renderGenres();
         });
       });
+      var view = ++MD.view;
       apiGet('TentacleDiscover/Genre?genre_id=' + MD.genreActive + '&type=' + typeParam + '&mode=' + MD.genreMode + '&userId=' + window.ApiClient.getCurrentUserId())
         .then(function (data) {
-          if (gen !== MD.generation) return;
+          if (gen !== MD.generation || view !== MD.view) return;
           MD.genreSection = { id: 'genres', items: (data && data.items) || [], failure: failureMessage(data) };
           var wrap = document.getElementById('mdStreamGrid');
           if (wrap) renderGrid(MD.genreSection, wrap);
         })
         .catch(function () {
+          if (gen !== MD.generation || view !== MD.view) return;
           var wrap = document.getElementById('mdStreamGrid');
           if (wrap) wrap.innerHTML = '<div class="md-loading">Failed to load.</div>';
         });
@@ -622,38 +634,28 @@
 
     if (!MD.genreList || MD.genreListType !== typeParam) {
       apiGet('TentacleDiscover/Genres?type=' + typeParam + '&userId=' + window.ApiClient.getCurrentUserId())
-        .then(function (data) { MD.genreList = (data && data.genres) || []; MD.genreListType = typeParam; if (gen === MD.generation) paint(); })
-        .catch(function () { MD.genreList = []; MD.genreListType = typeParam; if (gen === MD.generation) paint(); });
+        .then(function (data) { MD.genreList = (data && data.genres) || []; MD.genreListType = typeParam; if (gen === MD.generation && MD.activeSection === 'genres') paint(); })
+        .catch(function () { MD.genreList = []; MD.genreListType = typeParam; if (gen === MD.generation && MD.activeSection === 'genres') paint(); });
     } else {
       paint();
     }
   }
 
-  function findItem(tmdbId, tvdbId) {
-    if (MD.missingSection) {
-      var mitems = MD.missingSection.items || [];
-      for (var q = 0; q < mitems.length; q++) {
-        if ((mitems[q].tmdb_id || 0) === tmdbId || (tvdbId && (mitems[q].tvdb_id || 0) === tvdbId)) return mitems[q];
-      }
-    }
-    if (MD.genreSection) {
-      var gitems = MD.genreSection.items || [];
-      for (var j = 0; j < gitems.length; j++) {
-        if ((gitems[j].tmdb_id || 0) === tmdbId || (tvdbId && (gitems[j].tvdb_id || 0) === tvdbId)) return gitems[j];
-      }
-    }
-    if (MD.streamingSection) {
-      var sitems = MD.streamingSection.items || [];
-      for (var k = 0; k < sitems.length; k++) {
-        if ((sitems[k].tmdb_id || 0) === tmdbId || (tvdbId && (sitems[k].tvdb_id || 0) === tvdbId)) return sitems[k];
-      }
-    }
-    if (!MD.sections) return null;
-    for (var i = 0; i < MD.sections.length; i++) {
-      var items = MD.sections[i].items;
-      for (var j = 0; j < items.length; j++) {
-        if (tmdbId && items[j].tmdb_id === tmdbId) return items[j];
-        if (tvdbId && items[j].tvdb_id === tvdbId) return items[j];
+  function findItem(tmdbId, tvdbId, mediaType) {
+    // The grid on screen first: an older From My Lists / Genres / Streaming
+    // answer stays in memory, and a movie and a show can share a TMDB number.
+    var byTab = { missing: MD.missingSection, genres: MD.genreSection, streaming: MD.streamingSection };
+    var pools = [];
+    var current = byTab[MD.activeSection] ||
+      (MD.sections && MD.sections.find(function (s) { return s.id === MD.activeSection; }));
+    if (current) pools.push(current.items || []);
+    [MD.missingSection, MD.genreSection, MD.streamingSection].forEach(function (sec) { if (sec) pools.push(sec.items || []); });
+    (MD.sections || []).forEach(function (sec) { pools.push(sec.items || []); });
+    for (var p = 0; p < pools.length; p++) {
+      for (var i = 0; i < pools[p].length; i++) {
+        var it = pools[p][i];
+        if (mediaType && (it.media_type || 'movie') !== mediaType) continue;
+        if ((tmdbId && (it.tmdb_id || 0) === tmdbId) || (tvdbId && (it.tvdb_id || 0) === tvdbId)) return it;
       }
     }
     return null;
