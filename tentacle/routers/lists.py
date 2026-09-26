@@ -572,28 +572,36 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
     tagged = 0
     cleaned = 0
 
-    # --- Strip stale tags from items that no longer belong ---
-    for movie in db.query(Movie).all():
-        if not movie.tags or tag not in movie.tags:
-            continue
-        if (movie.tmdb_id, "movie") in valid_ids or (movie.tmdb_id, "") in valid_ids:
-            continue
-        tags = [t for t in movie.tags if t != tag]
-        movie.tags = tags
-        if movie.nfo_path:
-            update_nfo_tags(Path(movie.nfo_path), tags)
-        cleaned += 1
+    # A tag is not only this list's. Two users' lists can share it, and so can
+    # a list and a tag rule; stripping it from everything not on THIS list
+    # emptied the other's playlist on every refresh, the last list refreshed
+    # winning (#162). A title keeps the tag while any active list with it (its
+    # stored items, this list's new ones included) or an active rule producing
+    # it still holds the title.
+    from models.database import TagRule
+    from services.tagger import apply_tag_rules, list_tag_holders, _row_metadata
+    holders = list_tag_holders(db)
+    tag_rules = db.query(TagRule).filter(TagRule.active == True, TagRule.output_tag == tag).all()  # noqa: E712
 
-    for series in db.query(Series).all():
-        if not series.tags or tag not in series.tags:
-            continue
-        if (series.tmdb_id, "series") in valid_ids or (series.tmdb_id, "") in valid_ids:
-            continue
-        tags = [t for t in series.tags if t != tag]
-        series.tags = tags
-        if series.nfo_path:
-            update_nfo_tags(Path(series.nfo_path), tags)
-        cleaned += 1
+    def _still_held(row, media_type: str) -> bool:
+        if (row.tmdb_id, media_type) in valid_ids or (row.tmdb_id, "") in valid_ids:
+            return True
+        if tag in holders.get((media_type, row.tmdb_id), ()):
+            return True
+        return bool(tag_rules) and tag in apply_tag_rules(
+            _row_metadata(row, media_type, row.tags or []), media_type, row.source or "",
+            row.source_tag, db, rules=tag_rules)
+
+    # --- Strip stale tags from items that no longer belong ---
+    for media_type, model in (("movie", Movie), ("series", Series)):
+        for row in db.query(model).all():
+            if not row.tags or tag not in row.tags or _still_held(row, media_type):
+                continue
+            tags = [t for t in row.tags if t != tag]
+            row.tags = tags
+            if row.nfo_path:
+                update_nfo_tags(Path(row.nfo_path), tags)
+            cleaned += 1
 
     if cleaned:
         logger.info(f"List tag '{tag}': removed stale tag from {cleaned} items")
