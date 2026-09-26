@@ -408,12 +408,11 @@ public class TentacleDiscoverController : ControllerBase
     [HttpPost("ArrSearch")]
     [Authorize]
     public Task<ActionResult> ArrSearch([FromBody] JsonElement body) =>
-        ForwardArrAction("search", body, HttpClient);
+        // AddClient: Tentacle reads the whole Sonarr series list and the show's
+        // episodes first; on a big library that outlasts HttpClient's 15 s and the
+        // user was told it failed when Sonarr had done it.
+        ForwardArrAction("search", body, AddClient);
 
-    /// <summary>
-    /// Stops Sonarr looking for a show's missing episodes (body: media_type, tmdb_id,
-    /// tvdb_id, optional episodes). Downloaded episodes are untouched.
-    /// </summary>
     /// <summary>
     /// Why hasn't this downloaded? Tentacle runs Radarr/Sonarr's interactive search
     /// (every indexer — can take a minute) and sums up the releases (body: media_type,
@@ -430,10 +429,14 @@ public class TentacleDiscoverController : ControllerBase
     public Task<ActionResult> ArrGrab([FromBody] JsonElement body) =>
         ForwardArrAction("grab", body, AddClient);
 
+    /// <summary>
+    /// Stops Sonarr looking for a show's missing episodes (body: media_type, tmdb_id,
+    /// tvdb_id, optional episodes). Downloaded episodes are untouched.
+    /// </summary>
     [HttpPost("ArrStopMissing")]
     [Authorize]
     public Task<ActionResult> ArrStopMissing([FromBody] JsonElement body) =>
-        ForwardArrAction("stop-missing", body, HttpClient);
+        ForwardArrAction("stop-missing", body, AddClient);
 
     /// <summary>
     /// Removes a requested title from Radarr/Sonarr, folder included (VOD folders
