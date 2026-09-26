@@ -77,6 +77,8 @@ class TestNightlyRefreshRunsOncePerUser(unittest.TestCase):
             mock.patch.object(tagger, "refresh_recently_added_tags", lambda db: None),
             mock.patch.object(discovery, "discover_new_provider_content",
                               lambda db: {"vod_new": [], "live_new": []}),
+            # A live stream another test left open must not make this wait.
+            mock.patch("services.provider_activity.live_streams_active", lambda: False),
             mock.patch.object(jellyfin.JellyfinService, "wait_for_library_scan",
                               lambda self, **kw: False),
         ]

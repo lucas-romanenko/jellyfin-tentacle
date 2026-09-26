@@ -32,6 +32,7 @@ class _Base(unittest.IsolatedAsyncioTestCase):
         from routers import livetv
         self.livetv = livetv
         livetv._stream_slots = livetv._StreamSlots()
+        self.addCleanup(lambda: setattr(livetv, "_stream_slots", livetv._StreamSlots()))
         livetv._shared_streams.clear(); livetv._pending_opens.clear(); livetv._reserved_channels.clear()
         livetv._recording_cache.update(at=-1e9, sids=set(), pending=None, failures=0, retry_at=-1e9)
         livetv._recording_cache.pop("answer_issued_at", None)

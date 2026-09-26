@@ -280,6 +280,7 @@ class TunerOpens(unittest.IsolatedAsyncioTestCase):
         livetv = _livetv()
         self.livetv = livetv
         livetv._stream_slots = livetv._StreamSlots()
+        self.addCleanup(lambda: setattr(livetv, "_stream_slots", livetv._StreamSlots()))
         livetv._shared_streams.clear()
         livetv._pending_opens.clear()
         livetv._reserved_channels.clear()
@@ -421,6 +422,7 @@ class FilmsThroughTentacle(unittest.TestCase):
         from test_vod_proxy import PANEL
         self.livetv, self.vod = livetv, vod
         livetv._stream_slots = livetv._StreamSlots()
+        self.addCleanup(lambda: setattr(livetv, "_stream_slots", livetv._StreamSlots()))
         vod._playbacks.clear()
         vod._sweeper = None
         self.db = _fresh_db()

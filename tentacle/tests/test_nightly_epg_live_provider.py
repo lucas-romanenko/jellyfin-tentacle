@@ -89,6 +89,9 @@ class NightlyEpgForLiveProvider(unittest.TestCase):
             mock.patch.object(tagger, "refresh_recently_added_tags", lambda db: None),
             mock.patch.object(discovery, "discover_new_provider_content",
                               lambda db: {"vod_new": [], "live_new": []}),
+            # Provider jobs wait while live TV runs: a stream another test left
+            # open would make this one wait for hours.
+            mock.patch("services.provider_activity.live_streams_active", lambda: False),
         ]
         for p in patches:
             p.start()

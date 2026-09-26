@@ -133,6 +133,8 @@ class NightlySync(_Db):
             mock.patch.object(tagger, "refresh_recently_added_tags", lambda db: None),
             mock.patch.object(discovery, "discover_new_provider_content",
                               lambda db: {"vod_new": [], "live_new": []}),
+            # A live stream another test left open must not make this wait.
+            mock.patch("services.provider_activity.live_streams_active", lambda: False),
         ]
         for p in patches:
             p.start()

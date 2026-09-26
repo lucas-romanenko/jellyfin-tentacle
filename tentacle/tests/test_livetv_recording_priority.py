@@ -386,6 +386,7 @@ class KnowingWhatIsRecording(unittest.IsolatedAsyncioTestCase):
                 mock.patch.object(self.livetv, "SessionLocal", lambda: self.db), \
                 mock.patch.object(self.db, "close", lambda: None):
             self.livetv._stream_slots = self.livetv._StreamSlots()
+            self.addCleanup(lambda: setattr(self.livetv, "_stream_slots", self.livetv._StreamSlots()))
             lease = await self.livetv._stream_slots.acquire_lease(6, 0.01, "live", "channel:9", stream_key="277123")
             self.assertEqual("live", lease.kind)
             answers.append({"277123"})       # the timer flipped
@@ -425,6 +426,7 @@ class KnowingWhatIsRecording(unittest.IsolatedAsyncioTestCase):
         even though Jellyfin has no InProgress timer for it yet."""
         with mock.patch.object(self.livetv, "_recording_stream_ids_from_jellyfin", lambda u, k: set()):
             self.livetv._stream_slots = self.livetv._StreamSlots()
+            self.addCleanup(lambda: setattr(self.livetv, "_stream_slots", self.livetv._StreamSlots()))
             lease = await self.livetv._stream_slots.acquire_lease(
                 6, 0.01, "live", f"channel:{self.b.id}", stream_key=self.b.stream_id or str(self.b.id))
             await self.livetv.live_reserve(self.livetv.ReserveRequest(channel_id=self.b.id, seconds=60), self.db)
@@ -480,6 +482,7 @@ class RouteGivesRecordingsTheSlot(unittest.TestCase):
         import routers.livetv as livetv
         self.livetv = livetv
         livetv._stream_slots = livetv._StreamSlots()
+        self.addCleanup(lambda: setattr(livetv, "_stream_slots", livetv._StreamSlots()))
         livetv._shared_lock = None
         livetv._shared_streams.clear()
         livetv._stream_status.clear()
