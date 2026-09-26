@@ -85,7 +85,7 @@ class _VodResponse(StreamingResponse):
 class _Playback:
     """One title being played: its lease and when it was last asked for."""
     __slots__ = ("token", "owner", "client", "lease", "last_used", "started", "idle", "stopped",
-                 "active_bodies", "opening", "generation")
+                 "active_bodies", "opening", "generation", "upstream")
 
     def __init__(self, token: str, owner: str, lease, idle: float, client: str = ""):
         self.token = token
@@ -101,6 +101,11 @@ class _Playback:
         # the disconnect grace and waits out a 509 on open would otherwise
         # end up streaming on a playback whose lease was given away.
         self.opening = 0
+        # The provider response the newest request is reading. Closed from
+        # outside when a newer request replaces it or the slot is taken: a
+        # body whose player is paused is blocked sending to the player and
+        # would otherwise keep the provider connection open indefinitely.
+        self.upstream = None
         # One playback, one provider connection: a new request (a seek) ends
         # the body still streaming the previous range, so two never run at once
         # under one counted slot.
@@ -115,6 +120,15 @@ class _Playback:
             logger.warning(f"[VOD] {self.owner}: playback stopped — a recording or live stream needed "
                            f"its connection slot")
             self.stopped.set()
+            if self.upstream is not None:
+                _close_resp_later(self.upstream)
+                self.upstream = None
+            # Its slot is gone (the broker moved it to the newcomer), so it is
+            # not a playback any more: off the list now, even if its request
+            # is still stuck writing to a paused player. The player's next
+            # request starts a new playback, which asks for a slot again.
+            if _playbacks.get(self.token) is self:
+                del _playbacks[self.token]
 
 
 _playbacks: "dict[str, _Playback]" = {}
@@ -127,6 +141,13 @@ def _release(pb: _Playback):
         del _playbacks[pb.token]
     livetv._stream_slots.release_lease(pb.lease)
     logger.info(f"[VOD] {pb.owner}: playback ended, slot released")
+
+
+def _close_resp_later(resp) -> None:
+    """Close one upstream response now, from a task of its own."""
+    task = asyncio.get_running_loop().create_task(resp.aclose())
+    _pending_releases.add(task)
+    task.add_done_callback(_pending_releases.discard)
 
 
 def _close_later(resp, client) -> None:
@@ -189,7 +210,11 @@ async def _playback_for(db, token: str, owner: str, client: str = "") -> _Playba
         pb.touch()
         return pb
     limit = livetv._max_concurrent_streams(db)
-    lease = await livetv._stream_slots.acquire_lease(limit, livetv._SLOT_WAIT_SECONDS, "vod", owner)
+    livetv._stream_slots.set_protect(livetv._protect_recordings(db))
+    try:
+        lease = await livetv._stream_slots.acquire_lease(limit, livetv._SLOT_WAIT_SECONDS, "vod", owner)
+    except livetv.RecordingProtected:
+        raise HTTPException(503, livetv.PROTECTED_REFUSAL_DETAIL)
     if lease is None:
         livetv._stream_slots.refused += 1
         logger.warning(f"[VOD] {owner}: refused — at capacity ({limit}) and every slot is held by "
@@ -251,7 +276,8 @@ async def _open(client: httpx.AsyncClient, method: str, url: str, headers: dict,
     raise HTTPException(502, "Too many redirects")
 
 
-async def _open_with_retry(client, method, url, headers, guard, owner: str, player_left=None) -> httpx.Response:
+async def _open_with_retry(client, method, url, headers, guard, owner: str, player_left=None,
+                           stopped=None) -> httpx.Response:
     """Open, waiting out a provider that is momentarily refusing (429/509,
     5xx, timeouts) on the live path's terms: a growing delay, a bounded
     budget. Anything else is final. `player_left` (async, -> bool) stops the
@@ -262,8 +288,13 @@ async def _open_with_retry(client, method, url, headers, guard, owner: str, play
     started = loop.time()
     backoff = 1.0
     while True:
+        if stopped is not None and stopped():
+            raise HTTPException(503, "The connection slot was needed by a recording or live stream")
         try:
             resp = await _open(client, method, url, headers, guard)
+            if stopped is not None and stopped():
+                await resp.aclose()     # lost the slot while this attempt was in flight
+                raise HTTPException(503, "The connection slot was needed by a recording or live stream")
             if resp.status_code in (200, 206):
                 return resp
             status = resp.status_code
@@ -277,6 +308,8 @@ async def _open_with_retry(client, method, url, headers, guard, owner: str, play
         if waited + backoff > livetv._OPEN_RETRY_BUDGET:
             logger.error(f"[VOD] {owner}: could not open after {waited:.0f}s: {reason}")
             raise HTTPException(503, "The provider is not answering; try again shortly")
+        if stopped is not None and stopped():
+            raise HTTPException(503, "The connection slot was needed by a recording or live stream")
         if player_left is not None and await player_left():
             logger.info(f"[VOD] {owner}: the player left while the provider was refusing ({reason})")
             raise HTTPException(503, "The player went away")
@@ -287,7 +320,11 @@ async def _open_with_retry(client, method, url, headers, guard, owner: str, play
 
 def _resolve(db, kind: str, token_file: str):
     parsed = vod_tokens.parse(kind, token_file)
-    if not parsed or not vod_tokens.verify(vod_tokens.token_secret(db), kind, parsed):
+    # Read, never create: the secret is made by the sync that writes the
+    # links. An install that never turned VOD-through-Tentacle on has none,
+    # and an anonymous request must not make one.
+    secret = (get_setting(db, vod_tokens.SECRET_SETTING, "") or "").strip()
+    if not parsed or not secret or not vod_tokens.verify(secret, kind, parsed):
         raise HTTPException(404, "Unknown stream")
     provider = db.query(Provider).filter(Provider.id == parsed["provider_id"]).first()
     if not provider or (provider.provider_type or "xtream") != "xtream" or not provider.server_url:
@@ -303,8 +340,17 @@ def _resolve(db, kind: str, token_file: str):
 
 @router.head("/api/vod/{kind}/{token_file}")
 async def vod_head(kind: str, token_file: str, request: Request, db: Session = Depends(get_db)):
-    """Headers only; no lease -- a probe, not a play."""
+    """Headers only; no lease -- a probe, not a play. Still a provider
+    connection, so with recording protection on it is refused while a
+    recording runs, like a play would be."""
     url, guard, ua, owner = _resolve(db, kind, token_file)
+    slots = livetv._stream_slots
+    slots.set_protect(livetv._protect_recordings(db))
+    if slots.protect and slots.recording_active():
+        try:
+            slots._refuse_protected("vod", f"{owner} (HEAD)")
+        except livetv.RecordingProtected:
+            raise HTTPException(503, livetv.PROTECTED_REFUSAL_DETAIL)
     client = httpx.AsyncClient(follow_redirects=False,
                                timeout=httpx.Timeout(connect=10.0, read=20.0, write=10.0, pool=10.0))
     try:
@@ -347,7 +393,8 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
 
     pb.opening += 1
     try:
-        resp = await _open_with_retry(client, "GET", url, headers, guard, owner, player_left=player_left)
+        resp = await _open_with_retry(client, "GET", url, headers, guard, owner, player_left=player_left,
+                                      stopped=pb.stopped.is_set)
     except BaseException:
         pb.opening -= 1
         await client.aclose()
@@ -377,6 +424,11 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
         resumable = not range_header and resp.headers.get("accept-ranges", "").lower() == "bytes"
     pb.active_bodies += 1
     pb.generation += 1
+    # One playback, one provider connection: the range this request replaces
+    # is closed now, not when its body next gets to run.
+    if pb.upstream is not None and pb.upstream is not resp:
+        _close_resp_later(pb.upstream)
+    pb.upstream = resp
     my_generation = pb.generation
     current = {"resp": resp}
     state = {"finished": False, "complete": False}
@@ -393,6 +445,8 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
         state["finished"] = True
         pb.active_bodies -= 1
         pb.touch()
+        if pb.upstream is current["resp"]:
+            pb.upstream = None
         _close_later(current["resp"], client)
         # Ended by a seek (a newer request took over) or by reaching the end
         # of the range: the player is still there and will ask again -- keep
@@ -426,9 +480,11 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
                         yield chunk
                     state["complete"] = True
                     return                      # the provider finished the file/range
-                except httpx.HTTPError as e:
+                except (httpx.HTTPError, httpx.StreamError) as e:
                     reason = str(e) or type(e).__name__
                 await resp.aclose()
+                if pb.stopped.is_set() or pb.generation != my_generation:
+                    return                      # closed on purpose: pre-empted, or replaced by a seek
                 if loop.time() - opened_at >= 30.0:
                     attempts = 0                # a connection that lasted resets the budget
                 if pb.stopped.is_set() or not resumable or attempts >= RECONNECT_ATTEMPTS:
@@ -442,13 +498,17 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
                 logger.warning(f"[VOD] {owner}: upstream dropped after {sent} bytes; resuming from byte "
                                f"{start + sent} in {delay:.0f}s: {reason}")
                 await asyncio.sleep(delay)
+                if pb.stopped.is_set() or pb.generation != my_generation:
+                    return                  # pre-empted or replaced during the wait: no new connection
                 resume = f"bytes={start + sent}-" + (str(end) if end is not None else "")
                 try:
                     # No player_left here: while the body streams, Starlette
                     # owns the disconnect listener and cancels this generator
                     # itself; a second reader of the ASGI receive is not ours.
                     current["resp"] = await _open_with_retry(client, "GET", url, dict(headers, Range=resume),
-                                                             guard, owner)
+                                                             guard, owner, stopped=pb.stopped.is_set)
+                    if pb.generation == my_generation and not pb.stopped.is_set():
+                        pb.upstream = current["resp"]
                 except HTTPException as e:
                     logger.error(f"[VOD] {owner}: could not resume: {e.detail}")
                     return

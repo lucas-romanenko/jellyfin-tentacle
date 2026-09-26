@@ -161,7 +161,7 @@ class SyncPausesOnlyBetweenCategories(unittest.TestCase):
         c.get_series_info("9")
         c.job_pause.assert_not_called()
         for call in c.session.get.call_args_list:
-            self.assertEqual(30, call.kwargs.get("timeout"), "requests ignores Session.timeout; pass it per call")
+            self.assertEqual((15, 180), call.kwargs.get("timeout"), "requests ignores Session.timeout; pass it per call")
         self.assertFalse(hasattr(c, "before_request"), "the per-request hook is gone")
 
     def test_the_category_pause_commits_first(self):
@@ -271,11 +271,30 @@ class RecheckKnownBadIsPolite(unittest.TestCase):
         self.assertTrue(out["deferred"])
         self.assertEqual([], self.checked)
 
-    def test_stops_when_the_provider_is_over_its_limit(self):
-        self.sh._probe_state["provider_busy"] = True
-        out = self.sh.recheck_known_bad(self.db)
-        self.assertEqual(0, out["rechecked"])
+    def test_stops_when_the_provider_goes_over_its_limit_during_the_run(self):
+        def check(db, media_type, kind, stream_id, url, provider):
+            self.checked.append(stream_id)
+            self.sh._note_provider_busy()                    # this probe got a 509
+            return None
+        with mock.patch.object(self.sh, "check_stream", check):
+            out = self.sh.recheck_known_bad(self.db)
+        self.assertEqual(1, out["rechecked"])
         self.assertTrue(out["provider_busy"])
+
+    def test_the_button_does_not_clear_a_running_sweeps_busy_flag(self):
+        """The dashboard recheck (a worker thread) can overlap the nightly
+        sweep; the sweep must stay stopped once the provider said 509."""
+        self.sh._probe_state["provider_busy"] = True
+        self.sh.recheck_known_bad(self.db, limit=10)
+        self.assertTrue(self.sh._probe_state["provider_busy"])
+
+    def test_a_busy_flag_left_by_an_earlier_probe_does_not_block_the_button(self):
+        """A 509 seen by last night's sweep or by "Check now" sets
+        provider_busy; the button must still re-test."""
+        self.sh._probe_state["provider_busy"] = True
+        out = self.sh.recheck_known_bad(self.db, limit=10)
+        self.assertEqual(3, out["rechecked"])
+        self.assertFalse(out["provider_busy"])
 
     def test_the_button_does_a_batch_and_says_how_many_are_left(self):
         """At PROBE_INTERVAL_SECONDS per probe a long list outlasts a reverse

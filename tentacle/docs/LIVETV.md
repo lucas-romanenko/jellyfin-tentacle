@@ -161,14 +161,15 @@ background jobs below waiting.
 
 | Key | Default | Purpose |
 |-----|---------|---------|
-| livetv_max_concurrent_streams | "6" (0 = unlimited) | Provider connection limit. Leases are handed out by priority: recording > viewer > VOD; at the limit a lower-priority stream is taken over when a recording needs the slot |
-| livetv_reconnect_budget_seconds | "120" (0 = until the client leaves) | How long a viewer's pull keeps retrying an upstream failure (509/timeouts) inside the same response. Recordings retry for as long as Jellyfin keeps the tuner open, whatever this says |
+| livetv_max_concurrent_streams | "6" (0 = unlimited) | Provider connection limit, counted per upstream (a channel watched and recorded at once is one). Priority: recording > viewer > VOD. At the limit a newcomer takes the slot of a strictly lower-priority stream (a recording takes a viewer's or a VOD's, a viewer takes a VOD's; never an equal's), otherwise waits 5 s and is refused with 503. Pulls waiting for a slot are served most important first, then in arrival order |
+| livetv_reconnect_budget_seconds | "120" (0 = until the client leaves) | How long a viewer's pull keeps retrying a retryable upstream failure (timeouts, resets, 429/509, 5xx) inside the same response. A pull that is being recorded retries retryable failures for as long as Jellyfin keeps the tuner open, whatever this says; a 401/403/404 ends any stream |
 | livetv_stream_format | "m3u8" | `m3u8`, `ts`, or `auto` (the provider's advertised format, remembered at channel sync). `ts` = one long-lived connection per channel instead of playlist polling |
 | provider_jobs_defer_while_live_seconds | "14400" (4 h) | Scheduled and manual syncs and discovery wait while a live stream, recording or VOD playback is running — one cumulative budget per run, then they go ahead. A waiting sync shows "Waiting for live TV…" in its progress and can be cancelled. (The stream-health sweep and the known-bad recheck do not wait: they skip and report `deferred`, and run at their next turn) |
+| livetv_protect_recordings | "false" | Recording protection, for accounts that carry one heavy connection well and punish a second one on the stream already open. While a recording is being pulled: a new viewer upstream or VOD playback (GET or HEAD) is refused with 503 — a viewer of a channel already being pulled still attaches to that pull, and a second recording always opens (within `livetv_max_concurrent_streams`, like any pull). The viewer does not see the reason: Jellyfin ignores the tuner's HTTP status and shows a generic playback error, and the Android TV app retries 4 times, then says "Too many errors" — the reason is in Tentacle's log and in `last_protected_refusal`; a recording that starts first stops every running viewer and VOD playback (the viewer's stream ends, the film's provider connection closes); the scheduled sync and discovery wait for the recording to end without spending `provider_jobs_defer_while_live_seconds` (and wait even when that is 0; a run waiting for a recording is not failed as stuck); the nightly EPG download waits at most 1 h, then is skipped until the next night; the provider-contacting buttons (provider test, category fetch, sync preview, channel/group/EPG sync, single stream check) answer 503; Refresh Jellyfin skips its inline EPG download. When Jellyfin cannot say in time what is being recorded, a live open is let through (it may be the next recording) and a recording stops VOD only; a viewer let through that way is stopped once Jellyfin answers. A tuner open under protection needs an answer from Jellyfin issued after it began: with Jellyfin slow it can take up to ~6 s (an older lookup still in flight, then a fresh one, each waited for at most 3 s) — well inside the 20 s a tuner open already allows for provider retries; past that it is let through. "Recording" is Jellyfin's timer, not the file: protection starts up to 2 min before a timer (pre-padding included), lasts through its post-padding, and lasts while Jellyfin still lists the timer as recording — including an orphaned tuner stream Jellyfin holds for a timer it re-fired inside its post-padding — `recording_active` in `/api/live/streams` shows it. Only what goes through Tentacle is covered: `.strm` files that point straight at the provider (VOD through Tentacle off) and other apps on the same account are not. Visible in `GET /api/live/streams` and `/api/live/capacity`: `protect_recordings`, `recording_active`, `protected_refusals`, `protected_preemptions`, `last_protected_refusal`; refusals are logged at most once a minute |
 | vod_via_tentacle_enabled | "false" | Write `.strm` files that play through `/api/vod/...` (signed, resumable, counted against the connection limit) instead of direct provider URLs. Switching either way rewrites the files at the next sync |
 | vod_base_url | "" (YouTube's Tentacle address) | The address written into those `.strm` files. Players fetch it themselves on direct play (the Android TV app included), so it must be reachable from wherever they play: a LAN address keeps films off a tunnel/access gate but stops them playing from outside the home; a public name works everywhere but routes every film through it |
-| vod_lease_idle_seconds | "45" | How long a VOD playback keeps its slot between requests (seeks) before it is released; a player that leaves mid-request frees it within ~3 s (one that leaves while the provider is refusing the open: when the open gives up, ≤ 20 s) |
-| vod_token_secret | generated | HMAC key for `/api/vod` links; masked in `GET /api/settings` (and a masked value posted back is ignored). Changing it invalidates every `.strm` until the next sync |
+| vod_lease_idle_seconds | "45" (minimum 5) | How long a VOD playback (one per title per client address) keeps its slot between requests (seeks) before it is released. A player that leaves mid-request frees it within ~3 s, one that leaves while the provider is refusing the open within one retry. A playback that loses its slot to a recording or viewer closes its provider connection at once, paused or not. A newer range closes the older one's connection |
+| vod_token_secret | made by the first sync with VOD through Tentacle on | HMAC key for `/api/vod` links; masked in `GET /api/settings` (and a masked value posted back is ignored). Changing it invalidates every `.strm` until the next sync. Without it every `/api/vod` request is 404 |
 
 The home-row card previews policy is not a setting row: it is per user, in the home config,
 set with `POST /api/smartlists/card-previews` `{"mode": "all" | "local_only" | "off"}` (default
@@ -177,13 +178,21 @@ set with `POST /api/smartlists/card-previews` `{"mode": "all" | "local_only" | "
 `GET /api/live/streams` (internal secret or admin) lists every open upstream — one entry per live
 channel or VOD playback: `channel_id`, `channel`, `client`, `stream_id` (the GuideNumber), `kind`
 (`recording` | `live` | `vod`), `state` (`streaming` | `reconnecting` | `idle` | `stopped`),
-`for_seconds` (in that state), `open_seconds`, `last_error`, `subscribers`. Not listed = no
+`for_seconds` (in that state), `open_seconds`, `last_error`, `subscribers`; plus the recording
+protection fields (`protect_recordings`, `recording_active`, `protected_refusals`,
+`protected_preemptions`, `last_protected_refusal`). Not listed = no
 upstream any more. `POST /api/live/reserve` `{channel_id|stream_id, seconds}` holds recording
 priority for a channel ahead of a timer (for schedulers that know the start time before Jellyfin
 does); `DELETE /api/live/reserve/{channel_id}` drops it. Recording identity otherwise comes from
-Jellyfin's timers (InProgress, or due within 120 s), asked for at most every 5 s while a live
-stream is open and on every tuner open (≤ 3 s wait); when Jellyfin cannot be reached the last
-answer is kept.
+Jellyfin's timers (InProgress, or New and due within 120 s and not yet past its end), asked
+for at most every 5 s while a live stream is open and on every tuner open (≤ 3 s wait; 3 s
+connect / 5 s read timeout); when Jellyfin cannot be reached the last answer is kept, one warning is
+logged and routine lookups wait 5 s doubling to a minute before asking again (a tuner
+open at the limit always asks).
+
+The known-bad stream recheck (Health → Recheck bad) tests 10 entries per press, least recently
+checked first, 3 s apart, and answers how many remain; it stands aside while live TV runs and
+stops if the provider says it is over its connection limit.
 
 ## API ENDPOINTS
 
