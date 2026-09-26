@@ -92,39 +92,103 @@ class FolderCollisions(NightlyHarness):
 
 
 class PriorityTakeover(NightlyHarness):
-    def test_the_strm_follows_the_higher_priority_provider(self):
+    """A higher-priority provider takes a title over: its files must play that
+    provider from then on, in place (same paths, same Jellyfin items) (#154)."""
+
+    def setUp(self):
+        super().setUp()
         self.provider.priority = 2
         self.db.commit()
         self.add_category("1")
         self.catalogue_movies("1", ["Heat"])
-        self.sync_only()
-        self.assertTrue(self._strm_text(1000).startswith("http://provider/"))
-
-        high = Provider(name="High", server_url="http://high", username="u", password="p", active=True, priority=1)
-        self.db.add(high)
+        self.add_category("s1", type_="series")
+        self.catalogue_series("s1", ["Friends"])
+        self.high = Provider(name="High", server_url="http://high", username="u", password="p",
+                             active=True, priority=1)
+        self.db.add(self.high)
         self.db.commit()
-        self.db.add(ProviderCategory(provider_id=high.id, category_id="h1", category_name="H", type="movie",
-                                     whitelisted=True, source_tag="HighTag"))
+        for cat_id, type_ in (("h1", "movie"), ("hs1", "series")):
+            self.db.add(ProviderCategory(provider_id=self.high.id, category_id=cat_id, category_name=cat_id,
+                                         type=type_, whitelisted=True, source_tag="HighTag"))
         self.db.commit()
 
         class HighClient(FakeClient):
             def movie_stream_url(self, stream_id, ext):
                 return f"http://high/movie/u/p/{stream_id}.{ext}"
-        high_client = HighClient(movies={"h1": [("Heat", 77)]})
+
+            def episode_stream_url(self, ep_id, ext):
+                return f"http://high/series/u/p/{ep_id}.{ext}"
+        high_client = HighClient(movies={"h1": [("Heat", 77)]}, series={"hs1": [("Friends", 88)]})
         low_client = self.client
-        sync.make_provider_client = lambda p: high_client if p.id == high.id else low_client
-        run = sync.sync_provider(high, "full", self.db)
+        sync.make_provider_client = lambda p: high_client if p.id == self.high.id else low_client
+
+    def _sync(self, provider):
+        run = sync.sync_provider(provider, "full", self.db)
         self.assertEqual("completed", run.status, run.error_message)
         self.db.expire_all()
-        row = self.movie(1000)
-        self.assertEqual(high.id, row.provider_id)
-        self.assertEqual("http://high/movie/u/p/77.mp4", self._strm_text(1000))
-        self.assertIn("HighTag Movies", row.tags)
-        self.assertNotIn("Tag1 Movies", row.tags)
 
-    def _strm_text(self, tmdb_id):
-        row = self.movie(tmdb_id)
-        return _RealPath(row.strm_path).read_text().strip()
+    def _strm(self):
+        return _RealPath(self.movie(1000).strm_path).read_text().strip()
+
+    def _episodes(self):
+        show = _RealPath(self.series_row(5000).strm_path)
+        return {p.relative_to(show).as_posix(): p.read_text().strip() for p in show.rglob("*.strm")}
+
+    def test_the_strm_follows_the_higher_priority_provider_and_stays(self):
+        self._sync(self.provider)
+        self.assertEqual("http://provider/movie/u/p/1000.mp4", self._strm())
+        for provider in (self.high, self.provider, self.high, self.provider):
+            self._sync(provider)
+            self.assertEqual("http://high/movie/u/p/77.mp4", self._strm(), provider.name)
+        self.assertEqual(self.high.id, self.movie(1000).provider_id)
+
+    def test_a_title_taken_over_before_this_fix_is_healed(self):
+        self._sync(self.provider)
+        row = self.movie(1000)                       # the old code: row moved, file not
+        row.provider_id, row.source = self.high.id, f"provider_{self.high.id}"
+        self.db.commit()
+        self._sync(self.high)
+        self.assertEqual("http://high/movie/u/p/77.mp4", self._strm())
+
+    def test_a_hand_made_url_is_left_alone(self):
+        self._sync(self.provider)
+        self._sync(self.high)
+        path = _RealPath(self.movie(1000).strm_path)
+        path.write_text("http://my-proxy.lan:8080/play?id=77", encoding="utf-8")
+        self._sync(self.high)
+        self.assertEqual("http://my-proxy.lan:8080/play?id=77", self._strm())
+
+    def test_a_series_takeover_rewrites_its_episodes_in_place(self):
+        self._sync(self.provider)
+        before = self._episodes()
+        self.assertTrue(all(url.startswith("http://provider/series/") for url in before.values()))
+        self._sync(self.high)
+        after = self._episodes()
+        self.assertEqual(set(before), set(after), "no episode file was added, moved or renamed")
+        self.assertTrue(all(url.startswith("http://high/series/") for url in after.values()), after)
+
+    def test_tags_are_left_alone(self):
+        """The old provider still offers the title: its source playlist keeps it.
+        The new provider's tag is merged in on its next pass, like any title's."""
+        self._sync(self.provider)
+        self._sync(self.high)
+        self.assertIn("Tag1 Movies", self.movie(1000).tags)
+        self._sync(self.high)
+        self.assertEqual({"Tag1 Movies", "HighTag Movies"},
+                         {t for t in self.movie(1000).tags if t.endswith(" Movies") and "Recently" not in t})
+
+
+class SecondCategoryTag(NightlyHarness):
+    def test_a_title_listed_in_another_category_later_gets_its_tag(self):
+        """_merge_source_tag appended to the loaded list in place, so assigning
+        it back looked like no change: the tag was never written."""
+        self.add_category("1")
+        self.catalogue_movies("1", ["Heat"])
+        self.sync_only()
+        self.add_category("2")
+        self.client.movies["2"] = [("Heat", 1000)]
+        self.sync_only()
+        self.assertIn("Tag2 Movies", self.movie(1000).tags)
 
 
 if __name__ == "__main__":

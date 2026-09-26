@@ -319,6 +319,51 @@ def _strm_needs_rewrite(strm_file: Path, expected: str, client) -> bool:
     return ref is not None and ref == exp and exp[0] == provider_host
 
 
+# A direct Xtream stream URL, for its host and username.
+_XTREAM_ACCOUNT_RE = re.compile(
+    r"(?i)^https?://([^/:?#]+)(?::\d+)?(?:/[^?#]*?)?/(?:movie|series)/([^/?#]+)/[^/?#]+/\d+\.[a-z0-9]+$")
+
+
+def _note_other_providers(client, provider: Provider, db: Session) -> None:
+    """Tell the client which provider ids and Xtream accounts are someone
+    else's, for _strm_plays_other_provider."""
+    from urllib.parse import urlparse
+    own = ((urlparse(provider.server_url or "").hostname or "").lower(), provider.username or "")
+    ids, accounts = set(), set()
+    for other in db.query(Provider).filter(Provider.id != provider.id).all():
+        ids.add(other.id)
+        account = ((urlparse(other.server_url or "").hostname or "").lower(), other.username or "")
+        if account[0] and account[1] and account != own:
+            accounts.add(account)
+    client.other_providers = {"ids": ids, "accounts": accounts}
+
+
+def _strm_plays_other_provider(strm_file: Path, client) -> bool:
+    """True only on positive evidence that an existing .strm plays ANOTHER
+    configured provider: a Tentacle VOD link naming another provider id, or a
+    direct Xtream URL on another provider's host and account.
+
+    A title a higher-priority provider takes over keeps its row but its file
+    still played the lower-priority provider, and _strm_needs_rewrite never
+    rewrites a file that plays a different stream: when the backup provider
+    expired, the title stopped playing (#154). This heals those files, the
+    ones taken over before this fix included. A hand-made or proxy URL, or
+    one of this provider's own, is left alone."""
+    others = getattr(client, "other_providers", None)
+    if not others:
+        return False
+    try:
+        current = strm_file.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return False
+    from services import vod_tokens
+    m = vod_tokens._TOKEN_URL.search(current)
+    if m:
+        return int(m.group(2)) in others["ids"]
+    m = _XTREAM_ACCOUNT_RE.match(current)
+    return bool(m) and (m.group(1).lower(), m.group(2)) in others["accounts"]
+
+
 # ── M3U provider support ─────────────────────────────────────────────────
 # An M3U playlist has no categories/streams API — it's a flat list. M3UClient
 # parses it once and exposes the SAME interface as XtreamClient so the entire
@@ -524,12 +569,15 @@ def _merge_source_tag(tmdb_id: int, media_type: str, source_tag: str, provider_i
     if not record:
         return
 
-    tags = record.tags or []
+    # A copy: appending to the loaded list changed the value SQLAlchemy
+    # compares against too, so the assignment below looked like no change and
+    # the tag was never written for a title already in the DB.
+    tags = list(record.tags or [])
     if new_tag in tags:
         return
 
     tags.append(new_tag)
-    record.tags = list(tags)  # Force SQLAlchemy to detect mutation
+    record.tags = tags
     record.date_updated = datetime.utcnow()
 
     # Update NFO file with new tags
@@ -554,15 +602,13 @@ def _merge_source_tag(tmdb_id: int, media_type: str, source_tag: str, provider_i
             pass  # NFO update is best-effort
 
 
-def _write_episode_strms(client: "XtreamClient", episodes: dict, show_dir: Path, folder_name: str,
-                         overwrite: bool = False) -> int:
+def _write_episode_strms(client: "XtreamClient", episodes: dict, show_dir: Path, folder_name: str) -> int:
     """Write .strm files for any episodes that don't already exist on disk.
 
     Returns the number of NEW episode files written. Safe to call on an
-    existing series to back-fill newly-added seasons/episodes (idempotent —
-    existing .strm files are left untouched). With `overwrite`, an existing
-    file that plays anything else is rewritten: a higher-priority provider
-    took the series over (#154).
+    existing series to back-fill newly-added seasons/episodes (idempotent).
+    An existing file is rewritten only when it plays the same stream in
+    another form, or plays another provider (a takeover, #154).
     """
     ep_count = 0
     for season_num, eps in episodes.items():
@@ -596,10 +642,7 @@ def _write_episode_strms(client: "XtreamClient", episodes: dict, show_dir: Path,
                 strm_file.write_text(expected, encoding='utf-8')
                 chown_path(strm_file)
                 ep_count += 1
-            elif overwrite and strm_file.read_text(encoding="utf-8", errors="replace").strip() != expected:
-                strm_file.write_text(expected, encoding='utf-8')
-                chown_path(strm_file)
-            elif _strm_needs_rewrite(strm_file, expected, client):
+            elif _strm_needs_rewrite(strm_file, expected, client) or _strm_plays_other_provider(strm_file, client):
                 strm_file.write_text(expected, encoding='utf-8')
                 chown_path(strm_file)
                 logger.info(f"[Sync] Rewrote {strm_file.name}: stream address changed")
@@ -625,7 +668,7 @@ def _repair_movie_strm(client, stream: dict, tmdb_id: int, provider: Provider, d
         strm = Path(record.strm_path)
         expected = client.movie_stream_url(stream.get("stream_id"), stream.get("container_extension", "mp4"))
         if strm.exists():
-            if _strm_needs_rewrite(strm, expected, client):
+            if _strm_needs_rewrite(strm, expected, client) or _strm_plays_other_provider(strm, client):
                 strm.write_text(expected, encoding="utf-8")
                 chown_path(strm)
                 logger.info(f"[Sync] Rewrote {strm.name}: stream address changed")
@@ -659,7 +702,6 @@ def _backfill_series_episodes(
     tmdb_id: int,
     provider: Provider,
     db: Session,
-    overwrite: bool = False,
 ) -> int:
     """For an EXISTING VOD series owned by this provider, fetch series info and
     write any newly-added season/episode .strm files. Returns count of new files.
@@ -711,7 +753,7 @@ def _backfill_series_episodes(
             chown_path(nfo)
             logger.info(f"[Sync] Restored missing folder for existing series '{record.title}'")
         folder_name = show_dir.name
-        new_eps = _write_episode_strms(client, episodes, show_dir, folder_name, overwrite=overwrite)
+        new_eps = _write_episode_strms(client, episodes, show_dir, folder_name)
         if new_eps:
             record.date_updated = datetime.utcnow()
             logger.info(f"[Sync] Back-filled {new_eps} new episode(s) for existing series '{record.title}'")
@@ -730,41 +772,17 @@ TAKEOVER = "takeover"
 
 
 def _take_over_files(db: Session, media_type: str, tmdb_id: int, client, item: dict,
-                     provider: Provider, source_tag: Optional[str]) -> None:
-    """Point a title a higher-priority provider took over at that provider.
-
-    The row already says provider_2, but the .strm still played the lower-
-    priority provider, and _strm_needs_rewrite never rewrites a file that plays
-    a different stream: when the backup provider then expired, the title
-    stopped playing and nothing repaired it (#154)."""
-    Model = Movie if media_type == "movie" else Series
-    row = db.query(Model).filter(Model.tmdb_id == tmdb_id).first()
-    if row is None or row.strm_disabled:
-        return
-    try:
-        if media_type == "movie" and row.strm_path:
-            strm = Path(row.strm_path)
-            strm.parent.mkdir(parents=True, exist_ok=True)
-            strm.write_text(client.movie_stream_url(item.get("stream_id"), item.get("container_extension", "mp4")),
-                            encoding="utf-8")
-            chown_path(strm)
-        elif media_type == "series":
-            _backfill_series_episodes(client, item, tmdb_id, provider, db, overwrite=True)
-    except Exception as e:
-        logger.warning(f"[Sync] Could not point '{row.title}' at {provider.name}: {e}")
-        return
-    old = row.source_tag
-    if source_tag and old != source_tag:
-        label = "Movies" if media_type == "movie" else "TV"
-        swap = {f"{old} {label}": f"{source_tag} {label}",
-                f"{old} Recently Added {label}": f"{source_tag} Recently Added {label}"} if old else {}
-        tags = [swap.get(t, t) for t in (row.tags or [])]
-        if not old and f"{source_tag} {label}" not in tags:
-            tags.insert(0, f"{source_tag} {label}")
-        row.source_tag = source_tag
-        from services.tagger import set_row_tags
-        set_row_tags(row, tags)
-    logger.info(f"[Sync] '{row.title}' now plays from {provider.name} (higher priority)")
+                     provider: Provider) -> None:
+    """Point a title a higher-priority provider just took over at that provider:
+    the same repairs every later sync runs (see _strm_plays_other_provider),
+    so paths and Jellyfin items stay. Tags are left alone: the old provider
+    still offers the title, and this provider's tag is merged in on its next
+    pass like any title's (#154)."""
+    if media_type == "movie":
+        _repair_movie_strm(client, item, tmdb_id, provider, db)
+    else:
+        _backfill_series_episodes(client, item, tmdb_id, provider, db)
+    logger.info(f"[Sync] tmdb:{tmdb_id} now plays from {provider.name} (higher priority)")
 
 
 def _claim_vod_name(db: Session, media_type: str, output_dir: Path, title: str, year: Optional[str],
@@ -1253,6 +1271,7 @@ def sync_provider(
         client.job_pause.cancel_check = cancel_check
         client.job_pause.run_id = run.id    # protected waits are booked to this run (routers.sync)
         client.vod_links = vod_links_for(db, provider)
+        _note_other_providers(client, provider, db)
         # Before the first provider call, with the run already visible (so a
         # waiting sync can be seen and cancelled from the dashboard).
         _pause_between_categories(client, db, progress_callback,
@@ -1643,7 +1662,7 @@ def _sync_movies(
             dup_answer = check_and_record_duplicate(tmdb_id, "movie", f"provider_{provider.id}", str(strm_file),
                                                     provider, db)
             if dup_answer == TAKEOVER:
-                _take_over_files(db, "movie", tmdb_id, client, stream, provider, cat.source_tag)
+                _take_over_files(db, "movie", tmdb_id, client, stream, provider)
             if dup_answer:
                 cat_existing += 1
                 stats["existing"] += 1
@@ -1987,7 +2006,7 @@ def _sync_series(
             dup_answer = check_and_record_duplicate(tmdb_id, "series", f"provider_{provider.id}", str(show_dir),
                                                     provider, db)
             if dup_answer == TAKEOVER:
-                _take_over_files(db, "series", tmdb_id, client, series, provider, cat.source_tag)
+                _take_over_files(db, "series", tmdb_id, client, series, provider)
             if dup_answer:
                 cat_existing += 1
                 stats["existing"] += 1
