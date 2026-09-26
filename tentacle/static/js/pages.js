@@ -5112,8 +5112,14 @@ async function loadDiscover() {
   }
 }
 
+// Bumped whenever the Discover grid is repainted for a different section, pill,
+// list or genre. A loader that answers after the user has moved on must not
+// paint its (now wrong) titles under the tab that is selected.
+let _discoverView = 0;
+
 function switchDiscoverSection(sectionId) {
   _discoverActiveSection = sectionId;
+  _discoverView++;
   document.querySelectorAll('.discover-sec-tab').forEach(btn => {
     const active = btn.getAttribute('data-section') === sectionId;
     btn.style.color = active ? 'var(--text)' : 'var(--text3)';
@@ -5132,12 +5138,19 @@ function switchDiscoverSection(sectionId) {
     loadGenreSection();
     return;
   }
+  if (sectionId === 'missing') {
+    // From My Lists: All plus one tab per list (the picker loadListsSection builds).
+    if (pills) pills.style.display = 'flex';
+    loadListsSection();
+    return;
+  }
   if (pills) pills.style.display = 'none';
   const section = _discoverSections.find(s => s.id === sectionId);
   if (section) renderDiscoverGrid(section.items);
 }
 
 async function loadStreamingSection() {
+  const view = ++_discoverView;
   const pills = document.getElementById('discover-streaming-pills');
   const grid = document.getElementById('discover-grid');
   if (!_streamingProviders) {
@@ -5145,6 +5158,7 @@ async function loadStreamingSection() {
       const r = await api('/api/discover/providers');
       _streamingProviders = r.providers || [];
     } catch (e) { _streamingProviders = []; }
+    if (view !== _discoverView) return;
   }
   if (!_streamingProviders.length) {
     if (pills) pills.innerHTML = '';
@@ -5164,8 +5178,10 @@ async function loadStreamingSection() {
   try {
     if (!_activityData) await loadActivity().catch(() => {});
     const data = await api(`/api/discover/streaming?provider=${_streamingActiveProvider}&type=${_discoverType}`);
+    if (view !== _discoverView) return;
     renderDiscoverGrid(data.items || []);
   } catch (e) {
+    if (view !== _discoverView) return;
     grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Failed to load: ${e.message}</p></div>`;
   }
 }
@@ -5176,6 +5192,7 @@ function selectStreamingProvider(slug) {
 }
 
 async function loadGenreSection() {
+  const view = ++_discoverView;
   const pills = document.getElementById('discover-streaming-pills');
   const grid = document.getElementById('discover-grid');
   if (!_genreList[_discoverType]) {
@@ -5183,6 +5200,7 @@ async function loadGenreSection() {
       const r = await api(`/api/discover/genres?type=${_discoverType}`);
       _genreList[_discoverType] = r.genres || [];
     } catch (e) { _genreList[_discoverType] = []; }
+    if (view !== _discoverView) return;
   }
   const genres = _genreList[_discoverType];
   if (!genres.length) {
@@ -5208,8 +5226,10 @@ async function loadGenreSection() {
   try {
     if (!_activityData) await loadActivity().catch(() => {});
     const data = await api(`/api/discover/genre?genre_id=${_genreActive}&type=${_discoverType}&mode=${_genreMode}`);
+    if (view !== _discoverView) return;
     renderDiscoverGrid(data.items || []);
   } catch (e) {
+    if (view !== _discoverView) return;
     grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Failed to load: ${e.message}</p></div>`;
   }
 }
@@ -5225,6 +5245,7 @@ function setGenreMode(m) {
 }
 
 async function loadListsSection() {
+  const view = ++_discoverView;
   const pills = document.getElementById('discover-streaming-pills');
   const grid = document.getElementById('discover-grid');
   if (!_missingLists[_discoverType]) {
@@ -5232,6 +5253,7 @@ async function loadListsSection() {
       const r = await api(`/api/discover/lists?type=${_discoverType}`);
       _missingLists[_discoverType] = r.lists || [];
     } catch (e) { _missingLists[_discoverType] = []; }
+    if (view !== _discoverView) return;
   }
   const lists = _missingLists[_discoverType];
   const tabs = [{ id: 'all', name: 'All' }].concat(lists.map(l => ({ id: String(l.id), name: l.name })));
@@ -5246,8 +5268,10 @@ async function loadListsSection() {
   try {
     if (!_activityData) await loadActivity().catch(() => {});
     const data = await api(`/api/discover/list-missing?list_id=${_missingActiveList}&type=${_discoverType}`);
+    if (view !== _discoverView) return;
     renderDiscoverGrid(data.items || []);
   } catch (e) {
+    if (view !== _discoverView) return;
     grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Failed to load: ${e.message}</p></div>`;
   }
 }
