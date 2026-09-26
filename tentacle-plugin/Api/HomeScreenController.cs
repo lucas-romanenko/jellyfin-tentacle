@@ -183,6 +183,11 @@ public class TentacleHomeController : ControllerBase
                         displayText = row.DisplayName,
                         playlistId = row.PlaylistId,
                         shape = string.IsNullOrEmpty(row.Shape) ? "poster" : row.Shape,
+                        // The row's item limit, as GetSectionItems applies it. A client
+                        // refreshing a row in place can tell a complete answer (this many
+                        // items) from a playlist caught mid-rebuild, and so apply a row
+                        // the dashboard shortened (androidtv #54).
+                        maxItems = Math.Min(row.MaxItems is > 0 ? row.MaxItems.Value : 20, 30),
                     });
                 }
             }
