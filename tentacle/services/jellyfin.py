@@ -405,15 +405,29 @@ class JellyfinService:
             return False
         return self._post_item_update(item_id, self._minimal_update(item, Name=name), "rename")
 
-    @staticmethod
-    def _minimal_update(item: dict, **changes) -> dict:
+    # ItemUpdate treats its body as the whole item: a field left out is set to
+    # null. Each of these goes back as the GET returned it (and is left out
+    # when the GET had none), or one tag push cleared a movie's critic and
+    # custom ratings, sort title and metadata language, and a series' status,
+    # end date and display order (#161).
+    _ECHOED_FIELDS = (
+        "CustomRating", "CriticRating", "ForcedSortName", "PreferredMetadataLanguage",
+        "PreferredMetadataCountryCode", "Status", "EndDate", "DisplayOrder", "AirDays", "AirTime",
+        "RunTimeTicks", "AspectRatio", "Video3DFormat", "ProductionLocations", "DateCreated",
+    )
+
+    @classmethod
+    def _minimal_update(cls, item: dict, **changes) -> dict:
         """The ItemUpdate payload for `item` with `changes` applied.
 
         Only the fields ItemUpdate needs (the full DTO makes Jellyfin answer
-        500 on some versions). LockData and LockedFields go back as they were:
+        500 on some versions), plus every field it would otherwise clear
+        (_ECHOED_FIELDS). LockData and LockedFields go back as they were:
         Jellyfin takes a missing LockData as false, so every tag push used to
         unlock the item, and the next metadata refresh could overwrite the
-        edits the lock protected (#161).
+        edits the lock protected (#161). Jellyfin still copies a series'
+        ratings onto its episodes on any ItemUpdate; only a tags-only write
+        would avoid that.
         """
         payload = {
             "Id": item["Id"],
@@ -434,6 +448,9 @@ class JellyfinService:
         }
         if item.get("LockedFields") is not None:
             payload["LockedFields"] = item["LockedFields"]
+        for field in cls._ECHOED_FIELDS:
+            if item.get(field) is not None:
+                payload[field] = item[field]
         payload.update(changes)
         return payload
 
