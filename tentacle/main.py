@@ -36,7 +36,7 @@ def run_scheduled_sync():
     db = SessionLocal()
     try:
         from models.database import ListSubscription
-        from routers.lists import refresh_list, _get_tmdb_service
+        from routers.lists import refresh_list, _get_tmdb_service, _TRAKT_NOT_CONFIGURED
         from services.tmdb import get_tmdb_token
         bearer = get_tmdb_token(db)
         trakt_cid = get_setting(db, "trakt_client_id") or ""
@@ -46,7 +46,10 @@ def run_scheduled_sync():
             try:
                 result = refresh_list(lst, db, bearer, trakt_cid, tmdb)
                 if not result["ok"]:
-                    logger.warning(f"List '{lst.name}' not refreshed: {result['note']}")
+                    # No Trakt client ID: the fetcher already warned once for this
+                    # process; one line per Trakt list every night added nothing (#160).
+                    log = logger.info if result["note"] == _TRAKT_NOT_CONFIGURED else logger.warning
+                    log(f"List '{lst.name}': {result['note']}")
                     continue
                 stored, new_count, removed_count = result["stored"], result["new"], result["removed"]
                 changes = f"+{new_count} new, -{removed_count} removed" if (new_count or removed_count) else "no changes"
