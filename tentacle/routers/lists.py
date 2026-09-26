@@ -443,6 +443,11 @@ def _fetch_letterboxd_film(slug: str, session: requests.Session) -> dict:
     r.raise_for_status()
     tmdb_match = re.search(r'data-tmdb-id="(\d+)"', r.text)
     if not tmdb_match:
+        # A bot challenge answered with 200 is a film the list still has, not
+        # a page without a TMDB id: dropping it silently made the read look
+        # complete, and the film was removed from the list (#164).
+        if _looks_like_challenge(r.text):
+            raise RuntimeError("Letterboxd served a challenge page instead of the film")
         return None
     tmdb_type = re.search(r'data-tmdb-type="(\w+)"', r.text)
     title_match = re.search(r'<meta property="og:title" content="([^"]+)"', r.text)

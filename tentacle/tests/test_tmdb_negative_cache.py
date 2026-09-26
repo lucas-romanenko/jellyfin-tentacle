@@ -86,6 +86,13 @@ class NegativeCache(unittest.TestCase):
         self.assertEqual(full, self.tmdb.search_movie("Alien", "1979"))
         self.tmdb.session.get.assert_not_called()
 
+    def test_an_imdb_negative_from_before_the_upgrade_is_not_trusted(self):
+        """The old code cached a failed /find (a 429) as None as well (#163)."""
+        self.tmdb._cache_set("find_imdb:tt0133093", None)
+        self.tmdb.session.get.return_value = _response(200, {"movie_results": [], "tv_results": []})
+        self.tmdb.find_by_imdb_id("tt0133093")
+        self.assertEqual(1, self.tmdb.session.get.call_count)
+
 
 if __name__ == "__main__":
     unittest.main()

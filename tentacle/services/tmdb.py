@@ -453,7 +453,10 @@ class TMDBService:
         # through lookup_failed(), and never cached as a negative (#163).
         self._tl.failed = False
 
-        cache_key = f"find_imdb:{imdb_id}"
+        # "find_imdb2": versions before #163 cached a failed /find (429, 5xx) as
+        # None too. Those entries could not be told from a real "no such title"
+        # and, read now, would drop list items for up to three days.
+        cache_key = f"find_imdb2:{imdb_id}"
         hit, cached = self._cache_lookup(cache_key)
         if hit:
             return cached or None

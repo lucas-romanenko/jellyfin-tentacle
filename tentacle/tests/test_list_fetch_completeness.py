@@ -210,6 +210,13 @@ class LetterboxdLists(_Db):
         self.assertEqual([(1, "movie"), (2, "movie"), (3, "movie")], self.stored(lst))
         self.assertIn("did not serve page 2", result["note"])
 
+    def test_a_film_page_served_as_a_challenge_keeps_that_film(self):
+        lst, result = self._run({"/page/1/": self._page(["a", "b", "c"]), "/film/a/": self._film(1),
+                                 "/film/b/": self._film(2),
+                                 "/film/c/": _Resp(text="<html><title>Just a moment...</title></html>")})
+        self.assertEqual([(1, "movie"), (2, "movie"), (3, "movie")], self.stored(lst))
+        self.assertIn("1 film page(s) did not load", result["note"])
+
 
 class TraktLists(_Db):
     def test_no_client_id_keeps_the_list_warns_once_and_says_so(self):
