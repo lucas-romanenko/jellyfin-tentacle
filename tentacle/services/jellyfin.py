@@ -319,12 +319,14 @@ class JellyfinService:
             if not page or start >= data.get("TotalRecordCount", 0):
                 return out
 
-    def get_tmdb_lookup_with_fallback(self, media_type: str = "Movie") -> tuple:
+    def get_tmdb_lookup_with_fallback(self, media_type: str = "Movie", with_counts: bool = False) -> tuple:
         """Build both TMDB and title+year lookups in one API call.
 
         Returns (tmdb_lookup, title_lookup) where:
         - tmdb_lookup: {int(tmdb_id): item}
         - title_lookup: {(normalized_title, year_str): item}
+        With `with_counts`, also {int(tmdb_id): number of items with that id}:
+        one row can be two items (a provider .strm next to a downloaded file).
 
         Title keys are normalized (year suffixes stripped, colons → hyphens).
         Callers should normalize their lookup keys with _normalize_title().
@@ -339,6 +341,7 @@ class JellyfinService:
                     it["Tags"] = fresh[it["Id"]]
         tmdb_lookup = {}
         title_lookup = {}
+        tmdb_counts: dict = {}
         for item in items:
             # YouTube videos live in their own Movies library, so they show up
             # in this listing. They have no TMDB id, which makes them reachable
@@ -353,6 +356,7 @@ class JellyfinService:
             if tmdb_id:
                 try:
                     tmdb_lookup[int(tmdb_id)] = item
+                    tmdb_counts[int(tmdb_id)] = tmdb_counts.get(int(tmdb_id), 0) + 1
                 except ValueError:
                     pass
             name = item.get("Name", "")
@@ -364,6 +368,8 @@ class JellyfinService:
                 raw = name.lower().strip()
                 if raw != norm:
                     title_lookup[(raw, year)] = item
+        if with_counts:
+            return tmdb_lookup, title_lookup, tmdb_counts
         return tmdb_lookup, title_lookup
 
     def _item_path(self, item_id: str) -> str:
@@ -394,6 +400,31 @@ class JellyfinService:
         old_tags = item.get("Tags", [])
         logger.debug(f"[Jellyfin] set_item_tags {item_id}: {old_tags} → {tags}")
         return self._post_item_update(item_id, self._minimal_update(item, Tags=tags), "set tags on")
+
+    def set_item_owned_tags(self, item_id: str, desired: List[str], owned: set,
+                            add_only: bool = False) -> str:
+        """Bring Tentacle's tags on one item in line with `desired`, computed
+        from a fresh GET of the item, never from a listing: the unscoped
+        listing can be stale, and a keyword added since it was read would be
+        wiped (#180). Tentacle's own tags (`owned`) not in `desired` come off,
+        unless `add_only`; every other tag stays.
+
+        Returns "written", "unchanged", "get_failed" (nothing written: merging
+        into an empty list would drop every keyword) or "post_failed"."""
+        from services.tagger import merge_owned_tags
+        item = self._get(self._item_path(item_id))
+        if not item:
+            logger.warning(f"[Jellyfin] Cannot GET item {item_id} — its tags were left as they are")
+            return "get_failed"
+        fresh = list(item.get("Tags") or [])
+        if add_only:
+            merged = fresh + [t for t in desired if t not in fresh]
+        else:
+            merged = merge_owned_tags(fresh, desired, owned)
+        if sorted(merged) == sorted(fresh):
+            return "unchanged"
+        ok = self._post_item_update(item_id, self._minimal_update(item, Tags=merged), "set tags on")
+        return "written" if ok else "post_failed"
 
     def set_item_name(self, item_id: str, name: str) -> bool:
         """Rename a Jellyfin item in place: same id, so every user's watched
@@ -1280,13 +1311,76 @@ def sweep_orphaned_downloads(db) -> int:
     return orphans_removed
 
 
+# The tag push writes in batches with a pause between them, always: bulk
+# imports age out of "Recently Added" together, so thousands of titles leave
+# the window on the same night (#180).
+TAG_PUSH_BATCH = 200
+TAG_PUSH_PAUSE_SECONDS = 1.0
+
+
+def sync_owned_tags(db, jf, log_prefix: str = "Pipeline") -> dict:
+    """Bring every row's Tentacle tags on its Jellyfin item in line with the DB.
+
+    Rules (#180):
+    - every row counts, a row with no tags too (empty = none of Tentacle's);
+    - Tentacle's own tags not on the row come off, and every other tag stays;
+    - but only where the TMDB id is exactly ONE Jellyfin item of that type:
+      one row can be two items (a provider .strm next to a downloaded file),
+      and a removal there took "Downloaded Movies" off the download. Such an
+      item, and one found by title rather than TMDB id, is only ever added to;
+    - the listing only picks candidates; each write is computed from a fresh
+      GET of the item, and nothing is written when that GET fails;
+    - an item that needs nothing is not written, so a second run writes 0.
+
+    Returns counts: written, unchanged, not_found, errors."""
+    import time
+    from models.database import Movie, Series
+    from services.tagger import merge_owned_tags, tentacle_owned_tags
+    owned = tentacle_owned_tags(db)
+    counts = {"written": 0, "unchanged": 0, "not_found": 0, "errors": 0}
+    for media_type, model in (("Movie", Movie), ("Series", Series)):
+        lookup, title_lookup, per_id = jf.get_tmdb_lookup_with_fallback(media_type, with_counts=True)
+        for row in db.query(model).all():
+            try:
+                jf_item = lookup.get(row.tmdb_id)
+                by_title = False
+                if not jf_item and row.title:
+                    norm = JellyfinService._normalize_title(row.title)
+                    jf_item = title_lookup.get((norm, str(row.year or ""))) or title_lookup.get((norm, ""))
+                    by_title = True
+                if not jf_item:
+                    counts["not_found"] += 1
+                    continue
+                desired = list(row.tags or [])
+                add_only = by_title or per_id.get(row.tmdb_id, 0) > 1
+                listed = list(jf_item.get("Tags") or [])
+                wanted = (listed + [t for t in desired if t not in listed]) if add_only \
+                    else merge_owned_tags(listed, desired, owned)
+                if sorted(wanted) == sorted(listed):
+                    counts["unchanged"] += 1
+                    continue
+                result = jf.set_item_owned_tags(jf_item["Id"], desired, owned, add_only=add_only)
+                if result == "written":
+                    counts["written"] += 1
+                    if counts["written"] % TAG_PUSH_BATCH == 0:
+                        time.sleep(TAG_PUSH_PAUSE_SECONDS)
+                elif result == "unchanged":
+                    counts["unchanged"] += 1
+                else:
+                    counts["errors"] += 1
+            except Exception as e:
+                counts["errors"] += 1
+                logger.debug(f"[{log_prefix}] Tag push failed for '{row.title}': {e}")
+    return counts
+
+
 def push_tags_to_jellyfin(db, log_prefix: str = "Pipeline") -> int:
     """Push tags from Tentacle DB to Jellyfin for all movies and series.
 
-    Shared helper used by VOD sync, nightly sync, and refresh-tags.
-    Returns total number of items successfully tagged.
+    Shared helper used by VOD sync and the nightly sync (Refresh Tags calls
+    sync_owned_tags directly). Returns the number of items written.
     """
-    from models.database import Movie, Series, get_setting
+    from models.database import get_setting
 
     jf_url = get_setting(db, "jellyfin_url")
     jf_key = get_setting(db, "jellyfin_api_key")
@@ -1295,38 +1389,10 @@ def push_tags_to_jellyfin(db, log_prefix: str = "Pipeline") -> int:
         logger.info(f"[{log_prefix}] Jellyfin not configured — skipping tag push")
         return 0
 
-    jf = JellyfinService(jf_url, jf_key, jf_uid)
-    jf_tagged = 0
-    # Tentacle's tags on an item are REPLACED with the row's, and everything
-    # else on it is kept (#107). The push used to only add: a tag taken off a
-    # row (an expired "Recently Added", a list the title left) stayed in
-    # Jellyfin for ever, so on a live install 5,860 titles still said
-    # "Recently Added" (#180). A row with no tags is pushed too: empty means
-    # "none of Tentacle's".
-    from services.tagger import merge_owned_tags, tentacle_owned_tags
-    owned = tentacle_owned_tags(db)
-
-    for media_type, model in (("Movie", Movie), ("Series", Series)):
-        lookup, title_lookup = jf.get_tmdb_lookup_with_fallback(media_type)
-        for row in db.query(model).all():
-            try:
-                jf_item = lookup.get(row.tmdb_id)
-                if not jf_item and row.title:
-                    norm = JellyfinService._normalize_title(row.title)
-                    jf_item = title_lookup.get((norm, str(row.year or "")))
-                    if not jf_item:
-                        jf_item = title_lookup.get((norm, ""))
-                if not jf_item:
-                    continue
-                current = jf_item.get("Tags") or []
-                merged = merge_owned_tags(current, row.tags or [], owned)
-                if sorted(merged) != sorted(current) and jf.set_item_tags(jf_item["Id"], merged):
-                    jf_tagged += 1
-            except Exception:
-                pass
-
-    logger.info(f"[{log_prefix}] Pushed tags to Jellyfin for {jf_tagged} items")
-    return jf_tagged
+    counts = sync_owned_tags(db, JellyfinService(jf_url, jf_key, jf_uid), log_prefix)
+    logger.info(f"[{log_prefix}] Pushed tags to Jellyfin for {counts['written']} items "
+                f"({counts['unchanged']} already right, {counts['errors']} failed)")
+    return counts["written"]
 
 
 def run_full_jellyfin_pipeline(db, log_prefix: str = "Pipeline", refresh_playlists: bool = True) -> dict:

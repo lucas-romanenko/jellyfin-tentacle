@@ -394,6 +394,12 @@ def tentacle_owned_tags(db: Session) -> set:
     # the row is gone nothing above produces the tag any more, so without this
     # it read as somebody else's and stayed on every item for ever.
     owned |= retired_tags(db)
+    # Each requester's "<name>'s Downloads": the Radarr/Sonarr scans keep it
+    # on the rows they attribute, so one on an item no row carries is stale.
+    from models.database import TentacleUser
+    for (name,) in db.query(TentacleUser.display_name).distinct():
+        if name:
+            owned.add(f"{name}'s Downloads")
     return owned
 
 

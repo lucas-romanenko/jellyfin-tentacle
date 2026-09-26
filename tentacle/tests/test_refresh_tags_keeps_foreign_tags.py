@@ -17,6 +17,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 import models.database as mdb
+from services.jellyfin import JellyfinService as _RealJellyfin
 from models.database import Movie, Series, Setting, ListSubscription, TagRule, TentacleUser
 from services.tagger import tentacle_owned_tags, merge_owned_tags
 
@@ -46,12 +47,24 @@ class FakeJellyfin:
         }
         cls.written = {}
 
-    def get_tmdb_lookup_with_fallback(self, media_type="Movie"):
+    def get_tmdb_lookup_with_fallback(self, media_type="Movie", with_counts=False):
         wanted = 603 if media_type == "Movie" else 1399
-        return {wanted: self.items[wanted]}, {}
+        lookup = {wanted: self.items[wanted]}
+        return (lookup, {}, {wanted: 1}) if with_counts else (lookup, {})
 
-    def set_item_tags(self, item_id, tags):
-        self.written[item_id] = list(tags)
+    # The real write rule (a fresh GET of the item, then merge) over this
+    # fake's items: only the HTTP layer is faked.
+    set_item_owned_tags = _RealJellyfin.set_item_owned_tags
+    _minimal_update = _RealJellyfin._minimal_update
+
+    def _item_path(self, item_id):
+        return item_id
+
+    def _get(self, path):
+        return next((dict(it) for it in self.items.values() if it["Id"] == path), None)
+
+    def _post_item_update(self, item_id, payload, what):
+        type(self).written[item_id] = list(payload["Tags"])
         return True
 
 
