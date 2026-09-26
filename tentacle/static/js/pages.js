@@ -859,6 +859,22 @@ let _addArrMediaType = 'movie';
 let _epPickerSeasons = [];  // cached season list for current series
 let _epPickerLoaded = {};   // season_number -> episodes array
 
+// Which opening of the Add / Manage / Download More modal an answer belongs
+// to (#144). Every opener resets ALL picker state (the Add path left another
+// series' downloaded episodes in place, so they showed as "DL", locked) and
+// takes a new token; an answer for an earlier opening is dropped, so a slow
+// request for series A can no longer fill the modal of series B, or give it a
+// Radarr profile list.
+let _epPickerToken = 0;
+function _resetEpisodePicker() {
+  _epPickerSeasons = [];
+  _epPickerLoaded = {};
+  _vodEpisodes = {};
+  _dlEpisodes = {};
+  _unairedPerSeason = {};
+  return ++_epPickerToken;
+}
+
 // Helper: resolve poster/backdrop URLs (TVDB sends full URLs, TMDB sends relative paths)
 function _imgUrl(path, size) {
   if (!path) return '';
@@ -872,6 +888,7 @@ async function showAddToRadarrModal(tmdbId, title, year, posterPath) {
 
 async function showAddToArrModal(tmdbId, title, year, posterPath, mediaType, tvdbId) {
   _resetManageMode(); // ensure modal is in add mode
+  const token = _resetEpisodePicker();
   _addArrTmdbId = tmdbId;
   _addArrTvdbId = tvdbId || 0;
   _addArrMediaType = mediaType || 'movie';
@@ -895,8 +912,10 @@ async function showAddToArrModal(tmdbId, title, year, posterPath, mediaType, tvd
   try {
     const endpoint = isSeries ? '/api/lists/sonarr-profiles' : '/api/lists/radarr-profiles';
     const profiles = await api(endpoint);
+    if (token !== _epPickerToken) return;
     select.innerHTML = profiles.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
   } catch (e) {
+    if (token !== _epPickerToken) return;
     select.innerHTML = '<option value="">Failed to load profiles</option>';
   }
 
@@ -988,6 +1007,7 @@ async function onMonitorPresetChange(val) {
   picker.style.display = 'block';
   modalBox.classList.add('ep-expanded');
   if (_epPickerSeasons.length > 0) return; // already loaded
+  const token = _epPickerToken;
   const loading = document.getElementById('episode-picker-loading');
   loading.style.display = 'block';
   try {
@@ -996,9 +1016,11 @@ async function onMonitorPresetChange(val) {
       ? `/api/discover/seasons-tvdb/${_addArrTvdbId}`
       : `/api/discover/seasons/${_addArrTmdbId}`;
     const data = await api(seasonsUrl);
+    if (token !== _epPickerToken) return;
     _epPickerSeasons = (data.seasons || []).filter(s => s.season_number > 0);
     _renderSeasons();
   } catch (e) {
+    if (token !== _epPickerToken) return;
     document.getElementById('episode-picker-seasons').innerHTML = '<div style="padding:12px;color:var(--text3)">Failed to load seasons</div>';
   }
   loading.style.display = 'none';
@@ -1032,6 +1054,7 @@ async function toggleSeasonAccordion(seasonNum) {
   list.classList.add('open');
   arrow.classList.add('open');
   if (!_epPickerLoaded[seasonNum]) {
+    const token = _epPickerToken;
     const tmdbId = _downloadMoreTmdbId || _addArrTmdbId;
     const isTvdbOnly = !tmdbId && _addArrTvdbId;
     list.innerHTML = '<div style="padding:8px 28px;color:var(--text3);font-size:12px">Loading...</div>';
@@ -1040,9 +1063,11 @@ async function toggleSeasonAccordion(seasonNum) {
         ? `/api/discover/season-tvdb/${_addArrTvdbId}/${seasonNum}`
         : `/api/discover/season/${tmdbId}/${seasonNum}`;
       const data = await api(epUrl);
+      if (token !== _epPickerToken) return;
       _epPickerLoaded[seasonNum] = data.episodes || [];
       _renderEpisodes(seasonNum);
     } catch (e) {
+      if (token !== _epPickerToken) return;
       list.innerHTML = '<div style="padding:8px 28px;color:var(--text3);font-size:12px">Failed to load</div>';
     }
   }
@@ -1163,9 +1188,8 @@ function _getSelectedEpisodes() {
 let _manageTmdbId = null;
 
 async function showManageEpisodesModal(tmdbId, title, year, posterPath) {
+  const token = _resetEpisodePicker();
   _manageTmdbId = tmdbId;
-  _epPickerSeasons = [];
-  _epPickerLoaded = {};
 
   const modalBox = document.getElementById('add-arr-modal-box');
   modalBox.className = 'modal modal-arr ep-expanded';
@@ -1201,6 +1225,7 @@ async function showManageEpisodesModal(tmdbId, title, year, posterPath) {
   // Load episodes from Sonarr
   try {
     const data = await api(`/api/discover/sonarr-episodes/${tmdbId}`);
+    if (token !== _epPickerToken) return;
     if (!data.in_sonarr) {
       container.innerHTML = '<div style="padding:12px;color:var(--text3)">Series not found in Sonarr</div>';
       loading.style.display = 'none';
@@ -1246,6 +1271,7 @@ async function showManageEpisodesModal(tmdbId, title, year, posterPath) {
       }).join('');
     }
   } catch (e) {
+    if (token !== _epPickerToken) return;
     container.innerHTML = '<div style="padding:12px;color:var(--text3)">Failed to load episodes</div>';
   }
   loading.style.display = 'none';
@@ -1284,12 +1310,8 @@ let _dlEpisodes = {};   // {season: [ep1, ep2, ...]} from Sonarr (hasFile=true)
 let _unairedPerSeason = {};  // {season: count} unaired episodes from Sonarr
 
 async function showDownloadMoreModal(tmdbId, title, year, posterPath) {
+  const token = _resetEpisodePicker();
   _downloadMoreTmdbId = tmdbId;
-  _vodEpisodes = {};
-  _dlEpisodes = {};
-  _unairedPerSeason = {};
-  _epPickerSeasons = [];
-  _epPickerLoaded = {};
 
   const modalBox = document.getElementById('add-arr-modal-box');
   modalBox.className = 'modal modal-arr ep-expanded';
@@ -1312,8 +1334,10 @@ async function showDownloadMoreModal(tmdbId, title, year, posterPath) {
   select.innerHTML = '<option value="">Loading...</option>';
   try {
     const profiles = await api('/api/lists/sonarr-profiles');
+    if (token !== _epPickerToken) return;
     select.innerHTML = profiles.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
   } catch (e) {
+    if (token !== _epPickerToken) return;
     select.innerHTML = '<option value="">Failed to load profiles</option>';
   }
 
@@ -1352,6 +1376,7 @@ async function showDownloadMoreModal(tmdbId, title, year, posterPath) {
       api(`/api/discover/vod-episodes/${tmdbId}`),
       api(`/api/discover/sonarr-episodes/${tmdbId}`).catch(() => ({ in_sonarr: false })),
     ]);
+    if (token !== _epPickerToken) return;
 
     if (vodData.has_episodes) {
       _vodEpisodes = vodData.episodes;
@@ -1381,6 +1406,7 @@ async function showDownloadMoreModal(tmdbId, title, year, posterPath) {
     _epPickerSeasons = (seasonsData.seasons || []).filter(s => s.season_number > 0);
     _renderSeasonsWithVod();
   } catch (e) {
+    if (token !== _epPickerToken) return;
     container.innerHTML = '<div style="padding:12px;color:var(--text3)">Failed to load seasons</div>';
   }
   loading.style.display = 'none';
@@ -1563,13 +1589,27 @@ function filterByTag(tag) {
   loadLibrary();
 }
 
+// Which opening of the shared title-detail modal an answer belongs to (#170).
+// The modal showed whichever answer arrived LAST: a slow detail for an
+// earlier title replaced the one clicked, and a series' episode state from an
+// earlier title fed the next one's "Bad copy?" buttons, which then asked to
+// replace an episode of the wrong show. Every opener takes a new number and
+// every await checks it.
+let _detailSeq = 0;
+function _detailOpening() {
+  _detailEpState = {};
+  return ++_detailSeq;
+}
+
 async function showMediaDetail(tmdbId, mediaType) {
+  const seq = _detailOpening();
   showModal('modal-media-detail');
   document.getElementById('detail-title').textContent = 'Loading...';
   document.getElementById('detail-body').innerHTML = '<div class="loading-state"><div class="spinner"></div></div>';
 
   try {
     const data = await api(`/api/library/item/${mediaType}/${tmdbId}`);
+    if (seq !== _detailSeq) return;
     document.getElementById('detail-title').textContent = data.title;
     const isSeries = mediaType === 'series';
     document.getElementById('detail-body').innerHTML = `
@@ -1605,14 +1645,16 @@ async function showMediaDetail(tmdbId, mediaType) {
       ${isSeries ? '<div id="detail-episodes" style="margin-top:20px"><div class="loading-state" style="padding:16px 0"><div class="spinner"></div></div></div>' : ''}`;
 
     // For series, load episode breakdown
-    if (isSeries) _loadSeriesEpisodes(tmdbId, data);
+    if (isSeries) _loadSeriesEpisodes(tmdbId, data, seq);
 
     // Fetch trailer URL from TMDB in background
     api(`/api/library/tmdb/${mediaType}/${tmdbId}`).then(tmdbData => {
+      if (seq !== _detailSeq) return;
       const slot = document.getElementById('detail-trailer-slot');
       if (slot && tmdbData.trailer_url) slot.innerHTML = _trailerBtn(tmdbData.trailer_url);
     }).catch(() => {});
   } catch (e) {
+    if (seq !== _detailSeq) return;
     document.getElementById('detail-body').innerHTML = '<div class="empty-state"><p>Failed to load details</p></div>';
   }
 }
@@ -1843,7 +1885,7 @@ async function toggleStrmManaged(mediaType, tmdbId, enabled) {
 
 let _detailEpState = {}; // { vodEps, dlEps, tmdbId, loaded: {sn: true} }
 
-async function _loadSeriesEpisodes(tmdbId, seriesData) {
+async function _loadSeriesEpisodes(tmdbId, seriesData, seq = _detailSeq) {
   const container = document.getElementById('detail-episodes');
   if (!container) return;
 
@@ -1853,6 +1895,7 @@ async function _loadSeriesEpisodes(tmdbId, seriesData) {
       api(`/api/discover/vod-episodes/${tmdbId}`),
       api(`/api/discover/sonarr-episodes/${tmdbId}`).catch(() => ({ in_sonarr: false })),
     ]);
+    if (seq !== _detailSeq) return;
 
     const seasons = (seasonsData.seasons || []).filter(s => s.season_number > 0);
     const vodEps = vodData.episodes || {};
@@ -1955,6 +1998,7 @@ async function _loadSeriesEpisodes(tmdbId, seriesData) {
 
     container.innerHTML = html;
   } catch (e) {
+    if (seq !== _detailSeq) return;
     container.innerHTML = '<div style="font-size:13px;color:var(--text3);padding:8px 0">Could not load episode data</div>';
   }
 }
@@ -1967,15 +2011,21 @@ async function detailToggleSeason(sn) {
   seasonEl.classList.add('open');
 
   const list = document.getElementById(`detail-ep-list-${sn}`);
-  if (_detailEpState.loaded[sn]) return; // already loaded
+  // The state of the title this season belongs to, taken now: everything
+  // below (the replace buttons included) is built from it, never from a
+  // later title's.
+  const epState = _detailEpState;
+  const seq = _detailSeq;
+  if (!epState.loaded || epState.loaded[sn]) return; // not ready, or already loaded
 
   list.innerHTML = '<div style="padding:8px 12px;color:var(--text3);font-size:12px">Loading...</div>';
   try {
-    const data = await api(`/api/discover/season/${_detailEpState.tmdbId}/${sn}`);
-    _detailEpState.loaded[sn] = true;
+    const data = await api(`/api/discover/season/${epState.tmdbId}/${sn}`);
+    if (seq !== _detailSeq || epState !== _detailEpState) return;
+    epState.loaded[sn] = true;
     const tmdbEps = data.episodes || [];
-    const vodEps = _detailEpState.vodEps;
-    const dlEps = _detailEpState.dlEps;
+    const vodEps = epState.vodEps;
+    const dlEps = epState.dlEps;
     const vod = vodEps[String(sn)] || vodEps[sn] || [];
     const dl = dlEps[String(sn)] || dlEps[sn] || [];
     const haveSet = new Set([...vod, ...dl]);
@@ -1988,7 +2038,7 @@ async function detailToggleSeason(sn) {
     for (const epNum of ownedNums) {
       if (!nameMap[epNum]) {
         const key = `${sn}-${epNum}`;
-        if (_detailEpState.sonarrEpMap[key]) nameMap[epNum] = _detailEpState.sonarrEpMap[key].title || '';
+        if (epState.sonarrEpMap[key]) nameMap[epNum] = epState.sonarrEpMap[key].title || '';
       }
     }
 
@@ -2012,7 +2062,7 @@ async function detailToggleSeason(sn) {
         <span class="detail-ep-name">${nameMap[epNum] || ''}</span>
         ${badges.join('')}
         ${isDl && !isVod ? `<button class="ep-replace-btn" title="Bad copy? Get another one" aria-label="Bad copy? Get another one"
-          onclick="replaceCopy('series', ${_detailEpState.tmdbId}, ${sn}, ${epNum}, this)">↻</button>` : ''}
+          onclick="replaceCopy('series', ${epState.tmdbId}, ${sn}, ${epNum}, this)">↻</button>` : ''}
       </div>`;
     }
 
@@ -2031,17 +2081,20 @@ async function detailToggleSeason(sn) {
     }
     list.innerHTML = rows;
   } catch {
+    if (seq !== _detailSeq) return;
     list.innerHTML = '<div style="padding:8px 12px;color:var(--text3);font-size:12px">Failed to load</div>';
   }
 }
 
 async function showCoverageDetail(tmdbId, mediaType, title, year, posterPath) {
+  const seq = _detailOpening();
   showModal('modal-media-detail');
   document.getElementById('detail-title').textContent = 'Loading...';
   document.getElementById('detail-body').innerHTML = '<div class="loading-state"><div class="spinner"></div></div>';
 
   try {
     const data = await api(`/api/library/item/${mediaType}/${tmdbId}`);
+    if (seq !== _detailSeq) return;
     document.getElementById('detail-title').textContent = data.title;
     document.getElementById('detail-body').innerHTML = `
       <div class="detail-layout" style="display:flex;gap:20px">
@@ -2062,9 +2115,11 @@ async function showCoverageDetail(tmdbId, mediaType, title, year, posterPath) {
         </div>
       </div>`;
   } catch {
+    if (seq !== _detailSeq) return;
     // Item not in library — fetch from TMDB for overview
     try {
       const data = await api(`/api/library/tmdb/${mediaType}/${tmdbId}`);
+      if (seq !== _detailSeq) return;
       const isSeries = mediaType === 'series';
       const arrLabel = isSeries ? 'Sonarr' : 'Radarr';
       document.getElementById('detail-title').textContent = data.title || title || 'Unknown';
@@ -2086,6 +2141,7 @@ async function showCoverageDetail(tmdbId, mediaType, title, year, posterPath) {
           </div>
         </div>`;
     } catch {
+      if (seq !== _detailSeq) return;
       document.getElementById('detail-title').textContent = title || 'Unknown';
       document.getElementById('detail-body').innerHTML = `
         <div class="detail-layout" style="display:flex;gap:20px">
@@ -5383,6 +5439,7 @@ function renderDiscoverGrid(items) {
 }
 
 async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, inLibrary, tvdbId) {
+  const seq = _detailOpening();
   showModal('modal-media-detail');
   document.getElementById('detail-title').textContent = 'Loading...';
   document.getElementById('detail-body').innerHTML = '<div class="loading-state"><div class="spinner"></div></div>';
@@ -5393,6 +5450,7 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
       ? `/api/discover/detail-tvdb/${tvdbId}`
       : `/api/discover/detail/${mediaType}/${tmdbId}`;
     const data = await api(detailUrl);
+    if (seq !== _detailSeq) return;
     const isSeries = mediaType === 'series';
     const arrLabel = isSeries ? 'Sonarr' : 'Radarr';
     const detailTvdbId = data.tvdb_id || tvdbId || 0;
@@ -5446,6 +5504,7 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
         </div>
       </div>`;
   } catch {
+    if (seq !== _detailSeq) return;
     document.getElementById('detail-title').textContent = title || 'Unknown';
     document.getElementById('detail-body').innerHTML = `
       <div class="detail-layout" style="display:flex;gap:20px">
