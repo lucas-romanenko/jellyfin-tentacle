@@ -385,14 +385,35 @@ class JellyfinService:
 
         old_tags = item.get("Tags", [])
         logger.debug(f"[Jellyfin] set_item_tags {item_id}: {old_tags} → {tags}")
+        return self._post_item_update(item_id, self._minimal_update(item, Tags=tags), "set tags on")
 
-        minimal = {
+    def set_item_name(self, item_id: str, name: str) -> bool:
+        """Rename a Jellyfin item in place: same id, so every user's watched
+        state and playlist entries stay. An item whose NFO says <lockdata>
+        is never re-read from it, so fixing the NFO alone renames nothing."""
+        item = self._get(self._item_path(item_id))
+        if not item:
+            logger.warning(f"[Jellyfin] Cannot GET item {item_id} — set_item_name aborted")
+            return False
+        return self._post_item_update(item_id, self._minimal_update(item, Name=name), "rename")
+
+    @staticmethod
+    def _minimal_update(item: dict, **changes) -> dict:
+        """The ItemUpdate payload for `item` with `changes` applied.
+
+        Only the fields ItemUpdate needs (the full DTO makes Jellyfin answer
+        500 on some versions). LockData and LockedFields go back as they were:
+        Jellyfin takes a missing LockData as false, so every tag push used to
+        unlock the item, and the next metadata refresh could overwrite the
+        edits the lock protected (#161).
+        """
+        payload = {
             "Id": item["Id"],
             "Name": item.get("Name", ""),
             "OriginalTitle": item.get("OriginalTitle", ""),
             "Overview": item.get("Overview", ""),
             "Genres": item.get("Genres", []),
-            "Tags": tags,
+            "Tags": item.get("Tags", []),
             "Studios": item.get("Studios", []),
             "People": item.get("People", []),
             "ProviderIds": item.get("ProviderIds", {}),
@@ -401,12 +422,18 @@ class JellyfinService:
             "CommunityRating": item.get("CommunityRating"),
             "OfficialRating": item.get("OfficialRating", ""),
             "Taglines": item.get("Taglines", []),
+            "LockData": bool(item.get("LockData")),
         }
+        if item.get("LockedFields") is not None:
+            payload["LockedFields"] = item["LockedFields"]
+        payload.update(changes)
+        return payload
 
+    def _post_item_update(self, item_id: str, payload: dict, what: str) -> bool:
         try:
             r = self.session.post(
                 f"{self.url}/Items/{item_id}",
-                json=minimal,
+                json=payload,
                 timeout=15
             )
             self._check_401(r, f"/Items/{item_id}")
@@ -419,7 +446,7 @@ class JellyfinService:
         except requests.HTTPError:
             raise
         except Exception as e:
-            logger.error(f"[Jellyfin] Failed to set tags on {item_id}: {e}")
+            logger.error(f"[Jellyfin] Failed to {what} {item_id}: {e}")
             return False
 
     def add_tag_to_item(self, item_id: str, tag: str) -> bool:
