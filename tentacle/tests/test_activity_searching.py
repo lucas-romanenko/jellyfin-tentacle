@@ -354,7 +354,7 @@ class TestSearchOrdering(_Base):
 class TestCommandWatch(_Base):
     def setUp(self):
         super().setUp()
-        activity._command_watch.update(ts=0, seen=None)
+        activity._command_watch.update(ts=0, seen={})
         self.commands = {"radarr": [], "sonarr": []}
 
         def get(url, headers=None, params=None, timeout=None):

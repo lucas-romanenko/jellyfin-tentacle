@@ -359,8 +359,12 @@ async function loadLibDownloads() {
   }
 }
 
+let _dlPollInFlight = false;
+
 async function pollLibDownloads() {
   if (state.currentPage !== 'library') { stopDownloadPolling(); return; }
+  if (_dlPollInFlight) return;  // the previous poll is still out (#171)
+  _dlPollInFlight = true;
   try {
     const data = await api('/api/activity');
     renderLibDownloads(data);
@@ -368,6 +372,7 @@ async function pollLibDownloads() {
       stopDownloadPolling();
     }
   } catch (e) { stopDownloadPolling(); }
+  finally { _dlPollInFlight = false; }
 }
 
 function stopDownloadPolling() {
@@ -4610,7 +4615,7 @@ let _activityData = null;
 function startActivityPolling() {
   stopActivityPolling();
   loadActivity();
-  _activityPollTimer = setInterval(loadActivity, 3000);
+  _activityPollTimer = setInterval(() => loadActivity(), 3000);
 }
 
 function stopActivityPolling() {
@@ -4620,23 +4625,38 @@ function stopActivityPolling() {
   }
 }
 
-async function loadActivity() {
-  try {
-    const data = await api('/api/activity');
-    _activityData = data;
-    // Always update badge count
-    const count = (data.downloads || []).length + (data.searching || []).length + (data.unreleased || []).length;
-    const badge = document.getElementById('activity-tab-badge');
-    if (badge) {
-      badge.textContent = count;
-      badge.classList.toggle('has-activity', count > 0);
-    }
-    // Only re-render if activity tab is visible
-    const panel = document.getElementById('discover-tab-activity');
-    if (panel && panel.style.display !== 'none') {
-      renderActivity(data);
-    }
-  } catch (_) {}
+// With a slow Radarr/Sonarr one answer took a minute, and a 3 s poll that did
+// not wait stacked requests behind it (18 in flight), holding every other
+// dashboard request behind the browser's six connections (#171). A poll joins
+// the request already out. An action asks for a fresh read, and an older
+// answer never replaces a newer one.
+let _activityPromise = null;
+let _activitySeq = 0;
+
+function loadActivity(fresh = false) {
+  if (_activityPromise && fresh !== true) return _activityPromise;
+  const seq = ++_activitySeq;
+  const p = (async () => {
+    try {
+      const data = await api('/api/activity');
+      if (seq !== _activitySeq) return;
+      _activityData = data;
+      // Always update badge count
+      const count = (data.downloads || []).length + (data.searching || []).length + (data.unreleased || []).length;
+      const badge = document.getElementById('activity-tab-badge');
+      if (badge) {
+        badge.textContent = count;
+        badge.classList.toggle('has-activity', count > 0);
+      }
+      // Only re-render if activity tab is visible
+      const panel = document.getElementById('discover-tab-activity');
+      if (panel && panel.style.display !== 'none') {
+        renderActivity(data);
+      }
+    } catch (_) {}
+  })().finally(() => { if (_activityPromise === p) _activityPromise = null; });
+  _activityPromise = p;
+  return p;
 }
 
 // Activity re-renders every 3s. Replacing innerHTML re-created every poster
@@ -4723,7 +4743,7 @@ async function _stopMissing(key, item, episodes) {
     const r = await api('/api/activity/arr/stop-missing', { method: 'POST', body });
     toast(r.message || 'Stopped looking');
     closeModal('modal-stop-missing');
-    await loadActivity();
+    await loadActivity(true);
   } catch (e) {
     toast(e.message || 'Failed', 'error');
   } finally {
@@ -4858,7 +4878,7 @@ async function _rcGrab(i, btn) {
     const res = await api('/api/activity/arr/grab', { method: 'POST', body: { ..._actBody(_rc.item), guid: r.guid, indexer_id: r.indexer_id } });
     toast(res.message || 'Sent to your download client');
     closeModal('modal-release-check');
-    await loadActivity();
+    await loadActivity(true);
   } catch (e) {
     toast(e.message || 'Download failed', 'error');
     btn.disabled = false; btn.textContent = r.rejected ? 'Download anyway' : 'Download';
@@ -4882,7 +4902,7 @@ async function activityRemove(key) {
     if (item.media_type === 'series' && item.episodes_on_disk > 0) body.delete_downloaded = true;
     const r = await api('/api/activity/arr/remove', { method: 'POST', body });
     toast(r.message || `Removed ${item.title}`);
-    await loadActivity();
+    await loadActivity(true);
   } catch (e) {
     toast(e.message || 'Remove failed', 'error');
   } finally {

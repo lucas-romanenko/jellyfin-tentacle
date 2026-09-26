@@ -8,6 +8,7 @@ dropped early whenever an item leaves the queue.
 
 import time
 import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import List, Optional
@@ -27,6 +28,15 @@ router = APIRouter(prefix="/api/activity", tags=["activity"])
 # ── Separate cache for the wanted lists (expensive, rarely changes) ───────
 # Holds {"unreleased": [...], "searching": [...]}.
 _unreleased_cache: dict = {"data": None, "ts": 0}
+# One wanted read at a time (#171). With a slow Radarr/Sonarr a read took over
+# a minute, and every Activity poll that found the cache empty started its own:
+# eighteen in flight at once, each re-reading every list from the app that was
+# already struggling. Later requests wait for the read in progress and use it.
+_wanted_lock = threading.Lock()
+# Bumped by invalidate_wanted_cache(). A read that was running when the cache
+# was invalidated returns what it read but does not store it: the change that
+# invalidated the cache may have landed after that read.
+_wanted_generation = 0
 # The wanted lists are two or three large Radarr/Sonarr reads, so they are
 # cached; searches started in Radarr/Sonarr themselves are noticed through
 # their command lists (see _watch_arr_searches) and refresh it at once.
@@ -51,7 +61,12 @@ SEARCH_COMMANDS = {"EpisodeSearch", "SeasonSearch", "SeriesSearch", "MissingEpis
                    "MoviesSearch", "MissingMoviesSearch", "CutoffUnmetMoviesSearch",
                    "CutOffUnmetEpisodeSearch"}
 COMMAND_WATCH_INTERVAL = 5
-_command_watch: dict = {"ts": 0, "seen": None}
+# "seen" holds the last reading PER APP, so an app that cannot be read this
+# time suspends only its own detection (#135).
+_command_watch: dict = {"ts": 0, "seen": {}}
+# Concurrent Activity requests must not both read the command lists: the one
+# that gets here first reads, the rest skip this turn.
+_command_watch_lock = threading.Lock()
 
 
 def _search_command_states(url: str, api_key: str) -> Optional[set]:
@@ -66,23 +81,37 @@ def _search_command_states(url: str, api_key: str) -> Optional[set]:
 
 
 def _watch_arr_searches(db: Session) -> None:
-    """Drop the wanted cache when a search starts or finishes in Radarr/Sonarr."""
-    now = time.time()
-    if now - _command_watch["ts"] < COMMAND_WATCH_INTERVAL:
+    """Drop the wanted cache when a search starts or finishes in Radarr/Sonarr.
+
+    Each app is read and compared on its own. The two used to be read as one,
+    and a failed read of either abandoned the whole turn, so a Sonarr that
+    timed out (3 s is short for a busy Sonarr) also hid every search started
+    in a healthy Radarr until the cache expired (#135). An unknown reading is
+    still never mistaken for a change."""
+    if not _command_watch_lock.acquire(blocking=False):
         return
-    _command_watch["ts"] = now
-    states = set()
-    for prefix in ("radarr", "sonarr"):
-        url, key = get_setting(db, f"{prefix}_url"), get_setting(db, f"{prefix}_api_key")
-        if url and key:
+    try:
+        now = time.time()
+        if now - _command_watch["ts"] < COMMAND_WATCH_INTERVAL:
+            return
+        _command_watch["ts"] = now
+        seen = _command_watch["seen"]
+        changed = False
+        for prefix in ("radarr", "sonarr"):
+            url, key = get_setting(db, f"{prefix}_url"), get_setting(db, f"{prefix}_api_key")
+            if not (url and key):
+                seen.pop(prefix, None)
+                continue
             got = _search_command_states(url, key)
             if got is None:
-                return  # unknown this time — don't mistake it for a change
-            states |= {(prefix,) + x for x in got}
-    seen = _command_watch["seen"]
-    _command_watch["seen"] = states
-    if seen is not None and states - seen:
-        invalidate_wanted_cache()
+                continue  # unknown for THIS app only; its last reading stands
+            if prefix in seen and got - seen[prefix]:
+                changed = True
+            seen[prefix] = got
+        if changed:
+            invalidate_wanted_cache()
+    finally:
+        _command_watch_lock.release()
 
 
 def _trigger_refresh_throttled(key: str, url: str, api_key: str) -> None:
@@ -625,12 +654,38 @@ def _same_title(a: dict, b_tmdb: set, b_tvdb: set) -> bool:
                 or (a.get("tvdb_id") and a["tvdb_id"] in b_tvdb))
 
 
-def _get_wanted(db: Session) -> dict:
-    """Unreleased and still-searching titles — cached for 5 minutes (expensive calls)."""
-    now = time.time()
-    if _unreleased_cache["data"] is not None and (now - _unreleased_cache["ts"]) < UNRELEASED_TTL:
-        return _unreleased_cache["data"]
+def _wanted_fresh() -> Optional[dict]:
+    data = _unreleased_cache["data"]
+    if data is not None and (time.time() - _unreleased_cache["ts"]) < UNRELEASED_TTL:
+        return data
+    return None
 
+
+def _get_wanted(db: Session) -> dict:
+    """Unreleased and still-searching titles, cached for UNRELEASED_TTL.
+
+    Single-flight: while one request reads the lists, the others wait for it
+    and take its answer instead of reading them again (#171)."""
+    cached = _wanted_fresh()
+    if cached is not None:
+        return cached
+    with _wanted_lock:
+        # The read that held the lock may have just filled the cache.
+        cached = _wanted_fresh()
+        if cached is not None:
+            return cached
+        generation = _wanted_generation
+        result = _read_wanted(db)
+        if generation == _wanted_generation:
+            _unreleased_cache["data"] = result
+            # Stamped when the lists were READ, not when the read began: a
+            # read slower than the TTL was stored already expired, so every
+            # following request read everything again.
+            _unreleased_cache["ts"] = time.time()
+        return result
+
+
+def _read_wanted(db: Session) -> dict:
     unreleased, searching = [], []
 
     radarr_url = get_setting(db, "radarr_url")
@@ -669,8 +724,6 @@ def _get_wanted(db: Session) -> dict:
     result = {"unreleased": unreleased[:20], "searching": searching[:SEARCHING_LIMIT]}
     _enrich_posters(db, result["unreleased"])
     _enrich_posters(db, result["searching"])
-    _unreleased_cache["data"] = result
-    _unreleased_cache["ts"] = now
     return result
 
 
@@ -680,6 +733,8 @@ def _get_unreleased(db: Session) -> list:
 
 
 def invalidate_wanted_cache() -> None:
+    global _wanted_generation
+    _wanted_generation += 1
     _unreleased_cache["data"] = None
     _unreleased_cache["ts"] = 0
 
@@ -765,16 +820,21 @@ def get_activity(request: Request, db: Session = Depends(get_db),
     searching = [dict(x) for x in wanted["searching"]]
     recently_downloaded = _get_recently_downloaded(db)
 
-    # Build lookup: tmdb_id -> requester display name
+    # Who asked for what, keyed by (media_type, tmdb_id): TMDB numbers movies
+    # and shows separately, so movie 1399 and show 1399 are two titles. Keyed
+    # by the number alone, a request for one showed (and credited) the other (#172).
     all_requests = db.query(DownloadRequest, TentacleUser.display_name).join(
         TentacleUser, DownloadRequest.user_id == TentacleUser.id
     ).all()
-    requester_map: dict[int, str] = {}
-    user_requests: set[int] = set()
+    requester_map: dict[tuple, str] = {}
+    user_requests: set[tuple] = set()
     for dr, display_name in all_requests:
-        requester_map[dr.tmdb_id] = display_name
+        requester_map[(dr.media_type, dr.tmdb_id)] = display_name
         if user and dr.user_id == user.id:
-            user_requests.add(dr.tmdb_id)
+            user_requests.add((dr.media_type, dr.tmdb_id))
+
+    def _key(item: dict) -> tuple:
+        return (item.get("media_type"), item.get("tmdb_id"))
 
     # Remove items from unreleased that are already showing in downloads (prevents duplicates)
     downloading_tmdb_ids = {d.get("tmdb_id") for d in downloads if d.get("tmdb_id")}
@@ -796,21 +856,16 @@ def get_activity(request: Request, db: Session = Depends(get_db),
 
     if not is_admin and user:
         # Non-admin: only show items they requested
-        downloads = [d for d in downloads if d.get("tmdb_id") in user_requests]
-        unreleased = [u for u in unreleased if u.get("tmdb_id") in user_requests]
-        searching = [x for x in searching if x.get("tmdb_id") in user_requests]
-        recently_downloaded = [r for r in recently_downloaded if r.get("tmdb_id") in user_requests]
+        downloads = [d for d in downloads if _key(d) in user_requests]
+        unreleased = [u for u in unreleased if _key(u) in user_requests]
+        searching = [x for x in searching if _key(x) in user_requests]
+        recently_downloaded = [r for r in recently_downloaded if _key(r) in user_requests]
 
     if is_admin:
         # Admin: attach requester name to each item
-        for d in downloads:
-            d["requested_by"] = requester_map.get(d.get("tmdb_id"))
-        for u in unreleased:
-            u["requested_by"] = requester_map.get(u.get("tmdb_id"))
-        for x in searching:
-            x["requested_by"] = requester_map.get(x.get("tmdb_id"))
-        for r in recently_downloaded:
-            r["requested_by"] = requester_map.get(r.get("tmdb_id"))
+        for items in (downloads, unreleased, searching, recently_downloaded):
+            for item in items:
+                item["requested_by"] = requester_map.get(_key(item))
 
     # Why each title is still searching (the last release check, if any), what
     # in Radarr/Sonarr is stopping downloads, and the week ahead.
@@ -826,7 +881,7 @@ def get_activity(request: Request, db: Session = Depends(get_db),
         unreleased_series = {u.get("tmdb_id") for u in unreleased if u.get("media_type") == "series"}
         coming_up = [dict(c) for c in arr_insight.coming_up(db)
                      if c.get("tmdb_id") not in unreleased_series
-                     and (is_admin or c.get("tmdb_id") in user_requests)]
+                     and (is_admin or _key(c) in user_requests)]
         _enrich_posters(db, coming_up)
     except Exception as e:
         logger.debug(f"Activity: calendar failed: {e}")
