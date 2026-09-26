@@ -28,7 +28,7 @@ from services.m3u_parser import episode_from_title, container_from_url
 from services.duplicates import delete_vod_files, convert_record_to_downloaded
 from services.media_files import delete_movie_files, delete_series_files
 from services.tagger import compute_tags, get_list_tags_for_tmdb_id, apply_tag_rules
-from services.exceptions import ProviderConnectionError, SyncCancelledError, SyncError
+from services.exceptions import ProviderConnectionError, SyncCancelledError, SyncError, TMDBConnectionError
 
 logger = logging.getLogger(__name__)
 
@@ -1421,7 +1421,32 @@ def _sync_movies(
                 if override_id in existing_provider_tmdb_ids or override_id in seen_tmdb_ids:
                     metadata = {"tmdb_id": override_id}
                 else:
-                    metadata = tmdb.get_movie_details(override_id)
+                    tmdb_down = False
+                    tl = getattr(tmdb, "_tl", None)
+                    if tl is not None:
+                        tl.failed = False  # get_movie_details doesn't reset it; a stale flag isn't this lookup's
+                    try:
+                        metadata = tmdb.get_movie_details(override_id)
+                        failed = getattr(tmdb, "_lookup_failed", None)
+                        tmdb_down = bool(not metadata and callable(failed) and failed())  # 429/5xx
+                    except TMDBConnectionError:
+                        metadata, tmdb_down = None, True
+                    if not metadata:
+                        # The right film's details didn't come. Skip the stream
+                        # for tonight (never import it under its wrong label,
+                        # never fail the sync). Only an unreachable TMDB makes
+                        # the seen set doubtful enough to hold back pruning: a
+                        # plain "no such film" (TMDB removed or merged the id)
+                        # comes back every night and would stop this
+                        # provider's pruning for good.
+                        if tmdb_down:
+                            fetch_ok = False
+                        else:
+                            logger.warning(f"[Sync] Stream {stream.get('stream_id')} is fixed to TMDB {override_id}, "
+                                           f"which TMDB no longer has; skipped (fix it again to a film TMDB knows)")
+                        cat_skipped += 1
+                        stats["skipped"] += 1
+                        continue
                 known_id = None
             if not metadata and known_id:
                 # Known title but not in batch — it's existing, merge tags

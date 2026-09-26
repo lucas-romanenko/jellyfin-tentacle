@@ -1689,11 +1689,18 @@ async function replaceCopy(mediaType, tmdbId, season, episode, btn) {
   }
 }
 
+let _fmSeq = 0;
 async function _fmLoad(q) {
   const list = document.getElementById('fm-list');
+  // Only the newest request may fill the list: an older answer (the previous
+  // title's, or an earlier search) arriving late would otherwise replace it,
+  // and picking from it would re-match THIS title to the other one's film.
+  const seq = ++_fmSeq, id = _fm.tmdbId;
+  const stale = () => seq !== _fmSeq || id !== _fm.tmdbId;
   list.innerHTML = `<div class="fm-note">${q ? 'Searching…' : 'Looking for likely matches…'}</div>`;
   try {
-    const d = await api(`/api/library/fix-match/movie/${_fm.tmdbId}/suggestions${q ? '?q=' + encodeURIComponent(q) : ''}`);
+    const d = await api(`/api/library/fix-match/movie/${id}/suggestions${q ? '?q=' + encodeURIComponent(q) : ''}`);
+    if (stale()) return;
     const langs = (d.audio_languages || []).map(l => l.name);
     const clues = [];
     if (d.actual_minutes) clues.push(`it plays ${d.actual_minutes} minutes`);
@@ -1713,6 +1720,7 @@ async function _fmLoad(q) {
           ${c.overview ? `<span class="fm-cand-ov">${escapeAttr(c.overview)}</span>` : ''}</span>
       </button>`).join('') : '<div class="fm-note">No matches found — try searching for the title you saw.</div>';
   } catch (e) {
+    if (stale()) return;
     list.innerHTML = `<div class="fm-note">${escapeAttr(e.message || 'Could not load suggestions')}</div>`;
   }
 }
