@@ -397,6 +397,10 @@ class ListSubscription(Base):
     playlist_enabled = Column(Boolean, default=False)  # Generate a Jellyfin playlist from this list
     last_fetched = Column(DateTime, nullable=True)
     last_item_count = Column(Integer, default=0)
+    # What the last refresh could not do, for the list card: a source that
+    # blocked part of the list, TMDB not answering, no Trakt client ID. None
+    # when the last refresh read the whole list.
+    last_fetch_note = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("TentacleUser", backref="list_subscriptions")

@@ -52,6 +52,11 @@ class TMDBService:
     def _lookup_failed(self) -> bool:
         return getattr(self._tl, "failed", False)
 
+    def lookup_failed(self) -> bool:
+        """Did the last lookup on this thread fail transiently (429/5xx/timeout)?
+        None from a lookup then means "unknown", not "TMDB has no such title"."""
+        return self._lookup_failed()
+
     # ── Cache ──────────────────────────────────────────────────────────────
 
     def _cache_path(self, key: str) -> Path:
@@ -415,32 +420,37 @@ class TMDBService:
         """
         if not self.enabled or not imdb_id:
             return None
+        # As search_movie: None is "no such title" only when nothing failed.
+        # A 429/5xx on /find or on the details call after it is reported
+        # through lookup_failed(), and never cached as a negative (#163).
+        self._tl.failed = False
 
         cache_key = f"find_imdb:{imdb_id}"
         cached = self._cache_get(cache_key)
         if cached is not None:
             return cached if cached else None
 
-        data = self._request(f"find/{imdb_id}", {"external_source": "imdb_id"})
+        try:
+            data = self._request(f"find/{imdb_id}", {"external_source": "imdb_id"})
+        except TMDBConnectionError:
+            return None  # the flag is set
         if not data:
-            self._cache_set(cache_key, None)
+            if not self._lookup_failed():
+                self._cache_set(cache_key, None)
             return None
 
         # Check movie results first, then TV
-        movie_results = data.get("movie_results", [])
-        if movie_results:
-            tmdb_id = movie_results[0].get("id")
+        for results, details in ((data.get("movie_results", []), self.get_movie_details),
+                                 (data.get("tv_results", []), self.get_series_details)):
+            tmdb_id = results[0].get("id") if results else None
             if tmdb_id:
-                result = self.get_movie_details(tmdb_id)
-                self._cache_set(cache_key, result)
-                return result
-
-        tv_results = data.get("tv_results", [])
-        if tv_results:
-            tmdb_id = tv_results[0].get("id")
-            if tmdb_id:
-                result = self.get_series_details(tmdb_id)
-                self._cache_set(cache_key, result)
+                try:
+                    result = details(tmdb_id)
+                except TMDBConnectionError:
+                    self._tl.failed = True
+                    return None
+                if result or not self._lookup_failed():
+                    self._cache_set(cache_key, result)
                 return result
 
         self._cache_set(cache_key, None)

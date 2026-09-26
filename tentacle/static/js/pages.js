@@ -2188,7 +2188,7 @@ async function loadListCards() {
             <div style="width:36px;height:36px;background:var(--bg3);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0">${icon}</div>
             <div style="flex:1;min-width:0">
               <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-                <span style="font-size:15px;font-weight:600;color:var(--text)">${list.name}</span>
+                <span style="font-size:15px;font-weight:600;color:var(--text)">${escapeAttr(list.name)}</span>
                 ${list.auto_add_radarr ? '<span class="badge badge-green">Auto-grab</span>' : ''}
                 <div style="margin-left:auto;display:flex;gap:6px">
                   <button class="btn btn-secondary btn-sm" onclick="fetchList(${list.id})">Fetch</button>
@@ -2198,7 +2198,8 @@ async function loadListCards() {
               <div style="font-size:12px;color:var(--text3);margin-top:4px">
                 ${typeLabel} · Last fetched: ${lastFetched}${list.last_item_count ? ` · ${list.last_item_count} items` : ''}
               </div>
-              <div style="font-size:12px;color:var(--text3);margin-top:2px">Tag: ${list.tag}</div>
+              <div style="font-size:12px;color:var(--text3);margin-top:2px">Tag: ${escapeAttr(list.tag)}</div>
+              ${list.last_fetch_note ? `<div class="list-fetch-note">⚠ ${escapeAttr(list.last_fetch_note)}</div>` : ''}
             </div>
           </div>
           ${list.last_item_count ? `
@@ -2733,6 +2734,7 @@ async function fetchList(id) {
     if (r.skipped_duplicate) msg += `, ${r.skipped_duplicate} skipped (duplicate)`;
     if (r.tagged) msg += `, ${r.tagged} tagged in library`;
     toast(msg, 'success', 8000);
+    if (r.note) toast(escapeAttr(r.note), 'warning', 10000);
     loadListCards();
   } catch (e) {
     loading.remove();

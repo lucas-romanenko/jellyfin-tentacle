@@ -176,6 +176,27 @@ LIST_ALLOWED_HOSTS = {
 }
 
 
+class ListFetch(list):
+    """What a list source returned, and how much of the list that is.
+
+    A fetch used to be a bare list, so a partial read was stored as the whole
+    list: every title it missed was deleted from the list and lost its tag
+    (#145, #163, #164). `complete` is False when part of the list could not be
+    read; `unseen` names media types the source cannot see at all (IMDb's
+    movies-only fallback cannot see TV shows); `note` is what to tell the user.
+    """
+
+    def __init__(self, items=(), complete: bool = True, unseen=(), note: Optional[str] = None):
+        super().__init__(items)
+        self.complete = complete
+        self.unseen = set(unseen)
+        self.note = note
+
+
+def _as_fetch(items) -> "ListFetch":
+    return items if isinstance(items, ListFetch) else ListFetch(items or [])
+
+
 def list_url_is_allowed(list_type: str, url: str) -> bool:
     """True if `url` is a public http(s) URL on a host this list type may use."""
     allowed = LIST_ALLOWED_HOSTS.get(list_type)
@@ -184,21 +205,21 @@ def list_url_is_allowed(list_type: str, url: str) -> bool:
     return is_safe_url(url, allowed_hosts=allowed)
 
 
-def fetch_list_tmdb_ids(lst: ListSubscription, bearer_token: str = "", trakt_client_id: str = "") -> list:
+def fetch_list_tmdb_ids(lst: ListSubscription, bearer_token: str = "", trakt_client_id: str = "") -> "ListFetch":
     """Fetch TMDB IDs from a list URL"""
     if not list_url_is_allowed(lst.type, lst.url or ""):
         logger.error(
             f"Refusing to fetch list {lst.id} ({lst.type}): URL is not a public "
             f"{'/'.join(sorted(LIST_ALLOWED_HOSTS.get(lst.type, set())))} address"
         )
-        return []
+        return ListFetch([], complete=False, note="Not refreshed: the list's address is not allowed.")
     if lst.type == "imdb_rss":
-        return fetch_imdb_rss(lst.url, bearer_token=bearer_token)
+        return _as_fetch(fetch_imdb_rss(lst.url, bearer_token=bearer_token))
     elif lst.type == "letterboxd":
-        return fetch_letterboxd_rss(lst.url)
+        return _as_fetch(fetch_letterboxd_rss(lst.url))
     elif lst.type == "trakt":
-        return fetch_trakt_list(lst.url, client_id=trakt_client_id)
-    return []
+        return _as_fetch(fetch_trakt_list(lst.url, client_id=trakt_client_id))
+    return ListFetch([], complete=False)
 
 
 _IMDB_GQL_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -269,17 +290,26 @@ def _fetch_imdb_graphql_chart(chart_type: str) -> list:
                 "media_type": media_type,
             })
         logger.info(f"IMDb GraphQL chart {chart_type}: {len(result)} items")
-        return result
+        return ListFetch(result)
     except Exception as e:
         logger.error(f"IMDb GraphQL chart {chart_type} failed: {e}")
-        return []
+        return ListFetch([], complete=False, note=f"IMDb did not answer ({_short(e)}).")
 
 
-def _fetch_imdb_graphql_list(list_id: str) -> list:
-    """Fetch an IMDb user list via GraphQL. Supports pagination."""
+def _short(e: Exception) -> str:
+    text = str(e) or type(e).__name__
+    return text if len(text) <= 80 else text[:77] + "..."
+
+
+def _fetch_imdb_graphql_list(list_id: str) -> "ListFetch":
+    """Fetch an IMDb user list via GraphQL. Supports pagination.
+
+    A page that fails is not the end of the list: the result is marked
+    incomplete, so what came before it is not stored as the whole list."""
     tv_types = {"tvSeries", "tvMiniSeries", "tvMovie", "tvSpecial"}
     result = []
     after = ""
+    failure = None
 
     while True:
         after_arg = f', after: "{after}"' if after else ""
@@ -328,18 +358,30 @@ def _fetch_imdb_graphql_list(list_id: str) -> list:
                 break
         except Exception as e:
             logger.warning(f"IMDb GraphQL list {list_id} failed: {e}")
+            failure = e
             break
 
     movies = sum(1 for i in result if i["media_type"] == "movie")
     series = sum(1 for i in result if i["media_type"] == "series")
     logger.info(f"IMDb GraphQL list: {len(result)} items ({movies} movies, {series} series)")
-    return result
+    if failure is not None:
+        note = (f"IMDb stopped answering after {len(result)} items ({_short(failure)}); the rest of the "
+                f"list was kept as it was." if result else f"IMDb did not answer ({_short(failure)}).")
+        return ListFetch(result, complete=False, note=note)
+    return ListFetch(result)
 
 
-def _fetch_imdb_servarr(list_id: str) -> list:
-    """Last-resort fallback: fetch via Servarr API (movie-only, limited chart support)."""
+_MOVIES_ONLY_NOTE = ("TV shows unavailable: IMDb blocked the request, so only the list's movies could "
+                     "be read. Its TV shows were kept as they were.")
+
+
+def _fetch_imdb_servarr(list_id: str) -> "ListFetch":
+    """Last-resort fallback: fetch via Servarr API (movie-only, limited chart support).
+
+    It can only ever see movies, so its answer says so: a refresh keeps the
+    list's stored TV shows instead of deleting them (#145)."""
     if not list_id:
-        return []
+        return ListFetch([], complete=False)
     try:
         api_url = f"https://radarrapi.servarr.com/v1/list/imdb/{list_id}"
         r = requests.get(api_url, timeout=20)
@@ -359,10 +401,10 @@ def _fetch_imdb_servarr(list_id: str) -> list:
             if entry.get("imdb_id") or entry.get("tmdb_id"):
                 result.append(entry)
         logger.info(f"IMDb Servarr fallback: {len(result)} items (movies only)")
-        return result
+        return ListFetch(result, unseen={"series"}, note=_MOVIES_ONLY_NOTE)
     except Exception as e:
         logger.error(f"Servarr API failed for {list_id}: {e}")
-        return []
+        return ListFetch([], complete=False, note=f"IMDb and its fallback did not answer ({_short(e)}).")
 
 
 def fetch_imdb_rss(url: str, bearer_token: str = "") -> list:
@@ -380,7 +422,8 @@ def fetch_imdb_rss(url: str, bearer_token: str = "") -> list:
         return _fetch_imdb_servarr(servarr_id)
 
     if parsed["type"] == "list":
-        # User list → GraphQL list query, Servarr fallback
+        # User list → GraphQL list query, Servarr fallback. A partial GraphQL
+        # read is still better than the movies-only fallback.
         items = _fetch_imdb_graphql_list(parsed["id"])
         if items:
             return items
@@ -391,7 +434,7 @@ def fetch_imdb_rss(url: str, bearer_token: str = "") -> list:
         return _fetch_imdb_servarr(parsed["id"])
 
     logger.error(f"Unrecognized IMDb URL format: {url}")
-    return []
+    return ListFetch([], complete=False, note="Not an IMDb list, chart or user address.")
 
 
 def _fetch_letterboxd_film(slug: str, session: requests.Session) -> dict:
@@ -412,7 +455,12 @@ def _fetch_letterboxd_film(slug: str, session: requests.Session) -> dict:
     }
 
 
-def fetch_letterboxd_rss(url: str) -> list:
+def _looks_like_challenge(html: str) -> bool:
+    text = (html or "")[:20000].lower()
+    return "challenge-platform" in text or "just a moment" in text or "cf-chl" in text
+
+
+def fetch_letterboxd_rss(url: str) -> "ListFetch":
     """Fetch Letterboxd list via HTML scraping (RSS blocked by Cloudflare)"""
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -422,11 +470,12 @@ def fetch_letterboxd_rss(url: str) -> list:
 
     if not is_safe_url(url, allowed_hosts=LIST_ALLOWED_HOSTS["letterboxd"]):
         logger.error("Refusing to fetch Letterboxd list: URL is not a public letterboxd.com address")
-        return []
+        return ListFetch([], complete=False, note="Not a Letterboxd address.")
     try:
         # Collect all film slugs across pages
         all_slugs = []
         page = 1
+        incomplete = None
         while True:
             page_url = f"{url.rstrip('/')}/page/{page}/"
             r = session.get(page_url, timeout=15)
@@ -436,6 +485,11 @@ def fetch_letterboxd_rss(url: str) -> list:
 
             slugs = re.findall(r'data-target-link="/film/([^/]+)/"', r.text)
             if not slugs:
+                # Cloudflare answers its challenge with HTTP 200. A page the
+                # previous one linked to, or a challenge, holding no films is
+                # not the end of the list (#164).
+                if page > 1 or _looks_like_challenge(r.text):
+                    incomplete = f"Letterboxd did not serve page {page} of the list"
                 break
             all_slugs.extend(slugs)
 
@@ -447,6 +501,7 @@ def fetch_letterboxd_rss(url: str) -> list:
 
         # Fetch film pages in parallel
         items = []
+        failed = 0
         with ThreadPoolExecutor(max_workers=10) as pool:
             futures = {pool.submit(_fetch_letterboxd_film, slug, session): slug for slug in all_slugs}
             for future in as_completed(futures):
@@ -456,20 +511,38 @@ def fetch_letterboxd_rss(url: str) -> list:
                     if result:
                         items.append(result)
                 except Exception as e:
+                    # A film page that failed (a 429 is likely, ten at a time)
+                    # is a film the list still has, not one it lost (#164).
+                    failed += 1
                     logger.debug(f"Letterboxd: failed to fetch film '{slug}': {e}")
 
-        logger.info(f"Letterboxd: resolved {len(items)} films with TMDB IDs")
-        return items
+        logger.info(f"Letterboxd: resolved {len(items)} films with TMDB IDs"
+                    + (f", {failed} film page(s) failed" if failed else ""))
+        notes = [n for n in (incomplete, f"{failed} film page(s) did not load" if failed else None) if n]
+        if notes:
+            return ListFetch(items, complete=False,
+                             note="; ".join(notes) + ". The films it could not read were kept as they were.")
+        return ListFetch(items)
     except Exception as e:
         logger.error(f"Failed to fetch Letterboxd {url}: {e}")
-        return []
+        return ListFetch([], complete=False, note=f"Letterboxd did not answer ({_short(e)}).")
 
 
-def fetch_trakt_list(url: str, client_id: str = "") -> list:
+_TRAKT_NOT_CONFIGURED = ("Not refreshed: no Trakt client ID is configured (Settings → Connections). "
+                         "The previous items were kept.")
+_trakt_warned = False
+
+
+def fetch_trakt_list(url: str, client_id: str = "") -> "ListFetch":
     """Fetch Trakt list via API"""
+    global _trakt_warned
     if not client_id:
-        logger.error("Trakt client ID not configured — add it in Settings → Connections")
-        return []
+        # A setup gap, not a failure: said once per process, not as an ERROR
+        # for every Trakt list every night (#160). The list card says it too.
+        if not _trakt_warned:
+            _trakt_warned = True
+            logger.warning("Trakt client ID not configured — add it in Settings → Connections")
+        return ListFetch([], complete=False, note=_TRAKT_NOT_CONFIGURED)
     try:
         # Convert URL to API endpoint
         # e.g. https://trakt.tv/users/username/lists/listname
@@ -500,10 +573,10 @@ def fetch_trakt_list(url: str, client_id: str = "") -> list:
                 if ids.get("tmdb"):
                     result.append({"tmdb_id": ids["tmdb"], "title": s.get("title"), "media_type": "series"})
         logger.info(f"Trakt: found {len(result)} items")
-        return result
+        return ListFetch(result)
     except Exception as e:
         logger.error(f"Failed to fetch Trakt list {url}: {e}")
-        return []
+        return ListFetch([], complete=False, note=f"Trakt did not answer ({_short(e)}).")
 
 
 def store_list_items(lst: ListSubscription, items: list, db: Session) -> dict:
@@ -550,6 +623,66 @@ def store_list_items(lst: ListSubscription, items: list, db: Session) -> dict:
     if skipped_no_tmdb or skipped_duplicate:
         logger.info(f"List '{lst.name}': stored {stored}, skipped {skipped_no_tmdb} (no TMDB match), {skipped_duplicate} (duplicate)")
     return {"stored": stored, "new": new_count, "removed": removed_count, "skipped_no_tmdb": skipped_no_tmdb, "skipped_duplicate": skipped_duplicate}
+
+
+def keep_unread_items(lst: ListSubscription, items: list, db: Session, complete: bool, unseen=()) -> list:
+    """`items` plus the stored items a partial read could not have seen.
+
+    After a page failure (or a film page, or TMDB, not answering) every stored
+    item missing from the read is kept: nothing says it left the list. After
+    the movies-only IMDb fallback, the stored TV shows are kept; movie
+    removals still apply, because that source does see movies."""
+    if complete and not unseen:
+        return items
+    have = {(i.get("media_type") or "movie", i.get("tmdb_id")) for i in items if i.get("tmdb_id")}
+    have_ids = {i.get("tmdb_id") for i in items if i.get("tmdb_id")}
+    kept = list(items)
+    for row in db.query(ListItem).filter(ListItem.list_id == lst.id).all():
+        media_type = row.media_type or "movie"
+        if not row.tmdb_id or (media_type, row.tmdb_id) in have or row.tmdb_id in have_ids:
+            continue
+        if not complete or media_type in unseen:
+            kept.append({"tmdb_id": row.tmdb_id, "imdb_id": row.imdb_id, "media_type": media_type,
+                         "title": row.title, "year": row.year, "poster_path": row.poster_path})
+    return kept
+
+
+def refresh_list(lst: ListSubscription, db: Session, bearer_token: str = "", trakt_client_id: str = "",
+                 tmdb: Optional[TMDBService] = None) -> dict:
+    """Read a list, store it and apply its tag. Shared by the Fetch button,
+    Refresh all and the nightly job, which each had their own copy.
+
+    A read that could not see the whole list never deletes what it missed
+    (see ListFetch and keep_unread_items), and what it could not do is stored
+    in lst.last_fetch_note for the list card. An empty read changes nothing,
+    as before: an empty answer is far more often an outage than a list that
+    emptied overnight.
+    """
+    fetched = _as_fetch(fetch_list_tmdb_ids(lst, bearer_token=bearer_token, trakt_client_id=trakt_client_id))
+    items = list(fetched)
+    complete = fetched.complete
+    notes = [fetched.note] if fetched.note else []
+    if tmdb and items:
+        failed = enrich_items_with_tmdb(items, tmdb)
+        if failed:
+            complete = False
+            notes.append(f"TMDB did not answer for {failed} item(s); they were kept as they were.")
+    note = " ".join(notes) or None
+    lst.last_fetch_note = note
+    if not items:
+        db.commit()
+        return {"ok": False, "fetched": 0, "stored": lst.last_item_count or 0, "new": 0, "removed": 0,
+                "skipped_no_tmdb": 0, "skipped_duplicate": 0, "tagged": 0, "complete": complete,
+                "note": note or "The list came back empty, so nothing was changed.", "items": []}
+    fetched_count = len(items)
+    items = keep_unread_items(lst, items, db, complete, fetched.unseen)
+    store_stats = store_list_items(lst, items, db)
+    tagged = apply_list_tags_to_library(items, lst.tag, db)
+    lst.last_fetched = datetime.utcnow()
+    lst.last_item_count = store_stats["stored"]
+    db.commit()
+    return {"ok": True, "fetched": fetched_count, "tagged": tagged, "complete": complete, "note": note,
+            "items": items, **store_stats}
 
 
 def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
@@ -677,6 +810,7 @@ def get_lists(db: Session = Depends(get_db), user: TentacleUser = Depends(get_us
             "playlist_enabled": l.playlist_enabled,
             "last_fetched": l.last_fetched,
             "last_item_count": l.last_item_count,
+            "last_fetch_note": l.last_fetch_note,
             "created_at": l.created_at,
         }
         for l in lists
@@ -688,6 +822,11 @@ def create_list(body: ListCreate, db: Session = Depends(get_db), user: TentacleU
     if not list_url_is_allowed(body.type, body.url or ""):
         raise HTTPException(400, f"A {body.type} list URL must be a public "
                                  f"{'/'.join(sorted(LIST_ALLOWED_HOSTS[body.type]))} address")
+    if body.type == "imdb_rss" and _parse_imdb_url(body.url or "")["type"] == "unknown":
+        # A name and address swapped in the form used to be accepted and then
+        # never fetched anything, without a word (#145).
+        raise HTTPException(400, "That is not an IMDb list, chart or user address "
+                                 "(e.g. https://www.imdb.com/list/ls055592025/)")
     from services.tagger import tag_conflict
     conflict = tag_conflict(db, body.tag, user.id)
     if conflict:
@@ -956,27 +1095,24 @@ def refresh_all_lists(db: Session = Depends(get_db), user: TentacleUser = Depend
 
     refreshed = 0
     errors = []
+    warnings = []
     for lst in active_lists:
         try:
-            items = fetch_list_tmdb_ids(lst, bearer_token=bearer, trakt_client_id=trakt_cid)
-            if not items:
-                errors.append(f"{lst.name}: empty or failed")
+            result = refresh_list(lst, db, bearer, trakt_cid, tmdb)
+            if not result["ok"]:
+                errors.append(f"{lst.name}: {result['note']}")
                 continue
-            if tmdb:
-                enrich_items_with_tmdb(items, tmdb)
-            store_stats = store_list_items(lst, items, db)
-            apply_list_tags_to_library(items, lst.tag, db)
-            lst.last_fetched = datetime.utcnow()
-            lst.last_item_count = store_stats["stored"]
             refreshed += 1
-            logger.info(f"Refreshed list '{lst.name}': {store_stats['stored']} items")
+            if result["note"]:
+                warnings.append(f"{lst.name}: {result['note']}")
+            logger.info(f"Refreshed list '{lst.name}': {result['stored']} items")
         except Exception as e:
             errors.append(f"{lst.name}: {e}")
             logger.warning(f"Failed to refresh list '{lst.name}': {e}")
 
     db.commit()
     log_activity(db, "lists_refresh", f"Refreshed {refreshed} lists")
-    return {"success": True, "refreshed": refreshed, "errors": errors}
+    return {"success": True, "refreshed": refreshed, "errors": errors, "warnings": warnings}
 
 
 @router.post("/{list_id}/fetch")
@@ -990,25 +1126,13 @@ def fetch_list(list_id: int, db: Session = Depends(get_db), user: TentacleUser =
         raise HTTPException(404, "List not found")
 
     from services.tmdb import get_tmdb_token
-    bearer_token = get_tmdb_token(db)
-    trakt_client_id = get_setting(db, "trakt_client_id") or ""
-    items = fetch_list_tmdb_ids(lst, bearer_token=bearer_token, trakt_client_id=trakt_client_id)
-    if not items:
-        raise HTTPException(400, "Failed to fetch list or list is empty")
-
-    # Enrich items with metadata from TMDB (poster, title, year)
-    tmdb = _get_tmdb_service(db)
-    if tmdb:
-        enrich_items_with_tmdb(items, tmdb)
-
-    # Store items with metadata
-    store_stats = store_list_items(lst, items, db)
-
-    tagged = apply_list_tags_to_library(items, lst.tag, db)
-
-    lst.last_fetched = datetime.utcnow()
-    lst.last_item_count = store_stats["stored"]
-    db.commit()
+    result = refresh_list(lst, db, get_tmdb_token(db), get_setting(db, "trakt_client_id") or "",
+                          _get_tmdb_service(db))
+    if not result["ok"]:
+        raise HTTPException(400, result["note"])
+    items = result["items"]
+    tagged = result["tagged"]
+    store_stats = result
 
     # Auto-add missing to Radarr
     radarr_added = 0
@@ -1055,7 +1179,8 @@ def fetch_list(list_id: int, db: Session = Depends(get_db), user: TentacleUser =
 
     return {
         "success": True,
-        "fetched": len(items),
+        "fetched": result["fetched"],
+        "note": result["note"],
         "stored": store_stats["stored"],
         "skipped_no_tmdb": store_stats["skipped_no_tmdb"],
         "skipped_duplicate": store_stats["skipped_duplicate"],
@@ -1074,15 +1199,23 @@ def _get_tmdb_service(db: Session) -> Optional[TMDBService]:
     return TMDBService(bearer_token=token, cache_dir=cache_dir)
 
 
-def enrich_items_with_tmdb(items: list, tmdb: TMDBService):
+def enrich_items_with_tmdb(items: list, tmdb: TMDBService) -> int:
     """Enrich list items with TMDB metadata (poster, title, year).
-    Modifies items in-place. Reusable by both the fetch endpoint and scheduled sync."""
+    Modifies items in-place. Reusable by both the fetch endpoint and scheduled sync.
+
+    Returns how many IMDb-only items TMDB did not answer for (429/5xx/timeout).
+    Those items have no TMDB id, and without the count they read as "TMDB has
+    no such title": dropped from the list, their tag stripped (#163)."""
+    failed = 0
     for item in items:
         tid = item.get("tmdb_id")
         imdb_id = item.get("imdb_id")
 
         if not tid and imdb_id:
             details = tmdb.find_by_imdb_id(imdb_id)
+            if not details and tmdb.lookup_failed():
+                failed += 1
+                continue
             if details:
                 item["tmdb_id"] = details.get("tmdb_id")
                 item.setdefault("title", details.get("title"))
@@ -1101,6 +1234,7 @@ def enrich_items_with_tmdb(items: list, tmdb: TMDBService):
                 item.setdefault("year", str(details.get("year", "") or ""))
                 item["poster_path"] = details.get("poster_path")
                 item.setdefault("media_type", details.get("media_type", "movie"))
+    return failed
 
 
 @router.get("/{list_id}/coverage")

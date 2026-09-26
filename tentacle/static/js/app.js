@@ -1525,6 +1525,10 @@ async function refreshLists(btn) {
   try {
     const r = await api('/api/lists/refresh-all', { method: 'POST' });
     toast(`Refreshed ${r.refreshed} lists${r.errors.length ? ` (${r.errors.length} errors)` : ''}`, 'success');
+    // A list the source could only partly read keeps what it missed; say so.
+    const problems = [...(r.warnings || []), ...(r.errors || [])];
+    if (problems.length) toast(escapeHtml(problems.join(' · ')), 'warning', 10000);
+    if (typeof loadListCards === 'function') loadListCards();
   } catch (e) {
     toast(e.message, 'error');
   } finally {
