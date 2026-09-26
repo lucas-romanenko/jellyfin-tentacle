@@ -8,6 +8,7 @@ dropped early whenever an item leaves the queue.
 
 import time
 import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import List, Optional
@@ -26,7 +27,13 @@ router = APIRouter(prefix="/api/activity", tags=["activity"])
 
 # ── Separate cache for the wanted lists (expensive, rarely changes) ───────
 # Holds {"unreleased": [...], "searching": [...]}.
-_unreleased_cache: dict = {"data": None, "ts": 0}
+# "gen" counts invalidations, so a fetch that was running when the cache was
+# invalidated does not store what it read before the change.
+_unreleased_cache: dict = {"data": None, "ts": 0, "gen": 0}
+# One wanted fetch at a time. With a slow Radarr/Sonarr a fetch takes longer
+# than the Activity poll interval, and every request that found the cache empty
+# used to fetch everything again, piling more load onto the slow app.
+_wanted_lock = threading.Lock()
 # The wanted lists are two or three large Radarr/Sonarr reads, so they are
 # cached; searches started in Radarr/Sonarr themselves are noticed through
 # their command lists (see _watch_arr_searches) and refresh it at once.
@@ -51,7 +58,13 @@ SEARCH_COMMANDS = {"EpisodeSearch", "SeasonSearch", "SeriesSearch", "MissingEpis
                    "MoviesSearch", "MissingMoviesSearch", "CutoffUnmetMoviesSearch",
                    "CutOffUnmetEpisodeSearch"}
 COMMAND_WATCH_INTERVAL = 5
-_command_watch: dict = {"ts": 0, "seen": None}
+# "seen": the last good reading per app ({"radarr": {(id, status), ...}}). An
+# app whose list could not be read keeps its previous reading and only its own
+# changes go unnoticed; the other app is still watched.
+_command_watch: dict = {"ts": 0, "seen": {}}
+# Held for a whole watch: a second request arriving meanwhile skips it rather
+# than reading the lists again (or waiting on a slow app).
+_command_watch_lock = threading.Lock()
 
 
 def _search_command_states(url: str, api_key: str) -> Optional[set]:
@@ -67,22 +80,31 @@ def _search_command_states(url: str, api_key: str) -> Optional[set]:
 
 def _watch_arr_searches(db: Session) -> None:
     """Drop the wanted cache when a search starts or finishes in Radarr/Sonarr."""
-    now = time.time()
-    if now - _command_watch["ts"] < COMMAND_WATCH_INTERVAL:
+    if not _command_watch_lock.acquire(blocking=False):
         return
-    _command_watch["ts"] = now
-    states = set()
-    for prefix in ("radarr", "sonarr"):
-        url, key = get_setting(db, f"{prefix}_url"), get_setting(db, f"{prefix}_api_key")
-        if url and key:
+    try:
+        now = time.time()
+        if now - _command_watch["ts"] < COMMAND_WATCH_INTERVAL:
+            return
+        _command_watch["ts"] = now
+        seen = _command_watch.get("seen") or {}
+        changed = False
+        for prefix in ("radarr", "sonarr"):
+            url, key = get_setting(db, f"{prefix}_url"), get_setting(db, f"{prefix}_api_key")
+            if not (url and key):
+                seen.pop(prefix, None)
+                continue
             got = _search_command_states(url, key)
             if got is None:
-                return  # unknown this time — don't mistake it for a change
-            states |= {(prefix,) + x for x in got}
-    seen = _command_watch["seen"]
-    _command_watch["seen"] = states
-    if seen is not None and states - seen:
-        invalidate_wanted_cache()
+                continue  # unknown for this app only: not a change, and its last reading stands
+            if prefix in seen and got - seen[prefix]:
+                changed = True
+            seen[prefix] = got
+        _command_watch["seen"] = seen
+        if changed:
+            invalidate_wanted_cache()
+    finally:
+        _command_watch_lock.release()
 
 
 def _trigger_refresh_throttled(key: str, url: str, api_key: str) -> None:
@@ -582,6 +604,9 @@ def _build_downloads(db: Session) -> list:
                         poster = _get_poster(db, tmdb_id, "series") or _extract_poster(series) or _fetch_tmdb_poster(tmdb_id, "series", db)
                         downloads.append({
                             "tmdb_id": tmdb_id,
+                            # A show Sonarr knows only by TVDB has tmdb_id 0; this
+                            # is what matches it against Searching/Upcoming.
+                            "tvdb_id": series.get("tvdbId") or 0,
                             "title": series.get("title", item.get("title", "")),
                             "year": str(series.get("year", "")),
                             "poster_path": poster,
@@ -625,12 +650,32 @@ def _same_title(a: dict, b_tmdb: set, b_tvdb: set) -> bool:
                 or (a.get("tvdb_id") and a["tvdb_id"] in b_tvdb))
 
 
-def _get_wanted(db: Session) -> dict:
-    """Unreleased and still-searching titles — cached for 5 minutes (expensive calls)."""
-    now = time.time()
-    if _unreleased_cache["data"] is not None and (now - _unreleased_cache["ts"]) < UNRELEASED_TTL:
+def _fresh_wanted() -> Optional[dict]:
+    if _unreleased_cache["data"] is not None and (time.time() - _unreleased_cache["ts"]) < UNRELEASED_TTL:
         return _unreleased_cache["data"]
+    return None
 
+
+def _get_wanted(db: Session) -> dict:
+    """Unreleased and still-searching titles — cached for UNRELEASED_TTL (expensive calls)."""
+    cached = _fresh_wanted()
+    if cached is not None:
+        return cached
+    with _wanted_lock:
+        cached = _fresh_wanted()  # fetched by the request we waited for
+        if cached is not None:
+            return cached
+        gen = _unreleased_cache.get("gen", 0)
+        result = _fetch_wanted(db)
+        # Counted from when the lists were read, not from when the fetch
+        # started: a fetch slower than the TTL was stored already expired.
+        if _unreleased_cache.get("gen", 0) == gen:
+            _unreleased_cache["data"] = result
+            _unreleased_cache["ts"] = time.time()
+        return result
+
+
+def _fetch_wanted(db: Session) -> dict:
     unreleased, searching = [], []
 
     radarr_url = get_setting(db, "radarr_url")
@@ -669,8 +714,6 @@ def _get_wanted(db: Session) -> dict:
     result = {"unreleased": unreleased[:20], "searching": searching[:SEARCHING_LIMIT]}
     _enrich_posters(db, result["unreleased"])
     _enrich_posters(db, result["searching"])
-    _unreleased_cache["data"] = result
-    _unreleased_cache["ts"] = now
     return result
 
 
@@ -682,6 +725,7 @@ def _get_unreleased(db: Session) -> list:
 def invalidate_wanted_cache() -> None:
     _unreleased_cache["data"] = None
     _unreleased_cache["ts"] = 0
+    _unreleased_cache["gen"] = _unreleased_cache.get("gen", 0) + 1
 
 
 def _note_queue(downloads: list) -> None:
@@ -765,22 +809,34 @@ def get_activity(request: Request, db: Session = Depends(get_db),
     searching = [dict(x) for x in wanted["searching"]]
     recently_downloaded = _get_recently_downloaded(db)
 
-    # Build lookup: tmdb_id -> requester display name
+    # Build lookup: (media_type, tmdb_id) -> requester display name. TMDB
+    # numbers movies and shows separately, so movie 1399 and show 1399 are two
+    # different titles; a request is for one of them.
     all_requests = db.query(DownloadRequest, TentacleUser.display_name).join(
         TentacleUser, DownloadRequest.user_id == TentacleUser.id
     ).all()
-    requester_map: dict[int, str] = {}
-    user_requests: set[int] = set()
+    requester_map: dict[tuple, str] = {}
+    user_requests: set[tuple] = set()
     for dr, display_name in all_requests:
-        requester_map[dr.tmdb_id] = display_name
+        requester_map[(dr.media_type, dr.tmdb_id)] = display_name
         if user and dr.user_id == user.id:
-            user_requests.add(dr.tmdb_id)
+            user_requests.add((dr.media_type, dr.tmdb_id))
+
+    def req_key(item: dict) -> tuple:
+        return ("series" if item.get("media_type") == "series" else "movie", item.get("tmdb_id"))
 
     # Remove items from unreleased that are already showing in downloads (prevents duplicates)
-    downloading_tmdb_ids = {d.get("tmdb_id") for d in downloads if d.get("tmdb_id")}
-    downloading_tvdb_ids = {d.get("tvdb_id") for d in downloads if d.get("tvdb_id")}
-    unreleased = [u for u in unreleased
-                  if not _same_title(u, downloading_tmdb_ids, downloading_tvdb_ids)]
+    # Keyed by media type too: movie N downloading is not show N.
+    downloading_keys = {req_key(d) for d in downloads if d.get("tmdb_id")}
+    downloading_tvdb_ids = {d.get("tvdb_id") for d in downloads
+                            if d.get("tvdb_id") and d.get("media_type") == "series"}
+
+    def _is_downloading(item: dict) -> bool:
+        return bool((item.get("tmdb_id") and req_key(item) in downloading_keys)
+                    or (item.get("media_type") == "series" and item.get("tvdb_id")
+                        and item["tvdb_id"] in downloading_tvdb_ids))
+
+    unreleased = [u for u in unreleased if not _is_downloading(u)]
     # Same for searching: the moment a grab lands in the queue it is a download.
     # A movie Tentacle already holds a Radarr file for is found, whatever the
     # cached list says.
@@ -789,28 +845,28 @@ def get_activity(request: Request, db: Session = Depends(get_db),
     have_movie_file = {tid for (tid,) in db.query(Movie.tmdb_id).filter(
         Movie.source == "radarr", Movie.tmdb_id.in_(searching_movie_ids)).all()} if searching_movie_ids else set()
     searching = [x for x in searching
-                 if not _same_title(x, downloading_tmdb_ids, downloading_tvdb_ids)
+                 if not _is_downloading(x)
                  and not (x.get("media_type") == "movie" and x.get("tmdb_id") in have_movie_file)]
 
     is_admin = user and user.is_admin
 
     if not is_admin and user:
         # Non-admin: only show items they requested
-        downloads = [d for d in downloads if d.get("tmdb_id") in user_requests]
-        unreleased = [u for u in unreleased if u.get("tmdb_id") in user_requests]
-        searching = [x for x in searching if x.get("tmdb_id") in user_requests]
-        recently_downloaded = [r for r in recently_downloaded if r.get("tmdb_id") in user_requests]
+        downloads = [d for d in downloads if req_key(d) in user_requests]
+        unreleased = [u for u in unreleased if req_key(u) in user_requests]
+        searching = [x for x in searching if req_key(x) in user_requests]
+        recently_downloaded = [r for r in recently_downloaded if req_key(r) in user_requests]
 
     if is_admin:
         # Admin: attach requester name to each item
         for d in downloads:
-            d["requested_by"] = requester_map.get(d.get("tmdb_id"))
+            d["requested_by"] = requester_map.get(req_key(d))
         for u in unreleased:
-            u["requested_by"] = requester_map.get(u.get("tmdb_id"))
+            u["requested_by"] = requester_map.get(req_key(u))
         for x in searching:
-            x["requested_by"] = requester_map.get(x.get("tmdb_id"))
+            x["requested_by"] = requester_map.get(req_key(x))
         for r in recently_downloaded:
-            r["requested_by"] = requester_map.get(r.get("tmdb_id"))
+            r["requested_by"] = requester_map.get(req_key(r))
 
     # Why each title is still searching (the last release check, if any), what
     # in Radarr/Sonarr is stopping downloads, and the week ahead.
@@ -826,7 +882,7 @@ def get_activity(request: Request, db: Session = Depends(get_db),
         unreleased_series = {u.get("tmdb_id") for u in unreleased if u.get("media_type") == "series"}
         coming_up = [dict(c) for c in arr_insight.coming_up(db)
                      if c.get("tmdb_id") not in unreleased_series
-                     and (is_admin or c.get("tmdb_id") in user_requests)]
+                     and (is_admin or req_key(c) in user_requests)]
         _enrich_posters(db, coming_up)
     except Exception as e:
         logger.debug(f"Activity: calendar failed: {e}")

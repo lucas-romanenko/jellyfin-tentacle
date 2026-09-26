@@ -74,7 +74,7 @@ class _Resp:
         return self._data
 
 
-def _fake_get(queue_records=None, sonarr_series=None):
+def _fake_get(queue_records=None, sonarr_series=None, sonarr_queue=None):
     def get(url, headers=None, params=None, timeout=None):
         if ":7878" in url and url.endswith("/api/v3/movie"):
             return _Resp(RADARR_MOVIES)
@@ -85,7 +85,7 @@ def _fake_get(queue_records=None, sonarr_series=None):
         if ":8989" in url and url.endswith("/api/v3/series"):
             return _Resp(sonarr_series or [])
         if ":8989" in url and url.endswith("/api/v3/queue"):
-            return _Resp({"records": []})
+            return _Resp({"records": sonarr_queue or []})
         raise AssertionError(f"unexpected GET {url}")
     return get
 
@@ -116,8 +116,8 @@ class _Base(unittest.TestCase):
     def tearDown(self):
         self.db.close()
 
-    def activity(self, user=None, queue=None, sonarr_series=None):
-        with mock.patch.object(activity.requests, "get", side_effect=_fake_get(queue, sonarr_series)) as g:
+    def activity(self, user=None, queue=None, sonarr_series=None, sonarr_queue=None):
+        with mock.patch.object(activity.requests, "get", side_effect=_fake_get(queue, sonarr_series, sonarr_queue)) as g:
             out = activity.get_activity(request=None, db=self.db, user=user or self.admin)
         self.gets = [c.args[0] for c in g.call_args_list]
         return out
@@ -257,6 +257,52 @@ class TestActivityEndpoint(_Base):
         out = self.activity(user=self.kid)
         self.assertEqual(["Show B"], [x["title"] for x in out["searching"]])
 
+    # TMDB numbers movies and shows separately: movie 101 and show 101 are
+    # different titles. A request is for one media type only.
+    def test_a_movie_request_does_not_show_the_series_with_the_same_number(self):
+        self.db.add(mdb.DownloadRequest(tmdb_id=101, media_type="movie", user_id=self.kid.id))
+        self.db.commit()
+        out = self.activity(user=self.kid)
+        self.assertEqual([], [x["title"] for x in out["searching"]], "the kid asked for movie 101, not Show B")
+
+    def test_requester_is_matched_by_media_type_too(self):
+        self.db.add(mdb.DownloadRequest(tmdb_id=101, media_type="movie", user_id=self.kid.id))
+        self.db.commit()
+        out = self.activity()
+        by = {(x["media_type"], x["tmdb_id"]): x.get("requested_by") for x in out["searching"]}
+        self.assertIsNone(by[("series", 101)], "Show B was not requested by the kid")
+
+    # A download hides the same title from Searching/Upcoming, not every title
+    # that happens to share its TMDB number.
+    @staticmethod
+    def _queue(tmdb, kind="movie"):
+        item = {"id": 78, "size": 100, "sizeleft": 50, "status": "downloading",
+                "trackedDownloadStatus": "ok", "trackedDownloadState": "downloading"}
+        item[kind] = {"tmdbId": tmdb, "title": f"{kind} {tmdb}"}
+        return [item]
+
+    def test_a_downloading_movie_does_not_hide_the_show_with_its_number(self):
+        out = self.activity(queue=self._queue(101))
+        self.assertIn(("series", 101), [(x["media_type"], x["tmdb_id"]) for x in out["searching"]],
+                      "movie 101 downloading is not Show B (series 101)")
+
+    def test_a_downloading_movie_still_leaves_searching(self):
+        out = self.activity(queue=self._queue(1))
+        self.assertNotIn(("movie", 1), [(x["media_type"], x["tmdb_id"]) for x in out["searching"]])
+
+    def test_a_downloading_show_known_only_by_tvdb_leaves_searching(self):
+        tvdb_only = dict(SHOW_B, tmdbId=0)
+        queue = [{"id": 79, "size": 100, "sizeleft": 50, "status": "downloading",
+                  "trackedDownloadStatus": "ok", "trackedDownloadState": "downloading",
+                  "series": tvdb_only, "episode": {"seasonNumber": 1, "episodeNumber": 1}}]
+        missing = {"records": [dict(r, series=tvdb_only) if r["series"] is SHOW_B else r
+                               for r in SONARR_MISSING["records"]]}
+        with mock.patch.dict(SONARR_MISSING, missing):
+            out = self.activity(sonarr_queue=queue)
+        self.assertEqual([("series", 0, 1001)], [(d["media_type"], d["tmdb_id"], d.get("tvdb_id")) for d in out["downloads"]])
+        self.assertNotIn("Show B", [x["title"] for x in out["searching"]],
+                         "the show is downloading; it must not also be listed as searching")
+
     def test_admin_sees_who_asked(self):
         self.db.add(mdb.DownloadRequest(tmdb_id=1, media_type="movie", user_id=self.kid.id))
         self.db.commit()
@@ -357,8 +403,14 @@ class TestCommandWatch(_Base):
         activity._command_watch.update(ts=0, seen=None)
         self.commands = {"radarr": [], "sonarr": []}
 
+        self.down = set()   # apps whose command list can't be read
+        self.reads = []
+
         def get(url, headers=None, params=None, timeout=None):
             which = "radarr" if ":7878" in url else "sonarr"
+            self.reads.append(which)
+            if which in self.down:
+                raise activity.requests.ConnectionError(f"{which} unreachable")
             return _Resp(self.commands[which])
         p = mock.patch.object(activity.requests, "get", side_effect=get)
         p.start()
@@ -392,3 +444,58 @@ class TestCommandWatch(_Base):
         activity._watch_arr_searches(self.db)
         with mock.patch.object(activity.requests, "get", side_effect=AssertionError("polled")):
             activity._watch_arr_searches(self.db)
+
+    # #135: one unreachable app must not switch the watch off for the other.
+    def test_a_radarr_search_is_noticed_while_sonarr_is_unreachable(self):
+        self.poll()
+        self.down = {"sonarr"}
+        self.assertFalse(self.poll(), "Sonarr unknown, Radarr unchanged: no change")
+        self.commands["radarr"] = [{"id": 2, "name": "MoviesSearch", "status": "started"}]
+        self.assertTrue(self.poll(), "Radarr's new search is seen although Sonarr is down")
+
+    def test_a_sonarr_search_is_noticed_while_radarr_is_unreachable(self):
+        self.poll()
+        self.down = {"radarr"}
+        self.commands["sonarr"] = [{"id": 7, "name": "EpisodeSearch", "status": "started"}]
+        self.assertTrue(self.poll())
+
+    def test_unreachable_from_the_start_the_other_app_still_counts(self):
+        self.down = {"sonarr"}
+        self.assertFalse(self.poll(), "first reading of Radarr is only a baseline")
+        self.commands["radarr"] = [{"id": 2, "name": "MoviesSearch", "status": "queued"}]
+        self.assertTrue(self.poll())
+
+    def test_an_outage_is_not_a_change(self):
+        self.poll()
+        self.commands["sonarr"] = [{"id": 7, "name": "EpisodeSearch", "status": "started"}]
+        self.poll()
+        self.down = {"sonarr"}
+        self.assertFalse(self.poll(), "an unreadable list is not an empty one")
+        self.down = set()
+        self.assertFalse(self.poll(), "back with the same commands: nothing new")
+
+    def test_a_search_during_the_outage_is_seen_when_it_comes_back(self):
+        self.poll()
+        self.down = {"sonarr"}
+        self.poll()
+        self.commands["sonarr"] = [{"id": 8, "name": "SeriesSearch", "status": "completed"}]
+        self.down = set()
+        self.assertTrue(self.poll())
+
+    def test_both_unreachable_changes_nothing(self):
+        self.poll()
+        self.down = {"radarr", "sonarr"}
+        self.assertFalse(self.poll())
+
+    def test_an_app_removed_from_settings_is_forgotten(self):
+        self.poll()
+        mdb.set_setting(self.db, "sonarr_url", "")
+        self.assertFalse(self.poll())
+        self.assertNotIn("sonarr", activity._command_watch["seen"])
+
+    def test_a_watch_in_progress_is_not_run_twice(self):
+        activity._command_watch["ts"] = 0
+        with activity._command_watch_lock:
+            activity._watch_arr_searches(self.db)
+        self.assertEqual([], self.reads, "a second request while one is reading skips it")
+        self.assertEqual(0, activity._command_watch["ts"], "and does not use up the next turn")

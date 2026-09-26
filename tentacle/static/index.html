@@ -552,6 +552,7 @@ td.primary { color: var(--text); font-weight: 500; }
 .toast.success { border-color: rgba(74,222,128,0.3); }
 .toast.error { border-color: rgba(248,113,113,0.3); }
 .toast.info { border-color: rgba(96,165,250,0.3); }
+.toast.warning { border-color: rgba(251,191,36,0.3); }
 .toast.loading { border-color: rgba(96,165,250,0.3); }
 .toast-spinner { display:inline-block; width:14px; height:14px; border:2px solid var(--border2); border-top-color:var(--blue); border-radius:50%; animation:spin 0.7s linear infinite; vertical-align:middle; }
 
@@ -1226,6 +1227,8 @@ button, a, .lib-card, .coverage-card, .user-card, .cat-row, .live-group-row, .li
   background: var(--bg1); transition: border-color 0.12s;
 }
 .activity-card:hover { border-color: var(--border2); }
+.activity-card[data-open] { cursor: pointer; }
+.activity-card[data-open]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .activity-poster {
   width: 60px; min-width: 60px; aspect-ratio: 2/3;
   border-radius: 6px; overflow: hidden; background: var(--bg3);

@@ -262,7 +262,7 @@ function connectLibraryStream() {
     _libEventSource = null;
     // Reconnect after 5s if still on library page
     setTimeout(() => {
-      if (state.currentPage === 'library') connectLibraryStream();
+      if (state.currentPage === 'library' && !state.sessionExpired) connectLibraryStream();
     }, 5000);
   };
 }
@@ -342,7 +342,7 @@ let _dlPollActive = false;
 
 async function loadLibDownloads() {
   try {
-    const data = await api('/api/activity');
+    const data = await _fetchActivity();
     renderLibDownloads(data);
     // Start polling only if there are active downloads
     const hasActive = data.downloads && data.downloads.length > 0;
@@ -353,26 +353,121 @@ async function loadLibDownloads() {
       stopDownloadPolling();
     }
   } catch (e) {
-    // If endpoint not available, hide section silently
+    if (e && e.sessionExpired) return;
     const el = document.getElementById('lib-downloads');
+    // Gave up after POLL_STALE_MS, or the connection failed: say so and let the
+    // poller fill the panel in, instead of hiding it until the next visit.
+    if (e && (e.name === 'AbortError' || e.name === 'TypeError')) {
+      const body = document.getElementById('lib-dl-body');
+      const countEl = document.getElementById('lib-dl-count');
+      if (el) el.style.display = '';
+      if (countEl) countEl.textContent = '';
+      if (body) body.innerHTML = '<div class="dl-item" style="color:var(--text3)">Couldn\'t load downloads — retrying…</div>';
+      if (!_dlPollTimer && !state.sessionExpired) {
+        _dlPollActive = true;
+        _dlPollTimer = setInterval(pollLibDownloads, 5000);
+      }
+      return;
+    }
+    // Endpoint not available: hide the section silently
     if (el) el.style.display = 'none';
   }
 }
 
+// ── One request at a time, per poller ──
+// A slow Radarr/Sonarr can make one /api/activity answer take longer than the
+// poll interval, so a poller skips its tick while its last request is out.
+// api() has no timeout: a request still out after POLL_STALE_MS is given up on
+// and CANCELLED. Merely dropping its answer would leave the connection open,
+// and six open requests to one host (HTTP/1.1) block every other request the
+// page makes. Without AbortController (very old browsers) an abandoned request
+// can't be cancelled, so a poller keeps at most one of them.
+const POLL_STALE_MS = 90000;
+const _canAbort = typeof AbortController === 'function';
+// Monotonic where available: a wall-clock jump (NTP fixing the time after
+// boot) must not stall or rush the pollers.
+function _pollClock() {
+  return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+}
+// GET /api/activity. Never through the HTTP cache: while a request for a URL is
+// out, Chromium makes later identical GETs wait behind it (the cache lock), so
+// one stuck request stalled every poll after it. A call without its own signal
+// (a one-off refresh) gets one that gives up after POLL_STALE_MS.
+function _fetchActivity(signal) {
+  let timer = null;
+  if (!signal && _canAbort) {
+    const ctrl = new AbortController();
+    timer = setTimeout(() => ctrl.abort(), POLL_STALE_MS);
+    signal = ctrl.signal;
+  }
+  const opts = signal ? { signal, cache: 'no-store' } : { cache: 'no-store' };
+  return api('/api/activity', opts).finally(() => { if (timer) clearTimeout(timer); });
+}
+function _newPoller() { return { since: 0, token: 0, ctrl: null, current: null, abandoned: 0 }; }
+// A new request for this tick ({ req, signal }), or null to skip the tick.
+function _pollStart(p) {
+  if (p.current) {
+    if (_pollClock() - p.since < POLL_STALE_MS || !_pollAbandon(p)) return null;
+  }
+  const ctrl = _canAbort ? new AbortController() : null;
+  const req = { tok: ++p.token, abandoned: false };
+  p.current = req; p.ctrl = ctrl; p.since = _pollClock();
+  return { req, signal: ctrl ? ctrl.signal : undefined };
+}
+// Give up on the outstanding request. False when it can't be (no
+// AbortController and one abandoned request is already out).
+function _pollAbandon(p) {
+  if (!p.current) return true;
+  if (p.ctrl) p.ctrl.abort();
+  else if (p.abandoned >= 1) return false;
+  else { p.abandoned++; p.current.abandoned = true; }
+  p.current = null; p.ctrl = null; p.since = 0;
+  return true;
+}
+// A request finished (answer, error or abort). True when its answer is still wanted.
+function _pollEnd(p, req) {
+  if (req.abandoned) { p.abandoned--; return false; }
+  if (p.current === req) { p.current = null; p.ctrl = null; p.since = 0; }
+  return req.tok === p.token;
+}
+// Stop: an answer still on its way belongs to the stopped poller.
+function _pollStop(p) {
+  p.token++;
+  _pollAbandon(p);   // if it can't be abandoned it keeps the slot; its answer is ignored
+}
+
+const _dlPoller = _newPoller();
+let _dlPollErrors = 0;    // failed polls in a row
+let _dlPollRetryAt = 0;   // _pollClock() before which a tick is skipped after an error
 async function pollLibDownloads() {
   if (state.currentPage !== 'library') { stopDownloadPolling(); return; }
+  if (_dlPollErrors && _pollClock() < _dlPollRetryAt) return;
+  const start = _pollStart(_dlPoller);
+  if (!start) return;
+  let data = null, failed = false;
   try {
-    const data = await api('/api/activity');
-    renderLibDownloads(data);
-    if (!data.downloads || data.downloads.length === 0) {
-      stopDownloadPolling();
-    }
-  } catch (e) { stopDownloadPolling(); }
+    data = await _fetchActivity(start.signal);
+  } catch (e) { failed = true; if (e && e.sessionExpired) { stopDownloadPolling(); return; } }
+  if (!_pollEnd(_dlPoller, start.req)) return;   // given up on, or polling stopped
+  if (failed) {
+    // A backend restart or a dropped connection: keep polling, backing off to
+    // one try a minute, instead of freezing the panel until the next visit.
+    _dlPollErrors++;
+    _dlPollRetryAt = _pollClock() + Math.min(5000 * 2 ** (_dlPollErrors - 1), 60000);
+    return;
+  }
+  _dlPollErrors = 0;
+  renderLibDownloads(data);
+  if (!data.downloads || data.downloads.length === 0) {
+    stopDownloadPolling();
+  }
 }
 
 function stopDownloadPolling() {
   if (_dlPollTimer) { clearInterval(_dlPollTimer); _dlPollTimer = null; }
   _dlPollActive = false;
+  _dlPollErrors = 0;
+  _pollStop(_dlPoller);
 }
 
 function renderLibDownloads(data) {
@@ -820,7 +915,7 @@ function renderLibCard(item) {
 
   // Normal in-library card
   const poster = item.poster_path
-    ? `<img src="https://image.tmdb.org/t/p/w185${item.poster_path}" loading="lazy" onerror="this.parentElement.innerHTML='<div class=\\'lib-card-poster-placeholder\\'>◫</div>'">`
+    ? `<img src="https://image.tmdb.org/t/p/w185${item.poster_path}" loading="lazy" onerror="this.outerHTML='<div class=\\'lib-card-poster-placeholder\\'>◫</div>'">`
     : `<div class="lib-card-poster-placeholder">◫</div>`;
 
   let badges = '';
@@ -846,6 +941,19 @@ let _addArrTvdbId = null;
 let _addArrMediaType = 'movie';
 let _epPickerSeasons = [];  // cached season list for current series
 let _epPickerLoaded = {};   // season_number -> episodes array
+// Add, Manage Episodes and Download More share one modal and one picker. Each
+// opening clears everything the picker knows about the last title and takes a
+// new token; an answer that arrives after the modal was opened again belongs to
+// the earlier title and is dropped.
+let _epPickerToken = 0;
+function _resetEpisodePicker() {
+  _epPickerSeasons = [];
+  _epPickerLoaded = {};
+  _vodEpisodes = {};
+  _dlEpisodes = {};
+  _unairedPerSeason = {};
+  return ++_epPickerToken;
+}
 
 // Helper: resolve poster/backdrop URLs (TVDB sends full URLs, TMDB sends relative paths)
 function _imgUrl(path, size) {
@@ -860,6 +968,7 @@ async function showAddToRadarrModal(tmdbId, title, year, posterPath) {
 
 async function showAddToArrModal(tmdbId, title, year, posterPath, mediaType, tvdbId) {
   _resetManageMode(); // ensure modal is in add mode
+  const tok = _resetEpisodePicker();
   _addArrTmdbId = tmdbId;
   _addArrTvdbId = tvdbId || 0;
   _addArrMediaType = mediaType || 'movie';
@@ -883,8 +992,10 @@ async function showAddToArrModal(tmdbId, title, year, posterPath, mediaType, tvd
   try {
     const endpoint = isSeries ? '/api/lists/sonarr-profiles' : '/api/lists/radarr-profiles';
     const profiles = await api(endpoint);
+    if (tok !== _epPickerToken) return;
     select.innerHTML = profiles.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
   } catch (e) {
+    if (tok !== _epPickerToken) return;
     select.innerHTML = '<option value="">Failed to load profiles</option>';
   }
 
@@ -893,8 +1004,6 @@ async function showAddToArrModal(tmdbId, title, year, posterPath, mediaType, tvd
   if (monitorWrap) monitorWrap.style.display = 'none';
 
   // Reset episode picker state
-  _epPickerSeasons = [];
-  _epPickerLoaded = {};
   document.getElementById('episode-picker').style.display = 'none';
   document.getElementById('episode-picker-seasons').innerHTML = '';
   document.getElementById('add-sonarr-monitor').value = 'all';
@@ -976,6 +1085,7 @@ async function onMonitorPresetChange(val) {
   picker.style.display = 'block';
   modalBox.classList.add('ep-expanded');
   if (_epPickerSeasons.length > 0) return; // already loaded
+  const tok = _epPickerToken;
   const loading = document.getElementById('episode-picker-loading');
   loading.style.display = 'block';
   try {
@@ -984,9 +1094,11 @@ async function onMonitorPresetChange(val) {
       ? `/api/discover/seasons-tvdb/${_addArrTvdbId}`
       : `/api/discover/seasons/${_addArrTmdbId}`;
     const data = await api(seasonsUrl);
+    if (tok !== _epPickerToken) return;
     _epPickerSeasons = (data.seasons || []).filter(s => s.season_number > 0);
     _renderSeasons();
   } catch (e) {
+    if (tok !== _epPickerToken) return;
     document.getElementById('episode-picker-seasons').innerHTML = '<div style="padding:12px;color:var(--text3)">Failed to load seasons</div>';
   }
   loading.style.display = 'none';
@@ -1020,6 +1132,7 @@ async function toggleSeasonAccordion(seasonNum) {
   list.classList.add('open');
   arrow.classList.add('open');
   if (!_epPickerLoaded[seasonNum]) {
+    const tok = _epPickerToken;
     const tmdbId = _downloadMoreTmdbId || _addArrTmdbId;
     const isTvdbOnly = !tmdbId && _addArrTvdbId;
     list.innerHTML = '<div style="padding:8px 28px;color:var(--text3);font-size:12px">Loading...</div>';
@@ -1028,9 +1141,11 @@ async function toggleSeasonAccordion(seasonNum) {
         ? `/api/discover/season-tvdb/${_addArrTvdbId}/${seasonNum}`
         : `/api/discover/season/${tmdbId}/${seasonNum}`;
       const data = await api(epUrl);
+      if (tok !== _epPickerToken) return;
       _epPickerLoaded[seasonNum] = data.episodes || [];
       _renderEpisodes(seasonNum);
     } catch (e) {
+      if (tok !== _epPickerToken) return;
       list.innerHTML = '<div style="padding:8px 28px;color:var(--text3);font-size:12px">Failed to load</div>';
     }
   }
@@ -1152,8 +1267,7 @@ let _manageTmdbId = null;
 
 async function showManageEpisodesModal(tmdbId, title, year, posterPath) {
   _manageTmdbId = tmdbId;
-  _epPickerSeasons = [];
-  _epPickerLoaded = {};
+  const tok = _resetEpisodePicker();
 
   const modalBox = document.getElementById('add-arr-modal-box');
   modalBox.className = 'modal modal-arr ep-expanded';
@@ -1189,6 +1303,7 @@ async function showManageEpisodesModal(tmdbId, title, year, posterPath) {
   // Load episodes from Sonarr
   try {
     const data = await api(`/api/discover/sonarr-episodes/${tmdbId}`);
+    if (tok !== _epPickerToken) return;
     if (!data.in_sonarr) {
       container.innerHTML = '<div style="padding:12px;color:var(--text3)">Series not found in Sonarr</div>';
       loading.style.display = 'none';
@@ -1234,6 +1349,7 @@ async function showManageEpisodesModal(tmdbId, title, year, posterPath) {
       }).join('');
     }
   } catch (e) {
+    if (tok !== _epPickerToken) return;
     container.innerHTML = '<div style="padding:12px;color:var(--text3)">Failed to load episodes</div>';
   }
   loading.style.display = 'none';
@@ -1273,11 +1389,7 @@ let _unairedPerSeason = {};  // {season: count} unaired episodes from Sonarr
 
 async function showDownloadMoreModal(tmdbId, title, year, posterPath) {
   _downloadMoreTmdbId = tmdbId;
-  _vodEpisodes = {};
-  _dlEpisodes = {};
-  _unairedPerSeason = {};
-  _epPickerSeasons = [];
-  _epPickerLoaded = {};
+  const tok = _resetEpisodePicker();
 
   const modalBox = document.getElementById('add-arr-modal-box');
   modalBox.className = 'modal modal-arr ep-expanded';
@@ -1300,8 +1412,10 @@ async function showDownloadMoreModal(tmdbId, title, year, posterPath) {
   select.innerHTML = '<option value="">Loading...</option>';
   try {
     const profiles = await api('/api/lists/sonarr-profiles');
+    if (tok !== _epPickerToken) return;
     select.innerHTML = profiles.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
   } catch (e) {
+    if (tok !== _epPickerToken) return;
     select.innerHTML = '<option value="">Failed to load profiles</option>';
   }
 
@@ -1340,6 +1454,7 @@ async function showDownloadMoreModal(tmdbId, title, year, posterPath) {
       api(`/api/discover/vod-episodes/${tmdbId}`),
       api(`/api/discover/sonarr-episodes/${tmdbId}`).catch(() => ({ in_sonarr: false })),
     ]);
+    if (tok !== _epPickerToken) return;
 
     if (vodData.has_episodes) {
       _vodEpisodes = vodData.episodes;
@@ -1369,6 +1484,7 @@ async function showDownloadMoreModal(tmdbId, title, year, posterPath) {
     _epPickerSeasons = (seasonsData.seasons || []).filter(s => s.season_number > 0);
     _renderSeasonsWithVod();
   } catch (e) {
+    if (tok !== _epPickerToken) return;
     container.innerHTML = '<div style="padding:12px;color:var(--text3)">Failed to load seasons</div>';
   }
   loading.style.display = 'none';
@@ -1551,13 +1667,20 @@ function filterByTag(tag) {
   loadLibrary();
 }
 
+// The detail modal is shared by every title. Each opening takes a number; an
+// answer for an earlier opening (a slow one, then another title clicked) is
+// dropped instead of replacing the title on screen.
+let _detailSeq = 0;
+
 async function showMediaDetail(tmdbId, mediaType) {
+  const seq = ++_detailSeq;
   showModal('modal-media-detail');
   document.getElementById('detail-title').textContent = 'Loading...';
   document.getElementById('detail-body').innerHTML = '<div class="loading-state"><div class="spinner"></div></div>';
 
   try {
     const data = await api(`/api/library/item/${mediaType}/${tmdbId}`);
+    if (seq !== _detailSeq) return;
     document.getElementById('detail-title').textContent = data.title;
     const isSeries = mediaType === 'series';
     document.getElementById('detail-body').innerHTML = `
@@ -1597,10 +1720,12 @@ async function showMediaDetail(tmdbId, mediaType) {
 
     // Fetch trailer URL from TMDB in background
     api(`/api/library/tmdb/${mediaType}/${tmdbId}`).then(tmdbData => {
+      if (seq !== _detailSeq) return;
       const slot = document.getElementById('detail-trailer-slot');
       if (slot && tmdbData.trailer_url) slot.innerHTML = _trailerBtn(tmdbData.trailer_url);
     }).catch(() => {});
   } catch (e) {
+    if (seq !== _detailSeq) return;
     document.getElementById('detail-body').innerHTML = '<div class="empty-state"><p>Failed to load details</p></div>';
   }
 }
@@ -1834,6 +1959,7 @@ let _detailEpState = {}; // { vodEps, dlEps, tmdbId, loaded: {sn: true} }
 async function _loadSeriesEpisodes(tmdbId, seriesData) {
   const container = document.getElementById('detail-episodes');
   if (!container) return;
+  const seq = _detailSeq;
 
   try {
     const [seasonsData, vodData, sonarrData] = await Promise.all([
@@ -1841,6 +1967,8 @@ async function _loadSeriesEpisodes(tmdbId, seriesData) {
       api(`/api/discover/vod-episodes/${tmdbId}`),
       api(`/api/discover/sonarr-episodes/${tmdbId}`).catch(() => ({ in_sonarr: false })),
     ]);
+    // Another title's detail since: its episode state must not become this one's.
+    if (seq !== _detailSeq) return;
 
     const seasons = (seasonsData.seasons || []).filter(s => s.season_number > 0);
     const vodEps = vodData.episodes || {};
@@ -1943,6 +2071,7 @@ async function _loadSeriesEpisodes(tmdbId, seriesData) {
 
     container.innerHTML = html;
   } catch (e) {
+    if (seq !== _detailSeq) return;
     container.innerHTML = '<div style="font-size:13px;color:var(--text3);padding:8px 0">Could not load episode data</div>';
   }
 }
@@ -1956,10 +2085,12 @@ async function detailToggleSeason(sn) {
 
   const list = document.getElementById(`detail-ep-list-${sn}`);
   if (_detailEpState.loaded[sn]) return; // already loaded
+  const st = _detailEpState;
 
   list.innerHTML = '<div style="padding:8px 12px;color:var(--text3);font-size:12px">Loading...</div>';
   try {
     const data = await api(`/api/discover/season/${_detailEpState.tmdbId}/${sn}`);
+    if (st !== _detailEpState || !list.isConnected) return;
     _detailEpState.loaded[sn] = true;
     const tmdbEps = data.episodes || [];
     const vodEps = _detailEpState.vodEps;
@@ -2024,12 +2155,14 @@ async function detailToggleSeason(sn) {
 }
 
 async function showCoverageDetail(tmdbId, mediaType, title, year, posterPath) {
+  const seq = ++_detailSeq;
   showModal('modal-media-detail');
   document.getElementById('detail-title').textContent = 'Loading...';
   document.getElementById('detail-body').innerHTML = '<div class="loading-state"><div class="spinner"></div></div>';
 
   try {
     const data = await api(`/api/library/item/${mediaType}/${tmdbId}`);
+    if (seq !== _detailSeq) return;
     document.getElementById('detail-title').textContent = data.title;
     document.getElementById('detail-body').innerHTML = `
       <div class="detail-layout" style="display:flex;gap:20px">
@@ -2050,9 +2183,11 @@ async function showCoverageDetail(tmdbId, mediaType, title, year, posterPath) {
         </div>
       </div>`;
   } catch {
+    if (seq !== _detailSeq) return;
     // Item not in library — fetch from TMDB for overview
     try {
       const data = await api(`/api/library/tmdb/${mediaType}/${tmdbId}`);
+      if (seq !== _detailSeq) return;
       const isSeries = mediaType === 'series';
       const arrLabel = isSeries ? 'Sonarr' : 'Radarr';
       document.getElementById('detail-title').textContent = data.title || title || 'Unknown';
@@ -2074,6 +2209,7 @@ async function showCoverageDetail(tmdbId, mediaType, title, year, posterPath) {
           </div>
         </div>`;
     } catch {
+      if (seq !== _detailSeq) return;
       document.getElementById('detail-title').textContent = title || 'Unknown';
       document.getElementById('detail-body').innerHTML = `
         <div class="detail-layout" style="display:flex;gap:20px">
@@ -2530,6 +2666,7 @@ async function pollResyncStatus() {
   try {
     s = await api('/api/smartlists/sync-status');
   } catch (e) {
+    if (e && e.sessionExpired) return;   // signing in reloads the page
     setTimeout(pollResyncStatus, 5000); // transient error — keep polling
     return;
   }
@@ -3164,6 +3301,7 @@ async function ytRefreshNow() {
 }
 
 let _ytPoll = null;   // the progress poll's interval handle, while an index runs
+function stopYouTubePolling() { if (_ytPoll) { clearInterval(_ytPoll); _ytPoll = null; } }
 
 function ytStartPolling() {
   if (_ytPoll) clearInterval(_ytPoll);
@@ -4458,7 +4596,12 @@ let _logAutoScroll = true;
 let _logEventSource = null;
 let _logLineCount = 0;
 
+function stopLogStream() {
+  if (_logEventSource) { _logEventSource.close(); _logEventSource = null; }
+}
+
 function initLogViewer() {
+  if (state.sessionExpired) return;
   if (_logEventSource) _logEventSource.close();
 
   const body = document.getElementById('log-body');
@@ -4609,8 +4752,21 @@ let _activityData = null;
 
 function startActivityPolling() {
   stopActivityPolling();
-  loadActivity();
-  _activityPollTimer = setInterval(loadActivity, 3000);
+  _pollActivity();
+  _activityPollTimer = setInterval(_pollActivity, 3000);
+}
+
+// The tab polls every 3 s, but with a slow Radarr/Sonarr one answer can take a
+// minute. Polls used to pile up behind it (a dozen requests in flight, which
+// also held the browser's connections every other page needs); now a poll is
+// skipped while the last one is out, and one out for POLL_STALE_MS is
+// cancelled and retried (see _pollStart). loadActivity() drops an answer older
+// than one already shown.
+const _activityPoller = _newPoller();
+function _pollActivity() {
+  const start = _pollStart(_activityPoller);
+  if (!start) return;
+  loadActivity(start.signal).finally(() => { _pollEnd(_activityPoller, start.req); });
 }
 
 function stopActivityPolling() {
@@ -4618,11 +4774,19 @@ function stopActivityPolling() {
     clearInterval(_activityPollTimer);
     _activityPollTimer = null;
   }
+  _pollStop(_activityPoller);
 }
 
-async function loadActivity() {
+// Answers can arrive out of order (a poll and a refresh after an action); an
+// older one must not replace a newer one already shown.
+let _activitySeq = 0;
+let _activityShownSeq = 0;
+async function loadActivity(signal) {
+  const seq = ++_activitySeq;
   try {
-    const data = await api('/api/activity');
+    const data = await _fetchActivity(signal);
+    if (seq < _activityShownSeq) return;
+    _activityShownSeq = seq;
     _activityData = data;
     // Always update badge count
     const count = (data.downloads || []).length + (data.searching || []).length + (data.unreleased || []).length;
@@ -4902,9 +5066,34 @@ function _activityWaited(iso) {
   return Math.floor(hrs / 24) + 'd';
 }
 
+// A card opens the title's detail, the same one Discover shows. Movies need a
+// TMDB id; a show without one opens by its TVDB id.
+function _actOpenAttrs(item) {
+  const tmdb = parseInt(item.tmdb_id) || 0, tvdb = parseInt(item.tvdb_id) || 0;
+  const type = item.media_type === 'series' ? 'series' : 'movie';
+  if (!tmdb && !(type === 'series' && tvdb)) return '';
+  return ` role="button" tabindex="0" data-open="${type}:${tmdb}:${tvdb}"`;
+}
+// One listener for the whole tab: it re-renders every 3 seconds. The card's
+// own buttons and links keep their clicks.
+function _activityCardOpen(e) {
+  if (e.type === 'keydown' && e.key !== 'Enter' && e.key !== ' ') return;
+  const card = e.target.closest('.activity-card[data-open]');
+  if (!card) return;
+  if (e.type === 'keydown' ? e.target !== card : e.target.closest('button, a, input, label')) return;
+  e.preventDefault();
+  const [type, tmdb, tvdb] = card.dataset.open.split(':');
+  showDiscoverDetail(+tmdb, type, undefined, undefined, undefined, undefined, +tvdb);
+}
+
 function renderActivity(data) {
   const content = document.getElementById('activity-content');
   if (!content) return;
+  if (!content._actOpen) {
+    content._actOpen = true;
+    content.addEventListener('click', _activityCardOpen);
+    content.addEventListener('keydown', _activityCardOpen);
+  }
   if (!data) data = _activityData;
   if (!data) { content.innerHTML = '<div class="activity-empty">Loading…</div>'; return; }
 
@@ -4937,7 +5126,7 @@ function renderActivity(data) {
       const qualityLabel = dl.quality ? escapeAttr(dl.quality) : '';
       const reqByLabel = dl.requested_by ? `<span class="activity-requested-by">${escapeAttr(dl.requested_by)}</span>` : '';
       const metaParts = [qualityLabel, sizeLabel].filter(Boolean).join(' · ');
-      return `<div class="activity-card">
+      return `<div class="activity-card"${_actOpenAttrs(dl)}>
         <div class="activity-poster">${poster}</div>
         <div class="activity-info">
           <div class="activity-title">${escapeAttr(dl.title)}${epLabel}</div>
@@ -4970,7 +5159,7 @@ function renderActivity(data) {
         : (disk ? 'Delete show' : 'Remove');
       const removeTitle = disk ? `Delete the whole show from ${arr}, including ${disk} downloaded episode${disk === 1 ? '' : 's'}`
         : `Remove from ${arr}, folder included`;
-      return `<div class="activity-card">
+      return `<div class="activity-card"${_actOpenAttrs(item)}>
         <div class="activity-poster">${poster}</div>
         <div class="activity-info">
           <div class="activity-title">${escapeAttr(item.title)}${item.episode ? ' · ' + escapeAttr(item.episode) : ''}</div>
@@ -4998,7 +5187,7 @@ function renderActivity(data) {
     html += recent.map(item => {
       const poster = _activityPoster(item.poster_path);
       const hrs = item.hours_remaining != null ? `${item.hours_remaining}h left` : '';
-      return `<div class="activity-card">
+      return `<div class="activity-card"${_actOpenAttrs(item)}>
         <div class="activity-poster">${poster}</div>
         <div class="activity-info">
           <div class="activity-title">${escapeAttr(item.title)}${item.episode ? ' · ' + escapeAttr(item.episode) : ''}</div>
@@ -5013,7 +5202,7 @@ function renderActivity(data) {
   const coming = data.coming_up || [];
   if (coming.length > 0) {
     html += '<div class="activity-section-title">Coming up this week</div><div class="activity-grid">';
-    html += coming.map(item => `<div class="activity-card">
+    html += coming.map(item => `<div class="activity-card"${_actOpenAttrs(item)}>
         <div class="activity-poster">${_activityPoster(item.poster_path)}</div>
         <div class="activity-info">
           <div class="activity-title">${escapeAttr(item.title)} · ${escapeAttr(item.episode)}</div>
@@ -5035,7 +5224,7 @@ function renderActivity(data) {
         const diff = Math.ceil((rd - now) / 86400000);
         daysUntil = diff <= 0 ? 'Releasing soon' : diff === 1 ? 'Tomorrow' : diff + ' days';
       }
-      return `<div class="activity-card">
+      return `<div class="activity-card"${_actOpenAttrs(item)}>
         <div class="activity-poster">${poster}</div>
         <div class="activity-info">
           <div class="activity-title">${escapeAttr(item.title)}</div>
@@ -5277,7 +5466,7 @@ function renderDiscoverGrid(items) {
   grid.innerHTML = items.map(item => {
     const posterSrc = _imgUrl(item.poster_path, 'w185');
     const poster = posterSrc
-      ? `<img src="${posterSrc}" loading="lazy" onerror="this.parentElement.innerHTML='<div class=\\'lib-card-poster-placeholder\\'>◫</div>'">`
+      ? `<img src="${posterSrc}" loading="lazy" onerror="this.outerHTML='<div class=\\'lib-card-poster-placeholder\\'>◫</div>'">`
       : `<div class="lib-card-poster-placeholder">◫</div>`;
     const tvdbId = item.tvdb_id || 0;
     const tmdbId = item.tmdb_id || 0;
@@ -5319,6 +5508,7 @@ function renderDiscoverGrid(items) {
 }
 
 async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, inLibrary, tvdbId) {
+  const seq = ++_detailSeq;
   showModal('modal-media-detail');
   document.getElementById('detail-title').textContent = 'Loading...';
   document.getElementById('detail-body').innerHTML = '<div class="loading-state"><div class="spinner"></div></div>';
@@ -5329,6 +5519,7 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
       ? `/api/discover/detail-tvdb/${tvdbId}`
       : `/api/discover/detail/${mediaType}/${tmdbId}`;
     const data = await api(detailUrl);
+    if (seq !== _detailSeq) return;
     const isSeries = mediaType === 'series';
     const arrLabel = isSeries ? 'Sonarr' : 'Radarr';
     const detailTvdbId = data.tvdb_id || tvdbId || 0;
@@ -5382,6 +5573,7 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
         </div>
       </div>`;
   } catch {
+    if (seq !== _detailSeq) return;
     document.getElementById('detail-title').textContent = title || 'Unknown';
     document.getElementById('detail-body').innerHTML = `
       <div class="detail-layout" style="display:flex;gap:20px">
@@ -6012,6 +6204,11 @@ async function liveSyncEpg() {
   } catch (e) {
     toast(`EPG sync failed: ${e.message}`, 'error');
   }
+}
+
+function stopLivePolling() {
+  if (liveState.epgPollTimer) { clearInterval(liveState.epgPollTimer); liveState.epgPollTimer = null; }
+  if (liveState.syncPollTimer) { clearInterval(liveState.syncPollTimer); liveState.syncPollTimer = null; }
 }
 
 function startEpgPoll() {
@@ -6687,7 +6884,7 @@ async function loadHealthDownloads() {
   const el = document.getElementById('health-downloads');
   if (!el) return;
   try {
-    const data = await api('/api/activity');
+    const data = await _fetchActivity();
     const downloads = data.downloads || [];
     if (!downloads.length) {
       el.innerHTML = '<div class="empty-state"><p>No active downloads</p></div>';
