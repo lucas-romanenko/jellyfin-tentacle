@@ -283,6 +283,13 @@ class YouTubeChannel(Base):
     live_enabled = Column(Boolean, default=False)
     channel_number = Column(String, nullable=True)
     last_checked = Column(DateTime, nullable=True)
+    # The last time the channel's tabs were listed in full. A scheduled check
+    # reads the channel's feed first and lists the tabs only when something is
+    # new, or when this is a day old (services.youtube.indexer._light_check).
+    last_full_check = Column(DateTime, nullable=True)
+    # The ids the feed showed when the tabs were last listed: already dealt
+    # with, so the next feed check reacts only to ids beyond these.
+    feed_ids = Column(JSON, nullable=True)
     last_error = Column(String, nullable=True)
     error_count = Column(Integer, default=0)
     # Why videos were passed over on the last index, as {reason: count}. Skips
@@ -323,6 +330,12 @@ class YouTubeVideo(Base):
     first_seen = Column(DateTime, default=datetime.utcnow)
     last_seen = Column(DateTime, default=datetime.utcnow)
     removed_at = Column(DateTime, nullable=True)
+    # When to read this video's details again, and how many reads failed in a
+    # row: a video that could not be read (members-only, private, a hiccup) is
+    # retried later, not on every check; a live or upcoming stream the listing no
+    # longer shows is re-read at most this often.
+    next_check_at = Column(DateTime, nullable=True)
+    check_failures = Column(Integer, default=0)
     # Why a video was passed over, recorded on the row so it is never detailed
     # again. Details are rate-limited to one every few seconds, and without this
     # a channel's excluded back catalogue was re-fetched on every single
@@ -1073,6 +1086,13 @@ def seed_defaults(db):
         "youtube_enabled": "false",
         "youtube_base_url": "",          # what goes in .strm; must be reachable BY Jellyfin
         "youtube_index_interval_minutes": "60",
+        # Scheduled checks for new uploads and live streams (on by default: the
+        # feature is about the latest uploads). Off: only "Refresh now".
+        "youtube_background_checks": "true",
+        # Optional: a YouTube Data API key (metadata from Google's API instead of
+        # YouTube's pages) and an HTTP proxy for YouTube traffic only.
+        "youtube_api_key": "",
+        "youtube_proxy": "",
         "tmdb_bearer_token": "",
         "tmdb_api_key": "",
         "radarr_url": "",

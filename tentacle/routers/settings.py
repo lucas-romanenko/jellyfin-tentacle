@@ -55,7 +55,7 @@ def get_settings(db: Session = Depends(get_db)):
     settings = db.query(Setting).all()
     result = {s.key: s.value for s in settings}
     # Mask sensitive values
-    for key in ["tmdb_bearer_token", "tmdb_api_key", "radarr_api_key", "sonarr_api_key", "jellyfin_api_key", "trakt_client_id", "mdblist_api_key", "vod_token_secret"]:
+    for key in ["tmdb_bearer_token", "tmdb_api_key", "radarr_api_key", "sonarr_api_key", "jellyfin_api_key", "trakt_client_id", "mdblist_api_key", "vod_token_secret", "youtube_api_key"]:
         if result.get(key):
             result[key] = result[key][:8] + "..." + result[key][-4:]
     return result
@@ -76,7 +76,7 @@ def get_settings_raw(db: Session = Depends(get_db)):
 @router.post("")
 def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
     from models.database import Setting
-    sensitive_keys = {"tmdb_bearer_token", "tmdb_api_key", "radarr_api_key", "sonarr_api_key", "jellyfin_api_key", "trakt_client_id", "mdblist_api_key", "vod_token_secret"}
+    sensitive_keys = {"tmdb_bearer_token", "tmdb_api_key", "radarr_api_key", "sonarr_api_key", "jellyfin_api_key", "trakt_client_id", "mdblist_api_key", "vod_token_secret", "youtube_api_key"}
     from models.database import NON_EMPTY_DEFAULTS
     for key, value in body.settings.items():
         # Don't overwrite sensitive keys if they look masked

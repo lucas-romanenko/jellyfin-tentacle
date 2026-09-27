@@ -2,7 +2,8 @@
 
 Xtream providers put the account's username and password in the stream path
 (/live/<user>/<pass>/<id>.ts) and in playlist/guide query strings, and the
-Jellyfin plugin and Android TV app authenticate with ?api_key=<access token>.
+Jellyfin plugin and Android TV app authenticate with ?api_key=<access token>,
+and the YouTube Data API with ?key=<API key>.
 Those URLs reach the log from Tentacle's own messages, from httpx's request
 logging and from uvicorn's access log. Redacting at record creation covers all
 of them, and every handler (console, the dashboard's live log) at once.
@@ -14,7 +15,7 @@ import traceback
 _XTREAM_PATH = re.compile(
     r"(/(?:live|movie|series|timeshift)/)[^/\s?#\"']+/[^/\s?#\"']+/", re.IGNORECASE)
 _SECRET_PARAM = re.compile(
-    r"((?:^|[?&;\s])(?:api_key|apikey|username|password|passwd|pwd|token|access_token|secret|x-emby-token)=)"
+    r"((?:^|[?&;\s])(?:api_key|apikey|key|username|password|passwd|pwd|token|access_token|secret|x-emby-token)=)"
     r"[^&\s\"']+", re.IGNORECASE)
 
 _MARK = "_tentacle_redacting"

@@ -1726,6 +1726,33 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
           </details>
         </div>
 
+        <!-- How Tentacle talks to YouTube. The defaults are safe for everyone:
+             a light, randomly timed check per channel and a pause after any
+             bot check. Everything here is optional. -->
+        <div class="card" id="yt-traffic-card" style="margin-bottom:16px">
+          <details>
+            <summary style="cursor:pointer;padding:12px 16px;font-size:13px;color:var(--text2)">Advanced: how Tentacle talks to YouTube <span id="yt-traffic-summary" style="color:var(--text3)"></span></summary>
+            <div class="card-body" style="padding-top:0;display:grid;gap:14px">
+              <label style="font-size:13px;display:flex;gap:8px;align-items:flex-start"><input type="checkbox" id="yt-bg-checks" style="margin-top:3px"> <span>Check channels for new uploads and live streams in the background <span style="color:var(--text3)">&mdash; off: only when you press Refresh</span></span></label>
+              <div>
+                <label class="form-label" for="yt-interval">Check about every (minutes) <span style="font-weight:400;color:var(--text3)">&mdash; at least 30. Each check is one small request per channel, at random times around this.</span></label>
+                <input type="number" id="yt-interval" class="form-input" min="30" max="1440" step="5" style="max-width:140px">
+              </div>
+              <div>
+                <label class="form-label" for="yt-api-key">YouTube Data API key <span style="font-weight:400;color:var(--text3)">&mdash; optional. With one, new uploads, video details and live status come from Google&rsquo;s official API instead of YouTube&rsquo;s pages. Free from the Google Cloud console.</span></label>
+                <input type="text" id="yt-api-key" class="form-input" placeholder="Not set" autocomplete="off" spellcheck="false">
+                <div id="yt-api-status" style="font-size:12px;margin-top:4px;color:var(--text3)"></div>
+              </div>
+              <div>
+                <label class="form-label" for="yt-proxy">Proxy for YouTube traffic <span style="font-weight:400;color:var(--text3)">&mdash; optional, for example <code>http://gluetun:8888</code> to send YouTube through a VPN. Watching YouTube videos then goes through it too.</span></label>
+                <input type="text" id="yt-proxy" class="form-input" placeholder="None" autocomplete="off" spellcheck="false">
+              </div>
+              <div id="yt-traffic-status" style="font-size:12px;color:var(--text3)"></div>
+              <div><button class="btn btn-secondary" onclick="ytSaveTraffic()">Save</button></div>
+            </div>
+          </details>
+        </div>
+
         <div class="card" id="yt-add-card" style="margin-bottom:16px">
           <div class="card-header"><h3>Add a channel</h3></div>
           <div class="card-body">

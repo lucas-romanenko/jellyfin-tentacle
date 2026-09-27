@@ -410,6 +410,8 @@ class TestTrackSelection(unittest.TestCase):
 
     def _pick(self, max_height):
         from services.youtube import resolver
+        # Each pick reads these formats afresh, not an earlier test's tracks.
+        resolver.forget_tracks("v9LArDyyNxw")
         with mock.patch.object(resolver.client, "extract",
                                return_value={"formats": self.FORMATS}):
             return resolver.pick_tracks("v9LArDyyNxw", max_height)
@@ -439,6 +441,7 @@ class TestTrackSelection(unittest.TestCase):
         muxed = [{"format_id": "18", "height": 360, "vcodec": "avc1", "acodec": "mp4a",
                   "protocol": "m3u8_native", "url": "https://x/muxed.m3u8"}]
         with mock.patch.object(resolver.client, "extract", return_value={"formats": muxed}):
+            resolver.forget_tracks("x")
             v, a, _ = resolver.pick_tracks("x", 1080)
         self.assertEqual(v, "https://x/muxed.m3u8")
         self.assertIsNone(a)
@@ -448,6 +451,7 @@ class TestTrackSelection(unittest.TestCase):
         from services.youtube.errors import YouTubeError
         with mock.patch.object(resolver.client, "extract", return_value={"formats": []}):
             with self.assertRaises(YouTubeError):
+                resolver.forget_tracks("x")
                 resolver.pick_tracks("x", 1080)
 
 
@@ -1057,6 +1061,8 @@ class TestArtwork(unittest.TestCase):
             return b"\xff\xd8\xff" + b"j" * 2000
         self._real = library._download
         library._download = _fake
+        # An earlier test's failed fetch must not hold this one back.
+        library._artwork_retry_at.clear()
 
     def tearDown(self):
         library._download = self._real

@@ -13,7 +13,7 @@ import os
 import logging
 import re
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from models.database import create_tables, SessionLocal, seed_defaults, Setting, Provider, SyncRun
 from routers import settings, providers, sync as sync_router, library, duplicates, lists as lists_router, widget, radarr as radarr_router, sonarr as sonarr_router, tags as tags_router, collections as collections_router, smartlists as smartlists_router, discover as discover_router, livetv as livetv_router, auth as auth_router, activity as activity_router, notifications as notifications_router, health as health_router, youtube as youtube_router
@@ -467,6 +467,45 @@ def get_schedule_info() -> dict:
     }
 
 
+def reschedule_youtube_index() -> bool:
+    """(Re)schedule the YouTube check from its settings. Safe at runtime: a
+    settings save calls it, so a change takes effect without a restart.
+
+    Never at a fixed beat: the interval carries random jitter, and the first run
+    lands at a random point of the first interval rather than at startup plus the
+    interval. Removed entirely when background checks are off.
+    """
+    from services.youtube import traffic as yt_traffic
+    from services.youtube.sync import run_youtube_sync
+    from models.database import get_setting
+    import random
+    db = SessionLocal()
+    try:
+        enabled = get_setting(db, "youtube_background_checks", "true") != "false"
+        minutes = yt_traffic.interval_minutes(
+            get_setting(db, "youtube_index_interval_minutes", str(yt_traffic.DEFAULT_INTERVAL_MINUTES)))
+    finally:
+        db.close()
+    if not enabled:
+        try:
+            scheduler.remove_job("youtube_index")
+        except Exception:
+            pass
+        logger.info("YouTube background checks are off: channels refresh only on request")
+        return False
+    first = datetime.now() + timedelta(seconds=random.uniform(5 * 60, minutes * 60))
+    scheduler.add_job(
+        run_youtube_sync,
+        IntervalTrigger(minutes=minutes, jitter=int(minutes * 60 * 0.2), start_date=first),
+        id="youtube_index",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    logger.info(f"YouTube channel checks scheduled: about every {minutes} min (±20%), first at {first:%H:%M}")
+    return True
+
+
 def setup_scheduler(db):
     """Setup cron scheduler from settings"""
     reschedule_main_sync()
@@ -528,29 +567,19 @@ def setup_scheduler(db):
     )
     logger.info("Stream health sweep scheduled: daily at 04:30")
 
-    # YouTube source: index enabled channels and write their .strm/NFO files.
+    # YouTube source: check enabled channels for new uploads and live streams.
     # The job checks the youtube_enabled setting itself, so the schedule can
     # stay in place whether or not the feature is turned on.
-    from services.youtube.sync import run_youtube_sync
-    yt_interval = 60
-    try:
-        from models.database import get_setting as _get_setting
-        db_ = SessionLocal()
-        try:
-            yt_interval = int(_get_setting(db_, "youtube_index_interval_minutes", "60") or "60")
-        finally:
-            db_.close()
-    except Exception:
-        pass
+    reschedule_youtube_index()
+    from services.youtube import traffic as _yt_traffic
     scheduler.add_job(
-        run_youtube_sync,
-        IntervalTrigger(minutes=max(15, yt_interval)),
-        id="youtube_index",
+        _yt_traffic.hourly_report,
+        IntervalTrigger(hours=1),
+        id="youtube_traffic_report",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
     )
-    logger.info(f"YouTube channel indexing scheduled: every {max(15, yt_interval)} min")
 
 logging.basicConfig(level=logging.INFO)
 from services.log_redaction import install as _install_log_redaction

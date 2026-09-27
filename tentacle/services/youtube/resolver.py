@@ -10,18 +10,33 @@ jellyfin-ffmpeg 7.1.3 cannot seek HLS whose segments are fMP4 (it emits
 "Invalid NAL unit size" and produces corrupt output). Verified against real
 YouTube: the visionos master carries no #EXT-X-MAP and ends with #EXT-X-ENDLIST.
 """
+import json
 import logging
+import os
+import re
 import threading
 import time
+from pathlib import Path
 from typing import Optional
 
-from services.youtube import client
-from services.youtube.errors import YouTubeBlocked, YouTubeError, YouTubeUnavailable
+from services.youtube import client, traffic
+from services.youtube.errors import VideoUnavailable, YouTubeBlocked, YouTubeError, YouTubeUnavailable
 
 logger = logging.getLogger(__name__)
 
-# Google's URLs last ~6h; re-resolve comfortably inside that.
+# Google's URLs last ~6h; re-resolve comfortably inside that. Used when the URL
+# does not say when it expires.
 CACHE_TTL_SECONDS = 4 * 3600
+# When it does (…/expire/<epoch>/…), a resolve is kept until this long before
+# that, and never longer than MAX_CACHE_SECONDS. Re-resolving every video after a
+# fixed 4 h, and again after every restart, was most of what Jellyfin's probes
+# cost: each one is a YouTube page load plus a manifest.
+EXPIRY_MARGIN_SECONDS = 30 * 60
+MAX_CACHE_SECONDS = 6 * 3600
+# A live stream's tracks are reused for this long across tunes.
+LIVE_TRACKS_TTL_SECONDS = 20 * 60
+
+_EXPIRE_RE = re.compile(r"(?:/expire/|[?&]expire=)(\d{9,11})")
 
 _cache: dict = {}
 _cache_lock = threading.Lock()
@@ -41,6 +56,25 @@ FAILURE_BACKOFF_START = 10 * 60
 FAILURE_BACKOFF_MAX = 6 * 3600
 TRANSIENT_BACKOFF = 60
 _failures: dict = {}  # video_id -> (retry_at, consecutive_failures, message)
+# Consecutive "this video can't be played" failures (private, members-only,
+# removed, age-restricted): the indexer retires a library video after two.
+_unplayable: dict = {}
+_tracks: dict = {}    # (video_id, max_height) -> (expires_at, tracks)
+_persist_loaded = False
+
+
+def url_expiry(url: str) -> Optional[float]:
+    """When Google says this URL stops working (epoch seconds), if it says."""
+    m = _EXPIRE_RE.search(url or "")
+    return float(m.group(1)) if m else None
+
+
+def _expires_at(url: str) -> float:
+    now = time.time()
+    expire = url_expiry(url)
+    if not expire:
+        return now + CACHE_TTL_SECONDS
+    return max(now + 60, min(expire - EXPIRY_MARGIN_SECONDS, now + MAX_CACHE_SECONDS))
 
 
 class ResolveBackoff(YouTubeError):
@@ -52,14 +86,18 @@ class ResolveBackoff(YouTubeError):
 
 
 class ResolvedVideo:
-    __slots__ = ("video_id", "master_url", "headers", "expires_at", "duration")
+    __slots__ = ("video_id", "master_url", "headers", "expires_at", "duration", "master_text")
 
-    def __init__(self, video_id, master_url, headers, duration=None):
+    def __init__(self, video_id, master_url, headers, duration=None, expires_at=None,
+                 master_text=None):
         self.video_id = video_id
         self.master_url = master_url
         self.headers = headers or {}
         self.duration = duration
-        self.expires_at = time.time() + CACHE_TTL_SECONDS
+        self.expires_at = expires_at or _expires_at(master_url)
+        # The master playlist itself, fetched once per resolve and reused: it
+        # used to be downloaded from Google again on every probe and play.
+        self.master_text = master_text
 
     @property
     def expired(self) -> bool:
@@ -74,6 +112,10 @@ def _extract(video_id: str, max_height: int) -> ResolvedVideo:
                 f"https://www.youtube.com/watch?v={video_id}",
                 {"extractor_args": {"youtube": {"player_client": [player_client]}}},
             )
+        except YouTubeBlocked:
+            # A bot check is about this server, not this client: trying the
+            # next one is one more request into the block.
+            raise
         except YouTubeError as e:
             last_error = e
             logger.debug(f"[YouTube] {player_client} failed for {video_id}: {e}")
@@ -118,6 +160,10 @@ def _record_failure(video_id: str, error: Exception) -> None:
     if isinstance(error, YouTubeBlocked):
         return
     with _cache_lock:
+        if isinstance(error, VideoUnavailable):
+            _unplayable[video_id] = _unplayable.get(video_id, 0) + 1
+        else:
+            _unplayable.pop(video_id, None)
         _, count, _ = _failures.get(video_id, (0, 0, ""))
         count += 1
         if isinstance(error, YouTubeUnavailable):
@@ -139,6 +185,7 @@ def resolve(video_id: str, max_height: int = 1080, force: bool = False,
     whose broadcast can start working at any moment.
     """
     backoff = backoff and not force
+    _load_persisted()
     if not force:
         with _cache_lock:
             hit = _cache.get(video_id)
@@ -146,6 +193,9 @@ def resolve(video_id: str, max_height: int = 1080, force: bool = False,
                 return hit
     if backoff:
         _check_backoff(video_id)
+    # Nothing new is asked of YouTube while requests are paused after a bot
+    # check; what is cached above keeps playing.
+    traffic.ensure_allowed()
 
     with _inflight_lock:
         lock = _inflight.setdefault(video_id, threading.Lock())
@@ -168,7 +218,85 @@ def resolve(video_id: str, max_height: int = 1080, force: bool = False,
         with _cache_lock:
             _cache[video_id] = resolved
             _failures.pop(video_id, None)
+            _unplayable.pop(video_id, None)
+        _persist()
         return resolved
+
+
+def master_text(video_id: str, max_height: int = 1080) -> tuple:
+    """(resolved, master playlist text) for a video, from cache when possible.
+
+    The master is fetched once per resolve, through the shared client. A cached
+    URL Google no longer honours (an IP change, an early expiry) is resolved
+    again once; anything else raises.
+    """
+    import httpx
+    for attempt in (0, 1):
+        resolved = resolve(video_id, max_height, force=bool(attempt))
+        if resolved.master_text:
+            return resolved, resolved.master_text
+        try:
+            r = traffic.http_client().get(resolved.master_url, headers=resolved.headers, timeout=30)
+            r.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            if attempt == 0 and e.response.status_code in (403, 404, 410):
+                logger.info(f"[YouTube] {video_id}: the cached stream is no longer valid; resolving again")
+                invalidate(video_id)
+                continue
+            raise
+        resolved.master_text = r.text
+        _persist()
+        return resolved, resolved.master_text
+    raise YouTubeUnavailable(f"Could not fetch the playlist for {video_id}")
+
+
+def unplayable_ids(min_failures: int = 2) -> set:
+    """Videos that failed as unplayable (private, members-only, removed) this
+    many times in a row — for the indexer to retire."""
+    with _cache_lock:
+        return {v for v, n in _unplayable.items() if n >= min_failures}
+
+
+def _persist_path() -> Path:
+    return Path(os.getenv("DATA_DIR", "/data")) / "cache" / "youtube_streams.json"
+
+
+def _load_persisted() -> None:
+    """Load resolves saved before a restart, once. A restart used to mean every
+    video was resolved again on its next probe."""
+    global _persist_loaded
+    if _persist_loaded:
+        return
+    _persist_loaded = True
+    try:
+        data = json.loads(_persist_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    now = time.time()
+    with _cache_lock:
+        for vid, e in (data or {}).items():
+            try:
+                if e["expires_at"] > now and vid not in _cache:
+                    _cache[vid] = ResolvedVideo(vid, e["master_url"], e.get("headers"), e.get("duration"),
+                                                expires_at=e["expires_at"], master_text=e.get("master_text"))
+            except (KeyError, TypeError):
+                continue
+
+
+def _persist() -> None:
+    now = time.time()
+    with _cache_lock:
+        data = {vid: {"master_url": r.master_url, "headers": r.headers, "duration": r.duration,
+                      "expires_at": r.expires_at, "master_text": r.master_text}
+                for vid, r in _cache.items() if r.expires_at > now}
+    path = _persist_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        tmp.replace(path)
+    except OSError as e:
+        logger.debug(f"[YouTube] Could not save resolved streams: {e}")
 
 
 # Video codecs ffmpeg's mpegts muxer can carry in a stream copy. VP9 and AV1
@@ -193,12 +321,19 @@ def pick_tracks(video_id: str, max_height: int = 1080) -> tuple:
     variant — 240p. Selecting the tracks ourselves is the only way to honour
     the channel's quality setting.
     """
+    key = (video_id, max_height)
+    with _cache_lock:
+        hit = _tracks.get(key)
+    if hit and hit[0] > time.time():
+        return hit[1]
     for player_client in client.PLAYER_CLIENTS:
         try:
             info = client.extract(
                 f"https://www.youtube.com/watch?v={video_id}",
                 {"extractor_args": {"youtube": {"player_client": [player_client]}}},
             )
+        except YouTubeBlocked:
+            raise
         except YouTubeError as e:
             logger.debug(f"[YouTube] {player_client} failed for {video_id}: {e}")
             continue
@@ -240,15 +375,32 @@ def pick_tracks(video_id: str, max_height: int = 1080) -> tuple:
             f"{best_video.get('height')}p {best_video.get('vcodec')}"
             f"{' + audio ' + str(best_audio.get('format_id')) if best_audio else ' (muxed audio)'}"
         )
-        return (best_video["url"],
-                best_audio["url"] if best_audio else None,
-                best_video.get("http_headers") or {})
+        tracks = (best_video["url"],
+                  best_audio["url"] if best_audio else None,
+                  best_video.get("http_headers") or {})
+        # Reused across tunes for a while: channel surfing, or Jellyfin opening
+        # the tuner twice, each used to be a fresh extraction.
+        expire = url_expiry(best_video["url"])
+        until = time.time() + LIVE_TRACKS_TTL_SECONDS
+        if expire:
+            until = min(until, expire - EXPIRY_MARGIN_SECONDS)
+        with _cache_lock:
+            _tracks[key] = (until, tracks)
+        return tracks
 
     raise YouTubeError(f"No usable HLS tracks for {video_id}")
 
 
+def forget_tracks(video_id: str) -> None:
+    """Drop a live stream's cached tracks (ffmpeg could not open them)."""
+    with _cache_lock:
+        for key in [k for k in _tracks if k[0] == video_id]:
+            _tracks.pop(key, None)
+
+
 def is_cached(video_id: str) -> bool:
     """Whether a resolve for this video would return without calling YouTube."""
+    _load_persisted()
     with _cache_lock:
         hit = _cache.get(video_id)
         return bool(hit and not hit.expired)
@@ -258,6 +410,7 @@ def invalidate(video_id: str) -> None:
     with _cache_lock:
         _cache.pop(video_id, None)
         _failures.pop(video_id, None)
+    _persist()
 
 
 def clear_failures() -> int:

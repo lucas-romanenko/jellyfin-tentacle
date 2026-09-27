@@ -3053,6 +3053,7 @@ async function loadYouTubePage() {
     }
 
     await loadYouTubeChannels();
+    ytLoadTraffic();
 
     // An index started earlier may still be running — pick the progress back up.
     try {
@@ -3154,6 +3155,73 @@ async function ytSaveAddress(inputId) {
     const fresh = await api('/api/youtube/status');
     ytShowAddress('yt-address', fresh);
     ytShowAddress('settings-tentacle-address', fresh);
+  } catch (e) {
+    toast(e.message, 'error', 10000);
+  }
+}
+
+// ── How Tentacle talks to YouTube ─────────────────────────────────────────
+function ytTrafficCounts(byPurpose) {
+  const parts = Object.entries(byPurpose || {}).map(([purpose, hosts]) =>
+    `${purpose} ${Object.values(hosts).reduce((a, b) => a + b, 0)}`);
+  const total = Object.values(byPurpose || {}).reduce(
+    (sum, hosts) => sum + Object.values(hosts).reduce((a, b) => a + b, 0), 0);
+  return parts.length ? `${total} (${parts.join(', ')})` : '0';
+}
+
+function ytShowTraffic(t) {
+  const summary = document.getElementById('yt-traffic-summary');
+  const status = document.getElementById('yt-traffic-status');
+  const apiStatus = document.getElementById('yt-api-status');
+  if (summary) {
+    summary.textContent = t.pause && t.pause.paused
+      ? `— paused after a bot check until ${String(t.pause.until || '').replace('T', ' ')}`
+      : (t.background_checks ? `— about every ${t.interval_minutes} min` : '— background checks off');
+    summary.style.color = t.pause && t.pause.paused ? 'var(--red)' : 'var(--text3)';
+  }
+  if (apiStatus) {
+    const api = t.api || {};
+    apiStatus.textContent = !api.configured ? 'Not set: RSS feeds are used for new uploads.'
+      : (api.off_for_seconds ? `Not in use right now (${api.reason}); RSS feeds and yt-dlp stand in.` : 'In use.');
+    apiStatus.style.color = api.configured && api.off_for_seconds ? 'var(--red)' : 'var(--text3)';
+  }
+  if (status) {
+    const lines = [`Requests to YouTube so far this hour: ${escapeAttr(ytTrafficCounts(t.this_hour))}`];
+    if (t.last_hour && t.last_hour.at) lines.push(`Last full hour: ${escapeAttr(ytTrafficCounts(t.last_hour.counts))}`);
+    if (t.pause && t.pause.paused) {
+      lines.push(`<span style="color:var(--red)">Paused after a bot check until ${escapeAttr(String(t.pause.until).replace('T', ' '))} ` +
+        `(block ${t.pause.blocks_in_a_row} in a row). Videos already found keep playing.</span>`);
+    }
+    status.innerHTML = lines.join('<br>');
+  }
+}
+
+async function ytLoadTraffic() {
+  try {
+    const t = await api('/api/youtube/traffic');
+    const set = (id, fn) => { const el = document.getElementById(id); if (el && document.activeElement !== el) fn(el); };
+    set('yt-bg-checks', el => { el.checked = !!t.background_checks; });
+    set('yt-interval', el => { el.value = t.interval_minutes; el.min = t.min_interval_minutes; });
+    set('yt-api-key', el => { el.value = t.api_key || ''; });
+    set('yt-proxy', el => { el.value = t.proxy || ''; });
+    ytShowTraffic(t);
+  } catch { /* the rest of the page does not depend on it */ }
+}
+
+async function ytSaveTraffic() {
+  const body = {
+    background_checks: !!document.getElementById('yt-bg-checks')?.checked,
+    interval_minutes: parseInt(document.getElementById('yt-interval')?.value || '60', 10) || 60,
+    api_key: (document.getElementById('yt-api-key')?.value || '').trim(),
+    proxy: (document.getElementById('yt-proxy')?.value || '').trim(),
+  };
+  try {
+    const t = await api('/api/youtube/traffic', { method: 'POST', body });
+    document.getElementById('yt-api-key').value = t.api_key || '';
+    document.getElementById('yt-interval').value = t.interval_minutes;
+    ytShowTraffic(t);
+    if (t.api_check && !t.api_check.ok) toast(`Saved, but the API key did not work: ${t.api_check.detail}`, 'error', 10000);
+    else toast('Saved', 'success');
   } catch (e) {
     toast(e.message, 'error', 10000);
   }
@@ -7177,7 +7245,7 @@ async function loadHealthDeletions() {
     showManageEpisodesModal, confirmManageEpisodes,
     showDownloadMoreModal, confirmDownloadMore, detailToggleSeason, toggleFollow,
     // YouTube
-    loadYouTubePage, loadYouTubeChannels, ytAddChannel, ytDeleteChannel, ytRefreshNow, ytStartPolling, ytDiagnose, ytSkipNote, ytReprobe, ytRefill, loadLiveYouTubeChannels, toggleLiveYouTube, ytSaveAddress, ytShowAddress, loadTentacleAddress, ytUseAddress, ytDetectAddress,
+    loadYouTubePage, loadYouTubeChannels, ytAddChannel, ytDeleteChannel, ytRefreshNow, ytStartPolling, ytDiagnose, ytSkipNote, ytReprobe, ytRefill, loadLiveYouTubeChannels, toggleLiveYouTube, ytSaveAddress, ytShowAddress, loadTentacleAddress, ytUseAddress, ytDetectAddress, ytLoadTraffic, ytSaveTraffic,
     // Following
     loadFollowing,
     toggleStrmManaged,
