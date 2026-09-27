@@ -26,7 +26,7 @@ from services.nfo import write_movie_nfo, write_series_nfo, make_folder_name, vo
 from services.cleaner import clean_title
 from services.m3u_parser import episode_from_title, container_from_url
 from services.duplicates import delete_vod_files, convert_record_to_downloaded
-from services.media_files import delete_movie_files, delete_series_files
+from services.media_files import delete_movie_files, delete_series_files, MEDIA_SUFFIXES
 from services.tagger import compute_tags, get_list_tags_for_tmdb_id, apply_tag_rules
 from services.exceptions import ProviderConnectionError, SyncCancelledError, SyncError, TMDBConnectionError
 
@@ -652,7 +652,8 @@ def _write_episode_strms(client: "XtreamClient", episodes: dict, show_dir: Path,
     return ep_count
 
 
-def _repair_movie_strm(client, stream: dict, tmdb_id: int, provider: Provider, db: Session) -> bool:
+def _repair_movie_strm(client, stream: dict, tmdb_id: int, provider: Provider, db: Session,
+                       restore: bool = True) -> bool:
     """Rewrite an existing movie's .strm when it has gone missing from disk.
 
     Series already self-heal via _backfill_series_episodes; movies did not, so a
@@ -675,6 +676,10 @@ def _repair_movie_strm(client, stream: dict, tmdb_id: int, provider: Provider, d
                 strm.write_text(expected, encoding="utf-8")
                 chown_path(strm)
                 logger.info(f"[Sync] Rewrote {strm.name}: stream address changed")
+            return False
+        if not restore:
+            # #185 (E25): with two films of one title, only the row's own stream
+            # may restore its file -- another listing could be its namesake.
             return False
         strm.parent.mkdir(parents=True, exist_ok=True)
         chown_path(strm.parent)
@@ -811,6 +816,299 @@ def _claim_vod_name(db: Session, media_type: str, output_dir: Path, title: str, 
     logger.info(f"[Sync] '{name}' already holds '{taken.title}' (tmdb:{taken.tmdb_id}); "
                 f"writing tmdb:{tmdb_id} to '{claimed}'")
     return claimed
+
+# ── Namesakes: two films with the same title and year (#185) ─────────────
+# Name matching cannot tell two such films apart: the same name and year give
+# the same TMDB search result. The only thing that can is the TMDB id many
+# Xtream panels attach to each stream ("tmdb"). It is used for that tie-break
+# only: it must name a film with exactly the title and year the name found,
+# and a stream never leaves the film whose .strm it already plays.
+
+_ASCII_ID_RE = re.compile(r"[0-9]+")
+
+
+def _provider_tmdb_hint(stream: dict):
+    """The TMDB id the provider attached to this stream, or None. Only plain
+    ASCII digits count: str.isdigit() also accepts "²" (which int() rejects,
+    failing the whole provider sync) and other scripts' digits."""
+    for key in ("tmdb", "tmdb_id"):
+        try:
+            raw = stream.get(key)
+            if isinstance(raw, bool):
+                continue
+            text = str(raw or "").strip()
+            if _ASCII_ID_RE.fullmatch(text) and 0 < int(text) < 2 ** 31:
+                return int(text)
+        except Exception:
+            continue
+    return None
+
+
+class _MovieIndex:
+    """What the namesake checks need to know about movie rows, loaded once per
+    sync and kept up to date as titles are imported. A query per new import
+    (on the unindexed strm_path column) made a first import of a large
+    catalogue twice as slow."""
+
+    def __init__(self, db: Session, provider: Provider):
+        self.provider = provider
+        self.strm_owner = {}  # strm_path -> tmdb_id, every row
+        self.own_strm = {}    # tmdb_id -> strm_path, this provider's rows
+        self.own_meta = {}    # tmdb_id -> {"title", "year"}, this provider's rows
+        self.title_count = {}  # (normalised title, year) -> rows with it, any source
+        # Accounts of the OTHER configured providers, as (host, username), and
+        # their ids: positive evidence that a .strm plays another provider's
+        # stream. Anything else a file of ours points at is this provider at
+        # an earlier address (a host change), never "someone else" (D3).
+        self.our_pair = _account_of(provider)
+        self.other_pairs = set()
+        self.other_ids = set()
+        for other in db.query(Provider).filter(Provider.id != provider.id).all():
+            self.other_ids.add(other.id)
+            pair = _account_of(other)
+            if pair and pair != self.our_pair:
+                self.other_pairs.add(pair)
+        # folder NAME -> tmdb_ids of Radarr downloads in a folder of that name.
+        # Names, not paths: Radarr sees /data/movies/X while Tentacle writes
+        # /media/vod/movies/X, and in the merged layout both are one folder.
+        self.radarr_folders = {}
+        self.shared = set()
+        for tid, strm, pid, radarr, title, year in db.query(
+                Movie.tmdb_id, Movie.strm_path, Movie.provider_id, Movie.radarr_path,
+                Movie.title, Movie.year).all():
+            if strm:
+                if strm in self.strm_owner and self.strm_owner[strm] != tid:
+                    self.shared.add(strm)  # two rows, one file (#155, from before)
+                self.strm_owner[strm] = tid
+            if radarr:
+                self.radarr_folders.setdefault(Path(radarr).parent.name, set()).add(tid)
+            key = _title_key(title, year)
+            self.title_count[key] = self.title_count.get(key, 0) + 1
+            if pid == provider.id:
+                self.own_strm[tid] = strm
+                self.own_meta[tid] = {"title": title, "year": year}
+
+    def add(self, tmdb_id: int, strm_path: str, title=None, year=None):
+        self.strm_owner[strm_path] = tmdb_id
+        self.own_strm[tmdb_id] = strm_path
+        self.own_meta[tmdb_id] = {"title": title, "year": year}
+        key = _title_key(title, year)
+        self.title_count[key] = self.title_count.get(key, 0) + 1
+
+    def is_other_provider(self, origin) -> bool:
+        if origin is None:
+            return False
+        if origin[0] == "pid":
+            return origin[1] != self.provider.id
+        return (origin[1], origin[2]) in self.other_pairs
+
+    def only_one_with_title(self, tmdb_id: int) -> bool:
+        meta = self.own_meta.get(tmdb_id)
+        return not meta or self.title_count.get(_title_key(meta["title"], meta["year"]), 0) <= 1
+
+
+_NS_STREAM_RE = re.compile(r"/(movie|series)/[^/?#&]+/[^/?#&]+/(\d+)\.[A-Za-z0-9]+")
+_NS_CARRIED_RE = re.compile(r"(?i)https?://[^\s?#&]+/(?:movie|series)/[^/?#&]+/[^/?#&]+/\d+\.[a-z0-9]+")
+
+
+def _title_key(title, year):
+    return (re.sub(r"\W+", "", str(title or "").casefold()), str(year or ""))
+
+
+def _account_of(provider: Provider):
+    """(host, username) of a provider's Xtream account, or None (as _note_other_providers)."""
+    from urllib.parse import urlparse
+    host = (urlparse(provider.server_url or "").hostname or "").lower()
+    return (host, provider.username or "") if host else None
+
+
+def _play_ref(url_text: str, unwrap: bool = False):
+    """(kind, stream number) a .strm plays: Tentacle's VOD address, a direct
+    Xtream URL, or (with `unwrap`) one carried inside a resume proxy's URL."""
+    from urllib.parse import unquote
+    from services import vod_tokens
+    via = vod_tokens.stream_id_in_url(url_text or "")
+    if via:
+        return via
+    for candidate in ((url_text, unquote(url_text or "")) if unwrap else (url_text,)):
+        m = _NS_STREAM_RE.search(candidate or "")
+        if m:
+            return m.group(1), int(m.group(2))
+    return None
+
+
+def _stream_origin(url_text: str, unwrap: bool = False):
+    """Whose stream a URL plays: ("pid", provider id) for Tentacle's own VOD
+    address, ("host", host, username) for a direct Xtream URL, None if unknown."""
+    from urllib.parse import unquote
+    from services import vod_tokens
+    m = vod_tokens._TOKEN_URL.search(url_text or "")
+    if m:
+        return ("pid", int(m.group(2)))
+    m = _XTREAM_ACCOUNT_RE.match(url_text or "")
+    if m is None and unwrap:
+        carried = _NS_CARRIED_RE.search(unquote(url_text or ""))
+        m = _XTREAM_ACCOUNT_RE.match(carried.group(0)) if carried else None
+    return ("host", m.group(1).lower(), m.group(2)) if m else None
+
+
+def _movie_row_plays_stream(client, stream: dict, strm_path, index: "_MovieIndex" = None):
+    """True / False when this .strm (a row's) does / does not play `stream`;
+    None when that cannot be told (no row, no file, a hand-made URL).
+    Stream numbers are only unique per provider, so with `index` a file playing
+    the same number counts as another stream only on positive evidence that it
+    is another configured provider's: its Tentacle VOD token names another
+    provider, or its (host, username) is another provider's account. An older
+    host of this provider is still this provider (#185 D3, E14/E27)."""
+    if not strm_path:
+        return None
+    try:
+        current = Path(strm_path).read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    expected = client.movie_stream_url(stream.get("stream_id"), stream.get("container_extension", "mp4"))
+    mine = _play_ref(expected)
+    theirs = _play_ref(current, unwrap=True)
+    if mine is None or theirs is None:
+        return None
+    if mine != theirs:
+        return False
+    if index is None:
+        return True
+    return not index.is_other_provider(_stream_origin(current, unwrap=True))
+
+
+def _same_film_name(a: dict, b: dict) -> bool:
+    def norm(s):
+        return re.sub(r"\W+", "", str(s or "").casefold())
+    return bool(norm(a.get("title"))) and norm(a.get("title")) == norm(b.get("title")) \
+        and str(a.get("year") or "") == str(b.get("year") or "")
+
+
+def _known_title_id(ids, stream: dict, owns, namesake_of=None):
+    """The already-imported film a stream is, from the title->ids map, or None
+    when it needs a real lookup. `owns(id)` is _movie_row_plays_stream for it;
+    `namesake_of(hint, id)` says whether TMDB names the hinted film with the
+    same title and year as row `id`.
+
+    One film with this title and a stream that carries no hint (or the same id)
+    is the normal case, and stays a map lookup with no file read. Otherwise a
+    stream keeps the film its .strm already plays, a hint picks among namesakes
+    already imported, a hint that is not a namesake of the one known film is
+    ignored (no name search), and a stream the map cannot place gets a real
+    lookup."""
+    if not ids:
+        return None
+    hint = _provider_tmdb_hint(stream)
+    if hint is not None and not any(i > 0 for i in ids):
+        hint = None  # provider-only titles (synthetic ids): the hint means nothing here
+    if len(ids) == 1 and (hint is None or hint == ids[0]):
+        return ids[0]
+    verdicts = {i: owns(i) for i in ids}
+    for i in ids:
+        if verdicts[i] is True:
+            return i
+    if hint is not None and hint in ids:
+        return hint
+    if len(ids) == 1 and verdicts[ids[0]] is None:
+        return ids[0]  # cannot tell: as before
+    if len(ids) == 1 and hint is not None and namesake_of is not None and not namesake_of(hint, ids[0]):
+        return ids[0]  # another listing of the known film with a wrong id: as before
+    return None
+
+
+def _namesake_claim(details, client, stream: dict, metadata: dict, index: _MovieIndex):
+    """#185 D1: the hinted film's metadata when this stream's provider id names a
+    DIFFERENT film with exactly the title and year the name found (a namesake
+    claim), else None. A stream whose .strm already plays under the found film
+    (or where that cannot be told) stays with it: no claim."""
+    hint = _provider_tmdb_hint(stream)
+    found = metadata.get("tmdb_id")
+    if hint is None or not isinstance(found, int) or found <= 0 or hint == found:
+        return None
+    if found in index.own_strm and \
+            _movie_row_plays_stream(client, stream, index.own_strm.get(found), index) is not False:
+        return None
+    other = details(hint)
+    if not other or other.get("tmdb_id") != hint or not _same_film_name(other, metadata):
+        return None
+    return other
+
+
+_NFO_TMDB_RE = re.compile(r"<tmdbid>\s*(-?\d+)\s*</tmdbid>|<uniqueid[^>]*type=\"tmdb\"[^>]*>\s*(-?\d+)\s*<", re.I)
+
+
+def _nfo_tmdb_ids(folder: Path, names) -> set:
+    """TMDB ids named by these NFOs in `folder` (missing/unreadable ones skipped)."""
+    ids = set()
+    for n in names:
+        try:
+            text = (folder / n).read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        for a, b in _NFO_TMDB_RE.findall(text):
+            ids.add(int(a or b))
+    return ids
+
+
+def _folder_owned_elsewhere(index: _MovieIndex, folder: Path, tmdb_id: int, claim: bool = False) -> bool:
+    """#185 additions to _claim_vod_name (which already moves a new title out
+    of a folder another row's .strm is in): True when another film owns the
+    folder without a .strm row there --
+    - a Radarr download of another film in a folder of that NAME (the merged
+      Radarr/VOD layout, where Radarr writes no NFO by default; names, since
+      Radarr sees /data/movies/X and Tentacle /media/vod/movies/X);
+    - an NFO there naming another TMDB id;
+    - for a namesake claim only: a video there with no NFO naming this film
+      and no Radarr row of this film in it (an unknown owner). A plain import
+      writes next to such a video, as it always did.
+    A re-import of the same film (its own NFO still on disk) keeps its folder."""
+    radarr_ids = index.radarr_folders.get(folder.name, set())
+    if radarr_ids - {tmdb_id}:
+        return True
+    if not folder.is_dir():
+        return False
+    try:
+        entries = [f for f in folder.iterdir()]
+    except OSError:
+        return True  # cannot look inside: do not write into it
+    nfo_ids = _nfo_tmdb_ids(folder, [f.name for f in entries if f.suffix.lower() == ".nfo"])
+    if nfo_ids - {tmdb_id}:
+        return True
+    if not claim:
+        return False
+    has_video = any(f.suffix.lower() in MEDIA_SUFFIXES for f in entries)
+    return has_video and tmdb_id not in nfo_ids and tmdb_id not in radarr_ids
+
+
+def _record_duplicate_only(tmdb_id: int, source: str, path: str, db: Session) -> None:
+    """Note that `source` also offers `tmdb_id`, which another source owns --
+    the duplicate record of check_and_record_duplicate, without its #154
+    takeover. For a film found through a provider id (#185 E26): a mislabelled
+    stream must never move a row to a provider that does not really have it."""
+    existing = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
+    if not existing:
+        return
+    dup = db.query(Duplicate).filter(Duplicate.tmdb_id == tmdb_id, Duplicate.media_type == "movie").first()
+    new_source = {"source": source, "path": path}
+    if dup:
+        sources = dup.sources or []
+        if not any(s["source"] == source for s in sources):
+            dup.sources = sources + [new_source]
+    elif existing.source != source:
+        db.add(Duplicate(
+            tmdb_id=tmdb_id, media_type="movie",
+            sources=[{"source": existing.source,
+                      "path": existing.strm_path or existing.radarr_path or ""}, new_source],
+            resolution="pending"))
+
+
+def _stream_num(stream: dict) -> int:
+    try:
+        return int(stream.get("stream_id") or 0)
+    except (TypeError, ValueError):
+        return 0
+
 
 def check_and_record_duplicate(
     tmdb_id: int,
@@ -1399,6 +1697,7 @@ def _sync_movies(
 
     # Track TMDB IDs seen this run to dedupe across categories
     seen_tmdb_ids = set()
+    dup_ids = set()  # films another source owns, met this run (duplicate recorded)
     # Comprehensive set of every tmdb_id this provider still offers (new OR
     # existing). Used after a successful run to delete rows for content the
     # provider has dropped upstream.
@@ -1414,13 +1713,183 @@ def _sync_movies(
         ).all()
     }
 
-    # Build title→tmdb_id lookup so we can skip TMDB API for known items
-    known_titles = {
-        (m.title.lower(), m.year): m.tmdb_id
-        for m in db.query(Movie.title, Movie.year, Movie.tmdb_id).filter(
-            Movie.provider_id == provider.id
-        ).all()
-    }
+    # Build title→tmdb_ids lookup so we can skip TMDB API for known items.
+    # A list: two different films can share a title and year (#185).
+    known_titles = {}
+    for m in db.query(Movie.title, Movie.year, Movie.tmdb_id).filter(
+            Movie.provider_id == provider.id).all():
+        known_titles.setdefault((m.title.lower(), m.year), []).append(m.tmdb_id)
+
+    index = _MovieIndex(db, provider)
+
+    details_memo = {}
+
+    def _details(i):
+        """TMDB details, once per id per sync (TMDBService also caches them)."""
+        if i not in details_memo:
+            try:
+                details_memo[i] = tmdb.get_movie_details(i)
+            except Exception:
+                details_memo[i] = None
+        return details_memo[i]
+
+    def _namesake_of(hint, row_id):
+        other = _details(hint)
+        row = index.own_meta.get(row_id)
+        return bool(other and row and other.get("tmdb_id") == hint and _same_film_name(other, row))
+
+    def _may_restore(stream, tmdb_id, guessed=False):
+        """#185 E25: a missing .strm is restored only from the row's own stream:
+        its provider id names the row, or the row is the only film with its
+        title and year (any source) -- then there is no namesake to confuse it
+        with, exactly as in 755ea67."""
+        if index.own_strm.get(tmdb_id) in index.shared:
+            return False  # a #155 legacy file two rows share: never rewritten (E18)
+        if tmdb_id < 0:  # a provider-only title: its id is made from its own stream
+            return tmdb_id == -(provider.id * NEGATIVE_ID_BLOCK + _stream_num(stream))
+        return _provider_tmdb_hint(stream) == tmdb_id or index.only_one_with_title(tmdb_id)
+
+    # #185 D6: a row created by its namesake's stream plays the wrong film. It
+    # is only logged (once per row per sync): a panel that swaps two namesakes'
+    # ids shows exactly the same signals, and rewriting would cross a right row.
+    hinted_streams = {}   # (title key, provider id) -> first stream carrying it
+    swap_suspects = {}    # row id -> (stream its .strm plays, that stream's id)
+    swap_logged = set()
+
+    def _log_suspected_swap(lookup_key, r, a, b, b_hint):
+        if r in swap_logged or b_hint == r:
+            return
+        strm = index.own_strm.get(r)
+        if not strm or strm in index.shared:
+            return
+        row, mine, theirs = index.own_meta.get(r), _details(r), _details(b_hint)
+        if not (row and mine and theirs and mine.get("tmdb_id") == r and theirs.get("tmdb_id") == b_hint
+                and _same_film_name(mine, row) and _same_film_name(theirs, row)):
+            return
+        if _nfo_tmdb_ids(Path(strm).parent, [Path(strm).with_suffix(".nfo").name]) != {r}:
+            return
+        swap_logged.add(r)
+        logger.info(f"[Sync] Suspected swapped namesake ids: row TMDB {r} plays stream {b.get('stream_id')} "
+                    f"(provider id {b_hint}); stream {a.get('stream_id')} has provider id {r}. "
+                    f"Not changed: fix it with Wrong movie.")
+
+    # #185 D2: namesake claims (a stream whose provider id names a namesake of
+    # the film its name found), decided once every category has been seen.
+    claims = []
+    # Streams this sync did not place on a row of ours (another source's film,
+    # or no match), by title: once a claim adds a film with that title, they
+    # are placed the way the next sync's title map will place them (S4).
+    unplaced = {}
+
+    def _import_movie(stream, metadata, source_tag, lookup_key, claim=False):
+        """Write a new film's .strm/.nfo and add its row (committed with the
+        category). "new", "duplicate" (another source owns it: nothing
+        written) or "failed". A `claim` (a film found through a provider id)
+        records a duplicate only and never takes a row over (#185 E26)."""
+        tmdb_id = metadata["tmdb_id"]
+        # Compute file path early so duplicate record has it
+        title = metadata["title"]
+        year_str = metadata.get("year")
+        folder_name = _claim_vod_name(db, "movie", output_dir, title, year_str, tmdb_id)
+        if folder_name == vod_folder_name(title, year_str) and \
+                _folder_owned_elsewhere(index, output_dir / folder_name, tmdb_id, claim):
+            # Another film owns that folder without a .strm row there (#185)
+            folder_name = vod_folder_name(title, year_str, tag=f" [tmdbid-{tmdb_id}]" if tmdb_id > 0
+                                          else f" [id-{abs(tmdb_id)}]")
+        movie_dir = output_dir / folder_name
+        strm_file = movie_dir / f"{folder_name}.strm"
+        nfo_file = movie_dir / f"{folder_name}.nfo"
+
+        # Check if exists from another provider (duplicate)
+        if claim and db.query(Movie.id).filter(Movie.tmdb_id == tmdb_id).first():
+            _record_duplicate_only(tmdb_id, f"provider_{provider.id}", str(strm_file), db)
+            return "duplicate"
+        dup_answer = check_and_record_duplicate(tmdb_id, "movie", f"provider_{provider.id}", str(strm_file),
+                                                provider, db)
+        if dup_answer == TAKEOVER:
+            _take_over_files(db, "movie", tmdb_id, client, stream, provider)
+        if dup_answer:
+            return "duplicate"
+
+        # Compute tags
+        now = datetime.utcnow()
+        list_tags = get_list_tags_for_tmdb_id(tmdb_id, "movie", db)
+        tags = compute_tags(source_tag, now, list_tags, recently_added_days, media_type="movie")
+
+        # Apply tag rules
+        metadata["tags"] = tags
+        rule_tags = apply_tag_rules(metadata, "movie", f"provider_{provider.id}", source_tag, db)
+        for rt in rule_tags:
+            if rt not in tags:
+                tags.append(rt)
+
+        try:
+            movie_dir.mkdir(parents=True, exist_ok=True)
+            chown_path(movie_dir)
+
+            # Write strm
+            stream_url = client.movie_stream_url(
+                stream.get("stream_id"),
+                stream.get("container_extension", "mp4")
+            )
+            strm_file.write_text(stream_url, encoding='utf-8')
+            chown_path(strm_file)
+
+            # Write full NFO with all metadata
+            write_movie_nfo(nfo_file, metadata, tags)
+            chown_path(nfo_file)
+
+            # Record in DB (batched — committed per category)
+            movie_record = Movie(
+                tmdb_id=tmdb_id,
+                title=title,
+                year=year_str,
+                overview=metadata.get("overview"),
+                runtime=metadata.get("runtime"),
+                rating=metadata.get("rating"),
+                genres=metadata.get("genres", []),
+                poster_path=metadata.get("poster_path"),
+                backdrop_path=metadata.get("backdrop_path"),
+                source=f"provider_{provider.id}",
+                provider_id=provider.id,
+                strm_path=str(strm_file),
+                nfo_path=str(nfo_file),
+                source_tag=source_tag,
+                tags=tags,
+                date_added=now,
+            )
+            db.add(movie_record)
+
+            existing_provider_tmdb_ids.add(tmdb_id)
+            known_titles.setdefault(lookup_key, []).append(tmdb_id)
+            index.add(tmdb_id, str(strm_file), title, year_str)
+
+            # Add to feed
+            if len(feed) < 100:
+                feed.append({
+                    "tmdb_id": tmdb_id,
+                    "title": title,
+                    "year": year_str,
+                    "poster": metadata.get("poster_path"),
+                    "tags": tags,
+                    "type": "movie",
+                    "added_at": now.isoformat(),
+                })
+
+            logger.debug(f"+ {folder_name} [{', '.join(tags)}]")
+            return "new"
+        except Exception as e:
+            logger.error(f"Failed to create files for {title}: {e}")
+            return "failed"
+
+    def _known_id(lookup_key, stream):
+        return _known_title_id(
+            known_titles.get(lookup_key), stream,
+            lambda i: _movie_row_plays_stream(client, stream, index.own_strm.get(i), index),
+            _namesake_of)
+
+    def _in_library(i):
+        return i in existing_provider_tmdb_ids or i in seen_tmdb_ids
 
     # Streams an admin reported as mislabelled ("Wrong movie"): never imported
     # again, whatever the provider calls them and whichever category they're in.
@@ -1484,6 +1953,7 @@ def _sync_movies(
         # Pre-resolve: check which items we can skip entirely
         needs_tmdb = []  # (index, clean_name, year)
         tmdb_results = {}  # index → metadata
+        known_by_idx = {}  # index → tmdb_id of an already-imported film (no lookup)
 
         for idx, (stream, raw_name, clean_name, year) in enumerate(cleaned):
             if not clean_name:
@@ -1494,10 +1964,10 @@ def _sync_movies(
 
             # Check if we already know this title → skip TMDB API call
             lookup_key = (clean_name.lower(), year)
-            if lookup_key in known_titles:
-                tmdb_id = known_titles[lookup_key]
-                if tmdb_id in existing_provider_tmdb_ids or tmdb_id in seen_tmdb_ids:
-                    continue  # Will be counted as existing in phase 3
+            tmdb_id = _known_id(lookup_key, stream)
+            if tmdb_id is not None and _in_library(tmdb_id):
+                known_by_idx[idx] = tmdb_id
+                continue  # Will be counted as existing in phase 3
             needs_tmdb.append((idx, clean_name, year))
 
         # Parallel TMDB lookups for items that actually need it
@@ -1555,11 +2025,31 @@ def _sync_movies(
 
             # Try title-based skip first (no TMDB needed)
             lookup_key = (clean_name.lower(), year)
-            known_id = known_titles.get(lookup_key)
             idx = item_idx - 1  # 0-based index into cleaned
 
             # Get metadata: from parallel batch or title-based lookup
             metadata = tmdb_results.get(idx)
+            known_id = None
+            override_hit = overrides and override_for(overrides, stream.get("stream_id"), client.movie_stream_url(
+                stream.get("stream_id"), stream.get("container_extension", "mp4"))) is not None
+            if metadata and not override_hit:
+                # Same name and year as another film: a claim, decided at the end (#185 D2)
+                other = _namesake_claim(_details, client, stream, metadata, index)
+                if other is not None:
+                    claims.append({"stream": stream, "tag": cat.source_tag, "key": lookup_key,
+                                   "x": metadata["tmdb_id"], "h": other})
+                    cat_existing += 1
+                    stats["existing"] += 1
+                    continue
+            guessed = False
+            if not metadata and not override_hit:
+                known_id = known_by_idx.get(idx)
+                if known_id is None and known_titles.get(lookup_key):
+                    # No lookup result: as before, the title map places it
+                    known_id = _known_id(lookup_key, stream)
+                    if known_id is None:
+                        known_id = known_titles[lookup_key][-1]
+                        guessed = True
             override_id = override_for(overrides, stream.get("stream_id"), client.movie_stream_url(
                 stream.get("stream_id"), stream.get("container_extension", "mp4"))) if overrides else None
             if override_id is not None:
@@ -1596,13 +2086,27 @@ def _sync_movies(
                         stats["skipped"] += 1
                         continue
                 known_id = None
+            hint = _provider_tmdb_hint(stream) if (not metadata and known_id and override_id is None
+                                                   and known_id > 0 and _in_library(known_id)) else None
+            if hint is not None:
+                if hint == known_id:
+                    hinted_streams.setdefault((lookup_key, hint), stream)
+                    if known_id in swap_suspects:
+                        b, b_hint = swap_suspects[known_id]
+                        _log_suspected_swap(lookup_key, known_id, stream, b, b_hint)
+                elif _movie_row_plays_stream(client, stream, index.own_strm.get(known_id), index) is True:
+                    swap_suspects.setdefault(known_id, (stream, hint))
+                    a = hinted_streams.get((lookup_key, known_id))
+                    if a is not None:
+                        _log_suspected_swap(lookup_key, known_id, a, stream, hint)
             if not metadata and known_id:
                 # Known title but not in batch — it's existing, merge tags
                 if known_id in existing_provider_tmdb_ids or known_id in seen_tmdb_ids:
                     _merge_source_tag(known_id, "movie", cat.source_tag, provider.id, db)
                     seen_ids_all.add(known_id)
                     # Existing VOD movie — restore its .strm if it vanished from disk
-                    _repair_movie_strm(client, stream, known_id, provider, db)
+                    _repair_movie_strm(client, stream, known_id, provider, db,
+                                       restore=_may_restore(stream, known_id, guessed))
                     cat_existing += 1
                     stats["existing"] += 1
                     if item_idx % 10 == 0 or item_idx == total_in_cat:
@@ -1611,6 +2115,7 @@ def _sync_movies(
 
             if not metadata:
                 if require_tmdb:
+                    unplaced.setdefault(lookup_key, []).append((stream, cat.source_tag))
                     cat_skipped += 1
                     stats["skipped"] += 1
                     if item_idx % 10 == 0 or item_idx == total_in_cat:
@@ -1634,120 +2139,48 @@ def _sync_movies(
             seen_ids_all.add(tmdb_id)
 
             # Skip if already seen this run or in library from this provider — merge tags
-            if tmdb_id in seen_tmdb_ids or tmdb_id in existing_provider_tmdb_ids:
+            if tmdb_id in seen_tmdb_ids or tmdb_id in existing_provider_tmdb_ids or tmdb_id in dup_ids:
+                if tmdb_id not in existing_provider_tmdb_ids:
+                    unplaced.setdefault(lookup_key, []).append((stream, cat.source_tag))
                 _merge_source_tag(tmdb_id, "movie", cat.source_tag, provider.id, db)
                 # Existing VOD movie — restore its .strm if it vanished from disk
-                _repair_movie_strm(client, stream, tmdb_id, provider, db)
+                _repair_movie_strm(client, stream, tmdb_id, provider, db,
+                                   restore=_may_restore(stream, tmdb_id))
                 cat_existing += 1
                 stats["existing"] += 1
                 if item_idx % 10 == 0 or item_idx == total_in_cat:
                     logger.info(f"  {cat.category_name} ({item_idx}/{total_in_cat}) — {cat_new} new, {cat_existing} existing")
                 continue
-
-            seen_tmdb_ids.add(tmdb_id)
 
             # Also check DB directly in case of prior partial sync — merge tags
             if db.query(Movie).filter(Movie.tmdb_id == tmdb_id, Movie.provider_id == provider.id).first():
                 existing_provider_tmdb_ids.add(tmdb_id)
                 _merge_source_tag(tmdb_id, "movie", cat.source_tag, provider.id, db)
                 # Existing VOD movie — restore its .strm if it vanished from disk
-                _repair_movie_strm(client, stream, tmdb_id, provider, db)
+                _repair_movie_strm(client, stream, tmdb_id, provider, db,
+                                   restore=_may_restore(stream, tmdb_id))
                 cat_existing += 1
                 stats["existing"] += 1
                 if item_idx % 10 == 0 or item_idx == total_in_cat:
                     logger.info(f"  {cat.category_name} ({item_idx}/{total_in_cat}) — {cat_new} new, {cat_existing} existing")
                 continue
 
-            # Compute file path early so duplicate record has it
-            title = metadata["title"]
-            year_str = metadata.get("year")
-            folder_name = _claim_vod_name(db, "movie", output_dir, title, year_str, tmdb_id)
-            movie_dir = output_dir / folder_name
-            strm_file = movie_dir / f"{folder_name}.strm"
-            nfo_file = movie_dir / f"{folder_name}.nfo"
-
-            # Check if exists from another provider (duplicate)
-            dup_answer = check_and_record_duplicate(tmdb_id, "movie", f"provider_{provider.id}", str(strm_file),
-                                                    provider, db)
-            if dup_answer == TAKEOVER:
-                _take_over_files(db, "movie", tmdb_id, client, stream, provider)
-            if dup_answer:
-                cat_existing += 1
-                stats["existing"] += 1
-                if item_idx % 10 == 0 or item_idx == total_in_cat:
-                    logger.info(f"  {cat.category_name} ({item_idx}/{total_in_cat}) — {cat_new} new, {cat_existing} existing")
-                continue
-
-            # Compute tags
-            now = datetime.utcnow()
-            list_tags = get_list_tags_for_tmdb_id(tmdb_id, "movie", db)
-            tags = compute_tags(cat.source_tag, now, list_tags, recently_added_days, media_type="movie")
-
-            # Apply tag rules
-            metadata["tags"] = tags
-            rule_tags = apply_tag_rules(metadata, "movie", f"provider_{provider.id}", cat.source_tag, db)
-            for rt in rule_tags:
-                if rt not in tags:
-                    tags.append(rt)
-
-            try:
-                movie_dir.mkdir(parents=True, exist_ok=True)
-                chown_path(movie_dir)
-
-                # Write strm
-                stream_url = client.movie_stream_url(
-                    stream.get("stream_id"),
-                    stream.get("container_extension", "mp4")
-                )
-                strm_file.write_text(stream_url, encoding='utf-8')
-                chown_path(strm_file)
-
-                # Write full NFO with all metadata
-                write_movie_nfo(nfo_file, metadata, tags)
-                chown_path(nfo_file)
-
-                # Record in DB (batched — committed per category)
-                movie_record = Movie(
-                    tmdb_id=tmdb_id,
-                    title=title,
-                    year=year_str,
-                    overview=metadata.get("overview"),
-                    runtime=metadata.get("runtime"),
-                    rating=metadata.get("rating"),
-                    genres=metadata.get("genres", []),
-                    poster_path=metadata.get("poster_path"),
-                    backdrop_path=metadata.get("backdrop_path"),
-                    source=f"provider_{provider.id}",
-                    provider_id=provider.id,
-                    strm_path=str(strm_file),
-                    nfo_path=str(nfo_file),
-                    source_tag=cat.source_tag,
-                    tags=tags,
-                    date_added=now,
-                )
-                db.add(movie_record)
-
-                existing_provider_tmdb_ids.add(tmdb_id)
-                known_titles[lookup_key] = tmdb_id
+            result = _import_movie(stream, metadata, cat.source_tag, lookup_key)
+            # "Seen" only once it is ours: a film another source owns must not
+            # count as this provider's (#185 review cause A).
+            if result == "new":
+                seen_tmdb_ids.add(tmdb_id)
                 cat_new += 1
                 stats["new"] += 1
-
-                # Add to feed
-                if len(feed) < 100:
-                    feed.append({
-                        "tmdb_id": tmdb_id,
-                        "title": title,
-                        "year": year_str,
-                        "poster": metadata.get("poster_path"),
-                        "tags": tags,
-                        "type": "movie",
-                        "added_at": now.isoformat(),
-                    })
-
-                logger.debug(f"+ {folder_name} [{', '.join(tags)}]")
-
-            except Exception as e:
-                logger.error(f"Failed to create files for {title}: {e}")
+            elif result == "duplicate":
+                dup_ids.add(tmdb_id)
+                unplaced.setdefault(lookup_key, []).append((stream, cat.source_tag))
+                cat_existing += 1
+                stats["existing"] += 1
+                if item_idx % 10 == 0 or item_idx == total_in_cat:
+                    logger.info(f"  {cat.category_name} ({item_idx}/{total_in_cat}) — {cat_new} new, {cat_existing} existing")
+                continue
+            else:
                 cat_failed += 1
                 stats["failed"] += 1
 
@@ -1786,6 +2219,57 @@ def _sync_movies(
             f"  {cat.category_name}: +{cat_new} new, "
             f"{cat_existing} existing, {cat_skipped} skipped"
         )
+
+    # #185 D2: namesake claims, decided once every category has been seen,
+    # from the state at sync start plus this sync's plain matches -- never from
+    # the order streams came in.
+    if claims:
+        held = set(seen_ids_all)  # films a plain (non-claim) stream resolved to this sync
+        start_rows = set(existing_provider_tmdb_ids)
+        for c in sorted(claims, key=lambda c: (c["h"]["tmdb_id"], _stream_num(c["stream"]))):
+            h, x, stream = c["h"]["tmdb_id"], c["x"], c["stream"]
+            logger.debug(f"[Sync] claim: stream {stream.get('stream_id')} names TMDB {h} (name: {x}); "
+                         f"ours {h in existing_provider_tmdb_ids}/{x in start_rows}, held {x in held}, "
+                         f"fetch_ok {fetch_ok}")
+            if x in start_rows and x not in held:
+                # Whatever the claim becomes, a row that existed at the start and
+                # has no stream of its own this sync keeps counting this one:
+                # a claim never leaves a row to the prune (S1).
+                seen_ids_all.add(x)
+            if h in existing_provider_tmdb_ids:
+                # Another listing of a film we already have (or just imported)
+                _merge_source_tag(h, "movie", c["tag"], provider.id, db)
+                seen_ids_all.add(h)
+                _repair_movie_strm(client, stream, h, provider, db, restore=True)
+                continue
+            other_owner = db.query(Movie.id).filter(Movie.tmdb_id == h).first()
+            if other_owner:
+                # Radarr or another provider has it: a duplicate record, never a takeover (E26)
+                _record_duplicate_only(h, f"provider_{provider.id}", "", db)
+                continue
+            x_other = db.query(Movie.id).filter(Movie.tmdb_id == x, Movie.provider_id != provider.id).first()
+            if fetch_ok and (x not in start_rows or x in held or x_other):
+                logger.info(f"[Sync] '{stream.get('name')}' is TMDB {h}, not TMDB {x}: "
+                            f"two films named '{c['h'].get('title')} ({c['h'].get('year')})'")
+                result = _import_movie(stream, c["h"], c["tag"], c["key"], claim=True)
+                seen_ids_all.add(h)
+                if result == "new":
+                    seen_tmdb_ids.add(h)
+                    stats["existing"] -= 1
+                    stats["new"] += 1
+                continue
+            # Undecided (the name's film is ours and has no stream of its own
+            # this sync, or part of the catalogue was not seen): x is kept from
+            # the prune (above) and nothing else changes.
+        # A film a claim just added: streams of the same title that found no row
+        # of ours are placed now as the title map will place them next sync.
+        for key in {c["key"] for c in claims}:
+            for stream, tag in unplaced.get(key, ()):
+                kid = _known_id(key, stream)
+                if kid is not None and kid in existing_provider_tmdb_ids:
+                    _merge_source_tag(kid, "movie", tag, provider.id, db)
+                    seen_ids_all.add(kid)
+        db.commit()
 
     logger.info(
         f"Movies complete: {stats['new']} new, {stats['existing']} existing, "

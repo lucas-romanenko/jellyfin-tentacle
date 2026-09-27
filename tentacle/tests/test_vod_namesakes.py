@@ -155,7 +155,6 @@ class NamesakesBothImport(Base):
         TMDB.films = dict(BROTHERS)
         TMDB.search = {"Brothers": 1001}
 
-    @unittest.expectedFailure  # #185: fails on 9cd80e1 until the fix
     def test_both_films_import_on_the_first_sync(self):
         self.client.movies = {"a": [stream("Brothers (2024)", 11, 1001), stream("Brothers (2024)", 22, 2002)]}
         self.night()
@@ -166,7 +165,6 @@ class NamesakesBothImport(Base):
         self.assertIn("<tmdbid>1001</tmdbid>", _RealPath(self.row(1001).nfo_path).read_text())
         self.assertIn("<tmdbid>2002</tmdbid>", _RealPath(self.row(2002).nfo_path).read_text())
 
-    @unittest.expectedFailure  # #185: fails on 9cd80e1 until the fix
     def test_order_does_not_matter(self):
         self.client.movies = {"a": [stream("Brothers (2024)", 22, 2002), stream("Brothers (2024)", 11, 1001)]}
         self.night()
@@ -174,7 +172,6 @@ class NamesakesBothImport(Base):
         self.assertIn("/11.mp4", self.plays(1001))
         self.assertIn("/22.mp4", self.plays(2002))
 
-    @unittest.expectedFailure  # #185: fails on 9cd80e1 until the fix
     def test_across_categories(self):
         self.client.movies = {"a": [stream("Brothers (2024)", 11, 1001)], "b": [stream("Brothers (2024)", 22, 2002)]}
         self.night()
@@ -189,7 +186,6 @@ class NamesakesBothImport(Base):
         self.assertEqual(TMDB.calls, [], "a known namesake was looked up again")
         self.assertEqual((run.movies_new, run.movies_existing), (0, 2))
 
-    @unittest.expectedFailure  # #185: fails on 9cd80e1 until the fix
     def test_upgrade_adds_only_the_missing_film(self):
         """A library from before the fix (the provider's ids were never read)
         keeps every file byte for byte; only the shadowed film is added."""
@@ -276,7 +272,6 @@ class ProviderOnlyTitles(Base):
 
 
 class FolderHelpers(unittest.TestCase):
-    @unittest.expectedFailure  # #185: fails on 9cd80e1 until the fix
     def test_hint_parsing(self):
         h = sync._provider_tmdb_hint
         self.assertEqual(h({"tmdb": "2002"}), 2002)
@@ -321,7 +316,6 @@ class MergedRadarrFolder(Base):
             self.db.commit()
         return folder
 
-    @unittest.expectedFailure  # #185: fails on 9cd80e1 until the fix
     def test_a_namesake_is_not_written_into_radarrs_folder(self):
         folder = self._radarr()
         self.client.movies = {"a": [stream("Brothers (2024)", 22, 2002)]}
@@ -337,7 +331,6 @@ class MergedRadarrFolder(Base):
         self.assertEqual([(m.tmdb_id, m.source) for m in self.db.query(Movie)], [(1001, "radarr")])
         self.assertEqual(sorted(p.name for p in (self.vod / "movies").iterdir()), ["Brothers (2024)"])
 
-    @unittest.expectedFailure  # #185: fails on 9cd80e1 until the fix
     def test_a_video_with_no_nfo_and_no_row_is_an_unknown_owner_for_a_namesake(self):
         """Only a namesake import treats an unmanaged video as another film's
         (CONTRACT-185 D4); a plain import writes next to it (R2,
@@ -354,7 +347,6 @@ class WrongIdsCostNothingExtra(Base):
     known film, must not cost a name search every night; the hinted film's
     details are looked up at most once per sync."""
 
-    @unittest.expectedFailure  # #185: fails on 9cd80e1 until the fix
     def test_no_name_search_for_a_wrong_id_on_a_known_title(self):
         TMDB.films = dict(BROTHERS)
         TMDB.films[3003] = ("Other", "1999")
@@ -436,7 +428,6 @@ class SwappedPairIsLoggedOnly(Base):
         self.assertIn("row TMDB 1001 plays stream 22 (provider id 2002); stream 11 has provider id 1001. "
                       "Not changed: fix it with Wrong movie.", lines[0])
 
-    @unittest.expectedFailure  # #185: fails on 9cd80e1 until the fix
     def test_logged_when_the_wrong_stream_comes_first(self):
         before, _ = self._old_library()
         self.client.movies = {"a": [stream("Brothers (2024)", 22, 2002), stream("Brothers (2024)", 11, 1001)]}
@@ -444,7 +435,6 @@ class SwappedPairIsLoggedOnly(Base):
             self.night()
         self._check_logged_only(before, logs)
 
-    @unittest.expectedFailure  # #185: fails on 9cd80e1 until the fix
     def test_logged_when_the_right_stream_comes_first(self):
         before, _ = self._old_library()
         self.client.movies = {"a": [stream("Brothers (2024)", 11, 1001)], "b": [stream("Brothers (2024)", 22, 2002)]}
@@ -479,7 +469,6 @@ class SwappedPairIsLoggedOnly(Base):
 
 
 class NiceToHaves(Base):
-    @unittest.expectedFailure  # #185: fails on 9cd80e1 until the fix
     def test_same_stream_number_of_another_account_is_not_the_rows_stream(self):
         """CONTRACT-185 D3: another stream only on positive evidence (another
         configured provider's host AND username, or its VOD token); an older
@@ -600,7 +589,6 @@ class ContractClaimNeverTakesOver(Base):
     """E26 / O1: a higher-priority provider's stream whose id names a namesake
     another provider owns records a duplicate only: the row keeps its owner."""
 
-    @unittest.expectedFailure  # #185: fails on 9cd80e1 until the fix
     def test_owner_unchanged(self):
         TMDB.films = dict(BROTHERS)
         TMDB.search = {"Brothers": 1001}
@@ -635,7 +623,6 @@ class ContractRestoreOnlyOwnStream(Base):
     with its title). Here TMDB search is failing, so every stream falls back
     to the title map."""
 
-    @unittest.expectedFailure  # #185: fails on 9cd80e1 until the fix
     def test_never_restored_from_the_other_films_stream(self):
         TMDB.films = dict(BROTHERS)
         TMDB.search = {"Brothers": 1001}
