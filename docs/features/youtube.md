@@ -37,8 +37,9 @@ real film and share its folder.
 your Jellyfin server can reach Tentacle on — and suggests the address you
 opened the dashboard with.
 
-`youtube_index_interval_minutes` (default 60, minimum 15) controls how often
-channels are re-indexed and can be set in Settings.
+Tentacle then checks your channels for new uploads and live streams about
+once an hour, on its own. See [How Tentacle talks to YouTube](#how-tentacle-talks-to-youtube)
+for what that costs and what you can change.
 
 !!! danger "youtube_base_url must be reachable by Jellyfin"
     Jellyfin's ffmpeg is what fetches the `.strm`'s contents, not your browser.
@@ -91,12 +92,52 @@ per-user policies then act on:
 Set a child user's library access, allowed tags and max rating in Jellyfin and
 they will see only the channels you approved.
 
+## How Tentacle talks to YouTube
+
+Google flags an address whose traffic looks scripted: requests at exactly the
+same time every hour, bursts, and a new connection for every request. When that
+happens, Google Search starts showing a captcha to everyone in the house. So
+Tentacle keeps its YouTube traffic small and irregular without any setup:
+
+- **A light check.** Each check reads the channel's public RSS feed: one small
+  request, the kind every feed reader makes. The channel's pages are only
+  loaded when the feed shows something new, and once a day as a safety net.
+  A Live TV channel also peeks at the top of its streams tab on each check to
+  see what's live or scheduled. A stream's full details are read only when it
+  ends.
+- **Never at a fixed beat.** Checks run about every hour, ±20%, at a random
+  time after startup, and each check spreads the channels a minute or so
+  apart.
+- **A pause after a bot check.** If YouTube answers with a 429, a captcha or
+  "confirm you're not a bot", every YouTube request stops:
+  - the first pause lasts an hour, and each block in a row doubles it, up to a day;
+  - it survives a restart;
+  - videos that were already found keep playing.
+- **Nothing twice.**
+  - A stream Tentacle has found is reused until shortly before Google's link
+    expires, and still after a restart. The video's playlist is reused too.
+  - A video that can't be read (private, members-only) is retried later, not
+    on every check.
+- **A count in the log.** Once an hour Tentacle logs one line with how many
+  requests it made to YouTube and Google, split into background checks,
+  playback and artwork.
+
+On the YouTube page, **Advanced: how Tentacle talks to YouTube** has four
+optional settings:
+
+| Setting | Default | What it does |
+|---|---|---|
+| Background checks | On | Off means channels only refresh when you press Refresh. |
+| Check about every | 60 min | At least 30 minutes, with ±20% jitter either way. |
+| YouTube Data API key | Not set | New uploads, video details and live status come from Google's official API instead of YouTube's pages, so the background checks never load a YouTube page. The key is free from the Google Cloud console, and the daily quota is far more than this uses. |
+| Proxy for YouTube traffic | None | An HTTP proxy for YouTube traffic only, e.g. `http://gluetun:8888` to route it through a VPN container. Watching YouTube videos goes through it too, because Google ties a video's stream link to the address that asked for it. |
+
 ## How playback works
 
 ```
 Jellyfin plays the .strm
   └─ GET /api/youtube/v/<id>/master.m3u8
-       └─ yt-dlp resolves the video (cached ~4h)
+       └─ yt-dlp resolves the video (reused until shortly before Google's link expires, restarts included)
        └─ the HLS playlist is rewritten so every URL points back at Tentacle
             └─ GET /api/youtube/v/<id>/r/<token>.ts  → bytes streamed through
 ```
@@ -166,10 +207,13 @@ something Jellyfin can't reach. Check it from the Jellyfin host:
 **A Live TV channel says "not streaming right now"** — that is the expected
 answer when the channel has no live stream. It reappears when one starts.
 
-**A channel shows "backing off"** — YouTube asked Tentacle to prove it isn't a
-bot. Indexing stands down for a few hours rather than making it worse; nothing
-is deleted. This is far likelier from a datacenter or VPN egress IP than a
-residential one.
+**A channel shows "backing off", or the YouTube page says requests are paused**
+— YouTube asked Tentacle to prove it isn't a bot. Every YouTube request pauses:
+for an hour, doubling on each block in a row, up to a day. Nothing is deleted,
+and videos already found keep playing. It's likelier from a datacenter or VPN
+exit address than a home one. If it keeps happening, a YouTube Data API key
+takes the background checks off YouTube's pages. The hourly
+`Requests to YouTube/Google` log line shows what Tentacle is sending.
 
 **Nothing is ever deleted because a listing failed.** A failed or bot-checked
 listing raises, and retention only runs after a listing that succeeded.

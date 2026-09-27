@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 
 from models.database import YouTubeChannel, YouTubeVideo
-from services.youtube import client
+from services.youtube import client, feeds, traffic
 from services.youtube.errors import VideoUnavailable, YouTubeBlocked, YouTubeError
 
 logger = logging.getLogger(__name__)
@@ -33,11 +33,34 @@ FINISHED_LIVE = ("was_live", "post_live")
 _CHANNEL_ID_RE = re.compile(r"^UC[A-Za-z0-9_-]{22}$")
 
 # Guest extraction is rate-limited at roughly 300 videos/hour, so details are
-# fetched slowly. The listing call is cheap and unmetered by comparison.
+# fetched slowly, and never at a fixed beat (see _detail_pause).
 DETAIL_SPACING_SECONDS = 5.0
 
 # How long to stand down after a bot check. Retrying into one makes it worse.
+# The pause itself is app-wide now (services.youtube.traffic); this is kept for
+# a channel's own blocked_until, which the page shows.
 BLOCK_BACKOFF_HOURS = 6
+
+# A scheduled check reads the channel's feed first and lists its tabs only when
+# something is new — and at least this often anyway, as a safety net for a feed
+# that lags or misses an upload.
+FULL_CHECK_HOURS = 24
+
+# A live or upcoming stream the listing no longer shows is re-read at most this often.
+PENDING_DETAIL_HOURS = 6
+
+# A video whose details could not be read (members-only, private, a hiccup) is
+# retried after this long, doubling up to the cap — not on every run.
+DETAIL_RETRY_START_HOURS = 6
+DETAIL_RETRY_MAX_HOURS = 48
+
+# Skip reasons of videos whose details could not be read, retried at next_check_at.
+UNAVAILABLE_REASON = "unavailable (private, members-only or removed)"
+UNREADABLE_REASON = "could not read details"
+_RETRYABLE = (UNAVAILABLE_REASON, UNREADABLE_REASON)
+
+# Listing live statuses that mean the broadcast is over.
+_ENDED = ("was_live", "post_live", "not_live")
 # Recorded verbatim on skipped rows so the restore path can find exactly the
 # videos this preference excluded, and not ones excluded for another reason.
 STREAM_PREFERENCE_REASON = "finished live stream and past live streams are not included"
@@ -343,13 +366,194 @@ def _apply_stream_preference(db: Session, channel: YouTubeChannel) -> int:
     return len(stale)
 
 
+def _detail_pause() -> None:
+    """Wait between two detail reads: never the same length twice."""
+    if DETAIL_SPACING_SECONDS > 0:
+        time.sleep(traffic.jitter(DETAIL_SPACING_SECONDS, 0.4))
+
+
+def _retry_later(video, reason: str) -> None:
+    """A read failed: skip the video now, read it again later (doubling, capped)."""
+    video.check_failures = (video.check_failures or 0) + 1
+    hours = min(DETAIL_RETRY_START_HOURS * 2 ** (video.check_failures - 1), DETAIL_RETRY_MAX_HOURS)
+    video.next_check_at = datetime.utcnow() + timedelta(seconds=traffic.jitter(hours * 3600, 0.1))
+    video.skip_reason = reason
+
+
+def _details(video_id: str) -> dict:
+    """One video's details: from the YouTube Data API when a key works, else yt-dlp.
+
+    A video the API does not return (private, removed) is VideoUnavailable. When
+    the API refuses or fails, yt-dlp answers instead.
+    """
+    if feeds.api_available():
+        try:
+            found = feeds.api_details([video_id])
+        except (feeds.FeedUnavailable, YouTubeError) as e:
+            logger.debug(f"[YouTube] API details for {video_id} failed, using yt-dlp: {e}")
+        else:
+            if video_id not in found:
+                raise VideoUnavailable(f"{video_id}: the YouTube Data API does not return it "
+                                       f"(private or removed)")
+            return found[video_id]
+    return client.video_details(video_id)
+
+
+def _apply_details(video, details: dict) -> None:
+    was = video.live_status
+    video.live_status = details.get("live_status")
+    if details.get("duration"):
+        video.duration = details["duration"]
+    published = _published(details)
+    if published and not video.published_at:
+        video.published_at = published
+    if was != video.live_status:
+        logger.info(f"[YouTube] '{video.title}' {was} → {video.live_status or 'ended'}")
+
+
+def _update_pending(db: Session, channel: YouTubeChannel, listed_status: dict) -> int:
+    """Bring the channel's live and upcoming streams up to date. Returns how many changed.
+
+    The status comes from what was already fetched: the streams tab listing
+    carries each entry's live_status, and the Data API (when a key works)
+    answers for every pending stream in one call. Details are read only when a
+    stream has just ended (for its final length) or has dropped out of the
+    listing — then at most every PENDING_DETAIL_HOURS. Every pending stream used
+    to get a full page load on every run.
+
+    Only channels on Live TV: nothing else keeps pending streams, and one that
+    left Live TV has no use for their status.
+    """
+    if not channel.live_enabled:
+        return 0
+    pending = db.query(YouTubeVideo).filter(
+        YouTubeVideo.channel_fk == channel.id,
+        YouTubeVideo.live_status.in_(PENDING_LIVE),
+        YouTubeVideo.removed_at.is_(None),
+    ).all()
+    if not pending:
+        return 0
+    api = {}
+    if feeds.api_available():
+        try:
+            api = feeds.api_details([v.video_id for v in pending])
+        except (feeds.FeedUnavailable, YouTubeError) as e:
+            logger.debug(f"[YouTube] API live status for '{channel.title}' failed: {e}")
+    changed = 0
+    now = datetime.utcnow()
+    for video in pending:
+        before = (video.live_status, video.duration)
+        if video.video_id in api:
+            _apply_details(video, api[video.video_id])
+        else:
+            status = listed_status.get(video.video_id)
+            if status in PENDING_LIVE:
+                if status != video.live_status:
+                    logger.info(f"[YouTube] '{video.title}' {video.live_status} → {status}")
+                    video.live_status = status
+            elif status in _ENDED or not video.next_check_at or video.next_check_at <= now:
+                video.next_check_at = now + timedelta(hours=PENDING_DETAIL_HOURS)
+                try:
+                    details = _details(video.video_id)
+                except YouTubeBlocked:
+                    raise
+                except YouTubeError:
+                    continue
+                _apply_details(video, details)
+                _detail_pause()
+        if (video.live_status, video.duration) != before:
+            changed += 1
+    db.commit()
+    return changed
+
+
+def _feed_entries(channel: YouTubeChannel):
+    """The channel's newest uploads from its feed or the API, or None when there
+    is no feed to read (then the tabs are listed, as before). Raises YouTubeBlocked."""
+    try:
+        return feeds.newest_uploads(channel)
+    except YouTubeBlocked:
+        raise
+    except (feeds.FeedUnavailable, YouTubeError) as e:
+        logger.info(f"[YouTube] No feed for '{channel.title}' ({e}); listing its tabs instead")
+        return None
+
+
+def _light_check(db: Session, channel: YouTubeChannel, known: set):
+    """The scheduled check: is anything new? (result, feed_ids).
+
+    result is None when the tabs have to be listed: something is new, the feed
+    can't be read, the channel was never listed, or the last full listing is
+    older than FULL_CHECK_HOURS. Otherwise only the live status of pending
+    streams is brought up to date and a result is returned — one small request
+    for most channels.
+    """
+    now = datetime.utcnow()
+    entries = _feed_entries(channel)
+    if entries is None:
+        return None, None
+    ids = [e["id"] for e in entries]
+    if not channel.last_full_check or \
+            now - channel.last_full_check > timedelta(seconds=traffic.jitter(FULL_CHECK_HOURS * 3600, 0.15)):
+        # Due for a full listing anyway; the feed ids read here are stored with it.
+        return None, ids
+    # Ids the last full listing already saw in the feed and dealt with — older
+    # than "the newest N", Shorts the channel skips, a video filed under another
+    # source. Without this each would read as new on every check.
+    handled = set(channel.feed_ids or [])
+    fresh = [e["id"] for e in entries
+             if e["id"] not in known and e["id"] not in handled
+             and not (e.get("short") and not channel.include_shorts)]
+    if fresh:
+        logger.info(f"[YouTube] '{channel.title}': {len(fresh)} new in its feed; listing it")
+        return None, ids
+
+    # A Live TV channel also peeks at the top of its streams tab, as every check
+    # did before: one small listing that shows what is live or scheduled, whether
+    # or not the feed carries broadcasts yet. With an API key the uploads above
+    # include them, and the API answers for pending streams.
+    listed_status = {}
+    if channel.live_enabled and not feeds.api_available():
+        for url in [u for u in _tab_urls(channel) if u.endswith("/streams")]:
+            info = client.flat_listing(url, LIVE_PEEK)
+            for entry in (info.get("entries") or []):
+                if entry.get("id"):
+                    listed_status[entry["id"]] = entry.get("live_status")
+        new_live = [vid for vid, status in listed_status.items()
+                    if status in PENDING_LIVE and vid not in known and vid not in handled]
+        if new_live:
+            logger.info(f"[YouTube] '{channel.title}': a new live or scheduled stream; listing it")
+            return None, ids
+    live_changes = _update_pending(db, channel, listed_status) if channel.live_enabled else 0
+
+    channel.last_checked = now
+    channel.last_error = None
+    channel.error_count = 0
+    channel.blocked_until = None
+    db.commit()
+    return {"skipped": False, "light": True, "new": 0, "seen": len(ids), "filtered": 0,
+            "skips": {}, "listing": channel.last_listing or {}, "beyond": 0,
+            "retitled": [], "live_changes": live_changes}, ids
+
+
+def _mark_blocked(db: Session, channel: YouTubeChannel, e: Exception) -> None:
+    left = traffic.paused() or BLOCK_BACKOFF_HOURS * 3600
+    channel.blocked_until = datetime.utcnow() + timedelta(seconds=left)
+    channel.last_error = "YouTube asked us to prove we're not a bot — backing off"
+    channel.error_count = (channel.error_count or 0) + 1
+    db.commit()
+    logger.warning(f"[YouTube] '{channel.title}' bot-checked; backing off: {e}")
+
+
 def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
-                  on_progress=None) -> dict:
+                  on_progress=None, light: bool = False) -> dict:
     """Refresh one channel. Returns counts; raises on a blocked/unavailable listing.
 
     New videos are recorded but NOT given media files here — library.py writes
     those, so an indexing failure can never leave half-written files behind.
     """
+    if traffic.paused():
+        return {"skipped": True, "paused": True, "new": 0, "seen": 0}
     if channel.blocked_until and channel.blocked_until > datetime.utcnow():
         logger.info(f"[YouTube] '{channel.title}' is backed off until {channel.blocked_until} — skipping")
         return {"skipped": True, "new": 0, "seen": 0}
@@ -357,6 +561,16 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
     limit = limit or listing_limit(channel)
     known = {v.video_id for v in db.query(YouTubeVideo.video_id).filter(
         YouTubeVideo.channel_fk == channel.id).all()}
+
+    feed_ids = None
+    if light:
+        try:
+            result, feed_ids = _light_check(db, channel, known)
+        except YouTubeBlocked as e:
+            _mark_blocked(db, channel, e)
+            raise
+        if result is not None:
+            return result
     # Library items already in hand. Walking the listing newest-first, these
     # count towards "the newest N" exactly as a freshly fetched one does.
     kept_ids = {v.video_id for v in db.query(YouTubeVideo.video_id).filter(
@@ -367,13 +581,23 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
     keep = channel.keep_count or 10
     # Rows whose title is a stand-in, repaired below if the listing names them.
     from sqlalchemy import or_
+    # Library rows only: a skipped row is never shown, and repairing its title
+    # would spend a detail read on it every run.
     placeholders = {v.video_id: v for v in db.query(YouTubeVideo).filter(
         YouTubeVideo.channel_fk == channel.id,
+        YouTubeVideo.removed_at.is_(None),
         or_(YouTubeVideo.title.is_(None), YouTubeVideo.title == "",
             YouTubeVideo.title == YouTubeVideo.video_id,
             YouTubeVideo.title.ilike("youtube video #%")),
     ).all() if is_placeholder_title(v.title, v.video_id)}
     retitled, repairs_left = [], TITLE_REPAIRS_PER_RUN
+    # Videos whose details could not be read earlier and are due another try.
+    retry_due = {v.video_id: v for v in db.query(YouTubeVideo).filter(
+        YouTubeVideo.channel_fk == channel.id,
+        YouTubeVideo.skip_reason.in_(_RETRYABLE),
+        YouTubeVideo.next_check_at.isnot(None),
+        YouTubeVideo.next_check_at <= datetime.utcnow(),
+    ).all()}
 
     # Every listed entry in listing order, tagged with whether its tab feeds
     # the library. The streams tab does only when finished broadcasts are
@@ -402,11 +626,7 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
                     new_videos.append(vid)
             listing[tab] = count
     except YouTubeBlocked as e:
-        channel.blocked_until = datetime.utcnow() + timedelta(hours=BLOCK_BACKOFF_HOURS)
-        channel.last_error = "YouTube asked us to prove we're not a bot — backing off"
-        channel.error_count = (channel.error_count or 0) + 1
-        db.commit()
-        logger.warning(f"[YouTube] '{channel.title}' bot-checked; backing off {BLOCK_BACKOFF_HOURS}h: {e}")
+        _mark_blocked(db, channel, e)
         raise
     except YouTubeError as e:
         channel.last_error = str(e)[:400]
@@ -418,35 +638,15 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
     # Anything still listed is alive — refresh last_seen so retention leaves it be.
     now = datetime.utcnow()
 
-    # Re-check anything currently marked live or upcoming. Details are only
-    # fetched for NEW videos, so a stream indexed while scheduled would keep
-    # live_status="is_upcoming" forever and never become playable on its Live TV
-    # channel. The set is small — only pending broadcasts.
-    pending = db.query(YouTubeVideo).filter(
-        YouTubeVideo.channel_fk == channel.id,
-        YouTubeVideo.live_status.in_(PENDING_LIVE),
-        YouTubeVideo.removed_at.is_(None),
-    ).all()
-    for video in pending:
-        try:
-            details = client.video_details(video.video_id)
-        except YouTubeBlocked:
-            raise
-        except YouTubeError:
-            continue
-        was = video.live_status
-        video.live_status = details.get("live_status")
-        if details.get("duration"):
-            video.duration = details["duration"]
-        published = _published(details)
-        if published and not video.published_at:
-            video.published_at = published
-        if was != video.live_status:
-            logger.info(
-                f"[YouTube] '{video.title}' {was} → {video.live_status or 'ended'}"
-            )
-    if pending:
-        db.commit()
+    # Bring live and upcoming streams up to date from what the listing says
+    # (see _update_pending). Details are only fetched for NEW videos, so a stream
+    # indexed while scheduled would otherwise keep live_status="is_upcoming"
+    # forever and never become playable on its Live TV channel.
+    try:
+        _update_pending(db, channel, {vid: entry.get("live_status") for vid, entry, _ in ordered})
+    except YouTubeBlocked as e:
+        _mark_blocked(db, channel, e)
+        raise
     if seen_ids:
         for i in range(0, len(seen_ids), 500):
             db.query(YouTubeVideo).filter(
@@ -496,6 +696,48 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
             _note_skip("already indexed under another channel or playlist")
             continue
         if vid in known:
+            if vid in retry_due:
+                if library_tab and seen_kept >= keep:
+                    beyond += 1
+                    continue
+                row = retry_due[vid]
+                try:
+                    details = _details(vid)
+                except VideoUnavailable:
+                    _retry_later(row, UNAVAILABLE_REASON)
+                    db.commit()
+                    _note_skip(UNAVAILABLE_REASON)
+                    continue
+                except YouTubeBlocked as e:
+                    _mark_blocked(db, channel, e)
+                    raise
+                except YouTubeError:
+                    _retry_later(row, UNREADABLE_REASON)
+                    db.commit()
+                    _note_skip(UNREADABLE_REASON)
+                    continue
+                wanted, reason = _should_index(details, channel)
+                row.title = details.get("title") or row.title
+                row.description = details.get("description")
+                row.published_at = _published(details) or row.published_at
+                row.duration = details.get("duration")
+                row.live_status = details.get("live_status")
+                row.media_type = "livestream" if details.get("live_status") else "video"
+                row.thumbnail_url = details.get("thumbnail")
+                row.is_made_for_kids = made_for_kids(details)
+                row.next_check_at, row.check_failures = None, 0
+                if wanted:
+                    row.removed_at, row.skip_reason = None, None
+                    added += 1
+                    if library_tab and details.get("live_status") not in PENDING_LIVE:
+                        seen_kept += 1
+                else:
+                    row.skip_reason = reason
+                    _note_skip(reason)
+                db.commit()
+                _report()
+                _detail_pause()
+                continue
             if vid in placeholders:
                 title = _usable_title(entry.get("title"), vid)
                 # Details only when the listing gave no title at all. A listing
@@ -505,12 +747,12 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
                 if not title and not entry.get("title") and repairs_left > 0:
                     repairs_left -= 1
                     try:
-                        title = _usable_title(client.video_details(vid).get("title"), vid)
+                        title = _usable_title(_details(vid).get("title"), vid)
                     except YouTubeBlocked:
                         raise
                     except YouTubeError as e:
                         logger.debug(f"[YouTube] Could not re-read the title of {vid}: {e}")
-                    time.sleep(DETAIL_SPACING_SECONDS)
+                    _detail_pause()
                 if title:
                     video = placeholders[vid]
                     logger.info(f"[YouTube] Retitled {vid}: '{video.title}' → '{title}'")
@@ -525,19 +767,22 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
             beyond += 1
             continue
         try:
-            details = client.video_details(vid)
-        except VideoUnavailable as e:
-            logger.debug(f"[YouTube] Skipping {vid}: {e}")
-            _note_skip("unavailable (private, members-only or removed)")
-            continue
-        except YouTubeBlocked as e:
-            channel.blocked_until = datetime.utcnow() + timedelta(hours=BLOCK_BACKOFF_HOURS)
+            details = _details(vid)
+        except (VideoUnavailable, YouTubeError) as e:
+            if isinstance(e, YouTubeBlocked):
+                _mark_blocked(db, channel, e)
+                raise
+            # Recorded, and read again later (see _retry_later): it used to be
+            # forgotten, so it counted as new — and was read again — on every run.
+            reason = UNAVAILABLE_REASON if isinstance(e, VideoUnavailable) else UNREADABLE_REASON
+            logger.debug(f"[YouTube] Skipping {vid} for now: {e}")
+            row = YouTubeVideo(channel_fk=channel.id, video_id=vid,
+                               title=_usable_title(entry.get("title"), vid) or vid,
+                               first_seen=now, last_seen=now, removed_at=now, check_failures=0)
+            _retry_later(row, reason)
+            db.add(row)
             db.commit()
-            logger.warning(f"[YouTube] Bot-checked mid-index of '{channel.title}': {e}")
-            raise
-        except YouTubeError as e:
-            logger.debug(f"[YouTube] Details failed for {vid}: {e}")
-            _note_skip("could not read details")
+            _note_skip(reason)
             continue
 
         wanted, reason = _should_index(details, channel)
@@ -563,7 +808,7 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
                 skip_reason=reason,
             ))
             db.commit()
-            time.sleep(DETAIL_SPACING_SECONDS)
+            _detail_pause()
             continue
 
         db.add(YouTubeVideo(
@@ -587,7 +832,7 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
         # Reported per video: a first index can take minutes, and waiting for
         # the whole channel to finish leaves the UI with nothing to show.
         _report()
-        time.sleep(DETAIL_SPACING_SECONDS)
+        _detail_pause()
 
     unindexed = _apply_stream_preference(db, channel)
     if unindexed > 0:
@@ -601,6 +846,12 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
         )
 
     channel.last_checked = now
+    channel.last_full_check = now
+    # What the feed showed before this listing has been dealt with by it; the
+    # next light check only reacts to ids beyond these. (A manual refresh reads
+    # no feed and leaves the stored ids as they were.)
+    if feed_ids is not None:
+        channel.feed_ids = feed_ids
     channel.last_error = None
     channel.error_count = 0
     channel.blocked_until = None

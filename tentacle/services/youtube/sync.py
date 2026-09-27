@@ -8,8 +8,8 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from models.database import YouTubeChannel, YouTubeVideo, get_setting
-from services.youtube import indexer, library
-from services.youtube.errors import YouTubeError
+from services.youtube import indexer, library, traffic
+from services.youtube.errors import YouTubeBlocked, YouTubeError
 
 logger = logging.getLogger(__name__)
 
@@ -211,9 +211,41 @@ def detect_base_url(db: Session, request_host: str = None, request_scheme: str =
     return {"url": None, "tried": tried}
 
 
-def sync_channel(db: Session, channel: YouTubeChannel, base: str, on_progress=None) -> dict:
-    """Index one channel, write any new media files, then apply retention."""
-    result = indexer.index_channel(db, channel, on_progress=on_progress)
+UNPLAYABLE_REASON = "unavailable (private, members-only or removed)"
+
+
+def _retire_unplayable(db: Session, channel: YouTubeChannel) -> int:
+    """Take library videos that could not be played twice in a row out of the
+    library (made private, members-only, removed, age-restricted). Jellyfin
+    would keep probing them, and each probe asks YouTube again."""
+    from services.youtube import resolver
+    ids = resolver.unplayable_ids()
+    if not ids:
+        return 0
+    gone = db.query(YouTubeVideo).filter(
+        YouTubeVideo.channel_fk == channel.id,
+        YouTubeVideo.removed_at.is_(None),
+        YouTubeVideo.video_id.in_(list(ids)),
+    ).all()
+    for video in gone:
+        library.remove_video(video)
+        video.removed_at = datetime.utcnow()
+        video.strm_path = None
+        video.skip_reason = UNPLAYABLE_REASON
+    if gone:
+        db.commit()
+        logger.info(f"[YouTube] Retired {len(gone)} video(s) from '{channel.title}' that can no longer be played")
+    return len(gone)
+
+
+def sync_channel(db: Session, channel: YouTubeChannel, base: str, on_progress=None,
+                 light: bool = False) -> dict:
+    """Index one channel, write any new media files, then apply retention.
+
+    `light`: the scheduled check, which reads the channel's feed first and lists
+    its tabs only when something is new (see indexer._light_check).
+    """
+    result = indexer.index_channel(db, channel, on_progress=on_progress, light=light)
     if result.get("skipped"):
         return result
 
@@ -232,7 +264,8 @@ def sync_channel(db: Session, channel: YouTubeChannel, base: str, on_progress=No
             if video.folder_path:
                 if video.video_id in retitled:
                     library.rewrite_nfo(video, channel, base)
-                art += library.fetch_artwork(video, Path(video.folder_path))
+                if not traffic.paused():
+                    art += library.fetch_artwork(video, Path(video.folder_path))
             continue
         try:
             art += library.write_video(video, channel, base).get("artwork", 0)
@@ -249,7 +282,7 @@ def sync_channel(db: Session, channel: YouTubeChannel, base: str, on_progress=No
         from services.youtube import livetv
         guide = livetv.refresh_guide(db, channel)
 
-    removed = apply_retention(db, channel)
+    removed = apply_retention(db, channel) + _retire_unplayable(db, channel)
     result.update({"written": written, "retired": removed, "guide": guide,
                    "artwork": art})
     return result
@@ -410,20 +443,26 @@ def _wait_for_channel_items(jf, channel: YouTubeChannel, expected: int,
         time.sleep(SCAN_POLL_SECONDS)
 
 
-WARM_WORKERS = 4
+# Videos warmed per publish at most, and how recent they must be. Warming only
+# spares Jellyfin's first probe of a NEW video a slow resolve; the whole channel
+# used to be resolved, four at a time, whenever one video changed.
+WARM_MAX = 10
+WARM_RECENT_HOURS = 3
+# Seconds between two warm resolves (random within the range).
+WARM_SPACING = (3.0, 8.0)
 
 
 def _warm_streams(db: Session, channels: list, on_stage=None) -> int:
-    """Resolve each channel's library videos ahead of Jellyfin's probes.
+    """Resolve newly added library videos ahead of Jellyfin's first probe.
 
-    Skips anything already cached, so a re-publish costs nothing. Stops at the
-    first bot check: warming is an optimisation, and hammering on through a
-    block would turn it into an outage. Returns how many were resolved.
+    Only videos added in the last WARM_RECENT_HOURS and not cached, at most
+    WARM_MAX, one at a time with random gaps. Stops at a bot check or while
+    YouTube requests are paused: warming is an optimisation, and pushing on
+    through a block would turn it into an outage. Returns how many were resolved.
     """
-    from concurrent.futures import ThreadPoolExecutor
     from services.youtube import resolver
-    from services.youtube.errors import YouTubeBlocked
 
+    recent = datetime.utcnow() - timedelta(hours=WARM_RECENT_HOURS)
     todo = []
     for ch in channels:
         for video in db.query(YouTubeVideo).filter(
@@ -431,32 +470,30 @@ def _warm_streams(db: Session, channels: list, on_stage=None) -> int:
             YouTubeVideo.removed_at.is_(None),
             indexer.is_library_status(YouTubeVideo.live_status),
         ).all():
+            if video.first_seen and video.first_seen < recent:
+                continue
             if not resolver.is_cached(video.video_id):
                 todo.append((video.video_id, ch.max_height or 1080))
+    todo = todo[:WARM_MAX]
     if not todo:
         return 0
     if on_stage:
         on_stage(f"preparing {len(todo)} stream(s) so Jellyfin imports quickly")
 
-    blocked = threading.Event()
     done = 0
-
-    def _one(item):
-        vid, height = item
-        if blocked.is_set():
-            return False
+    for i, (vid, height) in enumerate(todo):
+        if traffic.paused():
+            break
+        if i:
+            time.sleep(traffic.spacing(*WARM_SPACING))
         try:
             resolver.resolve(vid, height)
-            return True
+            done += 1
         except YouTubeBlocked as e:
             logger.warning(f"[YouTube] Bot-checked while preparing streams — stopping: {e}")
-            blocked.set()
+            break
         except Exception as e:
             logger.debug(f"[YouTube] Could not prepare {vid}: {e}")
-        return False
-
-    with ThreadPoolExecutor(max_workers=WARM_WORKERS) as pool:
-        done = sum(1 for ok in pool.map(_one, todo) if ok)
     logger.info(f"[YouTube] Prepared {done} of {len(todo)} stream(s) for Jellyfin's import")
     return done
 
@@ -746,13 +783,31 @@ def reconcile_playlists(db: Session, report: bool = False):
     return (fixed, still_behind) if report else fixed
 
 
+# Seconds between two channels in a scheduled check (random within the range),
+# so the checks never arrive as one burst at a fixed minute.
+CHANNEL_GAP_SECONDS = (20.0, 90.0)
+
+
 def run_youtube_sync() -> dict:
-    """Scheduler entry point."""
+    """Scheduler entry point: the light check of every enabled channel.
+
+    Off when background checks are turned off or YouTube requests are paused
+    after a bot check. Channels are checked in random order with random gaps,
+    each starting from its feed (see indexer._light_check).
+    """
+    import random
     from models.database import SessionLocal
     db = SessionLocal()
     try:
         if get_setting(db, "youtube_enabled", "false") != "true":
             return {"enabled": False}
+        if get_setting(db, "youtube_background_checks", "true") == "false":
+            return {"enabled": True, "background": False}
+        if traffic.paused():
+            state = traffic.pause_state()
+            logger.info(f"[YouTube] Scheduled check skipped: YouTube requests are paused after a "
+                        f"bot check until {state['until']}")
+            return {"enabled": True, "paused": True}
         base = base_url(db)
         if not base:
             logger.warning("[YouTube] Could not work out Tentacle's address — skipping. Point the "
@@ -761,15 +816,25 @@ def run_youtube_sync() -> dict:
 
         totals = {"channels": 0, "new": 0, "written": 0, "retired": 0, "errors": 0}
         changed = []
-        for channel in db.query(YouTubeChannel).filter(YouTubeChannel.enabled == True).all():  # noqa: E712
+        channels = db.query(YouTubeChannel).filter(YouTubeChannel.enabled == True).all()  # noqa: E712
+        random.shuffle(channels)
+        for i, channel in enumerate(channels):
+            if traffic.paused():
+                break
+            if i:
+                time.sleep(traffic.spacing(*CHANNEL_GAP_SECONDS))
             totals["channels"] += 1
             try:
-                r = sync_channel(db, channel, base)
+                r = sync_channel(db, channel, base, light=True)
                 totals["new"] += r.get("new", 0)
                 totals["written"] += r.get("written", 0)
                 totals["retired"] += r.get("retired", 0)
                 if r.get("written") or r.get("retired"):
                     changed.append(channel)
+            except YouTubeBlocked as e:
+                totals["errors"] += 1
+                logger.warning(f"[YouTube] '{channel.title}' failed: {e}")
+                break
             except YouTubeError as e:
                 totals["errors"] += 1
                 logger.warning(f"[YouTube] '{channel.title}' failed: {e}")

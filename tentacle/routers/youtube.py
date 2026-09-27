@@ -21,7 +21,7 @@ from typing import Optional
 
 from models.database import YouTubeChannel, YouTubeVideo, get_db, get_setting
 from routers.auth import require_admin
-from services.youtube import client, indexer, library, playlist, resolver
+from services.youtube import client, indexer, library, playlist, resolver, traffic
 from services.youtube.sync import check_base_url, detect_base_url
 from services.youtube.errors import YouTubeBlocked, YouTubeError
 
@@ -65,6 +65,7 @@ def effective_height(channel_cap: int, requested: Optional[int]) -> int:
 @router.get("/v/{video_id}/master.m3u8")
 @router.head("/v/{video_id}/master.m3u8")
 def master_playlist(video_id: str,
+                    request: Request,
                     h: Optional[int] = Query(None, ge=1, le=4320),
                     db: Session = Depends(get_db)):
     """What a .strm points at. Jellyfin re-probes this on every PlaybackInfo.
@@ -76,15 +77,19 @@ def master_playlist(video_id: str,
     exactly what the channel is set to. Still one variant either way.
     """
     video = _known_video(db, video_id)
+    if request.method == "HEAD":
+        # "Is it there?" is answered from the database. Resolving for a HEAD
+        # was a YouTube page load plus a manifest for a probe that reads no body.
+        return Response(media_type="application/vnd.apple.mpegurl",
+                        headers={"Cache-Control": "no-cache"})
     channel = db.query(YouTubeChannel).filter(YouTubeChannel.id == video.channel_fk).first()
     max_height = effective_height(channel.max_height if channel else 1080, h)
 
     try:
-        resolved = resolver.resolve(video_id, max_height)
-        with httpx.Client(timeout=UPSTREAM_TIMEOUT, follow_redirects=True) as c:
-            r = c.get(resolved.master_url, headers=resolved.headers)
-            r.raise_for_status()
-            text = r.text
+        # The resolve and the master are both cached until shortly before
+        # Google's URL expires, and survive a restart (see resolver).
+        with traffic.purpose("playback"):
+            resolved, text = resolver.master_text(video_id, max_height)
     except resolver.ResolveBackoff as e:
         # Already logged when it failed; Jellyfin re-probes far more often
         # than it is worth hearing about.
@@ -125,7 +130,8 @@ def proxied(video_id: str, token: str, request: Request, db: Session = Depends(g
 
     headers = {}
     try:
-        resolved = resolver.resolve(video_id)
+        with traffic.purpose("playback"):
+            resolved = resolver.resolve(video_id)
     except YouTubeBlocked:
         raise HTTPException(503, "YouTube is rate-limiting this server; try again shortly")
     except YouTubeError as e:
@@ -136,13 +142,19 @@ def proxied(video_id: str, token: str, request: Request, db: Session = Depends(g
     if range_header:
         headers["Range"] = range_header
 
-    client_ = httpx.Client(timeout=UPSTREAM_TIMEOUT, follow_redirects=True)
+    # One shared client: segments reuse keep-alive connections instead of a new
+    # connection (and DNS lookup) per segment, and the proxy setting applies.
+    client_ = traffic.http_client()
     try:
-        req = client_.build_request("GET", target, headers=headers)
-        upstream = client_.send(req, stream=True)
+        with traffic.purpose("playback"):
+            req = client_.build_request("GET", target, headers=headers, timeout=UPSTREAM_TIMEOUT)
+            upstream = client_.send(req, stream=True)
         upstream.raise_for_status()
     except httpx.HTTPError as e:
-        client_.close()
+        try:
+            upstream.close()
+        except Exception:
+            pass
         logger.warning(f"[YouTube] Upstream fetch failed for {video_id}: {e}")
         raise HTTPException(502, "Upstream fetch failed")
 
@@ -152,7 +164,6 @@ def proxied(video_id: str, token: str, request: Request, db: Session = Depends(g
             text = upstream.read().decode("utf-8", errors="replace")
         finally:
             upstream.close()
-            client_.close()
         body = playlist.rewrite(text, target, _proxy_prefix(db, video_id))
         return Response(content=body, media_type="application/vnd.apple.mpegurl",
                         headers={"Cache-Control": "no-cache"})
@@ -163,7 +174,6 @@ def proxied(video_id: str, token: str, request: Request, db: Session = Depends(g
                 yield chunk
         finally:
             upstream.close()
-            client_.close()
 
     passthrough = {k: v for k, v in upstream.headers.items()
                    if k.lower() in ("content-length", "content-range", "accept-ranges")}
@@ -221,8 +231,9 @@ def live_stream(channel_id: int, db: Session = Depends(get_db)):
         raise HTTPException(503, "ffmpeg is not available on the Tentacle server")
 
     try:
-        video_url, audio_url, headers = resolver.pick_tracks(
-            video.video_id, channel.max_height or 1080)
+        with traffic.purpose("playback"):
+            video_url, audio_url, headers = resolver.pick_tracks(
+                video.video_id, channel.max_height or 1080)
     except YouTubeBlocked:
         raise HTTPException(503, "YouTube is rate-limiting this server; try again shortly")
     except YouTubeError as e:
@@ -232,10 +243,13 @@ def live_stream(channel_id: int, db: Session = Depends(get_db)):
     user_agent = headers.get("User-Agent", "Mozilla/5.0")
     # ffmpeg runs on this host, so Google's IP-signed URLs are valid for it —
     # no need to route the segments back through our own proxy.
+    # With a proxy set, ffmpeg goes through it too: Google signs the URLs to the
+    # address that resolved them.
+    via = traffic.ffmpeg_proxy_args()
     cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin",
-           "-user_agent", user_agent, "-i", video_url]
+           "-user_agent", user_agent, *via, "-i", video_url]
     if audio_url:
-        cmd += ["-user_agent", user_agent, "-i", audio_url,
+        cmd += ["-user_agent", user_agent, *via, "-i", audio_url,
                 "-map", "0:v:0", "-map", "1:a:0"]
     else:
         cmd += ["-map", "0:v:0", "-map", "0:a:0?"]
@@ -284,7 +298,12 @@ def live_stream(channel_id: int, db: Session = Depends(get_db)):
         err = b"".join(err_tail).decode("utf-8", "replace").strip()
         if err:
             logger.warning(f"[YouTube] ffmpeg for '{channel.title}': {err[-400:]}")
+            if produced[0] < 1_000_000:
+                # It failed before it got going: the cached tracks are stale.
+                resolver.forget_tracks(video.video_id)
         logger.info(f"[YouTube] Live stream ended for '{channel.title}'")
+
+    produced = [0]
 
     def _stream():
         try:
@@ -292,6 +311,7 @@ def live_stream(channel_id: int, db: Session = Depends(get_db)):
                 chunk = proc.stdout.read1(65536)
                 if not chunk:
                     break
+                produced[0] += len(chunk)
                 yield chunk
         finally:
             _stop()
@@ -337,12 +357,13 @@ def live_master(channel_id: int, db: Session = Depends(get_db)):
 
     try:
         # No failure back-off: a broadcast can start answering at any moment.
-        resolved = resolver.resolve(video.video_id, channel.max_height or 1080,
-                                    backoff=False)
-        with httpx.Client(timeout=UPSTREAM_TIMEOUT, follow_redirects=True) as c:
-            r = c.get(resolved.master_url, headers=resolved.headers)
-            r.raise_for_status()
-            text = r.text
+        with traffic.purpose("playback"):
+            resolved = resolver.resolve(video.video_id, channel.max_height or 1080,
+                                        backoff=False)
+            r = traffic.http_client().get(resolved.master_url, headers=resolved.headers,
+                                          timeout=UPSTREAM_TIMEOUT)
+        r.raise_for_status()
+        text = r.text
     except YouTubeBlocked:
         raise HTTPException(503, "YouTube is rate-limiting this server; try again shortly")
     except (YouTubeError, httpx.HTTPError) as e:
@@ -461,6 +482,75 @@ def status(request: Request, db: Session = Depends(get_db)):
         "resolver_cache": resolver.cache_size(),
         "resolver_backing_off": resolver.failure_count(),
     }
+
+
+class TrafficSettings(BaseModel):
+    """How Tentacle talks to YouTube. See services/youtube/traffic.py."""
+    background_checks: bool = True
+    interval_minutes: int = traffic.DEFAULT_INTERVAL_MINUTES
+    # A masked key (as GET returns it) keeps the saved one; "" clears it.
+    api_key: str = ""
+    proxy: str = ""
+
+
+def _mask(key: str) -> str:
+    return (key[:4] + "..." + key[-4:]) if len(key) > 10 else ("..." if key else "")
+
+
+@router.get("/traffic", dependencies=[Depends(require_admin)])
+def traffic_status(db: Session = Depends(get_db)):
+    """The traffic settings, the pause after a bot check, and request counts."""
+    from services.youtube import feeds
+    key = get_setting(db, "youtube_api_key", "") or ""
+    return {
+        "background_checks": get_setting(db, "youtube_background_checks", "true") != "false",
+        "interval_minutes": traffic.interval_minutes(
+            get_setting(db, "youtube_index_interval_minutes", str(traffic.DEFAULT_INTERVAL_MINUTES))),
+        "min_interval_minutes": traffic.MIN_INTERVAL_MINUTES,
+        "api_key": _mask(key),
+        "api": feeds.api_state(),
+        "proxy": get_setting(db, "youtube_proxy", "") or "",
+        "pause": traffic.pause_state(),
+        "this_hour": traffic.counts(),
+        "last_hour": traffic.last_report(),
+    }
+
+
+@router.post("/traffic", dependencies=[Depends(require_admin)])
+def save_traffic(body: TrafficSettings, db: Session = Depends(get_db)):
+    from models.database import set_setting
+    from services.youtube import feeds
+    try:
+        proxy = traffic.normalize_proxy(body.proxy)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    old_proxy = get_setting(db, "youtube_proxy", "") or ""
+    old_key = get_setting(db, "youtube_api_key", "") or ""
+    key = old_key if "..." in (body.api_key or "") else (body.api_key or "").strip()
+
+    set_setting(db, "youtube_background_checks", "true" if body.background_checks else "false")
+    set_setting(db, "youtube_index_interval_minutes", str(traffic.interval_minutes(body.interval_minutes)))
+    set_setting(db, "youtube_proxy", proxy)
+    set_setting(db, "youtube_api_key", key)
+    traffic.configure(proxy=proxy, api_key=key)
+    if proxy != old_proxy:
+        # A pause is about the address YouTube saw; a new route starts fresh.
+        traffic.clear_pause()
+    api_check = None
+    if key and key != old_key:
+        feeds.reset_api_state()
+        ok, message = feeds.check_api_key()
+        api_check = {"ok": ok, "detail": message}
+    try:
+        from main import reschedule_youtube_index
+        reschedule_youtube_index()
+    except Exception as e:
+        logger.warning(f"[YouTube] Could not reschedule the background check: {e}")
+    logger.info(f"[YouTube] Traffic settings saved: background checks "
+                f"{'on' if body.background_checks else 'off'}, every "
+                f"{traffic.interval_minutes(body.interval_minutes)} min, API key "
+                f"{'set' if key else 'not set'}, proxy {proxy or 'none'}")
+    return {**traffic_status(db), "api_check": api_check}
 
 
 class SetupBody(BaseModel):
@@ -1089,6 +1179,10 @@ def _run_refresh(channel_ids=None):
         channel_ids = None if pending_all else pending
 
 
+# Seconds between two channels in a refresh someone started (random in range).
+MANUAL_CHANNEL_GAP_SECONDS = (2.0, 6.0)
+
+
 def _run_refresh_once(channel_ids=None):
     """Index the given channels (or every enabled one) with its own session."""
     from models.database import SessionLocal
@@ -1104,7 +1198,15 @@ def _run_refresh_once(channel_ids=None):
         channels = query.all()
         _refresh_state["channels_total"] = len(channels)
         changed = []
-        for channel in channels:
+        for i, channel in enumerate(channels):
+            if traffic.paused():
+                logger.info("[YouTube] Refresh stopped: YouTube requests are paused after a bot check")
+                break
+            if i:
+                # A few seconds apart, never at a fixed beat: someone waits on
+                # this, but a burst of listings is what YouTube flags.
+                import time as _time
+                _time.sleep(traffic.spacing(*MANUAL_CHANNEL_GAP_SECONDS))
             _refresh_state["channel"] = channel.title
             _refresh_state["keep"] = channel.keep_count or 10
             _refresh_state["kept"] = 0

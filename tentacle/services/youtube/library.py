@@ -148,16 +148,22 @@ def _download(url: str) -> bytes:
     without having to reach into the HTTP client.
     """
     try:
-        import httpx
-        with httpx.Client(timeout=15, follow_redirects=True) as c:
-            r = c.get(url)
-            r.raise_for_status()
-            # A 404 page or a placeholder is not artwork. maxresdefault is
-            # missing for plenty of uploads, and the next candidate handles it.
-            return r.content if len(r.content) > 1024 else b""
+        from services.youtube import traffic
+        with traffic.purpose("artwork"):
+            r = traffic.http_client().get(url, timeout=15)
+        r.raise_for_status()
+        # A 404 page or a placeholder is not artwork. maxresdefault is
+        # missing for plenty of uploads, and the next candidate handles it.
+        return r.content if len(r.content) > 1024 else b""
     except Exception as e:                      # network, DNS, HTTP, anything
         logger.debug(f"[YouTube] Could not fetch {url}: {e}")
         return b""
+
+
+# Videos whose artwork could not be fetched from any source, and when to try
+# again: missing artwork was retried on every scheduled check.
+ARTWORK_RETRY_SECONDS = 24 * 3600
+_artwork_retry_at: dict = {}
 
 
 def fetch_artwork(video, folder: Path) -> int:
@@ -175,6 +181,9 @@ def fetch_artwork(video, folder: Path) -> int:
                for n in ("poster", "fanart", "landscape")):
             return 0
 
+    import time
+    if _artwork_retry_at.get(video.video_id, 0) > time.time():
+        return 0
     data = b""
     for url in artwork_candidates(video):
         data = _download(url)
@@ -184,7 +193,9 @@ def fetch_artwork(video, folder: Path) -> int:
     if not ext:
         if data:
             logger.debug(f"[YouTube] Artwork for {video.video_id} was not an image")
+        _artwork_retry_at[video.video_id] = time.time() + ARTWORK_RETRY_SECONDS
         return 0
+    _artwork_retry_at.pop(video.video_id, None)
 
     written = 0
     # One 16:9 image, written under each name Jellyfin reads a different image

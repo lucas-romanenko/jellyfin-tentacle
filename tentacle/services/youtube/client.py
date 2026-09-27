@@ -7,7 +7,8 @@ so it can be stubbed in tests without touching the network.
 import logging
 from typing import Optional
 
-from services.youtube.errors import classify
+from services.youtube import traffic
+from services.youtube.errors import PausedByBotCheck, YouTubeBlocked, classify
 
 logger = logging.getLogger(__name__)
 
@@ -29,12 +30,33 @@ _BASE_OPTS = {
 }
 
 
+_counting_class = None
+
+
+def _ydl_class():
+    """yt-dlp's YoutubeDL, with every HTTP request it makes counted (they all go
+    through YoutubeDL.urlopen)."""
+    global _counting_class
+    if _counting_class is None:
+        import yt_dlp
+
+        class CountingYoutubeDL(yt_dlp.YoutubeDL):
+            def urlopen(self, req):
+                traffic.count(getattr(req, "url", req))
+                return super().urlopen(req)
+
+        _counting_class = CountingYoutubeDL
+    return _counting_class
+
+
 def _ydl(extra: dict = None):
-    import yt_dlp
     opts = dict(_BASE_OPTS)
+    # The proxy (if set) and a player cache that survives restarts, so the
+    # player code is not fetched again for every extraction.
+    opts.update(traffic.ydl_options())
     if extra:
         opts.update(extra)
-    return yt_dlp.YoutubeDL(opts)
+    return _ydl_class()(opts)
 
 
 def available() -> bool:
@@ -59,15 +81,23 @@ def extract(url: str, extra_opts: dict = None) -> dict:
 
     Raises YouTubeBlocked / YouTubeUnavailable / VideoUnavailable — never
     returns an empty result to mean failure, because a caller that prunes on an
-    empty list would then wipe the channel.
+    empty list would then wipe the channel. A bot check starts the app-wide
+    pause (services.youtube.traffic); during it, PausedByBotCheck is raised
+    without contacting YouTube.
     """
+    # Nothing is sent while YouTube requests are paused after a bot check.
+    traffic.ensure_allowed()
     try:
         with _ydl(extra_opts) as ydl:
             info = ydl.extract_info(url, download=False)
     except Exception as e:  # yt_dlp raises its own hierarchy
-        raise classify(e) from e
+        error = classify(e)
+        if isinstance(error, YouTubeBlocked) and not isinstance(error, PausedByBotCheck):
+            traffic.record_block(str(e))
+        raise error from e
     if info is None:
         raise classify(Exception(f"yt-dlp returned nothing for {url}"))
+    traffic.note_success()
     return info
 
 
