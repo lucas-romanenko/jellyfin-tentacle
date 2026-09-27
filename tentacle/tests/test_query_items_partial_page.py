@@ -1,66 +1,84 @@
-"""A smart playlist must not lose entries when a later page of its query fails (#167).
+"""A smart playlist loses entries when one page of JellyfinService.query_items()
+times out.
 
-Run from the tentacle/ directory:  python -m unittest discover -s tests
+query_items() pages /Items 2000 at a time. _get() returns None on a timeout /
+transport error, and the paging loop just `break`s, handing back the pages that
+did arrive as if they were the whole answer. _process_single_playlist() then
+diffs the playlist against that partial list and removes every entry past the
+failed page. The M5 guard only catches a completely empty result.
 
-query_items() pages through /Items 2,000 at a time. A page after the first that
-timed out ended the loop, and the pages that DID arrive came back as the whole
-answer; the playlist rebuild then removed everything after them. A later-page
-failure now raises, which every playlist caller turns into "leave the playlist
-unchanged". A failed first page still returns [] (the empty-result guard).
+Run from tentacle/:  python -m unittest discover -s tests -p "test_query_items_partial_page.py"
 """
-import logging
 import unittest
+from pathlib import Path
 
-from services.jellyfin import JellyfinService, PartialListing
+import services.smartlists as sl
+from services.jellyfin import JellyfinService
 
-
-def setUpModule():
-    logging.disable(logging.CRITICAL)
-
-
-def tearDownModule():
-    logging.disable(logging.NOTSET)
+TOTAL = 3600
 
 
-def _service(fail_at=None, total=3600):
-    jf = JellyfinService("http://jf:8096", "k", "u1")
+class PartialPagingJellyfin(JellyfinService):
+    def __init__(self):
+        self.url = "http://jf"
+        self.user_id = "u1"
+        self.removed = []
+        self.added = []
+        self.current = [{"Id": f"m{i}", "PlaylistItemId": f"e{i}", "Type": "Movie"} for i in range(TOTAL)]
 
-    def _get(path, params=None):
-        start = params["StartIndex"]
-        if fail_at is not None and start >= fail_at:
-            return None
-        n = min(params["Limit"], total - start)
-        return {"Items": [{"Id": str(start + i)} for i in range(n)], "TotalRecordCount": total}
-    jf._get = _get
-    return jf
+    def _get(self, path, params=None):
+        assert path == "/Items"
+        start = params.get("StartIndex", 0)
+        if start >= 2000:
+            return None  # second page timed out
+        return {"Items": [{"Id": f"m{i}"} for i in range(start, min(start + params["Limit"], TOTAL))],
+                "TotalRecordCount": TOTAL}
+
+    def item_exists(self, pid):
+        return True
+
+    def get_playlist_items(self, pid, *a, **k):
+        return list(self.current)
+
+    def add_to_playlist(self, pid, ids):
+        self.added.append(list(ids))
+        return True
+
+    def remove_from_playlist(self, pid, entry_ids):
+        self.removed.extend(entry_ids)
+        return True
 
 
-class QueryItemsPaging(unittest.TestCase):
-    def test_a_complete_listing_pages_through(self):
-        self.assertEqual(3600, len(_service().query_items(include_types=["Movie"], tags=["Netflix Movies"])))
+class TestQueryItemsPartialPage(unittest.TestCase):
+    def test_query_items_does_not_return_partial_list_as_complete(self):
+        jf = PartialPagingJellyfin()
+        with self.assertRaises(RuntimeError):
+            jf.query_items(["Movie"], tags=["Netflix Movies"])
 
-    def test_a_later_page_failure_raises_instead_of_returning_part(self):
-        with self.assertRaises(PartialListing):
-            _service(fail_at=2000).query_items(include_types=["Movie"], tags=["Netflix Movies"])
+    def test_a_complete_multi_page_answer_is_returned(self):
+        jf = PartialPagingJellyfin()
+        jf._get = lambda path, params=None: {
+            "Items": [{"Id": f"m{i}"} for i in range(params["StartIndex"],
+                                                      min(params["StartIndex"] + params["Limit"], TOTAL))],
+            "TotalRecordCount": TOTAL}
+        self.assertEqual(len(jf.query_items(["Movie"])), TOTAL)
 
-    def test_a_failed_first_page_is_still_an_empty_answer(self):
-        self.assertEqual([], _service(fail_at=0).query_items(include_types=["Movie"]))
+    def test_a_failed_first_page_is_still_empty(self):
+        """Unchanged: the M5 guard in _process_single_playlist handles this one."""
+        jf = PartialPagingJellyfin()
+        jf._get = lambda path, params=None: None
+        self.assertEqual(jf.query_items(["Movie"]), [])
 
-    def test_the_playlist_is_left_unchanged(self):
-        """The real playlist builder, with a Jellyfin that loses page 2."""
-        from pathlib import Path
-        from services import smartlists
-        jf = _service(fail_at=2000)
-        writes = []
-        jf.add_to_playlist = lambda *a, **k: writes.append(("add", a)) or True
-        jf.remove_from_playlist = lambda *a, **k: writes.append(("remove", a)) or True
-        stats = {"processed": 0, "created": 0, "updated": 0, "changed": 0, "errors": 0, "item_counts": {}}
-        config = {"Name": "Netflix Movies", "MediaTypes": ["Movie"], "JellyfinPlaylistId": "pl1",
-                  "ExpressionSets": [{"Expressions": [{"MemberName": "Tags", "Operator": "Contains",
-                                                       "TargetValue": "Netflix Movies"}]}]}
-        smartlists._process_single_playlist_locked(jf, Path("/nonexistent"), config, "u1", stats)
-        self.assertEqual([], writes)
-        self.assertEqual(1, stats["errors"])
+    def test_playlist_is_not_trimmed_on_a_failed_page(self):
+        jf = PartialPagingJellyfin()
+        stats = {"updated": 0, "processed": 0, "changed": 0, "errors": 0, "item_counts": {}}
+        config = {"Name": "Netflix Movies", "JellyfinPlaylistId": "pl-1", "MediaTypes": ["Movie"],
+                  "ExpressionSets": [{"Expressions": [
+                      {"MemberName": "Tags", "Operator": "Contains", "TargetValue": "Netflix Movies"}]}],
+                  "Order": {"SortOptions": [{"SortBy": "ReleaseDate", "SortOrder": "Descending"}]}}
+        sl._process_single_playlist(jf, Path("/nonexistent"), config, "u1", stats)
+        self.assertEqual(len(jf.removed), 0,
+                         f"{len(jf.removed)} of {TOTAL} playlist entries removed after one page timed out")
 
 
 if __name__ == "__main__":

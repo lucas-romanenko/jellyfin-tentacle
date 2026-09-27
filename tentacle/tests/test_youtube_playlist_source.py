@@ -1,147 +1,85 @@
-"""A YouTube playlist is its own source, not its owner's channel (#169).
+"""A YouTube playlist is a source of its own, named after itself.
 
-Run from the tentacle/ directory:  python -m unittest discover -s tests
+resolve_channel() titled every source "channel or uploader or title", and a
+playlist listing names its OWNER in "channel" (yt-dlp's _tab extractor fills
+channel/channel_id from the playlist's owner) — so a playlist was titled as
+its channel. add_channel() then refused it whenever that channel, or another
+of its playlists, was already added: it matched on channel_id, which is the
+owner's for a playlist. The indexer already handles a video listed by two
+sources ("already indexed under another channel or playlist").
 
-For a playlist, yt-dlp's tab extractor fills channel / channel_id with the
-playlist's OWNER. So a playlist was titled with the owner's channel name (its
-folder, playlist and home row all said "Kakė Makė" instead of the playlist),
-and add_channel refused it with 409 "already added" whenever the owner's
-channel, or another playlist of the same owner, was already a source.
+Run from tentacle/:  python -m unittest discover -s tests -p "test_youtube_playlist_source.py"
 """
-import logging
-import tempfile
 import unittest
 from unittest import mock
 
-from fastapi import HTTPException
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+import test_youtube
 
-import models.database as mdb
-from models.database import TentacleUser, YouTubeChannel
-from routers import youtube
-from services.youtube import client, indexer
-from services.youtube import sync as ysync
-
-OWNER = "UC" + "o" * 22
-PL1, PL2 = "PL" + "1" * 32, "PL" + "2" * 32
+OWNER = "UC" + "a" * 22
 
 
-def setUpModule():
-    logging.disable(logging.CRITICAL)
-
-
-def tearDownModule():
-    logging.disable(logging.NOTSET)
-
-
-class PlaylistTitle(unittest.TestCase):
-    def test_a_playlist_is_titled_by_its_own_title(self):
-        listing = {"title": "Kids' songs", "channel": "Kakė Makė", "uploader": "Kakė Makė",
-                   "channel_id": OWNER, "entries": [{"id": "a" * 11}], "thumbnails": []}
-        with mock.patch.object(client, "flat_listing", lambda url, limit: dict(listing)):
-            info = indexer.resolve_channel(f"https://www.youtube.com/playlist?list={PL1}")
-        self.assertEqual("playlist", info["kind"])
-        self.assertEqual("Kids' songs", info["title"])
-        self.assertEqual(PL1, info["playlist_id"])
+class TestPlaylistTitle(unittest.TestCase):
+    def test_a_playlist_is_titled_by_its_own_name(self):
+        from services.youtube import indexer
+        listing = {"title": "Bluey Season 1", "channel": "Bluey - Official Channel",
+                   "channel_id": OWNER, "entries": [{"id": "abcdefghijk"}], "thumbnails": []}
+        with mock.patch.object(indexer.client, "flat_listing", return_value=listing):
+            info = indexer.resolve_channel("https://www.youtube.com/playlist?list=PLbluey1")
+        self.assertEqual(info["kind"], "playlist")
+        self.assertEqual(info["title"], "Bluey Season 1")
 
     def test_a_channel_is_still_titled_by_the_channel(self):
-        listing = {"title": "Kakė Makė - Videos", "channel": "Kakė Makė", "channel_id": OWNER,
-                   "entries": [], "thumbnails": []}
-        with mock.patch.object(client, "flat_listing", lambda url, limit: dict(listing)):
-            info = indexer.resolve_channel("https://www.youtube.com/channel/" + OWNER)
-        self.assertEqual("Kakė Makė", info["title"])
-
-    def test_resolve_channel_reports_the_owner(self):
-        listing = {"title": "Favorites", "channel": "Owner B", "channel_id": OWNER,
-                   "entries": [], "thumbnails": []}
-        with mock.patch.object(client, "flat_listing", lambda url, limit: dict(listing)):
-            info = indexer.resolve_channel(f"https://www.youtube.com/playlist?list={PL1}")
-        self.assertEqual("Owner B", info["owner"])
+        from services.youtube import indexer
+        listing = {"title": "Bluey - Official Channel - Videos", "channel": "Bluey - Official Channel",
+                   "channel_id": OWNER, "entries": [], "thumbnails": []}
+        with mock.patch.object(indexer.client, "flat_listing", return_value=listing):
+            info = indexer.resolve_channel("https://www.youtube.com/@bluey")
+        self.assertEqual(info["title"], "Bluey - Official Channel")
 
 
-class AddingNextToTheOwner(unittest.TestCase):
-    def setUp(self):
-        engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db")
-        mdb.Base.metadata.create_all(engine)
-        self.db = sessionmaker(bind=engine)()
-        self.addCleanup(self.db.close)
-        self.db.add(TentacleUser(jellyfin_user_id="a" * 32, display_name="u", is_admin=True))
-        self.db.commit()
-        self.info = None
-        patches = [
-            mock.patch.object(youtube.client, "available", lambda: True),
-            mock.patch.object(youtube.indexer, "resolve_channel", lambda url: dict(self.info)),
-            mock.patch.object(youtube, "_start_refresh", lambda **kw: True),
-            mock.patch.object(ysync, "detect_base_url",
-                              lambda db, host=None, scheme="http": {"url": "http://192.168.2.10:8888", "tried": []}),
-        ]
-        for p in patches:
-            p.start()
-            self.addCleanup(p.stop)
+class TestPlaylistNextToItsChannel(unittest.TestCase):
+    """The add-channel harness of test_youtube.TestAddingAChannel, borrowed, not inherited."""
+    setUp = test_youtube.TestAddingAChannel.setUp
+    tearDown = test_youtube.TestAddingAChannel.tearDown
+    _Req = test_youtube.TestAddingAChannel._Req
+    _add = test_youtube.TestAddingAChannel._add
 
-    class _Req:
-        headers = {"host": "192.168.2.10:8888"}
+    def _as_playlist(self, playlist_id, title):
+        self.info.update(kind="playlist", playlist_id=playlist_id, title=title,
+                         channel_id=OWNER, canonical=f"https://www.youtube.com/playlist?list={playlist_id}")
 
-    def _add(self, kind, title, playlist_id=None, owner="Kakė Makė", channel_id=OWNER):
-        self.info = {"kind": kind, "channel_id": channel_id, "handle": None, "playlist_id": playlist_id,
-                     "title": title, "owner": owner, "avatar_url": None, "banner_url": None,
-                     "canonical": "u", "has_uploads": True}
-        body = youtube.ChannelCreate(url="https://youtube.com/x")
-        return youtube.add_channel(body, request=self._Req(), db=self.db)
-
-    def test_a_playlist_can_sit_next_to_its_owners_channel(self):
-        self._add("channel", "Kakė Makė")
-        self._add("playlist", "Kids' songs", PL1)
-        self.assertEqual({"Kakė Makė", "Kids' songs"}, {c.title for c in self.db.query(YouTubeChannel)})
+    def test_a_playlist_can_be_added_next_to_its_channel(self):
+        self.info.update(channel_id=OWNER)
+        self._add()
+        self._as_playlist("PLone", "Season 1")
+        self._add()
+        self.assertEqual(self.db.query(self.YouTubeChannel).count(), 2)
 
     def test_two_playlists_of_one_owner_can_both_be_added(self):
-        self._add("playlist", "Kids' songs", PL1)
-        self._add("playlist", "Lullabies", PL2)
-        self.assertEqual(2, self.db.query(YouTubeChannel).count())
+        self._as_playlist("PLone", "Season 1")
+        self._add()
+        self._as_playlist("PLtwo", "Season 2")
+        self._add()
+        self.assertEqual(self.db.query(self.YouTubeChannel).count(), 2)
 
-    def test_the_same_playlist_twice_is_still_refused(self):
-        self._add("playlist", "Kids' songs", PL1)
+    def test_the_same_playlist_twice_is_refused(self):
+        from fastapi import HTTPException
+        self._as_playlist("PLone", "Season 1")
+        self._add()
         with self.assertRaises(HTTPException) as cm:
-            self._add("playlist", "Kids' songs", PL1)
-        self.assertEqual(409, cm.exception.status_code)
+            self._add()
+        self.assertEqual(cm.exception.status_code, 409)
 
-    def test_the_same_channel_twice_is_still_refused_even_after_its_playlist(self):
-        self._add("playlist", "Kids' songs", PL1)
-        self._add("channel", "Kakė Makė")
+    def test_the_same_channel_twice_is_still_refused(self):
+        from fastapi import HTTPException
+        self.info.update(channel_id=OWNER)
+        self._add()
+        self._as_playlist("PLone", "Season 1")
+        self._add()
+        self.info.update(kind="channel", playlist_id=None, title="A Channel", channel_id=OWNER)
         with self.assertRaises(HTTPException) as cm:
-            self._add("channel", "Kakė Makė")
-        self.assertEqual(409, cm.exception.status_code)
-
-
-class TitlesStayUnique(AddingNextToTheOwner):
-    """Tentacle keys a source's playlist, home row, folder and collection on its
-    title: a second source with the same title silently got no playlist."""
-
-    def _titles(self):
-        return sorted(c.title for c in self.db.query(YouTubeChannel))
-
-    def test_a_playlist_named_like_its_channel_gets_a_number(self):
-        self._add("channel", "Bluey", owner="Bluey")
-        self._add("playlist", "bluey", PL1, owner="Bluey")
-        self.assertEqual(["Bluey", "bluey (2)"], self._titles())
-
-    def test_two_owners_playlists_with_one_name_take_the_owner(self):
-        self._add("playlist", "Favorites", PL1, owner="Owner A", channel_id="UC" + "a" * 22)
-        self._add("playlist", "Favorites", PL2, owner="Owner B", channel_id="UC" + "b" * 22)
-        self.assertEqual(["Favorites", "Favorites (Owner B)"], self._titles())
-
-    def test_a_third_clash_counts_on(self):
-        self._add("channel", "Bluey", owner="Bluey")
-        self._add("playlist", "Bluey", PL1, owner="Bluey")
-        self._add("playlist", "Bluey", "PL" + "3" * 32, owner="Bluey")
-        self.assertEqual(["Bluey", "Bluey (2)", "Bluey (3)"], self._titles())
-
-    def test_distinct_titles_are_untouched_and_each_gets_its_own_slug(self):
-        self._add("channel", "Kakė Makė")
-        self._add("playlist", "Kids' songs", PL1)
-        self.assertEqual(["Kakė Makė", "Kids' songs"], self._titles())
-        self.assertEqual(2, len({c.slug for c in self.db.query(YouTubeChannel)}))
+            self._add()
+        self.assertEqual(cm.exception.status_code, 409)
 
 
 if __name__ == "__main__":

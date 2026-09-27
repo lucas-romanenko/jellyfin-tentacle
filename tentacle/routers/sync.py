@@ -40,18 +40,6 @@ _running_syncs: dict = {}
 _after_sync: dict = {}
 
 
-def _finishing(run) -> bool:
-    """True for a completed run whose sync is still updating Jellyfin."""
-    if run is None or run.status != "completed":
-        return False
-    if run.provider_id in _after_sync:
-        return True
-    nightly = _after_sync.get("nightly")
-    return bool(nightly and run.started_at and run.started_at >= nightly)
-
-
-def _shown_status(run) -> str:
-    return "finishing" if _finishing(run) else run.status
 _sync_progress: dict = {}  # provider_id -> {phase, category, stats}
 _sync_subscribers: dict = {}  # provider_id -> [queue.Queue]
 _cancel_flags: dict = {}  # provider_id -> threading.Event (set = cancelled)
@@ -74,6 +62,25 @@ def _notify_sync_progress(provider_id: int, phase: str, category: str, stats: di
                 q.put_nowait(progress)
             except queue.Full:
                 pass
+
+
+def _finishing(provider_id, run_id=None, db=None) -> bool:
+    """A provider whose SyncRun is already "completed" but whose sync is still
+    updating Jellyfin: a manual sync's thread running the trailing pipeline
+    (scan wait up to 120 s, tag push, playlists), or the nightly job past its
+    provider syncs (scans, tags, EPG, per-user playlists; over an hour on a big
+    library). The guard against a second sync rightly still holds then; this
+    lets every status say so instead of "completed" (#159)."""
+    nightly = _after_sync.get("nightly")
+    if db is None or not (provider_id in _running_syncs or provider_id in _after_sync or nightly):
+        return False
+    latest = db.query(SyncRun).filter(SyncRun.provider_id == provider_id) \
+        .order_by(SyncRun.started_at.desc()).first()
+    if not (latest and latest.status == "completed" and (run_id is None or latest.id == run_id)):
+        return False
+    if provider_id in _running_syncs or provider_id in _after_sync:
+        return True
+    return bool(latest.started_at and latest.started_at >= nightly)
 
 
 def _run_sync_background(provider_id: int, sync_type: str):
@@ -210,6 +217,9 @@ def trigger_sync(body: SyncRequest, db: Session = Depends(get_db)):
             raise HTTPException(400, "The last sync is still updating Jellyfin (library scan, tags, "
                                      "playlists) — try again when it has finished")
         if body.provider_id in _running_syncs:
+            if _finishing(body.provider_id, db=db):
+                raise HTTPException(400, "The last sync is still updating Jellyfin (library scan, "
+                                         "tags, playlists) — try again when it has finished")
             raise HTTPException(400, "A sync is already running for this provider")
         db_running = db.query(SyncRun).filter(
             SyncRun.provider_id == body.provider_id,
@@ -326,12 +336,14 @@ def get_sync_status(db: Session = Depends(get_db)):
                 "movies_existing": last_run.movies_existing,
                 "series_new": last_run.series_new,
                 "series_existing": last_run.series_existing,
-                "finishing": _finishing(last_run),
+                "finishing": _finishing(p.id, last_run.id, db),
             })
 
     # Get the very last run status (any status) for cancel detection
     last_run_any = db.query(SyncRun).order_by(SyncRun.id.desc()).first()
-    last_status = _shown_status(last_run_any) if last_run_any else None
+    last_status = last_run_any.status if last_run_any else None
+    if last_run_any and _finishing(last_run_any.provider_id, last_run_any.id, db):
+        last_status = "finishing"
 
     return {
         "running": running,
@@ -363,7 +375,7 @@ def get_sync_history(
                 "id": r.id,
                 "provider_id": r.provider_id,
                 "provider_name": r.provider.name if r.provider else "Unknown",
-                "status": _shown_status(r),
+                "status": "finishing" if _finishing(r.provider_id, r.id, db) else r.status,
                 "sync_type": r.sync_type,
                 "movies_new": r.movies_new,
                 "movies_existing": r.movies_existing,
@@ -455,7 +467,8 @@ def get_dashboard(db: Session = Depends(get_db)):
     ).order_by(SyncRun.completed_at.desc()).first()
     if last_vod_run:
         last_vod_sync = last_vod_run.completed_at.isoformat() if last_vod_run.completed_at else None
-        last_vod_status = _shown_status(last_vod_run)
+        last_vod_status = ("finishing" if _finishing(last_vod_run.provider_id, last_vod_run.id, db)
+                           else last_vod_run.status)
         last_vod_new = (last_vod_run.movies_new or 0) + (last_vod_run.series_new or 0)
     else:
         last_vod_new = 0
@@ -891,6 +904,8 @@ def refresh_tags(db: Session = Depends(get_db)):
     if jellyfin_url and jellyfin_key:
         from services.jellyfin import JellyfinService
         jf = JellyfinService(jellyfin_url, jellyfin_key, jellyfin_uid)
+        from services.jellyfin import _retry_pending_rating_restores
+        _retry_pending_rating_restores(jf, "Refresh Tags")
         # Only Tentacle's own tags are replaced; a tag from a TMDB keyword
         # import or one a user added by hand in Jellyfin survives (#107). The
         # same rules as the nightly push (#180): see sync_owned_tags.
@@ -904,49 +919,40 @@ def refresh_tags(db: Session = Depends(get_db)):
     else:
         logger.info("[Refresh Tags] Jellyfin not configured — skipping tag push")
 
-    # Bring the VOD NFOs' tags in line so Jellyfin picks them up. An existing
-    # NFO gets only its <tag> lines rewritten: rebuilding it from the row threw
-    # away what the sync had written from full TMDB details (imdbid, cast,
-    # directors, studios, tagline), a Sonarr show's tvdbid, and reset
-    # <dateadded> to now (#165). A missing NFO is still written from the row.
+    # Bring the tags in each non-Radarr NFO in line with the DB. Only the
+    # <tag> lines are replaced: rebuilding the whole NFO from the DB row, as
+    # this used to, erased what the row does not hold — <imdbid>, cast,
+    # directors, studios and tagline from the sync's full TMDB details, a
+    # Sonarr show's <tvdbid> — and reset <dateadded> to now.
+    # An NFO that is missing altogether is still written from the row, as
+    # before — there is nothing in it to lose. Only Tentacle's own tags are
+    # replaced; tags Jellyfin's NFO saver or a user added stay (#165).
     from services.nfo import update_nfo_tags, write_movie_nfo, write_series_nfo
     from services.tagger import tentacle_owned_tags
     owned = tentacle_owned_tags(db)
     nfos_written = 0
-    vod_movies = db.query(Movie).filter(Movie.source != "radarr", Movie.nfo_path.isnot(None)).all()
-    for movie in vod_movies:
-        try:
-            if Path(movie.nfo_path).exists():
-                if update_nfo_tags(Path(movie.nfo_path), movie.tags or [], owned):
-                    nfos_written += 1
-                continue
-            metadata = {
-                "tmdb_id": movie.tmdb_id, "title": movie.title, "year": movie.year,
-                "overview": movie.overview, "runtime": movie.runtime, "rating": movie.rating,
-                "genres": movie.genres or [], "poster_path": movie.poster_path,
-                "backdrop_path": movie.backdrop_path,
-            }
-            write_movie_nfo(Path(movie.nfo_path), metadata, movie.tags or [])
-            nfos_written += 1
-        except Exception:
-            pass
-    vod_series = db.query(Series).filter(Series.source != "radarr", Series.nfo_path.isnot(None)).all()
-    for series in vod_series:
-        try:
-            if Path(series.nfo_path).exists():
-                if update_nfo_tags(Path(series.nfo_path), series.tags or [], owned):
-                    nfos_written += 1
-                continue
-            metadata = {
-                "tmdb_id": series.tmdb_id, "title": series.title, "year": series.year,
-                "overview": series.overview, "genres": series.genres or [],
-                "poster_path": series.poster_path, "backdrop_path": series.backdrop_path,
-                "status": getattr(series, "status", None),
-            }
-            write_series_nfo(Path(series.nfo_path), metadata, series.tags or [])
-            nfos_written += 1
-        except Exception:
-            pass
+    for model in (Movie, Series):
+        for row in db.query(model).filter(model.source != "radarr", model.nfo_path.isnot(None)).all():
+            try:
+                nfo = Path(row.nfo_path)
+                if nfo.exists():
+                    if update_nfo_tags(nfo, row.tags or [], owned):
+                        nfos_written += 1
+                    continue
+                metadata = {
+                    "tmdb_id": row.tmdb_id, "title": row.title, "year": row.year,
+                    "overview": row.overview, "genres": row.genres or [],
+                    "poster_path": row.poster_path, "backdrop_path": row.backdrop_path,
+                }
+                if model is Movie:
+                    metadata.update(runtime=row.runtime, rating=row.rating)
+                    write_movie_nfo(nfo, metadata, row.tags or [])
+                else:
+                    metadata["status"] = getattr(row, "status", None)
+                    write_series_nfo(nfo, metadata, row.tags or [])
+                nfos_written += 1
+            except Exception:
+                pass
     if nfos_written:
         logger.info(f"[Refresh Tags] Updated the tags of {nfos_written} NFO files")
 

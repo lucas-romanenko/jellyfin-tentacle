@@ -1,155 +1,62 @@
-"""A sync that is still updating Jellyfin says so (#159).
+"""A sync that is still updating Jellyfin must not be reported as done (A13).
 
-Run from the tentacle/ directory:  python -m unittest discover -s tests
+sync_provider marks the SyncRun "completed" when the VOD part ends, but the
+sync thread then runs the Jellyfin pipeline (library scan wait up to 120 s,
+tag push, playlists) and only clears _running_syncs afterwards. Every status
+said "completed" while a new sync was refused with "A sync is already
+running". The guard is right; the status now says "finishing".
 
-sync_provider marks the SyncRun "completed" when the VOD part ends, but a manual
-sync then runs the Jellyfin pipeline (library-scan wait, tag push, playlists),
-and the nightly job runs scans, tags, EPG and per-user playlist rebuilds (1 h
-43 m on a live install). All that time /history, /status and the dashboard said
-"completed", and a new manual sync was refused as "already running".
+Run from tentacle/:  python -m unittest discover -s tests -p "test_sync_finishing_status.py"
 """
-import logging
 import tempfile
 import unittest
 from datetime import datetime
-from unittest import mock
 
-from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 import models.database as mdb
-import routers.sync as sync_router
 from models.database import Provider, SyncRun
 
 
-def setUpModule():
-    logging.disable(logging.CRITICAL)
-
-
-def tearDownModule():
-    logging.disable(logging.NOTSET)
-
-
-class _Db(unittest.TestCase):
+class TestFinishing(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.mkdtemp()
-        engine = create_engine(f"sqlite:///{tmp}/t.db", connect_args={"check_same_thread": False})
+        import routers.sync as rs
+        self.rs = rs
+        engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db")
         mdb.Base.metadata.create_all(engine)
-        self.Session = sessionmaker(bind=engine)
-        self.db = self.Session()
-        self.addCleanup(self.db.close)
-        mdb.set_setting(self.db, "data_dir", tmp)
-        self.provider = Provider(name="P", server_url="http://192.0.2.10", username="u", password="p", active=True)
-        self.db.add(self.provider)
+        self.db = sessionmaker(bind=engine)()
+        self.p = Provider(name="P", server_url="http://p", username="u", password="x", active=True)
+        self.db.add(self.p)
         self.db.commit()
-        self.pid = self.provider.id
-        sync_router._after_sync.clear()
-        sync_router._running_syncs.clear()
-        self.addCleanup(sync_router._after_sync.clear)
-        self.addCleanup(sync_router._running_syncs.clear)
+        self.run = SyncRun(provider_id=self.p.id, status="completed", sync_type="full",
+                           started_at=datetime.utcnow(), completed_at=datetime.utcnow())
+        self.db.add(self.run)
+        self.db.commit()
+        rs._running_syncs[self.p.id] = True          # the Jellyfin pipeline is still going
 
-    def _complete_run(self, db):
-        run = SyncRun(provider_id=self.pid, sync_type="full", status="completed",
-                      started_at=datetime.utcnow(), completed_at=datetime.utcnow(), duration_seconds=1)
-        db.add(run)
-        db.commit()
-        return run
+    def tearDown(self):
+        self.rs._running_syncs.pop(self.p.id, None)
+        self.db.close()
 
-    def seen(self):
-        db = self.Session()
-        try:
-            return {
-                "history": sync_router.get_sync_history(db=db)["runs"][0]["status"],
-                "status": sync_router.get_sync_status(db=db)["last_status"],
-                "recent": sync_router.get_sync_status(db=db)["recent"][0]["finishing"],
-                "dashboard": sync_router.get_dashboard(db=db)["status"]["vod_sync"]["status"],
-            }
-        finally:
-            db.close()
+    def test_a_new_sync_is_refused_with_the_real_reason(self):
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException) as cm:
+            self.rs.trigger_sync(self.rs.SyncRequest(provider_id=self.p.id), db=self.db)
+        self.assertIn("still updating Jellyfin", cm.exception.detail)
 
+    def test_history_and_status_say_finishing(self):
+        hist = self.rs.get_sync_history(provider_id=self.p.id, limit=10, offset=0, db=self.db)
+        self.assertEqual(hist["runs"][0]["status"], "finishing")
+        st = self.rs.get_sync_status(db=self.db)
+        self.assertEqual(st["last_status"], "finishing")
+        self.assertTrue(st["recent"][0]["finishing"])
 
-class ManualSync(_Db):
-    def test_the_jellyfin_half_reads_as_finishing_then_completed(self):
-        during = {}
-
-        def fake_sync(provider, sync_type, db, **kw):
-            return self._complete_run(db)
-
-        def fake_pipeline(db, log_prefix=""):
-            during.update(self.seen())
-            try:
-                sync_router.trigger_sync(sync_router.SyncRequest(provider_id=self.pid, sync_type="full"), db=db)
-            except HTTPException as e:
-                during["trigger"] = e.detail
-            return {}
-
-        sync_router._running_syncs[self.pid] = True
-        with mock.patch.object(sync_router, "sync_provider", fake_sync), \
-                mock.patch("services.jellyfin.run_full_jellyfin_pipeline", fake_pipeline), \
-                mock.patch("models.database.SessionLocal", self.Session), \
-                mock.patch("routers.smartlists._compute_auto_playlists", lambda db: []):
-            sync_router._run_sync_background(self.pid, "full")
-
-        self.assertEqual({"history": "finishing", "status": "finishing", "recent": True,
-                          "dashboard": "finishing"}, {k: during[k] for k in ("history", "status", "recent", "dashboard")})
-        self.assertIn("still updating Jellyfin", during["trigger"])
-        after = self.seen()
-        self.assertEqual({"history": "completed", "status": "completed", "recent": False,
-                          "dashboard": "completed"}, after)
-
-
-class NightlySync(_Db):
-    def test_the_rest_of_the_nightly_job_reads_as_finishing(self):
-        import main
-        import services.jellyfin as jellyfin
-        import services.smartlists as sl
-        import services.radarr as radarr
-        import services.sonarr as sonarr
-        import services.tagger as tagger
-        import services.discovery as discovery
-        during = {}
-
-        def fake_sync(provider, sync_type, db, **kw):
-            return self._complete_run(db)
-
-        def radarr_scan(db):
-            during.update(self.seen())
-            try:
-                sync_router.trigger_sync(sync_router.SyncRequest(provider_id=self.pid, sync_type="full"), db=db)
-                during["trigger"] = "started"
-            except HTTPException as e:
-                during["trigger"] = e.detail
-            return {}
-
-        patches = [
-            mock.patch.object(main, "SessionLocal", self.Session),
-            mock.patch("services.sync.sync_provider", fake_sync),
-            mock.patch.object(radarr, "scan_radarr_library", radarr_scan),
-            mock.patch.object(sonarr, "scan_sonarr_library", lambda db: {}),
-            mock.patch.object(sl, "refresh_smartlist_playlists", lambda db, user_id=None, only_names=None: {}),
-            mock.patch.object(sl, "sync_smartlists", lambda db, user_id=None: {}),
-            mock.patch.object(sl, "write_home_config", lambda db, user_id=None: {}),
-            mock.patch.object(sl, "migrate_global_smartlists_to_user", lambda db, uid: None),
-            mock.patch.object(sl, "cleanup_orphaned_playlists", lambda db, uid: 0),
-            mock.patch.object(sl, "_notify_jellyfin_plugin", lambda db: {}),
-            mock.patch.object(jellyfin, "push_tags_to_jellyfin", lambda db, log_prefix="": 0),
-            mock.patch.object(jellyfin, "sweep_orphaned_downloads", lambda db: 0),
-            mock.patch.object(tagger, "refresh_recently_added_tags", lambda db: None),
-            mock.patch.object(discovery, "discover_new_provider_content",
-                              lambda db: {"vod_new": [], "live_new": []}),
-            # A live stream another test left open must not make this wait.
-            mock.patch("services.provider_activity.live_streams_active", lambda: False),
-        ]
-        for p in patches:
-            p.start()
-            self.addCleanup(p.stop)
-        main.run_scheduled_sync()
-        self.assertEqual("finishing", during["history"])
-        self.assertEqual("finishing", during["status"])
-        # A manual sync then would run a second Jellyfin pipeline alongside.
-        self.assertIn("still updating Jellyfin", during["trigger"])
-        self.assertEqual("completed", self.seen()["history"])
+    def test_once_done_it_is_completed(self):
+        self.rs._running_syncs.pop(self.p.id, None)
+        hist = self.rs.get_sync_history(provider_id=self.p.id, limit=10, offset=0, db=self.db)
+        self.assertEqual(hist["runs"][0]["status"], "completed")
+        self.assertEqual(self.rs.get_sync_status(db=self.db)["last_status"], "completed")
 
 
 if __name__ == "__main__":

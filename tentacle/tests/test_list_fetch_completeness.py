@@ -74,6 +74,14 @@ class FakeTMDB:
     get_series_details = get_movie_details
 
 
+def _refresh(lst, db, **kw):
+    """refresh_list()'s answer as these tests read it (it returns items, stats)."""
+    items, _stats = lists.refresh_list(lst, db, **kw)
+    db.commit()
+    return {"ok": items is not None, "note": lst.last_fetch_note,
+            "complete": items is not None and getattr(items, "complete", True)}
+
+
 TMDB_TABLE = {"tt1": {"tmdb_id": 1, "title": "Film 1", "media_type": "movie"},
               "tt2": {"tmdb_id": 2, "title": "Film 2", "media_type": "movie"},
               "tt3": {"tmdb_id": 3, "title": "Show 3", "media_type": "series"},
@@ -121,7 +129,7 @@ class ImdbLists(_Db):
         servarr = [{"ImdbId": "tt1", "TmdbId": 1, "Title": "Film 1"}]   # film 2 left the list
         with mock.patch.object(lists.requests, "post", return_value=_Resp(403, text="<html>Forbidden")), \
                 mock.patch.object(lists.requests, "get", return_value=_Resp(json_data=servarr)):
-            result = lists.refresh_list(lst, self.db, tmdb=FakeTMDB(TMDB_TABLE))
+            result = _refresh(lst, self.db, tmdb=FakeTMDB(TMDB_TABLE))
         self.assertEqual([(1, "movie"), (3, "series")], self.stored(lst))
         self.assertEqual([1, 3], self.tagged())
         self.assertIn("TV shows unavailable", result["note"])
@@ -138,17 +146,17 @@ class ImdbLists(_Db):
                 raise nxt
             return nxt
         with mock.patch.object(lists.requests, "post", side_effect=post):
-            result = lists.refresh_list(lst, self.db, tmdb=FakeTMDB(TMDB_TABLE))
+            result = _refresh(lst, self.db, tmdb=FakeTMDB(TMDB_TABLE))
         self.assertEqual([(1, "movie"), (2, "movie"), (3, "series"), (4, "series")], self.stored(lst))
         self.assertEqual([1, 2, 3, 4], self.tagged())
         self.assertFalse(result["complete"])
-        self.assertIn("stopped answering after 1 items", result["note"])
+        self.assertIn("IMDb stopped answering", result["note"])
 
     def test_a_tmdb_429_does_not_drop_the_item(self):
         lst = self.make_list("imdb_rss", self.URL, [(1, "movie"), (2, "movie")])
         page = _gql_page([("tt1", "Film 1", "movie"), ("tt2", "Film 2", "movie")])
         with mock.patch.object(lists.requests, "post", return_value=page):
-            result = lists.refresh_list(lst, self.db, tmdb=FakeTMDB(TMDB_TABLE, fail={"tt2"}))
+            result = _refresh(lst, self.db, tmdb=FakeTMDB(TMDB_TABLE, fail={"tt2"}))
         self.assertEqual([(1, "movie"), (2, "movie")], self.stored(lst))
         self.assertEqual([1, 2], self.tagged())
         self.assertIn("TMDB did not answer for 1 item", result["note"])
@@ -156,7 +164,7 @@ class ImdbLists(_Db):
     def test_a_complete_read_still_removes_what_left(self):
         lst = self.make_list("imdb_rss", self.URL, [(1, "movie"), (2, "movie")])
         with mock.patch.object(lists.requests, "post", return_value=_gql_page([("tt1", "Film 1", "movie")])):
-            result = lists.refresh_list(lst, self.db, tmdb=FakeTMDB(TMDB_TABLE))
+            result = _refresh(lst, self.db, tmdb=FakeTMDB(TMDB_TABLE))
         self.assertEqual([(1, "movie")], self.stored(lst))
         self.assertEqual([1], self.tagged())
         self.assertIsNone(result["note"])
@@ -167,7 +175,7 @@ class ImdbLists(_Db):
         with self.assertRaises(HTTPException) as cm:
             lists.create_list(lists.ListCreate(name="https://www.imdb.com/list/ls1/", type="imdb_rss",
                                                url="My favourites", tag="Faves"), db=self.db, user=self.user)
-        self.assertIn("not an IMDb", cm.exception.detail)
+        self.assertIn("Not an IMDb", cm.exception.detail)
 
 
 class LetterboxdLists(_Db):
@@ -194,7 +202,7 @@ class LetterboxdLists(_Db):
             return _Resp(404)
         with mock.patch.object(requests.Session, "get", side_effect=lambda url, **k: get(url, **k)), \
                 mock.patch.object(lists, "is_safe_url", lambda *a, **k: True):
-            result = lists.refresh_list(lst, self.db)
+            result = _refresh(lst, self.db)
         return lst, result
 
     def test_a_film_page_that_failed_keeps_that_film(self):
@@ -208,7 +216,7 @@ class LetterboxdLists(_Db):
                                  "/page/2/": _Resp(text="<html><title>Just a moment...</title></html>"),
                                  "/film/a/": self._film(1)})
         self.assertEqual([(1, "movie"), (2, "movie"), (3, "movie")], self.stored(lst))
-        self.assertIn("did not serve page 2", result["note"])
+        self.assertIn("page 2 of the list did not load", result["note"])
 
     def test_a_film_page_served_as_a_challenge_keeps_that_film(self):
         lst, result = self._run({"/page/1/": self._page(["a", "b", "c"]), "/film/a/": self._film(1),
@@ -221,12 +229,12 @@ class LetterboxdLists(_Db):
 class TraktLists(_Db):
     def test_no_client_id_keeps_the_list_warns_once_and_says_so(self):
         lst = self.make_list("trakt", "https://trakt.tv/users/x/lists/y", [(1, "movie")])
-        lists._trakt_warned = False
+        lists._trakt_unconfigured_logged = False
         with self.assertLogs("routers.lists", level="WARNING") as logs:
             logging.disable(logging.NOTSET)
             try:
-                first = lists.refresh_list(lst, self.db, trakt_client_id="")
-                lists.refresh_list(lst, self.db, trakt_client_id="")
+                first = _refresh(lst, self.db, trakt_client_id="")
+                _refresh(lst, self.db, trakt_client_id="")
             finally:
                 logging.disable(logging.CRITICAL)
         self.assertEqual(1, sum("Trakt client ID not configured" in m for m in logs.output))

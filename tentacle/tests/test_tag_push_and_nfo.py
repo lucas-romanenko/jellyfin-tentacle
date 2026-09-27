@@ -45,7 +45,6 @@ class FakeJellyfin:
     # The real write rule (a fresh GET of the item, then merge) over this
     # fake's items: only the HTTP layer is faked.
     set_item_owned_tags = _RealJellyfin.set_item_owned_tags
-    _minimal_update = _RealJellyfin._minimal_update
 
     def _item_path(self, item_id):
         return item_id
@@ -53,8 +52,8 @@ class FakeJellyfin:
     def _get(self, path):
         return next((dict(it) for it in self.items.values() if it["Id"] == path), None)
 
-    def _post_item_update(self, item_id, payload, what):
-        type(self).written[item_id] = list(payload["Tags"])
+    def _post_item_update(self, item, payload, what):
+        type(self).written[item["Id"]] = list(payload["Tags"])
         return True
 
     _normalize_title = staticmethod(lambda t: t.lower())

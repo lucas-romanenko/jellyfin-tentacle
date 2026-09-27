@@ -36,7 +36,7 @@ def run_scheduled_sync():
     db = SessionLocal()
     try:
         from models.database import ListSubscription
-        from routers.lists import refresh_list, _get_tmdb_service, _TRAKT_NOT_CONFIGURED
+        from routers.lists import refresh_list, _get_tmdb_service
         from services.tmdb import get_tmdb_token
         bearer = get_tmdb_token(db)
         trakt_cid = get_setting(db, "trakt_client_id") or ""
@@ -44,18 +44,20 @@ def run_scheduled_sync():
         active_lists = db.query(ListSubscription).filter(ListSubscription.active == True).all()
         for lst in active_lists:
             try:
-                result = refresh_list(lst, db, bearer, trakt_cid, tmdb)
-                if not result["ok"]:
-                    # No Trakt client ID: the fetcher already warned once for this
-                    # process; one line per Trakt list every night added nothing (#160).
-                    log = logger.info if result["note"] == _TRAKT_NOT_CONFIGURED else logger.warning
-                    log(f"List '{lst.name}': {result['note']}")
-                    continue
-                stored, new_count, removed_count = result["stored"], result["new"], result["removed"]
-                changes = f"+{new_count} new, -{removed_count} removed" if (new_count or removed_count) else "no changes"
-                note = f" — {result['note']}" if result["note"] else ""
-                log_activity(db, "list_fetch", f"Fetched '{lst.name}' — {stored} items ({changes}){note}")
-                logger.info(f"List '{lst.name}' refreshed: {stored} items{note}")
+                items, store_stats = refresh_list(lst, db, bearer, trakt_cid, tmdb)
+                if items:
+                    stored = store_stats.get("stored", len(items)) if store_stats else len(items)
+                    new_count = store_stats.get("new", 0) if store_stats else 0
+                    removed_count = store_stats.get("removed", 0) if store_stats else 0
+                    if new_count or removed_count:
+                        log_activity(db, "list_fetch", f"Fetched '{lst.name}' — {stored} items (+{new_count} new, -{removed_count} removed)")
+                    else:
+                        log_activity(db, "list_fetch", f"Fetched '{lst.name}' — {stored} items (no changes)")
+                    logger.info(f"List '{lst.name}' refreshed: {len(items)} items")
+                else:
+                    # Not a failure to warn about every night: a missing Trakt
+                    # client ID was already said once, at WARNING (#160).
+                    logger.info(f"List '{lst.name}': {lst.last_fetch_note}")
             except Exception as e:
                 logger.warning(f"Failed to refresh list '{lst.name}': {e}")
         db.commit()
@@ -576,13 +578,6 @@ async def lifespan(app: FastAPI):
             logger.info(f"Cleaned up {len(stuck_runs)} stuck sync run(s) from previous restart")
 
         setup_scheduler(db)
-
-        # One-time: the stored Made for Kids flags never came from YouTube (#130).
-        try:
-            from services.youtube.indexer import reset_made_for_kids_once
-            reset_made_for_kids_once(db)
-        except Exception as e:
-            logger.warning(f"Made for Kids reset failed: {e}")
 
         # One-time migration: move global smartlists to per-user directories
         from models.database import get_setting, TentacleUser as _TU

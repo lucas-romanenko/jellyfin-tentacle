@@ -3,10 +3,14 @@ Tentacle - Jellyfin Service
 Manages Jellyfin items, tags, and playlists via the REST API.
 """
 
+import json
+import os
 import re
+import threading
 import time
 import logging
 import requests
+from pathlib import Path
 from typing import Optional, List
 from services.exceptions import JellyfinConnectionError
 
@@ -32,12 +36,230 @@ def is_youtube_video(item: dict) -> bool:
 PRUNE_DEAD_READ_TIMEOUT = 900
 
 
-class PartialListing(Exception):
+class PartialListing(RuntimeError):
     """A paged Jellyfin listing lost a page after the first: it is incomplete."""
 
 
 # Entries per DELETE /Playlists/{id}/Items call — see remove_from_playlist.
 REMOVE_CHUNK_SIZE = 150
+
+
+# ── Pending rating restores ────────────────────────────────────────────────
+# A series update that Jellyfin cascaded, whose children's own ratings could
+# not all be written back (a 500 on one child, Jellyfin going away mid-way).
+# Kept on disk until every restore succeeds, and retried from these saved
+# values on the next push: once the cascade has run, re-reading the children
+# returns the series' copies, and the tags being correct means no later push
+# would otherwise touch that series again.
+#
+# File shape: {series_id: {"copy": [official, custom] | null,
+#                          "attempts": n, "since": epoch,
+#                          "children": {child_id: {"type": "Season"|"Episode",
+#                                                   "official": ..., "custom": ...,
+#                                                   "season": season_id | null}}}}
+# "copy" is what the series' update wrote onto its children.
+_PENDING_RESTORES_LOCK = threading.RLock()
+# One cascading update at a time (list -> save -> update -> restore). Two
+# passes over one series at once (Refresh Tags beside the nightly push) let
+# the second list the first one's copies as "own" ratings and flatten the
+# series with nothing pending. Tentacle runs one worker process.
+_CASCADE_LOCK = threading.RLock()
+PENDING_MAX_ATTEMPTS = 10
+PENDING_MAX_AGE_SECONDS = 7 * 86400
+# How long a push waits for another series' cascading update to finish before
+# it skips this series (its tags are still wrong, so the next run pushes it).
+CASCADE_LOCK_TIMEOUT = 90
+# A failed restore is tried once more after this pause, in the same run: most
+# failures are transient, and the next run can be a day away.
+IN_RUN_RETRY_DELAY = 5
+
+
+def _in_run_retry_wait() -> None:
+    if IN_RUN_RETRY_DELAY > 0:
+        time.sleep(IN_RUN_RETRY_DELAY)
+
+
+def _log_activity_safe(event: str, message: str) -> None:
+    """Write an Activity entry (redacted); never fail the caller over it."""
+    try:
+        from models.database import SessionLocal, log_activity
+        from services.log_redaction import redact
+        db = SessionLocal()
+        try:
+            log_activity(db, event, redact(message))
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"[Jellyfin] Could not write '{event}' to the Activity log: {e}")
+
+
+def _log_restore_given_up(parent_id: str, left: dict) -> None:
+    """Put a give-up on the Activity page, not only in the log."""
+    ids = ", ".join(f"{cid} ({c['official'] or '-'}/{c['custom'] or '-'})"
+                    for cid, c in list(left.items())[:20])
+    _log_activity_safe("rating_restore_failed",
+                       f"Could not restore the own ratings of {len(left)} season(s)/episode(s) of "
+                       f"Jellyfin series {parent_id} after a tag push; Jellyfin gave them the series' "
+                       f"rating. Set these by hand in Jellyfin: {ids}")
+
+
+def _pending_restores_path() -> Path:
+    return Path(os.getenv("DATA_DIR", "/data")) / "pending_rating_restores.json"
+
+
+def _valid_pending_entry(entry) -> Optional[dict]:
+    """A normalised entry, or None if it cannot be used. Accepts the
+    first on-disk form ({child: [type, official, custom]})."""
+    if not isinstance(entry, dict):
+        return None
+    if "children" not in entry:                       # first form: child map only
+        entry = {"copy": None, "attempts": 0, "since": time.time(), "children": entry}
+    children = entry.get("children")
+    if not isinstance(children, dict):
+        return None
+    out = {}
+    for cid, c in children.items():
+        if isinstance(c, list) and len(c) >= 3:
+            c = {"type": c[0], "official": c[1], "custom": c[2], "season": None}
+        if not isinstance(c, dict) or c.get("type") not in ("Season", "Episode"):
+            continue
+        if not all(v is None or isinstance(v, str)
+                   for v in (c.get("official"), c.get("custom"), c.get("season"))):
+            continue
+        sr = c.get("season_rating")
+        if not (isinstance(sr, list) and len(sr) == 2 and all(x is None or isinstance(x, str) for x in sr)):
+            sr = None
+        out[str(cid)] = {"type": c["type"], "official": c.get("official"),
+                         "custom": c.get("custom"), "season": c.get("season"),
+                         "season_rating": sr}
+    def _pair(v):
+        return v if isinstance(v, list) and len(v) == 2 and all(
+            x is None or isinstance(x, str) for x in v) else None
+    copy, prev_copy = _pair(entry.get("copy")), _pair(entry.get("prev_copy"))
+    try:
+        attempts, since = int(entry.get("attempts") or 0), float(entry.get("since") or time.time())
+    except (TypeError, ValueError):
+        attempts, since = 0, time.time()
+    known = {}
+    for cid, v in (entry.get("known") or {}).items() if isinstance(entry.get("known"), dict) else ():
+        if isinstance(v, list) and len(v) == 2 and all(x is None or isinstance(x, str) for x in v):
+            known[str(cid)] = v
+    return ({"copy": copy, "prev_copy": prev_copy, "attempts": attempts, "since": since,
+             "children": out, "known": known} if out else None)
+
+
+def _pending_restores_load() -> dict:
+    """The pending restores, validated. A file that cannot be read as that is
+    reported and kept aside as <name>.corrupt-<time>, never dropped silently."""
+    with _PENDING_RESTORES_LOCK:
+        path = _pending_restores_path()
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return {}
+        except OSError as e:
+            logger.warning(f"[Jellyfin] Could not read pending rating restores {path}: {e}")
+            return {}
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            data = None
+        bad = not isinstance(data, dict)
+        out = {}
+        for sid, entry in (data.items() if isinstance(data, dict) else ()):
+            norm = _valid_pending_entry(entry)
+            if norm is None:
+                bad = True
+            else:
+                out[str(sid)] = norm
+        if bad and raw.strip():
+            keep = path.with_name(f"{path.name}.corrupt-{int(time.time())}")
+            try:
+                keep.write_text(raw, encoding="utf-8")
+            except OSError:
+                pass
+            logger.warning(f"[Jellyfin] {path} was unreadable or held entries of the wrong shape; "
+                           f"kept a copy as {keep.name} and used the {len(out)} valid entr(y/ies)")
+            _pending_write(out)
+        return out
+
+
+def _pending_write(data: dict) -> None:
+    path = _pending_restores_path()
+    try:
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError as e:
+        logger.warning(f"[Jellyfin] Could not save pending rating restores to {path}: {e}")
+
+
+def _pending_restores_set(parent_id: str, entry) -> None:
+    """Store (or, with None, clear) the pending restore of one series. `entry`
+    is a full entry or, as before, a bare {child_id: [...]} map."""
+    with _PENDING_RESTORES_LOCK:
+        data = _pending_restores_load()
+        norm = _valid_pending_entry(entry) if entry else None
+        if norm:
+            data[parent_id] = norm
+        elif parent_id in data:
+            del data[parent_id]
+        else:
+            return
+        _pending_write(data)
+
+
+# Fields sent back as the GET returned them, and only when it returned one.
+# Jellyfin's ItemUpdate treats the body as a full replacement: a field left
+# out is cleared (checked live on 10.11.8 — CriticRating, CustomRating,
+# ForcedSortName, PreferredMetadataLanguage on a movie; Status, EndDate,
+# DisplayOrder, CustomRating on a series), and CustomRating feeds parental
+# ratings. Echoing only what is set keeps the body small; the full DTO is
+# what made some Jellyfin versions answer 500.
+_ECHOED_ITEM_FIELDS = (
+    "CustomRating", "CriticRating", "ForcedSortName", "PreferredMetadataLanguage",
+    "PreferredMetadataCountryCode", "Status", "EndDate", "DisplayOrder",
+    "AirDays", "AirTime", "RunTimeTicks", "AspectRatio", "Video3DFormat",
+    "ProductionLocations", "DateCreated",
+    # Numbering: cleared on an Episode/Season/track when omitted, and a
+    # child's own rating is restored through this same body (see
+    # _restore_child_ratings).
+    "IndexNumber", "ParentIndexNumber", "AirsBeforeSeasonNumber",
+    "AirsBeforeEpisodeNumber", "AirsAfterSeasonNumber", "Album",
+)
+
+
+def _item_update_payload(item: dict, **changes) -> dict:
+    """An ItemUpdate body that changes only `changes` and keeps everything else.
+
+    LockData is sent back as read: without it the item is unlocked, and on a
+    series the unlock cascades to every season and episode. LockedFields is
+    left out on purpose — Jellyfin leaves it alone when it is null. One thing
+    no body can avoid: on a series Jellyfin copies OfficialRating and
+    CustomRating to its seasons and episodes on every ItemUpdate.
+    """
+    payload = {
+        "Id": item["Id"],
+        "Name": item.get("Name", ""),
+        "OriginalTitle": item.get("OriginalTitle", ""),
+        "Overview": item.get("Overview", ""),
+        "Genres": item.get("Genres", []),
+        "Tags": item.get("Tags", []),
+        "Studios": item.get("Studios", []),
+        "People": item.get("People", []),
+        "ProviderIds": item.get("ProviderIds", {}),
+        "ProductionYear": item.get("ProductionYear"),
+        "PremiereDate": item.get("PremiereDate"),
+        "CommunityRating": item.get("CommunityRating"),
+        "OfficialRating": item.get("OfficialRating", ""),
+        "Taglines": item.get("Taglines", []),
+        "LockData": item.get("LockData"),
+    }
+    for field in _ECHOED_ITEM_FIELDS:
+        if item.get(field) is not None:
+            payload[field] = item[field]
+    payload.update(changes)
+    return payload
 
 
 class JellyfinService:
@@ -399,7 +621,8 @@ class JellyfinService:
 
         old_tags = item.get("Tags", [])
         logger.debug(f"[Jellyfin] set_item_tags {item_id}: {old_tags} → {tags}")
-        return self._post_item_update(item_id, self._minimal_update(item, Tags=tags), "set tags on")
+
+        return self._post_item_update(item, _item_update_payload(item, Tags=tags), "set tags on")
 
     def set_item_owned_tags(self, item_id: str, desired: List[str], owned: set,
                             add_only: bool = False) -> str:
@@ -423,75 +646,438 @@ class JellyfinService:
             merged = merge_owned_tags(fresh, desired, owned)
         if sorted(merged) == sorted(fresh):
             return "unchanged"
-        ok = self._post_item_update(item_id, self._minimal_update(item, Tags=merged), "set tags on")
+        ok = self._post_item_update(item, _item_update_payload(item, Tags=merged), "set tags on")
         return "written" if ok else "post_failed"
 
-    def set_item_name(self, item_id: str, name: str) -> bool:
-        """Rename a Jellyfin item in place: same id, so every user's watched
-        state and playlist entries stay. An item whose NFO says <lockdata>
-        is never re-read from it, so fixing the NFO alone renames nothing."""
-        item = self._get(self._item_path(item_id))
-        if not item:
-            logger.warning(f"[Jellyfin] Cannot GET item {item_id} — set_item_name aborted")
-            return False
-        return self._post_item_update(item_id, self._minimal_update(item, Name=name), "rename")
+    # ── ItemUpdate and Jellyfin's rating cascade ──────────────────────────
+    # Jellyfin 10.11.8 ItemUpdateController.UpdateItem: for a Series it sets
+    # every Season's and Episode's OfficialRating (unless that child has
+    # OfficialRating in LockedFields) and CustomRating (always) to the values
+    # in the body; for a Season it does the same to its Episodes. There is no
+    # condition — it happens on every update, a tags-only one included. A tag
+    # push to a series therefore rated every TV-MA episode as the series (e.g.
+    # TV-14), and a profile limited to TV-14 could then play it. Until 7444a25
+    # a DisplayOrder mismatch in the body queued a ReplaceAllMetadata refresh
+    # that re-read the episode NFOs and hid this for NFO-rated episodes.
+    # _post_item_update snapshots the children first and writes back, child
+    # by child, any rating of the child's OWN that the cascade changed.
+    #
+    # A child with no rating of its own is left with the copy: Jellyfin rates
+    # an unrated item by its display parent (OfficialRatingForComparison /
+    # GetCustomRatingForComparision walk up to the season, then the series),
+    # so the copy is the rating it already had for parental control. Restoring
+    # those too would cost a write per episode — on a live library 156,053 of
+    # 158,485 seasons/episodes have no rating of their own, and only 2 have
+    # one that differs from their series.
 
-    # ItemUpdate treats its body as the whole item: a field left out is set to
-    # null. Each of these goes back as the GET returned it (and is left out
-    # when the GET had none), or one tag push cleared a movie's critic and
-    # custom ratings, sort title and metadata language, and a series' status,
-    # end date and display order (#161).
-    _ECHOED_FIELDS = (
-        "CustomRating", "CriticRating", "ForcedSortName", "PreferredMetadataLanguage",
-        "PreferredMetadataCountryCode", "Status", "EndDate", "DisplayOrder", "AirDays", "AirTime",
-        "RunTimeTicks", "AspectRatio", "Video3DFormat", "ProductionLocations", "DateCreated",
-    )
+    _CASCADING_TYPES = ("Series", "Season")
+    # Unscoped (no UserId): a jellyfin_user_id with parental limits would not
+    # be shown exactly the episodes that need their rating back.
+    _CHILD_FIELDS = ("Overview,Genres,Tags,Studios,People,ProviderIds,Taglines,CustomRating,"
+                     "Settings,DateCreated,ProductionLocations,OriginalTitle,SpecialEpisodeNumbers")
 
-    @classmethod
-    def _minimal_update(cls, item: dict, **changes) -> dict:
-        """The ItemUpdate payload for `item` with `changes` applied.
+    def _child_ratings(self, parent_id: str) -> Optional[dict]:
+        """{id: (type, OfficialRating, CustomRating, SeasonId)} for every season
+        and episode under parent_id, or None if the listing could not be read
+        completely (a timeout, an HTTP error, a short page)."""
+        out = {}
+        start, page = 0, 1000
+        params = {"ParentId": parent_id, "Recursive": "true",
+                  "IncludeItemTypes": "Season,Episode",
+                  "Fields": "CustomRating,Settings", "EnableImages": "false",
+                  "EnableUserData": "false"}
+        while True:
+            params.update(StartIndex=start, Limit=page)
+            try:
+                data = self._get("/Items", params=dict(params))
+            except requests.HTTPError as e:
+                logger.debug(f"[Jellyfin] Listing the children of {parent_id} failed: {e}")
+                return None
+            if not data:
+                return None
+            items = data.get("Items") or []
+            for it in items:
+                out[it["Id"]] = (it.get("Type"), it.get("OfficialRating") or None,
+                                 it.get("CustomRating") or None, it.get("SeasonId"))
+            start += len(items)
+            total = data.get("TotalRecordCount") or 0
+            if not items or start >= total:
+                return out if start >= total else None
 
-        Only the fields ItemUpdate needs (the full DTO makes Jellyfin answer
-        500 on some versions), plus every field it would otherwise clear
-        (_ECHOED_FIELDS). LockData and LockedFields go back as they were:
-        Jellyfin takes a missing LockData as false, so every tag push used to
-        unlock the item, and the next metadata refresh could overwrite the
-        edits the lock protected (#161). Jellyfin still copies a series'
-        ratings onto its episodes on any ItemUpdate; only a tags-only write
-        would avoid that.
-        """
-        payload = {
-            "Id": item["Id"],
-            "Name": item.get("Name", ""),
-            "OriginalTitle": item.get("OriginalTitle", ""),
-            "Overview": item.get("Overview", ""),
-            "Genres": item.get("Genres", []),
-            "Tags": item.get("Tags", []),
-            "Studios": item.get("Studios", []),
-            "People": item.get("People", []),
-            "ProviderIds": item.get("ProviderIds", {}),
-            "ProductionYear": item.get("ProductionYear"),
-            "PremiereDate": item.get("PremiereDate"),
-            "CommunityRating": item.get("CommunityRating"),
-            "OfficialRating": item.get("OfficialRating", ""),
-            "Taglines": item.get("Taglines", []),
-            "LockData": bool(item.get("LockData")),
-        }
-        if item.get("LockedFields") is not None:
-            payload["LockedFields"] = item["LockedFields"]
-        for field in cls._ECHOED_FIELDS:
-            if item.get(field) is not None:
-                payload[field] = item[field]
-        payload.update(changes)
-        return payload
-
-    def _post_item_update(self, item_id: str, payload: dict, what: str) -> bool:
+    def _get_child(self, child_id: str) -> Optional[dict]:
+        """One season/episode with every field the update body echoes."""
         try:
-            r = self.session.post(
-                f"{self.url}/Items/{item_id}",
-                json=payload,
-                timeout=15
-            )
+            data = self._get("/Items", params={"Ids": child_id, "Fields": self._CHILD_FIELDS,
+                                               "EnableImages": "false", "EnableUserData": "false"})
+        except requests.HTTPError as e:
+            logger.debug(f"[Jellyfin] Reading {child_id} failed: {e}")
+            return None
+        if data is None:
+            return None
+        items = data.get("Items") or []
+        return items[0] if items else {}
+
+    @staticmethod
+    def _own_rating_changed(own: tuple, now: tuple) -> bool:
+        """Whether a child's own (non-empty) OfficialRating/CustomRating differs
+        from what it has now. An empty own value inherits, so it never counts."""
+        return any(o is not None and o != n for o, n in zip(own, now))
+
+    @staticmethod
+    def _copy_candidates(entry: dict, c: dict) -> Optional[list]:
+        """The (official, custom) pairs a cascade can have left on child `c`:
+        this push's series rating, an earlier push's (the series' rating may
+        have changed in between), and its season's own — as recorded at push
+        time, and as saved if the season itself is still pending. None for an
+        entry of the first on-disk form, which did not record them."""
+        if not entry.get("copy"):
+            return None
+        copies = [tuple(entry["copy"])]
+        if entry.get("prev_copy"):
+            copies.append(tuple(entry["prev_copy"]))
+        if c.get("season_rating"):
+            copies.append(tuple(c["season_rating"]))
+        season = entry["children"].get(c.get("season") or "")
+        if season:
+            copies.append((season["official"], season["custom"]))
+        return copies
+
+    @staticmethod
+    def _resolve_own(own: tuple, now: tuple, copies: Optional[list]) -> tuple:
+        """Per field, what the child should carry: its saved own value (None =
+        inherits) where it now shows that or a cascade's copy, the current value
+        where that was set by hand since. Without recorded copies (first
+        on-disk form) the saved value wins."""
+        out = []
+        for i, (o, n) in enumerate(zip(own, now)):
+            if n == o or n is None or copies is None or any(cp[i] == n for cp in copies):
+                out.append(o)          # the saved value, "inherit" (None) included
+            else:
+                out.append(n)          # set by hand since: keep it
+        return tuple(out)
+
+    @staticmethod
+    def _own_after(own: tuple, shown: tuple, copies: Optional[list]) -> tuple:
+        """A saved child's own rating in view of what it shows now: per field,
+        a value no cascade can have written was set by hand and becomes the
+        own value — also where the snapshot had none (it inherited then)."""
+        out = []
+        for i, (o, n) in enumerate(zip(own, shown)):
+            if n == o or n is None or copies is None or any(cp[i] == n for cp in copies):
+                out.append(o)
+            else:
+                out.append(n)
+        return tuple(out)
+
+    def _restore_from_snapshot(self, parent_id: str, entry: dict) -> dict:
+        """Write back each child's own ratings from a pending entry. Seasons
+        first; then EVERY saved episode, since any season written in this pass
+        (or an earlier one) cascades its rating onto its episodes. Returns the
+        children still pending: those that failed, plus all saved episodes of a
+        season that failed — they must be written again once it succeeds.
+
+        Values written are always the saved ones, and a child is only written
+        while it still carries a cascaded copy: a rating someone set in between
+        is left alone.
+        """
+        children = entry["children"]
+        failed_seasons, failed, restored, skipped = set(), {}, 0, 0
+        # Writing a season below cascades its rating onto its episodes — over
+        # a rating someone set by hand on one of them since. So those episodes
+        # are read first, and a hand edit found there becomes the episode's own
+        # rating (saved as such if it has to stay pending). If one of them
+        # cannot be read, its season is not written in this pass: its cascade
+        # could destroy an edit nobody has seen.
+        def own_now(c, shown):
+            return self._own_after((c["official"], c["custom"]), shown, self._copy_candidates(entry, c))
+
+        work = {cid: dict(c) for cid, c in children.items()}
+        seasons = {cid for cid, c in work.items() if c["type"] == "Season"}
+        unreadable = set()
+        # Episodes of a season about to be written that are NOT in the entry
+        # (unrated when the snapshot was taken) may have been given a rating
+        # since, by hand. The season's cascade would overwrite it, so any
+        # episode there showing a value no cascade wrote joins the entry.
+        for sid in sorted(seasons):
+            try:
+                eps = self._child_ratings(sid)
+            except Exception:
+                eps = None
+            if eps is None:
+                unreadable.add(sid)
+                continue
+            season_own = [work[sid]["official"], work[sid]["custom"]]
+            for eid, (etype, o, c, _s) in eps.items():
+                if etype != "Episode" or eid in work:
+                    continue
+                probe = {"type": "Episode", "official": None, "custom": None,
+                         "season": sid, "season_rating": season_own}
+                copies = self._copy_candidates(entry, probe) or []
+                own = tuple(v if v is not None and not any(cp[i] == v for cp in copies) else None
+                            for i, v in enumerate((o, c)))
+                if own != (None, None):
+                    work[eid] = dict(probe, official=own[0], custom=own[1])
+        for cid, c in work.items():
+            if c["type"] == "Episode" and c.get("season") in seasons:
+                try:
+                    child = self._get_child(cid)
+                except Exception:
+                    child = None
+                if child is None:
+                    unreadable.add(c["season"])
+                elif child:
+                    c["official"], c["custom"] = own_now(c, (child.get("OfficialRating") or None,
+                                                             child.get("CustomRating") or None))
+        if work != children and _pending_restores_load().get(parent_id):
+            # A hand edit found above is saved before any season is written: if
+            # the process dies after that season's cascade, the retry must not
+            # read the cascade's copy and put back the old value.
+            saved = _pending_restores_load()[parent_id]
+            known = dict(saved.get("known") or {})
+            known.update({cid: [c["official"], c["custom"]] for cid, c in work.items()})
+            _pending_restores_set(parent_id, dict(saved, children=work, known=known))
+        for kind in ("Season", "Episode"):
+            for cid, c in work.items():
+                if c["type"] != kind:
+                    continue
+                if kind == "Season" and cid in unreadable:
+                    failed[cid] = c
+                    failed_seasons.add(cid)
+                    continue
+                try:
+                    child = self._get_child(cid)
+                    if child is None:
+                        failed[cid] = c
+                        if kind == "Season":
+                            failed_seasons.add(cid)
+                        continue
+                    if not child:
+                        continue                  # gone from the library: nothing to restore
+                    now = (child.get("OfficialRating") or None, child.get("CustomRating") or None)
+                    if kind == "Season" or c.get("season") not in seasons:
+                        # Not pre-read: decide on what it shows now.
+                        c["official"], c["custom"] = own_now(c, now)
+                    own = (c["official"], c["custom"])
+                    if not self._own_rating_changed(own, now):
+                        continue
+                    # Field by field: a field still holding a cascade's copy
+                    # gets its own value back; a field set by hand since is
+                    # kept (and has already become the own value above).
+                    target = self._resolve_own(own, now, self._copy_candidates(entry, c))
+                    if target == now:
+                        skipped += 1
+                        logger.info(f"[Jellyfin] Not restoring {cid}: its rating was changed to "
+                                    f"{now[0] or '-'}/{now[1] or '-'} since the push")
+                        continue
+                    payload = _item_update_payload(child, OfficialRating=target[0] or "", CustomRating=target[1])
+                    if self._post(f"/Items/{cid}", payload):
+                        restored += 1
+                    else:
+                        failed[cid] = c
+                        if kind == "Season":
+                            failed_seasons.add(cid)
+                except Exception as e:
+                    logger.debug(f"[Jellyfin] Restoring the rating of {cid} failed: {e}")
+                    failed[cid] = c
+                    if kind == "Season":
+                        failed_seasons.add(cid)
+        # A season still pending will cascade onto its episodes when it is
+        # finally written, so every saved episode of it stays pending too.
+        for cid, c in work.items():
+            if c["type"] == "Episode" and c.get("season") in failed_seasons:
+                failed.setdefault(cid, c)
+        if restored:
+            logger.info(f"[Jellyfin] Restored the own ratings of {restored} season(s)/episode(s) "
+                        f"under {parent_id} after Jellyfin's rating cascade")
+        if failed:
+            logger.warning(
+                f"[Jellyfin] Could not restore the own ratings of {len(failed)} season(s)/episode(s) "
+                f"under {parent_id} after Jellyfin's rating cascade; they now carry the series' "
+                f"rating and will be retried on the next tag push: "
+                + ", ".join(f"{cid}={c['official'] or '-'}/{c['custom'] or '-'}"
+                            for cid, c in list(failed.items())[:10]))
+        return failed
+
+    def _finish_restore(self, parent_id: str, entry: dict) -> None:
+        """Run one restore pass for `entry` and store what is left, if anything.
+        A pass that leaves failures is followed, after a short pause, by one
+        more pass over only those — costing nothing when nothing failed."""
+        left = self._restore_from_snapshot(parent_id, entry)
+        if left:
+            _in_run_retry_wait()
+            left = self._restore_from_snapshot(parent_id, dict(entry, children=left))
+        if not left:
+            _pending_restores_set(parent_id, None)
+            return
+        attempts = entry.get("attempts", 0) + 1
+        age = time.time() - entry.get("since", time.time())
+        if attempts >= PENDING_MAX_ATTEMPTS or age >= PENDING_MAX_AGE_SECONDS:
+            logger.error(
+                f"[Jellyfin] Giving up restoring the own ratings of {len(left)} season(s)/episode(s) "
+                f"under {parent_id} after {attempts} attempt(s) over {int(age // 3600)} h; set them by "
+                f"hand: " + ", ".join(f"{cid}={c['official'] or '-'}/{c['custom'] or '-'}"
+                                      for cid, c in list(left.items())[:20]))
+            _log_restore_given_up(parent_id, left)
+            _pending_restores_set(parent_id, None)
+            return
+        _pending_restores_set(parent_id, dict(entry, children=left, attempts=attempts))
+
+    def retry_pending_rating_restores(self) -> int:
+        """Retry every restore a previous push could not finish. Returns how
+        many series are still pending afterwards."""
+        # The lock is taken per series and released in between, so a long
+        # retry list never holds up a push for its whole length.
+        for parent_id in list(_pending_restores_load()):
+            if not _CASCADE_LOCK.acquire(timeout=CASCADE_LOCK_TIMEOUT):
+                logger.warning(f"[Jellyfin] Another series update is still running; the rating "
+                               f"restore of {parent_id} stays pending for the next run")
+                continue
+            try:
+                entry = _pending_restores_load().get(parent_id)
+                if entry:
+                    self._finish_restore(parent_id, entry)
+            finally:
+                _CASCADE_LOCK.release()
+        return len(_pending_restores_load())
+
+    def _post_item_update(self, item: dict, payload: dict, what: str) -> bool:
+        """POST an ItemUpdate; for a Series/Season keep the children's ratings."""
+        if item.get("Type") not in self._CASCADING_TYPES:
+            return self._post_update(item["Id"], payload, what)
+        if not _CASCADE_LOCK.acquire(timeout=CASCADE_LOCK_TIMEOUT):
+            # Nothing was changed, so nothing needs saving: the tags are still
+            # wrong and the next push updates this series.
+            logger.warning(f"[Jellyfin] Not updating {item.get('Type')} {item['Id']} now: another "
+                           f"series update has held the lock for {CASCADE_LOCK_TIMEOUT} s; the next "
+                           f"push will do it")
+            return False
+        try:
+            return self._post_cascading_update(item, payload, what)
+        finally:
+            _CASCADE_LOCK.release()
+
+    def _post_cascading_update(self, item: dict, payload: dict, what: str) -> bool:
+        item_id = item["Id"]
+        cascaded = [(payload.get("OfficialRating") or "").strip() or None,
+                    payload.get("CustomRating") or None]
+        # An earlier push that could not finish its restore: those values are
+        # the children's real ones — a fresh read now would only see copies.
+        pending = _pending_restores_load().get(item_id)
+        need = {cid: dict(c) for cid, c in pending["children"].items()} if pending else {}
+        children = self._child_ratings(item_id)
+        if children is None:
+            # Usually transient: one more look after a short pause before
+            # updating without a snapshot.
+            _in_run_retry_wait()
+            children = self._child_ratings(item_id)
+        if children is not None and pending:
+            # A pending child that was set by hand since the failed restore:
+            # the edit is now its own rating, not the saved one.
+            for cid, c in need.items():
+                if cid in children:
+                    now = (children[cid][1], children[cid][2])
+                    c["official"], c["custom"] = self._own_after(
+                        (c["official"], c["custom"]), now, self._copy_candidates(pending, c))
+        if children is None:
+            logger.warning(
+                f"[Jellyfin] Could not list the seasons/episodes of {item.get('Type')} {item_id}; "
+                f"updating it anyway, so Jellyfin may give them its rating"
+                + (" (a pending restore will still be applied)" if need else ""))
+            _log_activity_safe(
+                "rating_cascade_unprotected",
+                f"Updated the tags of Jellyfin {item.get('Type', 'item').lower()} '{item.get('Name', '')}' "
+                f"({item_id}) without being able to list its seasons and episodes first. Jellyfin "
+                f"copies a series' parental rating onto all of them on every update, so episodes "
+                f"with a rating of their own may now carry the series' rating — check them in Jellyfin."
+                + (" A saved restore was still applied." if need else ""))
+        else:
+            seasons_to_restore = {cid for cid, c in need.items() if c["type"] == "Season"}
+            # Values an earlier, unfinished push's cascade wrote. A child that
+            # is not in that push's entry but shows one of them did not choose
+            # it: it had no rating of its own then (every rated child the
+            # cascade changed was saved), so it is an unrated child holding
+            # the copy. Recording the copy as its "own" rating would pin it: a
+            # season restored now cascades its rating onto the episode, and the
+            # episode's "restore" would then write the series' copy back — a
+            # TV-14 copy on an episode of a TV-MA season, for good.
+            # This push's own cascaded value is NOT treated so: before any
+            # cascade, an episode rated like its series is its real rating.
+            copies = [tuple(pending[k]) for k in ("copy", "prev_copy") if pending and pending.get(k)]
+            # Own ratings this unfinished entry already recorded, for children
+            # restored since (and so no longer in its children): those are the
+            # authority — an episode rated like its series keeps that rating.
+            recorded = (pending or {}).get("known") or {}
+
+            def own_of(cid, o, c):
+                if cid in recorded:
+                    return self._own_after(tuple(recorded[cid]), (o, c), copies)
+                return tuple(None if v is not None and any(k[i] == v for k in copies) else v
+                             for i, v in enumerate((o, c)))
+
+            for cid, (ctype, o, c, season) in children.items():
+                if cid in need:
+                    continue
+                own = own_of(cid, o, c)
+                if self._own_rating_changed(own, tuple(cascaded)):
+                    need[cid] = {"type": ctype, "official": own[0], "custom": own[1], "season": season}
+                    if ctype == "Season":
+                        seasons_to_restore.add(cid)
+            # Restoring a season cascades its rating onto its episodes, so
+            # every episode there with a rating of its own is restored too,
+            # even one the series' cascade itself would not have changed.
+            for cid, (ctype, o, c, season) in children.items():
+                if ctype == "Episode" and season in seasons_to_restore and cid not in need:
+                    own = own_of(cid, o, c)
+                    if own != (None, None):
+                        need[cid] = {"type": ctype, "official": own[0], "custom": own[1], "season": season}
+            for cid, (ctype, o, c, season) in children.items():
+                if cid in need and need[cid].get("season") is None and season:
+                    need[cid]["season"] = season
+            # Each episode also keeps its season's own rating as read now: if
+            # the season is restored and the episode is not, the season's
+            # cascade leaves that rating on the episode, and a retry must
+            # recognise it as a copy, not a hand edit.
+            for cid, e in need.items():
+                if e["type"] == "Episode" and not e.get("season_rating"):
+                    sid = e.get("season") or ""
+                    if sid in need:
+                        # The season is itself being restored (or still pending):
+                        # what it shows now may be a copy — use its own rating.
+                        e["season_rating"] = [need[sid]["official"], need[sid]["custom"]]
+                    else:
+                        s_row = children.get(sid)
+                        if s_row and s_row[0] == "Season":
+                            e["season_rating"] = [s_row[1], s_row[2]]
+        entry = None
+        if need:
+            prev = pending.get("copy") if pending else None
+            known = dict((pending or {}).get("known") or {})
+            known.update({cid: [c["official"], c["custom"]] for cid, c in need.items()})
+            entry = {"copy": cascaded, "prev_copy": prev if prev != cascaded else pending.get("prev_copy") if pending else None,
+                     "children": need, "known": known,
+                     "attempts": pending["attempts"] if pending else 0,
+                     "since": pending["since"] if pending else time.time()}
+            # Saved before the update, so a failure from here on is retried
+            # from these values instead of being lost.
+            _pending_restores_set(item_id, entry)
+        try:
+            ok = self._post_update(item_id, payload, what)
+        except requests.HTTPError:
+            ok = None
+            raise
+        finally:
+            # Also when the update call failed: Jellyfin may have applied it
+            # and lost only the response. The restore compares each child with
+            # its saved rating, so if nothing was cascaded nothing is written
+            # and the saved entry is simply cleared.
+            if entry:
+                self._finish_restore(item_id, _pending_restores_load().get(item_id)
+                                     or _valid_pending_entry(entry))
+        return ok
+
+    def _post_update(self, item_id: str, payload: dict, what: str) -> bool:
+        try:
+            r = self.session.post(f"{self.url}/Items/{item_id}", json=payload, timeout=15)
             self._check_401(r, f"/Items/{item_id}")
             if r.status_code >= 400:
                 body = r.text[:200] if r.text else "(empty)"
@@ -504,6 +1090,20 @@ class JellyfinService:
         except Exception as e:
             logger.error(f"[Jellyfin] Failed to {what} {item_id}: {e}")
             return False
+
+    def set_item_name(self, item_id: str, name: str) -> bool:
+        """Rename a Jellyfin item in place — same item, same id, same user data.
+
+        Same minimal ItemUpdate payload as set_item_tags, plus LockData: an
+        update that leaves it out unlocks the item (checked on 10.11.8), and a
+        YouTube item's lock is what keeps remote providers from re-identifying
+        it as some film of the same name.
+        """
+        item = self._get(self._item_path(item_id))
+        if not item:
+            logger.warning(f"[Jellyfin] Cannot GET item {item_id} — set_item_name aborted")
+            return False
+        return self._post_item_update(item, _item_update_payload(item, Name=name), "rename")
 
     def add_tag_to_item(self, item_id: str, tag: str) -> bool:
         """Add a single tag without removing existing tags"""
@@ -656,15 +1256,16 @@ class JellyfinService:
             params["StartIndex"] = start
             data = self._get("/Items", params=params)
             if not data:
-                if start:
-                    # A later page that timed out (or was reset) used to end the
-                    # loop, and the pages that did arrive were returned as the
-                    # whole answer: the playlist rebuild then removed every entry
-                    # after them (1,600 of a 3,600-entry playlist, #167). Every
-                    # playlist caller leaves the playlist unchanged on an error.
-                    # A failed FIRST page still returns [] for the empty-result
-                    # guard the callers already have.
-                    raise PartialListing(f"Jellyfin stopped answering after {start} items")
+                if all_items:
+                    # A later page failed (timeout, reset). What arrived is
+                    # the start of the answer, not all of it, and a playlist
+                    # diffed against it lost every entry past this page (1,600
+                    # of a 3,600-entry playlist, #167). Callers already treat
+                    # an exception as "leave it be". A failed FIRST page still
+                    # returns [] for the empty-result guard the callers have.
+                    raise PartialListing(
+                        f"Jellyfin /Items page at {start} failed; "
+                        f"only {len(all_items)} item(s) read")
                 break
             items = data.get("Items", [])
             all_items.extend(items)
@@ -1374,6 +1975,18 @@ def sync_owned_tags(db, jf, log_prefix: str = "Pipeline") -> dict:
     return counts
 
 
+def _retry_pending_rating_restores(jf, log_prefix: str = "Pipeline") -> None:
+    """Finish any season/episode rating restore an earlier push left undone."""
+    try:
+        if _pending_restores_load():
+            left = jf.retry_pending_rating_restores()
+            if left:
+                logger.warning(f"[{log_prefix}] {left} series still have season/episode ratings "
+                               f"to restore after Jellyfin's rating cascade; retrying next time")
+    except Exception as e:
+        logger.warning(f"[{log_prefix}] Retrying pending rating restores failed: {e}")
+
+
 def push_tags_to_jellyfin(db, log_prefix: str = "Pipeline") -> int:
     """Push tags from Tentacle DB to Jellyfin for all movies and series.
 
@@ -1389,7 +2002,9 @@ def push_tags_to_jellyfin(db, log_prefix: str = "Pipeline") -> int:
         logger.info(f"[{log_prefix}] Jellyfin not configured — skipping tag push")
         return 0
 
-    counts = sync_owned_tags(db, JellyfinService(jf_url, jf_key, jf_uid), log_prefix)
+    jf = JellyfinService(jf_url, jf_key, jf_uid)
+    _retry_pending_rating_restores(jf, log_prefix)
+    counts = sync_owned_tags(db, jf, log_prefix)
     logger.info(f"[{log_prefix}] Pushed tags to Jellyfin for {counts['written']} items "
                 f"({counts['unchanged']} already right, {counts['errors']} failed)")
     return counts["written"]

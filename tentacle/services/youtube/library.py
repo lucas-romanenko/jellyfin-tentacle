@@ -234,6 +234,29 @@ def write_video(video, channel, base_url: str, root: Path = None) -> dict:
     return {"folder": str(folder), "strm_written": wrote_strm, "artwork": art}
 
 
+def rewrite_nfo(video, channel, base_url: str) -> bool:
+    """Rewrite an existing video's NFO in place, e.g. after its title was repaired.
+
+    The folder keeps its name. Renaming it would give Jellyfin a new path, and
+    so a new item: watched state, favourites and playlist entries would be lost
+    for a cosmetic change. The .strm is not touched. Jellyfin does not re-read
+    a locked item's NFO, so an item it already has is renamed through its API
+    as well (sync.retitle_in_jellyfin); this keeps the NFO truthful for a
+    re-import or a library rebuild.
+    """
+    if not video.folder_path:
+        return False
+    folder = Path(video.folder_path)
+    if not folder.is_dir():
+        return False
+    try:
+        (folder / "movie.nfo").write_text(build_nfo(video, channel, base_url), encoding="utf-8")
+        return True
+    except OSError as e:
+        logger.warning(f"[YouTube] Could not rewrite the NFO in {folder}: {e}")
+        return False
+
+
 def rewrite_strm(video, base_url: str) -> bool:
     """Point an existing .strm at a new base URL. Returns True if it changed.
 

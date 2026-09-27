@@ -11,6 +11,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from models.database import Movie, Series, ListSubscription, ListItem, TagRule, get_setting
@@ -157,6 +158,76 @@ def apply_tag_rules(
     return matched_tags
 
 
+def rule_metadata(row, media_type: str) -> dict:
+    """The metadata a tag rule is evaluated against, for a library row.
+
+    The same shape the nightly pass builds, so every caller that asks "does a
+    rule give this row its tag" answers it the way the nightly pass does.
+    """
+    return {
+        "genres": row.genres or [],
+        "rating": getattr(row, "rating", None),
+        "year": row.year,
+        "runtime": getattr(row, "runtime", None) if media_type == "movie" else None,
+        "tags": row.tags or [],
+    }
+
+
+def rules_giving(tag: str, db: Session) -> list:
+    """Active tag rules whose output is `tag` (any user)."""
+    return db.query(TagRule).filter(TagRule.active == True, TagRule.output_tag == tag).all()  # noqa: E712
+
+
+_bad_rules_logged: set = set()
+
+
+def rule_gives(rules: list, row, media_type: str, tag: str = None) -> bool:
+    """Whether any of `rules` matches this library row.
+
+    `tag` is left out of the row's tags while evaluating: a rule whose own
+    condition is "has tag T" and whose output is T would otherwise keep T on a
+    title for ever once it had it. A rule that cannot be evaluated (a
+    hand-edited or imported row with a malformed condition) counts as not
+    matching and is logged once — it must not abort the caller's refresh.
+    """
+    meta = rule_metadata(row, media_type)
+    if tag:
+        meta["tags"] = [t for t in meta["tags"] if t != tag]
+    for rule in rules:
+        if rule.apply_to == "movies" and media_type != "movie":
+            continue
+        if rule.apply_to == "series" and media_type != "series":
+            continue
+        try:
+            if _evaluate_conditions(rule.conditions, meta, row.source or "", row.source_tag):
+                return True
+        except Exception as e:
+            if rule.id not in _bad_rules_logged:
+                _bad_rules_logged.add(rule.id)
+                logger.warning(f"[Tags] Tag rule {rule.id} ('{rule.name}') could not be evaluated "
+                               f"and is ignored: {e}")
+    return False
+
+
+def tag_taken_by_another_user(db: Session, tag: str, user_id) -> bool:
+    """Whether another user's list or tag rule already applies `tag`.
+
+    Tags are library-wide while lists and rules are per user, so a second
+    user's list or rule on the same tag merges both users' playlists and lets
+    one user's refresh undo the other's. The same user may point a list and a
+    rule at one tag (one playlist fed by both). Case-insensitive, as Jellyfin
+    compares tags.
+    """
+    wanted = (tag or "").strip().casefold()
+    if not wanted:
+        return False
+    for model, column in ((ListSubscription, ListSubscription.tag), (TagRule, TagRule.output_tag)):
+        for (t,) in db.query(column).filter(or_(model.user_id != user_id, model.user_id.is_(None))):
+            if (t or "").strip().casefold() == wanted:
+                return True
+    return False
+
+
 def _evaluate_conditions(
     conditions: list,
     metadata: dict,
@@ -281,6 +352,25 @@ def dynamic_tags(db: Session) -> set:
     return tags - builtin_tags(db)
 
 
+def paused_tags(db: Session) -> set:
+    """List and rule tags left exactly as they are on every title.
+
+    A switched-off list or rule is paused, not deleted: its titles keep the
+    tag until it is switched back on (the tag then follows it again) or
+    deleted (the tag is retired and comes off). Removing and re-adding every
+    tag on each toggle rewrote the NFO of every title it touched. And an
+    active list that has never stored an item may hold anything: its first
+    read failed or has not happened, and nothing it has not read can be
+    judged gone (#145, #168). Tags another active list or rule gives are
+    still added where they give them."""
+    tags = {t for (t,) in db.query(ListSubscription.tag).filter(ListSubscription.active == False)}  # noqa: E712
+    tags |= {t for (t,) in db.query(TagRule.output_tag).filter(TagRule.active == False)}  # noqa: E712
+    stored = {lid for (lid,) in db.query(ListItem.list_id).distinct()}
+    tags |= {t for (t, lid) in db.query(ListSubscription.tag, ListSubscription.id)
+             .filter(ListSubscription.active == True) if lid not in stored}  # noqa: E712
+    return {t for t in tags if t}
+
+
 def list_tag_holders(db: Session) -> dict:
     """{(media_type, tmdb_id): {tags}} from every ACTIVE list's stored items."""
     out = defaultdict(set)
@@ -305,17 +395,18 @@ def _row_metadata(row, media_type: str, tags: list) -> dict:
 
 
 def reconcile_dynamic_tags(row, media_type: str, tags: list, dynamic: set, holders: dict,
-                           rules: list, db: Session) -> list:
+                           rules: list, db: Session, paused: frozenset = frozenset()) -> list:
     """`tags` with the list and rule tags this title should carry, and no others.
 
     Tags used to be only ever added (#153): a title that stopped matching an
     edited or deleted rule kept its tag, and its playlist entry, for ever. A
     tag several sources produce (two users' lists, a list and a rule, #162) is
     kept while ANY of them holds the title. Everything else on the title,
-    Tentacle's built-in tags and tags nobody here wrote, is left as it is.
+    Tentacle's built-in tags and tags nobody here wrote, is left as it is, and
+    so are the tags of paused lists and rules (see paused_tags).
     """
     held = holders.get((media_type, row.tmdb_id), set())
-    kept = [t for t in tags if t not in dynamic or t in held]
+    kept = [t for t in tags if t not in dynamic or t in held or t in paused]
     for t in sorted(held):
         if t not in kept:
             kept.append(t)
@@ -435,6 +526,41 @@ def retire_tag(db: Session, tag: str) -> None:
         db.add(Setting(key=RETIRED_TAGS_SETTING, value=value))
 
 
+def name_key(name) -> str:
+    """How two playlist names are compared: NFC-normalised and case-folded.
+
+    Jellyfin compares tags case-insensitively, and the same visible text can
+    arrive composed (NFC) or decomposed (NFD) — "Šeimos" typed on one device,
+    pasted from another.
+    """
+    import unicodedata
+    return unicodedata.normalize("NFC", (name or "").strip()).casefold()
+
+
+def youtube_title_taken(db: Session, name: str) -> bool:
+    """Whether a YouTube source already has this name. Its playlist comes
+    before list and rule playlists in get_desired_smartlists(), so a list or
+    rule of the same name would silently get no playlist."""
+    from models.database import YouTubeChannel
+    key = name_key(name)
+    return any(name_key(t) == key for (t,) in db.query(YouTubeChannel.title).all() if t)
+
+
+def smartlist_names_in_use(db: Session) -> set:
+    """name_key of every name a SmartList playlist can have.
+
+    get_desired_smartlists() builds ONE name space, in order: source tags,
+    built-ins, per-user Downloads, YouTube sources, lists, tag rules — and
+    silently skips any later entry whose name is already taken. So a new name
+    has to be checked against all of them, not only its own kind.
+    """
+    from models.database import TentacleUser, YouTubeChannel
+    names = set(tentacle_owned_tags(db))
+    names |= {f"{u.display_name}'s Downloads" for u in db.query(TentacleUser).all() if u.display_name}
+    names |= {t for (t,) in db.query(YouTubeChannel.title).all() if t}
+    return {name_key(n) for n in names if n}
+
+
 def merge_owned_tags(existing, desired, owned) -> list:
     """Replace Tentacle's own tags in `existing` with `desired`; keep the rest."""
     kept = [t for t in (existing or []) if t not in owned and t not in (desired or [])]
@@ -490,6 +616,7 @@ def refresh_recently_added_tags(db: Session):
     cutoff = datetime.utcnow() - timedelta(days=days)
 
     dynamic = dynamic_tags(db)
+    paused = paused_tags(db)
     holders = list_tag_holders(db)
     rules = db.query(TagRule).filter(TagRule.active == True).all()  # noqa: E712
     owned = tentacle_owned_tags(db)
@@ -500,7 +627,7 @@ def refresh_recently_added_tags(db: Session):
             before = list(row.tags or [])
             is_recent = bool(row.date_added and row.date_added >= cutoff)
             tags = _recency_pass(list(before), is_recent, row.source_tag, type_label, dynamic)
-            tags = reconcile_dynamic_tags(row, media_type, tags, dynamic, holders, rules, db)
+            tags = reconcile_dynamic_tags(row, media_type, tags, dynamic, holders, rules, db, paused)
             if set_row_tags(row, tags, owned):
                 changed[media_type] += 1
 

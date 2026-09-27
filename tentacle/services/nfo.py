@@ -4,6 +4,7 @@ Writes complete Jellyfin-compatible NFO files from TMDB metadata.
 Tags are written here — this is the single source of truth for NFO content.
 """
 
+import hashlib
 import logging
 import re
 from pathlib import Path
@@ -261,23 +262,6 @@ def make_folder_name(title: str, year: Optional[str]) -> str:
 # sanitize_filename caps characters: 200 characters of CJK is 600 bytes, and
 # such a title raised ENAMETOOLONG on every sync and never imported (#156).
 MAX_NAME_BYTES = 255
-_STRM_SUFFIX = ".strm"
-
-
-def _cut_utf8(text: str, max_bytes: int) -> str:
-    """The longest prefix of `text` that fits in `max_bytes` of UTF-8."""
-    return text.encode("utf-8")[:max(0, max_bytes)].decode("utf-8", errors="ignore").rstrip()
-
-
-def _fit(head: str, tail: str, key: str, budget: int) -> str:
-    """head + tail within `budget` bytes. Shortened names get a stable 8-hex
-    hash of `key`, so a title keeps its folder from sync to sync and two long
-    titles that share a prefix still get two folders."""
-    if len((head + tail).encode("utf-8")) <= budget:
-        return head + tail
-    import hashlib
-    marker = " ~" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:8]
-    return _cut_utf8(head, budget - len((marker + tail).encode("utf-8"))) + marker + tail
 
 
 def vod_folder_name(title: str, year: Optional[str], tag: str = "") -> str:
@@ -301,11 +285,44 @@ def vod_folder_name(title: str, year: Optional[str], tag: str = "") -> str:
         # turned "(500) Days of Summer" into "Unknown (2009)".)
         safe = "Unknown"
     tail = (f" ({year})" if year else "") + tag
-    return _fit(safe, tail, f"{safe}{tail}", MAX_NAME_BYTES - len(_STRM_SUFFIX))
+    name = f"{safe}{tail}"
+    if len(name.encode("utf-8")) + _STEM_SUFFIX_BYTES <= MAX_NAME_BYTES:
+        return name
+    # Too long for the filesystem once ".strm" is added: ext4, XFS, btrfs and
+    # SMB cap one name at 255 BYTES, and sanitize_filename's 200-character cap
+    # is 600 bytes of CJK. mkdir raised ENAMETOOLONG and the title failed with
+    # an ERROR on every sync. Only such names change — every name that fits
+    # stays exactly as it was, so no existing Jellyfin item moves. The hash of
+    # the full name keeps two long titles that share a prefix apart, and is
+    # stable, so the same title lands in the same folder on every sync.
+    digest = hashlib.sha1(name.encode("utf-8")).hexdigest()[:8]
+    tail = f" {digest}{tail}"
+    budget = MAX_NAME_BYTES - _STEM_SUFFIX_BYTES - len(tail.encode("utf-8"))
+    return fit_bytes(safe, budget).rstrip(" .") + tail
 
 
-def episode_file_stem(show_folder: str, marker: str) -> str:
-    """"<show folder> S01E03", shortened in its show part only when the file
-    name would not fit, so " SxxEyy" stays whole for Jellyfin to parse."""
-    return _fit(show_folder, f" {marker}", show_folder, MAX_NAME_BYTES - len(_STRM_SUFFIX))
+# The longest suffix added to a VOD stem: ".strm" (".nfo" is shorter).
+_STEM_SUFFIX_BYTES = len(".strm")
+
+
+def fit_bytes(text: str, budget: int) -> str:
+    """Truncate to `budget` bytes of UTF-8 without splitting a character."""
+    encoded = text.encode("utf-8")
+    if len(encoded) <= budget:
+        return text
+    return encoded[:max(budget, 0)].decode("utf-8", errors="ignore")
+
+
+def fit_file_stem(stem: str, tail: str, suffix_bytes: int) -> str:
+    """stem + tail, unchanged if it fits in one name with the suffix.
+
+    Otherwise `stem` alone is shortened (plus a stable hash) and `tail` — an
+    episode's " S01E02", which Jellyfin parses the episode from — is kept whole.
+    """
+    full = f"{stem}{tail}"
+    if len(full.encode("utf-8")) + suffix_bytes <= MAX_NAME_BYTES:
+        return full
+    digest = hashlib.sha1(full.encode("utf-8")).hexdigest()[:8]
+    budget = MAX_NAME_BYTES - suffix_bytes - len(tail.encode("utf-8")) - len(digest) - 1
+    return f"{fit_bytes(stem, budget).rstrip(' .')} {digest}{tail}"
 

@@ -22,7 +22,7 @@ from models.database import (
     SyncRun, CategorySnapshot, Duplicate, get_setting, log_deletion
 )
 from services.tmdb import TMDBService
-from services.nfo import write_movie_nfo, write_series_nfo, make_folder_name, vod_folder_name, episode_file_stem
+from services.nfo import write_movie_nfo, write_series_nfo, make_folder_name, vod_folder_name, fit_file_stem
 from services.cleaner import clean_title
 from services.m3u_parser import episode_from_title, container_from_url
 from services.duplicates import delete_vod_files, convert_record_to_downloaded
@@ -633,9 +633,12 @@ def _write_episode_strms(client: "XtreamClient", episodes: dict, show_dir: Path,
             ep_num = ep.get("episode_num", 0)
             container = ep.get("container_extension", "mp4")
             try:
-                ep_filename = episode_file_stem(folder_name, f"S{season_int:02d}E{int(ep_num):02d}")
+                code = f" S{season_int:02d}E{int(ep_num):02d}"
             except (TypeError, ValueError):
                 continue
+            # Byte-safe: a show folder that fits can still overflow once the
+            # episode code and ".strm" are added. Unchanged when it fits.
+            ep_filename = fit_file_stem(folder_name, code, len(".strm"))
             strm_file = season_dir / f"{ep_filename}.strm"
             expected = client.episode_stream_url(ep_id, container)
             if not strm_file.exists():
@@ -845,13 +848,14 @@ def check_and_record_duplicate(
     # versions, where resolving deleted the row instead of converting it.
     if dup and dup.resolution == "keep_radarr" and existing.source and existing.source.startswith("provider_"):
         if existing.strm_path:
-            # A series' strm_path is its show folder: the movie helper ignored
-            # it, and the row then lost its path, leaving the episodes' .strm
-            # files beside Sonarr's with nothing tracking them (#166, as #83).
-            if media_type == "series":
-                delete_series_files(existing.strm_path)
-            else:
+            if media_type == "movie":
                 delete_vod_files(existing.strm_path)
+            else:
+                # A series' strm_path is its show folder, which the movie
+                # helper ignores — the episodes' .strm files stayed on disk
+                # with nothing tracking them once the row was converted.
+                from services.media_files import delete_series_files
+                delete_series_files(existing.strm_path)
         convert_record_to_downloaded(existing, media_type)
         logger.info(f"[Sync] Enforced keep-downloaded resolution for tmdb:{tmdb_id} — provider copy suppressed")
         return True

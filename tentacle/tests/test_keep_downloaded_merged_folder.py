@@ -1,87 +1,85 @@
-"""Keeping the downloaded copy never deletes its files, and never strands .strm files (#166).
+"""Duplicate "Keep Downloaded" (keep_radarr) goes through
+services/duplicates.delete_vod_files, which never got the merged-folder guard
+media_files.delete_movie_files has (#28): it deletes "<stem>.nfo" even when a
+downloaded "<stem>.mkv" sits beside it -- Radarr's NFO for the file the user
+chose to KEEP.  The sync's own enforcement of a keep_radarr resolution
+(check_and_record_duplicate) calls the same helper, and for a SERIES (strm_path
+is the show folder) it deletes nothing at all while converting the row, so the
+.strm episodes are orphaned next to Sonarr's.  Self-contained.  755ea67.
 
-Run from the tentacle/ directory:  python -m unittest discover -s tests
-
-services.duplicates.delete_vod_files deleted <stem>.nfo unconditionally. #28
-added the merged-folder guard only to media_files.delete_movie_files, so
-"Keep Downloaded" (and the sync's enforcement of a keep_radarr resolution)
-deleted Radarr's "Heat (1995).nfo" describing "Heat (1995).mkv", the copy the
-user chose to keep. The enforcement also passed a series' show folder to that
-movie helper, which ignored it: the episodes' .strm files stayed next to
-Sonarr's files with nothing tracking them (#83 fixed this in the router only).
+Run from tentacle/:  python -m unittest discover -s tests -p "test_keep_downloaded_merged_folder.py"
 """
-import logging
-import shutil
-import tempfile
-import unittest
+import logging, shutil, tempfile, unittest
 from pathlib import Path
-
-from services.duplicates import delete_vod_files
-from services.media_files import delete_series_files
-
-
-def setUpModule():
-    logging.disable(logging.CRITICAL)
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+import models.database as mdb
+from models.database import Movie, Series, Duplicate, Provider
 
 
-def tearDownModule():
-    logging.disable(logging.NOTSET)
+def setUpModule(): logging.disable(logging.CRITICAL)
+def tearDownModule(): logging.disable(logging.NOTSET)
 
 
-class KeepDownloaded(unittest.TestCase):
+class Base(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, self.tmp, True)
+        tmp = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, tmp, True)
+        self.root = Path(tmp)
+        engine = create_engine(f"sqlite:///{tmp}/t.db"); mdb.Base.metadata.create_all(engine)
+        self.db = sessionmaker(bind=engine)(); self.addCleanup(self.db.close)
+        self.p = Provider(name="P", server_url="http://p", username="u", password="p"); self.db.add(self.p); self.db.commit()
 
-    def test_a_merged_movie_folder_keeps_the_downloads_nfo(self):
-        folder = self.tmp / "Heat (1995)"
-        folder.mkdir()
-        for name in ("Heat (1995).strm", "Heat (1995).mkv", "Heat (1995).nfo"):
-            (folder / name).write_text("x")
-        delete_vod_files(str(folder / "Heat (1995).strm"))
-        self.assertFalse((folder / "Heat (1995).strm").exists())
-        self.assertTrue((folder / "Heat (1995).mkv").exists())
-        self.assertTrue((folder / "Heat (1995).nfo").exists(), "Radarr's NFO for the kept copy was deleted")
 
-    def test_a_vod_only_folder_is_still_cleaned_up(self):
-        folder = self.tmp / "Alien (1979)"
-        folder.mkdir()
-        (folder / "Alien (1979).strm").write_text("x")
-        (folder / "Alien (1979).nfo").write_text("x")
-        delete_vod_files(str(folder / "Alien (1979).strm"))
-        self.assertFalse(folder.exists())
+class KeepDownloadedMergedMovieFolder(Base):
+    def test_keep_downloaded_keeps_the_downloads_nfo(self):
+        d = self.root / "movies" / "Heat (1995)"; d.mkdir(parents=True)
+        strm, mkv, nfo = d / "Heat (1995).strm", d / "Heat (1995).mkv", d / "Heat (1995).nfo"
+        strm.write_text("http://p/movie/u/p/1.mp4"); mkv.write_bytes(b"\0" * 64)
+        nfo.write_text("<movie><title>Heat</title><!-- Radarr's metadata for the .mkv --></movie>")
+        self.db.add(Movie(tmdb_id=949, title="Heat", year="1995", source=f"provider_{self.p.id}", provider_id=self.p.id,
+                          strm_path=str(strm), nfo_path=str(nfo), radarr_path=str(d)))
+        dup = Duplicate(tmdb_id=949, media_type="movie", resolution="pending",
+                        sources=[{"source": "radarr", "path": str(d)}, {"source": f"provider_{self.p.id}", "path": str(strm)}])
+        self.db.add(dup); self.db.commit()
+        from routers.duplicates import _apply_resolution
+        _apply_resolution(dup, "keep_radarr", self.db)
+        self.assertFalse(strm.exists())
+        self.assertTrue(mkv.exists())
+        self.assertTrue(nfo.exists(), "Keep Downloaded deleted the NFO of the downloaded copy it was told to keep")
 
-    def test_the_sync_enforcement_removes_a_series_strm_files(self):
-        """Drives check_and_record_duplicate's keep_radarr branch."""
-        from unittest import mock
-        from sqlalchemy import create_engine
-        from sqlalchemy.orm import sessionmaker
-        import models.database as mdb
-        from services import sync as vod_sync
 
-        show = self.tmp / "Friends (1994)"
-        (show / "Season 01").mkdir(parents=True)
-        (show / "Season 01" / "Friends (1994) S01E01.strm").write_text("x")
-        (show / "Season 01" / "Friends (1994) S01E02.mkv").write_text("x")
-        (show / "Season 01" / "Friends (1994) S01E02.nfo").write_text("sonarr")
-
-        engine = create_engine(f"sqlite:///{self.tmp}/t.db")
-        mdb.Base.metadata.create_all(engine)
-        db = sessionmaker(bind=engine)()
-        self.addCleanup(db.close)
-        provider = mdb.Provider(name="P", server_url="http://192.0.2.10", username="u", password="p")
-        db.add(provider)
-        db.commit()
-        db.add(mdb.Series(tmdb_id=1668, title="Friends", source=f"provider_{provider.id}", strm_path=str(show)))
-        db.add(mdb.Duplicate(tmdb_id=1668, media_type="series", resolution="keep_radarr", sources=[]))
-        db.commit()
-        skipped = vod_sync.check_and_record_duplicate(1668, "series", f"provider_{provider.id}", str(show),
-                                                      provider, db)
+class SyncEnforcementOfSeriesKeepDownloaded(Base):
+    def test_enforcing_keep_downloaded_on_a_series_removes_its_strm_files(self):
+        show = self.root / "shows" / "Cheers (1982)"; (show / "Season 01").mkdir(parents=True)
+        ep = show / "Season 01" / "Cheers (1982) S01E01.strm"; ep.write_text("http://p/series/u/p/1.mp4")
+        (show / "Season 01" / "Cheers - S01E01.mkv").write_bytes(b"\0" * 64)
+        self.db.add(Series(tmdb_id=1414, title="Cheers", year="1982", source=f"provider_{self.p.id}",
+                           provider_id=self.p.id, strm_path=str(show), sonarr_path=str(show)))
+        self.db.add(Duplicate(tmdb_id=1414, media_type="series", resolution="keep_radarr",
+                              sources=[{"source": "sonarr", "path": str(show)}, {"source": f"provider_{self.p.id}", "path": str(show)}]))
+        self.db.commit()
+        from services.sync import check_and_record_duplicate
+        skipped = check_and_record_duplicate(1414, "series", f"provider_{self.p.id}", str(show), self.p, self.db)
+        self.db.commit()
+        row = self.db.query(Series).filter_by(tmdb_id=1414).one()
         self.assertTrue(skipped)
-        self.assertFalse((show / "Season 01" / "Friends (1994) S01E01.strm").exists(),
-                         "the provider's episodes were left with nothing tracking them")
-        self.assertTrue((show / "Season 01" / "Friends (1994) S01E02.mkv").exists())
-        self.assertTrue((show / "Season 01" / "Friends (1994) S01E02.nfo").exists())
+        self.assertEqual(row.source, "sonarr")
+        self.assertIsNone(row.strm_path)
+        self.assertFalse(ep.exists(), "row converted to Sonarr-only, but its VOD .strm episodes were left on disk "
+                                      "(and nothing tracks them any more)")
+        self.assertTrue((show / "Season 01" / "Cheers - S01E01.mkv").exists())
+
+
+class KeepDownloadedStillCleansAPlainVodFolder(Base):
+    def test_nfo_without_a_download_beside_it_is_removed(self):
+        from services.duplicates import delete_vod_files
+        d = self.root / "movies" / "Heat (1995)"; d.mkdir(parents=True)
+        strm, nfo = d / "Heat (1995).strm", d / "Heat (1995).nfo"
+        strm.write_text("http://p/movie/u/p/1.mp4"); nfo.write_text("<movie/>")
+        delete_vod_files(str(strm))
+        self.assertFalse(strm.exists())
+        self.assertFalse(nfo.exists())
+        self.assertFalse(d.exists())
 
 
 if __name__ == "__main__":

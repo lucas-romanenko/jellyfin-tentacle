@@ -397,9 +397,8 @@ class ListSubscription(Base):
     playlist_enabled = Column(Boolean, default=False)  # Generate a Jellyfin playlist from this list
     last_fetched = Column(DateTime, nullable=True)
     last_item_count = Column(Integer, default=0)
-    # What the last refresh could not do, for the list card: a source that
-    # blocked part of the list, TMDB not answering, no Trakt client ID. None
-    # when the last refresh read the whole list.
+    # What the user needs to know about the last refresh when it did not read
+    # the whole list (a movies-only fallback, a page that failed), else NULL.
     last_fetch_note = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -784,15 +783,14 @@ def create_notification(db, user_id: int, tmdb_id: int, media_type: str,
     return notif
 
 
-# Settings that must never be empty: a number or a mode the code parses. A
-# cleared Settings field used to be saved as "", which int()/float() refuse, so
-# every sync failed until the value was typed back in (#157). Saving "" for one
-# of these stores its default, and a stored "" reads as the default.
+# Settings whose readers parse or compare the stored value and need one: an
+# empty string is not "unset" to them (int("") raises). Seeded with these, and
+# a Save that sends an empty field stores these back instead of "".
 NON_EMPTY_DEFAULTS = {
+    "sync_schedule": "0 3 * * *",
     "recently_added_days": "30",
     "tmdb_match_threshold": "0.7",
     "hybrid_series_layout": "vod_root",
-    "sync_schedule": "0 3 * * *",
 }
 
 
@@ -960,7 +958,34 @@ def _migrate_columns():
     _migrate_home_row_order(cursor, conn)
     _migrate_auto_playlist_toggles(cursor, conn)
     _drop_retired_tables(cursor, conn)
+    _reset_guessed_made_for_kids(cursor, conn)
     conn.close()
+
+
+def _reset_guessed_made_for_kids(cursor, conn):
+    """Forget the Made for Kids values the age_limit guess wrote (#130).
+
+    Until this fix the indexer stored True for any unrestricted video whose
+    details came back without is_live, which is not what the designation
+    means, and never stored False. yt-dlp does not report the designation, so
+    none of the stored True values came from YouTube: reset them to NULL
+    ("unknown"). Runs once, recorded in settings, so values a later extractor
+    supplies for real are never touched.
+    """
+    import sqlite3
+    marker = "migrated_youtube_made_for_kids_reset"
+    try:
+        cursor.execute("SELECT 1 FROM settings WHERE key = ?", (marker,))
+        if cursor.fetchone():
+            return
+        cursor.execute("UPDATE youtube_videos SET is_made_for_kids = NULL "
+                       "WHERE is_made_for_kids IS NOT NULL")
+        if cursor.rowcount:
+            logger.info(f"[migrate] Cleared {cursor.rowcount} guessed youtube_videos.is_made_for_kids value(s)")
+        cursor.execute("INSERT INTO settings (key, value) VALUES (?, ?)", (marker, "1"))
+        conn.commit()
+    except sqlite3.OperationalError as e:
+        logger.error(f"[migrate] Could not reset youtube_videos.is_made_for_kids: {e}")
 
 
 def _drop_retired_tables(cursor, conn):

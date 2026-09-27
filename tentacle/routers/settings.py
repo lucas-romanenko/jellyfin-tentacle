@@ -75,21 +75,24 @@ def get_settings_raw(db: Session = Depends(get_db)):
 
 @router.post("")
 def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
-    from models.database import NON_EMPTY_DEFAULTS, Setting
+    from models.database import Setting
     sensitive_keys = {"tmdb_bearer_token", "tmdb_api_key", "radarr_api_key", "sonarr_api_key", "jellyfin_api_key", "trakt_client_id", "mdblist_api_key", "vod_token_secret"}
-    existing = {k for (k,) in db.query(Setting.key).all()}
+    from models.database import NON_EMPTY_DEFAULTS
     for key, value in body.settings.items():
         # Don't overwrite sensitive keys if they look masked
         if key in sensitive_keys and value and "..." in value:
             continue
-        if isinstance(value, str) and not value.strip():
-            # A cleared field shows its placeholder, so it looks like the
-            # default: store the default for a key that must hold a value
-            # (#157). A blank for a key never set stores nothing; an existing
-            # value can still be cleared.
+        if value in ("", None):
             if key in NON_EMPTY_DEFAULTS:
+                # A cleared "Recently added days" or match threshold (the
+                # field then shows its placeholder, so it looks like the
+                # default) was stored as "", and every reader's int()/float()
+                # raised: the provider sync, the tag refresh and the playlist
+                # build all failed until it was typed back in.
                 value = NON_EMPTY_DEFAULTS[key]
-            elif key not in existing:
+            elif db.query(Setting).filter(Setting.key == key).first() is None:
+                # Nothing to clear: don't create an empty row for a key that
+                # was never set (a Save with nothing edited changed the table).
                 continue
         set_setting(db, key, value)
 

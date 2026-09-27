@@ -122,7 +122,9 @@ class RuleTags(_Db):
         self.assertIn("Netflix Movies", self.tags(1))
 
     def test_the_nfo_follows_the_row(self):
-        self.lst(self.a, "Old List", [])
+        # The list holds another title: a list that has never stored one is
+        # left alone (see paused_tags).
+        self.lst(self.a, "Old List", [2])
         self.movie(1, tags=["Netflix Movies", "Old List"], nfo=True)
         refresh_recently_added_tags(self.db)
         nfo = Path(self.tmp, "m1.nfo").read_text(encoding="utf-8")
