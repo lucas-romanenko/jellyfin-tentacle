@@ -31,6 +31,12 @@ router = APIRouter(prefix="/api/activity", tags=["activity"])
 # "gen" counts invalidations, so a fetch that was running when the cache was
 # invalidated does not store what it read before the change.
 _unreleased_cache: dict = {"data": None, "ts": 0, "gen": 0}
+# Each app's own wanted lists, behind the combined cache above (#204). A search
+# changing state in Sonarr re-reads Sonarr only: the lists used to be cached as
+# one, so it also re-read Radarr's entire /movie library (megabytes on a big
+# install) up to three times per search.
+_wanted_parts: dict = {"radarr": {"data": None, "ts": 0, "gen": 0},
+                       "sonarr": {"data": None, "ts": 0, "gen": 0}}
 # One wanted fetch at a time. With a slow Radarr/Sonarr a fetch takes longer
 # than the Activity poll interval, and every request that found the cache empty
 # used to fetch everything again, piling more load onto the slow app.
@@ -89,7 +95,7 @@ def _watch_arr_searches(db: Session) -> None:
             return
         _command_watch["ts"] = now
         seen = _command_watch.get("seen") or {}
-        changed = False
+        changed = []
         for prefix in ("radarr", "sonarr"):
             url, key = get_setting(db, f"{prefix}_url"), get_setting(db, f"{prefix}_api_key")
             if not (url and key):
@@ -99,11 +105,11 @@ def _watch_arr_searches(db: Session) -> None:
             if got is None:
                 continue  # unknown for this app only: not a change, and its last reading stands
             if prefix in seen and got - seen[prefix]:
-                changed = True
+                changed.append(prefix)
             seen[prefix] = got
         _command_watch["seen"] = seen
-        if changed:
-            invalidate_wanted_cache()
+        for prefix in changed:
+            invalidate_wanted_cache(prefix)     # only that app's lists (#204)
     finally:
         _command_watch_lock.release()
 
@@ -267,13 +273,37 @@ def _iso_date(val) -> Optional[str]:
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ") if dt else None
 
 
-def _fetch_sonarr_file_counts(url: str, api_key: str) -> dict:
-    """Series id → episode files on disk. The episodes embedded in
-    wanted/missing carry no statistics, so ask the series list."""
+def _read_sonarr_series(url: str, api_key: str) -> Optional[list]:
+    """Sonarr's whole series list, or None when it could not be read."""
     try:
         r = requests.get(f"{url.rstrip('/')}/api/v3/series", headers={"X-Api-Key": api_key}, timeout=15)
         r.raise_for_status()
-        return {s["id"]: (s.get("statistics") or {}).get("episodeFileCount", 0) for s in r.json() if s.get("id")}
+        return r.json()
+    except Exception as e:
+        logger.debug(f"Sonarr series list fetch failed: {e}")
+        return None
+
+
+def _read_once(read):
+    """`read()` at most once, however many helpers ask for its answer: one
+    refresh reads Sonarr's /series once, not once per helper (#204)."""
+    box = []
+
+    def get():
+        if not box:
+            box.append(read())
+        return box[0]
+    return get
+
+
+def _fetch_sonarr_file_counts(url: str, api_key: str, series=None) -> dict:
+    """Series id → episode files on disk. The episodes embedded in
+    wanted/missing carry no statistics, so ask the series list. `series`,
+    when given, supplies that list (see _read_once)."""
+    all_series = series() if series is not None else _read_sonarr_series(url, api_key)
+    try:
+        return {s["id"]: (s.get("statistics") or {}).get("episodeFileCount", 0)
+                for s in all_series or [] if s.get("id")}
     except Exception as e:
         logger.debug(f"Sonarr series stats fetch failed: {e}")
         return {}
@@ -378,16 +408,13 @@ def _fetch_sonarr_searching(url: str, api_key: str, file_counts: Optional[dict] 
     return searching
 
 
-def _fetch_sonarr_unreleased(url: str, api_key: str) -> list:
-    """Fetch monitored series from Sonarr that haven't aired yet."""
+def _fetch_sonarr_unreleased(url: str, api_key: str, series=None) -> list:
+    """Fetch monitored series from Sonarr that haven't aired yet. `series`,
+    when given, supplies the series list (see _read_once)."""
+    all_series = series() if series is not None else _read_sonarr_series(url, api_key)
+    if all_series is None:
+        return []
     try:
-        r = requests.get(
-            f"{url.rstrip('/')}/api/v3/series",
-            headers={"X-Api-Key": api_key},
-            timeout=15,
-        )
-        r.raise_for_status()
-        all_series = r.json()
         now = datetime.utcnow()
         unreleased = []
         for s in all_series:
@@ -683,22 +710,48 @@ def _get_wanted(db: Session) -> dict:
         return result
 
 
+def _wanted_part(app: str, fetch) -> dict:
+    """One app's {"unreleased", "searching"}: cached for UNRELEASED_TTL, and
+    dropped on its own when that app's searches change (#204)."""
+    part = _wanted_parts[app]
+    if part["data"] is not None and (time.time() - part["ts"]) < UNRELEASED_TTL:
+        data = part["data"]
+    else:
+        gen = part["gen"]
+        data = fetch()
+        if part["gen"] == gen:      # not invalidated while it was being read
+            part.update(data=data, ts=time.time())
+    # Copies: the combined result below is edited (posters, waits, card ids).
+    return {k: [dict(x) for x in data[k]] for k in ("unreleased", "searching")}
+
+
+def _fetch_radarr_part(url: str, key: str) -> dict:
+    wanted = _fetch_radarr_wanted(url, key)
+    return {"unreleased": wanted["unreleased"], "searching": wanted["searching"]}
+
+
+def _fetch_sonarr_part(url: str, key: str) -> dict:
+    series = _read_once(lambda: _read_sonarr_series(url, key))
+    return {"unreleased": _fetch_sonarr_unreleased(url, key, series=series),
+            "searching": _fetch_sonarr_searching(url, key, _fetch_sonarr_file_counts(url, key, series=series))}
+
+
 def _fetch_wanted(db: Session) -> dict:
     unreleased, searching = [], []
 
     radarr_url = get_setting(db, "radarr_url")
     radarr_key = get_setting(db, "radarr_api_key")
     if radarr_url and radarr_key:
-        wanted = _fetch_radarr_wanted(radarr_url, radarr_key)
+        wanted = _wanted_part("radarr", lambda: _fetch_radarr_part(radarr_url, radarr_key))
         unreleased.extend(wanted["unreleased"])
         searching.extend(wanted["searching"])
 
     sonarr_url = get_setting(db, "sonarr_url")
     sonarr_key = get_setting(db, "sonarr_api_key")
     if sonarr_url and sonarr_key:
-        unreleased.extend(_fetch_sonarr_unreleased(sonarr_url, sonarr_key))
-        searching.extend(_fetch_sonarr_searching(
-            sonarr_url, sonarr_key, _fetch_sonarr_file_counts(sonarr_url, sonarr_key)))
+        wanted = _wanted_part("sonarr", lambda: _fetch_sonarr_part(sonarr_url, sonarr_key))
+        unreleased.extend(wanted["unreleased"])
+        searching.extend(wanted["searching"])
 
     # A series with no files whose next episode is ahead used to be listed as
     # upcoming even when earlier episodes had already aired. If Sonarr is
@@ -779,7 +832,11 @@ def _missing_ids_for(db: Session, rec: dict) -> Optional[set]:
     return set(got) if got is not None else None
 
 
-def invalidate_wanted_cache() -> None:
+def invalidate_wanted_cache(app: Optional[str] = None) -> None:
+    """Drop the wanted lists: one app's ("radarr" / "sonarr") or, by default, both."""
+    for name in ((app,) if app in _wanted_parts else tuple(_wanted_parts)):
+        part = _wanted_parts[name]
+        part.update(data=None, ts=0, gen=part.get("gen", 0) + 1)
     _unreleased_cache["data"] = None
     _unreleased_cache["ts"] = 0
     _unreleased_cache["gen"] = _unreleased_cache.get("gen", 0) + 1
@@ -789,8 +846,12 @@ def _note_queue(downloads: list) -> None:
     """Re-read the wanted lists when something has left the download queue."""
     global _last_queue_keys
     keys = {(d.get("source"), d.get("queue_id")) for d in downloads if d.get("queue_id") is not None}
-    if _last_queue_keys - keys:
-        invalidate_wanted_cache()
+    left = _last_queue_keys - keys
+    apps = {source for source, _ in left}
+    if left:
+        # Only the app a download left (#204); an unknown source re-reads both.
+        for app in (apps if apps <= set(_wanted_parts) else {None}):
+            invalidate_wanted_cache(app)
     _last_queue_keys = keys
 
 
