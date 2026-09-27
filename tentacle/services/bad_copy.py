@@ -122,8 +122,12 @@ def _grab_for_file(records: list, file_id) -> Optional[dict]:
         same = [g for g in grabs if g.get("downloadId") == download_id]
         if same:
             return _newest(same)
-    # A client that grabs without an id (blackhole): the last grab before it.
-    return _newest([g for g in grabs if (g.get("date") or "") <= (imp.get("date") or "")])
+    # A client that grabs without an id (blackhole): the last grab before it that
+    # has no id either. A grab carrying another download's id is another release:
+    # an import whose own id no grab has (a download added to the client by hand)
+    # blames nothing rather than whichever grab came before it.
+    return _newest([g for g in grabs if not g.get("downloadId")
+                    and (g.get("date") or "") <= (imp.get("date") or "")])
 
 
 def _outcome(title: str, grab: Optional[dict], blocked: bool) -> str:

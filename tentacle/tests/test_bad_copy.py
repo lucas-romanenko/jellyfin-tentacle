@@ -226,6 +226,19 @@ class TestTheGrabThatMadeTheFile(_Base):
         bad_copy.replace_movie(self.db, 100)
         self.assertEqual(["history/failed/2"], self._failed())
 
+    def test_a_download_added_by_hand_blames_no_earlier_grab(self):
+        # The import's download id matches no grab (added to the client by hand):
+        # an earlier grab of another release must not be blocklisted for it.
+        self.arr.movie["movieFile"] = {"id": 6}
+        self.arr.movie_history = [
+            _grab(1, "2026-09-01T10:00:00Z", "Movie.OTHER.RELEASE", "A1"),
+            _imported(2, "2026-09-01T11:00:00Z", 5, "A1"),
+            _imported(3, "2026-09-12T11:00:00Z", 6, "HAND9"),
+        ]
+        r = bad_copy.replace_movie(self.db, 100)
+        self.assertEqual([], self._failed())
+        self.assertFalse(r["blocklisted"])
+
     def test_an_older_radarr_without_file_ids_follows_the_newest_import(self):
         self.arr.movie["movieFile"] = {"id": 6}
         self.arr.movie_history = [
