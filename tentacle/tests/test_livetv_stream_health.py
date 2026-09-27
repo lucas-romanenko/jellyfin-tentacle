@@ -11,7 +11,7 @@ writes an Activity line when a RECORDING ended damaged.
 """
 import asyncio
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import httpx
 
@@ -149,6 +149,108 @@ class HlsDamagedThreshold(unittest.IsolatedAsyncioTestCase):
         asyncio.run(run())
 
 
+class EndedOnError(unittest.IsolatedAsyncioTestCase):
+    """Impact research, defects A and B: a stream that ENDS while still
+    failing was summarised as "retried in time, nothing lost" / "no upstream
+    trouble" -- the outage still open at the end was never added, and a
+    fatal answer was never counted."""
+
+    def setUp(self):
+        livetv._recent_streams.clear()
+
+    async def _run(self, script, recording, seconds=0.3):
+        log, closed, writes = [], [], []
+        real_sleep = asyncio.sleep
+
+        async def fast_sleep(delay):
+            await real_sleep(0.001)
+        with patch("httpx.AsyncClient", lambda **kw: FakeClient(script, log, closed, **kw)), \
+                patch("routers.livetv.is_safe_url", lambda *a, **k: True), \
+                patch("asyncio.sleep", fast_sleep), \
+                patch.object(livetv, "log_activity", lambda db, ev, msg, detail=None: writes.append((ev, msg))), \
+                patch.object(livetv, "SessionLocal", MagicMock()):
+            with self.assertLogs("routers.livetv", "INFO") as logs:
+                resp = await livetv._stream_proxy_inner(
+                    channel_id=7, user_agent="UA", stream_url=HLS, _release_sem=lambda: None,
+                    guard=None, is_recording=lambda: recording)
+
+                async def collect():
+                    async for _ in resp.body_iterator:
+                        pass
+                try:
+                    await asyncio.wait_for(collect(), timeout=seconds)
+                except asyncio.TimeoutError:
+                    pass          # Jellyfin's timer ends: the client goes away
+                await resp.body_iterator.aclose()
+                for _ in range(20):          # the Activity line is written from the executor
+                    if writes:
+                        break
+                    await real_sleep(0.02)
+        return livetv._recent_streams[-1], logs.output, writes
+
+    async def test_a_recording_refused_until_its_timer_ends_is_reported(self):
+        s1 = "http://provider.test/live/u/p/s1.ts"
+        media = b"#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4,\ns1.ts\n"   # live: no ENDLIST
+        script = {HLS: [_resp(200, HLS, content=media, headers=PL), _resp(509, HLS)],
+                  s1: [_resp(200, s1, content=b"G" * 188, headers=TS)]}
+        # a real second or more of refusals (under one is not an outage)
+        last, logs, writes = await self._run(script, recording=True, seconds=1.3)
+        self.assertTrue(last["ended_on_error"], last)
+        self.assertGreater(last["reconnecting_seconds"], 0.0, last)
+        self.assertTrue(any("WARNING" in m and "still failing" in m for m in logs), logs)
+        self.assertTrue(any(ev == "livetv_recording_damaged" and "still failing" in msg
+                            for ev, msg in writes), writes)
+
+    async def test_a_stream_ended_by_a_fatal_answer_is_reported(self):
+        s1 = "http://provider.test/live/u/p/s1.ts"
+        media = b"#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4,\ns1.ts\n"
+        script = {HLS: [_resp(200, HLS, content=media, headers=PL), _resp(400, HLS)],
+                  s1: [_resp(200, s1, content=b"G" * 188, headers=TS)]}
+        last, logs, _ = await self._run(script, recording=False, seconds=2)
+        self.assertTrue(last["ended_on_error"], last)
+        self.assertFalse(any("no upstream trouble" in m for m in logs), logs)
+
+    async def test_a_token_that_stays_refused_is_reported(self):
+        s1 = "http://provider.test/live/u/p/s1.ts"
+        media = b"#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4,\ns1.ts\n"
+        script = {HLS: [_resp(200, HLS, content=media, headers=PL), _resp(407, HLS)],
+                  s1: [_resp(200, s1, content=b"G" * 188, headers=TS)]}
+        last, logs, _ = await self._run(script, recording=False, seconds=2)
+        self.assertTrue(last["ended_on_error"], last)
+        self.assertFalse(any("retried in time, nothing lost" in m for m in logs), logs)
+
+    async def test_a_recovered_outage_is_still_not_an_error(self):
+        s1, s2 = "http://provider.test/live/u/p/s1.ts", "http://provider.test/live/u/p/s2.ts"
+        media = b"#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4,\ns1.ts\n#EXTINF:4,\ns2.ts\n#EXT-X-ENDLIST\n"
+        script = {HLS: [_resp(200, HLS, content=media, headers=PL)],
+                  s1: [_resp(509, s1), _resp(200, s1, content=b"G" * 188, headers=TS)],
+                  s2: [_resp(200, s2, content=b"H" * 188, headers=TS)]}
+        last, _, _ = await self._run(script, recording=True, seconds=2)
+        self.assertFalse(last["ended_on_error"], last)
+
+    def test_the_api_never_shows_the_internal_marker(self):
+        async def run():
+            entry = livetv._status_open(98)
+            entry["health"]["_failing_since"] = 1.0
+
+            class _Q:
+                def filter(self, *a):
+                    return self
+
+                def first(self):
+                    return None
+
+            class _Db:
+                def query(self, *a):
+                    return _Q()
+            try:
+                snap = [x for x in livetv._stream_snapshot(_Db()) if x["channel_id"] == 98][0]
+                self.assertNotIn("_failing_since", snap["health"])
+            finally:
+                livetv._status_clear(98, entry)
+        asyncio.run(run())
+
+
 class StatusShape(unittest.IsolatedAsyncioTestCase):
     async def test_a_running_stream_shows_its_health(self):
         entry = livetv._status_open(99)
@@ -169,6 +271,49 @@ class StatusShape(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(2, snap["health"]["reconnects"])
         finally:
             livetv._status_clear(99, entry)
+
+
+class OutageFlag(unittest.TestCase):
+    """The "ended while the provider was still failing (0s)" line read as a
+    zero-length outage; under a second the figure is left out."""
+
+    def _warning(self, seconds):
+        h = livetv._new_health()
+        h["reconnecting_seconds"] = seconds
+        h["ended_on_error"] = True
+        with self.assertLogs("routers.livetv", "WARNING") as logs:
+            livetv._stream_ended(7, {"health": h, "opened_at": 0.0}, recording=False)
+        return logs.output[-1]
+
+    def test_under_a_second_has_no_figure(self):
+        msg = self._warning(0.3)
+        self.assertIn("ended while the provider was still failing — ", msg)
+        self.assertNotIn("(0s)", msg)
+
+    def test_a_second_or_more_keeps_it(self):
+        self.assertIn("still failing (4s) — ", self._warning(4.2))
+
+
+class OpenOutageUnderASecond(unittest.TestCase):
+    """Round-4 low: a stream that ends a fraction of a second into a failure
+    (one refused request as the client leaves) did not end on an outage."""
+
+    def _summary(self, ago):
+        async def run():
+            loop = asyncio.get_running_loop()
+            h = livetv._new_health()
+            h["_failing_since"] = loop.time() - ago
+            livetv._stream_ended(7, {"health": h, "opened_at": loop.time() - 30}, recording=True)
+            return livetv._recent_streams[-1]
+        with patch.object(livetv, "log_activity", lambda *a, **k: None), \
+                patch.object(livetv, "SessionLocal", MagicMock()):
+            return asyncio.run(run())
+
+    def test_under_a_second_is_not_ended_on_error(self):
+        self.assertFalse(self._summary(0.2)["ended_on_error"])
+
+    def test_a_second_or_more_is(self):
+        self.assertTrue(self._summary(3.0)["ended_on_error"])
 
 
 if __name__ == "__main__":
