@@ -4,8 +4,10 @@ Handles user authentication via Jellyfin, session management, and user listing.
 """
 
 import logging
+import threading
 import time
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
@@ -32,6 +34,19 @@ _TOKEN_CACHE_TTL = 300  # 5 minutes
 # Jellyfin user who has never opened the dashboard can be given a Tentacle row
 # on their first plugin call instead of being refused.
 _token_profiles: dict[str, dict] = {}
+
+# Creating a user's Tentacle row is create-if-missing, and a new user's first
+# page load fires several requests at once (the plugin's Sections, Toolbar,
+# Hero, HeroConfig; the TV app's rows). Each saw no row, each inserted one, and
+# all but the first failed on the unique jellyfin_user_id with a 500 (#212).
+# So rows are created one at a time, and looked for again under the lock. It
+# also makes "is this the first user?" a question only one login asks at once.
+# The IntegrityError fallbacks cover what a lock in one process cannot.
+_user_create_lock = threading.Lock()
+
+
+def _user_row(db: Session, jellyfin_user_id: str) -> Optional[TentacleUser]:
+    return db.query(TentacleUser).filter(TentacleUser.jellyfin_user_id == jellyfin_user_id).first()
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -284,18 +299,28 @@ def _provision_plugin_user(db: Session, token_uid: str) -> Optional[TentacleUser
     owner and inherits the pre-multi-user data, and that must stay a deliberate
     dashboard login, not whichever TV happened to poll first.
     """
-    if db.query(TentacleUser).count() == 0:
-        return None
-    profile = _token_profiles.get(token_uid) or {}
-    user = TentacleUser(
-        jellyfin_user_id=token_uid,
-        display_name=profile.get("name") or token_uid,
-        is_admin=bool(profile.get("is_admin", False)),
-        profile_image_tag=profile.get("image_tag"),
-    )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
+    with _user_create_lock:
+        existing = _user_row(db, token_uid)
+        if existing is not None:
+            return existing     # a request that got here first created it (#212)
+        if db.query(TentacleUser).count() == 0:
+            return None
+        profile = _token_profiles.get(token_uid) or {}
+        user = TentacleUser(
+            jellyfin_user_id=token_uid,
+            display_name=profile.get("name") or token_uid,
+            is_admin=bool(profile.get("is_admin", False)),
+            profile_image_tag=profile.get("image_tag"),
+        )
+        db.add(user)
+        try:
+            db.commit()
+        except IntegrityError:
+            # Created outside this process's lock in the meantime: that row is
+            # the user, and whoever made it builds the playlists.
+            db.rollback()
+            return _user_row(db, token_uid)
+        db.refresh(user)
     logger.info(f"Created Tentacle user '{user.display_name}' from a verified Jellyfin token")
     _build_playlists_for_new_user(user.id)
     return user
@@ -416,35 +441,53 @@ def login(body: LoginRequest, response: Response, request: Request, db: Session 
     jf_image_tag = data["User"].get("PrimaryImageTag")
     jf_is_admin = data["User"].get("Policy", {}).get("IsAdministrator", False)
 
-    # Create or update TentacleUser
-    user = db.query(TentacleUser).filter(TentacleUser.jellyfin_user_id == jf_user_id).first()
-    is_first_user = db.query(TentacleUser).count() == 0
+    def _update(existing: TentacleUser) -> None:
+        existing.display_name = jf_user_name
+        existing.profile_image_tag = jf_image_tag
+        existing.is_admin = jf_is_admin  # Sync admin status on every login
 
-    if not user:
-        user = TentacleUser(
-            jellyfin_user_id=jf_user_id,
-            display_name=jf_user_name,
-            is_admin=jf_is_admin,  # Sync admin status from Jellyfin
-            profile_image_tag=jf_image_tag,
-        )
-        db.add(user)
-        db.flush()
+    # Create or update TentacleUser -- one login at a time (#212), so the same
+    # new user logging in twice at once gets one row, and only one of two new
+    # users on a fresh install becomes the owner that inherits the old data.
+    with _user_create_lock:
+        user = _user_row(db, jf_user_id)
+        is_first_user = db.query(TentacleUser).count() == 0
 
-        if is_first_user:
-            # Migrate existing data from before multi-user to this admin
-            migrate_orphaned_data_to_user(db, user.id)
-            # Also update the legacy settings for backwards compat
-            set_setting(db, "jellyfin_user_id", jf_user_id)
-            set_setting(db, "jellyfin_user_name", jf_user_name)
-            logger.info(f"First user '{jf_user_name}' set as admin, orphaned data migrated")
-        created = True
-    else:
-        user.display_name = jf_user_name
-        user.profile_image_tag = jf_image_tag
-        user.is_admin = jf_is_admin  # Sync admin status on every login
-        created = False
+        try:
+            if not user:
+                user = TentacleUser(
+                    jellyfin_user_id=jf_user_id,
+                    display_name=jf_user_name,
+                    is_admin=jf_is_admin,  # Sync admin status from Jellyfin
+                    profile_image_tag=jf_image_tag,
+                )
+                db.add(user)
+                db.flush()
 
-    db.commit()
+                if is_first_user:
+                    # Migrate existing data from before multi-user to this admin
+                    migrate_orphaned_data_to_user(db, user.id)
+                    # Also update the legacy settings for backwards compat
+                    set_setting(db, "jellyfin_user_id", jf_user_id)
+                    set_setting(db, "jellyfin_user_name", jf_user_name)
+                    logger.info(f"First user '{jf_user_name}' set as admin, orphaned data migrated")
+                created = True
+            else:
+                _update(user)
+                created = False
+            db.commit()
+        except IntegrityError:
+            # Created outside this process's lock in the meantime (the insert
+            # loses on the unique id). The rollback undoes this login's
+            # first-user migration too: that is the other login's to do. Log
+            # in to the row that won.
+            db.rollback()
+            user = _user_row(db, jf_user_id)
+            if user is None:
+                raise
+            _update(user)
+            db.commit()
+            created = False
 
     if created:
         # Give the new user their playlists now. Playlists are per-user and are
