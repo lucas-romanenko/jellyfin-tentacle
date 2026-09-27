@@ -189,13 +189,15 @@ def delete_rule(rule_id: int, db: Session = Depends(get_db), user: TentacleUser 
             # Delete Jellyfin playlist
             jf_url = get_setting(db, "jellyfin_url")
             jf_key = get_setting(db, "jellyfin_api_key")
+            jf_user_id = _get_jellyfin_user_id(db, user.id)
             if jf_url and jf_key:
-                jf = JellyfinService(jf_url, jf_key)
+                jf = JellyfinService(jf_url, jf_key, jf_user_id or "")
                 for entry in (old_data.get("UserPlaylists") or []):
                     pid = entry.get("JellyfinPlaylistId")
                     if pid:
                         try:
-                            jf.delete_item(pid)
+                            # Only a playlist Tentacle made; a user's own is unlinked and kept (#152).
+                            jf.delete_tentacle_playlist(pid, entry.get("UserId") or jf_user_id)
                         except Exception:
                             pass
             shutil.rmtree(folder, ignore_errors=True)

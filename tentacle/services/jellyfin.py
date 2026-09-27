@@ -262,6 +262,22 @@ def _item_update_payload(item: dict, **changes) -> dict:
     return payload
 
 
+# Tentacle marks every playlist it creates with this provider id (#152). Jellyfin
+# shows no provider id it has no provider for, and keeps it in the playlist's own
+# playlist.xml (<TentacleId>): the mark survives entry changes, a library scan, a
+# full "replace all metadata" refresh, a restart, and a wiped Tentacle data
+# directory (checked on 10.11.11). Only a marked playlist is ever taken over by
+# name or deleted; a user's own playlist of the same name never carries it.
+TENTACLE_PLAYLIST_PROVIDER = "Tentacle"
+TENTACLE_PLAYLIST_MARK = "managed"
+
+
+def is_tentacle_playlist(item: Optional[dict]) -> bool:
+    """Whether a Jellyfin playlist (a listing entry with ProviderIds) is Tentacle's own."""
+    ids = (item or {}).get("ProviderIds") or {}
+    return any(k.lower() == TENTACLE_PLAYLIST_PROVIDER.lower() and v for k, v in ids.items())
+
+
 class JellyfinService:
     def __init__(self, url: str, api_key: str, user_id: str = ""):
         self.url = url.rstrip("/")
@@ -1536,7 +1552,7 @@ class JellyfinService:
             "IncludeItemTypes": "Playlist",
             "Recursive": "true",
             "UserId": uid,
-            "Fields": "ChildCount",
+            "Fields": "ChildCount,ProviderIds",
         })
         if data:
             return data.get("Items", [])
@@ -1555,7 +1571,7 @@ class JellyfinService:
                 "IncludeItemTypes": "Playlist",
                 "Recursive": "true",
                 "UserId": uid,
-                "Fields": "ChildCount",
+                "Fields": "ChildCount,ProviderIds",
             })
         except Exception as e:
             logger.warning(f"[Jellyfin] Playlist listing for user {uid} failed: {e}")
@@ -1579,6 +1595,46 @@ class JellyfinService:
         except Exception as e:
             logger.warning(f"[Jellyfin] Could not list users: {e}")
             return None
+
+    def _owned_playlist(self, playlist_id: str, user_id: str = None) -> Optional[dict]:
+        """The playlist as its owner sees it, or None when it can't be read. A
+        private playlist is visible only to its owner, so the admin's view is no
+        use here."""
+        uid = user_id or self.user_id
+        path = f"/Users/{uid}/Items/{playlist_id}" if uid else f"/Items/{playlist_id}"
+        return self._get(path)
+
+    def mark_tentacle_playlist(self, playlist_id: str, user_id: str = None) -> bool:
+        """Mark a playlist as Tentacle's own (see TENTACLE_PLAYLIST_PROVIDER).
+        True when it carries the mark afterwards."""
+        item = self._owned_playlist(playlist_id, user_id)
+        if not item:
+            logger.warning(f"[Jellyfin] Cannot read playlist {playlist_id} to mark it as Tentacle's")
+            return False
+        if is_tentacle_playlist(item):
+            return True
+        ids = dict(item.get("ProviderIds") or {})
+        ids[TENTACLE_PLAYLIST_PROVIDER] = TENTACLE_PLAYLIST_MARK
+        return self._post_item_update(item, _item_update_payload(item, ProviderIds=ids),
+                                      "mark as Tentacle's")
+
+    def delete_tentacle_playlist(self, playlist_id: str, user_id: str = None) -> bool:
+        """Delete a playlist only if it carries Tentacle's mark (#152).
+
+        Every path that deletes a playlist it has linked by id (a rule deleted, a
+        playlist switched off, an orphaned SmartList, a removed YouTube source)
+        goes through here. A linked playlist without the mark was the user's own,
+        taken over by name before marks existed: it is unlinked and kept. One
+        that can't be read is kept too."""
+        item = self._owned_playlist(playlist_id, user_id)
+        if not item:
+            logger.info(f"[Jellyfin] Playlist {playlist_id} is gone or can't be read; nothing deleted")
+            return False
+        if not is_tentacle_playlist(item):
+            logger.info(f"[Jellyfin] Keeping playlist '{item.get('Name')}' ({playlist_id}): "
+                        f"Tentacle didn't make it, so it is only unlinked")
+            return False
+        return self.delete_item(playlist_id)
 
     def delete_item(self, item_id: str) -> bool:
         """Delete an item (playlist, collection, etc.) from Jellyfin."""
