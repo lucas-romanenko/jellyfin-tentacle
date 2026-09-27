@@ -3563,10 +3563,10 @@ async function loadHomeScreen() {
       updateMergeContinueSlider(mergeOn);
     }
 
-    // Card focus previews: all / local_only / off (absent = all)
+    // Card focus previews: all / local_only / off (absent = local_only, androidtv#47)
     const previewsSelect = document.getElementById('card-previews-select');
     if (previewsSelect) {
-      previewsSelect.value = ['all', 'local_only', 'off'].includes(config.card_previews) ? config.card_previews : 'all';
+      previewsSelect.value = ['all', 'local_only', 'off'].includes(config.card_previews) ? config.card_previews : 'local_only';
     }
 
     if (!homeRows.length) {

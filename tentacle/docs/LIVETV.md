@@ -189,7 +189,7 @@ background jobs below waiting.
 
 The home-row card previews policy is not a setting row: it is per user, in the home config,
 set with `POST /api/smartlists/card-previews` `{"mode": "all" | "local_only" | "off"}` (default
-`all`) and served to the plugin/clients as `cardPreviews` on `/TentacleHome/Toolbar` and `/Sections`.
+`local_only`: a provider title's preview opens a provider connection, androidtv#47) and served to the plugin/clients as `cardPreviews` on `/TentacleHome/Toolbar` and `/Sections`.
 
 `GET /api/live/streams` (internal secret or admin) lists every open upstream — one entry per live
 channel or VOD playback: `channel_id`, `channel`, `client`, `stream_id` (the GuideNumber), `kind`
