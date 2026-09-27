@@ -2244,7 +2244,20 @@ def _sync_groups(provider_id: int, categories: list[dict], db: Session, channel_
 
 
 # A provider's separator rows: "##### EVENTS #####", "=== SPORTS ===", "-----".
-_SEPARATOR_RE = re.compile(r"^\s*(?:[#=*~_|\-]{3,}.*[#=*~_|\-]{3,}|[#=*~_|\-\s]+)\s*$")
+# A row that begins AND ends with a run of two or more of # = * ~ _ | - ★ ▬
+# ◉ ● •, or consists only of them, optionally after a two/three-letter
+# "XX:" / "XX|" tag ("UK: ##### SPORTS #####", "★★ PPV EVENTS ★★"). "#1 Hits",
+# "C-SPAN", "Sky Sports ---", "***Premium*** Movies" and names ending in one
+# "◉" are channels.
+_SEP_SYM = r"[#=*~_|\-★▬◉●•]"
+# Underscores count at the ends only as a run of three: "__NAME__" is a
+# name, "___ NEWS ___" a separator.
+_SEP_END = r"[#=*~|\-★▬◉●•]"
+_SEP_TAG = r"(?:[A-Za-z]{2,3}\s*[:|]\s*)?"
+_SEPARATOR_RE = re.compile(
+    rf"^\s*{_SEP_TAG}(?:{_SEP_END}{{2,}}|_{{3,}}).*(?:{_SEP_END}{{2,}}|_{{3,}})\s*$"
+    rf"|^\s*{_SEP_TAG}(?:{_SEP_SYM}|\s)*{_SEP_SYM}(?:{_SEP_SYM}|\s)*$"
+)
 
 
 def _is_separator(name: str) -> bool:
