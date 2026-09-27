@@ -420,6 +420,9 @@ def download_xmltv(
 
 
 _XMLTV_TIME_RE = re.compile(r"^\s*(\d{4,14})\s*(?:([+-])(\d{2}):?(\d{2})?)?")
+# What may follow the digits: nothing, an offset (+0100, -05:00, +01) or Z,
+# then optionally a zone name ("+0100 BST", or a name alone).
+_XMLTV_TZ_TAIL = re.compile(r"^\s*(?:[+-]\d{2}(?::?\d{2})?|Z)?(?:\s+[A-Za-z][A-Za-z0-9/_+-]*)?\s*$")
 
 
 def _parse_xmltv_time(time_str: str) -> Optional[datetime]:
@@ -439,6 +442,18 @@ def _parse_xmltv_time(time_str: str) -> Optional[datetime]:
     if not m:
         return None
     digits, sign, hh, mm = m.groups()
+    # Whole fields only (YYYY, YYYYMM, ... YYYYMMDDhhmmss), and nothing after
+    # them but a zone: a cut field ("2026092") would be padded into another
+    # date, and an ISO "2026-09-25T18:00:00Z" read as 1 January plus an
+    # offset. A time that cannot be read exactly is dropped, never stored
+    # wrong (#177).
+    rest = time_str.strip()[len(digits):]
+    if len(digits) % 2 or not _XMLTV_TZ_TAIL.match(rest):
+        return None
+    # No zone on Earth is further than 14:00 from UTC, and an offset's
+    # minutes are under 60: anything else is a broken feed.
+    if sign and (int(mm or 0) >= 60 or int(hh) * 60 + int(mm or 0) > 14 * 60):
+        return None
     digits += "20000101000000"[len(digits):]
     try:
         dt = datetime.strptime(digits, "%Y%m%d%H%M%S")
