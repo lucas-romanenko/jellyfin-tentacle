@@ -43,12 +43,23 @@ class FakeServer:
     """
 
     def __init__(self):
-        self.playlists = {}   # id -> {"Name": str, "visible_to": set}
+        self.playlists = {}   # id -> {"Name", "visible_to", "marked", "entries"}
         self.deleted = []
         self.created = []
+        self.marked = []
 
-    def add(self, pid, name, visible_to):
-        self.playlists[pid] = {"Name": name, "visible_to": set(visible_to)}
+    def add(self, pid, name, visible_to, marked=True, entries=1):
+        """`marked`: Tentacle made it (see services.jellyfin.TENTACLE_PLAYLIST_PROVIDER);
+        a user's own playlist is added with marked=False."""
+        self.playlists[pid] = {"Name": name, "visible_to": set(visible_to),
+                               "marked": marked, "entries": entries}
+
+    def listing_entry(self, pid, child_count=True):
+        pl = self.playlists[pid]
+        entry = {"Id": pid, "Name": pl["Name"], "ProviderIds": {"Tentacle": "managed"} if pl["marked"] else {}}
+        if child_count and pl["entries"] is not None:   # None: Jellyfin left the key out
+            entry["ChildCount"] = pl["entries"]
+        return entry
 
 
 class FakeJellyfinService:
@@ -66,10 +77,24 @@ class FakeJellyfinService:
     def get_playlists(self, user_id=None):
         uid = user_id or self.user_id
         return [
-            {"Id": pid, "Name": pl["Name"], "ChildCount": 1}
+            self.server.listing_entry(pid)
             for pid, pl in self.server.playlists.items()
             if uid in pl["visible_to"]
         ]
+
+    def mark_tentacle_playlist(self, playlist_id, user_id=None):
+        pl = self.server.playlists.get(playlist_id)
+        if pl is None:
+            return False
+        pl["marked"] = True
+        self.server.marked.append(playlist_id)
+        return True
+
+    def delete_tentacle_playlist(self, playlist_id, user_id=None):
+        pl = self.server.playlists.get(playlist_id)
+        if not pl or not pl["marked"]:
+            return False
+        return self.delete_item(playlist_id)
 
     def get_playlists_checked(self, user_id=None):
         return self.get_playlists(user_id)
@@ -188,7 +213,8 @@ class TestCleanupIsOwnerAware(CleanupBase):
             if path == "/Items" and (params or {}).get("UserId") == "jf-2":
                 return None          # what _get returns after a read timeout
             uid = (params or {}).get("UserId")
-            return {"Items": [{"Id": pid, "Name": pl["Name"]} for pid, pl in server.playlists.items()
+            # Marked like Tentacle's own, so only the listing guard can keep it.
+            return {"Items": [server.listing_entry(pid) for pid, pl in server.playlists.items()
                               if uid in pl["visible_to"]]}
 
         def setting(db, key, default=""):
@@ -264,7 +290,8 @@ class TestLookupDoesNotAdoptAnotherUsersPlaylist(CleanupBase):
             if url.rstrip("/").endswith("/Users"):
                 return FakeResponse([{"Id": u} for u in self.fake_service.jellyfin_users])
             uid = url.rstrip("/").split("/")[-2]
-            items = [{"Id": pid, "Name": pl["Name"]}
+            with_count = "ChildCount" in ((params or {}).get("Fields") or "")
+            items = [self.server.listing_entry(pid, child_count=with_count)
                      for pid, pl in self.server.playlists.items()
                      if uid in pl["visible_to"]]
             return FakeResponse({"Items": items})
@@ -272,7 +299,8 @@ class TestLookupDoesNotAdoptAnotherUsersPlaylist(CleanupBase):
         def fake_post(url, headers=None, json=None, timeout=None):
             posted.append(json)
             pid = f"pl-new-{len(posted)}"
-            self.server.add(pid, json["Name"], {json["UserId"]})
+            # A playlist fresh from POST /Playlists: empty, and not marked yet.
+            self.server.add(pid, json["Name"], {json["UserId"]}, marked=False, entries=0)
             return FakeResponse({"Id": pid})
 
         def setting(db, key, default=""):
@@ -320,11 +348,12 @@ class TestLookupDoesNotAdoptAnotherUsersPlaylist(CleanupBase):
         self.assertNotEqual(linked, "pl-mom")
         self.assertEqual(len(posted), 1, "a playlist of its own should have been created")
 
-    def test_the_users_own_playlist_is_still_reused(self):
-        # The reason the lookup exists: don't create a second playlist when one
-        # with that name is already there for this user.
+    def test_tentacles_own_playlist_is_still_reused(self):
+        # The reason the lookup exists: don't create a second playlist when
+        # Tentacle's own is already there for this user (a lost config, a
+        # wiped data directory). It is recognised by its mark (#152).
         self.config("jf-1", "HBO TV", "")
-        self.server.add("pl-mine", "HBO TV", {"jf-1"})
+        self.server.add("pl-mine", "HBO TV", {"jf-1"}, marked=True)
 
         linked, posted = self._sync("HBO TV")
 

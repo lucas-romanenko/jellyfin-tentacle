@@ -1354,8 +1354,9 @@ def _cleanup_after_remove(title: str, was_live: bool, slug: str = None) -> None:
             if jf and recorded:
                 try:
                     if any(p.get("Id") == recorded for p in jf.get_playlists(user.jellyfin_user_id) or []):
-                        jf.delete_item(recorded)
-                        logger.info(f"[YouTube] Deleted leftover Jellyfin playlist {recorded} ('{title}')")
+                        # Only a playlist Tentacle made (#152).
+                        if jf.delete_tentacle_playlist(recorded, user.jellyfin_user_id):
+                            logger.info(f"[YouTube] Deleted leftover Jellyfin playlist {recorded} ('{title}')")
                 except Exception as e:
                     logger.warning(f"[YouTube] Could not check Jellyfin playlists for user {user.id}: {e}")
 

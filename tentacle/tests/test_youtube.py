@@ -1769,6 +1769,15 @@ class _FakeJellyfin:
         self._playlists = [p for p in self._playlists if p.get("Id") != item_id]
         return True
 
+    def delete_tentacle_playlist(self, playlist_id, user_id=None):
+        # As the real one: only a playlist carrying Tentacle's mark (#152).
+        from services.jellyfin import is_tentacle_playlist
+        pl = next((p for p in self._playlists if p.get("Id") == playlist_id), None)
+        if not is_tentacle_playlist(pl):
+            self.calls.append(("kept", playlist_id))
+            return False
+        return self.delete_item(playlist_id)
+
 
 class _PublishFixture(unittest.TestCase):
     """A channel with three library videos, one user, and every Jellyfin and
@@ -2037,7 +2046,7 @@ class TestRemovingAChannelRemovesEverything(_PublishFixture):
         rs._read_home_json = lambda user: dict(self.configs.get(user.id) or {})
         rs._write_home_json = lambda user, cfg: self.written.__setitem__(user.id, cfg)
         livetv.refresh_jellyfin_guide = lambda db: self.log.append(("guide",)) or True
-        self.jf._playlists = [{"Id": "pl-1", "Name": "TraderTV Live"}]
+        self.jf._playlists = [{"Id": "pl-1", "Name": "TraderTV Live", "ProviderIds": {"Tentacle": "managed"}}]
         # Each user has their OWN copy of the channel's playlist, found by the
         # channel's tag -- as _get_smartlists_with_playlist_ids reports it.
         per_user = {self.user.id: "pl-1", self.other.id: "pl-9"}
@@ -2071,7 +2080,8 @@ class TestRemovingAChannelRemovesEverything(_PublishFixture):
             "hero": {"enabled": True, "playlist_id": "pl-mine", "display_name": "TraderTV Live"},
             "rows": [{"type": "playlist", "playlist_id": "pl-mine", "display_name": "TraderTV Live", "order": 1},
                      {"type": "playlist", "playlist_id": "pl-9", "display_name": "TraderTV Live", "order": 2}]}
-        self.jf._playlists = [{"Id": "pl-1", "Name": "TraderTV Live"}, {"Id": "pl-mine", "Name": "TraderTV Live"}]
+        self.jf._playlists = [{"Id": "pl-1", "Name": "TraderTV Live", "ProviderIds": {"Tentacle": "managed"}},
+                              {"Id": "pl-mine", "Name": "TraderTV Live", "ProviderIds": {"Tentacle": "managed"}}]
 
     def test_a_users_own_same_named_playlist_is_not_deleted(self):
         self._with_a_users_own_playlist_of_the_same_name()
@@ -2079,6 +2089,14 @@ class TestRemovingAChannelRemovesEverything(_PublishFixture):
         self.assertNotIn(("delete", "pl-mine"), self.jf.calls,
                          "removing the YouTube channel deleted the user's own playlist of the same name")
         self.assertIn(("delete", "pl-1"), self.jf.calls, "the channel's own playlist must still go")
+
+    def test_a_recorded_playlist_tentacle_did_not_make_is_kept(self):
+        """Linked by name before playlists carried Tentacle's mark: it was the
+        user's own, so removing the channel unlinks it and leaves it (#152)."""
+        self.jf._playlists = [{"Id": "pl-1", "Name": "TraderTV Live"}]
+        self._remove()
+        self.assertNotIn(("delete", "pl-1"), self.jf.calls)
+        self.assertIn(("kept", "pl-1"), self.jf.calls)
 
     def test_a_users_own_same_named_row_and_hero_survive(self):
         self._with_a_users_own_playlist_of_the_same_name()
