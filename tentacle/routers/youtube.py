@@ -390,9 +390,15 @@ def toggle_live(channel_id: int, body: LiveToggle, db: Session = Depends(get_db)
     channel = db.query(YouTubeChannel).filter(YouTubeChannel.id == channel_id).first()
     if not channel:
         raise HTTPException(404, "Channel not found")
-    channel.live_enabled = body.enabled
     if body.channel_number:
-        channel.channel_number = body.channel_number
+        # A number another Live TV channel already has would be merged with it
+        # in Jellyfin (#179): say so rather than keep a pin the lineup must set aside.
+        number = str(body.channel_number).strip()
+        others = yt_livetv.lineup_numbers(db, [c for c in yt_livetv._lineup_channels(db) if c.id != channel.id])
+        if number in yt_livetv.iptv_guide_numbers(db) or number in set(others.values()):
+            raise HTTPException(409, f"Guide number {number} is already used by another Live TV channel")
+        channel.channel_number = number
+    channel.live_enabled = body.enabled
     db.commit()
 
     guide = 0
@@ -413,7 +419,7 @@ def toggle_live(channel_id: int, body: LiveToggle, db: Session = Depends(get_db)
 
     logger.info(f"[YouTube] Live TV {'enabled' if body.enabled else 'disabled'} for '{channel.title}'")
     return {"success": True, "live_enabled": body.enabled,
-            "guide_number": yt_livetv.guide_number(channel, yt_livetv.iptv_guide_numbers(db)),
+            "guide_number": yt_livetv.number_for(db, channel),
             "programmes": guide}
 
 
@@ -911,14 +917,15 @@ def list_channels(db: Session = Depends(get_db)):
     from services.youtube import livetv as yt_livetv
 
     out = []
-    taken = yt_livetv.iptv_guide_numbers(db)
+    numbers = yt_livetv.lineup_numbers(db)
+    taken = yt_livetv.iptv_guide_numbers(db) | set(numbers.values())
     for ch in db.query(YouTubeChannel).order_by(YouTubeChannel.title).all():
         # Guide entries this channel has in Tentacle's own EPG — what the
         # Live TV page shows next to it, and what Jellyfin's guide is built from.
         guide_programmes = db.query(EPGProgram).filter(
             EPGProgram.channel_id == yt_livetv.epg_channel_id(ch)).count() if ch.live_enabled else 0
         out.append({
-            "guide_number": yt_livetv.guide_number(ch, taken),
+            "guide_number": numbers.get(ch.id) or yt_livetv.guide_number(ch, taken),
             "guide_programmes": guide_programmes,
             "id": ch.id, "title": ch.title, "slug": ch.slug, "kind": ch.kind,
             "input_url": ch.input_url, "avatar_url": ch.avatar_url,

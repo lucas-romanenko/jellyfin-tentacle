@@ -109,6 +109,50 @@ class M3uOddLines(_Base):
         self.assertIsNone(self._channels()["Five"].channel_number)
 
 
+class M3uSwitchedOffStaysOff(_Base):
+    """Rob, #158: an M3U channel the user switched off, which the provider drops
+    and later lists again, came back enabled: the sync deletes a dropped channel,
+    and a returning one is a new row that takes its group's state."""
+
+    def _sync(self, names):
+        text = "#EXTM3U\n" + "".join(
+            f'#EXTINF:-1 group-title="Sports",{n}\nhttp://x/live/{n.replace(" ", "")}.ts\n' for n in names)
+        livetv._upsert_channels_from_m3u(self.pid, parse_m3u(text), self.db)
+        self.db.commit()
+
+    def test_a_switched_off_channel_that_returns_stays_off(self):
+        self._group("Sports", True)
+        lineup = [f"Channel {i}" for i in range(30)]
+        self._sync(lineup)
+        chans = self._channels()
+        self.assertTrue(chans["Channel 3"].enabled)
+        chans["Channel 3"].enabled = False
+        self.db.commit()
+        self._sync([n for n in lineup if n != "Channel 3"])      # the provider drops it
+        self.assertNotIn("Channel 3", self._channels())
+        self._sync(lineup)                                       # and lists it again
+        chans = self._channels()
+        self.assertFalse(chans["Channel 3"].enabled, "the user's off came back on")
+        self.assertTrue(chans["Channel 4"].enabled)
+        self.assertEqual([], livetv._m3u_switched_off(self.db, self.pid),
+                         "once the row is back, it carries the off itself")
+
+    def test_a_channel_that_was_on_returns_on(self):
+        self._group("Sports", True)
+        lineup = [f"Channel {i}" for i in range(30)]
+        self._sync(lineup)
+        self._sync([n for n in lineup if n != "Channel 3"])
+        self._sync(lineup)
+        self.assertTrue(self._channels()["Channel 3"].enabled)
+
+    def test_a_channel_off_only_because_its_group_is_off_is_not_remembered(self):
+        self._group("Sports", False)
+        lineup = [f"Channel {i}" for i in range(30)]
+        self._sync(lineup)
+        self._sync([n for n in lineup if n != "Channel 3"])
+        self.assertEqual([], livetv._m3u_switched_off(self.db, self.pid))
+
+
 class NewChannelsFollowTheirGroup(_Base):
     def _xtream(self, streams):
         livetv._upsert_channels(self.pid, streams, {"1": "Sports", "2": "News", "3": "Brand New"},

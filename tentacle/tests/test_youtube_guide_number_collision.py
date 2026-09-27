@@ -77,10 +77,56 @@ class GuideNumberCollision(unittest.TestCase):
         self.db.commit()
         self.assertEqual("9001", yt_livetv.live_channels(self.db)[0]["guide_number"])
 
-    def test_a_pinned_number_is_kept(self):
+    def test_a_free_pinned_number_is_kept(self):
+        self.yt.channel_number = "777"
+        self.db.commit()
+        self.assertEqual("777", yt_livetv.live_channels(self.db)[0]["guide_number"])
+
+    def test_a_pinned_number_an_iptv_channel_uses_is_set_aside(self):
+        """Rob, #179: a pin on an enabled IPTV channel's number only logged a
+        warning, and Jellyfin merged the two channels."""
         self.yt.channel_number = "9001"
         self.db.commit()
-        self.assertEqual("9001", yt_livetv.live_channels(self.db)[0]["guide_number"])
+        numbers = self._lineup_numbers()
+        self.assertEqual(len(numbers), len(set(numbers)), numbers)
+        self.assertNotEqual("9001", yt_livetv.live_channels(self.db)[0]["guide_number"])
+
+    def _second_youtube(self, **kw):
+        yt2 = mdb.YouTubeChannel(input_url="u2", kind="channel", channel_id="UC" + "y" * 22,
+                                 title="YT Two", slug="yt-two", live_enabled=True, enabled=True,
+                                 extra_tags=[], **kw)
+        self.db.add(yt2)
+        self.db.commit()
+        return yt2
+
+    def test_two_youtube_channels_pinned_to_one_number_get_two(self):
+        """Rob, #179: the check only looked at IPTV numbers."""
+        self.yt.channel_number = "555"
+        self._second_youtube(channel_number="555")
+        numbers = self._lineup_numbers()
+        self.assertEqual(len(numbers), len(set(numbers)), numbers)
+        by_title = {c["name"]: c["guide_number"] for c in yt_livetv.live_channels(self.db)}
+        self.assertEqual("555", by_title["YT Live"], "the first channel keeps the pinned number")
+        self.assertNotEqual("555", by_title["YT Two"])
+
+    def test_a_pin_keeps_its_number_over_an_automatic_one(self):
+        self.iptv.enabled = False
+        self.db.commit()
+        self._second_youtube(channel_number="9001")    # channel 1's automatic number
+        by_title = {c["name"]: c["guide_number"] for c in yt_livetv.live_channels(self.db)}
+        self.assertEqual("9001", by_title["YT Two"])
+        self.assertNotEqual("9001", by_title["YT Live"])
+        numbers = self._lineup_numbers()
+        self.assertEqual(len(numbers), len(set(numbers)), numbers)
+
+    def test_pinning_a_number_in_use_is_refused(self):
+        import routers.youtube as yt_router
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException) as cm:
+            yt_router.toggle_live(self.yt.id, yt_router.LiveToggle(enabled=True, channel_number="9001"), db=self.db)
+        self.assertEqual(409, cm.exception.status_code)
+        self.db.refresh(self.yt)
+        self.assertIsNone(self.yt.channel_number)
 
     def test_the_youtube_page_reports_the_number_the_lineup_uses(self):
         import routers.youtube as yt_router

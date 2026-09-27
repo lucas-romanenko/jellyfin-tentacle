@@ -182,6 +182,82 @@ class RunningStreams(_Base):
         self.assertEqual(b"CHUNK1", body)
         self.assertNotIn(BLACK, log)
 
+    async def _record(self, script, recording=True):
+        """Drive the HLS worker as a recording (or a viewer) on a fake clock."""
+        from test_livetv_hls_transient_errors import FakeClient as HlsClient
+        loop = asyncio.get_running_loop()
+        clock = [loop.time()]
+        real_sleep = asyncio.sleep
+
+        async def fast_sleep(delay):
+            clock[0] += delay
+            await real_sleep(0)
+
+        log = []
+        with patch("httpx.AsyncClient", lambda **kw: HlsClient(script, log, **kw)), \
+                patch("routers.livetv.is_safe_url", lambda *a, **k: True), \
+                patch("asyncio.sleep", fast_sleep), \
+                patch.object(loop, "time", lambda: clock[0]):
+            response = await livetv._stream_proxy_inner(
+                channel_id=1, user_agent="t", stream_url=BASE, _release_sem=lambda: None,
+                failure_budget=30, is_recording=lambda: recording)
+
+            async def collect():
+                out = b""
+                async for piece in response.body_iterator:
+                    out += piece
+                return out
+            body = await asyncio.wait_for(collect(), timeout=3600)
+        return body, log
+
+    async def test_a_recording_waits_out_a_placeholder_that_ends_the_playlist(self):
+        """Rob, #140: a recording whose playlist became black.ts + ENDLIST stopped,
+        and Jellyfin filed the rest of the event as recorded. It waits, asks the
+        channel URL again, and carries on when the channel is back."""
+        seg = "http://provider.test/live/u/p/"
+        ended = _playlist("/video/black.ts", end=True)
+        script = {
+            BASE: [_resp(200, BASE, _playlist("c1.ts").encode(), PLAYLIST_CT)]
+            + [_resp(200, BASE, ended.encode(), PLAYLIST_CT) for _ in range(4)]
+            + [_resp(200, BASE, _playlist("c2.ts", end=True).encode(), PLAYLIST_CT)],
+            seg + "c1.ts": [_resp(200, seg + "c1.ts", b"CHUNK1")],
+            seg + "c2.ts": [_resp(200, seg + "c2.ts", b"CHUNK2")],
+            BLACK: [_resp(200, BLACK, b"BLACK")],
+        }
+        body, log = await self._record(script)
+        self.assertEqual(b"CHUNK1CHUNK2", body)
+        self.assertNotIn(BLACK, log)
+
+    async def test_a_viewer_still_stops_on_a_placeholder_that_ends_the_playlist(self):
+        seg = "http://provider.test/live/u/p/"
+        script = {
+            BASE: [_resp(200, BASE, _playlist("c1.ts").encode(), PLAYLIST_CT),
+                   _resp(200, BASE, _playlist("/video/black.ts", end=True).encode(), PLAYLIST_CT),
+                   _resp(200, BASE, _playlist("c2.ts", end=True).encode(), PLAYLIST_CT)],
+            seg + "c1.ts": [_resp(200, seg + "c1.ts", b"CHUNK1")],
+            seg + "c2.ts": [_resp(200, seg + "c2.ts", b"CHUNK2")],
+        }
+        body, _log = await self._record(script, recording=False)
+        self.assertEqual(b"CHUNK1", body)
+
+    async def test_a_segment_that_redirects_to_a_placeholder_is_never_written(self):
+        """Rob, #140: an ordinary segment URL answering with a redirect to
+        black.ts was fetched and written into the stream."""
+        seg = "http://provider.test/live/u/p/"
+        script = {
+            BASE: [_resp(200, BASE, _playlist("c1.ts", "c2.ts").encode(), PLAYLIST_CT),
+                   _resp(200, BASE, _playlist("c1.ts", "c2.ts", "c3.ts", end=True).encode(), PLAYLIST_CT)],
+            seg + "c1.ts": [_resp(200, seg + "c1.ts", b"CHUNK1")],
+            seg + "c2.ts": [_resp(302, seg + "c2.ts", headers={"location": BLACK}),
+                            _resp(200, seg + "c2.ts", b"CHUNK2")],
+            seg + "c3.ts": [_resp(200, seg + "c3.ts", b"CHUNK3")],
+            BLACK: [_resp(200, BLACK, b"BLACK")],
+        }
+        body, _log = await self._record(script)
+        self.assertNotIn(b"BLACK", body)
+        self.assertEqual(b"CHUNK1CHUNK2CHUNK3", body)
+        self.assertEqual(1, livetv._placeholders[1]["count"])
+
     async def test_a_raw_redial_that_lands_on_a_placeholder_is_retried(self):
         script = {
             PANEL: [_redirect(), _resp(302, PANEL, headers={"location": BLACK}), _redirect(),
