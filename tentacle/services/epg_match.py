@@ -19,10 +19,40 @@ Ordered passes, most reliable first:
 """
 from collections import Counter, defaultdict
 
-from services.channel_names import channel_country, channel_name_key, feed_countries
+import re
+
+from services.channel_names import channel_country, channel_name_key, channel_name_words, feed_countries
 
 # How many unmatched / ambiguous channels a coverage report lists by name.
 _LIST_LIMIT = 200
+
+# For deciding whether one feed id's display names are ONE channel: a
+# timeshift ("+1", "plus 1"), "(BK)" and generic words say nothing about which
+# channel it is, and spacing differs between entries ("SPORTSN ET WEST").
+_TIMESHIFT = re.compile(r"(?:\s+plus\s+\d{1,2})+$")
+_IDENTITY_DROP = {"bk", "channel", "tv"}
+
+
+def _identity(name: str) -> str:
+    words = " ".join(channel_name_words(name))
+    words = _TIMESHIFT.sub("", words)
+    return "".join(w for w in words.split() if w not in _IDENTITY_DROP)
+
+
+def _one_channel(names) -> bool:
+    """True when the names are one channel's: the same after _identity, or
+    one ending the other ("HISTORY" / "DISCOVERY HISTORY": a brand prefix).
+    "LRT" / "LRT PLUS" differ at the END: two channels. A name that is only
+    a number (a channel number) is not counted."""
+    ids = sorted({i for i in (_identity(n) for n in names) if i and not i.isdigit()}, key=len)
+    if len(ids) <= 1:
+        return True
+    longest = ids[-1]
+    return all(len(i) >= 3 and longest.endswith(i) for i in ids[:-1])
+
+
+def _has_timeshift(name: str) -> bool:
+    return bool(_TIMESHIFT.search(" ".join(channel_name_words(name))))
 
 
 def resolve_guide_ids(channels: list, feed_channels: list) -> dict:
@@ -40,11 +70,19 @@ def resolve_guide_ids(channels: list, feed_channels: list) -> dict:
     feed_ids = {f["id"] for f in feed_channels if f.get("id")}
     countries = {f["id"]: feed_countries(f["id"], f.get("names")) for f in feed_channels if f.get("id")}
     feed_by_key = defaultdict(set)
+    feed_names = defaultdict(list)     # a feed may list one id in several <channel> elements
     for f in feed_channels:
+        if not f.get("id"):
+            continue        # a <channel id=""> in the feed is nobody's guide
+        feed_names[f.get("id")].extend(f.get("names") or [])
         for name in f.get("names") or []:
             key = channel_name_key(name)
             if key:
                 feed_by_key[key].add(f["id"])
+    # A feed id whose display names are different channels' names (one real
+    # feed lists "LRT PLUS" and "LRT" on one id) cannot be trusted to be
+    # either: no channel is matched by name through it.
+    mixed = {fid for fid, names in feed_names.items() if fid and not _one_channel(names)}
 
     out, needs_name = {}, []
     for ch in channels:
@@ -67,6 +105,12 @@ def resolve_guide_ids(channels: list, feed_channels: list) -> dict:
         key = channel_name_key(ch.get("name") or "")
         candidates = sorted(feed_by_key.get(key, ())) if key else []
         miss = "tvg-id-not-in-feed" if tvg else "no-tvg-id"
+        if candidates and set(candidates) & mixed:
+            candidates = [c for c in candidates if c not in mixed]
+            if not candidates:
+                out[ch["id"]] = {"method": None, "guide_id": None, "name_match": None,
+                                 "reason": "ambiguous", "candidates": []}
+                continue
         country = channel_country(ch.get("name") or "")
         if country and candidates:
             local = [c for c in candidates if not countries.get(c) or country in countries[c]]
@@ -75,6 +119,12 @@ def resolve_guide_ids(channels: list, feed_channels: list) -> dict:
                                  "reason": "foreign", "candidates": candidates}
                 continue
             candidates = local
+        if len(candidates) > 1:
+            # One id carrying the timeshift too ("GOLD", "GOLD +1") next to one
+            # that is only the channel ("GOLD"): the plain one is it.
+            plain = [c for c in candidates if not any(_has_timeshift(n) for n in feed_names.get(c, ()))]
+            if len(plain) == 1:
+                candidates = plain
         if len(candidates) == 1:
             tentative[ch["id"]] = candidates[0]
         elif candidates:

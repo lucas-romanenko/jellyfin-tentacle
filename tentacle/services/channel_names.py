@@ -22,6 +22,19 @@ _MARKERS = {
 }
 
 
+def channel_name_words(name: str) -> list:
+    """channel_name_key() before the spaces are dropped: the name's words."""
+    if not name:
+        return []
+    text = unicodedata.normalize("NFKC", name)
+    stripped = _PREFIX_RE.sub("", text, count=1)
+    if stripped.strip():
+        text = stripped
+    text = "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
+    text = text.lower().replace("&", " and ").replace("+", " plus ")
+    return [w for w in re.split(r"[^0-9a-z]+", text) if w and w not in _MARKERS]
+
+
 def channel_name_key(name: str) -> str:
     """"CA: TSN 5 ᴿᴬᵂ" -> "tsn5"; "" when nothing distinctive is left."""
     if not name:

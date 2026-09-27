@@ -23,9 +23,12 @@ Channel management:
 """
 
 import asyncio
+import hashlib
 import logging
 import re
 import threading
+
+import httpx
 from datetime import datetime, timedelta
 from typing import Optional, List
 
@@ -117,6 +120,52 @@ async def _send_checked(client, url: str, headers: dict, guard=None):
 # Opening a stream: statuses worth waiting out, and for how long. Kept well under
 # a tuner client's patience; the running worker has its own, longer budget.
 _OPEN_RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504, 509}
+# What a provider answers once a tokenized stream URL has expired (seen in
+# production: 407 about an hour into an HLS stream). Recovered by resolving
+# the CHANNEL url again, which hands out a fresh token -- at most
+# _MAX_RERESOLVE times in a row without a segment arriving in between;
+# after that the account really is refusing and the stream ends as before.
+_TOKEN_EXPIRED_STATUS = {401, 403, 404, 407, 410}
+_MAX_RERESOLVE = 3
+# #184: a running HLS stream refused (429/509) for _REVIVE_AFTER s in a row
+# may have lost its session for good -- on a "newest connection wins" account
+# the older session is ended, and asking its tokenized URL again answers 509
+# until the timer closes (2 h of a game lost in production). It resolves the
+# channel URL again, in the same response, but ONLY when no rival is
+# delivering: another stream on the same provider account, of equal or
+# higher priority, that delivered within _RIVAL_FRESH s. Re-resolving against
+# a delivering rival would kick it (and it would kick back: ping-pong, both
+# recordings damaged). Between attempts the cooldown doubles from
+# _REVIVE_COOLDOWN to _REVIVE_COOLDOWN_CAP, and resets once segments flow.
+# Raw TS is not affected: its re-dial already starts from the channel URL.
+_REVIVE_AFTER = 45.0
+_REVIVE_COOLDOWN = 60.0
+_REVIVE_COOLDOWN_CAP = 300.0
+_RIVAL_FRESH = 20.0
+# Jellyfin marks a timer InProgress only after the tuner stream is open, and
+# a lookup can fail: a live pull counts as a possible recording until
+# Jellyfin has ANSWERED a lookup made this long after the pull started.
+_CLASSIFY_GRACE = 10.0
+# A rival whose state is still "streaming" (it has not started failing) is
+# delivering for this long after its last success: a segment or read can
+# take a while, and a raw TS stream marks itself only every few seconds.
+_RIVAL_STREAMING_FRESH = 60.0
+# The cooldown returns to _REVIVE_COOLDOWN only after this long of unbroken
+# delivery: a player outside Tentacle that re-opens the account every time it
+# is kicked would otherwise be fought every 60 s (#184 review, Q3).
+_REVIVE_RESET_AFTER = 600.0
+# How often a raw TS stream re-marks itself as delivering (Q1).
+_RAW_MARK_EVERY = 5.0
+# For a recording, a 404/410 counts toward _MAX_RERESOLVE only after this long
+# of unbroken 404/410 (a panel blip is seconds); viewers keep the 3-try rule.
+_GONE_GRACE = 180.0
+# An HLS recording whose channel URL keeps answering with a continuous stream
+# instead of a playlist ends after this long, so Jellyfin re-opens on it.
+_STREAM_ANSWER_LIMIT = 120.0
+
+
+class _NotAPlaylist(httpx.TransportError):
+    """The channel URL answered with a stream where a playlist was expected."""
 _OPEN_RETRY_BUDGET = 20.0   # seconds
 
 # Backoff while a RUNNING stream re-dials. A transport error is retried on a
@@ -296,7 +345,8 @@ PROTECTED_REFUSAL_DETAIL = ("A recording is running and recording protection is 
 
 class _Lease:
     """One upstream pull's claim on a connection slot."""
-    __slots__ = ("id", "kind", "priority", "owner", "stream_key", "started", "preempted", "on_preempt")
+    __slots__ = ("id", "kind", "priority", "owner", "stream_key", "started", "preempted", "on_preempt",
+                 "provider_id", "channel_id", "account")
 
     def __init__(self, lease_id: int, kind: str, owner: "str | None", stream_key: "str | None" = None):
         self.id = lease_id
@@ -309,6 +359,10 @@ class _Lease:
         # Set by the owner once its pump exists: called (may be async) when
         # a more important pull takes this slot.
         self.on_preempt = None
+        # Which account and channel this pull is, once known (#184's rival test).
+        self.provider_id = None
+        self.channel_id = None
+        self.account = None     # (server host, username): two provider rows, one account
 
 
 class _StreamSlots:
@@ -892,6 +946,15 @@ def _recording_answer_is_current(since: "float | None" = None) -> bool:
 _recording_refresher: "asyncio.Task | None" = None
 
 
+async def _refresh_recordings_bounded() -> None:
+    """_refresh_recordings_once for a stream deciding whether to take the
+    account (#184): never raises, never waits longer than a lookup may."""
+    try:
+        await asyncio.wait_for(_refresh_recordings_once(), _RECORDING_LOOKUP_WAIT + 1.0)
+    except Exception as e:
+        logger.debug(f"[LiveTV] recording lookup before a re-resolve failed: {e}")
+
+
 async def _refresh_recordings_once() -> None:
     """One fresh lookup, applied to the running leases (sync_recordings)."""
     db = SessionLocal()
@@ -959,6 +1022,7 @@ def _recording_lookup_done(task):
             logger.info("[LiveTV] Jellyfin is answering again about which channels are recording")
         cache["failures"], cache["retry_at"] = 0, -1e9
     if sids is not None:
+        cache["ok_at"] = cache["at"]     # a lookup Jellyfin actually answered
         cache["sids"] = set(sids)
         cache["answer_issued_at"] = issued if issued is not None else now
         reserved_keys = {r["stream_key"] for r in _reserved_channels.values() if r.get("stream_key")}
@@ -1008,14 +1072,109 @@ _PUMP_RECANCEL_SECONDS = 1.0
 _stream_status: "dict[int, dict]" = {}
 
 
-def _status_open(channel_id: int) -> dict:
+def _status_open(channel_id: int, health: "dict | None" = None) -> dict:
     """A new upstream for this channel: a fresh entry, returned so that the
     stream which made it clears only its own (a channel closed and reopened
     within the same second must not lose the new entry to the old finally)."""
     now = asyncio.get_running_loop().time()
-    entry = {"state": "streaming", "since": now, "opened_at": now, "last_error": None}
+    entry = {"state": "streaming", "since": now, "opened_at": now, "last_error": None,
+             "health": health if health is not None else _new_health()}
     _stream_status[channel_id] = entry
     return entry
+
+
+# What went wrong during a stream's life (#137). Counted where the stream
+# code already knows it -- a re-dial, a wait on a failing provider, a segment
+# given up on -- so the figures are facts, not inferences. A recording that
+# lost content looked exactly like a good one until it was played; now its
+# end is logged with these numbers, and an Activity line says so.
+_RECENT_STREAMS_MAX = 50
+_recent_streams: "list[dict]" = []
+
+
+def _new_health() -> dict:
+    return {"reconnects": 0,              # outages recovered from: a raw TS connection
+                                          # re-established, or an HLS run of failed
+                                          # requests that ended in a success
+            "reconnecting_seconds": 0.0,  # time spent with the provider failing
+            "segments_skipped": 0,        # HLS: segments that never arrived
+            "errors": 0}                  # failed requests that were retried
+
+
+def _stream_ended(channel_id: int, entry: dict, recording: bool, hls: bool = False) -> None:
+    """Log (and keep, for /api/live/streams) how a finished stream went.
+    Synchronous and cheap: it runs from a generator's finally."""
+    from datetime import timezone
+    h = entry.get("health") or _new_health()
+    started = h.pop("_failing_since", None)
+    if started is not None:
+        # Ended while still failing: the outage that never recovered counts
+        # too, or a recording refused until its timer closed it reads "fine".
+        # Under a second (one failed request as the client left) is not one.
+        try:
+            open_outage = asyncio.get_running_loop().time() - started
+        except RuntimeError:
+            open_outage = 0.0
+        h["reconnecting_seconds"] += open_outage
+        if open_outage >= 1.0:
+            h["ended_on_error"] = True
+    try:
+        seconds = asyncio.get_running_loop().time() - entry["opened_at"]
+    except RuntimeError:
+        seconds = 0.0
+    summary = {"channel_id": channel_id,
+               "ended_at": datetime.now(timezone.utc).isoformat(),
+               "seconds": round(seconds, 1), "recording": bool(recording),
+               "reconnects": h["reconnects"],
+               "reconnecting_seconds": round(h["reconnecting_seconds"], 1),
+               "segments_skipped": h["segments_skipped"], "errors": h["errors"],
+               "ended_on_error": bool(h.get("ended_on_error")),
+               "revives": h.get("revives", 0)}
+    _recent_streams.append(summary)
+    del _recent_streams[:-_RECENT_STREAMS_MAX]
+    # A raw TS reconnect is always a gap. An HLS "interruption" can be one
+    # segment retried in place within the playlist window -- nothing lost --
+    # so for HLS only a skipped segment or a second or more of waiting counts.
+    damaged = ((h["reconnects"] and not hls) or h["segments_skipped"]
+               or h["reconnecting_seconds"] >= 1.0 or h.get("ended_on_error"))
+    what = "recording" if recording else "stream"
+    text = (f"{h['reconnects']} interruption(s) recovered, {h['reconnecting_seconds']:.0f}s waiting "
+            f"on the provider, {h['segments_skipped']} segment(s) skipped, "
+            f"{h['errors']} failed request(s)")
+    if h.get("revives"):
+        text += f", {h['revives']} fresh resolve(s) of a refused session"
+    if h.get("ended_on_error"):
+        failing = (f" ({h['reconnecting_seconds']:.0f}s)" if h["reconnecting_seconds"] >= 1.0 else "")
+        text = f"ended while the provider was still failing{failing} — " + text
+    if not damaged:
+        if h["reconnects"] or h["errors"]:
+            logger.info(f"[LiveTV] Channel {channel_id}: {what} ran {seconds:.0f}s — {text} "
+                        f"(retried in time, nothing lost)")
+        else:
+            logger.info(f"[LiveTV] Channel {channel_id}: {what} ran {seconds:.0f}s with no upstream trouble")
+        return
+    logger.warning(f"[LiveTV] Channel {channel_id}: {what} ran {seconds:.0f}s — {text}")
+    if not recording:
+        return
+
+    def _write():
+        db = None
+        try:
+            db = SessionLocal()
+            ch = db.query(LiveChannel).filter(LiveChannel.id == channel_id).first()
+            label = f"'{ch.name}'" if ch else f"channel {channel_id}"
+            log_activity(db, "livetv_recording_damaged",
+                         f"Live TV: a recording of {label} may be missing content — {text}",
+                         detail=summary)
+        except Exception as e:
+            logger.debug(f"[LiveTV] Could not record the stream summary in Activity: {e}")
+        finally:
+            if db is not None:
+                db.close()
+    try:
+        asyncio.get_running_loop().run_in_executor(None, _write)
+    except RuntimeError:
+        pass
 
 
 def _status_set(channel_id: int, state: str, last_error: "str | None" = None):
@@ -1023,13 +1182,84 @@ def _status_set(channel_id: int, state: str, last_error: "str | None" = None):
     cur = _stream_status.get(channel_id)
     if cur is None:
         _stream_status[channel_id] = {"state": state, "since": now, "opened_at": now,
-                                      "last_error": last_error}
+                                      "last_error": last_error,
+                                      "last_ok": now if state == "streaming" else None}
         return
     if cur["state"] != state:
         cur["state"] = state
         cur["since"] = now
+    if state == "streaming":
+        cur["last_ok"] = now          # when it last delivered (#184's rival test)
+        cur.pop("waiting_for", None)
     if last_error is not None:
         cur["last_error"] = last_error
+
+
+def _account_key(provider) -> "tuple | None":
+    """What the provider counts connections against: its server host and the
+    username. Two provider rows for one account (an M3U and an Xtream entry,
+    a copy with other groups) are one account."""
+    if provider is None:
+        return None
+    from urllib.parse import urlparse
+    try:
+        host = (urlparse((provider.server_url or "").strip()).hostname or "").lower()
+    except ValueError:
+        host = ""
+    if host.startswith("www."):
+        host = host[4:]
+    user = (provider.username or "").strip()
+    return (host, user) if host else None
+
+
+def _same_account(a: "_Lease", b: "_Lease") -> bool:
+    if a.account is not None and b.account is not None:
+        return a.account == b.account
+    return a.provider_id is not None and a.provider_id == b.provider_id
+
+
+def _rival_delivering(lease: "_Lease | None") -> "_Lease | None":
+    """#184: another pull on the same provider account, of equal or higher
+    priority (a recording for a recording; a recording or a viewer for a
+    viewer), that delivered within _RIVAL_FRESH s -- the stream that holds the
+    account now. None when there is none (or the account is unknown)."""
+    if lease is None or (lease.provider_id is None and lease.account is None):
+        return None
+    now = asyncio.get_running_loop().time()
+    for other in list(_stream_slots.leases.values()):
+        if (other is lease or other.preempted or not _same_account(other, lease)
+                or other.channel_id is None or other.channel_id == lease.channel_id):
+            continue
+        prio = other.priority
+        if other.kind == "live" and _recording_cache.get("ok_at", -1e9) < other.started + _CLASSIFY_GRACE:
+            # Jellyfin has not answered a lookup made well after this pull
+            # opened (it marks a timer InProgress only AFTER the tuner stream
+            # is open, and a lookup can fail or lag): it may be a recording
+            # not promoted yet. Never take the account from it on a guess
+            # (fuzz seeds 34, 7007, 7095).
+            prio = _LEASE_PRIORITY["recording"]
+        if prio > lease.priority:
+            continue
+        st = _stream_status.get(other.channel_id)
+        if st and st.get("reviving_at") is not None and now - st["reviving_at"] <= _RIVAL_FRESH:
+            # It is re-resolving right now: it is about to hold the account.
+            # Two streams waiting behind the same outsider must not both take
+            # it back at once (fuzz seed 234).
+            return other
+        last = st.get("last_ok") if st else None
+        if last is None:
+            # Still opening: it has just been handed a session -- on a
+            # "newest wins" account it holds the account now (fuzz seeds
+            # 110, 197).
+            if now - other.started <= _RIVAL_FRESH:
+                return other
+            continue
+        if now - last <= _RIVAL_FRESH:
+            return other
+        # Still "streaming" (not "reconnecting"): a slow segment, not a failure.
+        if st.get("state") == "streaming" and now - last <= _RIVAL_STREAMING_FRESH:
+            return other
+    return None
 
 
 def _status_clear(channel_id: int, entry: "dict | None" = None):
@@ -1535,7 +1765,11 @@ def _stream_snapshot(db) -> list:
             "for_seconds": round(max(0.0, now - st["since"]), 1),
             "open_seconds": round(max(0.0, now - st["opened_at"]), 1),
             "last_error": st.get("last_error"),
+            # #184: silent on purpose -- a rival on this account is delivering
+            "waiting_for": st.get("waiting_for"),
             "subscribers": len(shared.subscribers) if shared is not None else None,
+            # reconnects / seconds waiting on the provider / segments skipped (#137)
+            "health": {k: v for k, v in (st.get("health") or {}).items() if not k.startswith("_")},
         })
     # Provider VOD played through Tentacle holds a slot too (routers.vod).
     try:
@@ -1578,6 +1812,8 @@ def live_streams(db: Session = Depends(get_db)):
         # of the channel since Tentacle started, and how often (#140).
         "placeholders": [{"channel_id": cid, **info} for cid, info in sorted(_placeholders.items())],
         **_protection_snapshot(db),
+        # the last streams that ended, and how they went (#137)
+        "recent": list(_recent_streams),
     }
 
 
@@ -2008,7 +2244,20 @@ def _sync_groups(provider_id: int, categories: list[dict], db: Session, channel_
 
 
 # A provider's separator rows: "##### EVENTS #####", "=== SPORTS ===", "-----".
-_SEPARATOR_RE = re.compile(r"^\s*(?:[#=*~_|\-]{3,}.*[#=*~_|\-]{3,}|[#=*~_|\-\s]+)\s*$")
+# A row that begins AND ends with a run of two or more of # = * ~ _ | - ★ ▬
+# ◉ ● •, or consists only of them, optionally after a two/three-letter
+# "XX:" / "XX|" tag ("UK: ##### SPORTS #####", "★★ PPV EVENTS ★★"). "#1 Hits",
+# "C-SPAN", "Sky Sports ---", "***Premium*** Movies" and names ending in one
+# "◉" are channels.
+_SEP_SYM = r"[#=*~_|\-★▬◉●•]"
+# Underscores count at the ends only as a run of three: "__NAME__" is a
+# name, "___ NEWS ___" a separator.
+_SEP_END = r"[#=*~|\-★▬◉●•]"
+_SEP_TAG = r"(?:[A-Za-z]{2,3}\s*[:|]\s*)?"
+_SEPARATOR_RE = re.compile(
+    rf"^\s*{_SEP_TAG}(?:{_SEP_END}{{2,}}|_{{3,}}).*(?:{_SEP_END}{{2,}}|_{{3,}})\s*$"
+    rf"|^\s*{_SEP_TAG}(?:{_SEP_SYM}|\s)*{_SEP_SYM}(?:{_SEP_SYM}|\s)*$"
+)
 
 
 def _is_separator(name: str) -> bool:
@@ -3268,6 +3517,8 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
 
         provider = db.query(Provider).filter(Provider.id == channel.provider_id).first()
         user_agent = (provider.user_agent if provider else None) or "TiviMate/4.7.0 (Linux; Android 12)"
+        lease.provider_id, lease.channel_id = channel.provider_id, channel_id
+        lease.account = _account_key(provider)
 
         stream_url = channel.stream_url
         logger.info(f"[LiveTV] Stream request for channel {channel_id} ({channel.name}): {stream_url}")
@@ -3285,7 +3536,9 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
         upstream = await _stream_proxy_inner(channel_id, user_agent, stream_url,
                                              _release_sem, guard,
                                              failure_budget=_reconnect_budget(db),
-                                             is_recording=lambda: lease.kind == "recording")
+                                             is_recording=lambda: lease.kind == "recording",
+                                             rival_delivering=lambda: _rival_delivering(lease),
+                                             refresh_recordings=_refresh_recordings_bounded)
         if lease.preempted:
             # A recording took this slot while the open was still in flight
             # (there was no pump yet to stop). Going on would run one more
@@ -3322,7 +3575,7 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
 
 async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str, _release_sem,
                               guard=None, failure_budget: float = _DEFAULT_RECONNECT_BUDGET,
-                              is_recording=None):
+                              is_recording=None, rival_delivering=None, refresh_recordings=None):
     """Inner stream proxy logic. `_release_sem()` is called when the concurrency
     slot can be freed: immediately on early-exit paths, or by the streaming
     generator's `finally` once the long-lived stream ends.
@@ -3337,7 +3590,14 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
     asked at the moment the budget would run out: a recording never gives
     up while its client is attached, whatever the budget (a viewer who is
     cut off changes channel; a recording cut off is gone for good), so the
-    budget is a viewer's setting."""
+    budget is a viewer's setting.
+
+    `rival_delivering`, when given, returns the pull on the same account that
+    holds it now (or None): an HLS stream refused for _REVIVE_AFTER s
+    re-resolves the channel URL only when it returns None (#184). Without
+    it nothing is re-resolved on a refusal -- the safe default.
+    `refresh_recordings`, when given, is awaited before such a decision so
+    it is taken on a fresh answer from Jellyfin about what is recording."""
     guard = guard or is_safe_url
 
     def _budget_spent(waited: float, extra: float = 0.0) -> bool:
@@ -3376,8 +3636,20 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
         open_backoff = 1.0
         open_slept = 0.0
         open_url = stream_url
+        open_reresolved = False
+        refused_token_url = None
         while True:
             resp = None
+            if refused_token_url is not None:
+                # Q5, decided on current information right before the re-walk:
+                # a rival that started delivering meanwhile keeps the account.
+                if refresh_recordings is not None:
+                    await refresh_recordings()
+                if rival_delivering() is not None:
+                    open_url = refused_token_url
+                    logger.info(f"[LiveTV] Opening channel {channel_id}: another stream on this account "
+                                f"is delivering now; not resolving the channel URL again")
+                refused_token_url = None
             try:
                 resp = await _send_checked(client, open_url, {"User-Agent": user_agent}, guard)
                 resp.raise_for_status()
@@ -3402,6 +3674,21 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     logger.error(f"[LiveTV] Tokenized URL failed for channel {channel_id}"
                                  f"{f' after {waited:.0f}s of retries' if waited >= 1 else ''}: {e}")
                     raise HTTPException(502, f"Failed to connect to stream: {e}")
+                if (not open_reresolved and open_url != stream_url and rival_delivering is not None
+                        and isinstance(e, httpx.HTTPStatusError)
+                        and e.response.status_code in _REFUSAL_STATUS
+                        and rival_delivering() is None):
+                    # The session this open was handed was ended while it
+                    # opened (a newer connection took the account): asking
+                    # its token URL again answers 509 for good. Resolve the
+                    # channel URL once more -- unless a rival on the account
+                    # is delivering, as for a running stream (#184, Q5).
+                    open_reresolved = True
+                    refused_token_url = open_url
+                    open_url = stream_url
+                    logger.warning(f"[LiveTV] Opening channel {channel_id}: the session was refused "
+                                   f"({e.response.status_code}) and nothing else on this account is "
+                                   f"delivering; resolving the channel URL once more")
                 logger.warning(f"[LiveTV] Opening channel {channel_id} refused "
                                f"(retry in {open_backoff:.0f}s, {waited:.0f}s so far): {e}")
                 delay = open_backoff * (0.8 + random.random() * 0.4)
@@ -3502,6 +3789,8 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
             align = "mp2t" in upstream_ct.lower()
             first = True
             status_entry = _status_open(channel_id)
+            health = status_entry["health"]
+            dropped_at = None   # while re-dialling: when the data stopped
             try:
                 while True:
                     opened_at = loop.time()
@@ -3513,7 +3802,15 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     # every drop would be lost on top of the drop.
                     pending = b""
                     try:
+                        last_mark = loop.time()
+                        last_piece = None
                         async for piece in raw_resp.aiter_bytes():
+                            last_piece = loop.time()
+                            if loop.time() - last_mark >= _RAW_MARK_EVERY:
+                                # Still delivering: an HLS stream on the same
+                                # account must see it as the holder (#184).
+                                last_mark = loop.time()
+                                _status_set(channel_id, "streaming")
                             if first:
                                 first = False
                                 align = align and piece[:1] == b"G"
@@ -3526,6 +3823,12 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                                 yield out
                     except httpx.HTTPError as e:
                         reason = str(e) or type(e).__name__
+                    # When it last delivered is when the last bytes came, not the
+                    # last periodic mark (up to _RAW_MARK_EVERY earlier): a waiting
+                    # HLS stream judges "delivering" by it (fuzz seed 7173).
+                    st_now = _stream_status.get(channel_id)
+                    if st_now is not None and last_piece is not None:
+                        st_now["last_ok"] = max(st_now.get("last_ok") or last_piece, last_piece)
                     # What arrived before the stream stopped still goes out -- whole
                     # packets only; the tail of a cut packet is unusable.
                     cut = len(pending) - (len(pending) % 188) if align else len(pending)
@@ -3533,6 +3836,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         yield pending[:cut]
                     if loop.time() - opened_at >= HEALTHY_AFTER:
                         failing_since, slept, backoff, backoff_cap = None, 0.0, 1.0, _BACKOFF_CAP
+                    dropped_at = loop.time()
                     await raw_resp.aclose()
 
                     # Re-open, waiting out refusals, until it works or the budget is spent.
@@ -3579,6 +3883,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                             status = e.response.status_code if isinstance(e, httpx.HTTPStatusError) else None
                             if isinstance(e, httpx.TransportError) or status in _OPEN_RETRYABLE_STATUS:
                                 reason = str(e) or type(e).__name__
+                                health["errors"] += 1
                                 if status in _REFUSAL_STATUS:
                                     backoff_cap = _REFUSAL_BACKOFF_CAP
                                 continue
@@ -3586,8 +3891,16 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                                          f"re-opened, stopping: {e}")
                             return
                         raw_resp = new_resp
+                        health["reconnects"] += 1
+                        health["reconnecting_seconds"] += loop.time() - dropped_at
+                        dropped_at = None
                         break
             finally:
+                if dropped_at is not None:     # ended while still re-dialling
+                    health["reconnecting_seconds"] += loop.time() - dropped_at
+                    health["ended_on_error"] = True
+                _stream_ended(channel_id, status_entry,
+                              bool(is_recording is not None and is_recording()))
                 _status_clear(channel_id, status_entry)
                 await raw_resp.aclose()
                 await raw_client.aclose()
@@ -3618,13 +3931,17 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
 
     logger.info(f"[LiveTV] HLS stream for channel {channel_id} — proxying chunks as MPEG-TS")
 
+    health = _new_health()
+
     async def hls_to_mpegts():
         """Wrapper that releases the concurrency slot once the stream ends."""
-        status_entry = _status_open(channel_id)
+        status_entry = _status_open(channel_id, health)
         try:
             async for chunk in _hls_worker():
                 yield chunk
         finally:
+            _stream_ended(channel_id, status_entry,
+                          bool(is_recording is not None and is_recording()), hls=True)
             _status_clear(channel_id, status_entry)
             _release_sem()
             logger.info(f"[LiveTV] Stream ended for channel {channel_id}")
@@ -3634,6 +3951,10 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
         import asyncio
         import random
         seen_chunks: set[str] = set()
+        yielded_any = False
+        last_seq = None     # media sequence number of the last segment sent
+        last_disc = None    # and the discontinuity sequence it was sent under
+        last_payload_hash = None   # sha1 of the last segment sent (re-resolve dedupe)
         current_playlist = playlist_text
         current_base = playlist_base
         ua_headers = {"User-Agent": user_agent}
@@ -3698,7 +4019,11 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 # failure budget, run on until a real segment arrives.
                 return
             in_placeholder = False
+            if failing_since is not None:
+                health["reconnecting_seconds"] += asyncio.get_running_loop().time() - failing_since
+                health["reconnects"] += 1   # an outage recovered from
             failing_since = None
+            health.pop("_failing_since", None)
             backoff = BACKOFF_START
             backoff_cap = _BACKOFF_CAP
             _status_set(channel_id, "streaming")
@@ -3711,14 +4036,21 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
             if not _is_retryable(exc):
                 logger.error(f"[LiveTV] {what} failed fatally for channel "
                              f"{channel_id}, stopping: {exc}")
+                health["errors"] += 1
+                health["ended_on_error"] = True
                 return True
             now = asyncio.get_running_loop().time()
+            health["errors"] += 1
             if failing_since is None:
                 failing_since = now
+                health["_failing_since"] = now   # an outage still open when the stream ends
             waited = now - failing_since
             if _budget_spent(waited):
                 logger.error(f"[LiveTV] {what} still failing after {waited:.0f}s "
                              f"for channel {channel_id}, stopping: {exc}")
+                health["reconnecting_seconds"] += waited
+                health.pop("_failing_since", None)
+                health["ended_on_error"] = True
                 return True
             logger.warning(f"[LiveTV] {what} failed for channel {channel_id} "
                            f"(retry in {backoff:.0f}s, {waited:.0f}s so far): {exc}")
@@ -3736,6 +4068,220 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
             follow_redirects=False,
             timeout=httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0),
         ) as hls_client:
+            placeholder_noted = False
+
+            async def _placeholder_refusal(name: str, where: str) -> bool:
+                """A re-resolve that landed on a stand-in clip (#140). True
+                means end the stream: nothing sent yet, or the budget is
+                spent; else it is waited out like a refusal."""
+                nonlocal placeholder_noted, backoff_cap
+                if not placeholder_noted:
+                    placeholder_noted = True
+                    try:
+                        await _note_placeholder(channel_id, name)
+                    except Exception as e:   # reporting must never end the stream
+                        logger.debug(f"[LiveTV] Could not report the placeholder for channel {channel_id}: {e}")
+                if not yielded_any:
+                    return True
+                stop = _note_failure(_ProviderPlaceholder(name), where)
+                backoff_cap = _REFUSAL_BACKOFF_CAP
+                return stop
+
+            reresolve_run = 0          # re-resolves since a segment last arrived
+            after_reresolve = False    # the playlist in hand came from a fresh resolve
+            refused_since = None       # first 429/509 of the current refresh run (#184)
+            revive = {"last": None, "gap": _REVIVE_COOLDOWN, "held": False, "flow_since": None}
+            gone_since = None          # first 404/410 of the current run (recordings)
+            stream_answer_since = None # first non-playlist answer of the channel URL
+
+            def _token_expired(exc) -> bool:
+                return (isinstance(exc, httpx.HTTPStatusError)
+                        and exc.response.status_code in _TOKEN_EXPIRED_STATUS)
+
+            async def _resolve_channel_playlist():
+                """GET the channel URL as the open did: (playlist text, final
+                URL). Raises what the request raised, _ProviderPlaceholder,
+                or _NotAPlaylist for a continuous stream -- never read as a
+                playlist: it has no end."""
+                r = await _send_checked(hls_client, stream_url, ua_headers, guard)
+                try:
+                    placeholder = _placeholder_name(str(r.url))
+                    if placeholder:
+                        raise _ProviderPlaceholder(placeholder)
+                    r.raise_for_status()
+                    if "mpegurl" not in r.headers.get("content-type", "").lower():
+                        raise _NotAPlaylist("the channel now answers with a stream, not a playlist")
+                    return (await r.aread()).decode("utf-8", errors="replace"), str(r.url)
+                finally:
+                    await r.aclose()
+
+            async def _maybe_revive(exc) -> str:
+                """#184: after _REVIVE_AFTER s of unbroken refusals on the
+                playlist refresh, the session may be gone for good. Resolve
+                the channel URL again -- unless a rival on this account is
+                delivering (it holds the account; taking it back would kick it
+                and it would kick back). "ok" = a fresh playlist is in hand,
+                "stop" = end the stream, "" = go on waiting."""
+                nonlocal current_playlist, current_base, playlist_loaded_at
+                nonlocal after_reresolve, backoff_cap
+                if rival_delivering is None or refused_since is None:
+                    return ""
+                now = asyncio.get_running_loop().time()
+                if now - refused_since < _REVIVE_AFTER:
+                    return ""
+                if revive["last"] is not None and now - revive["last"] < revive["gap"]:
+                    return ""
+                rival = rival_delivering()
+                if rival is None and refresh_recordings is not None:
+                    # Decide on current information: a pull that became a
+                    # recording since the last lookup (a recording joining a
+                    # channel a viewer had open) is a rival (fuzz seed 157).
+                    await refresh_recordings()
+                    rival = rival_delivering()
+                if rival is not None:
+                    what = "recording" if rival.kind == "recording" else "stream"
+                    st = _stream_status.get(channel_id)
+                    if st is not None:
+                        st["waiting_for"] = f"another {what} on this account is delivering"
+                    if not revive["held"]:
+                        revive["held"] = True
+                        logger.warning(f"[LiveTV] Channel {channel_id}: refused for {now - refused_since:.0f}s "
+                                       f"while {rival.kind} '{rival.owner}' on the same account is "
+                                       f"delivering; waiting rather than taking the account from it")
+                    return ""
+                st = _stream_status.get(channel_id)
+                if st is not None:
+                    # Claimed in the same loop turn as the check above, so a
+                    # second waiting stream sees this one as the holder.
+                    st["reviving_at"] = asyncio.get_running_loop().time()
+                if revive["last"] is not None:
+                    revive["gap"] = min(revive["gap"] * 2, _REVIVE_COOLDOWN_CAP)
+                revive["last"] = now
+                health["revives"] = health.get("revives", 0) + 1
+                logger.warning(f"[LiveTV] Channel {channel_id}: refused for {now - refused_since:.0f}s and "
+                               f"nothing else on this account is delivering -- the session may be gone; "
+                               f"resolving the channel URL again (next attempt no sooner than "
+                               f"{revive['gap']:.0f}s)")
+                try:
+                    text, final = await _resolve_channel_playlist()
+                except _ProviderPlaceholder as e:
+                    return "stop" if await _placeholder_refusal(e.segment, "Re-resolving after refusals") else ""
+                except Exception as e:
+                    # Counted like the refusal it answers: within a viewer's
+                    # budget, for as long as a recording stays attached.
+                    stop = _note_failure(httpx.TransportError(
+                        f"Re-resolving after refusals: {e}"), "Re-resolving after refusals")
+                    backoff_cap = _REFUSAL_BACKOFF_CAP
+                    return "stop" if stop else ""
+                current_playlist, current_base = text, final
+                playlist_loaded_at = asyncio.get_running_loop().time()
+                after_reresolve = True
+                st = _stream_status.get(channel_id)
+                if st is not None:
+                    st.pop("waiting_for", None)
+                logger.info(f"[LiveTV] Channel {channel_id}: re-resolved the channel URL after refusals, "
+                            f"continuing the same stream")
+                return "ok"
+
+            async def _reresolve(what: str, exc) -> bool:
+                """The tokenized URL expired: resolve the channel URL again,
+                exactly as the open did, and carry on in the SAME response.
+                Counted as an interruption, inside the viewer's budget (for
+                a recording: for as long as it stays attached). True means
+                stop."""
+                nonlocal reresolve_run, after_reresolve, current_playlist
+                nonlocal current_base, playlist_loaded_at, backoff_cap, stream_answer_since
+                loop_now = asyncio.get_running_loop().time
+                reresolve_run += 1
+                status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+                counted = True
+                if _gone_grace(status):
+                    # A 404/410 blip on a recording: not the account refusing
+                    # yet (see _gone_grace); waited out on the refusal cap.
+                    reresolve_run -= 1
+                    counted = False
+                    backoff_cap = _REFUSAL_BACKOFF_CAP
+                if reresolve_run > _MAX_RERESOLVE:
+                    logger.error(f"[LiveTV] {what} for channel {channel_id} still answers {status} after "
+                                 f"{_MAX_RERESOLVE} fresh resolves of the channel URL, stopping: {exc}")
+                    health["ended_on_error"] = True
+                    return True
+                if _note_failure(httpx.TransportError(f"{what}: {status} — the stream URL expired"), what):
+                    return True
+                logger.warning(f"[LiveTV] {what} for channel {channel_id} answered {status} — the "
+                               f"tokenized URL has expired; re-resolving the channel URL "
+                               f"({reresolve_run}/{_MAX_RERESOLVE})")
+                if reresolve_run > 1 or not counted:
+                    await _backoff_sleep()
+                try:
+                    text, final = await _resolve_channel_playlist()
+                except _ProviderPlaceholder as e:
+                    # Not an answer about the token: does not count toward
+                    # _MAX_RERESOLVE (a recording must ride it out) -- but it
+                    # is waited out like a refusal, never re-asked at once.
+                    reresolve_run -= 1
+                    if await _placeholder_refusal(e.segment, what):
+                        return True
+                    await _backoff_sleep()
+                    return False
+                except Exception as e:
+                    if _token_expired(e):
+                        # counted: the next failure resolves again, up to the limit
+                        st = e.response.status_code
+                        if st in (401, 403, 407):
+                            backoff_cap = _REFUSAL_BACKOFF_CAP
+                        if counted and _gone_grace(st):
+                            reresolve_run -= 1
+                            backoff_cap = _REFUSAL_BACKOFF_CAP
+                            await _backoff_sleep()
+                        return False
+                    if isinstance(e, _NotAPlaylist):
+                        # The channel turned into a continuous stream. For a
+                        # recording, waiting for ever records nothing until the
+                        # timer ends; after _STREAM_ANSWER_LIMIT of this, end,
+                        # so Jellyfin re-opens (the raw path takes the stream)
+                        # and the content lands in a second file instead.
+                        now = loop_now()
+                        if stream_answer_since is None:
+                            stream_answer_since = now
+                        elif (is_recording is not None and is_recording()
+                              and now - stream_answer_since >= _STREAM_ANSWER_LIMIT):
+                            logger.error(f"[LiveTV] Channel {channel_id}: the channel URL has answered with a "
+                                         f"continuous stream instead of a playlist for "
+                                         f"{now - stream_answer_since:.0f}s, ending so the recording re-opens "
+                                         f"on it")
+                            health["ended_on_error"] = True
+                            return True
+                    # A 509, a transport error, a stream instead of a playlist:
+                    # the provider being busy, not the account refusing.
+                    reresolve_run -= 1
+                    if _note_failure(e, "Re-resolving the stream URL"):
+                        return True
+                    await _backoff_sleep()
+                    return False
+                stream_answer_since = None
+                current_playlist, current_base = text, final
+                playlist_loaded_at = asyncio.get_running_loop().time()
+                after_reresolve = True
+                logger.info(f"[LiveTV] Channel {channel_id}: re-resolved the channel URL, "
+                            f"continuing the same stream")
+                return False
+
+            def _gone_grace(status) -> bool:
+                """True while a 404/410 on a RECORDING should not yet count
+                toward _MAX_RERESOLVE: a panel blip answers 404 for seconds,
+                and three quick 1-2 s re-resolves ended a recording over a
+                7.5 s blip. It counts only after _GONE_GRACE of unbroken
+                404/410 (a channel really removed). Viewers keep the 3-try
+                rule; 401/403/407 are never graced."""
+                nonlocal gone_since
+                if status not in (404, 410) or not (is_recording is not None and is_recording()):
+                    return False
+                now = asyncio.get_running_loop().time()
+                if gone_since is None:
+                    gone_since = now
+                return now - gone_since < _GONE_GRACE
+
             while True:
                 # Master playlist? Follow the best variant before treating any
                 # line as a media segment. Each hop goes through the same
@@ -3763,6 +4309,11 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         finally:
                             await v_resp.aclose()
                     except Exception as e:
+                        if _token_expired(e):
+                            if await _reresolve("Variant playlist fetch", e):
+                                return
+                            variant_retry = True
+                            break
                         # Same retry regime as chunks and refreshes (#86): a 509
                         # here is the provider being momentarily busy, not a
                         # reason to end a recording.
@@ -3785,6 +4336,10 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 # Parse chunk URLs from playlist
                 lines = current_playlist.splitlines()
                 chunk_urls = []
+                chunk_seq: dict = {}         # chunk URL -> media sequence number
+                media_seq = None             # #EXT-X-MEDIA-SEQUENCE, when the playlist has one
+                disc_seq = None              # #EXT-X-DISCONTINUITY-SEQUENCE, when it has one
+                uri_index = 0
                 target_duration = 5  # default segment length
                 is_live = "#EXT-X-ENDLIST" not in current_playlist
 
@@ -3795,8 +4350,21 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                             target_duration = int(stripped.split(":")[1])
                         except (ValueError, IndexError):
                             pass
+                    elif stripped.startswith("#EXT-X-MEDIA-SEQUENCE:"):
+                        try:
+                            media_seq = int(stripped.split(":")[1])
+                        except (ValueError, IndexError):
+                            pass
+                    elif stripped.startswith("#EXT-X-DISCONTINUITY-SEQUENCE:"):
+                        try:
+                            disc_seq = int(stripped.split(":")[1])
+                        except (ValueError, IndexError):
+                            pass
                     elif stripped and not stripped.startswith("#"):
                         chunk_url = urljoin(current_base, stripped)
+                        if media_seq is not None:
+                            chunk_seq[chunk_url] = media_seq + uri_index
+                        uri_index += 1
                         if not line_guard(chunk_url):
                             logger.warning(f"[LiveTV] Skipping HLS chunk on non-public host for channel {channel_id}: {chunk_url}")
                             continue
@@ -3819,6 +4387,53 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         if _note_failure(_ProviderPlaceholder(segment), "Channel"):
                             return
                         await _backoff_sleep()
+
+                if after_reresolve and last_seq is not None and chunk_seq:
+                    # A fresh token renames every segment URL, so segments
+                    # already sent come back as "new". Skip them by media
+                    # sequence -- only when the new window straddles the last
+                    # segment sent, i.e. the numbering really continues. A
+                    # restarted numbering (a window that does not reach the
+                    # last one sent, or a changed discontinuity sequence) is
+                    # left alone: better a repeat than a hole.
+                    lo, hi = min(chunk_seq.values()), max(chunk_seq.values())
+                    same_disc = last_disc is None or disc_seq is None or last_disc == disc_seq
+                    if same_disc and lo <= last_seq + 1 <= hi + 1:
+                        # The numbers line up -- but a server whose counter
+                        # moved by one would lose a real segment per re-resolve
+                        # to a skip by number. Where the new window holds a
+                        # segment numbered like the last one sent, fetch it and
+                        # skip only if it IS that segment (same bytes).
+                        probe = next((u for u, n in chunk_seq.items() if n == last_seq), None)
+                        same = probe is None   # nothing to compare: nothing <= last_seq either
+                        if probe is not None and last_payload_hash is not None:
+                            try:
+                                pr = await _send_checked(hls_client, probe, ua_headers, guard)
+                                try:
+                                    pr.raise_for_status()
+                                    same = hashlib.sha1(await pr.aread()).digest() == last_payload_hash
+                                finally:
+                                    await pr.aclose()
+                            except Exception as e:
+                                logger.debug(f"[LiveTV] Could not compare the segment after a re-resolve "
+                                             f"for channel {channel_id}: {e}")
+                        if same:
+                            for u, n in chunk_seq.items():
+                                if n <= last_seq:
+                                    seen_chunks.add(u)
+                        else:
+                            logger.info(f"[LiveTV] Channel {channel_id}: the fresh playlist's numbering does "
+                                        f"not continue the old one; sending its window again rather than "
+                                        f"risking a hole")
+                    elif (last_disc is not None and disc_seq is not None and last_disc == disc_seq
+                          and lo > last_seq + 1):
+                        # The window moved on while the URL was re-resolved:
+                        # those segments are gone for good. Say so -- only when
+                        # the discontinuity sequence proves it is one numbering,
+                        # and never more than a window.
+                        health["segments_skipped"] += min(lo - last_seq - 1, len(chunk_seq))
+                    after_reresolve = False
+                restart = False
 
                 # Fetch new chunks
                 got_new = False
@@ -3850,12 +4465,24 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                                 return
                             await _backoff_sleep()
                     if payload is None:
+                        if (_token_expired(chunk_error)
+                                and chunk_error.response.status_code in (401, 403, 407)):
+                            # The token behind the segment URLs was refused:
+                            # not a lost segment. Re-resolve and re-read. (A
+                            # 404/410 segment is one that left the window,
+                            # skipped as before.)
+                            if await _reresolve("Chunk fetch", chunk_error):
+                                return
+                            restart = True
+                            break
                         if not _is_retryable(chunk_error):
                             fatal_chunk_skips += 1
+                            health["segments_skipped"] += 1
                             seen_chunks.add(chunk_url)
                             if fatal_chunk_skips > MAX_FATAL_CHUNK_SKIPS:
                                 logger.error(f"[LiveTV] {fatal_chunk_skips} segments in a row are gone for "
                                              f"channel {channel_id}, stopping: {chunk_error}")
+                                health["ended_on_error"] = True
                                 return
                             logger.warning(f"[LiveTV] Segment gone for channel {channel_id} "
                                            f"({fatal_chunk_skips} in a row), skipping it: {chunk_error}")
@@ -3873,8 +4500,26 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     seen_chunks.add(chunk_url)
                     got_new = True
                     fatal_chunk_skips = 0
+                    yielded_any = True
+                    reresolve_run, after_reresolve, gone_since = 0, False, None
+                    refused_since = None
+                    # The cooldown resets only after _REVIVE_RESET_AFTER of
+                    # unbroken delivery (Q3); a failure run restarts the clock.
+                    t_now = asyncio.get_running_loop().time()
+                    if failing_since is not None or revive["flow_since"] is None:
+                        revive["flow_since"] = t_now
+                    revive["held"] = False
+                    if (revive["last"] is not None
+                            and t_now - revive["flow_since"] >= _REVIVE_RESET_AFTER):
+                        revive.update(last=None, gap=_REVIVE_COOLDOWN)
+                    last_payload_hash = hashlib.sha1(payload).digest()
+                    if chunk_url in chunk_seq:
+                        last_seq, last_disc = chunk_seq[chunk_url], disc_seq
                     yield payload
                     _note_success(real_data=True)
+
+                if restart:
+                    continue        # the re-resolved playlist is in hand
 
                 if not is_live:
                     # VOD-style playlist — we're done after all chunks
@@ -3904,12 +4549,28 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     finally:
                         await pl_resp.aclose()
                 except Exception as e:
+                    if _token_expired(e):
+                        refused_since = None
+                        if await _reresolve("Playlist refresh", e):
+                            return
+                        continue
                     if _note_failure(e, "Playlist refresh"):
                         return
+                    if isinstance(e, httpx.HTTPStatusError) and e.response.status_code in _REFUSAL_STATUS:
+                        if refused_since is None:
+                            refused_since = asyncio.get_running_loop().time()
+                        rv = await _maybe_revive(e)
+                        if rv == "stop":
+                            return
+                        if rv == "ok":
+                            continue
+                    else:
+                        refused_since = None
                     await _backoff_sleep()
                     continue
                 current_playlist = refreshed
                 playlist_loaded_at = asyncio.get_running_loop().time()
+                refused_since = None
                 _note_success()
 
     response = StreamingResponse(
@@ -3981,11 +4642,13 @@ def _emit_sub_titles(db) -> bool:
 
 
 def _provider_hosts(db, channels) -> "set[str]":
-    """Hosts that belong to a Live TV provider: its server and its channels'
-    stream hosts."""
+    """Hosts that belong to a Live TV provider: its server, its guide (EPG)
+    URL and its channels' stream hosts."""
     from urllib.parse import urlparse
     hosts = set()
-    for url in [p.server_url for p in live_tv_providers(db)] + [ch.stream_url for ch in channels]:
+    providers = live_tv_providers(db)
+    for url in ([p.server_url for p in providers] + [getattr(p, "epg_url", None) for p in providers]
+                + [ch.stream_url for ch in channels]):
         try:
             host = urlparse(url or "").hostname
         except ValueError:
@@ -4003,9 +4666,12 @@ def _third_party_icon(url: Optional[str], provider_hosts: "set[str]") -> Optiona
         return None
     from urllib.parse import urlparse
     try:
-        host = (urlparse(url).hostname or "").lower()
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
     except ValueError:
         return None
+    if parsed.scheme not in ("http", "https"):
+        return None     # only web art: never a file:, data: or other scheme
     return None if host in provider_hosts else url
 
 
