@@ -4642,11 +4642,13 @@ def _emit_sub_titles(db) -> bool:
 
 
 def _provider_hosts(db, channels) -> "set[str]":
-    """Hosts that belong to a Live TV provider: its server and its channels'
-    stream hosts."""
+    """Hosts that belong to a Live TV provider: its server, its guide (EPG)
+    URL and its channels' stream hosts."""
     from urllib.parse import urlparse
     hosts = set()
-    for url in [p.server_url for p in live_tv_providers(db)] + [ch.stream_url for ch in channels]:
+    providers = live_tv_providers(db)
+    for url in ([p.server_url for p in providers] + [getattr(p, "epg_url", None) for p in providers]
+                + [ch.stream_url for ch in channels]):
         try:
             host = urlparse(url or "").hostname
         except ValueError:
@@ -4664,9 +4666,12 @@ def _third_party_icon(url: Optional[str], provider_hosts: "set[str]") -> Optiona
         return None
     from urllib.parse import urlparse
     try:
-        host = (urlparse(url).hostname or "").lower()
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
     except ValueError:
         return None
+    if parsed.scheme not in ("http", "https"):
+        return None     # only web art: never a file:, data: or other scheme
     return None if host in provider_hosts else url
 
 

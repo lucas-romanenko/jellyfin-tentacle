@@ -115,7 +115,10 @@ def _programme_dict(prog_el, channel_id: str) -> Optional[dict]:
     sub_el = prog_el.find("sub-title")
     desc_el = prog_el.find("desc")
     cat_el = prog_el.find("category")
-    icon_el = prog_el.find("icon")
+    # The first web (http/https) icon: a feed can list others first
+    # (file:, data:), which are never art Jellyfin can fetch.
+    icon_url = next((src for src in ((i.get("src") or "").strip() for i in prog_el.findall("icon"))
+                     if src.lower().startswith(("http://", "https://"))), None)
     return {
         "channel_id": channel_id,
         "title": (title_el.text if title_el is not None else "") or "",
@@ -124,7 +127,7 @@ def _programme_dict(prog_el, channel_id: str) -> Optional[dict]:
         "start": start,
         "stop": stop,
         "category": cat_el.text if cat_el is not None else None,
-        "icon_url": ((icon_el.get("src") or "").strip() or None) if icon_el is not None else None,
+        "icon_url": icon_url,
     }
 
 
