@@ -1187,6 +1187,7 @@ const SETTINGS_TEXT_FIELDS = [
   'lidarr_url', 'lidarr_api_key', 'navidrome_url', 'navidrome_public_url', 'navidrome_username', 'navidrome_password',
   'musicbrainz_contact', 'musicbrainz_cache_days', 'music_library_path',
   'music_preferred_countries', 'music_preferred_formats', 'music_edition_words', 'music_reconcile_time',
+  'music_chart_country',
 ];
 // Checkboxes, saved as "true" / "false".
 const SETTINGS_CHECKBOX_FIELDS = [

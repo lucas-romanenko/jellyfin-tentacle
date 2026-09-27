@@ -55,7 +55,7 @@ class EmptySave(unittest.TestCase):
     def test_the_keys_are_the_ones_with_non_empty_defaults(self):
         self.assertEqual({"recently_added_days", "tmdb_match_threshold", "hybrid_series_layout", "sync_schedule",
                           # music module (services/music/settings.py NON_EMPTY)
-                          "music_reconcile_time", "musicbrainz_cache_days"},
+                          "music_reconcile_time", "musicbrainz_cache_days", "music_chart_country"},
                          set(NON_EMPTY_DEFAULTS))
 
 

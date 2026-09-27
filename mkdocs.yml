@@ -70,6 +70,7 @@ nav:
     - Playlists: features/playlists.md
     - Home Screen: features/home-screen.md
     - Discover & Lists: features/discover-and-lists.md
+    - Music: features/music.md
     - Library: features/library.md
     - Activity Tracking: features/activity.md
     - Multi-User: features/multi-user.md

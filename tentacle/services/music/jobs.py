@@ -173,11 +173,16 @@ def scheduled_reconcile():
     from models.database import SessionLocal
     db = SessionLocal()
     try:
-        ready = music_settings.is_enabled(db) and get_setting(db, "lidarr_url") and get_setting(db, "lidarr_api_key")
+        enabled = music_settings.is_enabled(db)
+        ready = enabled and get_setting(db, "lidarr_url") and get_setting(db, "lidarr_api_key")
+        if ready:
+            start_reconcile("daily")
+        if enabled:
+            # Queued behind the check, so Discover → Music is fresh by morning.
+            from services.music import discover
+            discover.ensure_fresh(db)
     finally:
         db.close()
-    if ready:
-        start_reconcile("daily")
 
 
 # ── Webhook ──────────────────────────────────────────────────────────────

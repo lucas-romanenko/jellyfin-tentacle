@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, urlparse
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -352,6 +352,128 @@ def start_reconcile(db: Session = Depends(get_db)):
         raise HTTPException(400, "Connect Lidarr first (Settings → Connections)")
     started = jobs.start_reconcile("manual")
     return {"started": started, "message": "Checking the library" if started else "A check is already running"}
+
+
+# ── Discover → Music and Spotify imports (phase 4) ──────────────────────
+
+@webhook_router.get("/discover")
+def music_discover(db: Session = Depends(get_db), user: TentacleUser = Depends(music_user)):
+    """Trending, new releases, top of all time and playlist albums, from the cache the
+    worker builds; missing or stale sections are queued."""
+    from services.music import discover
+    return discover.page(db, user)
+
+
+@router.post("/discover/refresh")
+def refresh_discover(db: Session = Depends(get_db)):
+    from services.music import discover
+    _module_on(db)
+    discover.ensure_fresh(db, force=True)
+    return {"queued": True}
+
+
+MAX_EXPORT = 20 * 1024 * 1024
+
+
+def _spotify_errors(fn):
+    import functools
+    from services.music.spotify import SpotifyImportError
+
+    @functools.wraps(fn)
+    def wrapper(*a, **kw):
+        try:
+            return fn(*a, **kw)
+        except SpotifyImportError as e:
+            raise HTTPException(e.status, e.message)
+    return wrapper
+
+
+def _import_detail(db, imp) -> dict:
+    from services.music import browse, library, spotify
+    albums, skipped = spotify.albums_of(imp)
+    statuses = browse._statuses(db, [a["mbid"] for a in albums])
+    outcomes = imp.outcomes or {}
+
+    def with_status(a):
+        row, status, progress = statuses.get(a["mbid"], (None, library.AVAILABLE, None))
+        outcome = outcomes.get(a["mbid"])
+        return dict(a, status=status, progress=progress, refused=None if outcome in (None, "requested") else outcome)
+    return {"id": imp.id, "name": imp.name, "source": imp.source, "status": imp.status, "error": imp.error,
+            "done": imp.done, "total": imp.total, "refreshable": imp.source == "spotify_url",
+            "albums": [with_status(a) for a in albums], "skipped": skipped}
+
+
+@webhook_router.get("/imports")
+def list_imports(db: Session = Depends(get_db), user: TentacleUser = Depends(music_user)):
+    from services.music import spotify
+    return {"imports": spotify.summaries(db, user)}
+
+
+@webhook_router.post("/imports")
+@_spotify_errors
+def create_import(url: str = Form(""), file: Optional[UploadFile] = File(None), db: Session = Depends(get_db),
+                  user: TentacleUser = Depends(music_user)):
+    """A public playlist link (its first 100 songs) or an Exportify CSV (any size)."""
+    from services.music import spotify
+    if file is not None and file.filename:
+        data = file.file.read(MAX_EXPORT + 1)
+        if len(data) > MAX_EXPORT:
+            raise HTTPException(413, "That file is over 20 MB")
+        name, songs = spotify.parse_exportify(data, file.filename)
+        source, link = "exportify_csv", ""
+    elif url.strip():
+        link = url.strip()
+        name, songs = spotify.fetch_playlist(link)
+        source = "spotify_url"
+    else:
+        raise HTTPException(400, "Paste a playlist link or choose an Exportify CSV")
+    imp = spotify.start_import(db, user.id if user else None, name, source, link, songs)
+    return {"id": imp.id, "name": imp.name, "total": imp.total}
+
+
+@webhook_router.get("/imports/{import_id}")
+@_spotify_errors
+def import_detail(import_id: int, db: Session = Depends(get_db), user: TentacleUser = Depends(music_user)):
+    from services.music import spotify
+    return _import_detail(db, spotify.get_import(db, user, import_id))
+
+
+class ImportRequest(BaseModel):
+    mbids: list
+
+
+@webhook_router.post("/imports/{import_id}/request")
+@_spotify_errors
+def request_from_import(import_id: int, body: ImportRequest, db: Session = Depends(get_db),
+                        user: TentacleUser = Depends(music_user)):
+    """Request the ticked albums: queued, one at a time, each through the single request path."""
+    from services.music import spotify, worker
+    imp = spotify.get_import(db, user, import_id)
+    known = {a["mbid"] for a in spotify.albums_of(imp)[0]}
+    wanted = [m for m in dict.fromkeys(body.mbids or []) if isinstance(m, str) and m in known]
+    if not wanted:
+        raise HTTPException(400, "None of those albums are in this playlist")
+    worker.submit(spotify.request_job(imp.id, wanted, user.id if user else None), worker.NORMAL,
+                  f"requests from the playlist '{imp.name}'")
+    return {"queued": len(wanted)}
+
+
+@webhook_router.post("/imports/{import_id}/refresh")
+@_spotify_errors
+def refresh_import(import_id: int, db: Session = Depends(get_db), user: TentacleUser = Depends(music_user)):
+    from services.music import spotify
+    imp = spotify.refresh_import(db, spotify.get_import(db, user, import_id))
+    return {"id": imp.id, "total": imp.total}
+
+
+@webhook_router.delete("/imports/{import_id}")
+@_spotify_errors
+def delete_import(import_id: int, db: Session = Depends(get_db), user: TentacleUser = Depends(music_user)):
+    """Forget the playlist. Albums already requested stay in Lidarr."""
+    from services.music import spotify
+    db.delete(spotify.get_import(db, user, import_id))
+    db.commit()
+    return {"deleted": True}
 
 
 # ── Admin: the review page (phase 3) ────────────────────────────────────

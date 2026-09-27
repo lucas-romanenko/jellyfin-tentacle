@@ -58,7 +58,8 @@ function _musicAlbumCard(a, opts = {}) {
   const cover = a.cover
     ? `<img src="${escapeAttr(a.cover)}" loading="lazy" onerror="this.outerHTML='<div class=\\'lib-card-poster-placeholder\\'>♫</div>'">`
     : '<div class="lib-card-poster-placeholder">♫</div>';
-  const sub = opts.showArtist === false ? (a.year || '—') : `${escapeAttr(a.artist || '')}${a.year ? ' · ' + a.year : ''}`;
+  const sub = opts.meta != null ? opts.meta
+    : opts.showArtist === false ? (a.year || '—') : `${escapeAttr(a.artist || '')}${a.year ? ' · ' + a.year : ''}`;
   return `<div class="lib-card music" onclick="openMusicAlbum('${escapeJS(a.mbid)}')">
       <div class="lib-card-poster">${cover}<div class="lib-card-source">${_musicBadge(a)}</div>${addBtn}</div>
       <div class="lib-card-info">
@@ -68,19 +69,361 @@ function _musicAlbumCard(a, opts = {}) {
     </div>`;
 }
 
-// ── Discover: search ──────────────────────────────────────────────────────
+// ── Discover → Music: trending, new releases, top of all time, Spotify ────
 
-function musicDiscoverHome() {
-  const grid = document.getElementById('discover-grid');
+const _MUSIC_TABS = [['trending', 'Trending'], ['new', 'New releases'], ['alltime', 'Top of all time'], ['spotify', 'From Spotify']];
+Object.assign(musicState, { discover: null, dTab: 'trending', dSub: { trending: 'artists', new: 'all', alltime: '' },
+  hideOwned: false, dTimer: null, dSeq: 0 });
+
+function _musicDiscoverVisible() {
+  const browse = document.getElementById('discover-tab-browse');
+  return typeof _discoverType !== 'undefined' && _discoverType === 'music' && !_discoverSearchQuery
+    && browse && browse.offsetParent !== null;
+}
+
+async function musicDiscoverHome() {
   const tabs = document.getElementById('discover-section-tabs');
+  if (tabs) {
+    tabs.innerHTML = _MUSIC_TABS.map(([id, label]) =>
+      `<button class="discover-sec-tab" data-mtab="${id}" onclick="musicDiscoverTab('${id}')">${label}</button>`).join('');
+  }
+  if (!musicState.discover) {
+    document.getElementById('discover-grid').innerHTML =
+      '<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text3)"><span class="toast-spinner"></span> Loading…</div>';
+  } else {
+    musicDiscoverTab(musicState.dTab);
+  }
+  await _loadMusicDiscover();
+}
+
+async function _loadMusicDiscover() {
+  const seq = ++musicState.dSeq;
+  let data;
+  try {
+    data = await api('/api/music/discover');
+  } catch (e) {
+    data = { error: e.message };
+  }
+  if (seq !== musicState.dSeq) return;
+  musicState.discover = data;
+  if (_musicDiscoverVisible()) musicDiscoverTab(musicState.dTab);
+  clearTimeout(musicState.dTimer);
+  const busy = data.building && (data.building.trending || data.building.all_time)
+    || ((data.spotify || {}).imports || []).some(i => i.status === 'resolving');
+  // Keep refreshing while something is being built, as long as the page is open.
+  if (busy) musicState.dTimer = setTimeout(() => { if (_musicDiscoverVisible()) _loadMusicDiscover(); }, 8000);
+}
+
+function musicDiscoverTab(id) {
+  musicState.dTab = id;
+  document.querySelectorAll('#discover-section-tabs .discover-sec-tab').forEach(btn => {
+    const active = btn.getAttribute('data-mtab') === id;
+    btn.style.color = active ? 'var(--text)' : 'var(--text3)';
+    btn.style.borderBottomColor = active ? 'var(--accent)' : 'transparent';
+  });
+  const d = musicState.discover;
+  const grid = document.getElementById('discover-grid');
   const pills = document.getElementById('discover-streaming-pills');
-  if (tabs) tabs.innerHTML = '';
-  if (pills) pills.style.display = 'none';
-  grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px">
-      <p>Search for an artist, an album or a song.</p>
-      <p style="font-size:12px;color:var(--text3)">Tentacle finds the original studio album and asks Lidarr for it, with its original tracklist.</p>
+  pills.style.display = 'none';
+  pills.innerHTML = '';
+  if (!d) return;
+  if (d.error) {
+    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>${escapeAttr(d.error)}</p></div>`;
+    return;
+  }
+  ({ trending: _musicTrending, new: _musicNew, alltime: _musicAllTime, spotify: _musicSpotify })[id](d, grid, pills);
+}
+
+function _musicPills(pills, items, active, handler) {
+  pills.style.display = 'flex';
+  pills.classList.add('music-pills');   // one scrolling row on phones
+  pills.innerHTML = items.map(([id, label, count]) =>
+    `<button class="lib-list-pill${id === active ? ' active' : ''}" onclick="${handler}('${escapeJS(id)}')">${escapeAttr(label)}${count != null ? ` <span style="opacity:.7">${count}</span>` : ''}</button>`).join('');
+}
+
+function musicDiscoverSub(value) {
+  musicState.dSub[musicState.dTab] = value;
+  musicDiscoverTab(musicState.dTab);
+}
+
+function _musicNote(html) {
+  return `<div class="music-note">${html}</div>`;
+}
+
+function _musicAgo(ts) {
+  if (!ts) return '';
+  const h = Math.round((Date.now() / 1000 - ts) / 3600);
+  return h < 1 ? 'updated just now' : h < 48 ? `updated ${h} h ago` : `updated ${Math.round(h / 24)} days ago`;
+}
+
+function _musicEmpty(text) {
+  return `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>${text}</p></div>`;
+}
+
+function _musicBuilding(d, which, what) {
+  const err = (d.errors || {})[which];
+  if (err) return _musicNote(`<span style="color:var(--red)">Couldn't build ${what}: ${escapeAttr(err)}</span>`);
+  if ((d.building || {})[which]) return _musicNote(`<span class="toast-spinner"></span> Building ${what} in the background…`);
+  return '';
+}
+
+function _musicArtistCard(a) {
+  const pic = a.picture
+    ? `<img class="music-artist-pic" src="${escapeAttr(a.picture)}" loading="lazy" onerror="this.outerHTML='<div class=\\'music-artist-pic\\'>${escapeAttr((a.name || '?').charAt(0))}</div>'">`
+    : `<div class="music-artist-pic">${escapeAttr((a.name || '?').charAt(0))}</div>`;
+  return `<div class="music-artist-card" onclick="openMusicArtist('${escapeJS(a.mbid)}')">${pic}
+      <div class="music-artist-name" title="${escapeAttr(a.name)}">${escapeAttr(a.name)}</div>
+      ${a.in_library ? '<span class="badge badge-green" style="font-size:9px;padding:1px 5px">In Lidarr</span>' : ''}
     </div>`;
 }
+
+function _musicSongCard(s) {
+  const a = s.album;
+  const addBtn = a.status === 'available'
+    ? `<button onclick="event.stopPropagation();requestMusicAlbum('${escapeJS(a.mbid)}', this)" class="lib-card-add-btn" title="Request ${escapeAttr(a.title)}">+</button>` : '';
+  const art = s.artwork || a.cover;
+  const cover = art ? `<img src="${escapeAttr(art)}" loading="lazy" onerror="this.outerHTML='<div class=\\'lib-card-poster-placeholder\\'>♪</div>'">`
+    : '<div class="lib-card-poster-placeholder">♪</div>';
+  return `<div class="lib-card music" onclick="openMusicSong('${escapeJS(s.title)}', '${escapeJS(s.artist_mbid)}')">
+      <div class="lib-card-poster">${cover}${a.status !== 'available' ? `<div class="lib-card-source">${_musicBadge(a)}</div>` : ''}${addBtn}</div>
+      <div class="lib-card-info">
+        <div class="lib-card-title" title="${escapeAttr(s.title)}">${escapeAttr(s.title)}</div>
+        <div class="lib-card-meta">${escapeAttr(s.artist)}</div>
+        <div class="lib-card-meta" title="${escapeAttr(a.title)}">from ${escapeAttr(a.title)}${a.year ? ' (' + a.year + ')' : ''}</div>
+      </div>
+    </div>`;
+}
+
+function _musicDate(iso) {
+  if (!iso) return '';
+  const d = new Date(iso + 'T12:00:00');
+  return isNaN(d) ? iso : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function _musicTrending(d, grid, pills) {
+  const t = d.trending || {};
+  const sub = musicState.dSub.trending;
+  _musicPills(pills, [['artists', 'Artists', (t.artists || []).length], ['songs', 'Songs', (t.songs || []).length]],
+    sub, 'musicDiscoverSub');
+  let html = _musicBuilding(d, 'trending', "the charts");
+  if (t.built) html += _musicNote(`Apple Music's charts for ${escapeAttr((d.country || '').toUpperCase())} · ${_musicAgo(t.built)}`);
+  const items = sub === 'songs' ? (t.songs || []).map(_musicSongCard) : (t.artists || []).map(_musicArtistCard);
+  grid.innerHTML = html + (items.join('') || (t.built ? _musicEmpty('Nothing to show.') : ''));
+}
+
+function _musicNew(d, grid, pills) {
+  const n = d.new || {};
+  const sub = musicState.dSub.new;
+  _musicPills(pills, [['all', 'All', (n.releases || []).length], ['yours', 'From your artists', (n.yours || []).length]]
+    .concat((n.genres || []).map(([g, c]) => [g, g, c])), sub, 'musicDiscoverSub');
+  let html = _musicBuilding(d, 'trending', 'new releases');
+  let items;
+  if (sub === 'yours') {
+    html += _musicNote('New and announced albums by artists already in your library.');
+    items = n.yours || [];
+  } else {
+    html += _musicNote(`Albums out in the last 8 weeks that are charting on Apple Music (${escapeAttr((d.country || '').toUpperCase())}).`);
+    items = sub === 'all' ? (n.releases || []) : (n.releases || []).filter(a => (a.genres || []).includes(sub));
+  }
+  const cards = items.map(a => _musicAlbumCard(a, { meta: `${escapeAttr(a.artist || '')} · ${a.upcoming ? 'out ' : ''}${_musicDate(a.date)}` }));
+  grid.innerHTML = html + (cards.join('') || _musicEmpty(sub === 'yours'
+    ? 'No new albums from your artists in the last few weeks.' : 'No new albums here yet.'));
+}
+
+function _musicAllTime(d, grid, pills) {
+  const at = d.all_time || {};
+  const genres = at.genres || [];
+  let sub = musicState.dSub.alltime;
+  if (!genres.find(g => g.name === sub)) sub = musicState.dSub.alltime = genres.length ? genres[0].name : '';
+  if (genres.length) _musicPills(pills, genres.map(g => [g.name, g.name, g.albums.length]), sub, 'musicDiscoverSub');
+  let html = '';
+  if (!at.complete && (d.building || {}).all_time) {
+    const p = at.progress || {};
+    html += _musicNote(`<span class="toast-spinner"></span> Sorting ListenBrainz's most-listened albums into genres${p.total
+      ? `: ${p.done} of ${p.total} checked` : '…'}. MusicBrainz allows one request a second, so the first time takes a while; genres fill in as it goes.`);
+  } else {
+    html += _musicBuilding(d, 'all_time', 'the all-time list');
+  }
+  html += `<div class="music-note" style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap">
+      <span>The most-listened studio albums on ListenBrainz, by genre${at.built ? ' · ' + _musicAgo(at.built) : ''}.</span>
+      <label style="display:flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" ${musicState.hideOwned ? 'checked' : ''} onchange="musicState.hideOwned=this.checked;musicDiscoverTab('alltime')"> Hide albums I have</label>
+    </div>`;
+  const current = genres.find(g => g.name === sub);
+  const albums = ((current || {}).albums || []).filter(a => !musicState.hideOwned || a.status === 'available');
+  grid.innerHTML = html + (albums.map(a => _musicAlbumCard(a)).join('') ||
+    (genres.length ? _musicEmpty('You have every album in this list.') : ''));
+}
+
+function _musicSpotify(d, grid) {
+  const s = d.spotify || {};
+  const imports = s.imports || [];
+  let html = `<div class="music-note" style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center">
+      <span>Import a Spotify playlist: Tentacle finds the original studio album of every song, and you pick which to request.</span>
+      <button class="btn btn-primary btn-sm" onclick="showMusicImport()">Import a playlist</button>
+    </div>`;
+  if (imports.length) {
+    html += '<div class="music-rows">' + imports.map(i => {
+      const progress = i.status === 'resolving'
+        ? `<div class="music-progress"><div style="width:${i.total ? Math.round(100 * i.done / i.total) : 0}%"></div></div>
+           <div class="music-row-sub">Finding albums: ${i.done} of ${i.total} songs</div>`
+        : i.status === 'error' ? `<div class="music-row-sub" style="color:var(--red)">${escapeAttr(i.error || 'Failed')}</div>`
+        : `<div class="music-row-sub">${i.total} songs → ${i.albums} albums${i.skipped ? ` · ${i.skipped} song${i.skipped === 1 ? '' : 's'} not matched` : ''}</div>`;
+      return `<div class="music-row" onclick="openMusicImport(${i.id})">
+          <div class="music-row-icon">♫</div>
+          <div class="music-row-main"><div class="music-row-title">${escapeAttr(i.name)}</div>${progress}</div>
+          <div class="music-lib-actions" onclick="event.stopPropagation()">
+            ${i.refreshable ? `<button class="btn btn-secondary btn-sm" onclick="refreshMusicImport(${i.id}, this)" title="Read the playlist again">Refresh</button>` : ''}
+            <button class="btn btn-secondary btn-sm" onclick="deleteMusicImport(${i.id}, this)" title="Forget this playlist">Remove</button>
+          </div>
+        </div>`;
+    }).join('') + '</div>';
+  }
+  const albums = s.albums || [];
+  const missing = albums.filter(a => a.status === 'available');
+  if (albums.length) {
+    html += `<div class="music-note" style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center;margin-top:10px">
+        <span>Albums from your playlists: ${albums.length}, ${missing.length} not in your library.</span>
+      </div>`;
+    html += albums.map(a => _musicAlbumCard(a, { meta: `${escapeAttr(a.artist || '')} · ${a.songs.length} song${a.songs.length === 1 ? '' : 's'}` })).join('');
+  } else if (!imports.length) {
+    html += _musicEmpty('No playlists imported yet.');
+  }
+  grid.innerHTML = html;
+}
+
+// ── Spotify import: dialog, preview, requests ─────────────────────────────
+
+function showMusicImport() {
+  _musicModal('Import a Spotify playlist', `
+    <div class="form-group">
+      <div class="form-label">Public playlist link</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <input class="form-input" id="music-import-url" placeholder="https://open.spotify.com/playlist/…" style="flex:1;min-width:220px">
+        <button class="btn btn-primary" onclick="startMusicImport(this)">Import</button>
+      </div>
+      <div class="form-hint">Reads the first 100 songs. No Spotify account or key needed.</div>
+    </div>
+    <div class="form-group" style="margin-top:14px">
+      <div class="form-label">Or an Exportify file (any size, private playlists too)</div>
+      <input type="file" id="music-import-file" accept=".csv,text/csv" onchange="startMusicImport(null)">
+      <div class="form-hint">Export the playlist at <a href="https://exportify.net" target="_blank" rel="noopener" style="color:var(--accent)">exportify.net</a> and choose the CSV it saves.</div>
+    </div>
+    <p class="form-hint" style="margin-top:14px">Nothing is requested yet: you'll see the albums first and tick the ones you want.</p>`);
+  setTimeout(() => { const i = document.getElementById('music-import-url'); if (i) i.focus(); }, 50);
+}
+
+async function startMusicImport(btn) {
+  const url = (document.getElementById('music-import-url') || {}).value || '';
+  const fileInput = document.getElementById('music-import-file');
+  const file = fileInput && fileInput.files && fileInput.files[0];
+  if (!url.trim() && !file) { toast('Paste a playlist link or choose a file', 'error'); return; }
+  const form = new FormData();
+  if (file) form.append('file', file); else form.append('url', url.trim());
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch('/api/music/imports', { method: 'POST', body: form });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(body.detail || r.statusText);
+    closeModal('modal-music');
+    toast(`Importing “${escapeAttr(body.name)}”: finding albums for ${body.total} songs…`, 'info', 6000);
+    musicState.dTab = 'spotify';
+    await _loadMusicDiscover();
+  } catch (e) {
+    toast(escapeAttr(e.message), 'error', 8000);
+    if (btn) btn.disabled = false;
+    if (fileInput) fileInput.value = '';
+  }
+}
+
+async function openMusicImport(id, keepOpen) {
+  if (!keepOpen) _musicLoading('Playlist');
+  let d;
+  try {
+    d = await api(`/api/music/imports/${id}`);
+  } catch (e) {
+    _musicModal('Playlist', `<p style="color:var(--red)">${escapeAttr(e.message)}</p>`);
+    return;
+  }
+  if (keepOpen && !document.getElementById(`music-import-${id}`)) return;   // closed meanwhile
+  const available = d.albums.filter(a => a.status === 'available');
+  const rows = d.albums.map(a => {
+    const can = a.status === 'available';
+    const songs = a.songs.slice(0, 3).map(t => `“${escapeAttr(t)}”`).join(', ') + (a.songs.length > 3 ? ` +${a.songs.length - 3}` : '');
+    return `<label class="music-check-row">
+        <input type="checkbox" value="${escapeAttr(a.mbid)}" ${can ? 'checked' : 'disabled'} onchange="_musicImportCount(${id})">
+        ${_musicCover(a.cover, 40)}
+        <div class="music-row-main">
+          <div class="music-row-title">${escapeAttr(a.title)} <span style="color:var(--text3)">· ${escapeAttr(a.artist || '')}${a.year ? ' · ' + a.year : ''}</span></div>
+          <div class="music-row-sub">${songs}</div>
+          ${a.refused ? `<div class="music-row-sub" style="color:var(--red)">${escapeAttr(a.refused)}</div>` : ''}
+        </div>
+        ${_musicBadge(a)}
+      </label>`;
+  }).join('');
+  const progress = d.status === 'resolving'
+    ? `<div class="music-progress" style="margin:6px 0 10px"><div style="width:${d.total ? Math.round(100 * d.done / d.total) : 0}%"></div></div>
+       <p class="form-hint">Finding albums: ${d.done} of ${d.total} songs. You can request what's found so far.</p>` : '';
+  const skipped = d.skipped.length ? `<details style="margin-top:14px"><summary style="cursor:pointer;font-size:13px">${d.skipped.length} song${d.skipped.length === 1 ? '' : 's'} not matched to a studio album</summary>
+      <div class="music-rows" style="margin-top:8px">${d.skipped.map(s => `<div class="music-row-sub"><b style="color:var(--text2)">${escapeAttr(s.title)}</b> · ${escapeAttr(s.artist)}: ${escapeAttr(s.reason)}</div>`).join('')}</div></details>` : '';
+  _musicModal(d.name, `<div id="music-import-${id}">
+      ${d.error ? `<p style="color:var(--red)">${escapeAttr(d.error)}</p>` : ''}
+      ${progress}
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+        <span class="form-hint" style="margin:0">${d.total} songs → ${d.albums.length} albums, ${available.length} not in your library</span>
+        <button class="btn btn-primary btn-sm" id="music-import-go-${id}" onclick="requestMusicImport(${id}, this)" ${available.length ? '' : 'disabled'}>Request ${available.length}</button>
+      </div>
+      <div class="music-check-list">${rows || '<p class="form-hint">No albums found yet.</p>'}</div>
+      ${skipped}
+    </div>`);
+  if (d.status === 'resolving') setTimeout(() => openMusicImport(id, true), 4000);
+}
+
+function _musicImportCount(id) {
+  const n = document.querySelectorAll(`#music-import-${id} input[type=checkbox]:checked`).length;
+  const btn = document.getElementById(`music-import-go-${id}`);
+  if (btn) { btn.textContent = `Request ${n}`; btn.disabled = !n; }
+}
+
+async function requestMusicImport(id, btn) {
+  const mbids = [...document.querySelectorAll(`#music-import-${id} input[type=checkbox]:checked`)].map(c => c.value);
+  if (!mbids.length) return;
+  btn.disabled = true;
+  try {
+    const r = await api(`/api/music/imports/${id}/request`, { method: 'POST', body: { mbids } });
+    toast(`Requesting ${r.queued} album${r.queued === 1 ? '' : 's'}, one at a time…`, 'info', 6000);
+    closeModal('modal-music');
+    setTimeout(_loadMusicDiscover, 3000);
+  } catch (e) {
+    toast(escapeAttr(e.message), 'error', 8000);
+    btn.disabled = false;
+  }
+}
+
+async function refreshMusicImport(id, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    await api(`/api/music/imports/${id}/refresh`, { method: 'POST' });
+    toast('Reading the playlist again…', 'info');
+    await _loadMusicDiscover();
+  } catch (e) {
+    toast(escapeAttr(e.message), 'error', 8000);
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function deleteMusicImport(id, btn) {
+  if (!confirm('Forget this playlist? Albums you already requested stay in Lidarr.')) return;
+  if (btn) btn.disabled = true;
+  try {
+    await api(`/api/music/imports/${id}`, { method: 'DELETE' });
+    await _loadMusicDiscover();
+  } catch (e) {
+    toast(escapeAttr(e.message), 'error');
+    if (btn) btn.disabled = false;
+  }
+}
+
+// ── Discover: search ──────────────────────────────────────────────────────
 
 async function musicSearch(query) {
   const grid = document.getElementById('discover-grid');
@@ -283,6 +626,7 @@ async function requestMusicAlbum(mbid, btn, tracks) {
     const r = await api('/api/music/request', { method: 'POST', body });
     toast(`Requested ${escapeAttr(r.title || 'the album')} — Tentacle pins the original release, then Lidarr searches`, 'success', 6000);
     if (btn && btn.classList.contains('lib-card-add-btn')) btn.remove();
+    if (_musicDiscoverVisible()) setTimeout(_loadMusicDiscover, 1500);   // the badge turns "Wanted"
     if (document.getElementById('modal-music').style.display === 'flex' && btn && !btn.classList.contains('lib-card-add-btn')) openMusicAlbum(mbid);
   } catch (e) {
     toast(escapeAttr(e.message), 'error', 8000);
