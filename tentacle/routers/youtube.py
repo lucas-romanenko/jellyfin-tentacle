@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
 from starlette.background import BackgroundTask
 from pydantic import BaseModel
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from typing import Optional
 
@@ -391,7 +392,8 @@ def toggle_live(channel_id: int, body: LiveToggle, db: Session = Depends(get_db)
 
     logger.info(f"[YouTube] Live TV {'enabled' if body.enabled else 'disabled'} for '{channel.title}'")
     return {"success": True, "live_enabled": body.enabled,
-            "guide_number": yt_livetv.guide_number(channel), "programmes": guide}
+            "guide_number": yt_livetv.guide_number(channel, yt_livetv.iptv_guide_numbers(db)),
+            "programmes": guide}
 
 
 # ── Admin ───────────────────────────────────────────────────────────────────
@@ -819,13 +821,14 @@ def list_channels(db: Session = Depends(get_db)):
     from services.youtube import livetv as yt_livetv
 
     out = []
+    taken = yt_livetv.iptv_guide_numbers(db)
     for ch in db.query(YouTubeChannel).order_by(YouTubeChannel.title).all():
         # Guide entries this channel has in Tentacle's own EPG — what the
         # Live TV page shows next to it, and what Jellyfin's guide is built from.
         guide_programmes = db.query(EPGProgram).filter(
             EPGProgram.channel_id == yt_livetv.epg_channel_id(ch)).count() if ch.live_enabled else 0
         out.append({
-            "guide_number": yt_livetv.guide_number(ch),
+            "guide_number": yt_livetv.guide_number(ch, taken),
             "guide_programmes": guide_programmes,
             "id": ch.id, "title": ch.title, "slug": ch.slug, "kind": ch.kind,
             "input_url": ch.input_url, "avatar_url": ch.avatar_url,
@@ -856,6 +859,11 @@ def list_channels(db: Session = Depends(get_db)):
                 YouTubeVideo.removed_at.is_(None)).count(),
         })
     return out
+
+
+# A bound on "<title> (n)" numbering, so a naming bug can only ever fail an
+# add, never spin a request thread.
+_MAX_TITLE_NUMBER = 1000
 
 
 @router.post("/channels", dependencies=[Depends(require_admin)])
@@ -897,12 +905,58 @@ def add_channel(body: ChannelCreate, request: Request, db: Session = Depends(get
     except (YouTubeError, ValueError) as e:
         raise HTTPException(400, f"Could not read that channel: {e}")
 
+    # A playlist is its own source: its listing carries its OWNER's
+    # channel_id, so matching on that refused a playlist next to the channel
+    # it comes from (or a second playlist of the same owner) as "already
+    # added". Videos in both are handled by the indexer ("already indexed
+    # under another channel or playlist").
     existing = None
-    if info.get("channel_id"):
+    if info.get("kind") == "playlist" and info.get("playlist_id"):
         existing = db.query(YouTubeChannel).filter(
-            YouTubeChannel.channel_id == info["channel_id"]).first()
+            YouTubeChannel.playlist_id == info["playlist_id"]).first()
+    elif info.get("channel_id"):
+        existing = db.query(YouTubeChannel).filter(
+            YouTubeChannel.channel_id == info["channel_id"],
+            or_(YouTubeChannel.kind.is_(None), YouTubeChannel.kind != "playlist")).first()
     if existing:
         raise HTTPException(409, f"'{existing.title}' is already added")
+
+    # The title names the source's folder, playlist and home row, and the
+    # playlist builder skips a second source of the same name. A playlist is
+    # often named like its channel ("Bluey") or generically ("Favorites"), so
+    # a clash is told apart by the owner, then by a number.
+    # The name space is shared with every other SmartList (lists, tag rules,
+    # source and built-in playlists, Downloads): a YouTube "Christmas" next
+    # to a "Christmas" rule displaced the rule's playlist. And two titles that
+    # differ only past the 120 characters safe_name() keeps would share one
+    # folder, so the folder name has to be free too.
+    from services.tagger import name_key, smartlist_names_in_use
+    taken = smartlist_names_in_use(db)
+    taken_folders = {name_key(library.safe_name(t)) for (t,) in db.query(YouTubeChannel.title).all() if t}
+
+    def _clash(t):
+        return name_key(t) in taken or name_key(library.safe_name(t)) in taken_folders
+
+    title = info["title"]
+    owner = info.get("owner")
+    if _clash(title) and info.get("kind") == "playlist" and owner \
+            and name_key(owner) != name_key(title):
+        title = f"{title} ({owner})"
+    base_title, n = title, 2
+    while _clash(title):
+        if n > _MAX_TITLE_NUMBER:
+            raise HTTPException(409, f"Could not find a free name for '{info['title']}': "
+                                     f"{_MAX_TITLE_NUMBER - 1} numbered copies already exist")
+        # Keep the number inside what the folder name keeps: safe_name() cuts
+        # at 120 characters AND at 255 bytes. Sized in characters only, a long
+        # CJK or emoji title lost its " (n)" to the byte cut, the folder name
+        # never changed, and this loop never ended.
+        suffix = f" ({n})"
+        cut = base_title[:120 - len(suffix)]
+        cut = library._fit_bytes(cut, library.MAX_NAME_BYTES - len(suffix.encode("utf-8")))
+        title = cut.rstrip() + suffix
+        n += 1
+    info["title"] = title
 
     slug = indexer.slugify(info["title"])
     if db.query(YouTubeChannel).filter(YouTubeChannel.slug == slug).first():
@@ -914,7 +968,7 @@ def add_channel(body: ChannelCreate, request: Request, db: Session = Depends(get
     channel = YouTubeChannel(
         input_url=body.url, kind=info["kind"], channel_id=info.get("channel_id"),
         handle=info.get("handle"), playlist_id=info.get("playlist_id"),
-        title=info["title"], slug=slug,
+        title=title, slug=slug,
         avatar_url=info.get("avatar_url"), banner_url=info.get("banner_url"),
         include_videos=True,
         # A channel that only ever broadcasts live has an empty uploads tab;
@@ -1208,7 +1262,7 @@ def delete_channel(channel_id: int, db: Session = Depends(get_db)):
         removed += library.remove_video(video)
     # ...and the channel's own folder, which the per-video removals leave empty.
     library.remove_channel_folder(channel.title)
-    title, was_live = channel.title, bool(channel.live_enabled)
+    title, was_live, channel_slug = channel.title, bool(channel.live_enabled), channel.slug
     if was_live:
         from models.database import EPGProgram
         from services.youtube import livetv as yt_livetv
@@ -1219,12 +1273,12 @@ def delete_channel(channel_id: int, db: Session = Depends(get_db)):
     db.commit()
     logger.info(f"[YouTube] Removed channel '{title}' ({removed} file(s) deleted)")
 
-    threading.Thread(target=_cleanup_after_remove, args=(title, was_live), daemon=True,
+    threading.Thread(target=_cleanup_after_remove, args=(title, was_live, channel_slug), daemon=True,
                      name="youtube-remove-cleanup").start()
     return {"success": True, "files_deleted": removed}
 
 
-def _cleanup_after_remove(title: str, was_live: bool) -> None:
+def _cleanup_after_remove(title: str, was_live: bool, slug: str = None) -> None:
     """Take a removed channel out of Jellyfin entirely: rows, playlist, items, guide.
 
     Every step stands on its own and is logged, because a removal that stops
@@ -1254,17 +1308,30 @@ def _cleanup_after_remove(title: str, was_live: bool) -> None:
         for user in db.query(TentacleUser).all():
             # The playlist id Tentacle recorded, captured before the sync below
             # removes the folder that holds it.
-            recorded = next((p["playlist_id"] for p in _get_smartlists_with_playlist_ids(db, user_id=user.id)
-                             if p["name"] == title), None)
+            # Found by the channel's own tag ("yt:<slug>"), never by name: a
+            # user's own playlist called "Cooking" is not the YouTube channel
+            # "Cooking", and matching by name deleted it, with its home row and
+            # hero (#52). Without a slug (an older caller), only YouTube
+            # playlists are considered.
+            smartlists = _get_smartlists_with_playlist_ids(db, user_id=user.id)
+            if slug:
+                recorded = next((p["playlist_id"] for p in smartlists
+                                 if f"yt:{slug}" in (p.get("yt_tags") or [])), None)
+            else:
+                recorded = next((p["playlist_id"] for p in smartlists
+                                 if p.get("is_youtube") and p["name"] == title), None)
 
             # 1. The home row and, if it pointed here, the hero — explicitly.
             try:
                 with home_config_lock:
                     config = _read_home_json(user) or {}
                     rows = config.get("rows") or []
-                    kept = [r for r in rows if r.get("display_name") != title]
+                    # By playlist id only. No recorded playlist means there is no
+                    # row of this channel to find, and a same-named row is someone
+                    # else's.
+                    kept = [r for r in rows if not (recorded and r.get("playlist_id") == recorded)]
                     hero = config.get("hero") or {}
-                    hero_hit = hero.get("display_name") == title
+                    hero_hit = bool(recorded) and hero.get("playlist_id") == recorded
                     if len(kept) != len(rows) or hero_hit:
                         for i, r in enumerate(kept, start=1):
                             r["order"] = i

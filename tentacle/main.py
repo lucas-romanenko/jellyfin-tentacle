@@ -31,10 +31,12 @@ def run_scheduled_sync():
     from services.radarr import scan_radarr_library
     from services.tmdb import TMDBService
     from models.database import get_setting, log_activity
+    from routers.sync import _after_sync
+    nightly_started = datetime.utcnow()
     db = SessionLocal()
     try:
         from models.database import ListSubscription
-        from routers.lists import fetch_list_tmdb_ids, store_list_items, apply_list_tags_to_library, enrich_items_with_tmdb, _get_tmdb_service
+        from routers.lists import refresh_list, _get_tmdb_service
         from services.tmdb import get_tmdb_token
         bearer = get_tmdb_token(db)
         trakt_cid = get_setting(db, "trakt_client_id") or ""
@@ -42,14 +44,8 @@ def run_scheduled_sync():
         active_lists = db.query(ListSubscription).filter(ListSubscription.active == True).all()
         for lst in active_lists:
             try:
-                items = fetch_list_tmdb_ids(lst, bearer_token=bearer, trakt_client_id=trakt_cid)
+                items, store_stats = refresh_list(lst, db, bearer, trakt_cid, tmdb)
                 if items:
-                    if tmdb:
-                        enrich_items_with_tmdb(items, tmdb)
-                    store_stats = store_list_items(lst, items, db)
-                    apply_list_tags_to_library(items, lst.tag, db)
-                    lst.last_fetched = datetime.utcnow()
-                    lst.last_item_count = len(items)
                     stored = store_stats.get("stored", len(items)) if store_stats else len(items)
                     new_count = store_stats.get("new", 0) if store_stats else 0
                     removed_count = store_stats.get("removed", 0) if store_stats else 0
@@ -58,6 +54,10 @@ def run_scheduled_sync():
                     else:
                         log_activity(db, "list_fetch", f"Fetched '{lst.name}' — {stored} items (no changes)")
                     logger.info(f"List '{lst.name}' refreshed: {len(items)} items")
+                else:
+                    # Not a failure to warn about every night: a missing Trakt
+                    # client ID was already said once, at WARNING (#160).
+                    logger.info(f"List '{lst.name}': {lst.last_fetch_note}")
             except Exception as e:
                 logger.warning(f"Failed to refresh list '{lst.name}': {e}")
         db.commit()
@@ -120,6 +120,11 @@ def run_scheduled_sync():
                 _running_syncs.pop(provider.id, None)
                 _cancel_flags.pop(provider.id, None)
                 _sync_progress.pop(provider.id, None)
+
+        # The provider runs above read "completed" from here on while the rest
+        # of the job runs for a long while yet: report them as finishing (#159).
+        _after_sync["nightly"] = nightly_started
+        pause.run_id = None     # later waits (discovery) belong to no sync run
 
         logger.info("Scheduled Radarr scan starting")
         try:
@@ -218,8 +223,12 @@ def run_scheduled_sync():
         logger.info("Syncing Live TV EPG data")
         try:
             from models.database import LiveChannel
-            from routers.livetv import _run_epg_sync_background
-            live_providers = db.query(Provider).filter(Provider.live_tv_enabled == True, Provider.active == True).all()
+            from routers.livetv import _run_epg_sync_background, live_tv_providers
+            from services.provider_activity import wait_for_recordings, EPG_WAIT_FOR_RECORDING_SECONDS
+            epg_may_download = True
+            live_providers = live_tv_providers(db)
+            if not live_providers:
+                logger.info("No Live TV provider — nothing to sync")
             epg_synced = False
             for lp in live_providers:
                 all_channels = db.query(LiveChannel).filter(LiveChannel.provider_id == lp.id).all()
@@ -244,6 +253,14 @@ def run_scheduled_sync():
                 # Only trigger the Jellyfin guide refresh if the sync actually
                 # produced data — refreshing after a failed sync makes Jellyfin
                 # re-ingest a draining/stale guide for nothing.
+                # The guide download is a provider request like any other; with
+                # recording protection on it waits for a running recording --
+                # for a bounded time, then this night's download is skipped.
+                if epg_may_download:
+                    epg_may_download = wait_for_recordings(db, "the scheduled EPG sync",
+                                                           max_seconds=EPG_WAIT_FOR_RECORDING_SECONDS)
+                if not epg_may_download:
+                    continue
                 if _run_epg_sync_background(provider_data):
                     epg_synced = True
 
@@ -348,6 +365,7 @@ def run_scheduled_sync():
         except Exception:
             pass
     finally:
+        _after_sync.pop("nightly", None)
         db.close()
 
 
@@ -378,14 +396,24 @@ def reschedule_main_sync(cron: str = None) -> bool:
     """(Re)schedule the daily sync from a 5-field cron string. Reads the
     sync_schedule setting when cron is None. Safe to call at runtime — the job is
     replaced in place, so schedule changes take effect without a restart."""
-    if cron is None:
+    from models.database import NON_EMPTY_DEFAULTS, get_setting
+    default = NON_EMPTY_DEFAULTS["sync_schedule"]
+    from_settings = cron is None
+    if from_settings:
         db = SessionLocal()
         try:
-            s = db.query(Setting).filter(Setting.key == "sync_schedule").first()
-            cron = s.value if s and s.value else "0 3 * * *"
+            # Through get_setting: a stored blank or whitespace value reads as
+            # the default. Read raw, "  " was truthy, failed the 5-field check
+            # below, and no nightly job was scheduled at all (#157).
+            cron = get_setting(db, "sync_schedule", default)
         finally:
             db.close()
     parts = (cron or "").strip().split()
+    if len(parts) != 5 and from_settings and cron != default:
+        # A stored value that is no schedule must not leave the install with
+        # no nightly job: run at the default time and say so.
+        logger.warning(f"Invalid sync schedule '{cron}' in settings — using the default '{default}'")
+        cron, parts = default, default.split()
     if len(parts) != 5:
         logger.warning(f"Invalid sync schedule '{cron}' — expected 5 cron fields")
         return False
@@ -405,10 +433,10 @@ def reschedule_main_sync(cron: str = None) -> bool:
 def get_schedule_info() -> dict:
     """Current sync schedule as a friendly time + the effective timezone + next run."""
     from datetime import datetime
+    from models.database import NON_EMPTY_DEFAULTS, get_setting
     db = SessionLocal()
     try:
-        s = db.query(Setting).filter(Setting.key == "sync_schedule").first()
-        cron = s.value if s and s.value else "0 3 * * *"
+        cron = get_setting(db, "sync_schedule", NON_EMPTY_DEFAULTS["sync_schedule"])
     finally:
         db.close()
     parts = cron.strip().split()
@@ -651,6 +679,9 @@ app.include_router(smartlists_router.router)
 app.include_router(discover_router.router)
 app.include_router(activity_router.router)
 app.include_router(livetv_router.router)
+# A refused tuner open answers 503 with no body: Jellyfin's tuner copies any
+# body as if it were the stream (#140).
+app.add_exception_handler(livetv_router._TunerRefusal, livetv_router.tuner_refusal_handler)
 from routers import vod as vod_router
 app.include_router(vod_router.router)
 app.include_router(notifications_router.router)

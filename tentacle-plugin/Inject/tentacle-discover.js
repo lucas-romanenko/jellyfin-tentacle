@@ -31,6 +31,7 @@
     loadedAt: 0,          // timestamp of last render — stale after 5 min
     activityData: null,   // shared — used for download badges on discover cards
     generation: 0,        // incremented on navigation, stale API responses check this
+    view: 0,              // incremented whenever the grid is repainted for another tab/pill
     _pendingAction: null, // 'manage' or 'downloadMore' — auto-trigger after modal render
     streamingProviders: null, // [{slug,name}] once loaded
     streamingActive: null,    // active provider slug
@@ -50,7 +51,16 @@
     active: false,
     loaded: false,
     timer: null,
+    pollSince: 0,   // when the outstanding Activity poll started, 0 = none
+    pollToken: 0,
   };
+  // A poll still out after this long is given up on, so one request that
+  // never answers can't stop the polling for good.
+  var POLL_STALE_MS = 90000;
+  // Monotonic where available, so a wall-clock jump can't stall the poll.
+  function pollClock() {
+    return (window.performance && window.performance.now) ? window.performance.now() : Date.now();
+  }
 
   // ── Bootstrap ───────────────────────────────────────────────────────
   function waitForReady() {
@@ -302,6 +312,7 @@
   // ── Fetch discover sections ─────────────────────────────────────────
   function fetchDiscoverData() {
     var gen = MD.generation;
+    MD.view++;
     var content = document.getElementById('mdDiscoverContent');
     if (content) content.innerHTML = '<div class="md-loading"><div class="md-spinner"></div><br>Loading...</div>';
 
@@ -377,6 +388,7 @@
 
   function switchSection(sectionId) {
     MD.activeSection = sectionId;
+    MD.view++;
 
     document.querySelectorAll('.md-section-tab').forEach(function (btn) {
       btn.classList.toggle('md-section-active', btn.getAttribute('data-section') === sectionId);
@@ -419,14 +431,18 @@
         });
       });
       var typeParam = MD.mediaFilter === 'series' ? 'series' : 'movies';
+      // A later pill, tab or type switch reuses #mdStreamGrid: an answer for
+      // the earlier one must not land in it.
+      var view = ++MD.view;
       apiGet('TentacleDiscover/Streaming?provider=' + encodeURIComponent(MD.streamingActive) + '&type=' + typeParam + '&userId=' + window.ApiClient.getCurrentUserId())
         .then(function (data) {
-          if (gen !== MD.generation) return;
+          if (gen !== MD.generation || view !== MD.view) return;
           MD.streamingSection = { id: 'streaming', items: (data && data.items) || [], failure: failureMessage(data) };
           var wrap = document.getElementById('mdStreamGrid');
           if (wrap) renderGrid(MD.streamingSection, wrap);
         })
         .catch(function () {
+          if (gen !== MD.generation || view !== MD.view) return;
           var wrap = document.getElementById('mdStreamGrid');
           if (wrap) wrap.innerHTML = '<div class="md-loading">Failed to load.</div>';
         });
@@ -434,8 +450,8 @@
 
     if (!MD.streamingProviders) {
       apiGet('TentacleDiscover/Providers?userId=' + window.ApiClient.getCurrentUserId())
-        .then(function (data) { MD.streamingProviders = (data && data.providers) || []; if (gen === MD.generation) paint(); })
-        .catch(function () { MD.streamingProviders = []; if (gen === MD.generation) paint(); });
+        .then(function (data) { MD.streamingProviders = (data && data.providers) || []; if (gen === MD.generation && MD.activeSection === 'streaming') paint(); })
+        .catch(function () { MD.streamingProviders = []; if (gen === MD.generation && MD.activeSection === 'streaming') paint(); });
     } else {
       paint();
     }
@@ -498,7 +514,7 @@
         if (e.target.closest('.md-card-add')) return;
         var tmdb = parseInt(card.getAttribute('data-tmdb'), 10) || 0;
         var tvdb = parseInt(card.getAttribute('data-tvdb'), 10) || 0;
-        var item = findItem(tmdb, tvdb);
+        var item = findItem(tmdb, tvdb, card.getAttribute('data-type'));
         if (item) showDetailModal(item);
       });
     });
@@ -509,7 +525,8 @@
         e.stopPropagation();
         var tmdb = parseInt(btn.getAttribute('data-tmdb'), 10) || 0;
         var tvdb = parseInt(btn.getAttribute('data-tvdb'), 10) || 0;
-        var item = findItem(tmdb, tvdb);
+        var card = btn.closest('.md-card');
+        var item = findItem(tmdb, tvdb, card && card.getAttribute('data-type'));
         if (item) showDetailModal(item);
       });
     });
@@ -537,14 +554,16 @@
           renderLists();
         });
       });
+      var view = ++MD.view;
       apiGet('TentacleDiscover/ListMissing?list_id=' + encodeURIComponent(MD.missingActive) + '&type=' + typeParam + '&userId=' + window.ApiClient.getCurrentUserId())
         .then(function (data) {
-          if (gen !== MD.generation) return;
+          if (gen !== MD.generation || view !== MD.view) return;
           MD.missingSection = { id: 'missing', items: (data && data.items) || [], failure: failureMessage(data) };
           var wrap = document.getElementById('mdStreamGrid');
           if (wrap) renderGrid(MD.missingSection, wrap);
         })
         .catch(function () {
+          if (gen !== MD.generation || view !== MD.view) return;
           var wrap = document.getElementById('mdStreamGrid');
           if (wrap) wrap.innerHTML = '<div class="md-loading">Failed to load.</div>';
         });
@@ -552,8 +571,8 @@
 
     if (!MD.missingLists || MD.missingListType !== typeParam) {
       apiGet('TentacleDiscover/Lists?type=' + typeParam + '&userId=' + window.ApiClient.getCurrentUserId())
-        .then(function (data) { MD.missingLists = (data && data.lists) || []; MD.missingListType = typeParam; if (gen === MD.generation) paint(); })
-        .catch(function () { MD.missingLists = []; MD.missingListType = typeParam; if (gen === MD.generation) paint(); });
+        .then(function (data) { MD.missingLists = (data && data.lists) || []; MD.missingListType = typeParam; if (gen === MD.generation && MD.activeSection === 'missing') paint(); })
+        .catch(function () { MD.missingLists = []; MD.missingListType = typeParam; if (gen === MD.generation && MD.activeSection === 'missing') paint(); });
     } else {
       paint();
     }
@@ -598,14 +617,16 @@
           renderGenres();
         });
       });
+      var view = ++MD.view;
       apiGet('TentacleDiscover/Genre?genre_id=' + MD.genreActive + '&type=' + typeParam + '&mode=' + MD.genreMode + '&userId=' + window.ApiClient.getCurrentUserId())
         .then(function (data) {
-          if (gen !== MD.generation) return;
+          if (gen !== MD.generation || view !== MD.view) return;
           MD.genreSection = { id: 'genres', items: (data && data.items) || [], failure: failureMessage(data) };
           var wrap = document.getElementById('mdStreamGrid');
           if (wrap) renderGrid(MD.genreSection, wrap);
         })
         .catch(function () {
+          if (gen !== MD.generation || view !== MD.view) return;
           var wrap = document.getElementById('mdStreamGrid');
           if (wrap) wrap.innerHTML = '<div class="md-loading">Failed to load.</div>';
         });
@@ -613,38 +634,28 @@
 
     if (!MD.genreList || MD.genreListType !== typeParam) {
       apiGet('TentacleDiscover/Genres?type=' + typeParam + '&userId=' + window.ApiClient.getCurrentUserId())
-        .then(function (data) { MD.genreList = (data && data.genres) || []; MD.genreListType = typeParam; if (gen === MD.generation) paint(); })
-        .catch(function () { MD.genreList = []; MD.genreListType = typeParam; if (gen === MD.generation) paint(); });
+        .then(function (data) { MD.genreList = (data && data.genres) || []; MD.genreListType = typeParam; if (gen === MD.generation && MD.activeSection === 'genres') paint(); })
+        .catch(function () { MD.genreList = []; MD.genreListType = typeParam; if (gen === MD.generation && MD.activeSection === 'genres') paint(); });
     } else {
       paint();
     }
   }
 
-  function findItem(tmdbId, tvdbId) {
-    if (MD.missingSection) {
-      var mitems = MD.missingSection.items || [];
-      for (var q = 0; q < mitems.length; q++) {
-        if ((mitems[q].tmdb_id || 0) === tmdbId || (tvdbId && (mitems[q].tvdb_id || 0) === tvdbId)) return mitems[q];
-      }
-    }
-    if (MD.genreSection) {
-      var gitems = MD.genreSection.items || [];
-      for (var j = 0; j < gitems.length; j++) {
-        if ((gitems[j].tmdb_id || 0) === tmdbId || (tvdbId && (gitems[j].tvdb_id || 0) === tvdbId)) return gitems[j];
-      }
-    }
-    if (MD.streamingSection) {
-      var sitems = MD.streamingSection.items || [];
-      for (var k = 0; k < sitems.length; k++) {
-        if ((sitems[k].tmdb_id || 0) === tmdbId || (tvdbId && (sitems[k].tvdb_id || 0) === tvdbId)) return sitems[k];
-      }
-    }
-    if (!MD.sections) return null;
-    for (var i = 0; i < MD.sections.length; i++) {
-      var items = MD.sections[i].items;
-      for (var j = 0; j < items.length; j++) {
-        if (tmdbId && items[j].tmdb_id === tmdbId) return items[j];
-        if (tvdbId && items[j].tvdb_id === tvdbId) return items[j];
+  function findItem(tmdbId, tvdbId, mediaType) {
+    // The grid on screen first: an older From My Lists / Genres / Streaming
+    // answer stays in memory, and a movie and a show can share a TMDB number.
+    var byTab = { missing: MD.missingSection, genres: MD.genreSection, streaming: MD.streamingSection };
+    var pools = [];
+    var current = byTab[MD.activeSection] ||
+      (MD.sections && MD.sections.find(function (s) { return s.id === MD.activeSection; }));
+    if (current) pools.push(current.items || []);
+    [MD.missingSection, MD.genreSection, MD.streamingSection].forEach(function (sec) { if (sec) pools.push(sec.items || []); });
+    (MD.sections || []).forEach(function (sec) { pools.push(sec.items || []); });
+    for (var p = 0; p < pools.length; p++) {
+      for (var i = 0; i < pools[p].length; i++) {
+        var it = pools[p][i];
+        if (mediaType && (it.media_type || 'movie') !== mediaType) continue;
+        if ((tmdbId && (it.tmdb_id || 0) === tmdbId) || (tvdbId && (it.tvdb_id || 0) === tvdbId)) return it;
       }
     }
     return null;
@@ -1105,8 +1116,15 @@
       stopBtn.addEventListener('click', function () {
         var c = chosen();
         var body = arrTitleBody(item);
-        // All ticked = every missing episode (the list shows at most 50).
-        if (c && c.length < (item.missing_labels || []).length) body.episodes = c;
+        // Some unticked: just those. All ticked: the whole card (below).
+        if (c && c.length < (item.missing_labels || []).length) {
+          body.episodes = c;
+        } else if ((item.missing_labels || []).length) {
+          // The whole card: its labels plus its count (labels are capped at
+          // 50). The server stops what the card counted, never every episode.
+          body.episodes = item.missing_labels;
+          body.episode_count = item.missing_episodes || item.missing_labels.length;
+        }
         stopBtn.disabled = true;
         if (searchBtn) searchBtn.disabled = true;
         say('Telling Sonarr\u2026', true);
@@ -1799,14 +1817,42 @@
     }
     morphChildren(from, to);
   }
+  // Cards carry data-morph-key: a card whose title moved (one arrived above it,
+  // or one above it left) is moved, not rewritten — patching by position gave
+  // every card below a new poster src, and each of those flashed.
+  function morphKey(n) { return n.nodeType === 1 ? n.getAttribute('data-morph-key') : null; }
+  function actKey() {
+    return Array.prototype.map.call(arguments, function (x) {
+      return String(x == null ? '' : x).replace(/[^A-Za-z0-9_-]/g, '');
+    }).join(':');
+  }
   function morphChildren(from, to) {
-    var fc = Array.prototype.slice.call(from.childNodes);
+    var keyed = {};
+    Array.prototype.forEach.call(from.childNodes, function (n) {
+      var k = morphKey(n);
+      if (k && !keyed.hasOwnProperty(k)) keyed[k] = n;
+    });
     var tc = Array.prototype.slice.call(to.childNodes);
+    var wanted = {};
+    tc.forEach(function (n) { var k = morphKey(n); if (k) wanted[k] = 1; });
     for (var i = 0; i < tc.length; i++) {
-      if (i < fc.length) morphNode(fc[i], tc[i]);
-      else from.appendChild(tc[i]);
+      var n = tc[i], cur = from.childNodes[i] || null, k = morphKey(n);
+      // A card that is gone: drop it here rather than moving every card after it.
+      while (cur && morphKey(cur) && !wanted.hasOwnProperty(morphKey(cur))) {
+        from.removeChild(cur); cur = from.childNodes[i] || null;
+      }
+      var match = k && keyed.hasOwnProperty(k) ? keyed[k] : null;
+      if (match) {
+        delete keyed[k];
+        if (match !== cur) from.insertBefore(match, cur);
+        morphNode(match, n);
+      } else if (!k && cur && !morphKey(cur)) {
+        morphNode(cur, n);
+      } else {
+        from.insertBefore(n, cur);
+      }
     }
-    for (var j = tc.length; j < fc.length; j++) from.removeChild(fc[j]);
+    while (from.childNodes.length > tc.length) from.removeChild(from.childNodes[tc.length]);
   }
   function morphInto(el, html) {
     var tpl = document.createElement('div');
@@ -1935,7 +1981,7 @@
           var sizeLabel = dl.size_remaining ? esc(dl.size_remaining) + ' left' : '';
           var qualityLabel = dl.quality ? esc(dl.quality) : '';
 
-          return '<div class="md-act-card md-act-status-' + statusClass + '">' +
+          return '<div class="md-act-card md-act-status-' + statusClass + '" data-morph-key="' + actKey('dl', dl.source, dl.queue_id) + '">' +
             '<div class="md-act-poster">' + poster + '</div>' +
             '<div class="md-act-info">' +
               '<div class="md-act-card-title">' + esc(dl.title) + epLabel + '</div>' +
@@ -1967,7 +2013,7 @@
           var poster = actPoster(item.poster_path, 'md-act-upcoming-ph');
           var waited = waitedFor(item.waiting_since);
           var epLabel = item.episode ? '<div class="md-act-upcoming-type">' + esc(item.episode) + '</div>' : '';
-          return '<div class="md-act-upcoming-card" data-searching-idx="' + idx + '" style="cursor:pointer">' +
+          return '<div class="md-act-upcoming-card" data-searching-idx="' + idx + '" data-morph-key="' + actKey('s', item.media_type, item.tmdb_id, item.tvdb_id) + '" style="cursor:pointer">' +
             '<div class="md-act-upcoming-poster">' + poster +
               '<div class="md-act-countdown-badge md-act-cd-searching">' + (waited ? 'Searching \u00b7 ' + esc(waited) : 'Searching') + '</div>' +
             '</div>' +
@@ -1997,7 +2043,7 @@
           var hrs = item.hours_remaining;
           var chip = (hrs != null) ? '<div class="md-act-countdown-badge md-act-cd-ready">' + hrs + 'h</div>' : '';
           var epLabel = item.episode ? '<div class="md-act-upcoming-type">' + esc(item.episode) + '</div>' : '';
-          return '<div class="md-act-upcoming-card" data-recent-idx="' + idx + '" style="cursor:pointer">' +
+          return '<div class="md-act-upcoming-card" data-recent-idx="' + idx + '" data-morph-key="' + actKey('r', item.media_type, item.tmdb_id, item.episode) + '" style="cursor:pointer">' +
             '<div class="md-act-upcoming-poster">' + poster + chip + '</div>' +
             '<div class="md-act-upcoming-info">' +
               '<div class="md-act-upcoming-title">' + esc(item.title) + '</div>' +
@@ -2019,7 +2065,7 @@
         '</div>' +
         '<div class="md-act-upcoming-grid">' +
         coming.map(function (item) {
-          return '<div class="md-act-upcoming-card">' +
+          return '<div class="md-act-upcoming-card" data-morph-key="' + actKey('c', item.tmdb_id || item.tvdb_id, item.episode) + '">' +
             '<div class="md-act-upcoming-poster">' + actPoster(item.poster_path, 'md-act-upcoming-ph') +
               '<div class="md-act-countdown-badge md-act-cd-week">' + esc(airDay(item.air_date_utc)) + '</div>' +
             '</div>' +
@@ -2055,7 +2101,7 @@
             else { countdown = diff + ' days'; countdownClass = 'md-act-cd-later'; }
           }
           var releaseLabel = item.release_type ? '<div class="md-act-upcoming-type">' + esc(item.release_type) + '</div>' : '';
-          return '<div class="md-act-upcoming-card" data-upcoming-idx="' + idx + '" style="cursor:pointer">' +
+          return '<div class="md-act-upcoming-card" data-upcoming-idx="' + idx + '" data-morph-key="' + actKey('u', item.media_type, item.tmdb_id || item.tvdb_id) + '" style="cursor:pointer">' +
             '<div class="md-act-upcoming-poster">' + poster +
               (countdown ? '<div class="md-act-countdown-badge ' + countdownClass + '">' + countdown + '</div>' : '') +
             '</div>' +
@@ -2207,7 +2253,14 @@
         stopActivityPolling();
         return;
       }
+      // One poll at a time: behind a slow backend every 3 s tick used to add
+      // another request on top of the ones still outstanding.
+      if (ACT.pollSince && pollClock() - ACT.pollSince < POLL_STALE_MS) return;
+      var tok = ++ACT.pollToken;
+      ACT.pollSince = pollClock();
       apiGet('TentacleDiscover/Activity?userId=' + window.ApiClient.getCurrentUserId()).then(function (data) {
+        if (tok !== ACT.pollToken) return;   // given up on; a newer poll owns the page
+        ACT.pollSince = 0;
         MD.activityData = data;
         var count = activityCount(data);
         window.dispatchEvent(new CustomEvent('tentacle-activity-count', { detail: count }));
@@ -2216,7 +2269,7 @@
         if (ACT.active) {
           renderActivityContent(data);
         }
-      }).catch(function () {});
+      }).catch(function () { if (tok === ACT.pollToken) ACT.pollSince = 0; });
     }, 3000);
   }
 
@@ -2225,6 +2278,8 @@
       clearInterval(ACT.timer);
       ACT.timer = null;
     }
+    ACT.pollSince = 0;
+    ACT.pollToken++;   // an answer still on its way belongs to the stopped poller
   }
 
   // Background badge polling — runs on home page even when overlays are closed

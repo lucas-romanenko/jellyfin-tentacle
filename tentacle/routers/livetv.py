@@ -35,6 +35,7 @@ from services.youtube import livetv as youtube_livetv
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from models.database import (
@@ -127,10 +128,170 @@ _BACKOFF_CAP = 5.0
 _REFUSAL_STATUS = {429, 509}
 _REFUSAL_BACKOFF_CAP = 15.0
 
+# Stand-ins a provider (or a re-streamer in front of it, e.g. tuliprox) serves
+# when it has nothing for a channel: 200 OK and a few seconds of valid MPEG-TS,
+# usually black. Proxied as the channel, a scheduled recording "succeeds" with
+# ten minutes of black that Jellyfin never retries, or dies on its own buffer
+# with an error that says nothing about the cause (#140). Recognised by file
+# name, never fetched, and refused with a 503 while the channel is opening, so
+# Jellyfin fails the timer honestly and tries again a minute later.
+_PLACEHOLDER_STEMS = {
+    "black",
+    "channel_unavailable",
+    "user_connections_exhausted",
+    "provider_connections_exhausted",
+    "user_account_expired",
+}
+# Placeholder refusals since start, per channel: {"count", "segment", "at"}.
+_placeholders: "dict[int, dict]" = {}
+# When each channel last got an Activity line for one (at most once an hour).
+_placeholder_activity_at: "dict[int, float]" = {}
+_PLACEHOLDER_ACTIVITY_EVERY = 3600.0
+
+
+def _placeholder_name(url: str) -> "str | None":
+    """The file name, when `url` is a known placeholder segment."""
+    from urllib.parse import urlparse
+    try:
+        base = urlparse(url).path.rsplit("/", 1)[-1].lower()
+    except ValueError:
+        return None
+    stem, dot, ext = base.rpartition(".")
+    return base if dot and ext == "ts" and stem in _PLACEHOLDER_STEMS else None
+
+
+class _ProviderPlaceholder(Exception):
+    """The provider answered with a placeholder instead of the channel."""
+
+    def __init__(self, segment: str):
+        super().__init__(f"the provider served a placeholder ({segment}) instead of the channel")
+        self.segment = segment
+
+
+def _record_activity_for_placeholder(channel_id: int, segment: str) -> None:
+    db = SessionLocal()
+    try:
+        ch = db.query(LiveChannel).filter(LiveChannel.id == channel_id).first()
+        name = ch.guide_name if ch else f"channel {channel_id}"
+        log_activity(db, "livetv_placeholder",
+                     f"{name}: the provider served a placeholder ({segment}) instead of the "
+                     f"channel, so it is unavailable right now. Recordings are refused and "
+                     f"retried rather than saved as black.")
+    except Exception as e:
+        logger.debug(f"[LiveTV] Could not log the placeholder for channel {channel_id}: {e}")
+    finally:
+        db.close()
+
+
+async def _note_placeholder(channel_id: int, segment: str) -> None:
+    """Count, log and (at most hourly) put a placeholder in Activity."""
+    loop = asyncio.get_running_loop()
+    entry = _placeholders.setdefault(channel_id, {"count": 0})
+    entry.update(count=entry["count"] + 1, segment=segment,
+                 at=datetime.utcnow().isoformat() + "Z")
+    logger.warning(f"[LiveTV] Channel {channel_id}: the provider served a placeholder ({segment}) "
+                   f"— channel unavailable")
+    last = _placeholder_activity_at.get(channel_id)
+    if last is None or loop.time() - last >= _PLACEHOLDER_ACTIVITY_EVERY:
+        _placeholder_activity_at[channel_id] = loop.time()
+        await asyncio.to_thread(_record_activity_for_placeholder, channel_id, segment)
+
+
+# Jellyfin retries a failed recording open 60 s later (at most 10 times, and
+# only until the timer ends).
+TUNER_RETRY_AFTER_SECONDS = 60
+
+
+class _TunerRefusal(HTTPException):
+    """A refused tuner open: no free slot, a recording needed the slot,
+    recording protection, or a placeholder. Answered as a 503 with NO body by
+    tuner_refusal_handler (registered on the app in main.py).
+
+    Jellyfin's tuner (SharedHttpStream.Open) never looks at the status: it
+    copies whatever body arrives. FastAPI's JSON error body "opened" as a
+    stream, was probed for 3 s, and left a recording .nfo and show folder
+    behind on every retry. An empty body fails at once ("Zero bytes copied")
+    and Jellyfin retries (#140). The reason goes in X-Tentacle-Reason."""
+
+    def __init__(self, detail: str):
+        super().__init__(503, detail)
+
+
+async def tuner_refusal_handler(request, exc: "_TunerRefusal") -> Response:
+    reason = str(exc.detail or "unavailable").encode("ascii", "replace").decode("ascii")[:300]
+    return Response(status_code=503, content=b"", headers={
+        "X-Tentacle-Reason": reason,
+        "Retry-After": str(TUNER_RETRY_AFTER_SECONDS),
+        "Cache-Control": "no-cache, no-store",
+        "Connection": "close",
+    })
+
+
+class _PlaceholderRefusal(_TunerRefusal):
+    """The 503 a channel open answers when the provider served a placeholder."""
+
+
+async def _refuse_placeholder(channel_id: int, segment: str):
+    await _note_placeholder(channel_id, segment)
+    raise _PlaceholderRefusal(f"Channel unavailable: the provider served a placeholder ({segment})")
+
+
+def _media_segments(playlist_text: str, base_url: str) -> list:
+    """Segment URLs of an HLS media playlist, resolved against its URL."""
+    return [urljoin(base_url, line.strip()) for line in playlist_text.splitlines()
+            if line.strip() and not line.strip().startswith("#")]
+
+
 # What an upstream pull is for. Lower number = more important. A recording
 # outranks a viewer (tvheadend: 300 vs 100): a viewer who is cut off changes
 # channel; a recording that is cut off is gone for good.
 _LEASE_PRIORITY = {"recording": 0, "live": 10, "vod": 20}
+
+# Recording protection (setting `livetv_protect_recordings`, default off).
+#
+# Some accounts carry ONE heavy connection well and punish a second one on
+# the stream that is already open, whatever max_connections says. Measured
+# on one household's Xtream account (2026-09-23/24): one continuous-TS
+# channel alone dropped once in 30 min; two TS recordings at once were
+# closed by the provider every ~8 s, in turn, for 1 h 45 min; a TV episode
+# played next to a TS recording closed the recording every ~20 s for as
+# long as it played; and every new connection (a film, a card preview, the
+# nightly sync) put a running HLS recording into a 509 storm of 30 s to
+# 3 min. A connection limit cannot express that -- "2" still lets a film
+# open next to a recording. With protection on, while a recording is being
+# pulled:
+#   * a NEW upstream for a viewer ("live") or a film ("vod") is refused
+#     with 503 -- except a viewer of a channel that is already being pulled,
+#     who attaches to that pull (_SharedUpstream) and costs the provider
+#     nothing;
+#   * a recording always opens, and when it does, every running viewer or
+#     film upstream is stopped first (cleanly: the viewer's stream ends, the
+#     film's connection closes) -- on that account a film left running cuts
+#     the recording every ~20 s until it ends;
+#   * Tentacle's own background provider work waits (services.provider_activity).
+# It errs towards the recording: when Jellyfin cannot say right now what is
+# being recorded, a live open is let through rather than refused (it may
+# BE the next recording) and only films are stopped for a recording.
+def _protect_recordings(db) -> bool:
+    return (get_setting(db, "livetv_protect_recordings", "") or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+class RecordingProtected(Exception):
+    """acquire_lease refused a viewer or film because a recording runs and
+    recording protection is on."""
+
+    def __init__(self, kind: str, owner: "str | None"):
+        super().__init__(f"{kind} '{owner}' refused: a recording is running and recording protection is on")
+        self.kind = kind
+        self.owner = owner
+
+
+# Refusals are logged at most this often (a player retrying every few
+# seconds must not flood the log); the rest are counted.
+_PROTECT_LOG_EVERY = 60.0
+PROTECTED_REFUSAL_DETAIL = ("A recording is running and recording protection is on "
+                            "(livetv_protect_recordings): no other provider connection is opened "
+                            "until it ends. Channels already being recorded can still be watched.")
 
 
 class _Lease:
@@ -142,7 +303,7 @@ class _Lease:
         self.kind = kind
         self.priority = _LEASE_PRIORITY.get(kind, _LEASE_PRIORITY["live"])
         self.owner = owner
-        self.stream_key = stream_key   # the channel's GuideNumber, for upgrade_recordings
+        self.stream_key = stream_key   # the channel's GuideNumber, for sync_recordings
         self.started = asyncio.get_running_loop().time()
         self.preempted = False
         # Set by the owner once its pump exists: called (may be async) when
@@ -168,11 +329,136 @@ class _StreamSlots:
         self.preempted_since_start = 0
         self.last_refused: "dict | None" = None
         self._next_id = 1
+        # Replaced (not cleared) each time it fires, so a waiter that took a
+        # reference before checking can never miss a wake-up.
         self._freed: "asyncio.Event | None" = None
+        # Pulls waiting for a slot: id -> (priority, arrival). When a slot
+        # frees, the most important, earliest waiter gets it -- a recording
+        # that is waiting is never beaten to a freed slot by a viewer that
+        # happened to start waiting first.
+        self._waiting: "dict[int, tuple]" = {}
+        self._next_waiter = 1
+        # Recording protection (see _protect_recordings). The setting is
+        # read by whoever opens a pull and by the recording refresher, and
+        # kept here for the synchronous paths (sync_recordings).
+        self.protect = False
+        self.protected_refusals = 0
+        self.protected_preemptions = 0
+        self.last_protected_refusal: "dict | None" = None
+        self._protect_logged_at = -1e9
+        self._protect_unlogged = 0
+        self._enforcing: "set[asyncio.Task]" = set()
 
     @property
     def active(self) -> int:
         return len(self.leases)
+
+    def recording_active(self) -> bool:
+        """A recording is being pulled right now. Safe from worker threads."""
+        return any(l.kind == "recording" and not l.preempted for l in list(self.leases.values()))
+
+    def set_protect(self, on: bool) -> None:
+        """Apply the current setting. Turned on while a recording runs, it
+        clears the way for it at once, not at the next open."""
+        on = bool(on)
+        was, self.protect = self.protect, on
+        if on and not was:
+            self._enforce_soon()
+
+    def _refuse_protected(self, kind: str, owner: "str | None"):
+        self.protected_refusals += 1
+        self.last_protected_refusal = {"kind": kind, "owner": owner,
+                                       "at": datetime.utcnow().isoformat() + "Z"}
+        now = asyncio.get_running_loop().time()
+        if now - self._protect_logged_at >= _PROTECT_LOG_EVERY:
+            more = f" ({self._protect_unlogged} more refused since the last message)" if self._protect_unlogged else ""
+            logger.warning(f"[LiveTV] Recording protection: refused {kind} '{owner}' — a recording is "
+                           f"running, so no other provider connection is opened until it ends{more}")
+            self._protect_logged_at, self._protect_unlogged = now, 0
+        else:
+            self._protect_unlogged += 1
+        raise RecordingProtected(kind, owner)
+
+    def _protect_victims(self, films_only: bool, live_before: "float | None" = None) -> "list[_Lease]":
+        """Take every running viewer and film pull off the books (recording
+        protection). `films_only` when it is not certain which live pulls are
+        recordings: a film never is. `live_before`: only live pulls that were
+        already running then -- a lookup answer issued at that time cannot
+        know about a pull (maybe a recording) that opened after it."""
+        victims = [l for l in self.leases.values()
+                   if l.kind != "recording" and not l.preempted
+                   and (l.kind == "vod" or (not films_only and (live_before is None or l.started < live_before)))]
+        for victim in victims:
+            victim.preempted = True
+            self.leases.pop(victim.id, None)
+        self.protected_preemptions += len(victims)
+        self.preempted_since_start += len(victims)
+        return victims
+
+    async def _clear_and_grant(self, kind: str, owner: "str | None", stream_key: "str | None",
+                               films_only: bool) -> "_Lease | None":
+        """A recording under protection: stop every viewer and film pull and
+        take a slot in the same step, before anything is awaited -- so a
+        waiter woken while the victims stop finds a recording running (and
+        is refused), never a free slot. None when there was nothing to stop
+        (the ordinary path decides then). Every victim freed a slot, so the
+        count never goes over the limit."""
+        victims = self._protect_victims(films_only, _recording_cache.get("answer_issued_at"))
+        if not victims:
+            return None
+        lease = self._grant(kind, owner, stream_key)
+        try:
+            await self._stop_victims(victims, owner)
+        except asyncio.CancelledError:
+            self.leases.pop(lease.id, None)
+            self._wake()
+            raise
+        self._wake()
+        return lease
+
+    async def _clear_for_recording(self, owner: "str | None", films_only: bool = False,
+                                   live_before: "float | None" = None) -> int:
+        """Stop every running viewer and film pull because a recording is
+        running (it was recognised after it opened, a current answer came in,
+        or protection was just turned on)."""
+        victims = self._protect_victims(films_only, live_before)
+        await self._stop_victims(victims, owner)
+        return len(victims)
+
+    async def _stop_victims(self, victims, owner: "str | None") -> None:
+        for victim in victims:
+            logger.warning(f"[LiveTV] Recording protection: {victim.kind} '{victim.owner}' is stopped — "
+                           f"recording '{owner}' has the provider connection to itself")
+            if victim.on_preempt is not None:
+                try:
+                    result = victim.on_preempt()
+                    if asyncio.iscoroutine(result):
+                        await result
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.error(f"[LiveTV] Stopping {victim.kind} '{victim.owner}' failed: {e}")
+
+    def _enforce_soon(self, live_before: "float | None" = None) -> None:
+        """From a synchronous path (a recording was just recognised, or the
+        setting was just turned on): clear the way in a task of its own."""
+        if not (self.protect and self.recording_active()):
+            return
+        if not any(l.kind != "recording" and not l.preempted for l in self.leases.values()):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        rec = next((l.owner for l in self.leases.values() if l.kind == "recording" and not l.preempted), None)
+        # Which live pulls are recordings is only as good as the last answer
+        # from Jellyfin: if that is not current, stop films only.
+        if live_before is None:
+            live_before = _recording_cache.get("answer_issued_at")
+        task = loop.create_task(self._clear_for_recording(rec, films_only=not _recording_answer_is_current(),
+                                                          live_before=live_before))
+        self._enforcing.add(task)
+        task.add_done_callback(self._enforcing.discard)
 
     def _grant(self, kind: str, owner: "str | None", stream_key: "str | None" = None) -> _Lease:
         lease = _Lease(self._next_id, kind, owner, stream_key)
@@ -180,7 +466,7 @@ class _StreamSlots:
         self.leases[lease.id] = lease
         return lease
 
-    def sync_recordings(self, stream_keys) -> int:
+    def sync_recordings(self, stream_keys, issued_at: "float | None" = None) -> int:
         """Bring running pulls into line with which channels are recorded NOW.
 
         Promote: Jellyfin marks a timer InProgress only AFTER its tuner
@@ -207,7 +493,20 @@ class _StreamSlots:
                 lease.kind, lease.priority = "live", _LEASE_PRIORITY["live"]
                 n += 1
                 logger.info(f"[LiveTV] '{lease.owner}' is no longer being recorded — back to viewer priority")
+        if n:
+            self._wake()        # a demoted pull may now be a waiting recording's to take
+        if self.protect:
+            # Every current answer, not only one that changed a rank: a
+            # viewer let through while Jellyfin could not answer, or left
+            # running because protection was switched on from a stale answer,
+            # is stopped as soon as Jellyfin says it is not a recording.
+            self._enforce_soon(live_before=issued_at)
         return n
+
+    def _wake(self):
+        if self._freed is not None:
+            self._freed.set()
+            self._freed = asyncio.Event()
 
     def _victim_for(self, kind: str) -> "_Lease | None":
         """The least important running pull this kind may take a slot from:
@@ -218,9 +517,14 @@ class _StreamSlots:
             return None
         return max(candidates, key=lambda l: (l.priority, l.started))
 
-    async def _preempt(self, victim: _Lease, kind: str, owner: "str | None"):
+    async def _take_from(self, victim: _Lease, kind: str, owner: "str | None",
+                         stream_key: "str | None") -> _Lease:
+        """Move the victim's slot to the newcomer in one step -- the slot is
+        never free in between, so nobody woken meanwhile can take it and put
+        the count over the limit -- then stop the victim."""
         victim.preempted = True
-        self.leases.pop(victim.id, None)   # the slot is free from this moment
+        self.leases.pop(victim.id, None)
+        lease = self._grant(kind, owner, stream_key)
         self.preempted_since_start += 1
         logger.warning(f"[LiveTV] At capacity: {kind} '{owner}' takes the slot of {victim.kind} "
                        f"'{victim.owner}', which is stopped")
@@ -229,32 +533,80 @@ class _StreamSlots:
                 result = victim.on_preempt()
                 if asyncio.iscoroutine(result):
                     await result
+            except asyncio.CancelledError:
+                # The newcomer went away while the victim was being stopped:
+                # nobody owns this lease, give the slot back.
+                self.leases.pop(lease.id, None)
+                self._wake()
+                raise
             except Exception as e:
                 logger.error(f"[LiveTV] Stopping pre-empted {victim.kind} '{victim.owner}' failed: {e}")
+        return lease
+
+    def _first_in_line(self, waiter_id: int) -> bool:
+        best = min(self._waiting.items(), key=lambda kv: kv[1])[0] if self._waiting else None
+        return best == waiter_id
 
     async def acquire_lease(self, limit: int, wait: float, kind: str = "live",
-                            owner: "str | None" = None, stream_key: "str | None" = None) -> "_Lease | None":
-        if limit <= 0 or len(self.leases) < limit:
+                            owner: "str | None" = None, stream_key: "str | None" = None,
+                            certain: bool = True) -> "_Lease | None":
+        """A slot for one upstream pull, or None when refused at capacity.
+
+        With recording protection on (self.protect): a recording first stops
+        every viewer and film pull; a viewer or film is refused with
+        RecordingProtected while a recording runs. `certain` is False when
+        the caller could not learn from Jellyfin just now what is being
+        recorded -- then a live pull is not refused (it may be the next
+        recording) and a recording stops films only."""
+        prio = _LEASE_PRIORITY.get(kind, _LEASE_PRIORITY["live"])
+        if self.protect:
+            if kind == "recording":
+                lease = await self._clear_and_grant(kind, owner, stream_key, films_only=not certain)
+                if lease is not None:
+                    return lease
+            elif self.recording_active() and (certain or kind == "vod"):
+                self._refuse_protected(kind, owner)
+        if limit <= 0:
+            return self._grant(kind, owner, stream_key)
+        # A free slot goes to the newcomer only if nobody as important is
+        # already waiting for one.
+        if len(self.leases) < limit and not any(p <= prio for p, _ in self._waiting.values()):
             return self._grant(kind, owner, stream_key)
         victim = self._victim_for(kind)
         if victim is not None:
-            await self._preempt(victim, kind, owner)
-            return self._grant(kind, owner, stream_key)
+            return await self._take_from(victim, kind, owner, stream_key)
         if self._freed is None:
             self._freed = asyncio.Event()
         loop = asyncio.get_running_loop()
         deadline = loop.time() + wait
-        while True:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                return None
-            self._freed.clear()
-            try:
-                await asyncio.wait_for(self._freed.wait(), timeout=remaining)
-            except asyncio.TimeoutError:
-                return None
-            if len(self.leases) < limit:
-                return self._grant(kind, owner, stream_key)
+        me = self._next_waiter
+        self._next_waiter += 1
+        self._waiting[me] = (prio, me)
+        try:
+            while True:
+                freed = self._freed          # before checking: a set after this is not missed
+                if self.protect and kind != "recording" and self.recording_active() \
+                        and (certain or kind == "vod"):
+                    self._refuse_protected(kind, owner)     # a recording started while we waited
+                if len(self.leases) < limit and self._first_in_line(me):
+                    return self._grant(kind, owner, stream_key)
+                # Something may have become takeable while we waited (a
+                # recording demoted back to a viewer when its timer ended).
+                victim = self._victim_for(kind)
+                if victim is not None and self._first_in_line(me):
+                    return await self._take_from(victim, kind, owner, stream_key)
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    return None
+                try:
+                    await asyncio.wait_for(freed.wait(), timeout=remaining)
+                except asyncio.TimeoutError:
+                    return None
+        finally:
+            self._waiting.pop(me, None)
+            # The queue changed: whoever is first in line now re-checks.
+            if self._waiting:
+                self._wake()
 
     async def acquire(self, limit: int, wait: float) -> bool:
         """The original shape: an anonymous viewer-priority slot."""
@@ -263,8 +615,7 @@ class _StreamSlots:
     def release_lease(self, lease: "_Lease | None"):
         if lease is not None:
             self.leases.pop(lease.id, None)
-        if self._freed is not None:
-            self._freed.set()
+        self._wake()
 
     def release(self):
         """The original shape: frees the most recent anonymous slot."""
@@ -376,15 +727,29 @@ _RECORDING_LOOKUP_TTL = 5.0
 # up a stream open (Jellyfin's own tuner timeout is what it would hit); past
 # this the lookup finishes in the background and the last answer is used.
 _RECORDING_LOOKUP_WAIT = 3.0
-_recording_cache = {"at": -1e9, "sids": set(), "pending": None}
+_recording_cache = {"at": -1e9, "sids": set(), "pending": None, "failures": 0, "retry_at": -1e9}
 _reserved_channels: "dict[int, float]" = {}   # channel id -> loop time the reservation ends
+
+
+def _jellyfin_timers(url: str, key: str):
+    """GET /LiveTv/Timers with a short timeout of its own (a tuner open may
+    be waiting on the answer) and without JellyfinService's per-call ERROR
+    log for a bad key -- this runs every few seconds while live TV plays;
+    failures are reported once per streak by _recording_lookup_done."""
+    import requests
+    with requests.get(f"{url.rstrip('/')}/LiveTv/Timers", headers={"X-Emby-Token": key},
+                      timeout=(3.0, 5.0)) as r:
+        if r.status_code != 200:
+            raise RuntimeError(f"Jellyfin answered HTTP {r.status_code} for /LiveTv/Timers"
+                               + (" (API key invalid?)" if r.status_code == 401 else ""))
+        return r.json()
 
 
 def _recording_stream_ids_from_jellyfin(url: str, key: str) -> "set[str] | None":
     """GuideNumbers of the channels Jellyfin is recording, or None if it
-    could not be asked. Blocking; run it off the event loop."""
-    from services.jellyfin import JellyfinService
-    data = JellyfinService(url, key, "")._get("/LiveTv/Timers")
+    gave no usable answer. Blocking; run it off the event loop. Raises when
+    Jellyfin cannot be asked at all."""
+    data = _jellyfin_timers(url, key)
     if not isinstance(data, dict):
         return None
     out = set()
@@ -411,40 +776,83 @@ _RECORDING_IMMINENT_SECONDS = 120.0
 
 def _timer_is_imminent(timer: dict, now: "datetime") -> bool:
     """A New timer whose recording (start minus pre-padding) begins within
-    _RECORDING_IMMINENT_SECONDS, or should already have begun."""
-    raw = (timer.get("StartDate") or "")[:19]
-    try:
-        start = datetime.strptime(raw, "%Y-%m-%dT%H:%M:%S")
-    except ValueError:
+    _RECORDING_IMMINENT_SECONDS, or should already have begun -- and has
+    not already ended (a timer Jellyfin never started stays "New" for ever;
+    it must not keep its channel ranked as a recording)."""
+    def _parse(value):
+        try:
+            return datetime.strptime((value or "")[:19], "%Y-%m-%dT%H:%M:%S")
+        except ValueError:
+            return None
+
+    def _seconds(value):
+        try:
+            return float(value or 0)
+        except (TypeError, ValueError):
+            return 0.0
+    start = _parse(timer.get("StartDate"))
+    if start is None:
         return False
-    try:
-        pre = float(timer.get("PrePaddingSeconds") or 0)
-    except (TypeError, ValueError):
-        pre = 0.0
-    rec_start = start - timedelta(seconds=pre)
+    rec_start = start - timedelta(seconds=_seconds(timer.get("PrePaddingSeconds")))
+    end = _parse(timer.get("EndDate"))
+    if end is not None and end + timedelta(seconds=_seconds(timer.get("PostPaddingSeconds"))) <= now:
+        return False
     return (rec_start - now).total_seconds() <= _RECORDING_IMMINENT_SECONDS
 
 
-async def _recording_channel_ids(db, force: bool = False) -> "set[int]":
+async def _recording_channel_ids(db, force: bool = False, background: bool = False,
+                                 fresh_after: "float | None" = None) -> "set[int]":
     """LiveChannel ids being recorded now: reservations plus Jellyfin's
     in-progress timers (cached for _RECORDING_LOOKUP_TTL; `force` asks
     again regardless -- used when a slot is about to be taken from someone,
-    so the victim is chosen on current information)."""
+    so the victim is chosen on current information).
+
+    `fresh_after` (recording protection): the answer must come from a
+    lookup issued at or after that loop time. A lookup already in flight
+    that was issued earlier -- the refresher's, say -- may predate a
+    "record now" timer whose tuner open is asking right now; it is waited
+    for, then a fresh one is issued. If that cannot be had in time the
+    answer is not current (_recording_answer_is_current(since=...)) and
+    the caller treats it as uncertain."""
     loop = asyncio.get_running_loop()
     now = loop.time()
+    cache = _recording_cache
+    stale = cache.get("pending")
+    if fresh_after is not None and stale is not None and cache.get("pending_issued", -1e9) < fresh_after:
+        try:
+            await asyncio.wait_for(asyncio.shield(stale), _RECORDING_LOOKUP_WAIT)
+        except Exception:
+            pass
+        if stale.done():
+            _recording_lookup_done(stale)
+        else:
+            # Still no answer: do not wait a second time for the new one;
+            # the caller sees an answer that is not current.
+            sids = cache["sids"]
+            reserved = {c for c, r in _reserved_channels.items() if r["until"] > loop.time()}
+            ids = {row.id for row in db.query(LiveChannel).filter(LiveChannel.stream_id.in_(list(sids))).all()} if sids else set()
+            return reserved | ids
+        now = loop.time()
     for cid in [c for c, r in _reserved_channels.items() if r["until"] <= now]:
         del _reserved_channels[cid]
     reserved = set(_reserved_channels)
-    cache = _recording_cache
-    if (force or now - cache["at"] >= _RECORDING_LOOKUP_TTL) and cache["pending"] is None:
+    # After a failed lookup, routine asks (the TTL path and the background
+    # refresher) wait 5 s doubling to a minute. The at-capacity ask (`force`
+    # from a tuner open) never does: a recording's own tuner open comes from
+    # Jellyfin, so Jellyfin is up at that moment even if it was not a minute
+    # ago -- and a stale "nothing is recording" there would refuse it.
+    backed_off = now < cache.get("retry_at", -1e9) and (background or not force)
+    if (force or now - cache["at"] >= _RECORDING_LOOKUP_TTL) and cache["pending"] is None \
+            and not backed_off:
         url = (get_setting(db, "jellyfin_url", "") or "").strip()
         key = (get_setting(db, "jellyfin_api_key", "") or "").strip()
         if url and key:
+            cache["pending_issued"] = now
             cache["pending"] = asyncio.ensure_future(
                 asyncio.to_thread(_recording_stream_ids_from_jellyfin, url, key))
             cache["pending"].add_done_callback(_recording_lookup_done)
         else:
-            cache["at"], cache["sids"] = now, set()
+            cache["at"], cache["sids"], cache["answer_issued_at"] = now, set(), now
     pending = cache["pending"]
     if pending is not None:
         try:
@@ -463,14 +871,33 @@ async def _recording_channel_ids(db, force: bool = False) -> "set[int]":
     return reserved | ids
 
 
+def _recording_answer_is_current(since: "float | None" = None) -> bool:
+    """The last lookup of what is being recorded succeeded and is recent:
+    nothing pending, no failure streak, within the cache TTL -- and, with
+    `since`, issued at or after that loop time. Recording protection only
+    refuses a live open, or stops a live pull, on such an answer -- a stale
+    "not recording" must never cost a recording."""
+    cache = _recording_cache
+    if cache.get("pending") is not None or cache.get("failures"):
+        return False
+    if since is not None and cache.get("answer_issued_at", -1e9) < since:
+        return False
+    try:
+        now = asyncio.get_running_loop().time()
+    except RuntimeError:
+        return False
+    return now - cache.get("at", -1e9) <= _RECORDING_LOOKUP_TTL
+
+
 _recording_refresher: "asyncio.Task | None" = None
 
 
 async def _refresh_recordings_once() -> None:
-    """One fresh lookup, applied to the running leases (upgrade_recordings)."""
+    """One fresh lookup, applied to the running leases (sync_recordings)."""
     db = SessionLocal()
     try:
-        await _recording_channel_ids(db, force=True)
+        _stream_slots.set_protect(_protect_recordings(db))
+        await _recording_channel_ids(db, force=True, background=True)
     finally:
         db.close()
 
@@ -511,16 +938,31 @@ def _recording_lookup_done(task):
     if cache["pending"] is not task:
         return      # already applied (or superseded by a newer lookup)
     cache["pending"] = None
+    issued = cache.get("pending_issued")
+    failure = None
     try:
         sids = task.result()
+        if sids is None:
+            failure = "no usable answer"
     except Exception as e:
-        logger.debug(f"[LiveTV] Could not ask Jellyfin which channels are recording: {e}")
-        sids = None
-    cache["at"] = asyncio.get_running_loop().time()
+        sids, failure = None, str(e) or type(e).__name__
+    now = asyncio.get_running_loop().time()
+    cache["at"] = now
+    if failure is not None:
+        cache["failures"] = cache.get("failures", 0) + 1
+        cache["retry_at"] = now + min(60.0, _RECORDING_LOOKUP_TTL * 2 ** (cache["failures"] - 1))
+        if cache["failures"] == 1:
+            logger.warning(f"[LiveTV] Could not ask Jellyfin which channels are recording ({failure}); "
+                           f"keeping the last answer and retrying at most once a minute")
+    else:
+        if cache.get("failures"):
+            logger.info("[LiveTV] Jellyfin is answering again about which channels are recording")
+        cache["failures"], cache["retry_at"] = 0, -1e9
     if sids is not None:
         cache["sids"] = set(sids)
+        cache["answer_issued_at"] = issued if issued is not None else now
         reserved_keys = {r["stream_key"] for r in _reserved_channels.values() if r.get("stream_key")}
-        _stream_slots.sync_recordings(cache["sids"] | reserved_keys)
+        _stream_slots.sync_recordings(cache["sids"] | reserved_keys, issued_at=cache["answer_issued_at"])
 
 
 # One upstream pull per channel, fanned out to every client watching it.
@@ -791,8 +1233,16 @@ def _get_sync_status(provider_id: int, default: dict | None = None) -> dict:
 # ─── Pydantic models ────────────────────────────────────────────────────────
 
 
+CUSTOM_NAME_MAX = 64
+EPG_ID_OVERRIDE_MAX = 200
+
+
 class ChannelUpdate(BaseModel):
     enabled: Optional[bool] = None
+    # "" clears it and puts the provider's name back.
+    custom_name: Optional[str] = None
+    # The XMLTV channel id to take the guide from; "" = match automatically.
+    epg_id_override: Optional[str] = None
     channel_number: Optional[int] = None
     epg_channel_id: Optional[str] = None
     sort_order: Optional[int] = None
@@ -861,6 +1311,17 @@ def get_live_provider(db: Session = Depends(get_db)):
     }
 
 
+def live_tv_providers(db: Session) -> list:
+    """Every provider that serves Live TV.
+
+    Selected on `live_tv_enabled` alone. `active` is the VOD sync switch, and
+    save_live_provider() creates its provider with active=False because a Live
+    TV provider must never get a VOD sync, so a filter on `active` matched no
+    provider set up the normal way: the nightly guide refresh never ran (#174).
+    """
+    return db.query(Provider).filter(Provider.live_tv_enabled == True).all()  # noqa: E712
+
+
 @router.post("/api/live/provider", dependencies=_admin)
 def save_live_provider(body: LiveProviderConfig, db: Session = Depends(get_db)):
     """Create or update the live TV provider."""
@@ -923,6 +1384,8 @@ def save_live_provider(body: LiveProviderConfig, db: Session = Depends(get_db)):
 @router.post("/api/live/provider/test", dependencies=_admin)
 def test_live_provider(db: Session = Depends(get_db)):
     """Test connection to the live TV provider."""
+    from services.provider_activity import refuse_while_recording
+    refuse_while_recording(db, "Testing the provider")
     provider = db.query(Provider).filter(Provider.live_tv_enabled == True).first()
     if not provider:
         provider = db.query(Provider).first()
@@ -983,6 +1446,8 @@ def test_live_provider(db: Session = Depends(get_db)):
 @router.post("/api/live/sync/{provider_id}", dependencies=_admin)
 def sync_live_groups(provider_id: int, db: Session = Depends(get_db)):
     """Phase 1: Fetch categories/groups only (fast). No channels downloaded."""
+    from services.provider_activity import refuse_while_recording
+    refuse_while_recording(db, "A channel group sync")
     provider = db.query(Provider).filter(Provider.id == provider_id).first()
     if not provider:
         raise HTTPException(404, "Provider not found")
@@ -1005,6 +1470,8 @@ def sync_live_groups(provider_id: int, db: Session = Depends(get_db)):
 @router.post("/api/live/sync-channels/{provider_id}", dependencies=_admin)
 def sync_live_channels(provider_id: int, db: Session = Depends(get_db)):
     """Phase 2: Fetch channels only for enabled groups. Call after enabling groups."""
+    from services.provider_activity import refuse_while_recording
+    refuse_while_recording(db, "A channel sync")
     provider = db.query(Provider).filter(Provider.id == provider_id).first()
     if not provider:
         raise HTTPException(404, "Provider not found")
@@ -1044,6 +1511,7 @@ def live_capacity(db: Session = Depends(get_db)):
         "last_refused": _stream_slots.last_refused,
         "reconnect_budget_seconds": _reconnect_budget(db),
         "streams": _stream_snapshot(db),
+        **_protection_snapshot(db),
     }
 
 
@@ -1052,7 +1520,7 @@ def _stream_snapshot(db) -> list:
     import time
     now = time.monotonic()
     out = []
-    for channel_id, st in sorted(_stream_status.items()):
+    for channel_id, st in sorted(list(_stream_status.items())):
         ch = db.query(LiveChannel).filter(LiveChannel.id == channel_id).first()
         shared = _shared_streams.get(channel_id)
         lease = _stream_slots.lease_for(f"channel:{channel_id}")
@@ -1079,7 +1547,7 @@ def _stream_snapshot(db) -> list:
                 "client": pb.client,
                 "stream_id": None,
                 "kind": "vod",
-                "state": "streaming" if pb.active_bodies else ("stopped" if pb.stopped.is_set() else "idle"),
+                "state": "stopped" if pb.stopped.is_set() else ("streaming" if pb.active_bodies else "idle"),
                 "for_seconds": round(max(0.0, now - pb.last_used), 1),
                 "open_seconds": round(max(0.0, now - pb.started), 1),
                 "last_error": None,
@@ -1105,8 +1573,42 @@ def live_streams(db: Session = Depends(get_db)):
         "active": _stream_slots.active,
         "preempted_since_start": _stream_slots.preempted_since_start,
         "reconnect_budget_seconds": _reconnect_budget(db),
-        "reserved_channel_ids": sorted(_reserved_channels),
+        "reserved_channel_ids": sorted(list(_reserved_channels)),
+        # Channels the provider answered with a placeholder (black.ts) instead
+        # of the channel since Tentacle started, and how often (#140).
+        "placeholders": [{"channel_id": cid, **info} for cid, info in sorted(_placeholders.items())],
+        **_protection_snapshot(db),
     }
+
+
+def _protection_snapshot(db) -> dict:
+    """Recording protection, for /api/live/streams and /api/live/capacity."""
+    return {
+        "protect_recordings": _protect_recordings(db),
+        "recording_active": _stream_slots.recording_active(),
+        "protected_refusals": _stream_slots.protected_refusals,
+        "protected_preemptions": _stream_slots.protected_preemptions,
+        "last_protected_refusal": _stream_slots.last_protected_refusal,
+    }
+
+
+@router.get("/api/live/epg-coverage", dependencies=_admin)
+def epg_coverage(provider_id: Optional[int] = None, db: Session = Depends(get_db)):
+    """What the last EPG sync matched: how many channels have a guide, by which
+    rule, and which do not and why (no tvg-id, a tvg-id the feed lacks, an
+    ambiguous name). One report per Live TV provider (#141)."""
+    import json
+    out = []
+    for p in live_tv_providers(db):
+        if provider_id and p.id != provider_id:
+            continue
+        raw = get_setting(db, f"livetv_epg_coverage_{p.id}", "")
+        try:
+            report = json.loads(raw) if raw else None
+        except ValueError:
+            report = None
+        out.append({"provider_id": p.id, "provider": p.name, "report": report})
+    return {"providers": out}
 
 
 class ReserveRequest(BaseModel):
@@ -1505,6 +2007,35 @@ def _sync_groups(provider_id: int, categories: list[dict], db: Session, channel_
     db.flush()
 
 
+# A provider's separator rows: "##### EVENTS #####", "=== SPORTS ===", "-----".
+_SEPARATOR_RE = re.compile(r"^\s*(?:[#=*~_|\-]{3,}.*[#=*~_|\-]{3,}|[#=*~_|\-\s]+)\s*$")
+
+
+def _is_separator(name: str) -> bool:
+    """A lineup heading dressed as a channel. A NEW one is created switched
+    off even in an enabled group (#158): it plays nothing, and Jellyfin would
+    list it. "#1 Hits", "C-SPAN" and "***Premium*** Movies" are channels."""
+    return bool(_SEPARATOR_RE.match(name or ""))
+
+
+def _enabled_group_names(db: Session, provider_id: int) -> set:
+    """Names of this provider's groups the user has switched on.
+
+    A NEW channel starts with its group's state (#158). The page says "enable
+    the groups you want, then sync channels", but every new channel was created
+    disabled and the group toggle only cascades to channels that already exist,
+    so the first sync reported "N channels (0 enabled)" and a channel a provider
+    added later to an enabled group stayed off. Existing channels keep the
+    user's own setting either way.
+    """
+    return {
+        name for (name,) in db.query(LiveChannelGroup.name).filter(
+            LiveChannelGroup.provider_id == provider_id,
+            LiveChannelGroup.enabled == True,  # noqa: E712
+        )
+    }
+
+
 def _upsert_channels(
     provider_id: int,
     streams: list[dict],
@@ -1525,6 +2056,7 @@ def _upsert_channels(
     new_count = 0
     updated_count = 0
     seen_ids = set()
+    enabled_groups = _enabled_group_names(db, provider_id)
 
     for stream in streams:
         sid = str(stream.get("stream_id", ""))
@@ -1554,7 +2086,7 @@ def _upsert_channels(
                 logo_url=stream.get("stream_icon") or None,
                 group_title=group,
                 epg_channel_id=stream.get("epg_channel_id") or None,
-                enabled=False,
+                enabled=bool(group) and group in enabled_groups and not _is_separator(name),
             ))
             new_count += 1
 
@@ -1581,6 +2113,39 @@ def _m3u_stable_id(name: str, stream_url: str) -> str:
     return hashlib.sha256(f"{name}|{stream_url}".encode()).hexdigest()[:16]
 
 
+def _m3u_channel_number(value) -> Optional[int]:
+    """tvg-chno as a channel number, when it is a plain whole number.
+
+    Providers write sub-channels ("5.1") and text there, and int() on those
+    raised, which failed the whole M3U sync (#175). Anything else is left
+    unnumbered. ASCII digits only: "²".isdigit() is true and int("²") raises,
+    and a full-width "５" is no channel number either.
+    """
+    text = str(value or "").strip()
+    return int(text) if text.isascii() and text.isdigit() else None
+
+
+def _dedupe_m3u(parsed_channels: list[dict]) -> list[dict]:
+    """The first entry of each channel; later copies of it are dropped.
+
+    Provider M3Us often list one channel under two groups ("Sports" and
+    "Favourites"): same name, same URL, so the same stable id. Both were added
+    and the flush failed on uq_live_channel_stream, so no channel of the
+    playlist was saved (#175).
+    """
+    seen, kept = set(), []
+    for ch in parsed_channels:
+        sid = _m3u_stable_id(ch["name"], ch["stream_url"])
+        if sid in seen:
+            continue
+        seen.add(sid)
+        kept.append(ch)
+    dropped = len(parsed_channels) - len(kept)
+    if dropped:
+        logger.info(f"[LiveTV] M3U lists {dropped} channel(s) more than once; the first entry of each is used")
+    return kept
+
+
 def _upsert_channels_from_m3u(
     provider_id: int,
     parsed_channels: list[dict],
@@ -1593,6 +2158,9 @@ def _upsert_channels_from_m3u(
     sort_order, channel_number) across syncs. Removes channels no longer in
     the M3U file.
     """
+    parsed_channels = _dedupe_m3u(parsed_channels)
+    enabled_groups = _enabled_group_names(db, provider_id)
+
     # Build lookup of existing channels by stream_id
     existing = {
         ch.stream_id: ch
@@ -1647,8 +2215,9 @@ def _upsert_channels_from_m3u(
             row.logo_url = ch.get("logo_url") or row.logo_url
             row.group_title = group or row.group_title
             row.epg_channel_id = ch.get("epg_channel_id") or row.epg_channel_id
-            if ch.get("tvg_chno") and not row.channel_number:
-                row.channel_number = int(ch["tvg_chno"])
+            number = _m3u_channel_number(ch.get("tvg_chno"))
+            if number is not None and not row.channel_number:
+                row.channel_number = number
             row.updated_at = datetime.utcnow()
             updated_count += 1
         else:
@@ -1660,8 +2229,8 @@ def _upsert_channels_from_m3u(
                 logo_url=ch.get("logo_url"),
                 group_title=group,
                 epg_channel_id=ch.get("epg_channel_id"),
-                channel_number=int(ch["tvg_chno"]) if ch.get("tvg_chno") else None,
-                enabled=False,
+                channel_number=_m3u_channel_number(ch.get("tvg_chno")),
+                enabled=bool(group) and group in enabled_groups and not _is_separator(name),
             ))
             new_count += 1
 
@@ -1734,6 +2303,8 @@ def _update_group_counts(provider_id: int, db: Session):
 @router.post("/api/live/sync-epg/{provider_id}", dependencies=_admin)
 def sync_epg(provider_id: int, db: Session = Depends(get_db)):
     """Sync EPG data for enabled channels only (runs in background)."""
+    from services.provider_activity import refuse_while_recording
+    refuse_while_recording(db, "An EPG sync")
     provider = db.query(Provider).filter(Provider.id == provider_id).first()
     if not provider:
         raise HTTPException(404, "Provider not found")
@@ -1793,15 +2364,29 @@ def _run_epg_sync_background(provider_data: dict):
     try:
         db = SessionLocal()
         try:
-            # Build set of EPG IDs for ALL provider channels (not just enabled)
-            # This ensures newly-enabled channels already have EPG data available
-            epg_ids = {ch["epg_channel_id"] for ch in channels if ch.get("epg_channel_id")}
-            if not epg_ids:
+            # Guide data is kept for ALL of the provider's channels, not just
+            # the enabled ones, so a channel enabled later already has a guide.
+            # Ids known before the feed is read: overrides and tvg-ids. Channels
+            # with neither (or a tvg-id the feed lacks) are matched by name once
+            # the feed's own channel list is in hand (#141).
+            from services.epg_match import resolve_guide_ids
+            rows = db.query(LiveChannel).filter(LiveChannel.provider_id == pid).all()
+            chan_info = [{"id": r.id, "name": r.name, "tvg_id": r.epg_channel_id,
+                          "override": r.epg_id_override, "enabled": bool(r.enabled)} for r in rows]
+            epg_ids = ({(c["override"] or "").strip() for c in chan_info}
+                       | {(c["tvg_id"] or "").strip() for c in chan_info}) - {""}
+            if not chan_info:
                 _set_sync_status(pid, {
                     "phase": "epg", "status": "error", "progress": 0,
-                    "message": "No enabled channels have EPG IDs. Cannot fetch guide data.",
+                    "message": "No channels yet. Sync channels first, then the guide.",
                 })
                 return False
+            resolved: dict = {}
+
+            def _resolve(feed_channels):
+                resolved.clear()
+                resolved.update(resolve_guide_ids(chan_info, feed_channels))
+                return {r["guide_id"] for r in resolved.values() if r["guide_id"]}
 
             # Determine XMLTV URL
             epg_url = provider_data.get("epg_url")
@@ -1854,6 +2439,7 @@ def _run_epg_sync_background(provider_data: dict):
                         user_agent=provider_data["user_agent"],
                         on_progress=on_progress,
                         force_download=attempt > 1,
+                        resolve_channels=_resolve,
                     )
                     if programs:
                         break
@@ -1866,12 +2452,12 @@ def _run_epg_sync_background(provider_data: dict):
                     _drop_xmltv_cache()  # don't let a bad cached file poison the retry
                     _time.sleep(30 * attempt)
 
+            # Everything this provider's channels were, or are about to be,
+            # stored under: a name match that moved leaves nothing behind.
             provider_channel_epg_ids = {
-                ch.epg_channel_id
-                for ch in db.query(LiveChannel).filter(
-                    LiveChannel.provider_id == pid,
-                    LiveChannel.epg_channel_id.isnot(None),
-                ).all()
+                gid for r in rows
+                for gid in (r.guide_epg_id, r.epg_name_match, (r.epg_channel_id or "").strip())
+                if gid
             }
             old_count = (
                 db.query(EPGProgram).filter(EPGProgram.channel_id.in_(provider_channel_epg_ids)).count()
@@ -1899,6 +2485,20 @@ def _run_epg_sync_background(provider_data: dict):
                 return False
 
             # Replace guide data — quick transaction, no network inside it
+            if resolved:
+                with_programmes = {p["channel_id"] for p in programs}
+                for r in rows:
+                    match = (resolved.get(r.id) or {}).get("name_match")
+                    tvg = (r.epg_channel_id or "").strip()
+                    if match and tvg in with_programmes:
+                        # The channel's own tvg-id brought programmes (a feed can
+                        # carry a schedule it lists no <channel> for): that is its
+                        # guide, and a name match must not replace it (#141).
+                        match = None
+                        resolved[r.id] = {**resolved[r.id], "method": "tvg-id", "guide_id": tvg,
+                                          "name_match": None}
+                    r.epg_name_match = match
+                provider_channel_epg_ids |= {v["guide_id"] for v in resolved.values() if v["guide_id"]}
             if provider_channel_epg_ids:
                 db.query(EPGProgram).filter(
                     EPGProgram.channel_id.in_(provider_channel_epg_ids)
@@ -1917,11 +2517,13 @@ def _run_epg_sync_background(provider_data: dict):
                 seen_epg.add(key)
                 batch.append(EPGProgram(
                     channel_id=prog["channel_id"],
-                    title=prog["title"],
+                    title=prog["title"] or "",
+                    sub_title=prog.get("sub_title"),
                     description=prog.get("description"),
                     start=prog["start"],
                     stop=prog["stop"],
                     category=prog.get("category"),
+                    icon_url=prog.get("icon_url"),
                 ))
                 inserted += 1
                 if len(batch) >= 5000:
@@ -1932,14 +2534,26 @@ def _run_epg_sync_background(provider_data: dict):
                 db.add_all(batch)
                 db.flush()
 
+            # How many channels actually have a guide, and why the rest do not:
+            # "success" alone hid that most channels had nothing (#141).
+            coverage_note = ""
+            if resolved:
+                import json
+                from services.epg_match import coverage_report, coverage_summary
+                report = coverage_report(chan_info, resolved, {p["channel_id"] for p in programs})
+                report["at"] = datetime.utcnow().isoformat() + "Z"
+                set_setting(db, f"livetv_epg_coverage_{pid}", json.dumps(report))
+                coverage_note = f" — {coverage_summary(report)}"
+
             db.commit()
-            log_activity(db, "epg_sync", f"EPG sync: {inserted} programs for {total} channels ({enabled_count} enabled)")
+            log_activity(db, "epg_sync", f"EPG sync: {inserted} programs for {total} channels "
+                                         f"({enabled_count} enabled){coverage_note}")
 
             _set_sync_status(pid, {
                 "phase": "epg",
                 "status": "complete",
                 "progress": 100,
-                "message": f"{inserted} programs synced for {total} channels ({enabled_count} enabled)",
+                "message": f"{inserted} programs synced for {total} channels ({enabled_count} enabled){coverage_note}",
                 "programs": inserted,
                 "channels": total,
             })
@@ -1954,6 +2568,23 @@ def _run_epg_sync_background(provider_data: dict):
 
 
 # ─── Channel management ────────────────────────────────────────────────────
+
+
+def _guide_id_expr():
+    """LiveChannel.guide_epg_id as SQL: override, else name match, else tvg-id."""
+    return func.coalesce(
+        func.nullif(func.trim(LiveChannel.epg_id_override), ""),
+        LiveChannel.epg_name_match,
+        func.nullif(func.trim(LiveChannel.epg_channel_id), ""),
+    )
+
+
+def _ids_with_programmes(db: Session, ids) -> set:
+    found = set()
+    for chunk in _chunked(ids):
+        found |= {row[0] for row in db.query(EPGProgram.channel_id)
+                  .filter(EPGProgram.channel_id.in_(chunk)).distinct()}
+    return found
 
 
 @router.get("/api/live/channels", dependencies=_admin)
@@ -1976,33 +2607,27 @@ def list_channels(
     if enabled is not None:
         q = q.filter(LiveChannel.enabled == enabled)
     if search:
-        q = q.filter(LiveChannel.name.ilike(f"%{search}%"))
-    # Build set of epg_channel_ids that actually have programs in the DB
-    # EPG sync stores data for ALL provider channels, so this is accurate after first sync
-    epg_id_q = db.query(LiveChannel.epg_channel_id).filter(
-        LiveChannel.epg_channel_id.isnot(None), LiveChannel.epg_channel_id != ""
-    )
+        q = q.filter(or_(LiveChannel.name.ilike(f"%{search}%"), LiveChannel.custom_name.ilike(f"%{search}%")))
+    # Guide ids that actually have programs in the DB. EPG sync stores data
+    # for ALL provider channels, so this is accurate after the first sync.
+    # A channel's guide id is its override, a name match or its tvg-id (#141).
+    guide_id = _guide_id_expr()
+    epg_id_q = db.query(guide_id).filter(guide_id.isnot(None))
     if provider_id:
         epg_id_q = epg_id_q.filter(LiveChannel.provider_id == provider_id)
     all_epg_ids = {row[0] for row in epg_id_q.distinct().all()}
-    epg_ids_with_programs = set()
-    if all_epg_ids:
-        epg_ids_with_programs = {
-            row[0] for row in db.query(EPGProgram.channel_id)
-            .filter(EPGProgram.channel_id.in_(all_epg_ids))
-            .distinct().all()
-        }
+    epg_ids_with_programs = _ids_with_programmes(db, all_epg_ids) if all_epg_ids else set()
 
     # Filter by whether channel actually has EPG program data in the DB
     if has_epg is not None:
         if has_epg:
             if epg_ids_with_programs:
-                q = q.filter(LiveChannel.epg_channel_id.in_(epg_ids_with_programs))
+                q = q.filter(guide_id.in_(epg_ids_with_programs))
             else:
                 q = q.filter(LiveChannel.id < 0)  # no results — no EPG data exists yet
         else:
             if epg_ids_with_programs:
-                q = q.filter((LiveChannel.epg_channel_id.is_(None)) | (LiveChannel.epg_channel_id == "") | ~LiveChannel.epg_channel_id.in_(epg_ids_with_programs))
+                q = q.filter(guide_id.is_(None) | ~guide_id.in_(epg_ids_with_programs))
             # else: all channels have no EPG, no filter needed
 
     total = q.count()
@@ -2012,14 +2637,20 @@ def list_channels(
         "channels": [
             {
                 "id": ch.id,
-                "name": ch.name,
+                "name": ch.guide_name,
+                "provider_name": ch.name,
+                "custom_name": ch.custom_name,
                 "channel_number": ch.channel_number,
                 "stream_id": ch.stream_id,
                 "stream_url": ch.stream_url,
                 "logo_url": ch.logo_url,
                 "group_title": ch.group_title,
                 "epg_channel_id": ch.epg_channel_id,
-                "has_epg_data": ch.epg_channel_id in epg_ids_with_programs if ch.epg_channel_id else False,
+                "epg_id_override": ch.epg_id_override,
+                "epg_name_match": ch.epg_name_match,
+                "guide_epg_id": ch.guide_epg_id,
+                "epg_match": ch.epg_match,
+                "has_epg_data": ch.guide_epg_id in epg_ids_with_programs if ch.guide_epg_id else False,
                 "enabled": ch.enabled,
                 "sort_order": ch.sort_order,
             }
@@ -2046,6 +2677,18 @@ def update_channel(channel_id: int, update: ChannelUpdate, db: Session = Depends
         ch.epg_channel_id = update.epg_channel_id
     if update.sort_order is not None:
         ch.sort_order = update.sort_order
+    if update.custom_name is not None:
+        custom = " ".join(update.custom_name.split())
+        if len(custom) > CUSTOM_NAME_MAX:
+            raise HTTPException(400, f"Channel names are limited to {CUSTOM_NAME_MAX} characters")
+        ch.custom_name = custom or None
+    if update.epg_id_override is not None:
+        # The feed's channel id to take the guide from; "" goes back to
+        # matching automatically. Applied at the next EPG sync.
+        override = update.epg_id_override.strip()
+        if len(override) > EPG_ID_OVERRIDE_MAX:
+            raise HTTPException(400, f"Guide ids are limited to {EPG_ID_OVERRIDE_MAX} characters")
+        ch.epg_id_override = override or None
 
     ch.updated_at = datetime.utcnow()
     db.commit()
@@ -2085,12 +2728,13 @@ def bulk_update_channels_by_filter(update: BulkChannelFilter, db: Session = Depe
     if update.group:
         q = q.filter(LiveChannel.group_title == update.group)
     if update.search:
-        q = q.filter(LiveChannel.name.ilike(f"%{update.search}%"))
+        q = q.filter(or_(LiveChannel.name.ilike(f"%{update.search}%"), LiveChannel.custom_name.ilike(f"%{update.search}%")))
     if update.has_epg is not None:
+        guide_id = _guide_id_expr()
         if update.has_epg:
-            q = q.filter(LiveChannel.epg_channel_id.isnot(None), LiveChannel.epg_channel_id != "")
+            q = q.filter(guide_id.isnot(None))
         else:
-            q = q.filter((LiveChannel.epg_channel_id.is_(None)) | (LiveChannel.epg_channel_id == ""))
+            q = q.filter(guide_id.is_(None))
     count = q.update({LiveChannel.enabled: update.enabled}, synchronize_session=False)
     db.commit()
     return {"success": True, "updated": count}
@@ -2234,13 +2878,12 @@ def refresh_jellyfin_guide(db: Session = Depends(get_db)):
     )
     for (pid,) in providers_with_channels:
         enabled_epg_ids = {
-            ch.epg_channel_id
+            ch.guide_epg_id
             for ch in db.query(LiveChannel).filter(
                 LiveChannel.provider_id == pid,
                 LiveChannel.enabled == True,
-                LiveChannel.epg_channel_id.isnot(None),
             ).all()
-        }
+        } - {None}
         if not enabled_epg_ids:
             continue
         # Check if any enabled channel has zero EPG programs
@@ -2253,6 +2896,11 @@ def refresh_jellyfin_guide(db: Session = Depends(get_db)):
         }
         missing = enabled_epg_ids - epg_with_data
         if missing:
+            from services.provider_activity import recording_protected
+            if recording_protected(db):
+                logger.warning(f"[LiveTV] {len(missing)} enabled channels have no EPG data, but a recording is "
+                               f"running and recording protection is on — not downloading the guide now")
+                continue
             logger.info(f"[LiveTV] {len(missing)} enabled channels missing EPG data for provider {pid} — triggering EPG sync")
             # Trigger EPG sync synchronously (inline, not background thread)
             # so Jellyfin gets fresh data when we refresh
@@ -2371,7 +3019,7 @@ def hdhr_lineup(request: Request, db: Session = Depends(get_db)):
         number = ch.stream_id or str(ch.id)
         entry = {
             "GuideNumber": str(number),
-            "GuideName": ch.name,
+            "GuideName": ch.guide_name,
             "URL": f"{base_url}/api/live/stream/{ch.id}",
         }
         if ch.logo_url:
@@ -2572,12 +3220,27 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
     # this pull is one comes from Jellyfin's own timers, or a reservation.
     # When a slot would have to be taken from someone, ask afresh so the
     # victim is chosen on current information (a recording that opened a
-    # moment ago may still be classified as a viewer: upgrade_recordings).
+    # moment ago may still be classified as a viewer: sync_recordings).
     at_capacity = limit > 0 and _stream_slots.active >= limit
-    recording_ids = await _recording_channel_ids(db, force=at_capacity)
+    # Recording protection decides on current information too: whether this
+    # open is a recording (refused if not, while one runs), and which running
+    # pulls are (the others are stopped for it).
+    _stream_slots.set_protect(_protect_recordings(db))
+    protect_decides = _stream_slots.protect and _stream_slots.active > 0
+    open_began = asyncio.get_running_loop().time()
+    recording_ids = await _recording_channel_ids(db, force=at_capacity or protect_decides,
+                                                 fresh_after=open_began if protect_decides else None)
     kind = "recording" if channel_id in recording_ids else "live"
-    lease = await _stream_slots.acquire_lease(limit, _SLOT_WAIT_SECONDS, kind, f"channel:{channel_id}",
-                                              stream_key=(ch.stream_id or str(ch.id)) if ch else None)
+    certain = _recording_answer_is_current(since=open_began if protect_decides else None)
+    if protect_decides and not certain:
+        logger.warning(f"[LiveTV] Recording protection: Jellyfin did not say in time what is being "
+                       f"recorded — channel {channel_id} is opened as a {kind} and no viewer is stopped for it")
+    try:
+        lease = await _stream_slots.acquire_lease(limit, _SLOT_WAIT_SECONDS, kind, f"channel:{channel_id}",
+                                                  stream_key=(ch.stream_id or str(ch.id)) if ch else None,
+                                                  certain=certain)
+    except RecordingProtected:
+        raise _TunerRefusal(PROTECTED_REFUSAL_DETAIL)
     if lease is None:
         name = ch.name if ch else f"channel {channel_id}"
         _stream_slots.refused += 1
@@ -2586,7 +3249,7 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
         logger.error(f"[LiveTV] At capacity ({limit} streams) — REFUSED {kind} '{name}' (channel {channel_id}). "
                      f"If this was a recording it is lost. Raise livetv_max_concurrent_streams "
                      f"(0 = no limit) if this server and provider can carry more.")
-        raise HTTPException(503, f"Too many concurrent live streams (limit {limit})")
+        raise _TunerRefusal(f"Too many concurrent live streams (limit {limit})")
     sem = _stream_slots
     # Ownership of the release is handed to the streaming generator on the
     # success paths; on every early-exit / error path below we release here.
@@ -2632,7 +3295,7 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
             close = getattr(upstream, "close_upstream", None)
             if close is not None:
                 await close()
-            raise HTTPException(503, "A recording needed this connection slot")
+            raise _TunerRefusal("A recording needed this connection slot")
         if not isinstance(upstream, StreamingResponse):
             # A raw-TS channel is answered with a redirect; Jellyfin then talks
             # to the provider directly and there is nothing here to share.
@@ -2748,6 +3411,9 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
 
         tokenized_url = str(resp.url)
         logger.info(f"[LiveTV] Resolved tokenized URL for channel {channel_id}: {tokenized_url}")
+        placeholder = _placeholder_name(tokenized_url)
+        if placeholder:
+            await _refuse_placeholder(channel_id, placeholder)
 
         content_type = resp.headers.get("content-type", "")
         is_hls = "mpegurl" in content_type.lower()
@@ -2755,6 +3421,47 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
         if is_hls:
             # HLS playlist — read the playlist text, then we're done with this client
             playlist_text = (await resp.aread()).decode("utf-8", errors="replace")
+            playlist_base = tokenized_url
+            # Look at the media playlist before answering: a provider with
+            # nothing for the channel serves one that holds only a placeholder
+            # segment, and once the response has started it can only end, not
+            # fail. The first variant is read here rather than by the worker
+            # (the same request, earlier); if it does not come back quickly
+            # the worker reads it on its usual retry terms.
+            for _hop in range(_MAX_VARIANT_HOPS):
+                variant = _select_hls_variant(playlist_text, playlist_base)
+                if not variant or not guard(variant):
+                    break
+                placeholder = _placeholder_name(variant)
+                if placeholder:
+                    await _refuse_placeholder(channel_id, placeholder)
+                v_resp = None
+                try:
+                    v_resp = await asyncio.wait_for(
+                        _send_checked(client, variant, {"User-Agent": user_agent}, guard), 10.0)
+                    v_resp.raise_for_status()
+                    placeholder = _placeholder_name(str(v_resp.url))
+                    if placeholder:
+                        await _refuse_placeholder(channel_id, placeholder)
+                    variant_text = (await asyncio.wait_for(v_resp.aread(), 10.0)).decode(
+                        "utf-8", errors="replace")
+                except _PlaceholderRefusal:
+                    raise
+                except Exception as e:
+                    # Anything else (a refusal, a blocked redirect) is the
+                    # stream's to handle, on the terms it always had.
+                    logger.info(f"[LiveTV] Variant for channel {channel_id} not read at open ({e}); "
+                                f"the stream reads it")
+                    break
+                finally:
+                    if v_resp is not None:
+                        await v_resp.aclose()
+                playlist_text, playlist_base = variant_text, variant
+            if not _select_hls_variant(playlist_text, playlist_base):
+                segments = _media_segments(playlist_text, playlist_base)
+                placeholders = [_placeholder_name(u) for u in segments]
+                if segments and all(placeholders):
+                    await _refuse_placeholder(channel_id, placeholders[0])
     except BaseException:
         if resp is not None:
             await resp.aclose()
@@ -2849,8 +3556,19 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         try:
                             new_resp = await _send_checked(raw_client, stream_url, ua, guard)
                             new_resp.raise_for_status()
+                            placeholder = _placeholder_name(str(new_resp.url))
+                            if placeholder:
+                                raise _ProviderPlaceholder(placeholder)
                             if "mpegurl" in new_resp.headers.get("content-type", "").lower():
                                 raise httpx.HTTPError("the channel now answers with a playlist")
+                        except _ProviderPlaceholder as e:
+                            # Not the channel: waited out like a refusal, and
+                            # its bytes never reach the recording (#140).
+                            await new_resp.aclose()
+                            reason = str(e)
+                            backoff_cap = _REFUSAL_BACKOFF_CAP
+                            await _note_placeholder(channel_id, e.segment)
+                            continue
                         except HTTPException as e:
                             logger.error(f"[LiveTV] Raw stream for channel {channel_id} cannot be "
                                          f"re-opened, stopping: {e.detail}")
@@ -2898,7 +3616,6 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
         response.close_upstream = close_upstream
         return response
 
-    playlist_base = tokenized_url
     logger.info(f"[LiveTV] HLS stream for channel {channel_id} — proxying chunks as MPEG-TS")
 
     async def hls_to_mpegts():
@@ -2961,14 +3678,26 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
         # When the playlist now in hand was read; reloads are timed from here.
         playlist_loaded_at = asyncio.get_running_loop().time()
 
+        # A playlist that holds nothing but a placeholder is the provider
+        # saying "not now": waited out like a 509, never fetched or recorded.
+        in_placeholder = False
+
         def _is_retryable(exc) -> bool:
+            if isinstance(exc, _ProviderPlaceholder):
+                return True
             if isinstance(exc, httpx.HTTPStatusError):
                 return exc.response.status_code in RETRYABLE_STATUS
             # Timeouts, resets and refused connections are all worth another go.
             return isinstance(exc, httpx.TransportError)
 
-        def _note_success():
-            nonlocal failing_since, backoff, backoff_cap
+        def _note_success(real_data: bool = False):
+            nonlocal failing_since, backoff, backoff_cap, in_placeholder
+            if in_placeholder and not real_data:
+                # A playlist that answers is not the channel coming back while
+                # it still holds only the placeholder: the spell, and its
+                # failure budget, run on until a real segment arrives.
+                return
+            in_placeholder = False
             failing_since = None
             backoff = BACKOFF_START
             backoff_cap = _BACKOFF_CAP
@@ -3073,6 +3802,24 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                             continue
                         chunk_urls.append(chunk_url)
 
+                # Placeholder segments are never fetched. A playlist of nothing
+                # else means the channel is unavailable right now (#140).
+                placeholder_segments = [u for u in chunk_urls if _placeholder_name(u)]
+                if placeholder_segments:
+                    chunk_urls = [u for u in chunk_urls if not _placeholder_name(u)]
+                    if not any(u not in seen_chunks for u in chunk_urls):
+                        segment = _placeholder_name(placeholder_segments[0])
+                        if not in_placeholder:
+                            in_placeholder = True
+                            await _note_placeholder(channel_id, segment)
+                        if not is_live:
+                            logger.error(f"[LiveTV] Channel {channel_id}: the provider ended the "
+                                         f"stream with a placeholder ({segment}), stopping")
+                            return
+                        if _note_failure(_ProviderPlaceholder(segment), "Channel"):
+                            return
+                        await _backoff_sleep()
+
                 # Fetch new chunks
                 got_new = False
                 chunk_pending = False
@@ -3127,7 +3874,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     got_new = True
                     fatal_chunk_skips = 0
                     yield payload
-                    _note_success()
+                    _note_success(real_data=True)
 
                 if not is_live:
                     # VOD-style playlist — we're done after all chunks
@@ -3197,11 +3944,11 @@ def live_playlist_m3u(request: Request, db: Session = Depends(get_db)):
     lines = ["#EXTM3U"]
     for ch in channels:
         number = ch.stream_id or str(ch.id)
-        epg_id = ch.epg_channel_id or f"tentacle-{ch.id}"
+        epg_id = ch.guide_epg_id or f"tentacle-{ch.id}"
         logo = f' tvg-logo="{ch.logo_url}"' if ch.logo_url else ""
         group = f' group-title="{ch.group_title}"' if ch.group_title else ""
         lines.append(
-            f'#EXTINF:-1 tvg-id="{epg_id}" tvg-chno="{number}"{logo}{group},{ch.name}'
+            f'#EXTINF:-1 tvg-id="{epg_id}" tvg-chno="{number}"{logo}{group},{ch.guide_name}'
         )
         lines.append(f"{base_url}/api/live/stream/{ch.id}")
 
@@ -3221,6 +3968,45 @@ def live_playlist_m3u(request: Request, db: Session = Depends(get_db)):
         media_type="audio/x-mpegurl",
         headers={"Content-Disposition": "inline; filename=tentacle.m3u"},
     )
+
+
+def _emit_sub_titles(db) -> bool:
+    """Whether the served guide carries each programme's <sub-title> (setting
+    `livetv_emit_subtitles`, default off). Jellyfin 10.11 treats a programme
+    with an episode title as a series: its recordings are named
+    "<title> - <sub-title>" and get tvshow/episodedetails NFOs instead of a
+    <movie> one, so serving sub-titles by default would re-file every recording
+    of a feed that sends them (#148). They are always stored."""
+    return (get_setting(db, "livetv_emit_subtitles", "") or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _provider_hosts(db, channels) -> "set[str]":
+    """Hosts that belong to a Live TV provider: its server and its channels'
+    stream hosts."""
+    from urllib.parse import urlparse
+    hosts = set()
+    for url in [p.server_url for p in live_tv_providers(db)] + [ch.stream_url for ch in channels]:
+        try:
+            host = urlparse(url or "").hostname
+        except ValueError:
+            host = None
+        if host:
+            hosts.add(host.lower())
+    return hosts
+
+
+def _third_party_icon(url: Optional[str], provider_hosts: "set[str]") -> Optional[str]:
+    """A programme icon the provider hosts itself is dropped: Jellyfin fetches
+    it as a recording starts, one more connection to a panel that may be
+    carrying that recording (#147). Art from elsewhere (TMDB, YouTube) is kept."""
+    if not url:
+        return None
+    from urllib.parse import urlparse
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return None
+    return None if host in provider_hosts else url
 
 
 @router.get("/hdhr/xmltv.xml")
@@ -3248,15 +4034,15 @@ def hdhr_xmltv(db: Session = Depends(get_db)):
         guide_number = str(ch.stream_id or ch.id)
         xmltv_channels.append({
             "id": guide_number,
-            "name": ch.name,
+            "name": ch.guide_name,
             "logo_url": ch.logo_url,
         })
         # Channel group feeds the category inference below when a programme
         # title says nothing about its genre.
         guide_number_group[guide_number] = ch.group_title
-        if ch.epg_channel_id:
-            epg_ids.add(ch.epg_channel_id)
-            epg_id_to_guide_numbers.setdefault(ch.epg_channel_id, []).append(guide_number)
+        if ch.guide_epg_id:
+            epg_ids.add(ch.guide_epg_id)
+            epg_id_to_guide_numbers.setdefault(ch.guide_epg_id, []).append(guide_number)
 
     # YouTube Live TV channels, with their own guide ids.
     for yt in youtube_livetv.live_channels(db):
@@ -3273,6 +4059,8 @@ def hdhr_xmltv(db: Session = Depends(get_db)):
     # When multiple channels share an EPG ID, duplicate programs for each
     programs = []
     inferred_categories = 0
+    emit_sub_titles = _emit_sub_titles(db)
+    provider_hosts = _provider_hosts(db, channels)
     if epg_ids:
         db_programs = (
             db.query(EPGProgram)
@@ -3295,10 +4083,14 @@ def hdhr_xmltv(db: Session = Depends(get_db)):
                 programs.append({
                     "channel_id": gn,
                     "title": p.title,
+                    "sub_title": p.sub_title if emit_sub_titles else None,
                     "description": p.description,
                     "start": p.start,
                     "stop": p.stop,
                     "category": category,
+                    # Stored for YouTube Live and provider programmes alike, and
+                    # dropped here until #147: Jellyfin saves it as the art.
+                    "icon_url": _third_party_icon(p.icon_url, provider_hosts),
                 })
 
     if inferred_categories:

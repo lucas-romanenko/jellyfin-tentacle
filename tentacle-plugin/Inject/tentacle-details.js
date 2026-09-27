@@ -2993,11 +2993,15 @@ var Details = {
             fetch(serverUrl + '/Playlists', {
                 method: 'POST',
                 headers: createHeaders,
+                // Private, like jellyfin-web's own dialog (its "public" box is
+                // unticked by default). Leaving IsPublic out makes Jellyfin's
+                // CreatePlaylistDto default to true: every user would see it.
                 body: JSON.stringify({
                     Name: playlistName,
                     Ids: [item.Id],
                     UserId: userId,
-                    MediaType: mediaType
+                    MediaType: mediaType,
+                    IsPublic: false
                 })
             }).then(function(resp) {
                 if (!resp.ok) throw new Error('HTTP ' + resp.status);

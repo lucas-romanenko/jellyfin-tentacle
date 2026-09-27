@@ -35,12 +35,40 @@ _CHANNEL_ID_RE = re.compile(r"^UC[A-Za-z0-9_-]{22}$")
 # Guest extraction is rate-limited at roughly 300 videos/hour, so details are
 # fetched slowly. The listing call is cheap and unmetered by comparison.
 DETAIL_SPACING_SECONDS = 5.0
+
 # How long to stand down after a bot check. Retrying into one makes it worse.
 BLOCK_BACKOFF_HOURS = 6
 # Recorded verbatim on skipped rows so the restore path can find exactly the
 # videos this preference excluded, and not ones excluded for another reason.
 STREAM_PREFERENCE_REASON = "finished live stream and past live streams are not included"
 
+
+
+# A title that is really a video id: the bare id today's fallback stores when
+# neither the details nor the listing had one, and "youtube video #<id>" from
+# an earlier build. Such a row is repaired from the listing on a later refresh
+# rather than kept for ever (#131).
+_PLACEHOLDER_TITLE_RE = re.compile(r"^youtube video #[A-Za-z0-9_-]{11}$", re.IGNORECASE)
+# What yt-dlp lists in place of a title for an entry it cannot show. Never a
+# replacement for anything.
+_UNAVAILABLE_TITLE_RE = re.compile(r"^\[(private|deleted|unavailable)[^\]]*\]$", re.IGNORECASE)
+# Details fetches spent per run on placeholders the listing could not repair.
+# Each is rate-limited, and new videos come first.
+TITLE_REPAIRS_PER_RUN = 3
+
+
+def is_placeholder_title(title, video_id: str) -> bool:
+    """Whether a stored title is a stand-in rather than the video's name."""
+    title = (title or "").strip()
+    return not title or title == video_id or bool(_PLACEHOLDER_TITLE_RE.match(title))
+
+
+def _usable_title(title, video_id: str):
+    """`title` if it names the video, else None."""
+    title = (title or "").strip()
+    if is_placeholder_title(title, video_id) or _UNAVAILABLE_TITLE_RE.match(title):
+        return None
+    return title
 
 
 def is_library_status(column):
@@ -116,7 +144,13 @@ def resolve_channel(url: str) -> dict:
         listing_url = listing_url.rstrip("/") + "/videos"
 
     info = client.flat_listing(listing_url, 1)
-    title = info.get("channel") or info.get("uploader") or info.get("title") or "YouTube"
+    if parsed["kind"] == "playlist":
+        # A playlist listing names its owner in "channel"; the playlist's own
+        # name is "title". Titling it by the owner made every playlist of a
+        # channel look like the channel itself.
+        title = info.get("title") or info.get("channel") or info.get("uploader") or "YouTube"
+    else:
+        title = info.get("channel") or info.get("uploader") or info.get("title") or "YouTube"
     thumbs = info.get("thumbnails") or []
 
     def _pick(*keys):
@@ -135,6 +169,9 @@ def resolve_channel(url: str) -> dict:
         "handle": parsed.get("handle"),
         "playlist_id": parsed.get("playlist_id"),
         "title": title,
+        # Who owns it: the channel's own name for a channel, the owner's for a
+        # playlist. Used to tell two same-named sources apart.
+        "owner": info.get("channel") or info.get("uploader"),
         "avatar_url": _pick("avatar"),
         "banner_url": _pick("banner"),
         "canonical": parsed["canonical"],
@@ -221,6 +258,20 @@ def _should_index(details: dict, channel: YouTubeChannel) -> tuple:
     if channel.min_duration and duration and duration < channel.min_duration:
         return False, f"duration {duration}s under minimum {channel.min_duration}s"
     return True, ""
+
+
+def made_for_kids(details: dict):
+    """YouTube's Made for Kids designation: True, False, or None when unknown.
+
+    Read only from a field that actually carries it. age_limit is not that
+    field: yt-dlp sets it to 0 for every video without an age restriction and
+    to 18 for the rest, so "age_limit == 0" flagged ordinary videos as made
+    for kids, and the old `a and b or None` expression could never produce
+    False either (#130). yt-dlp 2026.8.19 does not report the designation at
+    all, so this is None — "not known" — unless a future extractor supplies it.
+    """
+    value = details.get("is_made_for_kids")
+    return None if value is None else bool(value)
 
 
 def is_library_item(video) -> bool:
@@ -314,6 +365,15 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
         is_library_status(YouTubeVideo.live_status),
     ).all()}
     keep = channel.keep_count or 10
+    # Rows whose title is a stand-in, repaired below if the listing names them.
+    from sqlalchemy import or_
+    placeholders = {v.video_id: v for v in db.query(YouTubeVideo).filter(
+        YouTubeVideo.channel_fk == channel.id,
+        or_(YouTubeVideo.title.is_(None), YouTubeVideo.title == "",
+            YouTubeVideo.title == YouTubeVideo.video_id,
+            YouTubeVideo.title.ilike("youtube video #%")),
+    ).all() if is_placeholder_title(v.title, v.video_id)}
+    retitled, repairs_left = [], TITLE_REPAIRS_PER_RUN
 
     # Every listed entry in listing order, tagged with whether its tab feeds
     # the library. The streams tab does only when finished broadcasts are
@@ -436,6 +496,27 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
             _note_skip("already indexed under another channel or playlist")
             continue
         if vid in known:
+            if vid in placeholders:
+                title = _usable_title(entry.get("title"), vid)
+                # Details only when the listing gave no title at all. A listing
+                # that names the video by its id (or "[Private video]") has
+                # nothing better behind it, and re-fetching such a row on
+                # every run would spend the rate-limited budget for nothing.
+                if not title and not entry.get("title") and repairs_left > 0:
+                    repairs_left -= 1
+                    try:
+                        title = _usable_title(client.video_details(vid).get("title"), vid)
+                    except YouTubeBlocked:
+                        raise
+                    except YouTubeError as e:
+                        logger.debug(f"[YouTube] Could not re-read the title of {vid}: {e}")
+                    time.sleep(DETAIL_SPACING_SECONDS)
+                if title:
+                    video = placeholders[vid]
+                    logger.info(f"[YouTube] Retitled {vid}: '{video.title}' → '{title}'")
+                    video.title = title
+                    retitled.append(vid)
+                    db.commit()
             if library_tab and vid in kept_ids:
                 seen_kept += 1
                 _report()
@@ -495,7 +576,7 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
             live_status=details.get("live_status"),
             media_type="livestream" if details.get("live_status") else "video",
             thumbnail_url=details.get("thumbnail"),
-            is_made_for_kids=details.get("age_limit") == 0 and details.get("is_live") is None or None,
+            is_made_for_kids=made_for_kids(details),
             first_seen=now,
             last_seen=now,
         ))
@@ -535,7 +616,8 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
     if skips:
         logger.info(f"[YouTube] '{channel.title}' skips: {skips}")
     return {"skipped": False, "new": added, "seen": len(seen_ids),
-            "filtered": skipped, "skips": skips, "listing": listing, "beyond": beyond}
+            "filtered": skipped, "skips": skips, "listing": listing, "beyond": beyond,
+            "retitled": retitled}
 
 
 def _published(details: dict):

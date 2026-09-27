@@ -12,7 +12,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
 import requests
 
 from sqlalchemy.orm import Session
@@ -22,13 +22,13 @@ from models.database import (
     SyncRun, CategorySnapshot, Duplicate, get_setting, log_deletion
 )
 from services.tmdb import TMDBService
-from services.nfo import write_movie_nfo, write_series_nfo, make_folder_name, vod_folder_name
+from services.nfo import write_movie_nfo, write_series_nfo, make_folder_name, vod_folder_name, fit_file_stem
 from services.cleaner import clean_title
 from services.m3u_parser import episode_from_title, container_from_url
 from services.duplicates import delete_vod_files, convert_record_to_downloaded
 from services.media_files import delete_movie_files, delete_series_files
 from services.tagger import compute_tags, get_list_tags_for_tmdb_id, apply_tag_rules
-from services.exceptions import ProviderConnectionError, SyncCancelledError, SyncError
+from services.exceptions import ProviderConnectionError, SyncCancelledError, SyncError, TMDBConnectionError
 
 logger = logging.getLogger(__name__)
 
@@ -154,7 +154,10 @@ class XtreamClient:
         self.session.headers.update(XTREAM_HEADERS)
         # requests ignores a `timeout` attribute on a Session; it has to be
         # passed per call. Without it a stalled panel hung the sync for ever.
-        self.timeout = 30
+        # (connect, read): a large category can take a slow panel well over
+        # 30 s before its first byte; a stalled one must still not hang the
+        # nightly sync for ever.
+        self.timeout = (15, 180)
         # A services.provider_activity.JobPause when the sync must stand
         # aside for live TV / a recording. It is called at CATEGORY
         # boundaries, never between calls inside one, because a category's
@@ -244,47 +247,121 @@ def _pause_between_categories(client, db: Session, progress_callback=None, phase
         raise SyncCancelledError("Sync cancelled while waiting for live TV to finish")
 
 
-# The provider stream a .strm plays, as (kind, id): a direct Xtream URL, the
-# same wrapped by a resume proxy (URL-encoded in a query parameter), or
-# Tentacle's own /api/vod address. None for anything else (a hand-made file).
-_DIRECT_STREAM_RE = re.compile(r"/(movie|series)/[^/]+/[^/]+/(\d+)\.[A-Za-z0-9]+")
+def _direct_stream_res(prefix: str = ""):
+    """A direct Xtream stream URL: scheme://host[:port]<prefix>/movie|series/<u>/<p>/<id>.<ext>,
+    where <prefix> is the path of the provider's own server_url (usually
+    empty). Anything else -- a proxy that puts the provider's path under
+    its own prefix -- is not one. The second pattern finds such a URL
+    carried inside another one (a resume proxy's `?d=`)."""
+    p = re.escape(prefix.rstrip("/"))
+    return (re.compile(rf"(?i)^https?://([^/:?#]+)(?::\d+)?{p}/(movie|series)/[^/?#]+/[^/?#]+/(\d+)\.[a-z0-9]+$"),
+            re.compile(rf"(?i)https?://([^/:?#&]+)(?::\d+)?{p}/(movie|series)/[^/?#&]+/[^/?#&]+/(\d+)\.[a-z0-9]+"))
 
 
-def _stream_ref(url_text: str, unwrap: bool = False):
-    """`unwrap` also looks inside a URL-encoded query parameter (a resume
-    proxy wrapping the provider URL) -- only when migrating such files TO
-    Tentacle's own route; with VOD through Tentacle off, a hand-made proxy
-    file is somebody's deliberate setup and is left alone."""
+def _direct_ref(url_text: str, embedded: bool = False, prefix: str = ""):
+    """(host, kind, id) of a direct Xtream URL; with `embedded`, also of one
+    carried URL-encoded inside another URL."""
     from urllib.parse import unquote
-    from services import vod_tokens
-    via_tentacle = vod_tokens.stream_id_in_url(url_text)
-    if via_tentacle:
-        return via_tentacle
-    for candidate in ((url_text, unquote(url_text)) if unwrap else (url_text,)):
-        m = _DIRECT_STREAM_RE.search(candidate or "")
-        if m:
-            return m.group(1), int(m.group(2))
-    return None
+    direct, carried = _direct_stream_res(prefix)
+    m = direct.match(url_text or "")
+    if m is None and embedded:
+        m = carried.search(unquote(url_text or "")) if "%2F" in (url_text or "").upper() else None
+    return (m.group(1).lower(), m.group(2).lower(), int(m.group(3))) if m else None
 
 
 def _strm_needs_rewrite(strm_file: Path, expected: str, client) -> bool:
-    """An existing .strm is rewritten only when it plays the SAME provider
-    stream as the sync would write today, in a different form: switching to
-    or from Tentacle's VOD address, new credentials or host, or a resume
-    proxy wrapping the provider URL. A file that plays a different stream is
-    left alone -- a provider that lists one title in two categories offers
-    it twice, and rewriting to whichever listing came last would flip the
-    file every night (and change which copy plays). A file that points
-    somewhere else entirely was set up by hand and is left alone too."""
+    """An existing .strm is rewritten only when it plays the SAME stream of
+    THIS Xtream provider as the sync would write today, in a different form:
+      - switching to or from Tentacle's VOD route (vod_via_tentacle_enabled),
+        including a file that wraps the provider URL in a resume proxy
+        (URL-encoded), when moving TO Tentacle's route;
+      - the provider's own URL with changed credentials, scheme, port or
+        container extension.
+    Everything else is left alone: another stream id (a title listed twice
+    would otherwise flip every night), another host, a proxy of somebody's
+    own, and M3U providers (their playlist URLs may rotate tokens or hosts
+    on every fetch)."""
+    if not isinstance(client, XtreamClient):
+        return False
     try:
         current = strm_file.read_text(encoding="utf-8").strip()
     except (OSError, UnicodeDecodeError):
         return False
     if not current or current == expected:
         return False
+    from urllib.parse import urlparse
     from services import vod_tokens
-    current_ref = _stream_ref(current, unwrap=vod_tokens.is_vod_url(expected))
-    return current_ref is not None and current_ref == _stream_ref(expected)
+    provider_host = (urlparse(client.server).hostname or "").lower()
+    prefix = urlparse(client.server).path or ""
+    if not provider_host:
+        return False
+
+    def ours(url_text):
+        """(kind, id) of a Tentacle VOD link for THIS provider, else None."""
+        m = vod_tokens._TOKEN_URL.search(url_text or "")
+        if m is None or int(m.group(2)) != getattr(client, "provider_id", None):
+            return None
+        return m.group(1), int(m.group(3))
+    want = ours(expected)
+    if want is not None:                                   # moving TO Tentacle's route
+        have = ours(current)
+        if have is not None:
+            return have == want                            # new secret / address
+        ref = _direct_ref(current, embedded=True, prefix=prefix)
+        return ref is not None and ref == (provider_host, want[0], want[1])
+    exp = _direct_ref(expected, prefix=prefix)
+    if exp is None:
+        return False
+    have = ours(current)
+    if have is not None:                                   # moving back to direct
+        return have == (exp[1], exp[2])
+    ref = _direct_ref(current, prefix=prefix)
+    return ref is not None and ref == exp and exp[0] == provider_host
+
+
+# A direct Xtream stream URL, for its host and username.
+_XTREAM_ACCOUNT_RE = re.compile(
+    r"(?i)^https?://([^/:?#]+)(?::\d+)?(?:/[^?#]*?)?/(?:movie|series)/([^/?#]+)/[^/?#]+/\d+\.[a-z0-9]+$")
+
+
+def _note_other_providers(client, provider: Provider, db: Session) -> None:
+    """Tell the client which provider ids and Xtream accounts are someone
+    else's, for _strm_plays_other_provider."""
+    from urllib.parse import urlparse
+    own = ((urlparse(provider.server_url or "").hostname or "").lower(), provider.username or "")
+    ids, accounts = set(), set()
+    for other in db.query(Provider).filter(Provider.id != provider.id).all():
+        ids.add(other.id)
+        account = ((urlparse(other.server_url or "").hostname or "").lower(), other.username or "")
+        if account[0] and account[1] and account != own:
+            accounts.add(account)
+    client.other_providers = {"ids": ids, "accounts": accounts}
+
+
+def _strm_plays_other_provider(strm_file: Path, client) -> bool:
+    """True only on positive evidence that an existing .strm plays ANOTHER
+    configured provider: a Tentacle VOD link naming another provider id, or a
+    direct Xtream URL on another provider's host and account.
+
+    A title a higher-priority provider takes over keeps its row but its file
+    still played the lower-priority provider, and _strm_needs_rewrite never
+    rewrites a file that plays a different stream: when the backup provider
+    expired, the title stopped playing (#154). This heals those files, the
+    ones taken over before this fix included. A hand-made or proxy URL, or
+    one of this provider's own, is left alone."""
+    others = getattr(client, "other_providers", None)
+    if not others:
+        return False
+    try:
+        current = strm_file.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return False
+    from services import vod_tokens
+    m = vod_tokens._TOKEN_URL.search(current)
+    if m:
+        return int(m.group(2)) in others["ids"]
+    m = _XTREAM_ACCOUNT_RE.match(current)
+    return bool(m) and (m.group(1).lower(), m.group(2)) in others["accounts"]
 
 
 # ── M3U provider support ─────────────────────────────────────────────────
@@ -492,12 +569,15 @@ def _merge_source_tag(tmdb_id: int, media_type: str, source_tag: str, provider_i
     if not record:
         return
 
-    tags = record.tags or []
+    # A copy: appending to the loaded list changed the value SQLAlchemy
+    # compares against too, so the assignment below looked like no change and
+    # the tag was never written for a title already in the DB.
+    tags = list(record.tags or [])
     if new_tag in tags:
         return
 
     tags.append(new_tag)
-    record.tags = list(tags)  # Force SQLAlchemy to detect mutation
+    record.tags = tags
     record.date_updated = datetime.utcnow()
 
     # Update NFO file with new tags
@@ -526,8 +606,9 @@ def _write_episode_strms(client: "XtreamClient", episodes: dict, show_dir: Path,
     """Write .strm files for any episodes that don't already exist on disk.
 
     Returns the number of NEW episode files written. Safe to call on an
-    existing series to back-fill newly-added seasons/episodes (idempotent —
-    existing .strm files are left untouched).
+    existing series to back-fill newly-added seasons/episodes (idempotent).
+    An existing file is rewritten only when it plays the same stream in
+    another form, or plays another provider (a takeover, #154).
     """
     ep_count = 0
     for season_num, eps in episodes.items():
@@ -552,16 +633,19 @@ def _write_episode_strms(client: "XtreamClient", episodes: dict, show_dir: Path,
             ep_num = ep.get("episode_num", 0)
             container = ep.get("container_extension", "mp4")
             try:
-                ep_filename = f"{folder_name} S{season_int:02d}E{int(ep_num):02d}"
+                code = f" S{season_int:02d}E{int(ep_num):02d}"
             except (TypeError, ValueError):
                 continue
+            # Byte-safe: a show folder that fits can still overflow once the
+            # episode code and ".strm" are added. Unchanged when it fits.
+            ep_filename = fit_file_stem(folder_name, code, len(".strm"))
             strm_file = season_dir / f"{ep_filename}.strm"
             expected = client.episode_stream_url(ep_id, container)
             if not strm_file.exists():
                 strm_file.write_text(expected, encoding='utf-8')
                 chown_path(strm_file)
                 ep_count += 1
-            elif _strm_needs_rewrite(strm_file, expected, client):
+            elif _strm_needs_rewrite(strm_file, expected, client) or _strm_plays_other_provider(strm_file, client):
                 strm_file.write_text(expected, encoding='utf-8')
                 chown_path(strm_file)
                 logger.info(f"[Sync] Rewrote {strm_file.name}: stream address changed")
@@ -587,7 +671,7 @@ def _repair_movie_strm(client, stream: dict, tmdb_id: int, provider: Provider, d
         strm = Path(record.strm_path)
         expected = client.movie_stream_url(stream.get("stream_id"), stream.get("container_extension", "mp4"))
         if strm.exists():
-            if _strm_needs_rewrite(strm, expected, client):
+            if _strm_needs_rewrite(strm, expected, client) or _strm_plays_other_provider(strm, client):
                 strm.write_text(expected, encoding="utf-8")
                 chown_path(strm)
                 logger.info(f"[Sync] Rewrote {strm.name}: stream address changed")
@@ -684,6 +768,50 @@ def _backfill_series_episodes(
 
 # ── Duplicate Detection ───────────────────────────────────────────────────
 
+# What check_and_record_duplicate answers when a higher-priority provider has
+# just taken a title over: truthy (the caller still creates no new row), and
+# the caller must point the title's files at the new provider (#154).
+TAKEOVER = "takeover"
+
+
+def _take_over_files(db: Session, media_type: str, tmdb_id: int, client, item: dict,
+                     provider: Provider) -> None:
+    """Point a title a higher-priority provider just took over at that provider:
+    the same repairs every later sync runs (see _strm_plays_other_provider),
+    so paths and Jellyfin items stay. Tags are left alone: the old provider
+    still offers the title, and this provider's tag is merged in on its next
+    pass like any title's (#154)."""
+    if media_type == "movie":
+        _repair_movie_strm(client, item, tmdb_id, provider, db)
+    else:
+        _backfill_series_episodes(client, item, tmdb_id, provider, db)
+    logger.info(f"[Sync] tmdb:{tmdb_id} now plays from {provider.name} (higher priority)")
+
+
+def _claim_vod_name(db: Session, media_type: str, output_dir: Path, title: str, year: Optional[str],
+                    tmdb_id: int) -> str:
+    """The folder name for a new VOD title, clear of other titles' files.
+
+    Two different titles can map to one folder: namesakes with the same
+    year, or names sanitize_filename reduces to the same string. The second
+    import overwrote the first one's .strm and NFO, and pruning either
+    deleted both (#155). When another row owns the path, this title gets a
+    " [tmdbid-N]" folder, which Jellyfin also reads as the TMDB id."""
+    Model = Movie if media_type == "movie" else Series
+
+    def target(name):
+        return output_dir / name / f"{name}.strm" if media_type == "movie" else output_dir / name
+
+    name = vod_folder_name(title, year)
+    taken = db.query(Model).filter(Model.strm_path == str(target(name)), Model.tmdb_id != tmdb_id).first()
+    if taken is None:
+        return name
+    tag = f" [tmdbid-{tmdb_id}]" if tmdb_id > 0 else f" [id-{abs(tmdb_id)}]"
+    claimed = vod_folder_name(title, year, tag=tag)
+    logger.info(f"[Sync] '{name}' already holds '{taken.title}' (tmdb:{taken.tmdb_id}); "
+                f"writing tmdb:{tmdb_id} to '{claimed}'")
+    return claimed
+
 def check_and_record_duplicate(
     tmdb_id: int,
     media_type: str,
@@ -720,7 +848,14 @@ def check_and_record_duplicate(
     # versions, where resolving deleted the row instead of converting it.
     if dup and dup.resolution == "keep_radarr" and existing.source and existing.source.startswith("provider_"):
         if existing.strm_path:
-            delete_vod_files(existing.strm_path)
+            if media_type == "movie":
+                delete_vod_files(existing.strm_path)
+            else:
+                # A series' strm_path is its show folder, which the movie
+                # helper ignores — the episodes' .strm files stayed on disk
+                # with nothing tracking them once the row was converted.
+                from services.media_files import delete_series_files
+                delete_series_files(existing.strm_path)
         convert_record_to_downloaded(existing, media_type)
         logger.info(f"[Sync] Enforced keep-downloaded resolution for tmdb:{tmdb_id} — provider copy suppressed")
         return True
@@ -760,11 +895,12 @@ def check_and_record_duplicate(
             return True  # Existing provider has equal or higher priority, skip
 
         # New provider is higher priority (lower number) — take over the
-        # existing row instead of inserting a duplicate tmdb_id.
+        # existing row instead of inserting a duplicate tmdb_id. The caller
+        # points the files at it (see TAKEOVER).
         existing.provider_id = provider.id
         existing.source = source
         existing.date_updated = datetime.utcnow()
-        return True
+        return TAKEOVER
 
     # Same provider (e.g. re-sync / appears in a second category of the same
     # provider): the existing row already belongs to us — don't insert again.
@@ -931,7 +1067,13 @@ def _prune_removed_content(db: Session, provider: Provider, media_type: str, see
 
     removed = 0
     for record in confirmed:
-        if media_type == "movie":
+        # Two titles that were written to one folder before #155 share its
+        # files: removing one row must not delete what the other plays.
+        shared = record.strm_path and db.query(Model).filter(
+            Model.strm_path == record.strm_path, Model.id != record.id).first()
+        if shared:
+            logger.info(f"[Sync] Keeping the files of '{record.title}': '{shared.title}' still uses them")
+        elif media_type == "movie":
             # strm_path points at the .strm file itself.
             delete_movie_files(record.strm_path)
         else:
@@ -1131,7 +1273,9 @@ def sync_provider(
         from services.provider_activity import JobPause
         client.job_pause = pause if pause is not None else JobPause(db, "the provider sync", cancel_check)
         client.job_pause.cancel_check = cancel_check
+        client.job_pause.run_id = run.id    # protected waits are booked to this run (routers.sync)
         client.vod_links = vod_links_for(db, provider)
+        _note_other_providers(client, provider, db)
         # Before the first provider call, with the run already visible (so a
         # waiting sync can be seen and cancelled from the dashboard).
         _pause_between_categories(client, db, progress_callback,
@@ -1311,6 +1455,8 @@ def _sync_movies(
             continue
 
         _prev_count = cat.title_count
+        # Some TMDB lookup in this category failed tonight (see the count below).
+        cat_lookup_failed = False
         if _category_went_empty(db, cat, len(streams)):
             logger.warning(
                 f"Category '{cat.category_name}' returned 0 titles but held "
@@ -1375,6 +1521,7 @@ def _sync_movies(
                     elif metadata:
                         tmdb_results[idx] = metadata
             if lookup_failed:
+                cat_lookup_failed = True
                 # A stream whose lookup errored is neither matched nor "seen", so
                 # the seen set is incomplete — exactly like a failed category fetch.
                 logger.warning(
@@ -1421,7 +1568,33 @@ def _sync_movies(
                 if override_id in existing_provider_tmdb_ids or override_id in seen_tmdb_ids:
                     metadata = {"tmdb_id": override_id}
                 else:
-                    metadata = tmdb.get_movie_details(override_id)
+                    tmdb_down = False
+                    tl = getattr(tmdb, "_tl", None)
+                    if tl is not None:
+                        tl.failed = False  # get_movie_details doesn't reset it; a stale flag isn't this lookup's
+                    try:
+                        metadata = tmdb.get_movie_details(override_id)
+                        failed = getattr(tmdb, "_lookup_failed", None)
+                        tmdb_down = bool(not metadata and callable(failed) and failed())  # 429/5xx
+                    except TMDBConnectionError:
+                        metadata, tmdb_down = None, True
+                    if not metadata:
+                        # The right film's details didn't come. Skip the stream
+                        # for tonight (never import it under its wrong label,
+                        # never fail the sync). Only an unreachable TMDB makes
+                        # the seen set doubtful enough to hold back pruning: a
+                        # plain "no such film" (TMDB removed or merged the id)
+                        # comes back every night and would stop this
+                        # provider's pruning for good.
+                        if tmdb_down:
+                            fetch_ok = False
+                            cat_lookup_failed = True
+                        else:
+                            logger.warning(f"[Sync] Stream {stream.get('stream_id')} is fixed to TMDB {override_id}, "
+                                           f"which TMDB no longer has; skipped (fix it again to a film TMDB knows)")
+                        cat_skipped += 1
+                        stats["skipped"] += 1
+                        continue
                 known_id = None
             if not metadata and known_id:
                 # Known title but not in batch — it's existing, merge tags
@@ -1488,13 +1661,17 @@ def _sync_movies(
             # Compute file path early so duplicate record has it
             title = metadata["title"]
             year_str = metadata.get("year")
-            folder_name = vod_folder_name(title, year_str)
+            folder_name = _claim_vod_name(db, "movie", output_dir, title, year_str, tmdb_id)
             movie_dir = output_dir / folder_name
             strm_file = movie_dir / f"{folder_name}.strm"
             nfo_file = movie_dir / f"{folder_name}.nfo"
 
             # Check if exists from another provider (duplicate)
-            if check_and_record_duplicate(tmdb_id, "movie", f"provider_{provider.id}", str(strm_file), provider, db):
+            dup_answer = check_and_record_duplicate(tmdb_id, "movie", f"provider_{provider.id}", str(strm_file),
+                                                    provider, db)
+            if dup_answer == TAKEOVER:
+                _take_over_files(db, "movie", tmdb_id, client, stream, provider)
+            if dup_answer:
                 cat_existing += 1
                 stats["existing"] += 1
                 if item_idx % 10 == 0 or item_idx == total_in_cat:
@@ -1579,7 +1756,14 @@ def _sync_movies(
                 logger.info(f"  {cat.category_name} ({item_idx}/{total_in_cat}) — {cat_new} new, {cat_existing} existing")
 
         # Commit all new movies for this category at once
-        cat.title_count = cat_new + cat_existing
+        # The count is also the guard's memory (_category_went_empty): a category
+        # at 0 is not protected from an empty provider answer. On a night some
+        # lookups failed, what matched undercounts what the category holds — a
+        # TMDB outage could take it to 0, and two empty answers later every title
+        # in it was pruned (#25). Keep the higher count then; the snapshot below
+        # records what was really matched.
+        cat.title_count = max(_prev_count or 0, cat_new + cat_existing) if cat_lookup_failed \
+            else cat_new + cat_existing
         cat.last_sync_matched = cat_new + cat_existing
         cat.last_sync_skipped = cat_skipped
         snapshot = CategorySnapshot(
@@ -1681,6 +1865,8 @@ def _sync_series(
             continue
 
         _prev_count = cat.title_count
+        # Some TMDB lookup in this category failed tonight (see the count below).
+        cat_lookup_failed = False
         if _category_went_empty(db, cat, len(series_list)):
             logger.warning(
                 f"Category '{cat.category_name}' returned 0 series but held "
@@ -1733,6 +1919,7 @@ def _sync_series(
                     elif metadata:
                         tmdb_results[idx] = metadata
             if lookup_failed:
+                cat_lookup_failed = True
                 # A stream whose lookup errored is neither matched nor "seen", so
                 # the seen set is incomplete — exactly like a failed category fetch.
                 logger.warning(
@@ -1831,10 +2018,14 @@ def _sync_series(
             # Compute file path early so duplicate record has it
             title = metadata["title"]
             year_str = metadata.get("year")
-            folder_name = vod_folder_name(title, year_str)
+            folder_name = _claim_vod_name(db, "series", output_dir, title, year_str, tmdb_id)
             show_dir = output_dir / folder_name
 
-            if check_and_record_duplicate(tmdb_id, "series", f"provider_{provider.id}", str(show_dir), provider, db):
+            dup_answer = check_and_record_duplicate(tmdb_id, "series", f"provider_{provider.id}", str(show_dir),
+                                                    provider, db)
+            if dup_answer == TAKEOVER:
+                _take_over_files(db, "series", tmdb_id, client, series, provider)
+            if dup_answer:
                 cat_existing += 1
                 stats["existing"] += 1
                 if item_idx % 10 == 0 or item_idx == total_in_cat:
@@ -1925,7 +2116,14 @@ def _sync_series(
                 logger.info(f"  {cat.category_name} ({item_idx}/{total_in_cat}) — {cat_new} new, {cat_existing} existing")
 
         # Commit all new series for this category at once
-        cat.title_count = cat_new + cat_existing
+        # The count is also the guard's memory (_category_went_empty): a category
+        # at 0 is not protected from an empty provider answer. On a night some
+        # lookups failed, what matched undercounts what the category holds — a
+        # TMDB outage could take it to 0, and two empty answers later every title
+        # in it was pruned (#25). Keep the higher count then; the snapshot below
+        # records what was really matched.
+        cat.title_count = max(_prev_count or 0, cat_new + cat_existing) if cat_lookup_failed \
+            else cat_new + cat_existing
         cat.last_sync_matched = cat_new + cat_existing
         cat.last_sync_skipped = cat_skipped
         snapshot = CategorySnapshot(

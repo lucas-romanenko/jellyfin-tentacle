@@ -397,6 +397,9 @@ class ListSubscription(Base):
     playlist_enabled = Column(Boolean, default=False)  # Generate a Jellyfin playlist from this list
     last_fetched = Column(DateTime, nullable=True)
     last_item_count = Column(Integer, default=0)
+    # What the user needs to know about the last refresh when it did not read
+    # the whole list (a movies-only fallback, a page that failed), else NULL.
+    last_fetch_note = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("TentacleUser", backref="list_subscriptions")
@@ -652,6 +655,9 @@ class LiveChannel(Base):
 
     # Channel identity
     name = Column(String, nullable=False)
+    # The user's own name for the channel. Channel syncs rewrite `name` from
+    # the provider every time and never touch this, so a rename survives.
+    custom_name = Column(String, nullable=True)
     channel_number = Column(Integer, nullable=True)  # User-assignable
     stream_id = Column(String, nullable=True)  # Xtream stream_id or M3U index
 
@@ -662,6 +668,12 @@ class LiveChannel(Base):
     logo_url = Column(String, nullable=True)
     group_title = Column(String, nullable=True)  # Category/group from provider
     epg_channel_id = Column(String, nullable=True)  # tvg-id for EPG matching
+    # The admin's own guide id for the channel. Channel syncs never touch it,
+    # and it wins over everything below (#141).
+    epg_id_override = Column(String, nullable=True)
+    # The feed channel the last EPG sync matched by NAME, because the tvg-id
+    # was missing or the feed did not carry it (#141). Recomputed every sync.
+    epg_name_match = Column(String, nullable=True)
 
     # Management
     enabled = Column(Boolean, default=False)  # User must enable channels
@@ -675,6 +687,27 @@ class LiveChannel(Base):
     __table_args__ = (
         UniqueConstraint("provider_id", "stream_id", name="uq_live_channel_stream"),
     )
+
+    @property
+    def guide_name(self) -> str:
+        """The name Jellyfin's guide shows: the user's name, else the provider's."""
+        return (self.custom_name or "").strip() or self.name
+
+    @property
+    def guide_epg_id(self):
+        """The guide id this channel's programmes are stored and served under:
+        the override, else a name match, else the provider's tvg-id."""
+        return ((self.epg_id_override or "").strip() or self.epg_name_match
+                or (self.epg_channel_id or "").strip() or None)
+
+    @property
+    def epg_match(self):
+        """How guide_epg_id was chosen: "override", "name", "tvg-id" or None."""
+        if (self.epg_id_override or "").strip():
+            return "override"
+        if self.epg_name_match:
+            return "name"
+        return "tvg-id" if (self.epg_channel_id or "").strip() else None
 
 
 class LiveChannelGroup(Base):
@@ -697,6 +730,8 @@ class EPGProgram(Base):
     channel_id = Column(String, nullable=False, index=True)  # Matches epg_channel_id
 
     title = Column(String, nullable=False)
+    # The provider's <sub-title>: an episode or match name ("TOR vs MTL").
+    sub_title = Column(String, nullable=True)
     description = Column(Text, nullable=True)
     start = Column(DateTime, nullable=False)
     stop = Column(DateTime, nullable=False)
@@ -748,9 +783,22 @@ def create_notification(db, user_id: int, tmdb_id: int, media_type: str,
     return notif
 
 
+# Settings whose readers parse or compare the stored value and need one: an
+# empty string is not "unset" to them (int("") raises). Seeded with these, and
+# a Save that sends an empty field stores these back instead of "".
+NON_EMPTY_DEFAULTS = {
+    "sync_schedule": "0 3 * * *",
+    "recently_added_days": "30",
+    "tmdb_match_threshold": "0.7",
+    "hybrid_series_layout": "vod_root",
+}
+
+
 def get_setting(db, key: str, default: str = "") -> str:
     """Get a single setting value by key"""
     s = db.query(Setting).filter(Setting.key == key).first()
+    if s and key in NON_EMPTY_DEFAULTS and not (s.value or "").strip():
+        return default or NON_EMPTY_DEFAULTS[key]
     return s.value if s else default
 
 
@@ -910,7 +958,34 @@ def _migrate_columns():
     _migrate_home_row_order(cursor, conn)
     _migrate_auto_playlist_toggles(cursor, conn)
     _drop_retired_tables(cursor, conn)
+    _reset_guessed_made_for_kids(cursor, conn)
     conn.close()
+
+
+def _reset_guessed_made_for_kids(cursor, conn):
+    """Forget the Made for Kids values the age_limit guess wrote (#130).
+
+    Until this fix the indexer stored True for any unrestricted video whose
+    details came back without is_live, which is not what the designation
+    means, and never stored False. yt-dlp does not report the designation, so
+    none of the stored True values came from YouTube: reset them to NULL
+    ("unknown"). Runs once, recorded in settings, so values a later extractor
+    supplies for real are never touched.
+    """
+    import sqlite3
+    marker = "migrated_youtube_made_for_kids_reset"
+    try:
+        cursor.execute("SELECT 1 FROM settings WHERE key = ?", (marker,))
+        if cursor.fetchone():
+            return
+        cursor.execute("UPDATE youtube_videos SET is_made_for_kids = NULL "
+                       "WHERE is_made_for_kids IS NOT NULL")
+        if cursor.rowcount:
+            logger.info(f"[migrate] Cleared {cursor.rowcount} guessed youtube_videos.is_made_for_kids value(s)")
+        cursor.execute("INSERT INTO settings (key, value) VALUES (?, ?)", (marker, "1"))
+        conn.commit()
+    except sqlite3.OperationalError as e:
+        logger.error(f"[migrate] Could not reset youtube_videos.is_made_for_kids: {e}")
 
 
 def _drop_retired_tables(cursor, conn):
@@ -1006,9 +1081,9 @@ def seed_defaults(db):
         "sonarr_api_key": "",
         "jellyfin_url": "",
         "jellyfin_api_key": "",
-        "sync_schedule": "0 3 * * *",
-        "recently_added_days": "30",
-        "tmdb_match_threshold": "0.7",
+        "sync_schedule": NON_EMPTY_DEFAULTS["sync_schedule"],
+        "recently_added_days": NON_EMPTY_DEFAULTS["recently_added_days"],
+        "tmdb_match_threshold": NON_EMPTY_DEFAULTS["tmdb_match_threshold"],
         "smartlists_path": "/data/smartlists",
         "jellyfin_user_id": "",
         "jellyfin_user_name": "",
@@ -1021,7 +1096,7 @@ def seed_defaults(db):
         #   shared_library - Sonarr downloads to its own root using the SAME
         #                    folder name as the VOD show; Jellyfin merges the
         #                    two folders (both must be in ONE Jellyfin library)
-        "hybrid_series_layout": "vod_root",
+        "hybrid_series_layout": NON_EMPTY_DEFAULTS["hybrid_series_layout"],
         "setup_complete": "false",
         "data_dir": os.getenv("DATA_DIR", "/data"),
         "hdhr_tuner_count": "3",

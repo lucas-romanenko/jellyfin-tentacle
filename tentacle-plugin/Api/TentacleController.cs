@@ -52,6 +52,20 @@ public class TentacleController : ControllerBase
     }
 
     /// <summary>
+    /// Confirms that this server deleted a title and told the backend so. The backend
+    /// acts on a delete notification only when this answers 200 (#139). Each forwarded
+    /// deletion confirms once, within 15 minutes (see RecentDeletions).
+    /// </summary>
+    /// <param name="mediaType">"movie" or "series".</param>
+    /// <param name="tmdbId">The deleted title's TMDB id.</param>
+    [HttpPost("Deletions/{mediaType}/{tmdbId}/Confirm")]
+    [Authorize(Policy = "RequiresElevation")]
+    public ActionResult ConfirmDeletion([FromRoute] string mediaType, [FromRoute] string tmdbId)
+    {
+        return Services.RecentDeletions.TryConsume(mediaType, tmdbId) ? Ok() : NotFound();
+    }
+
+    /// <summary>
     /// Full refresh: clears caches and broadcasts a library-changed event.
     /// Called by Tentacle server after every sync.
     /// Requires Jellyfin API key auth (X-Emby-Token header).
@@ -75,6 +89,7 @@ public class TentacleController : ControllerBase
         // Step 2: Clear home config + discover + ratings caches
         _homeScreenManager.ClearCache();
         TentacleResultsHandler.ClearItemCache();
+        TentacleHomeController.ClearSectionCache();
         TentacleDiscoverController.ClearCache();
         TentacleMdbListController.ClearSettingsCache();
         Services.MdbListCacheService.Clear();

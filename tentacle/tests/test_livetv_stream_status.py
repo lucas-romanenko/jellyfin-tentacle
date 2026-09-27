@@ -36,11 +36,13 @@ class StatusEntriesBelongToTheStreamThatMadeThem(unittest.IsolatedAsyncioTestCas
     async def test_the_timer_refresher_does_not_run_for_vod_alone(self):
         from routers import livetv
         livetv._stream_slots = livetv._StreamSlots()
+        self.addCleanup(lambda: setattr(livetv, "_stream_slots", livetv._StreamSlots()))
         await livetv._stream_slots.acquire_lease(6, 0.01, "vod", "vod:movie:1:1")
         self.assertFalse(livetv._live_leases_exist())
         await livetv._stream_slots.acquire_lease(6, 0.01, "live", "channel:1")
         self.assertTrue(livetv._live_leases_exist())
         livetv._stream_slots = livetv._StreamSlots()
+        self.addCleanup(lambda: setattr(livetv, "_stream_slots", livetv._StreamSlots()))
 
 
 class StatusTransitions(unittest.IsolatedAsyncioTestCase):

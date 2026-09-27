@@ -40,23 +40,70 @@ class TestStreamKey(unittest.TestCase):
         self.assertFalse(wrong_match.is_blocked({"7"}, 8, "http://u"))
         self.assertFalse(wrong_match.is_blocked(set(), 7))
 
+    def test_an_m3u_export_of_an_xtream_panel_is_blocked_by_its_url_key(self):
+        """An M3U provider's entries carry a hashed stream_id, but a panel's
+        m3u_plus export lists VOD as /movie/<user>/<pass>/<id>.<ext>: the block
+        is stored as that <id> (stream_key_for_url of the .strm), so the entry
+        has to be compared the same way or the block never matches again."""
+        url = "http://panel.example:8080/movie/user/pass/5003.mkv"
+        key = wrong_match.stream_key_for_url(url)
+        self.assertEqual("5003", key)
+        hashed_id = 918273645   # what M3UClient gives the same entry
+        self.assertTrue(wrong_match.is_blocked({key}, hashed_id, url))
+        self.assertEqual(674607, wrong_match.override_for({key: 674607}, hashed_id, url))
+        self.assertFalse(wrong_match.is_blocked({key}, hashed_id, "http://panel.example:8080/movie/user/pass/5004.mkv"))
+        self.assertIsNone(wrong_match.override_for({key: 674607}, hashed_id,
+                                                   "http://panel.example:8080/movie/user/pass/5004.mkv"))
+
+    def test_override_by_whole_url_still_works(self):
+        url = "http://m3u.example/vod/some-film.m3u8?token=abc"
+        self.assertEqual(5, wrong_match.override_for({url: 5}, 123, url))
+        self.assertIsNone(wrong_match.override_for({url: 5}, 123, ""))
+
 
 class FakeJf:
-    """Records deletes, and what Tentacle's DB looked like at that moment."""
+    """Records deletes, and what Tentacle's DB looked like at that moment.
+
+    Lists one Jellyfin item per VOD .strm it has seen (Jellyfin mounts the
+    VOD folder at another prefix), plus `extra` items -- e.g. a Radarr download
+    of the same film, listed FIRST as Jellyfin may well list it."""
 
     def __init__(self, db):
         self.db = db
         self.deleted = []
         self.row_present_at_delete = None
+        self.items = {}
+        self.extra = []
 
     def __call__(self, *a, **k):
         return self
 
+    def sync_items(self):
+        for m in self.db.query(Movie).filter(Movie.strm_path.isnot(None)).all():
+            tail = "/".join(_RealPath(m.strm_path).parts[-2:])
+            self.items.setdefault(f"jf-{m.tmdb_id}", {
+                "Id": f"jf-{m.tmdb_id}", "ProviderIds": {"Tmdb": str(m.tmdb_id)}, "Path": "/jfvod/" + tail})
+
+    def _all(self):
+        self.sync_items()
+        return list(self.extra) + list(self.items.values())
+
+    def _get(self, path, params=None):
+        items = self._all()
+        start = int((params or {}).get("StartIndex") or 0)
+        return {"Items": items[start:], "TotalRecordCount": len(items)}
+
+    def get_item_by_id(self, item_id):
+        return next((i for i in self._all() if i["Id"] == item_id), None)
+
+    def trigger_library_scan(self, *a, **k):
+        return True
+
     def search_by_tmdb_id(self, tmdb_id, media_type="Movie", **k):
-        return {"Id": f"jf-{tmdb_id}"}
+        return next((i for i in self._all() if i["ProviderIds"]["Tmdb"] == str(tmdb_id)), None)
 
     def delete_item(self, item_id):
-        tmdb = int(item_id.split("-")[1])
+        tmdb = int(item_id.split("-")[-1])
         self.row_present_at_delete = self.db.query(Movie).filter(Movie.tmdb_id == tmdb).first() is not None
         self.deleted.append(item_id)
         return True
@@ -74,14 +121,26 @@ class _Base(NightlyHarness):
         mdb.set_setting(self.db, "jellyfin_url", "http://jf")
         mdb.set_setting(self.db, "jellyfin_api_key", "k")
         self.jf = FakeJf(self.db)
-        for p in (mock.patch("services.jellyfin.JellyfinService", self.jf),
-                  mock.patch("routers.library._cleanup_playlists_all_users")):
-            p.start()
-            self.addCleanup(p.stop)
+        mock.patch("services.jellyfin.JellyfinService", self.jf).start()
+        self.cleanup = mock.patch("routers.library._cleanup_playlists_all_users").start()
+        self.addCleanup(mock.patch.stopall)
         self.tmdb = FakeTMDB.ids["Movie 9"]   # the "mislabelled" one (stream id == tmdb id here)
+        self.jf.sync_items()
 
     def report(self, tmdb_id=None):
         return wrong_match.block_and_remove_movie(self.db, tmdb_id or self.tmdb, user_name="Lucas")
+
+
+def _assert_cleaned(self, item_id):
+    import time as _t
+    for _ in range(50):
+        if self.cleanup.call_args_list:
+            break
+        _t.sleep(0.05)
+    self.assertEqual([(self.tmdb, "movie", item_id)], [c.args for c in self.cleanup.call_args_list])
+
+
+_Base.assertPlaylistsCleanedFor = _assert_cleaned
 
 
 class TestWrongMovie(_Base):
@@ -94,7 +153,8 @@ class TestWrongMovie(_Base):
         self.assertFalse(strm.exists())
         self.assertFalse(strm.with_suffix(".nfo").exists())
         self.assertEqual(str(self.tmdb), r["blocked"])
-        self.assertEqual([f"jf-{self.tmdb}"], self.jf.deleted)
+        self.assertEqual([], self.jf.deleted, "never DELETE /Items: a scan drops the item")
+        self.assertPlaylistsCleanedFor(f"jf-{self.tmdb}")
         b = self.db.query(BlockedStream).one()
         self.assertEqual((self.provider.id, "movie", str(self.tmdb), "Lucas"),
                          (b.provider_id, b.media_type, b.stream_key, b.blocked_by))
@@ -138,7 +198,7 @@ class TestWrongMovie(_Base):
         self.db.add(DownloadRequest(tmdb_id=self.tmdb, media_type="movie", user_id=admin.id))
         self.db.commit()
         self.report()
-        self.assertFalse(self.jf.row_present_at_delete, "Jellyfin item deleted before Tentacle's row")
+        self.assertEqual([], self.jf.deleted)
         self.assertEqual(1, self.db.query(DownloadRequest).count())
 
     def test_reporting_twice_does_not_duplicate_the_block(self):
@@ -165,6 +225,72 @@ class TestWrongMovie(_Base):
         self.assertIsNotNone(self.movie(self.tmdb))
         self.assertEqual(0, self.db.query(BlockedStream).count())
 
+    def test_a_download_of_the_same_film_is_never_deleted_in_jellyfin(self):
+        """The same film is in Jellyfin twice: a Radarr download (listed first)
+        and this IPTV copy. Deleting "the first movie with this TMDB id" through
+        Jellyfin deleted the DOWNLOAD's folder from disk."""
+        self.jf.extra = [{"Id": f"dl-{self.tmdb}", "ProviderIds": {"Tmdb": str(self.tmdb)},
+                          "Path": "/downloads/Movie 9 (2020)/Movie 9 (2020).mkv"}]
+        self.report()
+        self.assertEqual([], self.jf.deleted)
+        self.assertPlaylistsCleanedFor(f"jf-{self.tmdb}")
+
+    def test_a_download_in_the_same_folder_is_not_deleted_through_jellyfin(self):
+        """Merged VOD/Radarr root: Jellyfin 10.11.8 groups "Movie (Year).strm"
+        and "Movie (Year) - Bluray-1080p.mkv" as versions of one item with the
+        .strm as primary; DELETE /Items then removes the whole folder."""
+        strm = _RealPath(self.movie(self.tmdb).strm_path)
+        mkv = strm.parent / (strm.parent.name + " - Bluray-1080p.mkv")
+        mkv.write_bytes(b"x")
+        r = self.report()
+        self.assertTrue(mkv.exists())
+        self.assertEqual([], self.jf.deleted, "no DELETE /Items while the folder holds a download")
+        self.assertFalse(r["jellyfin_deleted"])
+        self.assertIsNone(self.movie(self.tmdb), "Tentacle's copy is still removed")
+
+    def test_subtitles_and_art_beside_the_strm_are_not_deleted_through_jellyfin(self):
+        """Not grouped (IsInMixedFolder): Jellyfin deletes every sidecar whose
+        name starts with the item's -- the download's subtitles, NFO, art."""
+        strm = _RealPath(self.movie(self.tmdb).strm_path)
+        srt = strm.parent / (strm.stem + ".en.srt")
+        srt.write_text("1")
+        self.report()
+        self.assertTrue(srt.exists())
+        self.assertEqual([], self.jf.deleted)
+
+    def test_a_stored_id_of_the_download_is_not_trusted(self):
+        """Discover backfills jellyfin_item_id from a TMDB lookup -- it can be
+        the download's id."""
+        self.jf.extra = [{"Id": f"dl-{self.tmdb}", "ProviderIds": {"Tmdb": str(self.tmdb)},
+                          "Path": "/downloads/Movie 9 (2020)/Movie 9 (2020).mkv"}]
+        row = self.movie(self.tmdb)
+        row.jellyfin_item_id = f"dl-{self.tmdb}"
+        self.db.commit()
+        self.report()
+        self.assertEqual([], self.jf.deleted)
+        self.assertPlaylistsCleanedFor(f"jf-{self.tmdb}")
+
+    def test_no_item_for_this_strm_deletes_nothing(self):
+        self.jf.items.clear()
+        self.jf.sync_items = lambda: None
+        self.jf.extra = [{"Id": f"dl-{self.tmdb}", "ProviderIds": {"Tmdb": str(self.tmdb)},
+                          "Path": "/downloads/Movie 9 (2020)/Movie 9 (2020).mkv"}]
+        r = self.report()
+        self.assertEqual([], self.jf.deleted)
+        self.assertFalse(r["jellyfin_deleted"])
+        self.assertIsNone(self.movie(self.tmdb), "Tentacle's copy is still removed")
+
+    def test_a_strm_that_cannot_be_deleted_changes_nothing(self):
+        strm = _RealPath(self.movie(self.tmdb).strm_path)
+        with mock.patch("services.media_files.Path.unlink", side_effect=PermissionError("read-only")):
+            with self.assertRaises(wrong_match.WrongMatchError) as e:
+                self.report()
+        self.assertEqual(500, e.exception.status)
+        self.assertTrue(strm.exists())
+        self.db.expire_all()
+        self.assertIsNotNone(self.movie(self.tmdb), "the row stays: the copy still plays")
+        self.assertEqual(0, self.db.query(BlockedStream).count())
+
     def test_it_is_audited(self):
         self.report()
         log = self.db.query(mdb.DeletionLog).filter(mdb.DeletionLog.kind == "wrong-match").one()
@@ -185,6 +311,39 @@ class TestRuntimeCheck(_Base):
     def set_runtime(self, tmdb, minutes):
         self.movie(tmdb).runtime = minutes
         self.db.commit()
+
+    def test_a_download_of_the_same_film_is_not_the_stream(self):
+        """A Radarr download of the film (here an 8-minute sample, or another
+        cut) is not what the IPTV copy plays -- it must not flag it."""
+        self.set_runtime(self.tmdb, 83)
+        items = [{"Id": "dl", "ProviderIds": {"Tmdb": str(self.tmdb)}, "Path": "/downloads/Movie 9 (2020)/Movie 9.mkv",
+                  "MediaSources": [{"RunTimeTicks": 8 * 600_000_000}]},
+                 {"Id": f"jf-{self.tmdb}", "ProviderIds": {"Tmdb": str(self.tmdb)}, "Path": "/vod/Movie 9/Movie 9.strm",
+                  "MediaSources": [{"RunTimeTicks": 0}]}]
+        r = self.run_check(items)
+        self.assertEqual(0, r["flagged"])
+        self.assertEqual(0, self.db.query(MatchSuspect).count())
+
+    def test_the_strm_is_still_checked_next_to_a_download(self):
+        self.set_runtime(self.tmdb, 100)
+        items = [{"Id": "dl", "ProviderIds": {"Tmdb": str(self.tmdb)}, "Path": "/downloads/Movie 9/Movie 9.mkv",
+                  "MediaSources": [{"RunTimeTicks": 100 * 600_000_000}]},
+                 {"Id": f"jf-{self.tmdb}", "ProviderIds": {"Tmdb": str(self.tmdb)}, "Path": "/vod/Movie 9/Movie 9.strm",
+                  "MediaSources": [{"RunTimeTicks": 83 * 600_000_000}]}]
+        self.assertEqual(1, self.run_check(items)["flagged"])
+        self.assertEqual(f"jf-{self.tmdb}", self.db.query(MatchSuspect).one().jellyfin_item_id)
+
+    def test_a_download_grouped_with_the_strm_is_not_read_as_its_length(self):
+        """Same folder: Jellyfin groups the .mkv and the .strm as versions of one
+        item (the .strm primary) and lists the widest source first."""
+        self.set_runtime(self.tmdb, 100)
+        items = [{"Id": f"jf-{self.tmdb}", "ProviderIds": {"Tmdb": str(self.tmdb)},
+                  "Path": "/vod/Movie 9 (2020)/Movie 9 (2020).strm",
+                  "MediaSources": [{"Id": "mkv-version", "RunTimeTicks": 100 * 600_000_000},
+                                   {"Id": f"jf-{self.tmdb}", "RunTimeTicks": 8 * 600_000_000}]}]
+        r = self.run_check(items)
+        self.assertEqual(1, r["flagged"], "the stream plays 8 min, not the download's 100")
+        self.assertEqual(8, self.db.query(MatchSuspect).one().actual_minutes)
 
     def test_a_different_film_is_flagged(self):
         self.set_runtime(self.tmdb, 100)          # TMDB: the 1981 documentary
@@ -336,6 +495,53 @@ class TestSuggestions(_Base):
         self.assertNotIn(self.tmdb, [c["tmdb_id"] for c in r["candidates"]])
 
 
+class TestTmdbDown(_Base):
+    """TMDB unreachable (TMDBConnectionError) or failing (429/5xx -> None) is
+    not "no such film", and must never be an unhandled 500."""
+    def setUp(self):
+        super().setUp()
+        from services.exceptions import TMDBConnectionError
+        self.err = TMDBConnectionError
+        self.fake = FakeRealTMDB()
+        p = mock.patch.object(wrong_match, "_tmdb", lambda db: self.fake)
+        p.start()
+        self.addCleanup(p.stop)
+        self.jf.trigger_library_scan = mock.Mock(return_value=True)
+
+    def down(self, *a, **k):
+        raise self.err("Cannot reach TMDB API")
+
+    def test_suggestions_say_tmdb_is_down(self):
+        self.fake._request = self.down
+        with self.assertRaises(wrong_match.WrongMatchError) as e:
+            wrong_match.suggest_matches(self.db, self.tmdb)
+        self.assertEqual(503, e.exception.status)
+
+    def test_fix_match_says_tmdb_is_down_and_changes_nothing(self):
+        self.fake.get_movie_details = self.down
+        with self.assertRaises(wrong_match.WrongMatchError) as e:
+            wrong_match.rematch_movie(self.db, self.tmdb, 674607)
+        self.assertEqual(503, e.exception.status)
+        self.assertIsNotNone(self.movie(self.tmdb))
+
+    def test_a_failing_tmdb_answer_is_not_a_missing_film(self):
+        def failing(_tid):
+            self.fake._tl.failed = True
+            return None
+        import threading
+        self.fake._tl = threading.local()
+        self.fake._lookup_failed = lambda: getattr(self.fake._tl, "failed", False)
+        self.fake.get_movie_details = failing
+        with self.assertRaises(wrong_match.WrongMatchError) as e:
+            wrong_match.rematch_movie(self.db, self.tmdb, 674607)
+        self.assertEqual(503, e.exception.status)
+
+    def test_an_unknown_id_is_still_404(self):
+        with self.assertRaises(wrong_match.WrongMatchError) as e:
+            wrong_match.rematch_movie(self.db, self.tmdb, 999999999)
+        self.assertEqual(404, e.exception.status)
+
+
 class TestLanguageCodes(unittest.TestCase):
     def test_jellyfin_and_tmdb_codes_meet(self):
         for jf, tmdb in (("fre", "fr"), ("fra", "fr"), ("eng", "en"), ("ger", "de"), ("jpn", "ja"), ("en", "en")):
@@ -351,6 +557,17 @@ class TestProbeInfo(_Base):
             "MediaStreams": [{"Type": "Video"}, {"Type": "Audio", "Language": "fre"},
                              {"Type": "Audio", "Language": "fra"}, {"Type": "Subtitle", "Language": "eng"},
                              {"Type": "Audio", "Language": "und"}]}]}
+        info = wrong_match.probe_info(self.db, self.movie(self.tmdb))
+        self.assertEqual({"minutes": 83, "audio_languages": ["fr"]}, info)
+
+    def test_the_strm_version_not_a_grouped_download(self):
+        item_id = f"jf-{self.tmdb}"
+        self.jf.get_item_by_id = lambda _id: {"Id": item_id, "Path": "/vod/Movie 9 (2020)/Movie 9 (2020).strm",
+            "MediaSources": [
+                {"Id": "mkv-version", "RunTimeTicks": 120 * 600_000_000,
+                 "MediaStreams": [{"Type": "Audio", "Language": "eng"}]},
+                {"Id": item_id, "RunTimeTicks": 83 * 600_000_000,
+                 "MediaStreams": [{"Type": "Audio", "Language": "fre"}]}]}
         info = wrong_match.probe_info(self.db, self.movie(self.tmdb))
         self.assertEqual({"minutes": 83, "audio_languages": ["fr"]}, info)
 
@@ -402,6 +619,23 @@ class TestFrames(_Base):
         self.assertEqual(502, e.exception.status)
         self.assertEqual(0, len(list(_RealPath(self.tmp).glob("frame_cache/*.jpg"))), "failures aren't cached")
 
+    def test_cached_pictures_need_no_provider_connection(self):
+        """Once grabbed, the pictures come from the cache even while something
+        plays from the provider (the button used to refuse for ~45 s after its
+        own grab, because its own VOD playback was still counted)."""
+        wrong_match.stream_frames(self.db, self.tmdb)
+        with mock.patch("services.provider_activity.live_streams_active", return_value=True):
+            r = wrong_match.stream_frames(self.db, self.tmdb)
+        self.assertEqual(3, len(r["frames"]))
+        self.assertEqual(3, len(self.grabs))
+
+    def test_uncached_pictures_still_wait_for_the_provider(self):
+        with mock.patch("services.provider_activity.live_streams_active", return_value=True), \
+                self.assertRaises(wrong_match.WrongMatchError) as e:
+            wrong_match.stream_frames(self.db, self.tmdb)
+        self.assertEqual(503, e.exception.status)
+        self.assertEqual(0, len(self.grabs))
+
     def test_no_ffmpeg(self):
         with mock.patch("shutil.which", return_value=None), \
                 self.assertRaises(wrong_match.WrongMatchError) as e:
@@ -445,6 +679,20 @@ class TestRematch(_Base):
         self.assertIn("Tag1 Movies", row.tags, "source category tags are kept")
         self.jf.trigger_library_scan.assert_called_once()
 
+    def test_an_old_strm_that_cannot_be_deleted_changes_nothing(self):
+        import services.media_files as mf
+        old = self.movie(self.tmdb).strm_path
+        real = mf.delete_movie_files
+        with mock.patch.object(mf, "delete_movie_files", side_effect=lambda p: 0 if str(p) == old else real(p)):
+            with self.assertRaises(wrong_match.WrongMatchError) as e:
+                self.rematch()
+        self.assertEqual(500, e.exception.status)
+        self.db.expire_all()
+        self.assertIsNotNone(self.movie(self.tmdb), "unchanged")
+        self.assertIsNone(self.movie(674607))
+        self.assertTrue(_RealPath(old).exists())
+        self.assertFalse(any(_RealPath(old).parent.parent.glob("The Decline*/*.strm")), "the new copy is undone")
+
     def test_it_stays_fixed_every_night(self):
         self.rematch()
         for _ in range(3):
@@ -462,6 +710,55 @@ class TestRematch(_Base):
         self.assertIsNotNone(row)
         self.assertEqual("The Decline", row.title)
         self.assertIsNone(self.movie(self.tmdb))
+
+    def test_a_fix_to_a_film_tmdb_no_longer_has_does_not_stop_pruning(self):
+        self.rematch()
+        self.db.query(Movie).filter(Movie.tmdb_id == 674607).delete()
+        self.db.commit()
+        FakeTMDB.get_movie_details = lambda _self, tid: None   # a plain 404: the id is gone from TMDB
+        self.client.movies["1"] = [(t, s) for t, s in self.client.movies["1"] if t != "Movie 5"]
+        for _ in range(3):
+            self.night()
+        self.assertIsNone(self.movie(FakeTMDB.ids["Movie 5"]), "the provider dropped Movie 5; it is pruned")
+        self.assertIsNone(self.movie(self.tmdb), "the wrong label is not imported either")
+
+    def test_a_stale_failure_flag_does_not_make_a_404_look_like_tmdb_down(self):
+        import threading as _th
+        self.rematch()
+        self.db.query(Movie).filter(Movie.tmdb_id == 674607).delete()
+        self.db.commit()
+        FakeTMDB.get_movie_details = lambda _self, tid: None      # a plain 404
+        FakeTMDB._tl = _th.local()
+        FakeTMDB._lookup_failed = lambda _self: getattr(_self._tl, "failed", False)
+        self.addCleanup(lambda: [delattr(FakeTMDB, a) for a in ("_tl", "_lookup_failed") if hasattr(FakeTMDB, a)])
+        self.client.movies["1"] = [(t, s) for t, s in self.client.movies["1"] if t != "Movie 5"]
+        for _ in range(3):
+            FakeTMDB._tl.failed = True   # left over from an earlier failed call on this thread
+            self.night()
+        self.assertIsNone(self.movie(FakeTMDB.ids["Movie 5"]), "pruned: the 404 is not an outage")
+
+    def test_a_download_of_the_labelled_film_survives_in_jellyfin(self):
+        self.jf.extra = [{"Id": f"dl-{self.tmdb}", "ProviderIds": {"Tmdb": str(self.tmdb)},
+                          "Path": "/downloads/Movie 9 (2020)/Movie 9 (2020).mkv"}]
+        self.rematch()
+        self.assertEqual([], self.jf.deleted)
+        self.assertPlaylistsCleanedFor(f"jf-{self.tmdb}")
+
+    def test_tmdb_down_while_rebuilding_a_fixed_copy_neither_fails_the_sync_nor_imports_the_wrong_label(self):
+        self.rematch()
+        self.db.query(Movie).filter(Movie.tmdb_id == 674607).delete()
+        self.db.commit()
+        from services.exceptions import TMDBConnectionError
+        def down(_self, tid):
+            raise TMDBConnectionError("Cannot reach TMDB API")
+        FakeTMDB.get_movie_details = down
+        others = self.db.query(Movie).count()
+        self.night()
+        self.assertIsNone(self.movie(674607))
+        self.assertIsNone(self.movie(self.tmdb), "imported under the wrong label")
+        self.assertEqual(others, self.db.query(Movie).count(), "nothing pruned or added")
+        run = self.db.query(mdb.SyncRun).order_by(mdb.SyncRun.id.desc()).first()
+        self.assertEqual("completed", run.status)
 
     def test_the_request_for_the_labelled_film_survives(self):
         admin = mdb.TentacleUser(jellyfin_user_id="a" * 32, display_name="Lucas", is_admin=True)

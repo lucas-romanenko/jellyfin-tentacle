@@ -75,11 +75,25 @@ def get_settings_raw(db: Session = Depends(get_db)):
 
 @router.post("")
 def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
+    from models.database import Setting
     sensitive_keys = {"tmdb_bearer_token", "tmdb_api_key", "radarr_api_key", "sonarr_api_key", "jellyfin_api_key", "trakt_client_id", "mdblist_api_key", "vod_token_secret"}
+    from models.database import NON_EMPTY_DEFAULTS
     for key, value in body.settings.items():
         # Don't overwrite sensitive keys if they look masked
         if key in sensitive_keys and value and "..." in value:
             continue
+        if value in ("", None):
+            if key in NON_EMPTY_DEFAULTS:
+                # A cleared "Recently added days" or match threshold (the
+                # field then shows its placeholder, so it looks like the
+                # default) was stored as "", and every reader's int()/float()
+                # raised: the provider sync, the tag refresh and the playlist
+                # build all failed until it was typed back in.
+                value = NON_EMPTY_DEFAULTS[key]
+            elif db.query(Setting).filter(Setting.key == key).first() is None:
+                # Nothing to clear: don't create an empty row for a key that
+                # was never set (a Save with nothing edited changed the table).
+                continue
         set_setting(db, key, value)
 
     # Mark setup complete if all required fields are filled
@@ -92,7 +106,7 @@ def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
     if "sync_schedule" in body.settings:
         try:
             from main import reschedule_main_sync
-            reschedule_main_sync(body.settings["sync_schedule"])
+            reschedule_main_sync(get_setting(db, "sync_schedule"))
         except Exception:
             import logging
             logging.getLogger(__name__).warning("Could not reschedule sync after settings save", exc_info=True)
@@ -367,7 +381,9 @@ def connection_status(db: Session = Depends(get_db)):
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
         futs = {
-            "jellyfin": executor.submit(_test, jf_url, jf_key, "System/Info", "X-Emby-Token", "System/Configuration"),
+            # /Plugins requires elevation. /System/Configuration does not: any
+            # signed-in user may read it, so probing it let a non-admin key pass (#129).
+            "jellyfin": executor.submit(_test, jf_url, jf_key, "System/Info", "X-Emby-Token", "Plugins"),
             "radarr": executor.submit(_test, radarr_url, radarr_key, "api/v3/system/status", "X-Api-Key"),
             "sonarr": executor.submit(_test, sonarr_url, sonarr_key, "api/v3/system/status", "X-Api-Key"),
         }

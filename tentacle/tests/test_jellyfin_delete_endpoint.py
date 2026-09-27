@@ -63,7 +63,11 @@ class TestDeleteLibraryItemUnknownTitle(unittest.TestCase):
         self.db.commit()
 
     def _delete(self, tmdb_id=777):
-        return library.delete_library_item("movie", tmdb_id, None, self.db)
+        # Authorisation has its own test (test_library_delete_auth.py); these
+        # are about what an accepted deletion does.
+        from unittest import mock
+        with mock.patch.object(library, "_deletion_authorised", lambda *a: True):
+            return library.delete_library_item("movie", tmdb_id, None, self.db)
 
     def test_unknown_title_keeps_request_and_tombstone(self):
         self.assertIsNone(self.db.query(Movie).filter(Movie.tmdb_id == 777).first())

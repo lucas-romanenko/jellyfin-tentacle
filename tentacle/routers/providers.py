@@ -344,9 +344,10 @@ def delete_provider(provider_id: int, db: Session = Depends(get_db)):
     db.query(ProviderCategory).filter(ProviderCategory.provider_id == provider_id).delete()
     db.query(SyncRun).filter(SyncRun.provider_id == provider_id).delete()
     # Delete EPG programs for channels belonging to this provider, then channels/groups
-    channel_epg_ids = [c.epg_channel_id for c in db.query(LiveChannel.epg_channel_id).filter(
-        LiveChannel.provider_id == provider_id, LiveChannel.epg_channel_id.isnot(None)
-    ).all()]
+    channel_epg_ids = list({
+        gid for ch in db.query(LiveChannel).filter(LiveChannel.provider_id == provider_id)
+        for gid in (ch.guide_epg_id, ch.epg_channel_id) if gid
+    })
     if channel_epg_ids:
         db.query(EPGProgram).filter(EPGProgram.channel_id.in_(channel_epg_ids)).delete(synchronize_session=False)
     db.query(LiveChannel).filter(LiveChannel.provider_id == provider_id).delete()
@@ -391,6 +392,8 @@ def test_provider(provider_id: int, db: Session = Depends(get_db)):
     p = db.query(Provider).filter(Provider.id == provider_id).first()
     if not p:
         raise HTTPException(404, "Provider not found")
+    from services.provider_activity import refuse_while_recording
+    refuse_while_recording(db, "Testing the provider")
     try:
         data = test_provider_connection(p)
         info = data.get("user_info", {})
@@ -452,6 +455,8 @@ def fetch_categories(provider_id: int, db: Session = Depends(get_db)):
     p = db.query(Provider).filter(Provider.id == provider_id).first()
     if not p:
         raise HTTPException(404, "Provider not found")
+    from services.provider_activity import refuse_while_recording
+    refuse_while_recording(db, "Fetching the provider's categories")
 
     try:
         vod_cats, series_cats, vod_counts, series_counts = fetch_provider_categories(p)
@@ -468,6 +473,12 @@ def fetch_categories(provider_id: int, db: Session = Depends(get_db)):
 
     new_count = 0
     for cat_type, cats, counts in [("movie", vod_cats, vod_counts), ("series", series_cats, series_counts)]:
+        # Not a single title of this type in the provider's answer is a blip, not
+        # every category emptying at once. A category's count is also the sync's
+        # memory that it held titles; writing 0 into every one disarmed the
+        # guard against empty answers everywhere, and the next two empty answers
+        # pruned whole categories (#25). Existing counts stay; new ones are 0.
+        blip = not any(counts.values())
         for cat in cats:
             cid = str(cat["category_id"])
             cname = cat["category_name"]
@@ -476,7 +487,8 @@ def fetch_categories(provider_id: int, db: Session = Depends(get_db)):
 
             if key in existing:
                 existing[key].category_name = cname
-                existing[key].title_count = count
+                if not (blip and existing[key].title_count):
+                    existing[key].title_count = count
                 existing[key].last_seen = datetime.utcnow()
             else:
                 new_cat = ProviderCategory(
@@ -591,6 +603,8 @@ def preview_sync(provider_id: int, db: Session = Depends(get_db)):
         }
 
     # Get stream counts per category
+    from services.provider_activity import refuse_while_recording
+    refuse_while_recording(db, "A sync preview")
     base = f"{p.server_url.rstrip('/')}/player_api.php?username={p.username}&password={p.password}"
     session = requests.Session()
     session.headers.update(HEADERS)

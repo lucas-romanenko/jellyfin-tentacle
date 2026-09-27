@@ -332,6 +332,8 @@ def check_stream_now(body: StreamCheckRequest, db: Session = Depends(get_db)):
     """On-demand stream check for one library title."""
     if body.media_type not in ("movie", "series"):
         raise HTTPException(400, "media_type must be movie or series")
+    from services.provider_activity import refuse_while_recording
+    refuse_while_recording(db, "A stream check")
     from services.stream_health import check_title
     result = check_title(db, body.media_type, body.tmdb_id)
     if not result.get("ok"):
@@ -340,7 +342,7 @@ def check_stream_now(body: StreamCheckRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/streams/recheck")
-def recheck_streams(limit: int = 25, db: Session = Depends(get_db)):
+def recheck_streams(limit: int = 10, db: Session = Depends(get_db)):
     """Re-test known-bad entries now; recovered ones are cleared. At most
     `limit` per call (each probe is a few seconds; a reverse proxy in front
     of Tentacle would time the request out on a long list) -- the response

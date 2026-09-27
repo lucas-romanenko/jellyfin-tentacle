@@ -60,6 +60,9 @@ class TMDBService:
     # Negative matches (no TMDB result) shouldn't be cached for the full 30
     # days — the title may match later (new TMDB entry, fixed metadata).
     NEGATIVE_TTL_SECONDS = 3 * 86400  # 3 days
+    # A details lookup TMDB answered 404 (the id is gone or never existed). Kept
+    # briefly so a burst of scans does not ask again for every row (#182).
+    MISSING_DETAILS_TTL_SECONDS = 6 * 3600
 
     def _cache_get(self, key: str, ttl_seconds: int = 30 * 86400) -> Optional[Any]:
         path = self._cache_path(key)
@@ -75,6 +78,20 @@ class TMDBService:
         except Exception:
             pass
         return None
+
+    def _cache_lookup(self, key: str, ttl_seconds: int = 30 * 86400) -> tuple:
+        """(hit, value). A stored negative (None) is a hit: _cache_get cannot
+        tell it from a miss, so the negative cache was never used (#163, #182)."""
+        path = self._cache_path(key)
+        if not path.exists():
+            return False, None
+        try:
+            data = json.loads(path.read_text())
+            if data.get("ts", 0) > datetime.now().timestamp() - data.get("ttl", ttl_seconds):
+                return True, data.get("v")
+        except Exception:
+            pass
+        return False, None
 
     def _cache_set(self, key: str, value: Any, ttl_seconds: Optional[int] = None):
         # Cache negative results (None) for a shorter window so they expire and
@@ -128,13 +145,16 @@ class TMDBService:
                 params=params or {},
                 timeout=10
             )
+            self._tl.status = r.status_code
             r.raise_for_status()
             return r.json()
         except requests.ConnectionError as e:
+            self._tl.status = None
             self._tl.failed = True
             raise TMDBConnectionError(f"Cannot reach TMDB API: {e}")
         except requests.HTTPError as e:
             status = getattr(getattr(e, "response", None), "status_code", None)
+            self._tl.status = status
             # Only a 404 says anything about the title. A refused key (401/403),
             # a rate limit or a server error says nothing — treating those as
             # "no match" cached a negative result for 30 days and let the
@@ -202,9 +222,9 @@ class TMDBService:
         self._tl.failed = False
 
         cache_key = f"movie_search:{title.lower()}:{year}"
-        cached = self._cache_get(cache_key)
-        if cached is not None:
-            return cached if cached else None
+        hit, cached = self._cache_lookup(cache_key)
+        if hit:
+            return cached or None
 
         # Try with year, then without
         for params in [
@@ -244,9 +264,9 @@ class TMDBService:
         self._tl.failed = False
 
         cache_key = f"series_search:{title.lower()}:{year}"
-        cached = self._cache_get(cache_key)
-        if cached is not None:
-            return cached if cached else None
+        hit, cached = self._cache_lookup(cache_key)
+        if hit:
+            return cached or None
 
         for params in [
             {"query": title, "first_air_date_year": year} if year else {"query": title},
@@ -290,12 +310,15 @@ class TMDBService:
         if not self._valid_id(tmdb_id):
             return None
         cache_key = f"movie_details:{tmdb_id}"
-        cached = self._cache_get(cache_key)
-        if cached is not None:
-            return cached
+        hit, cached = self._cache_lookup(cache_key)
+        if hit:
+            return cached or None
 
+        self._tl.status = None
         data = self._request(f"movie/{tmdb_id}", {"append_to_response": "credits,videos"})
         if not data:
+            if getattr(self._tl, "status", None) == 404:
+                self._cache_set(cache_key, None, ttl_seconds=self.MISSING_DETAILS_TTL_SECONDS)
             return None
 
         result = {
@@ -333,12 +356,17 @@ class TMDBService:
         if not self._valid_id(tmdb_id):
             return None
         cache_key = f"series_details:{tmdb_id}"
-        cached = self._cache_get(cache_key, ttl_seconds=7 * 86400)
-        if cached is not None and "seasons" in cached:
+        hit, cached = self._cache_lookup(cache_key, ttl_seconds=7 * 86400)
+        if hit and cached is None:
+            return None  # TMDB said 404 a moment ago
+        if hit and "seasons" in cached:
             return cached
 
+        self._tl.status = None
         data = self._request(f"tv/{tmdb_id}", {"append_to_response": "credits,videos"})
         if not data:
+            if getattr(self._tl, "status", None) == 404:
+                self._cache_set(cache_key, None, ttl_seconds=self.MISSING_DETAILS_TTL_SECONDS)
             return None
 
         result = {
@@ -411,20 +439,31 @@ class TMDBService:
         """Look up a movie or series by IMDb ID using TMDB's /find endpoint.
 
         Returns the same metadata dict as get_movie_details/get_series_details,
-        or None if not found.
+        or None if not found. A lookup that could not complete (429/5xx/timeout)
+        also returns None but is never cached as "not found", and leaves
+        lookup_failed() True so the caller can tell the two apart — the same
+        rule search_movie follows. Without it a list refresh during a TMDB
+        hiccup could not tell a failure from a title TMDB lacks, dropped the
+        title from the list and stripped the list's tag from it.
         """
         if not self.enabled or not imdb_id:
             return None
+        self._tl.failed = False
 
-        cache_key = f"find_imdb:{imdb_id}"
-        cached = self._cache_get(cache_key)
-        if cached is not None:
-            return cached if cached else None
+        # "find_imdb2": versions before #163 cached a failed /find (429, 5xx) as
+        # None too. Those entries could not be told from a real "no such title"
+        # and, read now, would drop list items for up to three days.
+        cache_key = f"find_imdb2:{imdb_id}"
+        hit, cached = self._cache_lookup(cache_key)
+        if hit:
+            return cached or None
 
-        data = self._request(f"find/{imdb_id}", {"external_source": "imdb_id"})
+        try:
+            data = self._request(f"find/{imdb_id}", {"external_source": "imdb_id"})
+        except TMDBConnectionError:
+            return None  # the flag is set
         if not data:
-            self._cache_set(cache_key, None)
-            return None
+            return self._no_match(cache_key, imdb_id, False)
 
         # Check movie results first, then TV
         movie_results = data.get("movie_results", [])
@@ -432,6 +471,8 @@ class TMDBService:
             tmdb_id = movie_results[0].get("id")
             if tmdb_id:
                 result = self.get_movie_details(tmdb_id)
+                if result is None:
+                    return self._no_match(cache_key, imdb_id, False)
                 self._cache_set(cache_key, result)
                 return result
 
@@ -440,11 +481,17 @@ class TMDBService:
             tmdb_id = tv_results[0].get("id")
             if tmdb_id:
                 result = self.get_series_details(tmdb_id)
+                if result is None:
+                    return self._no_match(cache_key, imdb_id, False)
                 self._cache_set(cache_key, result)
                 return result
 
         self._cache_set(cache_key, None)
         return None
+
+    def lookup_failed(self) -> bool:
+        """Whether the last lookup on this thread failed rather than found nothing."""
+        return self._lookup_failed()
 
     def find_images_by_tvdb_id(self, tvdb_id: int) -> Optional[dict]:
         """Look up TMDB poster/backdrop by TheTVDB ID. Returns {'poster': '/path.jpg', 'backdrop': '/path.jpg'} or None."""
@@ -748,6 +795,7 @@ class TMDBService:
             })
         all_results = []
         seen = set()
+        self._tl.failed = False
         for page in range(1, pages + 1):
             params = dict(base, page=page)
             data = self._request(endpoint, params)
@@ -758,7 +806,10 @@ class TMDBService:
                 all_results.append(m)
             if not data or not data.get("results"):
                 break
-        self._cache_set(cache_key, all_results)
+        # A rate limit or server error is not an empty genre: keep it out of
+        # the 12 h cache so the next visit asks again.
+        if not self._lookup_failed():
+            self._cache_set(cache_key, all_results)
         return all_results
 
     def get_new_on_provider(self, media_type: str, provider_id: int, region: str = "CA",
@@ -787,6 +838,7 @@ class TMDBService:
 
         all_results = []
         seen = set()
+        self._tl.failed = False
         for page in range(1, pages + 1):
             params = {
                 "page": page,
@@ -812,7 +864,8 @@ class TMDBService:
                 all_results.append(m)
             if not items:
                 break
-        self._cache_set(cache_key, all_results)
+        if not self._lookup_failed():  # a failed page is not the end of the row
+            self._cache_set(cache_key, all_results)
         logger.info(f"TMDB new-on-provider {provider_id} {media_type} ({region}): {len(all_results)} items")
         return all_results
 

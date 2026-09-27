@@ -23,30 +23,72 @@ from services.youtube.indexer import PENDING_LIVE
 
 logger = logging.getLogger(__name__)
 
-# Guide numbers for YouTube channels start here, well clear of IPTV stream ids.
+# Guide numbers for YouTube channels start here. IPTV channels use their
+# provider stream id as the guide number, and a panel of any size has ids in
+# this range too, so the number is checked against them (#179).
 GUIDE_NUMBER_BASE = 9000
+# Where a channel goes when GUIDE_NUMBER_BASE + id is an IPTV channel's number.
+GUIDE_NUMBER_FALLBACK_BASE = 90000
 # How long a live stream is assumed to run when its duration is unknown.
 DEFAULT_LIVE_HOURS = 3
+
+# Collisions already logged, so a lineup Jellyfin polls does not repeat them.
+_warned_collisions: set = set()
 
 
 def epg_channel_id(channel: YouTubeChannel) -> str:
     return f"yt.{channel.slug}"
 
 
-def guide_number(channel: YouTubeChannel) -> str:
-    return channel.channel_number or str(GUIDE_NUMBER_BASE + channel.id)
+def iptv_guide_numbers(db: Session) -> set:
+    """Guide numbers the enabled IPTV channels use (what hdhr_lineup lists)."""
+    from models.database import LiveChannel
+    return {
+        str(stream_id or ch_id)
+        for stream_id, ch_id in db.query(LiveChannel.stream_id, LiveChannel.id).filter(
+            LiveChannel.enabled == True)  # noqa: E712
+    }
+
+
+def guide_number(channel: YouTubeChannel, taken: set = None) -> str:
+    """The channel's guide number, clear of `taken` (the IPTV numbers).
+
+    Jellyfin's HDHomeRun tuner names a channel hdhr_<GuideNumber>, so two
+    lineup entries with one number become ONE channel: one of them vanishes
+    from Live TV and the guide maps both schedules onto the other. A number
+    the user pinned is theirs to choose, and is only warned about.
+    """
+    if channel.channel_number:
+        number = str(channel.channel_number)
+        if taken and number in taken and (channel.id, number) not in _warned_collisions:
+            _warned_collisions.add((channel.id, number))
+            logger.warning(f"[YouTube] Live TV channel '{channel.title}' is pinned to guide number "
+                           f"{number}, which an IPTV channel also uses: Jellyfin will merge the two")
+        return number
+    number = str(GUIDE_NUMBER_BASE + channel.id)
+    if not taken or number not in taken:
+        return number
+    fallback = GUIDE_NUMBER_FALLBACK_BASE + channel.id
+    while str(fallback) in taken:
+        fallback += GUIDE_NUMBER_FALLBACK_BASE
+    if (channel.id, number) not in _warned_collisions:
+        _warned_collisions.add((channel.id, number))
+        logger.warning(f"[YouTube] Guide number {number} for '{channel.title}' is an IPTV channel's; "
+                       f"using {fallback}. Pin a channel number to choose one yourself.")
+    return str(fallback)
 
 
 def live_channels(db: Session) -> list:
     """Channels the user has opted into Live TV, as lineup/XMLTV dicts."""
     out = []
+    taken = iptv_guide_numbers(db)
     for ch in db.query(YouTubeChannel).filter(
         YouTubeChannel.live_enabled == True,  # noqa: E712
         YouTubeChannel.enabled == True,  # noqa: E712
     ).order_by(YouTubeChannel.title).all():
         out.append({
             "youtube_channel_id": ch.id,
-            "guide_number": guide_number(ch),
+            "guide_number": guide_number(ch, taken),
             "name": ch.title,
             "logo_url": ch.avatar_url,
             "group_title": "YouTube",

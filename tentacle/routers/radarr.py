@@ -14,6 +14,7 @@ from typing import Optional
 from models.database import get_db, Provider, Movie, ListItem, ListSubscription, DownloadRequest, Duplicate, get_setting, log_activity
 from services.radarr import scan_radarr_library, RadarrService
 from services.nfo import update_nfo_tags, write_movie_nfo, make_folder_name
+from services.tagger import tentacle_owned_tags
 from services.migration import migrate_provider, preview_migration
 from services.logstream import log_event_generator, get_recent_logs, emit_library_event
 
@@ -350,7 +351,7 @@ def radarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
                 if tagged_from:
                     db_movie.tags = tags
                     if db_movie.nfo_path:
-                        update_nfo_tags(Path(db_movie.nfo_path), tags)
+                        update_nfo_tags(Path(db_movie.nfo_path), tags, tentacle_owned_tags(db))
                     db.commit()
                     logger.info(f"[Radarr webhook] Tagged '{title}' with {tagged_from}")
                 else:
@@ -548,6 +549,8 @@ def preview_migration_endpoint(
 
     if not from_provider or not to_provider:
         raise HTTPException(404, "Provider not found")
+    from services.provider_activity import refuse_while_recording
+    refuse_while_recording(db, "A provider migration preview")
 
     return preview_migration(from_provider, to_provider, db)
 
@@ -555,6 +558,8 @@ def preview_migration_endpoint(
 @router.post("/migration/run")
 def run_migration(body: MigrateRequest, db: Session = Depends(get_db)):
     """Migrate content from one provider to another"""
+    from services.provider_activity import refuse_while_recording
+    refuse_while_recording(db, "A provider migration")
     result = migrate_provider(
         body.from_provider_id,
         body.to_provider_id,

@@ -36,6 +36,7 @@ class SharedUpstream(unittest.TestCase):
         self.livetv = livetv
         # These are bound to a running loop, and every test runs its own.
         livetv._stream_slots = livetv._StreamSlots()
+        self.addCleanup(lambda: setattr(livetv, "_stream_slots", livetv._StreamSlots()))
         livetv._shared_lock = None
         livetv._shared_streams.clear()
         self.db = _fresh_db()

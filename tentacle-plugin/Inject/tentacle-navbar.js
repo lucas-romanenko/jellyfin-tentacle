@@ -208,13 +208,28 @@
             if (typeof api.accessToken === 'function') token = api.accessToken();
             else if (api._accessToken) token = api._accessToken;
 
-            var url = serverUrl + '/TentacleHome/Toolbar?userId=' + userId;
-            if (token) url += '&api_key=' + token;
+            var url = serverUrl + '/TentacleHome/Toolbar?userId=' + encodeURIComponent(userId);
+            // The token goes in a header, not the URL: this runs on every page
+            // load, and a URL lands in reverse-proxy/CDN access logs and in the
+            // browser history (#149). Same header form as the other plugin calls.
+            var headers = token ? { 'Authorization': 'MediaBrowser Token="' + token + '"' } : {};
 
-            return fetch(url).then(function (resp) {
+            // Every answer is tagged with the user and request it belongs to. A
+            // late answer for the previous user (after an in-tab user switch) or
+            // for an older request must not overwrite the current toolbar.
+            var seq = self._toolbarSeq = (self._toolbarSeq || 0) + 1;
+            if (self._toolbarUser !== userId) {
+                self._toolbarUser = userId;
+                self.toolbarConfig = null; // never show the previous user's buttons
+            }
+
+            return fetch(url, { headers: headers }).then(function (resp) {
                 if (!resp.ok) throw new Error('HTTP ' + resp.status);
                 return resp.json();
             }).then(function (data) {
+                if (seq !== self._toolbarSeq || api.getCurrentUserId() !== userId) {
+                    return 'stale';
+                }
                 if (data && data.buttons && data.buttons.length > 0) {
                     self.toolbarConfig = data.buttons;
                     console.log('[Tentacle] Toolbar config loaded:', self.toolbarConfig.map(function (b) { return b.id + ':' + b.enabled; }));
@@ -236,7 +251,8 @@
         // Re-fetch toolbar config and rebuild buttons in-place (called on version change)
         refreshToolbar: function () {
             var self = this;
-            this.fetchToolbarConfig().then(function () {
+            this.fetchToolbarConfig().then(function (result) {
+                if (result === 'stale') return; // a newer request will rebuild
                 var pill = document.querySelector('.moonfin-nav-pill');
                 if (!pill) return;
 
