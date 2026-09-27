@@ -74,9 +74,56 @@ class _Arr:
         return r.json() if r.text else None
 
 
-def _latest_grab(records: list) -> Optional[dict]:
-    grabs = [h for h in records or [] if (h.get("eventType") or "").lower() == "grabbed"]
-    return max(grabs, key=lambda h: h.get("date") or "", default=None)
+# History events that put a file on disk: from a download (it carries the
+# grab's downloadId), or from a library scan / manual copy (no grab made it).
+_DOWNLOAD_IMPORT = "downloadfolderimported"
+_FOLDER_IMPORTS = {"moviefolderimported", "seriesfolderimported"}
+
+
+def _event(h: dict) -> str:
+    return (h.get("eventType") or "").lower()
+
+
+def _file_id(h: dict):
+    """The file an import event put on disk (Radarr/Sonarr record "FileId")."""
+    data = h.get("data") or {}
+    value = data.get("fileId", data.get("FileId"))
+    return None if value in (None, "") else str(value)
+
+
+def _newest(events: list) -> Optional[dict]:
+    return max(events, key=lambda h: h.get("date") or "", default=None)
+
+
+def _grab_for_file(records: list, file_id) -> Optional[dict]:
+    """The grab that produced the file on disk now, or None when none did.
+
+    The newest grab is not always it: an upgrade still downloading, or a search
+    someone started after the import, is newer -- and blocklisting that one
+    left the bad release free to come back (#190). The import event says which
+    file it put there (data.fileId) and which grab it came from (downloadId).
+    """
+    records = records or []
+    grabs = [h for h in records if _event(h) == "grabbed"]
+    imports = [h for h in records if _event(h) == _DOWNLOAD_IMPORT or _event(h) in _FOLDER_IMPORTS]
+    if not imports:
+        return _newest(grabs)       # nothing to go on: the newest grab, as before
+    with_ids = [h for h in imports if _file_id(h) is not None]
+    if with_ids:
+        imp = _newest([h for h in with_ids if _file_id(h) == str(file_id)])
+    else:
+        # An older Radarr/Sonarr that does not record the file: the newest
+        # import is the file there now.
+        imp = _newest(imports)
+    if imp is None or _event(imp) != _DOWNLOAD_IMPORT:
+        return None     # a rescan or a manual copy put it there: no grab to blame
+    download_id = imp.get("downloadId")
+    if download_id:
+        same = [g for g in grabs if g.get("downloadId") == download_id]
+        if same:
+            return _newest(same)
+    # A client that grabs without an id (blackhole): the last grab before it.
+    return _newest([g for g in grabs if (g.get("date") or "") <= (imp.get("date") or "")])
 
 
 def _outcome(title: str, grab: Optional[dict], blocked: bool) -> str:
@@ -103,7 +150,7 @@ def replace_movie(db: Session, tmdb_id: int, user_name: str = None) -> dict:
         raise BadCopyError(409, "Radarr has no file for this movie")
     title = movie.get("title") or (row.title if row else str(tmdb_id))
 
-    grab = _latest_grab(arr.call("GET", "history/movie", params={"movieId": movie["id"]}))
+    grab = _grab_for_file(arr.call("GET", "history/movie", params={"movieId": movie["id"]}), file_id)
     blocked = False
     if grab:
         try:
@@ -142,7 +189,7 @@ def replace_episode(db: Session, tmdb_id: int, season: int, episode: int, user_n
     history = arr.call("GET", "history", params={"episodeId": ep["id"], "page": 1, "pageSize": 50,
                                                  "sortKey": "date", "sortDirection": "descending"})
     records = history.get("records", []) if isinstance(history, dict) else history
-    grab = _latest_grab(records)
+    grab = _grab_for_file(records, ep["episodeFileId"])
     blocked = False
     if grab:
         try:
