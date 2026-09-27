@@ -18,6 +18,17 @@ function escapeJS(str) {
   if (!str) return '';
   return String(str).replace(/\\/g,'\\\\').replace(/'/g,'\\x27').replace(/"/g,'\\x22').replace(/`/g,'\\x60').replace(/\u2018/g,'\\x27').replace(/\u2019/g,'\\x27').replace(/\u201C/g,'\\x22').replace(/\u201D/g,'\\x22');
 }
+// Quality profile picker for an add. "Default" (the profile picked in
+// Settings) sends nothing; any other choice is sent as this request's
+// override. Never preselect the *arr's first profile: it is usually "Any".
+function _profileOptionsHtml(profiles) {
+  const def = (profiles || []).find(p => p.is_default);
+  const first = def
+    ? `<option value="">Default — ${escapeAttr(def.name)}</option>`
+    : '<option value="">Default (none picked yet — set one in Settings)</option>';
+  return first + (profiles || []).filter(p => !p.is_default)
+    .map(p => `<option value="${escapeAttr(String(p.id))}">${escapeAttr(p.name)}</option>`).join('');
+}
 function _trailerBtn(url) {
   if (!url) return '';
   return ` <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();_playTrailerInModal('${escapeJS(url)}')" style="margin-left:6px"><svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14" style="vertical-align:-2px;margin-right:4px"><path d="M8 5v14l11-7z"/></svg>Trailer</button>`;
@@ -994,10 +1005,10 @@ async function showAddToArrModal(tmdbId, title, year, posterPath, mediaType, tvd
     const endpoint = isSeries ? '/api/lists/sonarr-profiles' : '/api/lists/radarr-profiles';
     const profiles = await api(endpoint);
     if (tok !== _epPickerToken) return;
-    select.innerHTML = profiles.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
+    select.innerHTML = _profileOptionsHtml(profiles);
   } catch (e) {
     if (tok !== _epPickerToken) return;
-    select.innerHTML = '<option value="">Failed to load profiles</option>';
+    select.innerHTML = '<option value="">Default (couldn\'t load the list)</option>';
   }
 
   document.getElementById('sonarr-extra-fields').style.display = isSeries ? 'block' : 'none';
@@ -1025,7 +1036,7 @@ async function confirmAddToArr() {
   const qualityId = document.getElementById('add-radarr-quality').value;
   const isTvdbOnly = !_addArrTmdbId && _addArrTvdbId;
   const body = isTvdbOnly ? { tvdb_ids: [_addArrTvdbId] } : { tmdb_ids: [_addArrTmdbId] };
-  if (qualityId) body.quality_profile_id = parseInt(qualityId);
+  if (qualityId) body.quality_profile_override = parseInt(qualityId);
   if (isSeries) {
     const monitorVal = document.getElementById('add-sonarr-monitor').value;
     body.season_folder = document.getElementById('add-sonarr-season-folder').checked;
@@ -1414,10 +1425,10 @@ async function showDownloadMoreModal(tmdbId, title, year, posterPath) {
   try {
     const profiles = await api('/api/lists/sonarr-profiles');
     if (tok !== _epPickerToken) return;
-    select.innerHTML = profiles.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
+    select.innerHTML = _profileOptionsHtml(profiles);
   } catch (e) {
     if (tok !== _epPickerToken) return;
-    select.innerHTML = '<option value="">Failed to load profiles</option>';
+    select.innerHTML = '<option value="">Default (couldn\'t load the list)</option>';
   }
 
   // Show monitor new episodes toggle
@@ -1547,7 +1558,7 @@ async function confirmDownloadMore() {
       method: 'POST',
       body: {
         tmdb_ids: [_downloadMoreTmdbId],
-        quality_profile_id: qualityId ? parseInt(qualityId) : undefined,
+        quality_profile_override: qualityId ? parseInt(qualityId) : undefined,
         selected_episodes: selected,
         monitor_new: document.getElementById('dl-more-monitor-new')?.checked || false,
       },
@@ -5389,6 +5400,7 @@ let _missingLists = { movies: null, series: null };
 let _missingActiveList = 'all';
 
 async function loadDiscover() {
+  if (_discoverType === 'music' && typeof musicDiscoverHome === 'function') return musicDiscoverHome();
   const grid = document.getElementById('discover-grid');
   const tabsEl = document.getElementById('discover-section-tabs');
   grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text3)"><span class="toast-spinner"></span> Loading…</div>';
@@ -5733,6 +5745,8 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
 
 function setDiscoverType(type, btn) {
   _discoverType = type;
+  const searchInput = document.getElementById('discover-search-input');
+  if (searchInput) searchInput.placeholder = type === 'music' ? 'Artist, album or song…' : 'Search TMDB…';
   // Reset server sections between Movies/TV, but keep the streaming section pinned.
   if (['streaming', 'genres', 'missing'].indexOf(_discoverActiveSection) === -1) _discoverActiveSection = null;
   document.querySelectorAll('#discover-tab-browse .filter-btn').forEach(b => b.classList.remove('active'));
@@ -5757,10 +5771,11 @@ function onDiscoverSearchInput(input) {
     loadDiscover();
     return;
   }
+  // Music searches go to MusicBrainz (one request per second), so wait for a pause in typing.
   _discoverSearchTimeout = setTimeout(() => {
     _discoverSearchQuery = q;
     doDiscoverSearch(q);
-  }, 400);
+  }, _discoverType === 'music' ? 800 : 400);
 }
 
 function clearDiscoverSearch() {
@@ -5773,6 +5788,7 @@ function clearDiscoverSearch() {
 }
 
 async function doDiscoverSearch(query) {
+  if (_discoverType === 'music' && typeof musicSearch === 'function') return musicSearch(query);
   const grid = document.getElementById('discover-grid');
   const tabsEl = document.getElementById('discover-section-tabs');
   if (tabsEl) tabsEl.innerHTML = '';

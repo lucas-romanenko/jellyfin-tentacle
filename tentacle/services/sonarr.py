@@ -167,7 +167,7 @@ class SonarrService:
             logger.error(f"Sonarr text lookup failed for '{query}': {e}")
             return []
 
-    def add_series(self, tmdb_id: int = None, quality_profile_id: int = 1, root_folder: str = "",
+    def add_series(self, tmdb_id: int = None, quality_profile_id: int = None, root_folder: str = "",
                    monitor: str = "all", season_folder: bool = True,
                    selected_episodes: list = None,
                    series_path: str = None,
@@ -176,6 +176,11 @@ class SonarrService:
         # Prefer the exact TVDB lookup — Sonarr/Skyhook is TVDB-native, so it's
         # immune to the tmdb: term mis-resolution that can return the wrong show.
         self.last_error = None
+        if not quality_profile_id:
+            # No silent profile 1 ("Any"): callers go through services.media_requests,
+            # which picks the configured default or refuses.
+            self.last_error = "No quality profile was chosen for this request."
+            return None
         lookup = None
         if tvdb_id:
             lookup = self.lookup_by_tvdb(tvdb_id)

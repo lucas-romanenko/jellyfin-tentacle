@@ -44,6 +44,8 @@ async function postLoginInit() {
     loadArrProblems();
     state._arrProblemsTimer = setInterval(loadArrProblems, 120000);
   }
+  // Music module: show its tabs and search only when it is on.
+  if (typeof loadMusicConfig === 'function') loadMusicConfig();
   // Everyone lands on Library
   showPage('library');
 }
@@ -339,6 +341,9 @@ function showLibTab(tab) {
   document.getElementById('lib-tab-browse').style.display = tab === 'browse' ? '' : 'none';
   document.getElementById('lib-tab-following').style.display = tab === 'following' ? '' : 'none';
   document.getElementById('lib-tab-duplicates').style.display = tab === 'duplicates' ? '' : 'none';
+  const musicTab = document.getElementById('lib-tab-music');
+  if (musicTab) musicTab.style.display = tab === 'music' ? '' : 'none';
+  if (tab === 'music' && typeof loadMusicLibrary === 'function') loadMusicLibrary();
   if (tab === 'duplicates') loadDuplicates();
   if (tab === 'following') loadFollowing();
 }
@@ -599,7 +604,18 @@ async function testSetupArr(type) {
     el.innerHTML = `<span style="color:var(--green)">${r.message}</span>`;
   } catch (e) {
     el.innerHTML = `<span style="color:var(--red)">${e.message}</span>`;
+    return;
   }
+  // Connected: offer the default quality profile right here.
+  const wrap = document.getElementById(`setup-${type}-profile-wrap`);
+  const select = document.getElementById(`setup-${type}-profile`);
+  if (!wrap || !select) return;
+  try {
+    const opts = await api('/api/settings/service-options', { method: 'POST', body: { type, url, api_key: key } });
+    select.innerHTML = '<option value="">— Pick a default —</option>' +
+      (opts.quality_profiles || []).map(p => `<option value="${escHtml(String(p.id))}">${escHtml(p.name)}</option>`).join('');
+    wrap.style.display = '';
+  } catch (_) { /* pick it later in Settings → Connections */ }
 }
 
 async function setupStep3Next() {
@@ -613,6 +629,10 @@ async function setupStep3Next() {
   if (radarrKey) settings.radarr_api_key = radarrKey;
   if (sonarrUrl) settings.sonarr_url = sonarrUrl;
   if (sonarrKey) settings.sonarr_api_key = sonarrKey;
+  for (const svc of ['radarr', 'sonarr']) {
+    const profile = document.getElementById(`setup-${svc}-profile`)?.value;
+    if (profile) settings[`${svc}_quality_profile_id`] = profile;
+  }
 
   if (Object.keys(settings).length) {
     try {
@@ -1155,22 +1175,60 @@ async function previewSync(providerId) {
 }
 
 // ── Settings ───────────────────────────────────────────────────────────────
+// Text inputs saved as typed.
+const SETTINGS_TEXT_FIELDS = [
+  'tmdb_bearer_token', 'mdblist_api_key', 'radarr_url', 'radarr_api_key',
+  'sonarr_url', 'sonarr_api_key',
+  'jellyfin_url', 'jellyfin_api_key', 'jellyfin_public_url',
+  'recently_added_days', 'tmdb_match_threshold',
+  'webhook_host', 'sonarr_webhook_host', 'trakt_client_id', 'logodev_api_key',
+  'hybrid_series_layout',
+  // Music
+  'lidarr_url', 'lidarr_api_key', 'navidrome_url', 'navidrome_public_url', 'navidrome_username', 'navidrome_password',
+  'musicbrainz_contact', 'musicbrainz_cache_days', 'music_library_path',
+  'music_preferred_countries', 'music_preferred_formats', 'music_edition_words', 'music_reconcile_time',
+];
+// Checkboxes, saved as "true" / "false".
+const SETTINGS_CHECKBOX_FIELDS = [
+  'music_enabled', 'navidrome_enabled', 'navidrome_upload_artist_images', 'navidrome_rescan_after_import',
+  'jellyfin_music_enabled', 'jellyfin_music_set_artist_images', 'deezer_enabled',
+  'music_auto_repin', 'music_auto_repin_trim', 'music_auto_repin_download',
+];
+// Pickers filled from the service itself (see loadServicePickers).
+const SERVICE_PICKERS = {
+  radarr: { quality_profiles: 'radarr_quality_profile_id', root_folders: 'radarr_root_folder' },
+  sonarr: { quality_profiles: 'sonarr_quality_profile_id', root_folders: 'sonarr_root_folder' },
+  lidarr: { root_folders: 'lidarr_root_folder', quality_profiles: 'lidarr_quality_profile_id',
+            metadata_profiles: 'lidarr_metadata_profile_id' },
+};
+const SETTINGS_PICKER_FIELDS = [
+  ...Object.values(SERVICE_PICKERS).flatMap(p => Object.values(p)), 'jellyfin_music_library_id',
+];
+
 async function loadSettings() {
   try {
     const settings = await api('/api/settings/raw');
     if (typeof loadTentacleAddress === 'function') loadTentacleAddress();
-    const fields = [
-      'tmdb_bearer_token', 'mdblist_api_key', 'radarr_url', 'radarr_api_key',
-      'sonarr_url', 'sonarr_api_key',
-      'jellyfin_url', 'jellyfin_api_key', 'jellyfin_public_url',
-      'recently_added_days', 'tmdb_match_threshold',
-      'webhook_host', 'sonarr_webhook_host', 'trakt_client_id', 'logodev_api_key',
-      'hybrid_series_layout'
-    ];
-    fields.forEach(key => {
+    SETTINGS_TEXT_FIELDS.forEach(key => {
       const el = document.getElementById(key);
       if (el && settings[key]) el.value = settings[key];
     });
+    SETTINGS_CHECKBOX_FIELDS.forEach(key => {
+      const el = document.getElementById(key);
+      if (el) el.checked = settings[key] === 'true';
+    });
+    SETTINGS_PICKER_FIELDS.forEach(key => {
+      const el = document.getElementById(key);
+      if (!el) return;
+      el.dataset.saved = settings[key] || '';
+      el.dataset.loaded = '';
+      // Remember a choice the moment it is made, so reloading the list (Test)
+      // keeps it instead of snapping back to the saved one.
+      el.onchange = () => { el.dataset.saved = el.value; };
+    });
+    loadServicePickers('radarr');
+    loadServicePickers('sonarr');
+    applyMusicVisibility();
     // Sync schedule is stored as cron but shown as a friendly daily time.
     const _st = document.getElementById('sync_schedule_time');
     if (_st) _st.value = cronToTime(settings.sync_schedule);
@@ -1183,6 +1241,237 @@ async function loadSettings() {
     loadPathStatus();
     loadConnectionStatus();
   } catch (e) {}
+}
+
+// ── Service pickers and Test results ──────────────────────────────────────
+function _fillPicker(el, options, emptyLabel) {
+  // Keeps the saved choice selected; a saved value the service no longer has
+  // stays visible (marked) instead of silently turning into another one.
+  const saved = el.dataset.saved || '';
+  let html = emptyLabel !== null ? `<option value="">${escHtml(emptyLabel)}</option>` : '';
+  html += options.map(o => `<option value="${escHtml(String(o.value))}">${escHtml(o.label)}</option>`).join('');
+  if (saved && !options.some(o => String(o.value) === saved)) {
+    html += `<option value="${escHtml(saved)}">${escHtml(saved)} (no longer there — pick another)</option>`;
+  }
+  el.innerHTML = html;
+  el.value = saved;
+  el.dataset.loaded = '1';
+}
+
+function _pickerUnavailable(el, message) {
+  const saved = el.dataset.saved || '';
+  el.innerHTML = saved
+    ? `<option value="${escHtml(saved)}">Saved: ${escHtml(saved)} (${escHtml(message)})</option>`
+    : `<option value="">${escHtml(message)}</option>`;
+  el.value = saved;
+  el.dataset.loaded = '';
+}
+
+function _freeSpace(bytes) {
+  if (!bytes && bytes !== 0) return '';
+  const tb = bytes / 1e12;
+  return tb >= 1 ? ` (${tb.toFixed(1)} TB free)` : ` (${Math.round(bytes / 1e9)} GB free)`;
+}
+
+async function loadServicePickers(svc) {
+  const pickers = SERVICE_PICKERS[svc];
+  const els = Object.fromEntries(Object.entries(pickers).map(([k, id]) => [k, document.getElementById(id)]));
+  if (Object.values(els).some(el => !el)) return;
+  const url = document.getElementById(`${svc}_url`)?.value.trim();
+  const key = document.getElementById(`${svc}_api_key`)?.value.trim();
+  if (!url || !key) {
+    Object.values(els).forEach(el => _pickerUnavailable(el, 'Enter the URL and key, then Test'));
+    return;
+  }
+  try {
+    const opts = await api('/api/settings/service-options', { method: 'POST', body: { type: svc, url, api_key: key } });
+    const profiles = (opts.quality_profiles || []).map(p => ({ value: p.id, label: p.name }));
+    const roots = (opts.root_folders || []).map(f => ({ value: f.path, label: f.path + _freeSpace(f.free_space) }));
+    if (svc === 'lidarr') {
+      _fillPicker(els.quality_profiles, profiles, '— Pick one —');
+      _fillPicker(els.root_folders, roots, '— Pick one —');
+      _fillPicker(els.metadata_profiles, (opts.metadata_profiles || []).map(p => ({ value: p.id, label: p.name })), '— Pick one —');
+    } else {
+      _fillPicker(els.quality_profiles, profiles, '— Pick a default (requests are refused until you do) —');
+      _fillPicker(els.root_folders, roots, 'Automatic (first folder that isn\'t a VOD folder)');
+    }
+  } catch (e) {
+    Object.values(els).forEach(el => _pickerUnavailable(el, 'couldn\'t load the list'));
+  }
+}
+
+function _pickerValues(svc) {
+  // On-screen picks that loaded from the service, so Test checks what you see.
+  const out = {};
+  for (const id of Object.values(SERVICE_PICKERS[svc] || {})) {
+    const el = document.getElementById(id);
+    if (el && el.dataset.loaded === '1') out[id] = el.value;
+  }
+  return out;
+}
+
+function renderChecks(box, checks) {
+  if (!box) return;
+  const icon = { ok: '✓', fail: '✕', warn: '!' };
+  box.innerHTML = (checks || []).map(c => `<div class="svc-check ${escHtml(c.status)}">
+      <span class="svc-check-icon">${icon[c.status] || '•'}</span>
+      <span class="svc-check-label">${escHtml(c.label)}</span>
+      <span class="svc-check-detail">${escHtml(c.detail || '')}</span>
+    </div>`).join('');
+}
+
+async function testService(svc) {
+  const val = id => document.getElementById(id)?.value.trim() || '';
+  const body = { type: svc };
+  if (SERVICE_PICKERS[svc]) {
+    body.url = val(`${svc}_url`);
+    body.api_key = val(`${svc}_api_key`);
+    body.picks = _pickerValues(svc);
+  } else if (svc === 'navidrome') {
+    body.url = val('navidrome_url');
+    body.username = val('navidrome_username');
+    body.password = val('navidrome_password');
+  } else if (svc === 'jellyfin_music') {
+    body.library_id = val('jellyfin_music_library_id');
+    body.picks = _pickerValues('lidarr');
+  } else if (svc === 'musicbrainz') {
+    body.contact = val('musicbrainz_contact');
+  }
+  const box = document.getElementById(`checks-${svc}`);
+  if (box) box.innerHTML = '<div class="svc-check"><span class="svc-check-icon"><span class="toast-spinner"></span></span><span class="svc-check-detail">Testing…</span></div>';
+  if (SERVICE_PICKERS[svc]) loadServicePickers(svc);
+  try {
+    const r = await api('/api/settings/check', { method: 'POST', body });
+    renderChecks(box, r.checks);
+    toast(escHtml(r.message), r.success ? 'success' : 'error', r.success ? 3500 : 7000);
+  } catch (e) {
+    if (box) box.innerHTML = '';
+    toast(escHtml(e.message), 'error');
+  }
+}
+
+// ── Music module settings ─────────────────────────────────────────────────
+function applyMusicVisibility() {
+  const on = !!document.getElementById('music_enabled')?.checked;
+  const conn = document.getElementById('music-connections');
+  const body = document.getElementById('music-settings-body');
+  if (conn) conn.style.display = on ? '' : 'none';
+  if (body) body.style.display = on ? '' : 'none';
+  const status = document.getElementById('music-status-line');
+  if (status) {
+    const lidarr = document.getElementById('lidarr_url')?.value.trim();
+    status.innerHTML = !on ? ''
+      : lidarr ? 'Lidarr and your player are set in <a href="#" onclick="showSettingsSection(\'connections\');return false" style="color:var(--accent)">Connections</a>.'
+      : 'Next: connect Lidarr in <a href="#" onclick="showSettingsSection(\'connections\');return false" style="color:var(--accent)">Connections</a>.';
+  }
+  if (on) {
+    loadServicePickers('lidarr');
+    loadJellyfinMusicLibraries();
+    loadMusicWebhookInfo();
+  }
+}
+
+function onMusicEnabledChange() {
+  applyMusicVisibility();
+}
+
+async function loadJellyfinMusicLibraries() {
+  const el = document.getElementById('jellyfin_music_library_id');
+  if (!el) return;
+  try {
+    const libs = (await api('/api/settings/jellyfin-music/libraries'))
+      .filter(l => (l.collection_type || '').toLowerCase() === 'music');
+    _fillPicker(el, libs.map(l => ({ value: l.id, label: `${l.name} — ${(l.locations || []).join(', ') || 'no folder'}` })),
+      libs.length ? '— Pick the library that holds your music —' : 'No music library in Jellyfin yet — create one');
+  } catch (e) {
+    _pickerUnavailable(el, 'Jellyfin unreachable');
+  }
+}
+
+function toggleCreateMusicLibrary() {
+  const box = document.getElementById('jf-music-create');
+  if (!box) return;
+  const show = box.style.display === 'none';
+  box.style.display = show ? '' : 'none';
+  const path = document.getElementById('jf-music-create-path');
+  const root = document.getElementById('lidarr_root_folder')?.value;
+  if (show && path && !path.value && root) path.value = root;
+}
+
+async function createMusicLibrary() {
+  const name = document.getElementById('jf-music-create-name')?.value.trim() || 'Music';
+  const path = document.getElementById('jf-music-create-path')?.value.trim() || '';
+  if (!path) { toast('Enter the folder as Jellyfin sees it', 'error'); return; }
+  try {
+    const lib = await api('/api/settings/jellyfin-music/create-library', { method: 'POST', body: { name, path } });
+    const el = document.getElementById('jellyfin_music_library_id');
+    if (el) el.dataset.saved = lib.id || '';
+    await loadJellyfinMusicLibraries();
+    document.getElementById('jf-music-create').style.display = 'none';
+    toast(`Created the Jellyfin library "${escHtml(lib.name)}"`);
+  } catch (e) {
+    toast(escHtml(e.message), 'error', 8000);
+  }
+}
+
+let _musicWebhookUrl = '';
+
+async function loadMusicWebhookInfo() {
+  const input = document.getElementById('music-webhook-url');
+  if (!input) return;
+  try {
+    const info = await api('/api/music/webhook-info');
+    const base = info.base_url || window.location.origin;
+    _musicWebhookUrl = `${base}${info.path}?secret=${info.secret}`;
+    input.value = _musicWebhookUrl;
+    const hint = document.getElementById('music-webhook-hint');
+    if (hint) hint.textContent = info.base_url
+      ? 'The part after ?secret= proves the call comes from your Lidarr.'
+      : 'Built from this page\'s address. If Lidarr can\'t reach that, set Tentacle\'s own address in Connections. The part after ?secret= proves the call comes from your Lidarr.';
+    const trig = document.getElementById('music-webhook-triggers');
+    if (trig && info.triggers) trig.textContent = info.triggers.join(', ');
+    const statusUrl = document.getElementById('music-status-url');
+    if (statusUrl) statusUrl.value = `${base}/api/music/status?secret=${info.secret}`;
+    const last = document.getElementById('music-webhook-last');
+    if (last) last.textContent = info.last_test_at ? `Last test received ${new Date(info.last_test_at).toLocaleString()}` : '';
+  } catch (e) {
+    input.value = '';
+  }
+}
+
+async function copyMusicWebhookUrl() {
+  if (!_musicWebhookUrl) return;
+  try {
+    await navigator.clipboard.writeText(_musicWebhookUrl);
+    toast('Copied!');
+  } catch (_) {
+    toast('Copy failed — select the address and copy it by hand', 'error');
+  }
+}
+
+async function regenerateMusicWebhookSecret() {
+  if (!confirm('Make a new secret? Lidarr\'s webhook stops working until you paste the new URL into it.')) return;
+  try {
+    await api('/api/music/webhook/regenerate', { method: 'POST' });
+    await loadMusicWebhookInfo();
+    toast('New secret made — paste the new URL into Lidarr', 'info', 6000);
+  } catch (e) {
+    toast(escHtml(e.message), 'error');
+  }
+}
+
+async function testMusicWebhook() {
+  const box = document.getElementById('checks-music-webhook');
+  if (box) box.innerHTML = '<div class="svc-check"><span class="svc-check-icon"><span class="toast-spinner"></span></span><span class="svc-check-detail">Asking Lidarr to send its test…</span></div>';
+  try {
+    const r = await api('/api/music/webhook/test', { method: 'POST' });
+    renderChecks(box, r.checks);
+    toast(escHtml(r.message), r.success ? 'success' : 'error', r.success ? 3500 : 7000);
+    loadMusicWebhookInfo();
+  } catch (e) {
+    if (box) box.innerHTML = '';
+    toast(escHtml(e.message), 'error');
+  }
 }
 
 async function loadConnectionStatus() {
@@ -1249,27 +1538,33 @@ async function loadPathStatus() {
 }
 
 async function saveSettings() {
-  const fields = [
-    'tmdb_bearer_token', 'mdblist_api_key', 'radarr_url', 'radarr_api_key',
-    'sonarr_url', 'sonarr_api_key',
-    'jellyfin_url', 'jellyfin_api_key', 'jellyfin_public_url',
-    'recently_added_days', 'tmdb_match_threshold',
-    'webhook_host', 'sonarr_webhook_host', 'trakt_client_id', 'logodev_api_key',
-    'hybrid_series_layout'
-  ];
-
   const settings = {};
-  fields.forEach(key => {
+  SETTINGS_TEXT_FIELDS.forEach(key => {
     const el = document.getElementById(key);
     if (el) settings[key] = el.value.trim();
+  });
+  SETTINGS_CHECKBOX_FIELDS.forEach(key => {
+    const el = document.getElementById(key);
+    if (el) settings[key] = el.checked ? 'true' : 'false';
+  });
+  SETTINGS_PICKER_FIELDS.forEach(key => {
+    const el = document.getElementById(key);
+    // A picker whose list didn't load still holds the saved value; never let
+    // an unreachable service clear a choice.
+    if (el) settings[key] = el.dataset.loaded === '1' ? el.value : (el.dataset.saved || '');
   });
   // Sync schedule: convert the friendly daily time back to cron for storage.
   const _st = document.getElementById('sync_schedule_time');
   if (_st) settings.sync_schedule = timeToCron(_st.value);
   try {
     await api('/api/settings', { method: 'POST', body: { settings } });
+    SETTINGS_PICKER_FIELDS.forEach(key => {
+      const el = document.getElementById(key);
+      if (el) el.dataset.saved = settings[key];
+    });
     toast('Settings saved');
     loadScheduleInfo();
+    if (typeof loadMusicConfig === 'function') loadMusicConfig();
   } catch (e) {
     toast(e.message, 'error');
   }

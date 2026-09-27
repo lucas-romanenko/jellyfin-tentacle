@@ -53,7 +53,9 @@ class EmptySave(unittest.TestCase):
         refresh_recently_added_tags(self.db)  # int("") used to raise here
 
     def test_the_keys_are_the_ones_with_non_empty_defaults(self):
-        self.assertEqual({"recently_added_days", "tmdb_match_threshold", "hybrid_series_layout", "sync_schedule"},
+        self.assertEqual({"recently_added_days", "tmdb_match_threshold", "hybrid_series_layout", "sync_schedule",
+                          # music module (services/music/settings.py NON_EMPTY)
+                          "music_reconcile_time", "musicbrainz_cache_days"},
                          set(NON_EMPTY_DEFAULTS))
 
 

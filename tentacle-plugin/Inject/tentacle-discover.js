@@ -1409,11 +1409,9 @@
       profileSelect.innerHTML = '<option value="">Loading...</option>';
       var uid = window.ApiClient.getCurrentUserId();
       apiGet('TentacleDiscover/SonarrProfiles?userId=' + uid).then(function (profiles) {
-        profileSelect.innerHTML = (profiles || []).map(function (p) {
-          return '<option value="' + p.id + '">' + esc(p.name) + '</option>';
-        }).join('');
+        profileSelect.innerHTML = profileOptionsHtml(profiles);
       }).catch(function () {
-        profileSelect.innerHTML = '<option value="">Failed</option>';
+        profileSelect.innerHTML = '<option value="">Default (couldn\'t load the list)</option>';
       });
     }
 
@@ -1478,7 +1476,7 @@
         } else if (item.tvdb_id && item.tvdb_id > 0) {
           body.tvdb_ids = [item.tvdb_id];
         }
-        if (profileId) body.quality_profile_id = parseInt(profileId, 10);
+        if (profileId) body.quality_profile_override = parseInt(profileId, 10);
         apiPost('TentacleDiscover/AddToSonarr?userId=' + uid2, body).then(function (r) {
           var status2 = document.getElementById('mdDownloadStatus');
           if (r.added > 0) {
@@ -1619,6 +1617,23 @@
     }
   }
 
+  // Quality profile picker: "Default" (the profile picked in Tentacle's
+  // settings) first, sending nothing; any other choice is this request's
+  // override. Never preselect the *arr's first profile: it is usually "Any".
+  function profileOptionsHtml(profiles) {
+    profiles = profiles || [];
+    var def = null;
+    for (var i = 0; i < profiles.length; i++) { if (profiles[i].is_default) { def = profiles[i]; break; } }
+    var html = def
+      ? '<option value="">Default \u2014 ' + esc(def.name) + '</option>'
+      : '<option value="">Default (none picked yet in Tentacle)</option>';
+    for (var j = 0; j < profiles.length; j++) {
+      if (profiles[j].is_default) continue;
+      html += '<option value="' + esc(String(profiles[j].id)) + '">' + esc(profiles[j].name) + '</option>';
+    }
+    return html;
+  }
+
   function loadDownloadOptions(item) {
     var isSeries = item.media_type === 'series';
     var uid = window.ApiClient.getCurrentUserId();
@@ -1629,9 +1644,7 @@
       var ps = document.getElementById('mdProfileSelect');
       if (!ps) return;
 
-      ps.innerHTML = profiles.map(function (p) {
-        return '<option value="' + p.id + '">' + esc(p.name) + '</option>';
-      }).join('');
+      ps.innerHTML = profileOptionsHtml(profiles);
 
       var btn = document.getElementById('mdDownloadBtn');
       if (btn) {
@@ -1658,9 +1671,9 @@
     var uid = window.ApiClient.getCurrentUserId();
     var ep = isSeries ? 'TentacleDiscover/AddToSonarr?userId=' + uid : 'TentacleDiscover/AddToRadarr?userId=' + uid;
 
-    var body = {
-      quality_profile_id: parseInt(profileId, 10),
-    };
+    // "Default" sends nothing: Tentacle applies the profile picked in its settings.
+    var body = {};
+    if (profileId) body.quality_profile_override = parseInt(profileId, 10);
     if (item.tmdb_id && item.tmdb_id > 0) {
       body.tmdb_ids = [item.tmdb_id];
     } else if (item.tvdb_id && item.tvdb_id > 0) {

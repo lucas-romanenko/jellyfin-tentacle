@@ -70,25 +70,6 @@ class RadarrService:
             logger.error(f"Radarr text lookup failed for '{query}': {e}")
             return []
 
-    def add_movie(self, tmdb_id: int, root_folder: str, quality_profile_id: int = 1) -> bool:
-        try:
-            r = self.session.post(
-                f"{self.url}/api/v3/movie",
-                json={
-                    "tmdbId": tmdb_id,
-                    "monitored": True,
-                    "qualityProfileId": quality_profile_id,
-                    "rootFolderPath": root_folder,
-                    "addOptions": {"searchForMovie": True},
-                },
-                timeout=10
-            )
-            r.raise_for_status()
-            return True
-        except Exception as e:
-            logger.debug(f"Radarr add movie {tmdb_id} failed: {e}")
-            return False
-
     def delete_movie(self, tmdb_id: int, delete_files: bool = True) -> bool:
         """Delete a movie from Radarr by TMDB ID. Optionally deletes files on disk."""
         movie = self.get_movie_by_tmdb(tmdb_id)

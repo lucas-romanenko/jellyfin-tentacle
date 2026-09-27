@@ -21,10 +21,38 @@
     hideStyle: null,
     generation: 0,       // incremented on every nav, stale searches check this
     _onInputChange: null, // bound listener ref for cleanup
+    musicShow: false,    // Tentacle's music module + its Jellyfin music integration are on
+    musicSeq: 0,
   };
 
   function apiGet(path) {
     return window.ApiClient.getJSON(window.ApiClient.getUrl(path));
+  }
+
+  function apiPost(path, body) {
+    return window.ApiClient.fetch({
+      url: window.ApiClient.getUrl(path),
+      type: 'POST',
+      dataType: 'json',
+      contentType: 'application/json',
+      data: JSON.stringify(body),
+      headers: { accept: 'application/json' }
+    }).catch(function (err) {
+      // A non-2xx rejects with the raw Response: surface Tentacle's `detail`.
+      if (err && typeof err.json === 'function') {
+        var status = err.status;
+        return err.json().catch(function () { return null; }).then(function (b) {
+          var e = new Error((b && b.detail) || ('Request failed (HTTP ' + status + ')'));
+          e.status = status;
+          throw e;
+        });
+      }
+      throw (err instanceof Error) ? err : new Error('Could not reach the server');
+    });
+  }
+
+  function musicUrl(path) {
+    return 'TentacleMusic/' + path + (path.indexOf('?') === -1 ? '?' : '&') + 'userId=' + window.ApiClient.getCurrentUserId();
   }
 
   function esc(str) {
@@ -315,12 +343,14 @@
           '<button class="tentacle-search-filter-btn" data-tstype="movies">Movies</button>' +
           '<button class="tentacle-search-filter-btn" data-tstype="series">TV Shows</button>' +
           '<button class="tentacle-search-filter-btn" data-tstype="channels">Live TV</button>' +
+          '<button class="tentacle-search-filter-btn" data-tstype="music" id="tsMusicFilterBtn" style="display:none">Music</button>' +
         '</div>' +
       '</div>' +
       '<div id="tentacleSearchGrid"></div>';
 
     // Single delegated click handler for the entire container
     container.addEventListener('click', function (e) {
+      if (onMusicClick(e)) return;
       // Filter button click
       var filterBtn = e.target.closest('.tentacle-search-filter-btn');
       if (filterBtn) {
@@ -395,6 +425,7 @@
     // This is the key architectural fix: our container can never be trapped
     // in a stale hidden view on SPA navigation
     document.body.appendChild(container);
+    loadMusicConfig();
 
     return container;
   }
@@ -406,6 +437,7 @@
     var grid = document.getElementById('tentacleSearchGrid');
     if (!grid) return;
 
+    if (SEARCH.mediaFilter === 'music') { doMusicSearch(query, gen, grid); return; }
     grid.innerHTML = '<div class="tentacle-search-loading"><div class="md-spinner"></div>Searching...</div>';
 
     apiGet('TentacleDiscover/Search?q=' + encodeURIComponent(query) + '&type=' + SEARCH.mediaFilter)
@@ -587,6 +619,250 @@
     SEARCH.nativeInput = null;
     var el = document.getElementById('tentacleSearchResults');
     if (el) el.remove();
+    closeMusicOverlay();
+  }
+
+  // ── Music (Tentacle's music module; only with its Jellyfin music integration on) ──
+
+  var MUSIC_STATUS = {
+    in_library: ['ts-badge-inlib', 'In Library'],
+    downloading: ['ts-badge-downloading', 'Downloading'],
+    wanted: ['ts-badge-requested', 'Wanted'],
+    needs_review: ['ts-badge-review', 'Needs review']
+  };
+
+  function loadMusicConfig() {
+    apiGet(musicUrl('Config')).then(function (c) {
+      SEARCH.musicShow = !!(c && c.show);
+      var btn = document.getElementById('tsMusicFilterBtn');
+      if (btn) btn.style.display = SEARCH.musicShow ? '' : 'none';
+    }).catch(function () { SEARCH.musicShow = false; });
+  }
+
+  function musicBadge(a) {
+    var s = MUSIC_STATUS[a.status];
+    if (!s) return '<div class="ts-card-badge ts-badge-type">' + esc(a.type || 'Album') + '</div>';
+    var label = a.status === 'downloading' && a.progress != null ? 'Downloading ' + a.progress + '%' : s[1];
+    return '<div class="ts-card-badge ts-badge-status ' + s[0] + '">' + label + '</div>';
+  }
+
+  function musicDuration(ms) {
+    if (!ms) return '';
+    var t = Math.round(ms / 1000);
+    return Math.floor(t / 60) + ':' + ('0' + (t % 60)).slice(-2);
+  }
+
+  function musicAlbumCard(a, showArtist) {
+    var cover = safeUrl(a.cover);
+    return '<div class="ts-card ts-music-card ts-music-album" data-mbid="' + escAttr(a.mbid) + '">' +
+      '<div class="ts-card-poster">' + (cover ? '<img src="' + escAttr(cover) + '" loading="lazy" onerror="this.style.display=\'none\'">' : '') +
+        '<div class="ts-card-poster-placeholder">&#9835;</div>' + musicBadge(a) + '</div>' +
+      '<div class="ts-card-info"><div class="ts-card-title">' + esc(a.title) + '</div>' +
+      '<div class="ts-card-meta">' + (showArtist === false ? '' : esc(a.artist || '') + (a.year ? ' \u00b7 ' : '')) + esc(a.year || '') + '</div></div></div>';
+  }
+
+  function doMusicSearch(query, gen, grid) {
+    var seq = ++SEARCH.musicSeq;
+    grid.innerHTML = '<div class="tentacle-search-loading"><div class="md-spinner"></div>Searching MusicBrainz...</div>';
+    apiGet(musicUrl('Search?q=' + encodeURIComponent(query))).then(function (d) {
+      if (gen !== SEARCH.generation || seq !== SEARCH.musicSeq || !d || d.stale) return;
+      var artists = d.artists || [], albums = d.albums || [], songs = d.songs || [];
+      if (!artists.length && !albums.length && !songs.length) {
+        grid.innerHTML = '<div class="tentacle-search-empty">No music found for \u201c' + esc(query) + '\u201d</div>';
+        return;
+      }
+      var html = '';
+      if (artists.length) {
+        html += '<div class="ts-music-heading">Artists</div><div class="ts-music-rows">' + artists.map(function (a) {
+          return '<div class="ts-music-row ts-music-artist" data-mbid="' + escAttr(a.mbid) + '"><div class="ts-music-icon">' + esc((a.name || '?').charAt(0)) + '</div>' +
+            '<div><div class="ts-music-row-title">' + esc(a.name) + '</div><div class="ts-music-row-sub">' +
+            esc([a.type, a.country, a.disambiguation].filter(Boolean).join(' \u00b7 ')) + '</div></div></div>';
+        }).join('') + '</div>';
+      }
+      if (albums.length) {
+        html += '<div class="ts-music-heading">Albums</div><div class="tentacle-search-grid">' + albums.map(function (a) { return musicAlbumCard(a); }).join('') + '</div>';
+      }
+      if (songs.length) {
+        html += '<div class="ts-music-heading">Songs</div><div class="ts-music-rows">' + songs.map(function (t) {
+          return '<div class="ts-music-row ts-music-song" data-title="' + escAttr(t.title) + '" data-artist="' + escAttr(t.artist_mbid) + '"><div class="ts-music-icon">&#9834;</div>' +
+            '<div><div class="ts-music-row-title">' + esc(t.title) + '</div><div class="ts-music-row-sub">' + esc(t.artist) +
+            (t.length ? ' \u00b7 ' + musicDuration(t.length) : '') + '</div></div></div>';
+        }).join('') + '</div>';
+      }
+      grid.innerHTML = html;
+    }).catch(function () {
+      if (gen !== SEARCH.generation || seq !== SEARCH.musicSeq) return;
+      grid.innerHTML = '<div class="tentacle-search-empty">Music search is unavailable right now.</div>';
+    });
+  }
+
+  function onMusicClick(e) {
+    var req = e.target.closest('[data-ts-music-request]');
+    if (req) {
+      e.preventDefault(); e.stopPropagation();
+      requestMusicAlbum(req.getAttribute('data-ts-music-request'), req, parseInt(req.getAttribute('data-tracks'), 10) || 0);
+      return true;
+    }
+    var open = e.target.closest('[data-ts-music-open]');
+    if (open) {
+      e.preventDefault(); e.stopPropagation();
+      openInJellyfin(open.getAttribute('data-ts-music-open'), open.getAttribute('data-title'));
+      return true;
+    }
+    var album = e.target.closest('.ts-music-album');
+    if (album) { e.preventDefault(); e.stopPropagation(); openMusicAlbum(album.getAttribute('data-mbid')); return true; }
+    var artist = e.target.closest('.ts-music-artist');
+    if (artist) { e.preventDefault(); e.stopPropagation(); openMusicArtist(artist.getAttribute('data-mbid')); return true; }
+    var song = e.target.closest('.ts-music-song');
+    if (song) { e.preventDefault(); e.stopPropagation(); openMusicSong(song.getAttribute('data-title'), song.getAttribute('data-artist')); return true; }
+    return false;
+  }
+
+  function musicOverlay(title, html) {
+    var ov = document.getElementById('tsMusicOverlay');
+    if (!ov) {
+      ov = document.createElement('div');
+      ov.id = 'tsMusicOverlay';
+      ov.className = 'ts-music-overlay';
+      ov.innerHTML = '<div class="ts-music-modal" role="dialog" aria-modal="true"><div class="ts-music-modal-head">' +
+        '<div class="ts-music-modal-title"></div><button class="ts-music-close" aria-label="Close">&#10005;</button></div>' +
+        '<div class="ts-music-modal-body"></div></div>';
+      ov.addEventListener('click', function (e) {
+        if (e.target === ov || e.target.closest('.ts-music-close')) { closeMusicOverlay(); return; }
+        onMusicClick(e);
+      });
+      document.body.appendChild(ov);
+    }
+    ov.querySelector('.ts-music-modal-title').textContent = title;
+    ov.querySelector('.ts-music-modal-body').innerHTML = html;
+  }
+
+  function closeMusicOverlay() {
+    var ov = document.getElementById('tsMusicOverlay');
+    if (ov) ov.remove();
+  }
+
+  function musicNorm(s) {
+    return (s || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+      .replace(/[\u2018\u2019`\u00b4']/g, '').replace(/[^\w\s]/g, ' ').split(/\s+/).filter(Boolean).join(' ');
+  }
+
+  function musicTracklist(discs, highlight) {
+    if (!discs || !discs.length) return '';
+    return discs.map(function (d) {
+      return (discs.length > 1 ? '<div class="ts-music-disc">Disc ' + esc(String(d.position)) + '</div>' : '') +
+        '<div class="ts-music-tracks">' + (d.tracks || []).map(function (t) {
+          var hl = highlight && ((highlight.recordings || []).indexOf(t.recording_mbid) !== -1 || musicNorm(t.title) === highlight.title);
+          return '<div class="ts-music-track' + (hl ? ' ts-hl' : '') + '"><span class="ts-music-n">' + esc(String(t.number || '')) + '</span>' +
+            '<span class="ts-music-t">' + esc(t.title) + '</span><span class="ts-music-len">' + musicDuration(t.length) + '</span></div>';
+        }).join('') + '</div>';
+    }).join('');
+  }
+
+  function musicAlbumHtml(a, highlight) {
+    var cover = safeUrl(a.cover);
+    var actions = '';
+    if (a.status === 'available' && !(a.review && (a.review.options || []).length)) actions += '<button class="ts-music-btn ts-primary" data-ts-music-request="' + escAttr(a.mbid) + '">Request</button>';
+    if (a.status === 'in_library') actions += '<button class="ts-music-btn" data-ts-music-open="' + escAttr(a.mbid) + '" data-title="' + escAttr(a.title) + '">Open in Jellyfin</button>';
+    var badge = MUSIC_STATUS[a.status] ? '<span class="ts-music-pill ' + MUSIC_STATUS[a.status][0] + '">' + MUSIC_STATUS[a.status][1] + '</span>' : '';
+    var note = a.verdict && (a.verdict.message || a.verdict.state);
+    var html = '<div class="ts-music-album-head">' + (cover ? '<img class="ts-music-cover" src="' + escAttr(cover) + '" onerror="this.style.visibility=\'hidden\'">' : '') +
+      '<div><div class="ts-music-row-title"><a href="#" class="ts-music-artist ts-music-link" data-mbid="' + escAttr(a.artist_mbid) + '">' + esc(a.artist) + '</a></div>' +
+      '<div class="ts-music-row-sub">' + esc([a.year, a.type].filter(Boolean).join(' \u00b7 ')) + '</div>' + badge +
+      (note ? '<div class="ts-music-row-sub" style="margin-top:6px">' + esc(note) + '</div>' : '') +
+      (actions ? '<div class="ts-music-actions">' + actions + '</div>' : '') + '</div></div>';
+    if (a.original && a.release) {
+      html += '<div class="ts-music-original"><strong>Original:</strong> ' + esc(a.original.year) + ' \u00b7 ' + a.original.tracks + ' tracks' +
+        (a.original.discs > 1 ? ' \u00b7 ' + a.original.discs + ' discs' : '') + '</div>' + musicTracklist(a.release.tracklist, highlight);
+    } else if (a.review) {
+      html += '<div class="ts-music-original">' + esc(a.review.message) + ' Tentacle won\u2019t guess: pick one.</div>' +
+        (a.review.options || []).map(function (o) {
+          return '<div class="ts-music-option"><strong>' + o.tracks + ' tracks</strong> <span class="ts-music-row-sub">' + esc((o.examples || []).join('; ')) + '</span>' +
+            (a.status === 'available' ? ' <button class="ts-music-btn" data-ts-music-request="' + escAttr(a.mbid) + '" data-tracks="' + o.tracks + '">Request with ' + o.tracks + ' tracks</button>' : '') +
+            musicTracklist(o.tracklist) + '</div>';
+        }).join('');
+    }
+    return html;
+  }
+
+  function musicError(err) {
+    return '<div class="tentacle-search-empty">' + esc((err && err.message) || 'Tentacle could not load this.') + '</div>';
+  }
+
+  function openMusicAlbum(mbid, highlight, intro) {
+    var seq = ++SEARCH.musicSeq;
+    musicOverlay('Loading\u2026', '<div class="tentacle-search-loading"><div class="md-spinner"></div></div>');
+    apiGet(musicUrl('Album/' + encodeURIComponent(mbid))).then(function (a) {
+      if (seq !== SEARCH.musicSeq) return;
+      musicOverlay(a.title || 'Album', (intro || '') + musicAlbumHtml(a, highlight));
+    }).catch(function (err) { if (seq === SEARCH.musicSeq) musicOverlay('Album', musicError(err)); });
+  }
+
+  function openMusicArtist(mbid) {
+    var seq = ++SEARCH.musicSeq;
+    musicOverlay('Loading\u2026', '<div class="tentacle-search-loading"><div class="md-spinner"></div></div>');
+    apiGet(musicUrl('Artist/' + encodeURIComponent(mbid))).then(function (a) {
+      if (seq !== SEARCH.musicSeq) return;
+      var other = (a.other || []);
+      musicOverlay(a.name || 'Artist',
+        '<div class="ts-music-row-sub">' + esc([a.type, a.country, a.years, a.disambiguation].filter(Boolean).join(' \u00b7 ')) + '</div>' +
+        '<div class="ts-music-heading">Studio albums</div><div class="tentacle-search-grid">' + (a.studio || []).map(function (c) { return musicAlbumCard(c, false); }).join('') + '</div>' +
+        (other.length ? '<details class="ts-music-more"><summary>Show all releases (' + other.length + ')</summary><div class="tentacle-search-grid">' +
+          other.map(function (c) { return musicAlbumCard(c, false); }).join('') + '</div></details>' : ''));
+    }).catch(function (err) { if (seq === SEARCH.musicSeq) musicOverlay('Artist', musicError(err)); });
+  }
+
+  function openMusicSong(title, artistMbid) {
+    var seq = ++SEARCH.musicSeq;
+    musicOverlay(title, '<div class="tentacle-search-loading"><div class="md-spinner"></div>Finding the original album...</div>');
+    apiGet(musicUrl('Song?title=' + encodeURIComponent(title) + '&artist=' + encodeURIComponent(artistMbid))).then(function (s) {
+      if (seq !== SEARCH.musicSeq) return;
+      if (s.album) {
+        musicOverlay(s.album.title || title, '<div class="ts-music-original">\u201c' + esc(title) + '\u201d first appeared on this studio album.</div>' + musicAlbumHtml(s.album, s.highlight));
+      } else {
+        musicOverlay(title, '<div class="tentacle-search-empty">' + esc(s.message || '') + '</div>');
+      }
+    }).catch(function (err) { if (seq === SEARCH.musicSeq) musicOverlay(title, musicError(err)); });
+  }
+
+  function requestMusicAlbum(mbid, btn, tracks) {
+    btn.disabled = true;
+    var label = btn.textContent;
+    btn.textContent = 'Requesting\u2026';
+    var body = { mbid: mbid };
+    if (tracks) body.tracks = tracks;
+    apiPost(musicUrl('Request'), body).then(function () {
+      btn.textContent = '\u2713 Requested';
+    }).catch(function (err) {
+      btn.disabled = false;
+      btn.textContent = label;
+      var note = document.createElement('div');
+      note.className = 'ts-music-row-sub ts-music-err';
+      note.textContent = (err && err.message) || 'The request failed.';
+      btn.parentNode.appendChild(note);
+    });
+  }
+
+  function openInJellyfin(mbid, title) {
+    var userId = window.ApiClient.getCurrentUserId();
+    apiGet('Users/' + userId + '/Items?IncludeItemTypes=MusicAlbum&Recursive=true&Fields=ProviderIds&Limit=50&SearchTerm=' + encodeURIComponent(title || ''))
+      .then(function (data) {
+        var items = (data && data.Items) || [];
+        var match = null;
+        for (var i = 0; i < items.length && !match; i++) {
+          var ids = items[i].ProviderIds || {};
+          if (ids.MusicBrainzReleaseGroup === mbid || ids.MusicBrainzAlbum === mbid) match = items[i];
+        }
+        if (!match) {
+          var t = musicNorm(title);
+          for (var j = 0; j < items.length && !match; j++) if (musicNorm(items[j].Name) === t) match = items[j];
+        }
+        if (match) {
+          closeMusicOverlay();
+          cleanup();
+          window.location.hash = '#/details?id=' + match.Id;
+        }
+      }).catch(function () {});
   }
 
   // ── Bootstrap ────────────────────────────────────────────────────────

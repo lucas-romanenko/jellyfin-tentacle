@@ -309,18 +309,20 @@ class RecheckKnownBadIsPolite(unittest.TestCase):
 
 
 class SecretsStayMasked(unittest.TestCase):
+    # GET masking and the masked-value guard on POST read one list, SENSITIVE_KEYS.
     def test_the_vod_token_secret_is_masked_like_the_api_keys(self):
         from routers import settings as settings_router
+        self.assertIn("vod_token_secret", settings_router.SENSITIVE_KEYS)
         src = Path(settings_router.__file__).read_text(encoding="utf-8")
-        self.assertIn('"vod_token_secret"', src.split("# Mask sensitive values", 1)[1].split("\n", 2)[1])
+        self.assertIn("for key in SENSITIVE_KEYS:", src.split("# Mask sensitive values", 1)[1].split("\n", 2)[1])
 
     def test_a_masked_secret_posted_back_is_not_written(self):
         """GET masks it; a client that round-trips GET -> POST must not
         replace the real secret with 'abcd...wxyz' (every .strm would 404)."""
         from routers import settings as settings_router
         src = Path(settings_router.__file__).read_text(encoding="utf-8")
-        sensitive = src.split("sensitive_keys = {", 1)[1].split("}", 1)[0]
-        self.assertIn('"vod_token_secret"', sensitive)
+        self.assertIn("sensitive_keys = SENSITIVE_KEYS", src.split("def update_settings", 1)[1])
+        self.assertIn("vod_token_secret", settings_router.SENSITIVE_KEYS)
 
 
 class FrameGrabsRefuseWhileLive(unittest.TestCase):
