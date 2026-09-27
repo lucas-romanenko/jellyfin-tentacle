@@ -333,7 +333,7 @@ class MergedRadarrFolder(Base):
 
     def test_a_video_with_no_nfo_and_no_row_is_an_unknown_owner_for_a_namesake(self):
         """Only a namesake import treats an unmanaged video as another film's
-        (CONTRACT-185 D4); a plain import writes next to it (R2,
+        (design rule D4, see the PR description); a plain import writes next to it (R2,
         ContractUnmanagedVideo)."""
         folder = self._radarr(row=False)
         self.client.movies = {"a": [stream("Brothers (2024)", 22, 2002)]}
@@ -402,8 +402,8 @@ class DetailsNotFoundIsCached(unittest.TestCase):
 class SwappedPairIsLoggedOnly(Base):
     """A library from before the fix whose row was created by the NAMESAKE's
     stream: row 1001 plays stream 22 (film 2002). A panel that swaps two
-    namesakes' ids shows the same signals, so nothing is rewritten (CONTRACT-185
-    D6, R1a): the pair is logged once per row per sync, and film 2002 stays
+    namesakes' ids shows the same signals, so nothing is rewritten (design
+    rule D6, see the PR description; R1a): the pair is logged once per row per sync, and film 2002 stays
     missing until an admin uses Wrong movie."""
 
     def setUp(self):
@@ -470,7 +470,7 @@ class SwappedPairIsLoggedOnly(Base):
 
 class NiceToHaves(Base):
     def test_same_stream_number_of_another_account_is_not_the_rows_stream(self):
-        """CONTRACT-185 D3: another stream only on positive evidence (another
+        """Design rule D3 (see the PR description): another stream only on positive evidence (another
         configured provider's host AND username, or its VOD token); an older
         host of this provider is still this provider (a host change)."""
         other = Provider(name="Other", server_url="http://provider", username="u2", password="p",
@@ -530,7 +530,7 @@ class RenumberedStreamKeepsItsRow(Base):
         self.assertEqual(self.tree(), before)
 
 
-# ── CONTRACT-185.md: one test per event row the review found (each failed on 0653661) ──
+# ── The design's events (see the PR description): one test per event row the review found (each failed before the fix) ──
 
 class ContractSwappedIds(Base):
     """E6 / R1a: a panel that swaps two namesakes' ids must never make a right

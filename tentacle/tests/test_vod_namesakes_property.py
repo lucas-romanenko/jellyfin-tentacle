@@ -13,7 +13,7 @@ Each seed builds a world:
 
 Night 0 is the library as it was before (provider ids not read: they are
 stripped). Nights 1-3 (1-5 when files are deleted) run with the ids, in the
-same world. Invariants (CONTRACT-185.md section 2):
+same world. Invariants (see the PR description):
   S1  no path of a row from night 0 moves, and no night-0 row or file is lost
   S2  no folder holds files of two different films (unless it already did)
   S3  every sync completes (never raises)
@@ -147,7 +147,7 @@ def add_v2(world, rnd):
     world["shuffle"] = rnd.random() < 0.5
     world["fault"] = rnd.choices([None, "cat_fail", "crash"], [0.8, 0.1, 0.1])[0]
     world["crash_after"] = rnd.randint(1, 15)
-    # Design-review additions (CONTRACT-185 section 10):
+    # Design-review additions (see the PR description):
     # - two providers as two accounts on one panel host (E27);
     # - a namesake row's .strm deleted before night 2 (E25);
     # - cross-provider claims: a stream of X whose id names a namesake H that
@@ -704,7 +704,7 @@ def _run(cases, classes):
     return out
 
 
-# Classes the code at 0653661 violated (CONTRACT-185.md section 8), each with
+# Classes an earlier version of the fix violated, each with
 # seeds that showed it; they now run as regression seeds for their class.
 KNOWN = {
     "R1a": [(True, 205), (True, 208), (True, 224)],               # swapped ids: the heal crosses a right row
