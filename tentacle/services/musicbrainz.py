@@ -176,7 +176,8 @@ class MusicBrainz:
 
     # lookups
     def release_group(self, rgid: str) -> dict:
-        return self.get(f"/release-group/{rgid}", {"inc": "artist-credits"})
+        # Genres ride along (same request): Discover sorts albums by them.
+        return self.get(f"/release-group/{rgid}", {"inc": "artist-credits+genres"})
 
     def release_group_releases(self, rgid: str) -> list:
         """Every official release of a release group, with its media (formats, track counts)."""
@@ -206,6 +207,12 @@ class MusicBrainz:
     def search_recordings(self, q: str, limit: int = 25) -> list:
         return self.get("/recording", {"query": lucene_phrase(q), "limit": limit},
                         ttl=SEARCH_TTL).get("recordings") or []
+
+    def find_release_groups(self, title: str, artist: str, limit: int = 10) -> list:
+        """Release groups with this title credited to this artist (a chart entry)."""
+        query = f"releasegroup:{lucene_quote(title)} AND artist:{lucene_quote(artist)}"
+        return self.get("/release-group", {"query": query, "limit": limit},
+                        ttl=SEARCH_TTL).get("release-groups") or []
 
     def recordings_by(self, title: str, artist_ids: list, limit: int = 100) -> list:
         ids = " OR ".join(a for a in artist_ids if _MBID.match(a or ""))

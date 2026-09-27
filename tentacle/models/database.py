@@ -590,6 +590,27 @@ class MusicAlbum(Base):
     updated_at = Column(DateTime, default=datetime.utcnow)
 
 
+class MusicImport(Base):
+    """A Spotify playlist imported by a user (music module): its songs and the
+    original studio album each one resolved to (services/music/spotify.py)."""
+    __tablename__ = "music_imports"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("tentacle_users.id"), index=True)
+    name = Column(String, default="")
+    source = Column(String, default="")          # spotify_url | exportify_csv
+    url = Column(String, default="")             # the playlist link, for Refresh
+    status = Column(String, default="resolving")  # resolving | ready | error
+    done = Column(Integer, default=0)            # songs resolved so far
+    total = Column(Integer, default=0)
+    # [{title, artist, album, album_artist, result: {mbid, title, artist, artist_mbid,
+    #   year} | {reason}}]
+    tracks = Column(JSON)
+    outcomes = Column(JSON)                      # {release group id: "requested" | why not}
+    error = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+
 # ─── Activity Log ─────────────────────────────────────────────────────────────
 
 class ActivityLog(Base):

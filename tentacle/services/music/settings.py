@@ -48,12 +48,16 @@ DEFAULTS = {
     # Optional, read-only: Lidarr's root folder as Tentacle sees it, so an
     # existing artist.jpg can be reused. Empty = skip artist.jpg, use Deezer.
     "music_library_path": "",
+    # Discover → Music: whose Apple Music charts "Trending" and "New releases" follow
+    # (a two-letter country code).
+    "music_chart_country": "us",
 }
 
 # Parsed by their readers; an empty value means the default, not "nothing".
 NON_EMPTY = {
     "music_reconcile_time": DEFAULTS["music_reconcile_time"],
     "musicbrainz_cache_days": DEFAULTS["musicbrainz_cache_days"],
+    "music_chart_country": DEFAULTS["music_chart_country"],
 }
 
 # Masked by GET /api/settings, like the other keys and passwords.

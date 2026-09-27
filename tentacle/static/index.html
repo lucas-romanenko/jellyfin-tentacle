@@ -460,6 +460,17 @@ body:not(.music-on) [data-music-only] { display: none !important; }
 .music-row-title { font-size: 13px; color: var(--text); overflow: hidden; text-overflow: ellipsis; }
 .music-row-sub { font-size: 11px; color: var(--text3); margin-top: 2px; overflow-wrap: anywhere; }
 .music-row-hint { font-size: 11px; color: var(--text3); white-space: nowrap; }
+.music-note { grid-column: 1 / -1; font-size: 12px; color: var(--text3); }
+@media (max-width: 600px) { #discover-streaming-pills.music-pills { flex-wrap: nowrap !important; overflow-x: auto; scrollbar-width: none; } #discover-streaming-pills.music-pills > * { flex-shrink: 0; } }
+.music-artist-card { cursor: pointer; text-align: center; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.music-artist-pic { width: 100%; aspect-ratio: 1 / 1; border-radius: 50%; object-fit: cover; background: var(--bg3); display: flex; align-items: center; justify-content: center; font-size: 30px; font-weight: 600; color: var(--text3); transition: transform 0.12s; }
+.music-artist-card:hover .music-artist-pic { transform: scale(1.03); }
+.music-artist-name { font-size: 12px; color: var(--text); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.music-progress { height: 4px; background: var(--bg3); border-radius: 2px; overflow: hidden; margin-top: 4px; }
+.music-progress > div { height: 100%; background: var(--accent); transition: width 0.3s; }
+.music-check-list { display: grid; gap: 2px; }
+.music-check-row { display: flex; gap: 10px; align-items: center; padding: 6px 4px; border-bottom: 1px solid var(--border); cursor: pointer; min-width: 0; }
+.music-check-row input { accent-color: var(--accent); flex-shrink: 0; }
 .music-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 12px; margin-top: 8px; }
 .music-subhead { font-size: 12px; font-weight: 600; color: var(--text2); margin-top: 14px; }
 .music-original { margin-top: 18px; padding: 10px 12px; border-left: 3px solid var(--accent); background: var(--bg1); border-radius: var(--radius-sm); font-size: 13px; }
@@ -485,7 +496,7 @@ body:not(.music-on) [data-music-only] { display: none !important; }
 .music-lib-artist-name a { color: var(--text); text-decoration: none; }
 .music-lib-row { margin-bottom: 4px; }
 .music-lib-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
-@media (max-width: 600px) { .music-lib-row { flex-wrap: wrap; } .music-lib-actions { width: 100%; justify-content: flex-start; } .music-row-hint { display: none; } }
+@media (max-width: 600px) { .music-lib-row, .music-row { flex-wrap: wrap; } .music-lib-actions { width: 100%; justify-content: flex-start; } .music-row-hint { display: none; } }
 
 /* ── Buttons ── */
 .btn {
@@ -2446,6 +2457,14 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
                   <div class="form-label">Words that mark a special edition</div>
                   <input class="form-input" id="music_edition_words" placeholder="deluxe,expanded,anniversary,bonus,live,mono,stereo,box,collector,legacy,super">
                   <div class="form-hint">A release whose title or disambiguation contains one of these is passed over when another release has the same tracklist.</div>
+                </div>
+
+                <hr class="divider">
+                <div class="section-title">Discover</div>
+                <div class="form-group">
+                  <div class="form-label">Chart country</div>
+                  <select class="form-input" id="music_chart_country" style="max-width:240px"><option value="us">United States</option><option value="ca">Canada</option><option value="gb">United Kingdom</option><option value="au">Australia</option><option value="ie">Ireland</option><option value="nz">New Zealand</option><option value="de">Germany</option><option value="fr">France</option><option value="es">Spain</option><option value="it">Italy</option><option value="nl">Netherlands</option><option value="be">Belgium</option><option value="se">Sweden</option><option value="no">Norway</option><option value="dk">Denmark</option><option value="fi">Finland</option><option value="pl">Poland</option><option value="pt">Portugal</option><option value="br">Brazil</option><option value="mx">Mexico</option><option value="ar">Argentina</option><option value="jp">Japan</option><option value="kr">South Korea</option><option value="in">India</option><option value="za">South Africa</option></select>
+                  <div class="form-hint">Whose Apple Music charts Discover &rarr; Music shows under Trending and New releases. Top of all time is worldwide.</div>
                 </div>
 
                 <hr class="divider">

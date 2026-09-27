@@ -219,12 +219,17 @@ def original_album_for_song(mb: MusicBrainz, title: str, artist_mbid: str) -> di
     """The studio album a song first appeared on: the earliest official release
     group of type Album with no secondary types (compilation, live, soundtrack...)."""
     wanted = normalize(title)
-    recordings = [r for r in mb.recordings_by(title, related_artists(mb, artist_mbid))
-                  if normalize(r.get("title")) == wanted]
+    artists = related_artists(mb, artist_mbid)
+    recordings = [r for r in mb.recordings_by(title, artists) if normalize(r.get("title")) == wanted]
     studio, singles = {}, {}
     for rec in recordings:
         for rel in rec.get("releases") or []:
             if (rel.get("status") or "").lower() != "official":
+                continue
+            # Only the artist's own records: a charity album credited to Various
+            # Artists isn't the album "Tennessee Whiskey" came out on (Traveller is).
+            credited = {(c.get("artist") or {}).get("id") for c in rel.get("artist-credit") or []} - {None}
+            if credited and not credited.intersection(artists):
                 continue
             rg = rel.get("release-group") or {}
             date = rel.get("date") or "9999"

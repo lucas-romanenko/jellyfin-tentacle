@@ -5401,6 +5401,7 @@ let _missingActiveList = 'all';
 
 async function loadDiscover() {
   if (_discoverType === 'music' && typeof musicDiscoverHome === 'function') return musicDiscoverHome();
+  document.getElementById('discover-streaming-pills').classList.remove('music-pills');
   const grid = document.getElementById('discover-grid');
   const tabsEl = document.getElementById('discover-section-tabs');
   grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text3)"><span class="toast-spinner"></span> Loading…</div>';
