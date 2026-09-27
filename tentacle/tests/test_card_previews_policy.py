@@ -96,7 +96,8 @@ class PluginHandsItToClients(unittest.TestCase):
         toolbar = toolbar[:toolbar.index("[HttpGet(", 10)]
         self.assertEqual(2, len(re.findall(r"cardPreviews", toolbar)) - 1,
                          "both Toolbar returns carry cardPreviews")
-        self.assertIn('? "all" :', toolbar, "absent = all, so older configs change nothing")
+        self.assertIn('? "local_only" :', toolbar,
+                      "absent = local_only: nobody's cards open provider connections unless they choose all")
         self.assertIn("cardPreviews = string.IsNullOrEmpty(config.CardPreviews)", cs)
 
     def test_dashboard_offers_the_three_choices(self):

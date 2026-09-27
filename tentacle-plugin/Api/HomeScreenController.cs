@@ -198,7 +198,7 @@ public class TentacleHomeController : ControllerBase
             enabled = true,
             sections,
             mergeContinueWatching = config.MergeContinueWatching,
-            cardPreviews = string.IsNullOrEmpty(config.CardPreviews) ? "all" : config.CardPreviews,
+            cardPreviews = string.IsNullOrEmpty(config.CardPreviews) ? "local_only" : config.CardPreviews,
         });
     }
 
@@ -668,8 +668,11 @@ public class TentacleHomeController : ControllerBase
 
         var homeConfig = _homeScreenManager.GetHomeConfig(caller.UserId, GetApiKey());
         // Every client fetches this at start-up, so it also carries the server's
-        // answer on focus previews (all / local_only / off); absent = all.
-        var cardPreviews = string.IsNullOrEmpty(homeConfig?.CardPreviews) ? "all" : homeConfig!.CardPreviews;
+        // answer on focus previews (all / local_only / off). Absent = local_only: a
+        // preview of a provider (.strm) title opens a provider connection per card
+        // scrolled over, which can cut a running recording (androidtv#47), so nobody
+        // gets that without choosing it.
+        var cardPreviews = string.IsNullOrEmpty(homeConfig?.CardPreviews) ? "local_only" : homeConfig!.CardPreviews;
         var toolbar = homeConfig?.Toolbar;
         if (toolbar != null && toolbar.Count > 0)
         {
