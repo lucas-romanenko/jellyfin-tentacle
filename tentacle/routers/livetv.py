@@ -2395,6 +2395,24 @@ def _dedupe_m3u(parsed_channels: list[dict]) -> list[dict]:
     return kept
 
 
+# Channels the user switched off that the M3U playlist then dropped (#158). An
+# M3U sync deletes a channel that leaves the playlist, and one listed again is
+# a NEW row, which starts with its group's state: a channel switched off in an
+# enabled group came back on. Their names are kept per provider, so one that
+# returns stays off. (Xtream channels are never deleted, so they keep the row.)
+_M3U_SWITCHED_OFF_KEY = "livetv_m3u_switched_off_{}"
+_M3U_SWITCHED_OFF_MAX = 2000
+
+
+def _m3u_switched_off(db: Session, provider_id: int) -> list:
+    import json
+    try:
+        names = json.loads(get_setting(db, _M3U_SWITCHED_OFF_KEY.format(provider_id), "") or "[]")
+    except ValueError:
+        return []
+    return [n for n in names if isinstance(n, str)] if isinstance(names, list) else []
+
+
 def _upsert_channels_from_m3u(
     provider_id: int,
     parsed_channels: list[dict],
@@ -2409,6 +2427,9 @@ def _upsert_channels_from_m3u(
     """
     parsed_channels = _dedupe_m3u(parsed_channels)
     enabled_groups = _enabled_group_names(db, provider_id)
+    switched_off = _m3u_switched_off(db, provider_id)
+    remembered_off = set(switched_off)
+    returned_off = set()
 
     # Build lookup of existing channels by stream_id
     existing = {
@@ -2479,8 +2500,11 @@ def _upsert_channels_from_m3u(
                 group_title=group,
                 epg_channel_id=ch.get("epg_channel_id"),
                 channel_number=_m3u_channel_number(ch.get("tvg_chno")),
-                enabled=bool(group) and group in enabled_groups and not _is_separator(name),
+                enabled=(bool(group) and group in enabled_groups and not _is_separator(name)
+                         and name not in remembered_off),
             ))
+            if name in remembered_off:
+                returned_off.add(name)      # the row carries the user's "off" again
             new_count += 1
 
     # Remove channels no longer in M3U — but never on a response that looks
@@ -2510,10 +2534,28 @@ def _upsert_channels_from_m3u(
                 f"partial download, not a provider removal. Existing channels kept."
             )
         else:
+            for sid in removed_ids:
+                row = existing[sid]
+                if (not row.enabled and row.group_title in enabled_groups
+                        and not _is_separator(row.name)):
+                    switched_off.append(row.name)   # the user's own "off"
             db.query(LiveChannel).filter(
                 LiveChannel.provider_id == provider_id,
                 LiveChannel.stream_id.in_(removed_ids),
             ).delete(synchronize_session=False)
+
+    kept_off = list(dict.fromkeys(n for n in switched_off if n not in returned_off))
+    kept_off = kept_off[-_M3U_SWITCHED_OFF_MAX:]
+    if kept_off != _m3u_switched_off(db, provider_id):
+        # In this sync's transaction (set_setting would commit half of it).
+        import json
+        from models.database import Setting
+        key = _M3U_SWITCHED_OFF_KEY.format(provider_id)
+        row = db.query(Setting).filter(Setting.key == key).first()
+        if row is None:
+            db.add(Setting(key=key, value=json.dumps(kept_off)))
+        else:
+            row.value = json.dumps(kept_off)
 
     # Sync groups
     existing_groups = {
@@ -4381,9 +4423,28 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                             in_placeholder = True
                             await _note_placeholder(channel_id, segment)
                         if not is_live:
-                            logger.error(f"[LiveTV] Channel {channel_id}: the provider ended the "
-                                         f"stream with a placeholder ({segment}), stopping")
-                            return
+                            if not (is_recording is not None and is_recording()):
+                                logger.error(f"[LiveTV] Channel {channel_id}: the provider ended the "
+                                             f"stream with a placeholder ({segment}), stopping")
+                                return
+                            # A recording that ends here is filed by Jellyfin as
+                            # complete and never retried: the rest of the event is
+                            # lost. Wait it out as for a live placeholder, and ask
+                            # the CHANNEL url again -- this playlist has ended, so
+                            # re-reading it would only repeat the placeholder.
+                            if _note_failure(_ProviderPlaceholder(segment), "Channel"):
+                                return
+                            backoff_cap = _REFUSAL_BACKOFF_CAP
+                            await _backoff_sleep()
+                            try:
+                                current_playlist, current_base = await _resolve_channel_playlist()
+                                playlist_loaded_at = asyncio.get_running_loop().time()
+                            except _ProviderPlaceholder:
+                                pass        # still the placeholder: wait again
+                            except Exception as e:
+                                if _note_failure(e, "Re-resolving after a placeholder"):
+                                    return
+                            continue
                         if _note_failure(_ProviderPlaceholder(segment), "Channel"):
                             return
                         await _backoff_sleep()
@@ -4452,6 +4513,12 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         try:
                             chunk_resp = await _send_checked(hls_client, chunk_url, ua_headers, guard)
                             try:
+                                # A segment URL can redirect to the placeholder: its
+                                # bytes are black, not the channel, and are never
+                                # written (#140). Waited out like one in the playlist.
+                                placeholder = _placeholder_name(str(chunk_resp.url))
+                                if placeholder:
+                                    raise _ProviderPlaceholder(placeholder)
                                 chunk_resp.raise_for_status()
                                 payload = await chunk_resp.aread()
                             finally:
@@ -4459,6 +4526,11 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                             break
                         except Exception as e:
                             chunk_error = e
+                            if isinstance(e, _ProviderPlaceholder):
+                                if not in_placeholder:
+                                    in_placeholder = True
+                                    await _note_placeholder(channel_id, e.segment)
+                                break   # it will not turn into the channel in a second
                             if attempt == CHUNK_RETRIES_IN_PLACE or not _is_retryable(e):
                                 break
                             if _note_failure(e, "Chunk fetch"):

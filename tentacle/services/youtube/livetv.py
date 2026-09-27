@@ -51,20 +51,23 @@ def iptv_guide_numbers(db: Session) -> set:
 
 
 def guide_number(channel: YouTubeChannel, taken: set = None) -> str:
-    """The channel's guide number, clear of `taken` (the IPTV numbers).
+    """The channel's guide number, clear of `taken` (numbers already in the lineup).
 
     Jellyfin's HDHomeRun tuner names a channel hdhr_<GuideNumber>, so two
     lineup entries with one number become ONE channel: one of them vanishes
     from Live TV and the guide maps both schedules onto the other. A number
-    the user pinned is theirs to choose, and is only warned about.
+    the user pinned is used while it is free; one that another channel has
+    is set aside (and logged) rather than handed to Jellyfin twice (#179).
     """
     if channel.channel_number:
         number = str(channel.channel_number)
-        if taken and number in taken and (channel.id, number) not in _warned_collisions:
+        if not taken or number not in taken:
+            return number
+        if (channel.id, number) not in _warned_collisions:
             _warned_collisions.add((channel.id, number))
             logger.warning(f"[YouTube] Live TV channel '{channel.title}' is pinned to guide number "
-                           f"{number}, which an IPTV channel also uses: Jellyfin will merge the two")
-        return number
+                           f"{number}, which another Live TV channel uses: using a free number instead "
+                           f"(Jellyfin would merge the two)")
     number = str(GUIDE_NUMBER_BASE + channel.id)
     if not taken or number not in taken:
         return number
@@ -78,17 +81,51 @@ def guide_number(channel: YouTubeChannel, taken: set = None) -> str:
     return str(fallback)
 
 
+def _lineup_channels(db: Session) -> list:
+    return db.query(YouTubeChannel).filter(
+        YouTubeChannel.live_enabled == True,  # noqa: E712
+        YouTubeChannel.enabled == True,  # noqa: E712
+    ).order_by(YouTubeChannel.title).all()
+
+
+def lineup_numbers(db: Session, channels: list = None) -> dict:
+    """YouTube channel id -> guide number, for every channel in the lineup:
+    clear of the enabled IPTV channels AND of each other (#179). Pinned
+    numbers are claimed first, in id order, so a pin keeps its number over an
+    automatic 9000 + id; everything is decided from the database alone, so the
+    lineup, the XMLTV, the M3U and the YouTube page agree."""
+    channels = _lineup_channels(db) if channels is None else channels
+    taken = iptv_guide_numbers(db)
+    out = {}
+    by_id = sorted(channels, key=lambda c: c.id)
+    for ch in by_id:
+        if ch.channel_number and str(ch.channel_number) not in taken:
+            out[ch.id] = str(ch.channel_number)
+            taken.add(out[ch.id])
+    for ch in by_id:
+        if ch.id not in out:
+            out[ch.id] = guide_number(ch, taken)
+            taken.add(out[ch.id])
+    return out
+
+
+def number_for(db: Session, channel: YouTubeChannel) -> str:
+    """The guide number this channel has (in the lineup) or would get."""
+    numbers = lineup_numbers(db)
+    if channel.id in numbers:
+        return numbers[channel.id]
+    return guide_number(channel, iptv_guide_numbers(db) | set(numbers.values()))
+
+
 def live_channels(db: Session) -> list:
     """Channels the user has opted into Live TV, as lineup/XMLTV dicts."""
     out = []
-    taken = iptv_guide_numbers(db)
-    for ch in db.query(YouTubeChannel).filter(
-        YouTubeChannel.live_enabled == True,  # noqa: E712
-        YouTubeChannel.enabled == True,  # noqa: E712
-    ).order_by(YouTubeChannel.title).all():
+    channels = _lineup_channels(db)
+    numbers = lineup_numbers(db, channels)
+    for ch in channels:
         out.append({
             "youtube_channel_id": ch.id,
-            "guide_number": guide_number(ch, taken),
+            "guide_number": numbers[ch.id],
             "name": ch.title,
             "logo_url": ch.avatar_url,
             "group_title": "YouTube",
