@@ -21,12 +21,42 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "https://musicbrainz.org/ws/2"
 TIMEOUT = 15
-MIN_INTERVAL = 1.0
+MIN_INTERVAL = 1.0        # between request starts: MusicBrainz allows one a second on average
 RETRY_DELAYS = (2, 5)
 APP = "Tentacle/1.0"
+# Someone waiting on a page (an album, a search) goes before the music worker's
+# background lookups (reconcile, Discover, playlist imports); the worker also
+# holds off this long after a page's last lookup, so a page's follow-up
+# lookups aren't interleaved with the worker's.
+INTERACTIVE_GRACE = 2.0
 
 _gate = threading.Lock()
 _last_request = [0.0]
+_turns = threading.Condition()
+_interactive = {"waiting": 0, "last": 0.0}
+
+
+def _is_background() -> bool:
+    return threading.current_thread().name == "music-worker"
+
+
+def _take_turn(background: bool) -> None:
+    """Acquire the one-request-at-a-time gate; background callers give way to pages."""
+    with _turns:
+        if background:
+            while True:
+                idle = time.monotonic() - _interactive["last"]
+                if not _interactive["waiting"] and idle >= INTERACTIVE_GRACE:
+                    break
+                _turns.wait(timeout=1.0 if _interactive["waiting"] else INTERACTIVE_GRACE - idle)
+        else:
+            _interactive["waiting"] += 1
+    _gate.acquire()
+    if not background:
+        with _turns:
+            _interactive["waiting"] -= 1
+            _interactive["last"] = time.monotonic()
+            _turns.notify_all()
 
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -56,10 +86,12 @@ def get(path: str, params: Optional[dict] = None, *, contact: str,
     query["fmt"] = "json"
     attempt = 0
     while True:
-        with _gate:
+        _take_turn(_is_background())
+        try:
             wait = _last_request[0] + MIN_INTERVAL - time.monotonic()
             if wait > 0:
                 time.sleep(wait)
+            _last_request[0] = time.monotonic()
             try:
                 r = requests.get(f"{BASE_URL}{path}", params=query, timeout=TIMEOUT,
                                  headers={"User-Agent": user_agent(contact.strip()),
@@ -69,8 +101,8 @@ def get(path: str, params: Optional[dict] = None, *, contact: str,
                 r, reason = None, f"MusicBrainz did not answer within {TIMEOUT}s"
             except requests.exceptions.RequestException as e:
                 r, reason = None, f"Can't reach MusicBrainz ({e.__class__.__name__})"
-            finally:
-                _last_request[0] = time.monotonic()
+        finally:
+            _gate.release()
         if r is not None:
             if r.status_code == 503:
                 reason = "MusicBrainz is rate-limiting (HTTP 503)"

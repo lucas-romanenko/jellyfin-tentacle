@@ -510,7 +510,10 @@ def ensure_fresh(db, force: bool = False) -> dict:
              or now - trending.get("built", 0) > TRENDING_MAX_AGE)
     if (force or stale) and not jobs["trending"] and (force or now - _failed["trending"] > RETRY_AFTER_FAILURE):
         jobs["trending"] = True
-        worker.submit(_trending_job, worker.BACKGROUND, "Discover: trending and new releases")
+        # Nothing to show yet: someone is looking at an empty page, so it goes ahead
+        # of the background work. A daily refresh stays in the background.
+        worker.submit(_trending_job, worker.NORMAL if not trending else worker.BACKGROUND,
+                      "Discover: trending and new releases")
     all_time = data.get("all_time") or {}
     stale = not all_time or now - all_time.get("built", 0) > ALL_TIME_MAX_AGE
     if (force or stale) and not jobs["all_time"] and (force or now - _failed["all_time"] > RETRY_AFTER_FAILURE):

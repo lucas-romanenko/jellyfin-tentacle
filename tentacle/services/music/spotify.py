@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 EMBED_URL = "https://open.spotify.com/embed/playlist/{id}"
 TIMEOUT = 15
 MAX_TRACKS = 2000
+CHUNK = 10   # songs per worker turn: other waiting jobs (Discover, requests) run in between
 _PLAYLIST_ID = re.compile(r"playlist[/:]([A-Za-z0-9]{22})")
 _NEXT_DATA = re.compile(r'<script id="__NEXT_DATA__" type="application/json">(.+?)</script>', re.S)
 
@@ -166,15 +167,24 @@ def resolve_job(import_id: int):
     def job(db):
         from services.music.discover import resolve_song
         from services.musicbrainz import MusicBrainz, MusicBrainzError
+        requeued = False
         try:
             imp = db.get(MusicImport, import_id)
             if not imp:
                 return
             mb = MusicBrainz.from_settings(db)
             tracks = [dict(t) for t in imp.tracks or []]
+            resolved_now = 0
             for i, t in enumerate(tracks):
                 if t.get("result") is not None:
                     continue
+                if resolved_now >= CHUNK:
+                    # Back in line, so a long playlist doesn't hold up everything else.
+                    _store(db, imp, tracks)
+                    worker.submit(resolve_job(import_id), worker.NORMAL, f"Spotify import #{import_id}")
+                    requeued = True
+                    return
+                resolved_now += 1
                 worker.run_urgent_jobs()
                 try:
                     t["result"] = resolve_song(mb, t["title"], t["artist"], t.get("album") or "",
@@ -191,7 +201,8 @@ def resolve_job(import_id: int):
             _store(db, imp, tracks)
             logger.info(f"[Music] Spotify import '{imp.name}': {imp.done} songs resolved")
         finally:
-            _active.discard(import_id)
+            if not requeued:
+                _active.discard(import_id)
     return job
 
 

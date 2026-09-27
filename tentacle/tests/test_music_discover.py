@@ -436,6 +436,19 @@ class TestSpotifyImport(_DiscoverBase):
         self.assertEqual(imp.outcomes[R1], "requested")
         self.assertIn("metadata server", imp.outcomes[R2])
 
+    def test_a_long_playlist_is_resolved_in_turns(self):
+        from services.music import discover, spotify
+        songs = [{"title": f"Song {i}", "artist": "Fleetwood Mac"} for i in range(25)]
+        imp = spotify.start_import(self.db, self.user.id, "Long", "exportify_csv", "", songs)
+        turns = 0
+        with mock.patch.object(discover, "resolve_song", side_effect=self._resolve):
+            while self.jobs:
+                self.jobs.pop(0)(self.db)
+                turns += 1
+        self.db.refresh(imp)
+        self.assertEqual((turns, imp.done, imp.status), (3, 25, "ready"))   # 10 + 10 + 5
+        self.assertNotIn(imp.id, spotify._active)
+
     def test_refresh_keeps_resolved_songs_and_resumes(self):
         from services.music import discover, spotify
         imp = spotify.start_import(self.db, self.user.id, "Road trip", "spotify_url",
@@ -519,6 +532,64 @@ class TestImportEndpoints(_DiscoverBase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(set(r.json()), {"country", "building", "errors", "trending", "new", "all_time", "spotify"})
         self.assertEqual(self.client.post("/api/music/discover/refresh").json(), {"queued": True})
+
+
+class TestMusicBrainzTurns(unittest.TestCase):
+    """One request a second for the whole app: pages go before the worker's lookups."""
+
+    def setUp(self):
+        import services.musicbrainz as mbmod
+        self.mbmod = mbmod
+        self.starts = []
+
+        def fake_get(url, **kw):
+            import threading as th
+            self.starts.append((th.current_thread().name, time.monotonic()))
+            time.sleep(self.latency)
+            return mock.Mock(status_code=200, json=lambda: {"ok": True})
+        self.latency = 0.0
+        for patch in (mock.patch.object(mbmod.requests, "get", side_effect=fake_get),
+                      mock.patch.object(mbmod, "MIN_INTERVAL", 0.05),
+                      mock.patch.object(mbmod, "INTERACTIVE_GRACE", 0.4)):
+            patch.start()
+            self.addCleanup(patch.stop)
+        mbmod._last_request[0] = 0.0
+        mbmod._interactive.update(waiting=0, last=0.0)
+
+    def call(self):
+        return self.mbmod.get("/artist/x", contact="me@example.com")
+
+    def test_the_interval_runs_from_one_start_to_the_next(self):
+        self.latency = 0.1
+        with mock.patch.object(self.mbmod, "MIN_INTERVAL", 0.15):
+            for _ in range(4):
+                self.call()
+        gaps = [b[1] - a[1] for a, b in zip(self.starts, self.starts[1:])]
+        # 0.15 from one start to the next, not 0.15 after each answer (0.25).
+        self.assertTrue(all(0.14 <= g < 0.21 for g in gaps), gaps)
+
+    def test_a_page_goes_before_the_worker_and_keeps_its_turn(self):
+        import threading
+        stop = threading.Event()
+
+        def worker_loop():
+            while not stop.is_set():
+                self.call()
+        bg = threading.Thread(target=worker_loop, name="music-worker")
+        bg.start()
+        time.sleep(0.2)
+        for _ in range(3):      # an album page: a few lookups in a row
+            self.call()
+            time.sleep(0.02)
+        page_done = time.monotonic()
+        time.sleep(0.6)
+        stop.set()
+        bg.join()
+        names = [n for n, _ in self.starts]
+        first = names.index("MainThread")
+        self.assertEqual(names[first:first + 3], ["MainThread"] * 3)      # nothing in between
+        resumed = [t for n, t in self.starts if n == "music-worker" and t > page_done]
+        self.assertTrue(resumed and resumed[0] - page_done >= 0.3)       # the worker waited out the grace
 
 
 if __name__ == "__main__":
