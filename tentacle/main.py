@@ -16,7 +16,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 
 from models.database import create_tables, SessionLocal, seed_defaults, Setting, Provider, SyncRun
-from routers import settings, providers, sync as sync_router, library, duplicates, lists as lists_router, widget, radarr as radarr_router, sonarr as sonarr_router, tags as tags_router, collections as collections_router, smartlists as smartlists_router, discover as discover_router, livetv as livetv_router, auth as auth_router, activity as activity_router, notifications as notifications_router, health as health_router, youtube as youtube_router
+from routers import settings, providers, sync as sync_router, library, duplicates, lists as lists_router, widget, radarr as radarr_router, sonarr as sonarr_router, tags as tags_router, collections as collections_router, smartlists as smartlists_router, discover as discover_router, livetv as livetv_router, auth as auth_router, activity as activity_router, notifications as notifications_router, health as health_router, youtube as youtube_router, music as music_router
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
@@ -430,6 +430,38 @@ def reschedule_main_sync(cron: str = None) -> bool:
         return False
 
 
+def reschedule_music_reconcile(time_str: str = None) -> bool:
+    """The music module's daily check, at the music_reconcile_time setting (HH:MM).
+    The job itself does nothing while the module is off or Lidarr isn't set up."""
+    from services.music.jobs import scheduled_reconcile
+    from services.music.settings import DEFAULTS
+    if time_str is None:
+        from models.database import get_setting
+        db = SessionLocal()
+        try:
+            time_str = get_setting(db, "music_reconcile_time", DEFAULTS["music_reconcile_time"])
+        finally:
+            db.close()
+    try:
+        hour, minute = (int(x) for x in (time_str or "").strip().split(":")[:2])
+        assert 0 <= hour < 24 and 0 <= minute < 60
+    except Exception:
+        logger.warning(f"Invalid music check time '{time_str}' — using {DEFAULTS['music_reconcile_time']}")
+        hour, minute = (int(x) for x in DEFAULTS["music_reconcile_time"].split(":"))
+    scheduler.add_job(scheduled_reconcile, CronTrigger(hour=hour, minute=minute), id="music_reconcile",
+                      replace_existing=True, max_instances=1, coalesce=True)
+    logger.info(f"Music check scheduled: daily at {hour:02d}:{minute:02d}")
+    return True
+
+
+def schedule_once(fn, delay_seconds: int, job_id: str) -> None:
+    """Run fn once, delay_seconds from now (replacing a pending run with the same id)."""
+    from datetime import datetime, timedelta
+    from apscheduler.triggers.date import DateTrigger
+    scheduler.add_job(fn, DateTrigger(run_date=datetime.now() + timedelta(seconds=delay_seconds)),
+                      id=job_id, replace_existing=True)
+
+
 def get_schedule_info() -> dict:
     """Current sync schedule as a friendly time + the effective timezone + next run."""
     from datetime import datetime
@@ -571,6 +603,8 @@ def setup_scheduler(db):
     # The job checks the youtube_enabled setting itself, so the schedule can
     # stay in place whether or not the feature is turned on.
     reschedule_youtube_index()
+    # Music module: the daily reconcile (checks the setting itself when it runs).
+    reschedule_music_reconcile()
     from services.youtube import traffic as _yt_traffic
     scheduler.add_job(
         _yt_traffic.hourly_report,
@@ -716,6 +750,8 @@ app.include_router(vod_router.router)
 app.include_router(notifications_router.router)
 app.include_router(health_router.router)
 app.include_router(youtube_router.router)
+app.include_router(music_router.router)
+app.include_router(music_router.webhook_router)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
@@ -860,7 +896,7 @@ async def api_not_found(full_path: str, request: Request):
 # change — and forgetting sent users a mix of new HTML and months-old
 # JavaScript, where the page simply lacks whatever was added. Derived from the
 # files now, so it cannot fall out of step with them.
-_ASSET_FILES = ("static/js/app.js", "static/js/pages.js")
+_ASSET_FILES = ("static/js/app.js", "static/js/pages.js", "static/js/music.js")
 _index_cache: dict = {"key": None, "html": None}
 
 

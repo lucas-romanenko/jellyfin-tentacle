@@ -85,8 +85,11 @@ class _Base(unittest.TestCase):
         self.user = TentacleUser(id=1, jellyfin_user_id="u1", display_name="u", is_admin=True)
         self.db.add(self.user)
         self.db.commit()
+        # A default quality profile is required since requests stopped
+        # falling back to profile 1 (services.media_requests).
         for k, v in (("radarr_url", url), ("radarr_api_key", "k"),
-                     ("sonarr_url", url), ("sonarr_api_key", "k"), ("data_dir", tmp.name)):
+                     ("sonarr_url", url), ("sonarr_api_key", "k"), ("data_dir", tmp.name),
+                     ("radarr_quality_profile_id", "7"), ("sonarr_quality_profile_id", "7")):
             set_setting(self.db, k, v)
 
     def lists(self):

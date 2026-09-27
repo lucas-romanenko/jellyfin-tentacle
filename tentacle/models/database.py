@@ -539,6 +539,57 @@ class DownloadRequest(Base):
     )
 
 
+class MusicArtist(Base):
+    """An artist in Lidarr, as Tentacle last saw it (music module)."""
+    __tablename__ = "music_artists"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    mbid = Column(String, nullable=False, unique=True, index=True)   # MusicBrainz artist id
+    lidarr_artist_id = Column(Integer, index=True)
+    name = Column(String, nullable=False, default="")
+    sort_name = Column(String, default="")
+    disambiguation = Column(String, default="")
+    path = Column(String, default="")          # the artist's folder, as Lidarr sees it
+    updated_at = Column(DateTime, default=datetime.utcnow)
+    # Artist picture (services/music/pictures.py): "" (not checked) | set | ok |
+    # waiting (the player hasn't scanned the artist yet) | review | error
+    picture_status = Column(String, default="", index=True)
+    picture_source = Column(String, default="")    # artist.jpg | deezer | upload
+    picture_note = Column(Text)                    # why it needs review / what failed
+    picture_candidates = Column(JSON)              # Deezer candidates for the review page
+    picture_checked_at = Column(DateTime)
+
+
+class MusicAlbum(Base):
+    """An album (MusicBrainz release group) in Lidarr, with Tentacle's verdict on
+    its pinned release. A snapshot kept by the music module; Lidarr is the truth."""
+    __tablename__ = "music_albums"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    mbid = Column(String, nullable=False, unique=True, index=True)   # release group id
+    lidarr_album_id = Column(Integer, index=True)
+    lidarr_artist_id = Column(Integer, index=True)
+    artist_mbid = Column(String, index=True, default="")
+    artist_name = Column(String, default="")
+    title = Column(String, nullable=False, default="")
+    album_type = Column(String, default="")          # Album | EP | Single | ...
+    secondary_types = Column(String, default="")     # comma-separated: Live, Compilation, ...
+    release_date = Column(String, default="")
+    monitored = Column(Boolean, default=False)
+    any_release_ok = Column(Boolean, default=True)
+    track_count = Column(Integer, default=0)         # of the pinned release
+    track_file_count = Column(Integer, default=0)
+    size_on_disk = Column(Integer, default=0)
+    cover_url = Column(String, default="")
+    # Tentacle's verdict (services/music/original.py): right | repin | repin_trim |
+    # repin_download | review; empty until checked.
+    category = Column(String, default="", index=True)
+    verdict = Column(JSON)
+    checked_at = Column(DateTime)
+    check_error = Column(Text)
+    requested_by = Column(Integer, ForeignKey("tentacle_users.id"))
+    requested_at = Column(DateTime)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+
 # ─── Activity Log ─────────────────────────────────────────────────────────────
 
 class ActivityLog(Base):
@@ -805,6 +856,8 @@ NON_EMPTY_DEFAULTS = {
     "tmdb_match_threshold": "0.7",
     "hybrid_series_layout": "vod_root",
 }
+from services.music.settings import NON_EMPTY as _MUSIC_NON_EMPTY  # noqa: E402
+NON_EMPTY_DEFAULTS.update(_MUSIC_NON_EMPTY)
 
 
 def get_setting(db, key: str, default: str = "") -> str:
@@ -1126,7 +1179,12 @@ def seed_defaults(db):
         # delete/plugin-keys calls, Radarr/Sonarr webhooks) that cannot present a
         # user session. Copied into the plugin config / webhook URL by the operator.
         "internal_secret": secrets.token_hex(32),
+        # Secret Lidarr's webhook presents (?secret=) to /api/music/webhook.
+        "music_webhook_secret": secrets.token_urlsafe(24),
     }
+    # The music module's settings: off by default, every value a setting.
+    from services.music.settings import DEFAULTS as MUSIC_DEFAULTS
+    defaults.update(MUSIC_DEFAULTS)
     # Insert each missing default in its own transaction so a concurrent
     # worker seeding the same key (IntegrityError on the PK) doesn't abort the
     # whole batch — we just roll back and move on (get-or-create semantics).

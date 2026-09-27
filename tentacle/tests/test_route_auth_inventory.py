@@ -17,7 +17,7 @@ from fastapi.routing import APIRoute
 ROUTER_MODULES = [
     "auth", "settings", "providers", "sync", "library", "duplicates", "lists",
     "widget", "radarr", "sonarr", "tags", "collections", "smartlists",
-    "discover", "activity", "livetv", "notifications", "health", "youtube", "vod",
+    "discover", "activity", "livetv", "notifications", "health", "youtube", "vod", "music",
 ]
 
 # (METHOD, path) -> reason. Keep this list short and justified.
@@ -29,6 +29,8 @@ ALLOW = {
     ("GET", "/api/discover/image-proxy/{cache_key}"): "<img> tags cannot send auth; guarded by cache_key (#37)",
     ("POST", "/api/radarr/webhook"): "authenticates in body (_check_webhook_auth)",
     ("POST", "/api/sonarr/webhook"): "authenticates in body (_check_webhook_auth)",
+    ("POST", "/api/music/webhook"): "Lidarr's webhook: secret always required, checked in the handler",
+    ("GET", "/api/music/status"): "monitoring: admin, internal secret or the music webhook secret (status_access)",
     ("DELETE", "/api/library/delete-download/{tmdb_id}"): "authenticates in body (get_user_from_request)",
     ("DELETE", "/api/library/item/{media_type}/{tmdb_id}"): "plugin ItemRemoved hook: internal secret, admin, "
                                                             "or confirmed by Jellyfin in the handler (#139)",

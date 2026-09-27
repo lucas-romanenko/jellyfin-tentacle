@@ -9,7 +9,7 @@ import threading
 import requests
 from datetime import datetime
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
@@ -19,67 +19,34 @@ from services.cleaner import clean_list_title
 from services.ssrf import is_safe_url
 from services.nfo import update_nfo_tags
 from services.tmdb import TMDBService
-from services import arr_add
-from services.arr_add import AddReport, ADDED, EXISTS, FAILED
+from services import media_requests
+from services.media_requests import RequestRefused
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/lists", tags=["lists"])
 
 
-def _record_download_request(db: Session, tmdb_id: int, media_type: str, user_id: int):
-    """Record who requested a download so the scan can attribute it."""
-    existing = db.query(DownloadRequest).filter(
-        DownloadRequest.tmdb_id == tmdb_id,
-        DownloadRequest.media_type == media_type,
-    ).first()
-    if not existing:
-        db.add(DownloadRequest(tmdb_id=tmdb_id, media_type=media_type, user_id=user_id))
-        db.commit()
+def _via(request: Optional[Request]) -> str:
+    """Who is asking, for the request log. The plugin authenticates with ?api_key=."""
+    if request is None:
+        return "the API"
+    if request.query_params.get("api_key") or request.query_params.get("userId"):
+        return "the Jellyfin plugin (web or Android TV)"
+    return "Tentacle's dashboard"
 
 
-def _get_radarr_root_folder(radarr_url: str, radarr_key: str) -> str:
-    """Fetch the first non-VOD root folder from Radarr's API.
-
-    radarr_movies_path is Tentacle's container mount — NOT valid for Radarr API calls.
-    Radarr needs its own internal path (e.g. /data/movies).
-
-    Raises HTTPException(503) when the folders can't be read. There is no safe
-    fallback: a hardcoded path is only correct if the user happens to have a
-    root folder at exactly that path, so guessing turns a transient,
-    self-healing API blip into a guaranteed rejection with no explanation. In
-    the hybrid-series path a wrong root is worse still — it builds a wrong
-    series folder instead of failing cleanly.
-    """
-    try:
-        return arr_add.radarr_root_folder(radarr_url, radarr_key)
-    except Exception as e:
-        logger.warning(f"Failed to fetch Radarr root folders: {e}")
-        raise HTTPException(
-            503,
-            "Could not read Radarr's root folders (Radarr may be busy or down). "
-            "Nothing was added — please retry in a moment.",
-        )
+def _refused(e: RequestRefused) -> HTTPException:
+    return HTTPException(e.status, e.message)
 
 
-def _get_sonarr_root_folders(sonarr) -> list:
-    """Sonarr root folders, or HTTPException(503). See _get_radarr_root_folder."""
-    try:
-        folders = sonarr.get_root_folders(required=True)
-    except Exception as e:
-        logger.warning(f"Failed to fetch Sonarr root folders: {e}")
-        raise HTTPException(
-            503,
-            "Could not read Sonarr's root folders (Sonarr may be busy or down). "
-            "Nothing was added — please retry in a moment.",
-        )
-    if not folders:
-        raise HTTPException(
-            503,
-            "Sonarr has no root folders configured. Add one in Sonarr → Settings → "
-            "Media Management, then retry.",
-        )
-    return folders
+def _profiles_with_default(db: Session, service: str, url: str, key: str) -> list:
+    """The *arr's profiles, the configured default marked so pickers can offer it as "Default"."""
+    r = requests.get(f"{url.rstrip('/')}/api/v3/qualityprofile",
+                     headers={"X-Api-Key": key}, timeout=10)
+    r.raise_for_status()
+    default = media_requests.default_quality_profile(db, service)
+    return [{"id": p["id"], "name": p["name"], "is_default": p["id"] == default} for p in r.json()]
 
 
 @router.get("/radarr-profiles")
@@ -90,10 +57,7 @@ def radarr_profiles(db: Session = Depends(get_db), user: TentacleUser = Depends(
     if not radarr_url or not radarr_key:
         raise HTTPException(400, "Radarr not configured")
     try:
-        r = requests.get(f"{radarr_url.rstrip('/')}/api/v3/qualityprofile",
-                         headers={"X-Api-Key": radarr_key}, timeout=10)
-        r.raise_for_status()
-        return [{"id": p["id"], "name": p["name"]} for p in r.json()]
+        return _profiles_with_default(db, "radarr", radarr_url, radarr_key)
     except Exception as e:
         raise HTTPException(502, f"Failed to fetch Radarr profiles: {e}")
 
@@ -106,10 +70,7 @@ def sonarr_profiles(db: Session = Depends(get_db), user: TentacleUser = Depends(
     if not sonarr_url or not sonarr_key:
         raise HTTPException(400, "Sonarr not configured")
     try:
-        r = requests.get(f"{sonarr_url.rstrip('/')}/api/v3/qualityprofile",
-                         headers={"X-Api-Key": sonarr_key}, timeout=10)
-        r.raise_for_status()
-        return [{"id": p["id"], "name": p["name"]} for p in r.json()]
+        return _profiles_with_default(db, "sonarr", sonarr_url, sonarr_key)
     except Exception as e:
         raise HTTPException(502, f"Failed to fetch Sonarr profiles: {e}")
 
@@ -158,6 +119,11 @@ class ListCreate(BaseModel):
 class AddMissingBody(BaseModel):
     tmdb_ids: Optional[list] = None
     tvdb_ids: Optional[list] = None  # For TheTVDB-only content (no TMDB entry)
+    # An explicit profile the user picked for this one request. Anything else
+    # uses the default from settings (services.media_requests).
+    quality_profile_override: Optional[int] = None
+    # Ignored (logged): older clients always filled it in with the *arr's first
+    # profile, usually "Any", whether or not the user chose it.
     quality_profile_id: Optional[int] = None
     monitor: Optional[str] = None
     season_folder: Optional[bool] = None
@@ -931,191 +897,60 @@ def create_list(body: ListCreate, db: Session = Depends(get_db), user: TentacleU
     return {"id": lst.id, "success": True}
 
 
-def _radarr_upcoming_release(radarr_url: str, radarr_key: str, tmdb_id: int):
-    """Earliest future release date Radarr knows for a movie, for UI feedback."""
-    try:
-        r = requests.get(
-            f"{radarr_url.rstrip('/')}/api/v3/movie",
-            headers={"X-Api-Key": radarr_key},
-            params={"tmdbId": tmdb_id},
-            timeout=arr_add.READ_TIMEOUT,
-        )
-        r.raise_for_status()
-        movies = r.json()
-        movie_data = next((m for m in movies if m.get("tmdbId") == tmdb_id), None) if isinstance(movies, list) else None
-        if not movie_data:
-            return None
-        now = datetime.utcnow()
-        for field in ("digitalRelease", "physicalRelease", "inCinemas"):
-            val = movie_data.get(field)
-            if not val:
-                continue
-            try:
-                dt = datetime.fromisoformat(val.replace("Z", "+00:00")).replace(tzinfo=None)
-            except (ValueError, TypeError):
-                continue
-            if dt > now:
-                return val[:10]
-    except Exception as e:
-        logger.debug(f"Could not read release date for tmdb:{tmdb_id}: {e}")
-    return None
-
-
 @router.post("/add-to-radarr")
-def add_to_radarr(body: AddMissingBody, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
-    """Add specific TMDB IDs to Radarr (standalone, no list required)"""
+def add_to_radarr(body: AddMissingBody, db: Session = Depends(get_db),
+                  user: TentacleUser = Depends(get_user_from_request), request: Request = None):
+    """Add specific TMDB IDs to Radarr (standalone, no list required).
+
+    The dashboard, the Jellyfin plugin (web and Android TV) and API callers all
+    land here. Profile and root folder come from settings (media_requests).
+    """
     if not body.tmdb_ids:
         raise HTTPException(400, "No tmdb_ids provided")
 
-    radarr_url = get_setting(db, "radarr_url")
-    radarr_key = get_setting(db, "radarr_api_key")
-    if not radarr_url or not radarr_key:
-        raise HTTPException(400, "Radarr not configured")
-
-    root_folder = _get_radarr_root_folder(radarr_url, radarr_key)
-    quality_profile_id = body.quality_profile_id or int(get_setting(db, "radarr_quality_profile_id", "1") or "1")
-    report = AddReport()
-    release_date = None
-
-    for tmdb_id in body.tmdb_ids:
-        existing = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
+    def downloaded(tmdb_id):
         # Only an already-DOWNLOADED copy blocks the add. A VOD (.strm) copy
         # must not: adding to Radarr is exactly how users get a proper download
         # of a VOD title (the duplicate system then tracks the overlap). Radarr
         # itself rejects true duplicates via MovieExistsValidator.
-        if existing and existing.source == "radarr":
-            report.record(EXISTS)
-            continue
-        outcome, reason = arr_add.add_movie_to_radarr(
-            radarr_url, radarr_key, tmdb_id, quality_profile_id, root_folder
-        )
-        report.record(outcome, reason)
-        if outcome == ADDED:
-            _record_download_request(db, tmdb_id, "movie", user.id)
-            # Only for the first added title, and only for a single-title add:
-            # this is an extra round trip purely for UI feedback, and doing it
-            # per item made a bulk add outlast most reverse-proxy timeouts.
-            if not release_date and len(body.tmdb_ids) == 1:
-                release_date = _radarr_upcoming_release(radarr_url, radarr_key, tmdb_id)
+        existing = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
+        return bool(existing and existing.source == "radarr")
 
-    if report.added:
-        # New Radarr entries should badge as "requested" in Discover immediately
-        from routers.discover import bust_arr_ids_cache
-        bust_arr_ids_cache()
-
-    result = report.as_response()
-    if release_date:
-        result["release_date"] = release_date
-    return result
+    try:
+        outcome = media_requests.request_movies(
+            db, body.tmdb_ids, user_id=user.id, via=_via(request),
+            quality_profile_override=body.quality_profile_override,
+            legacy_profile_id=body.quality_profile_id,
+            already_owned=downloaded, want_release_date=len(body.tmdb_ids) == 1)
+    except RequestRefused as e:
+        raise _refused(e)
+    return outcome.as_response()
 
 
 @router.post("/add-to-sonarr")
-def add_to_sonarr(body: AddMissingBody, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
-    """Add specific TMDB or TVDB IDs to Sonarr"""
+def add_to_sonarr(body: AddMissingBody, db: Session = Depends(get_db),
+                  user: TentacleUser = Depends(get_user_from_request), request: Request = None):
+    """Add specific TMDB or TVDB IDs to Sonarr (same callers as add-to-radarr)."""
     if not body.tmdb_ids and not body.tvdb_ids:
         raise HTTPException(400, "No tmdb_ids or tvdb_ids provided")
 
-    sonarr_url = get_setting(db, "sonarr_url")
-    sonarr_key = get_setting(db, "sonarr_api_key")
-    if not sonarr_url or not sonarr_key:
-        raise HTTPException(400, "Sonarr not configured")
-
-    from services.sonarr import SonarrService
-    sonarr = SonarrService(sonarr_url, sonarr_key)
-    root_folders = _get_sonarr_root_folders(sonarr)
-    # Regular adds must never default into the VOD root folder (used only for
-    # hybrid series) — prefer the first non-VOD root
-    _non_vod_roots = [rf for rf in root_folders if "vod" not in rf["path"].lower()]
-    root_folder = (_non_vod_roots or root_folders)[0]["path"]
-    quality_profile_id = body.quality_profile_id or int(get_setting(db, "sonarr_quality_profile_id", "1") or "1")
-
-    report = AddReport()
-
-    monitor = body.monitor or "all"
-    season_folder = body.season_folder if body.season_folder is not None else True
-
-    # Find VOD root folder in Sonarr (for "Download More Episodes" on VOD series)
-    vod_root = None
-    for rf in root_folders:
-        if "vod" in rf["path"].lower():
-            vod_root = rf["path"].rstrip("/")
-            break
-
-    tmdb = _get_tmdb_service(db)
-
-    # Process TMDB IDs
-    for tmdb_id in (body.tmdb_ids or []):
+    def downloaded(tmdb_id):
         existing = db.query(Series).filter(Series.tmdb_id == tmdb_id).first()
-        if existing and existing.source == "sonarr":
-            report.record(EXISTS)
-            continue
+        return bool(existing and existing.source == "sonarr")
 
-        # Hybrid VOD series: unify VOD (.strm) + downloaded episodes as ONE
-        # Jellyfin series. Two layouts (hybrid_series_layout setting):
-        #   vod_root       — Sonarr downloads INTO the VOD folder (needs the VOD
-        #                    root folder registered in Sonarr)
-        #   shared_library — Sonarr downloads to its own root but with the SAME
-        #                    folder name as the VOD show; Jellyfin merges the
-        #                    same-named folders (both in one Jellyfin library)
-        series_path = None
-        is_hybrid = existing and existing.strm_path and existing.source.startswith("provider_")
-        if is_hybrid:
-            import os
-            folder_name = os.path.basename(existing.strm_path.rstrip("/"))
-            layout = get_setting(db, "hybrid_series_layout", "vod_root")
-            if layout == "shared_library":
-                # Same folder name under Sonarr's regular root — Jellyfin's
-                # cross-folder merge keys on matching series folder names
-                series_path = f"{root_folder.rstrip('/')}/{folder_name}"
-            elif vod_root:
-                series_path = f"{vod_root}/{folder_name}"
-            elif not existing.sonarr_path:
-                # vod_root layout but no VOD root folder in Sonarr: downloading
-                # to the regular root would show the series TWICE in Jellyfin.
-                # Fail loudly with a fix-it message instead.
-                report.record(FAILED, (
-                    "Sonarr has no VOD root folder. Add the folder containing your VOD "
-                    "series (the same host folder Tentacle writes .strm shows into) as a "
-                    "Root Folder in Sonarr → Settings → Media Management, then retry — or "
-                    "switch to the shared-library layout in Tentacle Settings → Integrations. "
-                    "Without one of these, downloads would create a duplicate series in Jellyfin."))
-                logger.warning(f"Blocked hybrid add for tmdb:{tmdb_id} — no VOD root folder in Sonarr")
-                continue
-
-        # Resolve the exact TVDB id (Sonarr's native key) so add_series doesn't
-        # have to rely on Skyhook's unreliable tmdb: term lookup
-        tvdb_id = tmdb.get_tvdb_id(tmdb_id) if tmdb else None
-        result = sonarr.add_series(tmdb_id, quality_profile_id, root_folder, monitor=monitor, season_folder=season_folder, selected_episodes=body.selected_episodes, series_path=series_path, monitor_new=body.monitor_new or False, tvdb_id=tvdb_id)
-        if result and result.get("alreadyExists"):
-            # Sonarr already has it — the outcome the user wanted, not a failure.
-            report.record(EXISTS)
-        elif result:
-            report.record(ADDED)
-            _record_download_request(db, tmdb_id, "series", user.id)
-            # Mark VOD series with sonarr_path so scan skips duplicate detection
-            if existing and existing.source.startswith("provider_") and result.get("path"):
-                existing.sonarr_path = result["path"]
-                db.commit()
-        else:
-            report.record(FAILED, sonarr.last_error)
-
-    # Process TVDB IDs (for TheTVDB-only content not on TMDB)
-    for tvdb_id in (body.tvdb_ids or []):
-        result = sonarr.add_series(tvdb_id=tvdb_id, quality_profile_id=quality_profile_id, root_folder=root_folder, monitor=monitor, season_folder=season_folder, selected_episodes=body.selected_episodes, monitor_new=body.monitor_new or False)
-        if result and result.get("alreadyExists"):
-            report.record(EXISTS)
-        elif result:
-            report.record(ADDED)
-            # Use the tmdbId from Sonarr's response if available, else use negative tvdb_id
-            result_tmdb = result.get("tmdbId") or -tvdb_id
-            _record_download_request(db, result_tmdb, "series", user.id)
-        else:
-            report.record(FAILED, sonarr.last_error)
-
-    if report.added:
-        from routers.discover import bust_arr_ids_cache
-        bust_arr_ids_cache()
-    return report.as_response()
+    try:
+        outcome = media_requests.request_series(
+            db, tmdb_ids=body.tmdb_ids or [], tvdb_ids=body.tvdb_ids or [],
+            user_id=user.id, via=_via(request),
+            quality_profile_override=body.quality_profile_override,
+            legacy_profile_id=body.quality_profile_id,
+            monitor=body.monitor or "all",
+            season_folder=body.season_folder if body.season_folder is not None else True,
+            selected_episodes=body.selected_episodes, monitor_new=body.monitor_new or False,
+            already_owned=downloaded)
+    except RequestRefused as e:
+        raise _refused(e)
+    return outcome.as_response()
 
 
 @router.delete("/{list_id}")
@@ -1221,39 +1056,26 @@ def fetch_list(list_id: int, db: Session = Depends(get_db), user: TentacleUser =
     tagged = store_stats.get("tagged", 0)
     db.commit()
 
-    # Auto-add missing to Radarr
+    # Auto-add missing movies to Radarr
     radarr_added = 0
     radarr_error = None
-    if lst.auto_add_radarr:
-        radarr_url = get_setting(db, "radarr_url")
-        radarr_key = get_setting(db, "radarr_api_key")
-        if radarr_url and radarr_key:
-            # The list items are already committed at this point, so a Radarr
-            # problem must not fail a fetch that otherwise succeeded — skip the
-            # optional auto-add and report why.
-            try:
-                root_folder = _get_radarr_root_folder(radarr_url, radarr_key)
-            except HTTPException as e:
-                root_folder = None
-                radarr_error = e.detail
-                logger.warning(f"Auto-add to Radarr skipped for '{lst.name}': {e.detail}")
-            if root_folder:
-                quality_profile_id = int(get_setting(db, "radarr_quality_profile_id", "1") or "1")
-                for item in items:
-                    tmdb_id = item.get("tmdb_id")
-                    if not tmdb_id:
-                        continue
-                    # Check if in library
-                    if db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first():
-                        continue
-                    outcome, reason = arr_add.add_movie_to_radarr(
-                        radarr_url, radarr_key, tmdb_id, quality_profile_id, root_folder
-                    )
-                    if outcome == ADDED:
-                        radarr_added += 1
-                        _record_download_request(db, tmdb_id, "movie", user.id)
-                    elif outcome == FAILED and not radarr_error:
-                        radarr_error = reason
+    if lst.auto_add_radarr and get_setting(db, "radarr_url") and get_setting(db, "radarr_api_key"):
+        # Movies only: a series' TMDB id names a different title (or nothing)
+        # in Radarr's movie namespace.
+        movie_ids = [item["tmdb_id"] for item in items
+                     if item.get("tmdb_id") and item.get("media_type", "movie") != "series"]
+        # The list items are already committed at this point, so a Radarr
+        # problem must not fail a fetch that otherwise succeeded — skip the
+        # optional auto-add and report why.
+        try:
+            outcome = media_requests.request_movies(
+                db, movie_ids, user_id=user.id, via=f"list '{lst.name}' auto-add",
+                already_owned=lambda tid: db.query(Movie).filter(Movie.tmdb_id == tid).first() is not None)
+            radarr_added = outcome.report.added
+            radarr_error = outcome.report.detail
+        except RequestRefused as e:
+            radarr_error = e.message
+            logger.warning(f"Auto-add to Radarr skipped for '{lst.name}': {e.message}")
 
     log_activity(db, "list_fetch", f"Fetched '{lst.name}' — {store_stats['stored']} items stored")
 
@@ -1412,7 +1234,8 @@ def get_list_coverage(list_id: int, db: Session = Depends(get_db), user: Tentacl
 
 
 @router.post("/{list_id}/add-missing-to-radarr")
-def add_missing_to_radarr(list_id: int, body: AddMissingBody = None, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+def add_missing_to_radarr(list_id: int, body: AddMissingBody = None, db: Session = Depends(get_db),
+                          user: TentacleUser = Depends(get_user_from_request), request: Request = None):
     """Add missing list items to Radarr"""
     lst = db.query(ListSubscription).filter(
         ListSubscription.id == list_id,
@@ -1420,14 +1243,6 @@ def add_missing_to_radarr(list_id: int, body: AddMissingBody = None, db: Session
     ).first()
     if not lst:
         raise HTTPException(404, "List not found")
-
-    radarr_url = get_setting(db, "radarr_url")
-    radarr_key = get_setting(db, "radarr_api_key")
-    if not radarr_url or not radarr_key:
-        raise HTTPException(400, "Radarr not configured")
-
-    root_folder = _get_radarr_root_folder(radarr_url, radarr_key)
-    quality_profile_id = (body.quality_profile_id if body else None) or int(get_setting(db, "radarr_quality_profile_id", "1") or "1")
 
     # Determine which tmdb_ids to add
     if body and body.tmdb_ids:
@@ -1439,32 +1254,23 @@ def add_missing_to_radarr(list_id: int, body: AddMissingBody = None, db: Session
         existing = {m.tmdb_id for m in db.query(Movie.tmdb_id).filter(Movie.tmdb_id.in_(all_ids)).all()}
         target_ids = [tid for tid in all_ids if tid not in existing]
 
-    report = AddReport()
-
-    for tmdb_id in target_ids:
-        existing = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
-        if existing:
-            report.record(EXISTS)
-            continue
-        # Shares add_movie_to_radarr with the single-title path, so a movie
-        # Radarr already owns (added in Radarr's own UI, by an import list, or
-        # by a watchlist sync — none of which are in Tentacle's Movie table)
-        # counts as already_exists instead of a hard failure.
-        outcome, reason = arr_add.add_movie_to_radarr(
-            radarr_url, radarr_key, tmdb_id, quality_profile_id, root_folder
-        )
-        report.record(outcome, reason)
-        if outcome == ADDED:
-            _record_download_request(db, tmdb_id, "movie", user.id)
-
-    if report.added:
-        from routers.discover import bust_arr_ids_cache
-        bust_arr_ids_cache()
-    return report.as_response()
+    # A movie Radarr already owns but Tentacle's Movie table doesn't know
+    # (added in Radarr's own UI, an import list, a watchlist sync) comes back
+    # from Radarr as already_exists, not as a failure.
+    try:
+        outcome = media_requests.request_movies(
+            db, target_ids, user_id=user.id, via=f"list '{lst.name}' add missing",
+            quality_profile_override=body.quality_profile_override if body else None,
+            legacy_profile_id=body.quality_profile_id if body else None,
+            already_owned=lambda tid: db.query(Movie).filter(Movie.tmdb_id == tid).first() is not None)
+    except RequestRefused as e:
+        raise _refused(e)
+    return outcome.as_response()
 
 
 @router.post("/{list_id}/add-missing-to-sonarr")
-def add_missing_to_sonarr(list_id: int, body: AddMissingBody = None, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+def add_missing_to_sonarr(list_id: int, body: AddMissingBody = None, db: Session = Depends(get_db),
+                          user: TentacleUser = Depends(get_user_from_request), request: Request = None):
     """Add missing list items to Sonarr"""
     lst = db.query(ListSubscription).filter(
         ListSubscription.id == list_id,
@@ -1472,20 +1278,6 @@ def add_missing_to_sonarr(list_id: int, body: AddMissingBody = None, db: Session
     ).first()
     if not lst:
         raise HTTPException(404, "List not found")
-
-    sonarr_url = get_setting(db, "sonarr_url")
-    sonarr_key = get_setting(db, "sonarr_api_key")
-    if not sonarr_url or not sonarr_key:
-        raise HTTPException(400, "Sonarr not configured")
-
-    from services.sonarr import SonarrService
-    sonarr = SonarrService(sonarr_url, sonarr_key)
-    root_folders = _get_sonarr_root_folders(sonarr)
-    # Regular adds must never default into the VOD root folder (used only for
-    # hybrid series) — prefer the first non-VOD root
-    _non_vod_roots = [rf for rf in root_folders if "vod" not in rf["path"].lower()]
-    root_folder = (_non_vod_roots or root_folders)[0]["path"]
-    quality_profile_id = (body.quality_profile_id if body else None) or int(get_setting(db, "sonarr_quality_profile_id", "1") or "1")
 
     if body and body.tmdb_ids:
         target_ids = body.tmdb_ids
@@ -1495,31 +1287,15 @@ def add_missing_to_sonarr(list_id: int, body: AddMissingBody = None, db: Session
         existing = {s.tmdb_id for s in db.query(Series.tmdb_id).filter(Series.tmdb_id.in_(all_ids)).all()}
         target_ids = [tid for tid in all_ids if tid not in existing]
 
-    monitor = (body.monitor if body else None) or "all"
-    season_folder = (body.season_folder if body else None)
-    if season_folder is None:
-        season_folder = True
-
-    report = AddReport()
-
-    tmdb = _get_tmdb_service(db)
-    for tmdb_id in target_ids:
-        if db.query(Series).filter(Series.tmdb_id == tmdb_id).first():
-            report.record(EXISTS)
-            continue
-        # Resolve the exact TVDB id (Sonarr's native key) so add_series doesn't
-        # have to rely on Skyhook's unreliable tmdb: term lookup
-        tvdb_id = tmdb.get_tvdb_id(tmdb_id) if tmdb else None
-        result = sonarr.add_series(tmdb_id, quality_profile_id, root_folder, monitor=monitor, season_folder=season_folder, tvdb_id=tvdb_id)
-        if result and result.get("alreadyExists"):
-            report.record(EXISTS)
-        elif result:
-            report.record(ADDED)
-            _record_download_request(db, tmdb_id, "series", user.id)
-        else:
-            report.record(FAILED, sonarr.last_error)
-
-    if report.added:
-        from routers.discover import bust_arr_ids_cache
-        bust_arr_ids_cache()
-    return report.as_response()
+    season_folder = body.season_folder if body else None
+    try:
+        outcome = media_requests.request_series(
+            db, tmdb_ids=target_ids, user_id=user.id, via=f"list '{lst.name}' add missing",
+            quality_profile_override=body.quality_profile_override if body else None,
+            legacy_profile_id=body.quality_profile_id if body else None,
+            monitor=(body.monitor if body else None) or "all",
+            season_folder=True if season_folder is None else season_folder,
+            already_owned=lambda tid: db.query(Series).filter(Series.tmdb_id == tid).first() is not None)
+    except RequestRefused as e:
+        raise _refused(e)
+    return outcome.as_response()

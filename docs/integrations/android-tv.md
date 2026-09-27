@@ -38,7 +38,7 @@ Browse TMDB content directly from your TV:
 - Search functionality
 - Full detail views with metadata
 - Add to Radarr/Sonarr with quality profile selection
-- Cycling quality profile button (persists last selection)
+- Cycling quality profile button: starts on **Default** (the profile picked in Tentacle's settings) each time; another profile applies to that request only
 
 ### Activity Tab
 

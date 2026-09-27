@@ -13,6 +13,7 @@ import requests
 
 from models.database import get_db, Setting, get_setting, set_setting
 from routers.auth import require_admin, get_user_from_request
+from services.music.settings import SECRET_KEYS as MUSIC_SECRET_KEYS
 
 router = APIRouter(prefix="/api/settings", tags=["settings"], dependencies=[Depends(require_admin)])
 
@@ -39,6 +40,12 @@ def get_plugin_keys(db: Session = Depends(get_db)):
     return result
 
 
+# Masked by GET /api/settings; a masked value sent back by a Save is ignored.
+SENSITIVE_KEYS = {"tmdb_bearer_token", "tmdb_api_key", "radarr_api_key", "sonarr_api_key",
+                  "jellyfin_api_key", "trakt_client_id", "mdblist_api_key", "vod_token_secret",
+                  "youtube_api_key"} | MUSIC_SECRET_KEYS
+
+
 class SettingsUpdate(BaseModel):
     settings: Dict[str, str]
 
@@ -55,7 +62,7 @@ def get_settings(db: Session = Depends(get_db)):
     settings = db.query(Setting).all()
     result = {s.key: s.value for s in settings}
     # Mask sensitive values
-    for key in ["tmdb_bearer_token", "tmdb_api_key", "radarr_api_key", "sonarr_api_key", "jellyfin_api_key", "trakt_client_id", "mdblist_api_key", "vod_token_secret", "youtube_api_key"]:
+    for key in SENSITIVE_KEYS:
         if result.get(key):
             result[key] = result[key][:8] + "..." + result[key][-4:]
     return result
@@ -76,7 +83,7 @@ def get_settings_raw(db: Session = Depends(get_db)):
 @router.post("")
 def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
     from models.database import Setting
-    sensitive_keys = {"tmdb_bearer_token", "tmdb_api_key", "radarr_api_key", "sonarr_api_key", "jellyfin_api_key", "trakt_client_id", "mdblist_api_key", "vod_token_secret", "youtube_api_key"}
+    sensitive_keys = SENSITIVE_KEYS
     from models.database import NON_EMPTY_DEFAULTS
     for key, value in body.settings.items():
         # Don't overwrite sensitive keys if they look masked
@@ -101,6 +108,23 @@ def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
     all_set = all(get_setting(db, k) for k in required)
     if all_set:
         set_setting(db, "setup_complete", "true")
+
+    if "music_reconcile_time" in body.settings:
+        try:
+            from main import reschedule_music_reconcile
+            reschedule_music_reconcile(get_setting(db, "music_reconcile_time"))
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning("Could not reschedule the music check", exc_info=True)
+    # Turning the music module on: fill the library snapshot now, not at the daily check.
+    if body.settings.get("music_enabled") == "true" and not get_setting(db, "music_last_reconcile") \
+            and get_setting(db, "lidarr_url") and get_setting(db, "lidarr_api_key"):
+        try:
+            from services.music.jobs import start_reconcile
+            start_reconcile("first run")
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning("Could not start the first music check", exc_info=True)
 
     # If the sync schedule changed, reschedule the job live (no restart needed).
     if "sync_schedule" in body.settings:
@@ -297,6 +321,100 @@ def test_connection(body: ConnectionTest, db: Session = Depends(get_db)):
             raise HTTPException(400, f"Jellyfin connection failed: {str(e)}")
 
     raise HTTPException(400, "Unknown connection type")
+
+
+class ServiceCheck(BaseModel):
+    type: str  # radarr | sonarr | lidarr | navidrome | jellyfin_music | musicbrainz | deezer
+    url: Optional[str] = None
+    api_key: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+    contact: Optional[str] = None
+    library_id: Optional[str] = None
+    # Picker values on screen, not saved yet (setting key -> value): the test
+    # checks what the user sees.
+    picks: Optional[Dict[str, str]] = None
+
+
+@router.post("/check")
+def check_service(body: ServiceCheck, db: Session = Depends(get_db)):
+    """The Test button: every step, ok / fail / warn, so the user sees exactly what
+    worked. Always 200; `success` says whether any step failed. Unsaved form
+    values are tested as typed (a masked secret falls back to the saved one)."""
+    from services import service_checks as sc
+    picks = body.picks or {}
+    if body.type in ("radarr", "sonarr"):
+        return sc.check_arr(db, body.type, body.url, body.api_key, picks)
+    if body.type == "lidarr":
+        return sc.check_lidarr(db, body.url, body.api_key, picks)
+    if body.type == "navidrome":
+        return sc.check_navidrome(db, body.url, body.username, body.password)
+    if body.type == "jellyfin_music":
+        return sc.check_jellyfin_music(db, body.library_id, picks)
+    if body.type == "musicbrainz":
+        return sc.check_musicbrainz(db, body.contact)
+    if body.type == "deezer":
+        return sc.check_deezer()
+    raise HTTPException(400, "Unknown service")
+
+
+class ServiceOptionsRequest(BaseModel):
+    type: str  # radarr | sonarr | lidarr
+    url: Optional[str] = None
+    api_key: Optional[str] = None
+
+
+@router.post("/service-options")
+def service_options(body: ServiceOptionsRequest, db: Session = Depends(get_db)):
+    """What the settings pickers offer, read from the service itself: quality
+    profiles and root folders (plus metadata profiles for Lidarr)."""
+    from services import service_checks as sc
+    if body.type not in ("radarr", "sonarr", "lidarr"):
+        raise HTTPException(400, "Unknown service")
+    url = sc._pick(body.url, get_setting(db, f"{body.type}_url"))
+    key = sc._pick(body.api_key, get_setting(db, f"{body.type}_api_key"))
+    if not url or not key:
+        raise HTTPException(400, "Enter the URL and API key first")
+    try:
+        if body.type == "lidarr":
+            return sc.lidarr_options(url, key)
+        return sc.arr_options(body.type, url, key)
+    except Exception as e:
+        message = getattr(e, "message", None) or str(e)
+        raise HTTPException(502, f"Couldn't read them from {body.type.capitalize()}: {message}")
+
+
+@router.get("/jellyfin-music/libraries")
+def jellyfin_music_libraries(db: Session = Depends(get_db)):
+    """Jellyfin's libraries, for the music library picker (music ones first)."""
+    from services import service_checks as sc
+    try:
+        libs = sc.jellyfin_libraries(db)
+    except Exception as e:
+        raise HTTPException(502, f"Couldn't list Jellyfin's libraries: {e}")
+    return sorted(libs, key=lambda l: ((l["collection_type"] or "").lower() != "music", (l["name"] or "").lower()))
+
+
+class CreateMusicLibrary(BaseModel):
+    name: str = "Music"
+    path: str
+
+
+@router.post("/jellyfin-music/create-library")
+def create_jellyfin_music_library(body: CreateMusicLibrary, db: Session = Depends(get_db)):
+    """Create a Jellyfin music library on a folder (by default, Lidarr's root folder
+    as Jellyfin sees it) and select it."""
+    from services import service_checks as sc
+    name = (body.name or "").strip() or "Music"
+    path = (body.path or "").strip()
+    if not path.startswith("/") and not (len(path) > 2 and path[1] == ":"):
+        raise HTTPException(400, "Enter the folder as Jellyfin sees it, e.g. /data/music")
+    try:
+        lib = sc.create_jellyfin_music_library(db, name, path)
+    except Exception as e:
+        raise HTTPException(502, str(e))
+    set_setting(db, "jellyfin_music_library_id", lib["id"] or "")
+    return lib
 
 
 @router.get("/paths")
