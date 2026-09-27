@@ -46,3 +46,25 @@ class MixedIds(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EmptyFeedIds(unittest.TestCase):
+    """A real feed has <channel id=""> elements. The empty id must never be a
+    candidate: "UK: ITV 1" was matched to "" because that element named only
+    "ITV 1" and the real id also lists "ITV 1 +1" (the plain-vs-timeshift
+    preference then picked the empty one)."""
+
+    FEED = [
+        {"id": "", "names": ["ITV 1"]},
+        {"id": "ITV1.uk", "names": ["ITV 1", "ITV 1 +1"]},
+        {"id": "", "names": ["GOLD"]},
+    ]
+
+    def test_an_empty_feed_id_is_never_matched(self):
+        r = resolve_guide_ids([{"id": 1, "name": "UK: ITV 1"}], self.FEED)[1]
+        self.assertEqual("ITV1.uk", r["guide_id"])
+        self.assertEqual("name", r["method"])
+
+    def test_a_name_only_an_empty_id_carries_has_no_guide(self):
+        r = resolve_guide_ids([{"id": 1, "name": "UK: GOLD"}], self.FEED)[1]
+        self.assertIsNone(r["guide_id"])

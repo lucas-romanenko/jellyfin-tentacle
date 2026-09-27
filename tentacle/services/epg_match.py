@@ -72,6 +72,8 @@ def resolve_guide_ids(channels: list, feed_channels: list) -> dict:
     feed_by_key = defaultdict(set)
     feed_names = defaultdict(list)     # a feed may list one id in several <channel> elements
     for f in feed_channels:
+        if not f.get("id"):
+            continue        # a <channel id=""> in the feed is nobody's guide
         feed_names[f.get("id")].extend(f.get("names") or [])
         for name in f.get("names") or []:
             key = channel_name_key(name)
