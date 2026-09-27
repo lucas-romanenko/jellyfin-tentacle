@@ -852,7 +852,8 @@
 
     card.innerHTML =
       '<div class="mh-card-poster">' +
-        '<img src="' + imgUrl + '" alt="" loading="lazy" onerror="this.parentNode.innerHTML=\'<div class=mh-card-no-poster>📺</div>\'">' +
+        // A failed image replaces only itself: its parent also holds the play overlay (#173).
+        '<img src="' + imgUrl + '" alt="" loading="lazy" onerror="this.outerHTML=\'<div class=mh-card-no-poster>📺</div>\'">' +
         '<div class="mh-card-play-overlay">' +
           '<div class="mh-card-play-icon">▶</div>' +
         '</div>' +
