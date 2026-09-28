@@ -5,11 +5,12 @@ Two ways in; neither needs a Spotify account or key:
   its first 100 songs (title and artist);
 - an Exportify CSV (exportify.net), for playlists of any size, private ones too.
 
-Each song is resolved the way Discover's song search does it (discover.resolve_song):
-the artist on MusicBrainz (the whole credit first, then its first name, so
-"Simon & Garfunkel" stays one artist while "A & B" finds A), then the studio
-album the song first came out on; compilations, live albums, soundtracks and
-singles never count. Nothing is requested until the user ticks albums in the
+Each song is resolved to the studio album it first came out on (discover.Resolver):
+the export's album name when it is a studio album, else the albums Deezer has
+the song on, checked through Lidarr's metadata server, else MusicBrainz's
+recordings. Artist credits are tried whole first, then by their first name, so
+"Simon & Garfunkel" stays one artist while "A & B" finds A; compilations, live
+albums, soundtracks and singles never count. Nothing is requested until the user ticks albums in the
 preview, and each one then goes through the single request path.
 """
 import csv
@@ -33,7 +34,7 @@ logger = logging.getLogger(__name__)
 EMBED_URL = "https://open.spotify.com/embed/playlist/{id}"
 TIMEOUT = 15
 MAX_TRACKS = 2000
-CHUNK = 10   # songs per worker turn: other waiting jobs (Discover, requests) run in between
+CHUNK = 25   # songs per worker turn: other waiting jobs (Discover, requests) run in between
 _PLAYLIST_ID = re.compile(r"playlist[/:]([A-Za-z0-9]{22})")
 _NEXT_DATA = re.compile(r'<script id="__NEXT_DATA__" type="application/json">(.+?)</script>', re.S)
 
@@ -165,19 +166,24 @@ def _submit(import_id: int) -> None:
 def resolve_job(import_id: int):
     """Worker job: resolve every song not resolved yet (so it resumes after a restart)."""
     def job(db):
-        from services.music.discover import resolve_song
+        from services.music.discover import Resolver
         from services.musicbrainz import MusicBrainz, MusicBrainzError
         requeued = False
         try:
             imp = db.get(MusicImport, import_id)
             if not imp:
                 return
-            mb = MusicBrainz.from_settings(db)
+            resolver = Resolver(db, MusicBrainz.from_settings(db))
             tracks = [dict(t) for t in imp.tracks or []]
             resolved_now = 0
             for i, t in enumerate(tracks):
                 if t.get("result") is not None:
                     continue
+                if resolved_now == 0:
+                    # This turn's songs: which albums they're on, matched in batches.
+                    pending = [x for x in tracks[i:] if x.get("result") is None][:CHUNK]
+                    resolver.prepare_songs([(x["title"], x["artist"], x.get("album") or "",
+                                             x.get("album_artist") or "") for x in pending])
                 if resolved_now >= CHUNK:
                     # Back in line, so a long playlist doesn't hold up everything else.
                     _store(db, imp, tracks)
@@ -187,8 +193,8 @@ def resolve_job(import_id: int):
                 resolved_now += 1
                 worker.run_urgent_jobs()
                 try:
-                    t["result"] = resolve_song(mb, t["title"], t["artist"], t.get("album") or "",
-                                               t.get("album_artist") or "")
+                    t["result"] = resolver.song(t["title"], t["artist"], t.get("album") or "",
+                                                t.get("album_artist") or "")
                 except MusicBrainzError as e:
                     if e.status != 404:
                         imp.status, imp.error = "error", f"MusicBrainz: {e.message}"
@@ -247,7 +253,8 @@ def albums_of(imp: MusicImport) -> tuple:
             continue
         album = result.get("album")
         if album:
-            entry = albums.setdefault(album["mbid"], dict(album, cover=_cover(album["mbid"]), songs=[]))
+            entry = albums.setdefault(album["mbid"], dict(album, cover=album.get("cover") or _cover(album["mbid"]),
+                                                          songs=[]))
             entry["songs"].append(clean_title(t["title"]))
         else:
             skipped.append({"title": t["title"], "artist": t["artist"], "reason": result.get("reason") or ""})

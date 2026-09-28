@@ -59,21 +59,31 @@ it arrives.
 ## Discover → Music
 
 Pick **Music** in Discover. The search box finds artists, albums and songs.
-Without a search there are four tabs:
+Without a search there are five tabs:
 
 - **Trending:** the artists and songs on Apple Music's charts for your country
   right now. A song card opens the album it first came out on.
 - **New releases:** albums out in the last eight weeks that are charting, with
   genre filters, plus **From your artists**: new and announced albums by
   artists already in your library.
+- **Lists:** critics' album lists, ranked: Rolling Stone's 500 Greatest Albums
+  (2023 and 2003), Apple Music's 100 Best Albums, 1001 Albums You Must Hear
+  Before You Die, and Pitchfork's best of the 1960s, 1970s, 1990s and 2010s.
+  Admins can add any list from MusicBrainz (search musicbrainz.org for a
+  series and paste its link) or remove one.
 - **Top of all time:** the most-listened studio albums on ListenBrainz, by
-  genre. *Hide albums I have* narrows it to what's missing.
+  genre. *Hide albums I have* narrows it to what's missing (Lists have it too).
 - **From Spotify:** your imported playlists (below).
 
-The chart country is **Settings → Music → Chart country**. The lists are
-built in the background, once a day for the charts and once a month for Top
-of all time. The first all-time list takes about an hour to build, and genres
-fill in as it goes.
+The chart country is **Settings → Music → Chart country**. Everything is
+built in the background: the charts once a day, Top of all time and the Lists
+once a month. The first build takes a few minutes.
+
+Charts don't use the ids Lidarr needs, so every entry has to be matched to a
+MusicBrainz album, which allows one request a second. Tentacle matches about
+eight albums per request, uses Lidarr's own metadata server (through your
+Lidarr) and Deezer's search where they can answer faster, and asks MusicBrainz
+one album at a time only for what's left.
 
 Every card shows whether you have the album (*In library*, *Downloading*,
 *Wanted*). The **+** button requests it.
