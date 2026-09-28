@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# The full test suite, as CI runs it (.github/workflows/tests.yml): the
+# Python unit tests with the real requirements. The workbench's global
+# pre-push hook (~/homelab/git-hooks) runs this before main moves.
+#
+# The virtualenv lives outside the repo, one per requirements.txt version,
+# so it's built once and reused (also by the hook's temporary checkouts).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+req=tentacle/requirements.txt
+venv="${XDG_CACHE_HOME:-$HOME/.cache}/jellyfin-tentacle/check-venv-$(sha256sum "$req" | cut -c1-12)"
+if [ ! -f "$venv/.ready" ]; then
+	echo "check: building the test virtualenv in $venv (once per requirements.txt)…"
+	rm -rf "$venv"
+	python3 -m venv "$venv"
+	"$venv/bin/pip" install --quiet --disable-pip-version-check -r "$req"
+	touch "$venv/.ready"
+fi
+
+cd tentacle
+exec "$venv/bin/python" -m unittest discover -s tests
