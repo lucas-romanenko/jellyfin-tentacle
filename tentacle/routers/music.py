@@ -364,6 +364,49 @@ def music_discover(db: Session = Depends(get_db), user: TentacleUser = Depends(m
     return discover.page(db, user)
 
 
+@webhook_router.get("/discover/list/{series_id}")
+def music_discover_list(series_id: str, db: Session = Depends(get_db), user: TentacleUser = Depends(music_user)):
+    """One curated list's albums, with their status in the library."""
+    from services.music import discover
+    found = discover.list_page(db, _mbid(series_id))
+    if not found:
+        raise HTTPException(404, "That list isn't loaded yet")
+    return found
+
+
+class ListAdd(BaseModel):
+    series: str   # a MusicBrainz series link or id
+
+
+@router.post("/lists")
+@_musicbrainz_errors
+def add_list(body: ListAdd, db: Session = Depends(get_db)):
+    """Add a curated album list: a MusicBrainz release group series."""
+    from services.music import discover
+    from services.musicbrainz import MusicBrainz
+    _module_on(db)
+    m = discover._SERIES_ID.search(body.series or "")
+    if not m:
+        raise HTTPException(400, "Paste a MusicBrainz series link (musicbrainz.org/series/…)")
+    series = MusicBrainz.from_settings(db).series(m.group(1))
+    if (series.get("type") or "") != "Release group series":
+        raise HTTPException(400, f"“{series.get('name')}” isn't a list of albums (it's a {series.get('type') or 'series'}).")
+    ids = discover.list_ids(db)
+    if m.group(1) not in ids:
+        set_setting(db, "music_lists", ",".join(ids + [m.group(1)]))
+    discover.ensure_fresh(db)
+    return {"id": m.group(1), "name": series.get("name")}
+
+
+@router.delete("/lists/{series_id}")
+def remove_list(series_id: str, db: Session = Depends(get_db)):
+    from services.music import discover
+    _module_on(db)
+    set_setting(db, "music_lists", ",".join(i for i in discover.list_ids(db) if i != series_id))
+    discover.ensure_fresh(db)
+    return {"removed": True}
+
+
 @router.post("/discover/refresh")
 def refresh_discover(db: Session = Depends(get_db)):
     from services.music import discover

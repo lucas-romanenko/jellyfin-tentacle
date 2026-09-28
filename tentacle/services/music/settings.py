@@ -51,6 +51,17 @@ DEFAULTS = {
     # Discover → Music: whose Apple Music charts "Trending" and "New releases" follow
     # (a two-letter country code).
     "music_chart_country": "us",
+    # Discover → Music → Lists: MusicBrainz release group series (curated album lists).
+    "music_lists": ",".join([
+        "bb3d9d84-75b8-4e67-8ad7-dcc38f764bf3",   # Rolling Stone: 500 Greatest Albums of All Time (2023)
+        "ec97d21b-c3d0-48d4-9476-f5efbdb5c397",   # Rolling Stone: 500 Greatest Albums of All Time (2003)
+        "d1d985e6-94ea-4c68-a7ac-63b98b6c0318",   # Apple Music: 100 Best Albums
+        "4bc2a338-e1d8-4546-8a61-640da8aaf888",   # 1001 Albums You Must Hear Before You Die (2005)
+        "efbe4c84-5f83-470f-be53-ef4089ef3010",   # Pitchfork: The 200 Best Albums of the 1960s
+        "f2e5e744-d9a7-41f5-bc95-6ee787122bc1",   # Pitchfork: The 100 Best Albums of the 1970s
+        "4d544556-8519-4a20-b854-af57256d9717",   # Pitchfork: The 150 Best Albums of the 1990s
+        "ecae5db8-a33e-45d3-a345-9acab6d5c559",   # Pitchfork: The 200 Best Albums of the 2010s
+    ]),
 }
 
 # Parsed by their readers; an empty value means the default, not "nothing".

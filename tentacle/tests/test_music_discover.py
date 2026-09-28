@@ -35,7 +35,7 @@ def rg(rgid, title, artist, artist_id, kind="Album", secondary=(), year="1977", 
 
 class FakeMB:
     def __init__(self):
-        self.artists, self.groups, self.rgs = {}, {}, {}
+        self.artists, self.groups, self.rgs, self.lists = {}, {}, {}, {}
 
     def search_artists(self, q, limit=8):
         return self.artists.get(q, [])
@@ -45,6 +45,32 @@ class FakeMB:
 
     def release_group(self, rgid):
         value = self.rgs[rgid]
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    def find_release_groups_batch(self, items):
+        self.searches = getattr(self, "searches", 0) + 1
+        out = []
+        for title, artists in items:
+            for a in artists:
+                out += self.groups.get((title, a), [])
+        return out
+
+    def recordings_batch(self, items):
+        self.recording_searches = getattr(self, "recording_searches", 0) + 1
+        out = []
+        for title, ids in items:
+            for i in ids:
+                out += getattr(self, "recordings", {}).get((title, i), [])
+        return out[:100]
+
+    def release_groups_by_id(self, rgids):
+        self.batches = getattr(self, "batches", 0) + 1
+        return {i: self.rgs[i] for i in rgids if isinstance(self.rgs.get(i), dict)}
+
+    def series(self, sid):
+        value = self.lists[sid]
         if isinstance(value, Exception):
             raise value
         return value
@@ -127,11 +153,55 @@ class TestWhatCounts(unittest.TestCase):
             def artist(self, mbid):
                 return {"relations": []}
 
-            def recordings_by(self, title, ids, limit=100):
+            def recordings_by(self, title, ids, limit=100, albums_only=False):
                 return [{"id": "r1", "title": "Tennessee Whiskey",
                          "releases": [release(R1, "Life Goes On", "2012", "various"),
                                       release(R2, "Traveller", "2015", A1)]}]
         self.assertEqual(original_album_for_song(MB(), "Tennessee Whiskey", A1)["album"]["id"], R2)
+
+
+class TestSongRule(unittest.TestCase):
+    """Where a song came out: fixes found importing Spotify's "Rock Classics"."""
+
+    class MB:
+        def __init__(self, relations=(), recordings=None):
+            self.relations, self.recordings, self.queries = list(relations), recordings or {}, []
+
+        def artist(self, mbid):
+            return {"relations": self.relations}
+
+        def recordings_by(self, title, ids, limit=100, albums_only=False):
+            self.queries.append((tuple(ids), albums_only))
+            return self.recordings.get(albums_only, [])
+
+    @staticmethod
+    def recording(rgid, album, date, artist_id, kind="Album", secondary=()):
+        return {"id": "r", "title": "Song", "releases": [{
+            "status": "Official", "date": date, "artist-credit": [{"artist": {"id": artist_id}}],
+            "release-group": {"id": rgid, "title": album, "primary-type": kind, "secondary-types": list(secondary)}}]}
+
+    def test_a_bands_members_are_not_the_band(self):
+        from services.music.browse import related_artists
+        mb = self.MB(relations=[{"type": "member of band", "direction": "backward", "artist": {"id": A2}},
+                                {"type": "member of band", "direction": "forward", "artist": {"id": A3}}])
+        self.assertEqual(related_artists(mb, A1), [A1, A3])   # the band A1 belongs to; not A1's member A2
+
+    def test_the_artists_own_soundtrack_album_counts(self):
+        from services.music.browse import original_album_for_song
+        mb = self.MB(recordings={True: [self.recording(R1, "Purple Rain", "1984", A1, secondary=["Soundtrack"]),
+                                        self.recording(R2, "Sign o' the Times", "1987", A1)]})
+        self.assertEqual(original_album_for_song(mb, "Song", A1)["album"]["id"], R1)
+
+    def test_album_recordings_first_all_recordings_only_to_explain_a_miss(self):
+        from services.music.browse import original_album_for_song
+        mb = self.MB(recordings={True: [self.recording(R1, "Aftermath", "1966", A1)]})
+        self.assertEqual(original_album_for_song(mb, "Song", A1)["album"]["id"], R1)
+        self.assertEqual(mb.queries, [((A1,), True)])          # one search, albums only
+        single = self.MB(recordings={False: [self.recording(R2, "Song", "1965", A1, kind="Single")]})
+        found = original_album_for_song(single, "Song", A1)
+        self.assertIsNone(found["album"])
+        self.assertEqual([q[1] for q in single.queries], [True, False])
+        self.assertEqual(found["singles"][0]["id"], R2)          # "only on singles"
 
 
 class TestMatching(unittest.TestCase):
@@ -187,6 +257,114 @@ class TestMatching(unittest.TestCase):
             self.assertEqual(got["album"]["mbid"], R3)
 
 
+def lidarr_album(rgid, title, artist, artist_id, kind="Album", secondary=(), date="1977-02-04"):
+    return {"foreignAlbumId": rgid, "title": title, "albumType": kind, "secondaryTypes": list(secondary),
+            "releaseDate": f"{date}T00:00:00Z", "images": [{"coverType": "cover", "remoteUrl": f"https://img/{rgid}"}],
+            "artist": {"artistName": artist, "foreignArtistId": artist_id}}
+
+
+class FakeLidarrLookups:
+    def __init__(self):
+        self.albums, self.artists, self.calls, self.fail = {}, {}, [], False
+
+    def lookup_albums(self, term):
+        from services.lidarr import LidarrError
+        self.calls.append(term)
+        if self.fail:
+            raise LidarrError("Lidarr is down")
+        if term in getattr(self, "unanswerable", ()):
+            raise LidarrError("Lidarr answered HTTP 503", 503)
+        return self.albums.get(term, [])
+
+    def lookup_artists(self, term):
+        self.calls.append(term)
+        return self.artists.get(term, [])
+
+
+class TestResolver(unittest.TestCase):
+    """Lidarr's metadata server and Deezer first; MusicBrainz for what they can't tell."""
+
+    def setUp(self):
+        from services.music import discover
+        self.discover = discover
+        self.mb = FakeMB()
+        self.r = discover.Resolver.__new__(discover.Resolver)
+        self.r.mb, self.r.lidarr, self.r.deezer = self.mb, FakeLidarrLookups(), True
+        self.r.reset()
+
+    def test_albums_come_from_lidarr_studio_and_earliest(self):
+        self.r.lidarr.albums["Fleetwood Mac Rumours"] = [
+            lidarr_album(R2, "Fleetwood Mac / Rumours", "Fleetwood Mac", A1, secondary=["Compilation"]),
+            lidarr_album(R3, "Rumours", "Fleetwood Mac", A1, secondary=["Live"], date="2019-08-09"),
+            lidarr_album(R1, "Rumours", "Fleetwood Mac", A1),
+            lidarr_album(R4, "Rumours", "Tribute Band", A2)]
+        card = self.r.album("Rumours (Super Deluxe)", "Fleetwood Mac")
+        self.assertEqual((card["mbid"], card["year"], card["cover"]), (R1, "1977", f"https://img/{R1}"))
+        # Lidarr knows the title but only as a live album: no MusicBrainz, no album.
+        self.r.lidarr.albums["Nirvana MTV Unplugged In New York"] = [
+            lidarr_album(R2, "MTV Unplugged In New York", "Nirvana", A2, secondary=["Live"])]
+        self.assertIsNone(self.r.album("MTV Unplugged In New York", "Nirvana"))
+        # Lidarr doesn't know it: MusicBrainz decides.
+        self.mb.groups[("Brand New", "Someone")] = [rg(R4, "Brand New", "Someone", A3, year="2026")]
+        self.assertEqual(self.r.album("Brand New", "Someone")["mbid"], R4)
+        self.assertIsNone(self.r.album("Brand New", "Someone", fallback=False) and None)
+
+    def test_when_lidarr_fails_musicbrainz_takes_over(self):
+        self.r._failures = 0
+        lidarr = self.r.lidarr
+        lidarr.fail = True
+        self.mb.groups[("Rumours", "Fleetwood Mac")] = [rg(R1, "Rumours", "Fleetwood Mac", A1)]
+        self.assertEqual(self.r.album("Rumours", "Fleetwood Mac")["mbid"], R1)
+        self.assertIs(self.r.lidarr, lidarr)            # one failure: Lidarr is asked again next time
+        self.r.album("Rumours", "Fleetwood Mac")
+        self.r.album("Rumours", "Fleetwood Mac")
+        self.assertIsNone(self.r.lidarr)                 # three in a row: MusicBrainz for the rest
+
+    def test_a_search_lidarr_cannot_answer_is_not_an_outage(self):
+        # Real: "Search for 'Jungle Sunshine' failed. Invalid response received from LidarrAPI." (503)
+        self.r.lidarr.unanswerable = {"Jungle Sunshine", "Bonobo Distance in Static", "X Y"}
+        self.mb.groups[("Sunshine", "Jungle")] = [rg(R1, "Sunshine", "Jungle", A1, year="2026")]
+        for title, artist in (("Sunshine", "Jungle"), ("Distance in Static", "Bonobo"), ("Y", "X")):
+            self.r.album(title, artist)
+        self.assertIsNotNone(self.r.lidarr)              # still used for everything else
+        self.assertEqual(self.r.album("Sunshine", "Jungle")["mbid"], R1)   # MusicBrainz decided that one
+
+    def test_artists_by_exact_name(self):
+        self.r.lidarr.artists["Star"] = [{"artistName": "Star Wars Orchestra", "foreignArtistId": A2},
+                                         {"artistName": "Star", "foreignArtistId": A1}]
+        self.assertEqual(self.r.artist("Star")["mbid"], A1)
+        self.mb.artists["Nova"] = [artist_hit("Nova", A3)]
+        self.assertEqual(self.r.artist("Nova")["mbid"], A3)   # Lidarr has none: MusicBrainz
+
+    def test_a_song_goes_to_the_earliest_studio_album_it_is_on(self):
+        deezer = {"data": [
+            {"title_short": "Come As You Are", "artist": {"name": "Nirvana"}, "album": {"title": "MTV Unplugged In New York"}},
+            {"title_short": "Come As You Are", "artist": {"name": "Nirvana"}, "album": {"title": "Live at Reading"}},
+            {"title_short": "Come As You Are", "artist": {"name": "Nirvana"}, "album": {"title": "Nevermind (30th Anniversary Super Deluxe)"}},
+            {"title_short": "Come As You Are", "artist": {"name": "Nirvana"}, "album": {"title": "Nevermind"}},
+            {"title_short": "Come As You Are", "artist": {"name": "A Tribute"}, "album": {"title": "Covers"}},
+            {"title_short": "Lithium", "artist": {"name": "Nirvana"}, "album": {"title": "Other"}}]}
+        self.r.lidarr.albums["Nirvana Nevermind"] = [lidarr_album(R1, "Nevermind", "Nirvana", A1, date="1991-09-24")]
+        with mock.patch.object(self.discover, "_get_json", return_value=deezer), \
+                mock.patch.object(self.discover, "resolve_song") as musicbrainz:
+            got = self.r.song("Come As You Are", "Nirvana")
+        self.assertEqual(got["album"]["mbid"], R1)
+        musicbrainz.assert_not_called()
+        # Live albums are skipped without a lookup; "Nevermind" is looked up once.
+        self.assertEqual(self.r.lidarr.calls, ["Nirvana Nevermind"])
+
+    def test_an_exports_album_name_first_and_musicbrainz_last(self):
+        self.r.lidarr.albums["Fleetwood Mac Rumours"] = [lidarr_album(R1, "Rumours", "Fleetwood Mac", A1)]
+        with mock.patch.object(self.discover, "_get_json") as deezer:
+            got = self.r.song("Dreams - 2004 Remaster", "Fleetwood Mac", album="Rumours (Super Deluxe)")
+        self.assertEqual(got["album"]["mbid"], R1)
+        deezer.assert_not_called()
+        with mock.patch.object(self.discover, "_get_json", return_value={"data": []}), \
+                mock.patch.object(self.discover, "resolve_song", return_value={"reason": "only on singles"}) as mbz:
+            self.assertEqual(self.r.song("B-side", "Fleetwood Mac"), {"reason": "only on singles"})
+        mbz.assert_called_once()
+
+
 class TestChartParsing(unittest.TestCase):
     def test_apple_charts(self):
         from services.music import discover
@@ -217,6 +395,10 @@ class _DiscoverBase(_Base):
         from services.music import spotify
         spotify._active.clear()
         self.addCleanup(spotify._active.clear)
+        # Never the network: song preparation (Deezer + MusicBrainz batches) is tested on its own.
+        p = mock.patch.object(discover.Resolver, "prepare_songs", lambda resolver, songs: None)
+        p.start()
+        self.addCleanup(p.stop)
         self.fmb = FakeMB()
 
 
@@ -253,16 +435,18 @@ class TestBuildTrending(_DiscoverBase):
                 raise discover.requests.ConnectionError("down")
             return rock if gid == 21 else []
 
-        def song(mb, title, artist, album="", album_artist=""):
+        def song(title, artist, album="", album_artist=""):
             if artist == "Star & Friend":
                 return {"album": {"mbid": R1, "title": "Shiny", "year": fresh[:4], "artist": "Star", "artist_mbid": A1}}
             return {"reason": "nope"}
         with mock.patch.object(discover, "apple_chart", side_effect=chart), \
                 mock.patch.object(discover, "itunes_genre_albums", side_effect=genre_chart), \
                 mock.patch.object(discover, "lb_fresh_releases", return_value=fresh_releases), \
-                mock.patch.object(discover, "resolve_song", side_effect=song), \
                 mock.patch.object(discover, "_deezer_picture", return_value="pic"):
-            t = discover.build_trending(self.db, self.fmb, "ca")
+            resolver = discover.Resolver(self.db, self.fmb)
+            resolver.lidarr, resolver.deezer = None, False   # MusicBrainz (faked) decides here
+            with mock.patch.object(resolver, "song", side_effect=song):
+                t = discover.build_trending(self.db, resolver, "ca")
         # "Star & Friend" and "Star" add up; the whole credit isn't an artist, "Star" is.
         self.assertEqual([(a["name"], a["picture"]) for a in t["artists"]], [("Star", "pic")])
         self.assertEqual([(s["title"], s["album"]["mbid"]) for s in t["songs"]], [("Hit", R1)])
@@ -298,25 +482,29 @@ class TestFreshness(_DiscoverBase):
     def test_stale_sections_are_queued_once_and_failures_back_off(self):
         from services.music import discover
         discover.ensure_fresh(self.db)
-        self.assertEqual(len(self.jobs), 2)            # trending + all-time
+        self.assertEqual(len(self.jobs), 3)            # trending, all-time, lists
         discover.ensure_fresh(self.db)
-        self.assertEqual(len(self.jobs), 2)            # already queued: not again
+        self.assertEqual(len(self.jobs), 3)            # already queued: not again
         with mock.patch.object(discover, "build_trending", side_effect=discover.MusicBrainzError("no contact")), \
-                mock.patch.object(discover, "build_all_time", return_value={"built": time.time(), "genres": {}}):
+                mock.patch.object(discover, "build_all_time", return_value={"built": time.time(), "genres": {}}), \
+                mock.patch.object(discover, "build_lists",
+                                  return_value={"built": time.time(), "ids": discover.list_ids(self.db), "lists": []}):
             with self.assertRaises(discover.MusicBrainzError):
                 self.jobs.pop(0)(self.db)
+            self.jobs.pop(0)(self.db)
             self.jobs.pop(0)(self.db)
         self.assertEqual(discover.load(self.db)["trending_error"], "no contact")
         discover.ensure_fresh(self.db)
         self.assertEqual(self.jobs, [])                # a failure isn't retried on every page view
         discover.ensure_fresh(self.db, force=True)
-        self.assertEqual(len(self.jobs), 2)
+        self.assertEqual(len(self.jobs), 3)
 
     def test_a_new_chart_country_rebuilds_trending(self):
         from models.database import set_setting
         from services.music import discover
         discover._save(self.db, trending={"country": "us", "built": time.time()},
-                       all_time={"built": time.time(), "genres": {"Rock": []}})
+                       all_time={"built": time.time(), "genres": {"Rock": []}},
+                       lists={"built": time.time(), "ids": discover.list_ids(self.db), "lists": []})
         discover.ensure_fresh(self.db)
         self.assertEqual(self.jobs, [])
         set_setting(self.db, "music_chart_country", "ca")
@@ -333,7 +521,9 @@ class TestPage(_DiscoverBase):
         discover._save(self.db, trending={"country": "ca", "built": time.time(), "artists": [], "releases": [card],
                                           "yours": [], "songs": [{"title": "Hit", "artist": "Star", "artist_mbid": A1,
                                                                   "artwork": "", "album": dict(card)}]},
-                       all_time={"built": time.time(), "genres": {"Pop": [dict(card, mbid=R2)]}})
+                       all_time={"built": time.time(), "genres": {"Pop": [dict(card, mbid=R2)]}},
+                       lists={"built": time.time(), "ids": discover.list_ids(self.db),
+                              "lists": [{"id": "l1", "name": "Best", "albums": [dict(card, rank=1)]}]})
         self.db.add(MusicAlbum(mbid=R1, title="Shiny", monitored=True, track_count=10, track_file_count=10))
         self.db.commit()
         page = discover.page(self.db, self.user)
@@ -345,6 +535,9 @@ class TestPage(_DiscoverBase):
             page = discover.page(self.db, self.user)
         self.assertEqual(page["all_time"]["genres"][0]["albums"][0]["status"], "available")
         self.assertEqual(page["country"], "ca")
+        self.assertEqual(page["lists"]["items"], [{"id": "l1", "name": "Best", "count": 1}])
+        self.assertEqual(discover.list_page(self.db, "l1")["albums"][0]["status"], "in_library")
+        self.assertIsNone(discover.list_page(self.db, "nope"))
 
 
 EMBED = """<html><script id="__NEXT_DATA__" type="application/json">%s</script></html>"""
@@ -401,7 +594,7 @@ class TestSpotifyImport(_DiscoverBase):
              {"title": "dreams", "artist": "fleetwood mac"},     # a duplicate
              {"title": "Rare Single", "artist": "Band"}]
 
-    def _resolve(self, mb, title, artist, album="", album_artist=""):
+    def _resolve(self, title, artist, album="", album_artist=""):
         if artist.lower() == "fleetwood mac":
             return {"album": {"mbid": R1, "title": "Rumours", "year": "1977", "artist": "Fleetwood Mac",
                               "artist_mbid": A1}}
@@ -412,7 +605,7 @@ class TestSpotifyImport(_DiscoverBase):
         from services.music import discover, spotify
         imp = spotify.start_import(self.db, self.user.id, "Road trip", "spotify_url", "u", self.SONGS)
         self.assertEqual(imp.total, 3)
-        with mock.patch.object(discover, "resolve_song", side_effect=self._resolve):
+        with mock.patch.object(discover.Resolver, "song", side_effect=self._resolve):
             self.run_jobs()
         self.db.refresh(imp)
         self.assertEqual((imp.status, imp.done), ("ready", 3))
@@ -441,7 +634,8 @@ class TestSpotifyImport(_DiscoverBase):
         songs = [{"title": f"Song {i}", "artist": "Fleetwood Mac"} for i in range(25)]
         imp = spotify.start_import(self.db, self.user.id, "Long", "exportify_csv", "", songs)
         turns = 0
-        with mock.patch.object(discover, "resolve_song", side_effect=self._resolve):
+        with mock.patch.object(discover.Resolver, "song", side_effect=self._resolve), \
+                mock.patch.object(spotify, "CHUNK", 10):
             while self.jobs:
                 self.jobs.pop(0)(self.db)
                 turns += 1
@@ -453,7 +647,7 @@ class TestSpotifyImport(_DiscoverBase):
         from services.music import discover, spotify
         imp = spotify.start_import(self.db, self.user.id, "Road trip", "spotify_url",
                                    "https://open.spotify.com/playlist/37i9dQZF1DWXRqgorJj26U", self.SONGS[:1])
-        with mock.patch.object(discover, "resolve_song", side_effect=self._resolve) as resolve:
+        with mock.patch.object(discover.Resolver, "song", side_effect=self._resolve) as resolve:
             self.run_jobs()
             with mock.patch.object(spotify, "fetch_playlist", return_value=("Road trip 2", self.SONGS[:2])):
                 spotify.refresh_import(self.db, imp)
@@ -468,7 +662,7 @@ class TestSpotifyImport(_DiscoverBase):
     def test_a_musicbrainz_outage_stops_the_import_with_the_reason(self):
         from services.music import discover, spotify
         imp = spotify.start_import(self.db, self.user.id, "P", "exportify_csv", "", self.SONGS)
-        with mock.patch.object(discover, "resolve_song", side_effect=discover.MusicBrainzError("rate limited", 503)):
+        with mock.patch.object(discover.Resolver, "song", side_effect=discover.MusicBrainzError("rate limited", 503)):
             self.run_jobs()
         self.db.refresh(imp)
         self.assertEqual(imp.status, "error")
@@ -511,7 +705,7 @@ class TestImportEndpoints(_DiscoverBase):
         r = self.client.post("/api/music/imports", files={"file": ("list.csv", io.BytesIO(csv_data), "text/csv")})
         self.assertEqual(r.json()["name"], "list")
         self.assertEqual(self.client.post("/api/music/imports", data={}).status_code, 400)
-        with mock.patch.object(discover, "resolve_song", side_effect=TestSpotifyImport._resolve.__get__(self)):
+        with mock.patch.object(discover.Resolver, "song", side_effect=TestSpotifyImport._resolve.__get__(self)):
             self.run_jobs()
         imports = self.client.get("/api/music/imports").json()["imports"]
         detail = self.client.get(f"/api/music/imports/{imports[0]['id']}").json()
@@ -530,7 +724,8 @@ class TestImportEndpoints(_DiscoverBase):
                        all_time={"built": time.time(), "genres": {}})
         r = self.client.get("/api/music/discover")
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(set(r.json()), {"country", "building", "errors", "trending", "new", "all_time", "spotify"})
+        self.assertEqual(set(r.json()), {"country", "building", "errors", "trending", "new", "all_time", "spotify",
+                                         "lists"})
         self.assertEqual(self.client.post("/api/music/discover/refresh").json(), {"queued": True})
 
 
@@ -590,6 +785,172 @@ class TestMusicBrainzTurns(unittest.TestCase):
         self.assertEqual(names[first:first + 3], ["MainThread"] * 3)      # nothing in between
         resumed = [t for n, t in self.starts if n == "music-worker" and t > page_done]
         self.assertTrue(resumed and resumed[0] - page_done >= 0.3)       # the worker waited out the grace
+
+
+class TestBatches(unittest.TestCase):
+    """MusicBrainz allows one request a second: names are matched eight per request."""
+
+    def setUp(self):
+        from services.music import discover
+        self.discover = discover
+        self.mb = FakeMB()
+        self.r = discover.Resolver.__new__(discover.Resolver)
+        self.r.mb, self.r.lidarr, self.r.deezer = self.mb, None, False
+        self.r.reset()
+
+    def test_eight_albums_per_request_and_answers_kept(self):
+        for i in range(10):
+            self.mb.groups[(f"Album {i}", f"Artist {i}")] = [rg(f"{i:08d}-0000-0000-0000-000000000000", f"Album {i}",
+                                                                 f"Artist {i}", A1)]
+        self.r.prefetch([(f"Album {i} (Deluxe)", f"Artist {i}", "") for i in range(10)])
+        self.assertEqual(self.mb.searches, 2)            # 8 + 2
+        with mock.patch.object(self.discover, "find_album") as single:
+            self.assertEqual(self.r.album("Album 3", "Artist 3")["title"], "Album 3")
+        single.assert_not_called()                       # answered from the batch
+
+    def test_same_titled_albums_nearest_to_the_chart_date(self):
+        # Weezer has six studio albums called "Weezer".
+        self.mb.groups[("Weezer", "Weezer")] = [rg(R1, "Weezer", "Weezer", A1, year="1994"),
+                                                rg(R2, "Weezer", "Weezer", A1, year="2016"),
+                                                rg(R3, "Weezer", "Weezer", A1, year="2026")]
+        self.r.prefetch([("Weezer", "Weezer", "2026-09-19"), ("Weezer", "Weezer", "")])
+        self.assertEqual(self.r.album("Weezer", "Weezer", near="2026-09-19")["mbid"], R3)
+        self.assertEqual(self.r.album("Weezer", "Weezer")["mbid"], R1)      # no date: the earliest
+
+    def test_a_title_that_is_only_a_single_is_not_an_album(self):
+        self.mb.groups[("Hit", "Star")] = [rg(R1, "Hit", "Star", A1, kind="Single")]
+        self.r.prefetch([("Hit", "Star", "")])
+        with mock.patch.object(self.discover, "find_album") as single:
+            self.assertIsNone(self.r.album("Hit", "Star"))
+        single.assert_not_called()
+
+    def test_songs_are_prepared_in_batches(self):
+        deezer = {"data": [{"title_short": "Dreams", "artist": {"name": "Fleetwood Mac"}, "album": {"title": "Rumours"}},
+                           {"title_short": "Go Your Own Way", "artist": {"name": "Fleetwood Mac"},
+                            "album": {"title": "Rumours"}}]}
+        self.r.deezer = True
+        self.mb.groups[("Rumours", "Fleetwood Mac")] = [rg(R1, "Rumours", "Fleetwood Mac", A1)]
+        with mock.patch.object(self.discover, "_get_json", return_value=deezer):
+            self.r.prepare_songs([("Dreams", "Fleetwood Mac", "", ""), ("Go Your Own Way", "Fleetwood Mac", "", "")])
+            self.assertEqual(self.mb.searches, 1)
+            with mock.patch.object(self.discover, "resolve_song") as recordings:
+                self.assertEqual(self.r.song("Dreams", "Fleetwood Mac")["album"]["mbid"], R1)
+            recordings.assert_not_called()
+
+    def test_songs_are_placed_by_their_recordings_four_per_request(self):
+        # The songs' own recordings decide (the rule Song search uses); the artist ids
+        # come from Lidarr, so MusicBrainz is asked once for all of them.
+        def recording(title, artist_id, rgid, album, date, kind="Album", secondary=()):
+            return {"id": f"rec-{title}", "title": title, "artist-credit": [{"artist": {"id": artist_id}}],
+                    "releases": [{"status": "Official", "date": date, "artist-credit": [{"artist": {"id": artist_id}}],
+                                  "release-group": {"id": rgid, "title": album, "primary-type": kind,
+                                                    "secondary-types": list(secondary)}}]}
+        self.r.lidarr = FakeLidarrLookups()
+        self.r.lidarr.artists["Ella Langley"] = [{"artistName": "Ella Langley", "foreignArtistId": A1}]
+        self.mb.recordings = {
+            ("Choosin' Texas", A1): [recording("Choosin' Texas", A1, R2, "Choosin' Texas", "2026-05-01", kind="Single"),
+                                     recording("Choosin' Texas", A1, R1, "Dandelion", "2026-08-01")],
+            ("Be Her", A1): [recording("Be Her", A1, R1, "Dandelion", "2026-08-01")]}
+        self.r.prepare_songs([("Choosin' Texas", "Ella Langley", "", ""), ("Be Her", "Ella Langley", "", "")])
+        self.assertEqual(self.mb.recording_searches, 1)
+        with mock.patch.object(self.discover, "resolve_song") as single:
+            for song in ("Choosin' Texas", "Be Her"):
+                got = self.r.song(song, "Ella Langley")["album"]
+                self.assertEqual((got["mbid"], got["title"], got["year"]), (R1, "Dandelion", "2026"))
+        single.assert_not_called()
+
+    def test_a_capped_recording_search_is_not_trusted(self):
+        self.r.lidarr = FakeLidarrLookups()
+        self.r.lidarr.artists["Fleetwood Mac"] = [{"artistName": "Fleetwood Mac", "foreignArtistId": A1}]
+        live = {"id": "x", "title": "Dreams", "artist-credit": [{"artist": {"id": A1}}],
+                "releases": [{"status": "Official", "date": "2004", "artist-credit": [{"artist": {"id": A1}}],
+                              "release-group": {"id": R3, "title": "Later Album", "primary-type": "Album"}}]}
+        self.mb.recordings = {("Dreams", A1): [live] * 100}   # the original may be past the cap
+        self.r.prepare_songs([("Dreams", "Fleetwood Mac", "", "")])
+        self.assertNotIn(self.r._song_key("Dreams", "Fleetwood Mac"), self.r._song_found)
+
+    def test_a_capped_batch_is_split_until_it_fits(self):
+        self.r.lidarr = FakeLidarrLookups()
+        self.r.lidarr.artists["Band"] = [{"artistName": "Band", "foreignArtistId": A1}]
+        def rec(title, rgid):
+            return {"id": title, "title": title, "artist-credit": [{"artist": {"id": A1}}],
+                    "releases": [{"status": "Official", "date": "1970", "artist-credit": [{"artist": {"id": A1}}],
+                                  "release-group": {"id": rgid, "title": "LP", "primary-type": "Album"}}]}
+        self.mb.recordings = {("Hit", A1): [rec("Hit", R1)] * 90, ("Deep Cut", A1): [rec("Deep Cut", R2)] * 20}
+        self.r.prepare_songs([("Hit", "Band", "", ""), ("Deep Cut", "Band", "", "")])
+        self.assertEqual(self.mb.recording_searches, 3)          # both (110, capped), then each alone
+        self.assertEqual(self.r._song_found[self.r._song_key("Hit", "Band")]["mbid"], R1)
+        self.assertEqual(self.r._song_found[self.r._song_key("Deep Cut", "Band")]["mbid"], R2)
+
+    def test_names_and_medleys(self):
+        from services.music.browse import same_song
+        self.assertEqual(self.discover._bare("Derek & The Dominos"), self.discover._bare("Derek and the Dominos"))
+        self.assertTrue(same_song("Black Magic Woman / Gypsy Queen", "black magic woman"))
+        self.assertFalse(same_song("Hey Jude", "hey"))
+
+    def test_store_subtitles_are_dropped_when_needed(self):
+        self.assertEqual(self.discover._title_variants("The Life of a Showgirl: The Encore"),
+                         ["The Life of a Showgirl: The Encore", "The Life of a Showgirl"])
+        self.assertEqual(self.discover._title_variants("Stick Season (We'll All Be Here Forever)"),
+                         ["Stick Season (We'll All Be Here Forever)", "Stick Season"])
+        self.assertEqual(self.discover._title_variants("Rumours"), ["Rumours"])
+
+    def test_day_numbers(self):
+        self.assertLess(self.discover._days("1977"), self.discover._days("1977-02-04") + 400)
+        self.assertEqual(self.discover._days(""), 10 ** 7)
+
+
+class TestLists(_DiscoverBase):
+    def test_a_list_in_its_order_with_artists_and_years(self):
+        from services.music import discover
+
+        def rel(rgid, title, number):
+            return {"type": "part of", "attribute-values": {"number": str(number)},
+                    "release_group": {"id": rgid, "title": title}}
+        self.fmb.lists["s1"] = {"name": "Rolling Stone: 500", "type": "Release group series",
+                                "relations": [rel(R2, "Pet Sounds", 2), rel(R1, "What's Going On", 1),
+                                              rel(R3, "Live at Leeds", 3)]}
+        self.fmb.rgs[R1] = rg(R1, "What's Going On", "Marvin Gaye", A1, year="1971")
+        self.fmb.rgs[R2] = rg(R2, "Pet Sounds", "The Beach Boys", A2, year="1966")
+        self.fmb.rgs[R3] = rg(R3, "Live at Leeds", "The Who", A3, secondary=["Live"], year="1970")
+        got = discover.build_list(self.fmb, "s1")
+        self.assertEqual([(a["rank"], a["title"], a["artist"], a["year"]) for a in got["albums"]],
+                         [(1, "What's Going On", "Marvin Gaye", "1971"), (2, "Pet Sounds", "The Beach Boys", "1966"),
+                          (3, "Live at Leeds", "The Who", "1970")])
+        self.assertEqual(got["albums"][2].get("type"), "Live")   # kept: the list chose it
+        self.assertEqual(self.fmb.batches, 1)                     # all details in one request
+
+    def test_the_list_setting_accepts_links_and_ids(self):
+        from models.database import set_setting
+        from services.music import discover
+        set_setting(self.db, "music_lists", f"https://musicbrainz.org/series/{R1}, {R2},junk")
+        self.assertEqual(discover.list_ids(self.db), [R1, R2])
+
+    def test_adding_and_removing_lists(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        import routers.music as music
+        from models.database import get_db, get_setting, set_setting
+        from routers.auth import require_admin
+        from services.musicbrainz import MusicBrainz
+        app = FastAPI()
+        app.include_router(music.router)
+        app.dependency_overrides[get_db] = lambda: self.Session()
+        app.dependency_overrides[require_admin] = lambda: self.user
+        client = TestClient(app)
+        set_setting(self.db, "music_lists", R1)
+        series = {R2: {"name": "1001 Albums", "type": "Release group series"},
+                  R3: {"name": "Eurovision winners", "type": "Recording series"}}
+        with mock.patch.object(MusicBrainz, "series", autospec=True, side_effect=lambda _mb, sid: series[sid]):
+            r = client.post("/api/music/lists", json={"series": f"https://musicbrainz.org/series/{R2}"})
+            self.assertEqual(r.json(), {"id": R2, "name": "1001 Albums"})
+            self.assertEqual(client.post("/api/music/lists", json={"series": R3}).status_code, 400)
+            self.assertEqual(client.post("/api/music/lists", json={"series": "not a link"}).status_code, 400)
+        self.db.expire_all()
+        self.assertEqual(get_setting(self.db, "music_lists"), f"{R1},{R2}")
+        client.delete(f"/api/music/lists/{R1}")
+        self.db.expire_all()
+        self.assertEqual(get_setting(self.db, "music_lists"), R2)
 
 
 if __name__ == "__main__":

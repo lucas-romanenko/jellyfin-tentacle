@@ -240,17 +240,61 @@ class MusicBrainz:
         return self.get("/recording", {"query": lucene_phrase(q), "limit": limit},
                         ttl=SEARCH_TTL).get("recordings") or []
 
+    def release_groups_by_id(self, rgids: list) -> dict:
+        """Up to 50 release groups in one request, {id: release group}: a search on their
+        ids, whose results carry types, first release date, artist credit and tags."""
+        ids = [r for r in dict.fromkeys(rgids) if _MBID.match(r or "")][:50]
+        if not ids:
+            return {}
+        found = self.get("/release-group", {"query": "rgid:(" + " OR ".join(ids) + ")", "limit": 100})
+        return {g["id"]: g for g in found.get("release-groups") or []}
+
+    def series(self, series_id: str) -> dict:
+        """A curated list (a MusicBrainz release group series) with its albums."""
+        return self.get(f"/series/{series_id}", {"inc": "release-group-rels"})
+
+    def find_release_groups_batch(self, items: list) -> list:
+        """Release groups for several (title, [artist names]) pairs in one request (up to
+        about 8 pairs: results are capped at 100)."""
+        parts = []
+        for title, artists in items:
+            names = " OR ".join(f"artist:{lucene_quote(a)}" for a in artists if a)
+            if title and names:
+                parts.append(f"(releasegroup:{lucene_quote(title)} AND ({names}))")
+        if not parts:
+            return []
+        return self.get("/release-group", {"query": " OR ".join(parts), "limit": 100},
+                        ttl=SEARCH_TTL).get("release-groups") or []
+
     def find_release_groups(self, title: str, artist: str, limit: int = 10) -> list:
         """Release groups with this title credited to this artist (a chart entry)."""
         query = f"releasegroup:{lucene_quote(title)} AND artist:{lucene_quote(artist)}"
         return self.get("/release-group", {"query": query, "limit": limit},
                         ttl=SEARCH_TTL).get("release-groups") or []
 
-    def recordings_by(self, title: str, artist_ids: list, limit: int = 100) -> list:
+    def recordings_batch(self, items: list) -> list:
+        """Album recordings (see ALBUM_RECORDINGS) for several (title, [artist ids]) songs in
+        one request: a few songs at most, since results are capped at 100."""
+        parts = []
+        for title, artist_ids in items:
+            ids = " OR ".join(a for a in artist_ids if _MBID.match(a or ""))
+            if title and ids:
+                parts.append(f"(recording:{lucene_quote(title)} AND arid:({ids}))")
+        if not parts:
+            return []
+        query = "(" + " OR ".join(parts) + ")" + ALBUM_RECORDINGS
+        return self.get("/recording", {"query": query, "limit": 100}, ttl=SEARCH_TTL).get("recordings") or []
+
+    def recordings_by(self, title: str, artist_ids: list, limit: int = 100, albums_only: bool = False) -> list:
         ids = " OR ".join(a for a in artist_ids if _MBID.match(a or ""))
-        query = f"recording:{lucene_quote(title)} AND arid:({ids})"
+        query = f"recording:{lucene_quote(title)} AND arid:({ids})" + (ALBUM_RECORDINGS if albums_only else "")
         return self.get("/recording", {"query": query, "limit": limit}, ttl=SEARCH_TTL).get("recordings") or []
 
+
+# Recordings on official albums, live ones left out. A famous song has hundreds of
+# recordings (335 for "Paint It, Black"): unfiltered, the 100 a search returns can
+# miss the original album entirely.
+ALBUM_RECORDINGS = " AND primarytype:album AND status:official AND NOT secondarytype:live"
 
 _MBID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 _LUCENE_SPECIAL = re.compile(r'([+\-!(){}\[\]^"~*?:\\/]|&&|\|\|)')

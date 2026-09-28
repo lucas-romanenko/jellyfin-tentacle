@@ -71,9 +71,10 @@ function _musicAlbumCard(a, opts = {}) {
 
 // ── Discover → Music: trending, new releases, top of all time, Spotify ────
 
-const _MUSIC_TABS = [['trending', 'Trending'], ['new', 'New releases'], ['alltime', 'Top of all time'], ['spotify', 'From Spotify']];
-Object.assign(musicState, { discover: null, dTab: 'trending', dSub: { trending: 'artists', new: 'all', alltime: '' },
-  hideOwned: false, dTimer: null, dSeq: 0 });
+const _MUSIC_TABS = [['trending', 'Trending'], ['new', 'New releases'], ['lists', 'Lists'], ['alltime', 'Top of all time'],
+  ['spotify', 'From Spotify']];
+Object.assign(musicState, { discover: null, dTab: 'trending', dSub: { trending: 'artists', new: 'all', alltime: '', lists: '' },
+  hideOwned: false, dTimer: null, dSeq: 0, listCache: {} });
 
 function _musicDiscoverVisible() {
   const browse = document.getElementById('discover-tab-browse');
@@ -108,7 +109,7 @@ async function _loadMusicDiscover() {
   musicState.discover = data;
   if (_musicDiscoverVisible()) musicDiscoverTab(musicState.dTab);
   clearTimeout(musicState.dTimer);
-  const busy = data.building && (data.building.trending || data.building.all_time)
+  const busy = data.building && (data.building.trending || data.building.all_time || data.building.lists)
     || ((data.spotify || {}).imports || []).some(i => i.status === 'resolving');
   // Keep refreshing while something is being built, as long as the page is open.
   if (busy) musicState.dTimer = setTimeout(() => { if (_musicDiscoverVisible()) _loadMusicDiscover(); }, 8000);
@@ -131,7 +132,7 @@ function musicDiscoverTab(id) {
     grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>${escapeAttr(d.error)}</p></div>`;
     return;
   }
-  ({ trending: _musicTrending, new: _musicNew, alltime: _musicAllTime, spotify: _musicSpotify })[id](d, grid, pills);
+  ({ trending: _musicTrending, new: _musicNew, lists: _musicLists, alltime: _musicAllTime, spotify: _musicSpotify })[id](d, grid, pills);
 }
 
 function _musicPills(pills, items, active, handler) {
@@ -252,6 +253,81 @@ function _musicAllTime(d, grid, pills) {
   const albums = ((current || {}).albums || []).filter(a => !musicState.hideOwned || a.status === 'available');
   grid.innerHTML = html + (albums.map(a => _musicAlbumCard(a)).join('') ||
     (genres.length ? _musicEmpty('You have every album in this list.') : ''));
+}
+
+function _musicIsAdmin() {
+  return typeof state !== 'undefined' && state.currentUser && state.currentUser.is_admin;
+}
+
+function _musicLists(d, grid) {
+  const items = (d.lists || {}).items || [];
+  if (!items.find(l => l.id === musicState.dSub.lists)) musicState.dSub.lists = items.length ? items[0].id : '';
+  const sid = musicState.dSub.lists;
+  let html = _musicBuilding(d, 'lists', 'the album lists');
+  if (!items.length) {
+    grid.innerHTML = html + (d.building && d.building.lists ? '' : _musicEmpty('No album lists yet.')) + _musicListAdmin(null);
+    return;
+  }
+  html += `<div class="music-note music-list-bar">
+      <select class="form-input" onchange="musicDiscoverSub(this.value)" style="max-width:420px">
+        ${items.map(l => `<option value="${escapeAttr(l.id)}"${l.id === sid ? ' selected' : ''}>${escapeAttr(l.name)} (${l.count})</option>`).join('')}
+      </select>
+      <label style="display:flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" ${musicState.hideOwned ? 'checked' : ''} onchange="musicState.hideOwned=this.checked;musicDiscoverTab('lists')"> Hide albums I have</label>
+    </div>`;
+  const cached = musicState.listCache[sid];
+  if (!cached || Date.now() - cached.at > 60000) {
+    grid.innerHTML = html + '<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text3)"><span class="toast-spinner"></span> Loading…</div>';
+    api(`/api/music/discover/list/${encodeURIComponent(sid)}`).then(data => {
+      musicState.listCache[sid] = { at: Date.now(), data };
+      if (_musicDiscoverVisible() && musicState.dTab === 'lists' && musicState.dSub.lists === sid) musicDiscoverTab('lists');
+    }).catch(e => { grid.innerHTML = html + _musicEmpty(escapeAttr(e.message)); });
+    return;
+  }
+  const albums = cached.data.albums || [];
+  const owned = albums.filter(a => a.status !== 'available').length;
+  html += _musicNote(`${albums.length} albums, ${owned} of them in your library. From MusicBrainz.`);
+  const shown = albums.filter(a => !musicState.hideOwned || a.status === 'available');
+  grid.innerHTML = html + (shown.map(a => _musicAlbumCard(a, {
+    meta: `#${a.rank} · ${escapeAttr(a.artist || '')}${a.year ? ' · ' + a.year : ''}` })).join('')
+    || _musicEmpty('You have every album on this list.')) + _musicListAdmin(sid);
+}
+
+function _musicListAdmin(sid) {
+  if (!_musicIsAdmin()) return '';
+  return `<div class="music-note" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px">
+      <button class="btn btn-secondary btn-sm" onclick="addMusicList(this)">Add a list…</button>
+      ${sid ? `<button class="btn btn-secondary btn-sm" onclick="removeMusicList('${escapeJS(sid)}', this)">Remove this list</button>` : ''}
+      <span>Any MusicBrainz album list works: find one at musicbrainz.org (search for a series) and paste its link.</span>
+    </div>`;
+}
+
+async function addMusicList(btn) {
+  const link = prompt('Paste a MusicBrainz series link (a list of albums):');
+  if (!link) return;
+  btn.disabled = true;
+  try {
+    const r = await api('/api/music/lists', { method: 'POST', body: { series: link } });
+    toast(`Adding “${escapeAttr(r.name)}”…`, 'info');
+    musicState.dSub.lists = r.id;
+    await _loadMusicDiscover();
+  } catch (e) {
+    toast(escapeAttr(e.message), 'error', 8000);
+  }
+  btn.disabled = false;
+}
+
+async function removeMusicList(sid, btn) {
+  if (!confirm('Remove this list from Discover?')) return;
+  btn.disabled = true;
+  try {
+    await api(`/api/music/lists/${encodeURIComponent(sid)}`, { method: 'DELETE' });
+    delete musicState.listCache[sid];
+    musicState.dSub.lists = '';
+    await _loadMusicDiscover();
+  } catch (e) {
+    toast(escapeAttr(e.message), 'error');
+    btn.disabled = false;
+  }
 }
 
 function _musicSpotify(d, grid) {
@@ -626,6 +702,7 @@ async function requestMusicAlbum(mbid, btn, tracks) {
     const r = await api('/api/music/request', { method: 'POST', body });
     toast(`Requested ${escapeAttr(r.title || 'the album')} — Tentacle pins the original release, then Lidarr searches`, 'success', 6000);
     if (btn && btn.classList.contains('lib-card-add-btn')) btn.remove();
+    musicState.listCache = {};
     if (_musicDiscoverVisible()) setTimeout(_loadMusicDiscover, 1500);   // the badge turns "Wanted"
     if (document.getElementById('modal-music').style.display === 'flex' && btn && !btn.classList.contains('lib-card-add-btn')) openMusicAlbum(mbid);
   } catch (e) {

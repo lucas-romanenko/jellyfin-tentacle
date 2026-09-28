@@ -243,6 +243,15 @@ class LidarrClient:
         """Lidarr deletes the file (into its recycle bin, if one is set)."""
         return self.delete(f"/api/v1/trackfile/{int(trackfile_id)}")
 
+    # Lidarr's metadata server (MusicBrainz data, cached by the Lidarr project): no
+    # one-request-a-second limit, so Discover and playlist imports match names here.
+    # Its search ranks loosely: callers pick exact title / artist matches themselves.
+    def lookup_albums(self, term: str) -> list:
+        return self.get("/api/v1/album/lookup", {"term": term}, retries=0) or []
+
+    def lookup_artists(self, term: str) -> list:
+        return self.get("/api/v1/artist/lookup", {"term": term}, retries=0) or []
+
     def recycle_bin(self) -> str:
         """Lidarr's recycle bin folder; "" when none is set (deleted files are then gone for good)."""
         return (self.get("/api/v1/config/mediamanagement", retries=0) or {}).get("recycleBin") or ""

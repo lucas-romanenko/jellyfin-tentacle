@@ -54,6 +54,13 @@ def _is_studio(rg: dict) -> bool:
     return (rg.get("primary-type") or "").lower() == STUDIO and not rg.get("secondary-types")
 
 
+def _is_album_for_song(rg: dict) -> bool:
+    """Where a song "came out": a studio album, or the artist's own soundtrack album
+    (Purple Rain). Releases credited to others (Various Artists) are left out by the caller."""
+    return (rg.get("primary-type") or "").lower() == STUDIO and \
+        set(t.lower() for t in rg.get("secondary-types") or []) <= {"soundtrack"}
+
+
 def _type_label(rg: dict) -> str:
     secondary = rg.get("secondary-types") or []
     return secondary[0] if secondary else (rg.get("primary-type") or "Other")
@@ -204,13 +211,21 @@ def artist_page(db: Session, mbid: str) -> dict:
 
 # ── Song ─────────────────────────────────────────────────────────────────
 
+def same_song(title: str, wanted: str) -> bool:
+    """A recording's title is the song (already normalized); a medley counts for its first
+    song: "Black Magic Woman / Gypsy Queen" is on Abraxas as one track."""
+    return normalize(title) == wanted or normalize((title or "").split(" / ")[0]) == wanted
+
+
 def related_artists(mb: MusicBrainz, mbid: str) -> list:
-    """The artist plus its band / member relations, so a song credited to "Jimi Hendrix"
-    also finds its album by "The Jimi Hendrix Experience" (and the other way round)."""
+    """The artist plus the bands it is a member of, so a song credited to "Jimi Hendrix"
+    also finds its album by "The Jimi Hendrix Experience". Not a band's members: their
+    solo records aren't the band's ("Paint It, Black" isn't on a Charlie Watts album)."""
     ids = [mbid]
     for rel in mb.artist(mbid).get("relations") or []:
         other = (rel.get("artist") or {}).get("id")
-        if rel.get("type") == "member of band" and other and other not in ids:
+        if (rel.get("type") == "member of band" and rel.get("direction", "forward") == "forward"
+                and other and other not in ids):
             ids.append(other)
     return ids
 
@@ -218,9 +233,19 @@ def related_artists(mb: MusicBrainz, mbid: str) -> list:
 def original_album_for_song(mb: MusicBrainz, title: str, artist_mbid: str) -> dict:
     """The studio album a song first appeared on: the earliest official release
     group of type Album with no secondary types (compilation, live, soundtrack...)."""
-    wanted = normalize(title)
     artists = related_artists(mb, artist_mbid)
-    recordings = [r for r in mb.recordings_by(title, artists) if normalize(r.get("title")) == wanted]
+    found = original_from_recordings(mb.recordings_by(title, artists, albums_only=True), title, artists)
+    if found["album"]:
+        return found
+    # No album: all its recordings, to tell "only on singles" from "unknown".
+    return original_from_recordings(mb.recordings_by(title, artists), title, artists)
+
+
+def original_from_recordings(recordings: list, title: str, artists: list) -> dict:
+    """original_album_for_song's rule over recordings already fetched (Discover fetches
+    several songs' recordings per request)."""
+    wanted = normalize(title)
+    recordings = [r for r in recordings if same_song(r.get("title"), wanted)]
     studio, singles = {}, {}
     for rec in recordings:
         for rel in rec.get("releases") or []:
@@ -233,7 +258,7 @@ def original_album_for_song(mb: MusicBrainz, title: str, artist_mbid: str) -> di
                 continue
             rg = rel.get("release-group") or {}
             date = rel.get("date") or "9999"
-            bucket = studio if _is_studio(rg) else (
+            bucket = studio if _is_album_for_song(rg) else (
                 singles if (rg.get("primary-type") or "") in ("Single", "EP") and not rg.get("secondary-types")
                 else None)
             if bucket is None or not rg.get("id"):
