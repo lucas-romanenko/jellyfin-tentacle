@@ -1,0 +1,227 @@
+# Tentacle server (`tentacle/`): internals
+
+Reference for coding agents; the overview is in [CLAUDE.md](../../CLAUDE.md).
+Merged from Lucas's long-standing working notes on 2026-09-28 and checked
+against the code then (corrections noted); where this and the code
+disagree, the code wins, and fix this file.
+
+## Stack
+
+FastAPI + SQLite (SQLAlchemy) + APScheduler, one uvicorn worker; the
+dashboard is a vanilla-JS single-page app (`static/index.html`,
+`static/js/app.js`, `static/js/pages.js`, `static/js/music.js`); one
+container. All routes: [server-api.md](server-api.md).
+
+```
+main.py                 app, lifespan, scheduler (sync_schedule, default "0 3 * * *"), routers
+models/database.py      every model + seed defaults (NON_EMPTY_DEFAULTS)
+routers/                one per area: auth, settings, providers, sync, library, duplicates,
+                        lists, smartlists, tags, radarr, sonarr, discover, collections,
+                        activity, widget, livetv, vod, notifications, health, youtube, music
+services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger, smartlists,
+                        jellyfin, radarr, sonarr, artwork, logstream, migration, xmltv,
+                        xtream_client, m3u_parser, media_requests, lidarr, musicbrainz, music/
+```
+
+## Auth and users (`routers/auth.py`)
+
+- Login is a Jellyfin user picker: `GET /api/auth/users` (no auth), then
+  `POST /api/auth/login` authenticates through Jellyfin
+  `/Users/AuthenticateByName`. Session: HMAC-signed cookie
+  `tentacle_session` (30 days, HttpOnly), secret in the `session_secret`
+  setting. After login the page does a full reload (clears SPA state).
+- Dependencies: `get_current_user` (cookie, else 401),
+  `get_current_user_optional`, `get_user_from_request` (cookie, or a
+  *verified* `?api_key=` Jellyfin token: `userId` is only a claim; the token
+  is resolved to its owner through Jellyfin), `require_admin`,
+  `require_internal_or_admin` (the plugin's server-to-server calls).
+  Admin-only routers declare `dependencies=[Depends(require_admin)]`.
+- Bootstrap: with no `TentacleUser` yet, `require_admin` lets the setup
+  wizard through.
+- Roles: admin status is copied from Jellyfin's `Policy.IsAdministrator` on
+  every login; the first user (lowest id) is the owner and can't lose admin;
+  Settings → Users toggles admin through Jellyfin's policy API. Non-admins
+  see only Library and Jellyfin pages (`data-admin-only` in the nav,
+  `applyUserRole()`).
+- Global (shared): providers, VOD sync, Radarr/Sonarr scans, library
+  content, tags on content, Live TV. Per user: playlists (Jellyfin playlists
+  with `IsPublic=false`), auto-playlist toggles, list subscriptions, tag
+  rules (custom playlists), home layout. Per-user files:
+  `/data/smartlists/{jellyfin_user_id}/`, `/data/home-configs/{jellyfin_user_id}.json`.
+- `DownloadRequest` (tmdb_id, media_type, user_id) records who asked for a
+  download; non-admins may delete only what they requested.
+
+## Key concepts
+
+- **TMDB is the gatekeeper**: no TMDB match = the item is skipped, unless
+  the provider has `require_tmdb_match=False` (then the provider's title and
+  a negative tmdb_id). A built-in project TMDB key ships with Tentacle
+  (`services/tmdb.py`); a user key/token in settings overrides it.
+- **Two ways to tag**: VOD `.strm` items get `<tag>` elements in their NFO
+  (Jellyfin reads NFO tags for `.strm` only); downloaded `.mkv` items must be
+  tagged through the Jellyfin API (`services/jellyfin.py` `set_item_tags`),
+  because Jellyfin ignores NFO tags on real video files. See
+  [jellyfin-notes.md](jellyfin-notes.md).
+- **Tag suffix**: source tags get the media type appended ("Netflix" →
+  "Netflix Movies" / "Netflix TV"); playlist expressions must use the
+  suffixed tag (`_extract_source_value()` in `services/smartlists.py`).
+- **Recently Added** is a rolling window (default 30 days), refreshed on
+  every scheduled sync.
+- **Duplicates**: found when a download also exists as VOD; resolved ones
+  are deleted from the DB.
+- **Following** = Sonarr `monitorNewItems="all"` (stricter than
+  `monitored`), mirrored in `Series.sonarr_monitored`, synced both ways on
+  every Sonarr scan; unfollowing keeps `monitored=true`. Hidden for ended
+  or canceled series.
+- **Hybrid series**: VOD `.strm` and downloaded episodes in one folder.
+  "Download more episodes" adds the series to Sonarr with an explicit `path`
+  in the VOD folder (needs a Sonarr root folder on the VOD shows directory;
+  `add_to_sonarr` in `routers/lists.py` picks the root with "vod" in its
+  path) and sets `Series.sonarr_path`, which stops the next scan from
+  calling it a duplicate. Sonarr SeriesDelete on a hybrid clears
+  `sonarr_path`/`sonarr_monitored` and keeps the VOD record.
+- **Unaired episodes** are left out of counts (Sonarr `airDateUtc`): "7/7
+  +1 upcoming", not "7/8".
+
+## Playlists
+
+Two kinds, both real Jellyfin playlists managed through the API, per user
+(`IsPublic=false`). There is no playlist table: `get_desired_smartlists(db,
+user_id)` computes them every time from source tags, list subscriptions
+(`ListSubscription.playlist_enabled`), tag rules and built-ins, filtered by
+`AutoPlaylistToggle` (keys like `source:Netflix:movies`,
+`builtin:recently_added_movies`).
+
+- **Auto**: one per provider source tag, one per list subscription, and the
+  built-ins "Recently Added Movies", "Recently Added TV" (capped at 50),
+  "Downloaded Movies". Tag-based expressions (`Tags Contains <tag>`).
+- **Custom** (tag rules from the Playlists page): conditions that Jellyfin
+  knows natively (genre, rating, year) become Jellyfin expressions and match
+  the *whole* library; Tentacle-only conditions (source, source_tag,
+  runtime) go through tags; a mix falls back to tags
+  (`_classify_conditions()`, `_conditions_to_expressions()`).
+- Pipeline: `sync_smartlists(db, user_id)` writes the configs to disk and
+  creates/updates the Jellyfin playlists, returning `changed_names`;
+  `refresh_smartlist_playlists(db, user_id, only_names=...)` fills them
+  (only the changed ones after an edit, all at night), in chunks of 50,
+  under the process-wide `_playlist_refresh_lock` (concurrent refreshes
+  corrupted Jellyfin's playlist folders); `write_home_config(db, user_id)`
+  regenerates the home layout.
+- Sort: per playlist, stored in the on-disk config's `Order`;
+  `PRESERVED_FIELDS = ["LastRefreshed", "DateCreated", "ItemCount", "Order"]`
+  survive rebuilds. Built-ins are `(name, media_types, sort, max_items)`
+  tuples (`services/smartlists.py`). Changing the sort clears the playlist
+  and re-adds items in order; `DateCreated` sorts use Tentacle's own
+  `date_added`, because Jellyfin's is unreliable for bulk imports.
+- Every change in the UI syncs at once (no "Sync" button). Each mutation in
+  `routers/smartlists.py` calls `bump_playlist_version()`; the web plugin
+  polls `GET /api/smartlists/version` to redraw.
+
+## Home screen config (per user)
+
+`/data/home-configs/{jellyfin_user_id}.json`, read by the plugin through
+`GET /api/smartlists/home-config?userId=` (no shared volume):
+
+```json
+{"hero": {"enabled": true, "playlist_id": "…", "display_name": "…", "sort_by": "random",
+          "sort_order": "Descending", "require_logo": true, "require_trailer": false},
+ "rows": [{"type": "playlist", "playlist_id": "…", "display_name": "…", "order": 1, "max_items": 20},
+          {"type": "builtin", "section_id": "resumevideo", "display_name": "Continue Watching", "order": 2}]}
+```
+
+- Row keys: `playlist:<guid>` or `builtin:<section_id>` (reorder/remove).
+- The hero has its own sort; `require_logo` (default on) keeps only items
+  with a backdrop and a logo; `require_trailer` only items with a trailer.
+  The plugin applies both when rendering.
+- `write_home_config()` checks the hero playlist still exists (else first
+  available, or off) and remaps rows and hero by `display_name` when a sync
+  recreated playlists with new ids (otherwise rows silently vanish).
+- When a user has a Tentacle home, `disable_home_sections()`
+  (`services/jellyfin.py`) turns Jellyfin's own home sections off for that
+  user (DisplayPreferences), so rows don't appear twice.
+
+## Deleting things
+
+- Deleting a provider removes its VOD files and DB records, then rebuilds
+  playlists and checks the hero.
+- Downloaded content only (never VOD, which is admin-only from the
+  dashboard): the TV app or the web plugin calls
+  `DELETE /TentacleDiscover/LibraryItem/{type}/{id}?jellyfinItemId=`, the
+  plugin proxies to `DELETE /api/library/delete-download/{tmdb_id}`, which
+  checks permission (admin, or the `DownloadRequest` owner), deletes in
+  Radarr/Sonarr (files), Jellyfin and the DB, then removes the item from
+  every user's playlists in the background. `can_delete` in the discover
+  detail response tells clients whether to show the button.
+- Deleted in Jellyfin's own UI: the plugin's `LibraryDeleteHandler` sees
+  `ItemRemoved` (2 s debounce) and calls `DELETE /api/library/item/...`.
+- The nightly `sweep_orphaned_downloads()` removes downloaded records
+  Jellyfin no longer has.
+
+## UI words
+
+The UI says "Playlist" everywhere; the code says SmartList, TagRule,
+output_tag. Never "Collection" (a different Jellyfin thing) or "Tag" in the
+UI. The "Jellyfin" page has three tabs: Home Screen, Playlists, Discover (the
+`discover_in_jellyfin` toggle lives there and saves at once).
+
+Every function called from an `onclick=""` in `index.html` must be exported
+in the `exposeGlobals()` block at the bottom of `pages.js` (else
+`ReferenceError`); top-level functions in `app.js` are global already.
+
+## Database
+
+SQLite `/data/tentacle.db` (WAL). Models in `models/database.py`:
+settings, providers, provider_categories, category_snapshots, movies,
+series, youtube_channels, youtube_videos, duplicates, sync_runs,
+list_subscriptions, list_items, tag_rules, home_row_order,
+auto_playlist_toggles, tentacle_users, notifications, download_requests,
+music_artists, music_albums, and the Live TV tables. Credentials live in
+`settings` (key/value) and `providers`; never log or print them.
+
+## Live TV
+
+Tentacle is the HDHomeRun tuner Jellyfin sees (it replaced Threadfin):
+`/discover.json`, `/lineup.json`, `/device.xml` (also under `/hdhr/`), the
+guide at `/api/live/xmltv.xml`, streams through `/api/live/stream/{id}`
+(follows provider redirects with the provider's user agent, HLS → MPEG-TS).
+User docs: `docs/features/live-tv.md`.
+
+- Channel ids are the provider's `stream_id` (stable across changes), used
+  as `GuideNumber`.
+- Two-phase sync: groups with counts, then channels for enabled groups; a
+  channel sync chains into an EPG sync. The EPG (XMLTV, cached on disk) is
+  stored for *all* provider channels, so newly enabled ones have a guide.
+  Channels may share one `epg_channel_id` (one-to-many in the XMLTV output).
+- After an EPG sync Tentacle deletes and re-adds its XMLTV listing provider
+  in Jellyfin, then runs RefreshGuide: re-POSTing a listing provider with
+  the same id does *not* remap new channels.
+- Provider fields: `provider_type` (xtream, m3u_url, m3u_file),
+  `user_agent`, `epg_url`, `require_tmdb_match`, `live_tv_enabled` (VOD and
+  Live TV providers share the table; the flag keeps them apart).
+
+## Music (Lidarr + MusicBrainz; off by default)
+
+"I like this song/album/artist" → the original studio album through Lidarr.
+Tentacle never touches music files or a player's database, only APIs. User
+docs: `docs/features/music.md`; plugin side: `Api/MusicController.cs`
+(`TentacleMusic/*`), 404 unless the integration is on.
+
+- One request path: `services/media_requests.py` (`request_movies`,
+  `request_series`, `request_album`). Profiles and root folders come from
+  settings, with no fallback to profile 1 (it refuses instead); a per-request
+  choice is `quality_profile_override` (the legacy `quality_profile_id` is
+  ignored: old clients always sent the first profile).
+- `services/lidarr.py`: one request at a time, 15 s timeout, refuses
+  `include*`, history, `since` and pageSize > 50, 2 retries. `/album` can't
+  be paged: read per artist. Adding an artist with
+  `addOptions.monitor: none` unmonitors every album on the first scan: pass
+  `albumsToMonitor: [rgid]`.
+- `services/musicbrainz.py`: 1 request/s, a contact e-mail in the user
+  agent (setting), file cache `musicbrainz_cache`.
+- `services/music/`: `worker.py` (one thread; urgent > normal > background),
+  `jobs.py`, `original.py` (the original-release rules, pure), `apply.py`
+  (pins and trims; deletions only when exactly the expected leftovers
+  remain, each logged), `pictures.py`, `players.py` (Navidrome, Jellyfin),
+  `discover.py`, `spotify.py`.
+- Webhook `POST /api/music/webhook?secret=` (secret always required);
+  status `GET /api/music/status`.

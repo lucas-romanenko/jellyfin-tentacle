@@ -14,6 +14,24 @@ documented privately in his homelab manual).
 The Android TV clients live in jellyfin-tentacle-androidtv (current) and
 jellyfin-tentacle-androidtv-legacy.
 
+What it does: syncs VOD from IPTV providers (Xtream, M3U) as `.strm` + NFO,
+tracks Radarr/Sonarr downloads, tags everything (NFO tags for `.strm`, the
+Jellyfin API for real video files), and turns tags, lists and rules into
+per-user Jellyfin playlists and a custom Jellyfin home screen (hero + rows),
+plus Discover (TMDB), Activity (downloads), Live TV (an HDHomeRun tuner for
+Jellyfin), YouTube and an optional music module (Lidarr).
+
+Reference for agents (read the one you need before changing that area):
+
+| File | What |
+|---|---|
+| [docs/agents/server.md](docs/agents/server.md) | server internals: auth and users, playlists, home config, deletes, DB, Live TV, music, UI words |
+| [docs/agents/pipelines.md](docs/agents/pipelines.md) | what happens on each event (webhooks, edits, nightly sync) and how changes reach the clients |
+| [docs/agents/plugin.md](docs/agents/plugin.md) | plugin internals, rules learned the hard way, caches |
+| [docs/agents/jellyfin-notes.md](docs/agents/jellyfin-notes.md) | Jellyfin/Radarr/Sonarr API behavior that isn't documented |
+| [docs/agents/server-api.md](docs/agents/server-api.md) | every server route and its auth |
+| [docs/agents/plugin-api.md](docs/agents/plugin-api.md) | every plugin route, its auth, what the TV app calls |
+
 ## Server (`tentacle/`)
 
 - `main.py`: the FastAPI app, routers, `/api/health` (container
@@ -31,7 +49,34 @@ jellyfin-tentacle-androidtv-legacy.
   cookie, or a *verified* `?api_key=` (a Jellyfin access token, resolved to
   its owner through Jellyfin). `userId` is only a claim. Jellyfin sends user
   ids with dashes; Tentacle stores them without: normalize
-  (`.replace("-", "")`) before comparing.
+  (`.replace("-", "")`) before comparing. Admin-only routers declare
+  `dependencies=[Depends(require_admin)]`; non-admins may delete only
+  downloads they requested (`DownloadRequest`).
+- Media paths inside the container are fixed (users map host folders with
+  volumes; Settings → Library Paths checks them): `/data` (DB, caches,
+  per-user `smartlists/` and `home-configs/`), `/media/movies` (Radarr),
+  `/media/shows` (Sonarr), `/media/vod/movies`, `/media/vod/shows` (VOD
+  `.strm`), `/media/youtube`.
+- Nightly sync: cron setting `sync_schedule` (default `0 3 * * *`),
+  `run_scheduled_sync()` in `main.py`.
+
+Rules that bite (details in the docs above):
+
+- Tags on `.mkv` only through the Jellyfin API with a minimal body; refresh
+  items with `ReplaceAllMetadata=false` (true wipes the tags).
+- Source tags carry a type suffix ("Netflix Movies"); playlist expressions
+  must use it.
+- Playlist refreshes hold `_playlist_refresh_lock` (concurrent refreshes
+  corrupt Jellyfin's playlist folders); add/remove items in chunks of 50.
+- Every home-config or playlist mutation calls `bump_playlist_version()`,
+  writes the home config and notifies the plugin, or the clients won't see it.
+- `write_home_config()` remaps rows by `display_name` when playlists get new
+  ids; keep that, or rows vanish after a sync.
+- Functions used from `onclick=""` in `index.html` must be exported in
+  `exposeGlobals()` at the bottom of `static/js/pages.js`.
+- UI says "Playlist", never "Tag" or "Collection".
+- Lidarr: one request at a time, pageSize ≤ 50, no `include*`; MusicBrainz 1
+  request/s.
 
 ## Plugin (`tentacle-plugin/`)
 
@@ -44,7 +89,14 @@ Every endpoint, its auth level and which the TV app calls:
 [docs/agents/plugin-api.md](docs/agents/plugin-api.md). Rule: a user-scoped
 endpoint checks the caller with `CallerIdentity` (`[Authorize]` alone only
 proves someone is signed in); admin-only ones use
-`[Authorize(Policy = "RequiresElevation")]`.
+`[Authorize(Policy = "RequiresElevation")]`. Its only setting is
+`TentacleUrl`; all JS/CSS is injected into Jellyfin's `index.html` through
+Harmony (no files modified). Proxy endpoints forward the server's status
+code (`ContentResult`, never `Content()`); config-page scripts stay inside
+the `data-role="page"` div; never set `GenerateAssemblyInfo=false`.
+
+Repo settings: pull requests merge by squash only; merged branches are
+deleted automatically.
 
 ## Work on it
 
@@ -123,3 +175,13 @@ deploys and checks his own is in his homelab manual.
 Tag `plugin-vX.Y.Z` on main and push it. Check: the GitHub release has
 `tentacle-plugin-vX.Y.Z.zip`, and main has the bot's "Update plugin manifest
 for vX.Y.Z" commit.
+
+## Open items
+
+- Title prefixes: `STRIP_PREFIXES` in `services/cleaner.py` is a fixed list
+  (NF, AMZ, HBO, ...) and misses unknown codes (e.g. `NF-DO`); a generic rule
+  for short uppercase codes before ` - `, maybe reviewable per category.
+- Playlist refresh efficiency (diffs, DB-computed tag playlists, parallel
+  users): [docs/agents/pipelines.md](docs/agents/pipelines.md).
+- The Radarr/Sonarr webhooks accept unsigned events unless `webhook_secret`
+  is set: consider making it required, as the music webhook's is.

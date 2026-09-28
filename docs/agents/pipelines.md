@@ -1,0 +1,101 @@
+# Pipelines: what happens when
+
+How content and changes flow from Tentacle into Jellyfin and the clients.
+Merged from Lucas's notes on 2026-09-28 and checked against the code then
+(corrections noted); the code wins. Internals: [server.md](server.md).
+
+## Content → tags → playlists → home screen
+
+1. **Content enters**
+   - VOD sync (IPTV, Xtream or M3U): each catalog item is matched on TMDB;
+     a match writes a `.strm` (the stream URL) and an `.nfo` with full
+     metadata and `<tag>`s; the DB gets a `Movie`/`Series` with
+     `source='vod'`.
+   - Radarr/Sonarr webhook (import): `scan_radarr_library()` /
+     `scan_sonarr_library()` enrich from TMDB, store `source='radarr'` /
+     `'sonarr'`, write an NFO named exactly like the video
+     (`Alien (1979) Bluray-1080p.nfo`) and push tags through the Jellyfin
+     API. The webhook handler retries while Radarr is still finishing the
+     import (waits of 15, 30, 45, 60 s).
+2. **Tags**: VOD through NFO; downloads through the API
+   (`set_item_tags`): "Downloaded Movies", "Recently Added Movies", list
+   tags (e.g. "IMDB TOP 250"). Source tags carry the type suffix.
+3. **Playlists computed** per user by `get_desired_smartlists()`.
+4. **Playlists written** to Jellyfin by `sync_smartlists()` and filled by
+   `refresh_smartlist_playlists()`.
+5. **Home config** written by `write_home_config()`; the plugin reads it.
+
+## Events
+
+**Radarr downloads a movie** (webhook): scan → TMDB → DB → NFO + API tags →
+Jellyfin item refresh with `ReplaceAllMetadata=false` (true would wipe the
+tags; an older note said true) → playlist refresh (all playlists: the
+webhook can't know which) → home config → plugin notified → version bumped.
+
+**Radarr deletes a movie** (MovieDelete): DB record and `DownloadRequest`s
+removed, then `remove_item_from_playlists()` for every user in the
+background; the Library shows it as missing again.
+
+**Sonarr deletes a series** (SeriesDelete): a hybrid keeps its VOD record
+(`sonarr_path`, `sonarr_monitored` cleared); a Sonarr-only series is
+deleted; then playlists as above.
+
+**"Download more episodes"** on a VOD series: the client loads TMDB seasons,
+VOD episodes and Sonarr episodes in parallel; the picker shows VOD
+episodes ("VOD") and downloaded ones ("DL") as checked and disabled, and
+season coverage ("5/8"). The chosen episodes go to
+`POST /api/lists/add-to-sonarr` with `selected_episodes`; Tentacle adds the
+series with an explicit `path` in the existing VOD folder, `monitor: none`,
+then monitors only the chosen episodes, sets `monitorNewItems="all"` when
+"Auto-download new episodes" (default on) is ticked, starts a search, and
+records `sonarr_path`/`sonarr_monitored` at once.
+
+**"Manage episodes"** on a Sonarr series: `GET /api/discover/sonarr-episodes/{tmdb_id}`,
+then `POST /api/discover/manage-episodes`: everything unmonitored, the
+chosen ones monitored again, those without files searched.
+
+**A custom playlist is created**: `POST /api/tags/rules`, then
+`POST /api/smartlists/sync` (refreshes only `changed_names`, clears their
+artwork cache, uploads artwork, writes home config, notifies the plugin,
+bumps the version) and answers with item counts per playlist.
+
+**An auto playlist is toggled**: `POST /api/smartlists/auto-playlists/toggle`
+saves the toggle, then a full sync/refresh/artwork/home config/notify/bump.
+The UI flips the switch before the answer (optimistic).
+
+**Home rows** (Home Screen tab): `add-row` (inserted at the top),
+`remove-row`, `reorder`, `hero`, `hero-sort`, `row-max-items`, `toolbar`
+under `/api/smartlists/`: each writes the home JSON, notifies the plugin
+and bumps the version.
+
+## Nightly sync
+
+`sync_schedule` (cron, default `0 3 * * *`), `run_scheduled_sync()` in
+`main.py`:
+
+1. refresh list subscriptions; 2. VOD sync from active providers; 3. Radarr
+scan; 4. Sonarr scan (and Following state for every series); 5. recently
+added tags; 6. Jellyfin pipeline (scan, push tags, refresh playlists);
+7. clean the TMDB cache; 8. `sweep_orphaned_downloads()`; 9. per user:
+`migrate_global_smartlists_to_user()` (one-time), `sync_smartlists()`,
+`write_home_config()`; 10. playlist artwork; 11. `POST /Tentacle/Refresh` to
+clear the plugin's caches.
+
+## How changes reach the clients
+
+| Channel | Client | How |
+|---|---|---|
+| Version polling | Jellyfin web (`tentacle-home.js`) | polls `GET /api/smartlists/version`; a new number re-fetches and redraws the rows |
+| WebSocket | Android TV (`HomeRowsFragment.kt`) | Jellyfin's `LibraryChangedMessage` (fired when playlists change) triggers a row refresh; no polling |
+| Plugin cache clear | the plugin | `POST /Tentacle/Refresh` after the nightly sync and settings changes |
+
+## Known inefficiencies (improvement ideas)
+
+1. Playlists are rebuilt from scratch every night even when nothing
+   changed: diff current vs desired and skip identical playlists.
+2. Tag-based playlists round-trip through Jellyfin (tag → Jellyfin indexes →
+   query by tag), which races with indexing after a webhook; Tentacle's DB
+   already knows the tags and could compute membership itself (native
+   genre/rating/year playlists still need Jellyfin).
+3. The nightly per-user loop is sequential (users are independent), and has
+   no dirty tracking (unchanged users are rebuilt too).
