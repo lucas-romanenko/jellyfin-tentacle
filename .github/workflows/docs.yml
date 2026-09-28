@@ -1,22 +1,26 @@
 name: Deploy Documentation
 
+# The docs site is what users read, so it follows releases: a docs change on
+# main is only built (mkdocs --strict, as a check); the site is deployed on a
+# version tag (vX.Y.Z), a GitHub release, or by hand (Run workflow).
 on:
   push:
     branches: [main]
+    tags:
+      - 'v*'
     paths:
       - 'docs/**'
       - 'mkdocs.yml'
       - 'requirements-docs.txt'
+      - '.github/workflows/docs.yml'
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
   contents: read
   pages: write
   id-token: write
-
-concurrency:
-  group: "pages"
-  cancel-in-progress: true
 
 jobs:
   build:
@@ -40,6 +44,12 @@ jobs:
 
   deploy:
     needs: build
+    # never from a push to main; a release on another tag (plugin-v*) is the plugin's
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    # one deploy at a time; a docs build on main never cancels a release's deploy
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     environment:
       name: github-pages

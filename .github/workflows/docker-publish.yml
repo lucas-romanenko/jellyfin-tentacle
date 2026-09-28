@@ -1,13 +1,25 @@
 name: Docker Publish
 
+# Images go to other people's servers, so publishing is a release: only a
+# version tag (vX.Y.Z) or a GitHub release publishes, never a push to main.
+# A release made in the GitHub UI can fire both events for one tag; the
+# concurrency group runs them one after the other, and the second just
+# pushes the same tags again.
 on:
   push:
-    branches: [main]
     tags:
       - 'v*'
+  release:
+    types: [published]
+
+concurrency:
+  group: docker-publish-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   publish:
+    # a release on another tag (plugin-v*) is the plugin's, not the server's
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -31,8 +43,11 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/lucas-romanenko/jellyfin-tentacle
+          # vX.Y.Z -> X.Y.Z, X.Y and latest; a pre-release (v2.0.0-rc.1)
+          # gets only its own tag and never moves latest
+          flavor: |
+            latest=auto
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
 
@@ -46,6 +61,6 @@ jobs:
           # Stamp the image so /api/version can say which commit it is.
           build-args: |
             TENTACLE_COMMIT=${{ github.sha }}
-            TENTACLE_BUILD_DATE=${{ github.event.head_commit.timestamp || github.event.repository.pushed_at }}
+            TENTACLE_BUILD_DATE=${{ github.event.head_commit.timestamp || github.event.release.published_at || github.event.repository.pushed_at }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

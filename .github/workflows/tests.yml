@@ -1,8 +1,9 @@
 name: Tests
 
+# every push (any branch or tag) and every pull request; publishing is
+# separate (docker-publish.yml, docs.yml: releases only)
 on:
   push:
-    branches: [main]
   pull_request:
 
 jobs:
