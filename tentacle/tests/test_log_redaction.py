@@ -65,6 +65,48 @@ class TestTheAppKeepsCredentialsOutOfTheLog(unittest.TestCase):
             acc.removeHandler(h); acc.setLevel(old)
         self.assertNotIn("JellyfinTok3n", " ".join(seen))
 
+    def test_a_real_webhook_call_through_uvicorn(self):
+        # As in the container: uvicorn's own logging config and access
+        # formatter, a real HTTP request, the webhook secret in the query
+        # string as Radarr and Sonarr send it.
+        import threading
+        import time
+        import urllib.request
+        import uvicorn
+        from fastapi import FastAPI
+        from uvicorn.logging import AccessFormatter
+        import main  # noqa: F401  (installs the redaction as the container does)
+
+        app = FastAPI()
+
+        @app.post("/api/radarr/webhook")
+        def hook():
+            return {"ok": True}
+
+        server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=0))
+        t = threading.Thread(target=server.run, daemon=True)
+        t.start()
+        stream = io.StringIO()
+        h = logging.StreamHandler(stream)
+        h.setFormatter(AccessFormatter('%(client_addr)s - "%(request_line)s" %(status_code)s',
+                                       use_colors=False))
+        try:
+            deadline = time.monotonic() + 10
+            while not server.started and time.monotonic() < deadline:
+                time.sleep(0.05)
+            port = server.servers[0].sockets[0].getsockname()[1]
+            logging.getLogger("uvicorn.access").addHandler(h)
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/radarr/webhook?secret=Hunter2pw",
+                data=b'{"eventType": "Test"}', headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=5).read()
+        finally:
+            logging.getLogger("uvicorn.access").removeHandler(h)
+            server.should_exit = True
+            t.join(5)
+        self.assertIn('"POST /api/radarr/webhook?secret=*** HTTP/1.1" 200', stream.getvalue())
+        self.assertNotIn("Hunter2pw", stream.getvalue())
+
 
 class TestLogRedaction(unittest.TestCase):
     @classmethod
@@ -98,7 +140,8 @@ class TestLogRedaction(unittest.TestCase):
 
     def test_query_string_secrets(self):
         for q in ("password=Hunter2pw", "api_key=Hunter2pw", "token=Hunter2pw",
-                  "X-Emby-Token=Hunter2pw", "secret=Hunter2pw"):
+                  "X-Emby-Token=Hunter2pw", "secret=Hunter2pw", "webhook_secret=Hunter2pw",
+                  "X-Tentacle-Secret=Hunter2pw", "apiKey=Hunter2pw", "key=Hunter2pw"):
             with self.subTest(q=q), _Capture("services.m3u_parser") as c:
                 logging.getLogger("services.m3u_parser").info(
                     "Downloading %s", f"http://p/get.php?username=alice&{q}&type=m3u_plus")

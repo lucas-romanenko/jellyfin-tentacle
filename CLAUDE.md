@@ -104,12 +104,33 @@ Clone at `/code/jellyfin-tentacle` on the workbench; work in a worktree on a
 branch, merge to main, push (the workbench's workflow). Tests:
 
 ```
-scripts/check    # the full unit suite, as CI runs it (a venv cached in ~/.cache/jellyfin-tentacle)
+make check       # = scripts/check: the full unit suite, as CI runs it (a venv cached in ~/.cache/jellyfin-tentacle)
 ```
 
-The workbench's pre-push hook runs `scripts/check` before main moves (about
+The workbench's pre-push hook runs the check before main moves (about
 4 min). CI (`tests.yml`) runs the same suite on every push and pull request.
 Merging to main publishes nothing (see below).
+
+Every coding task ends, after main is pushed, with:
+
+```
+make deploy      # run the current origin/main on Lucas's server (app; the plugin only if tentacle-plugin/ changed)
+make verify      # healthy, /api/version = the deployed commit; a deployed plugin is Active in Jellyfin
+```
+
+Both must pass; report their output. This is private: the image is built
+on the server itself, nothing goes to a registry or a release, and other
+installs are untouched. `make deploy-release` switches Lucas's server back
+to the latest public release (image `latest`, and the released plugin if a
+private build is installed). The targets call a private script that knows
+the server (outside this repo; `TENTACLE_DEPLOY` in the Makefile names it).
+A private plugin build is versioned `<newest release>.<commit count>` (e.g.
+`2.270.0.1189`), so the next real plugin release supersedes it.
+
+Logs: `services/log_redaction.py` strips credentials from every log record
+(uvicorn's access log included): Xtream paths and any query parameter
+named like a secret (`*secret*`, `*token*`, `*password*`, `*api_key*`,
+`key`, ...). A new credential in a URL needs such a name, or a rule there.
 
 ## Releasing is Lucas's decision
 
