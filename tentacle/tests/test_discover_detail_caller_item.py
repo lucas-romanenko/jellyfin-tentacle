@@ -8,7 +8,8 @@ profile Jellyfin hides the item from (parental rating, blocked tags, library
 access), the web page and the TV app already fail to open it (they look it
 up as that user), but the id was still in the reply. The id is now
 confirmed as the caller (GET /Items/{id}?userId=<caller>, 404 = hidden) and
-left out when Jellyfin hides the item or can't answer. The configured user
+left out when Jellyfin hides the item or can't answer; in_library is
+unchanged. The configured user
 skips the check; answers are cached per caller and item for 10 minutes.
 """
 import unittest
@@ -50,6 +51,7 @@ class CallerScopedItemId(_lib.TestDiscoverDetail):
             d = self.detail("movie", 603)
         self.assertIsNone(d["jellyfin_item_id"])
         self.assertNotIn("jellyfin_url", d)
+        self.assertTrue(d["in_library"], "in library as before; only the id is left out")
         self.assertEqual(f"{JF_URL}/Items/item-1", get.call_args.args[0])
         self.assertEqual({"userId": "restricted"}, get.call_args.kwargs["params"])
         self.assertEqual("item-1", self.stored_id(Movie, 603), "the stored id is not changed")

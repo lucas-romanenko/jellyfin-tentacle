@@ -587,14 +587,13 @@ def get_discover_detail(
         )
         stored_id = None
     resolved_id = live_id or stored_id
-    if resolved_id and not _caller_can_open(db, request, resolved_id):
-        # Jellyfin hides this item from the caller (parental rating, blocked
-        # tags, library access): no id to open it by. in_library stays as the
-        # catalogue has it.
-        resolved_id = None
     if resolved_id:
-        details["jellyfin_item_id"] = resolved_id
-        details["jellyfin_url"] = _jellyfin_web_url(db, resolved_id)
+        # Only a caller Jellyfin shows the item to gets an id to open it by
+        # (parental rating, blocked tags, library access); in_library and the
+        # stored id follow Jellyfin as before.
+        if _caller_can_open(db, request, resolved_id):
+            details["jellyfin_item_id"] = resolved_id
+            details["jellyfin_url"] = _jellyfin_web_url(db, resolved_id)
         if db_item is not None and getattr(db_item, "jellyfin_item_id", None) != resolved_id:
             try:
                 db_item.jellyfin_item_id = resolved_id
