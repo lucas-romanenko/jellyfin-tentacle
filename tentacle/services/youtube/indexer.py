@@ -766,17 +766,38 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
                 _detail_pause()
                 continue
             if vid in placeholders:
-                title = _usable_title(entry.get("title"), vid)
-                # Details only when the listing gave no title at all. A listing
-                # that names the video by its id (or "[Private video]") has
-                # nothing better behind it, and re-fetching such a row on
-                # every run would spend the rate-limited budget for nothing.
-                if not title and not entry.get("title") and repairs_left > 0:
+                listed = (entry.get("title") or "").strip()
+                title = _usable_title(listed, vid)
+                # Details only when the listing gave no title at all, or marks
+                # the entry "[Private video]" / "[Deleted video]". A listing that
+                # names the video by its id has nothing better behind it, and
+                # re-fetching such a row on every run would spend the
+                # rate-limited budget for nothing.
+                if not title and (not listed or _UNAVAILABLE_TITLE_RE.match(listed)) and repairs_left > 0:
                     repairs_left -= 1
                     try:
                         title = _usable_title(_details(vid).get("title"), vid)
-                    except YouTubeBlocked:
+                    except YouTubeBlocked as e:
+                        _mark_blocked(db, channel, e)
                         raise
+                    except VideoUnavailable:
+                        # Gone from YouTube: out of the library, the way a new
+                        # video that can't be read is skipped, and read again
+                        # later (restored if it plays). Only its title used to be
+                        # looked for, so a dead placeholder stayed in every
+                        # user's row for ever and cost a read on every run (#275).
+                        from services.youtube import library
+                        row = placeholders[vid]
+                        library.remove_video(row)
+                        row.strm_path = None
+                        row.removed_at = now
+                        _retry_later(row, UNAVAILABLE_REASON)
+                        db.commit()
+                        _note_skip(UNAVAILABLE_REASON)
+                        logger.info(f"[YouTube] {vid} ('{row.title}') is no longer on YouTube; "
+                                    f"taken out of '{channel.title}'")
+                        _detail_pause()
+                        continue
                     except YouTubeError as e:
                         logger.debug(f"[YouTube] Could not re-read the title of {vid}: {e}")
                     _detail_pause()
