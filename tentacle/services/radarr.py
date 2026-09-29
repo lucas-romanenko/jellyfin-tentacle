@@ -5,6 +5,7 @@ and writes NFO files with tags for Jellyfin.
 """
 
 import logging
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -141,6 +142,14 @@ def file_loss_looks_like_an_outage(lost: int, total: int) -> bool:
     """
     return lost >= 3 and lost * 2 > total
 
+# One Radarr scan at a time (#268). A scan loads every row, asks TMDB about
+# each new title and commits once, so two overlapping scans (two webhooks for
+# different movies, a webhook during the nightly scan, "Scan now") both added
+# the same new movie, and the second failed on UNIQUE(tmdb_id) and lost all
+# its work. A waiting scan re-reads the rows, so it sees the first one's.
+_scan_lock = threading.Lock()
+
+
 def scan_radarr_library(db: Session) -> dict:
     """
     Scan Radarr library and:
@@ -148,6 +157,11 @@ def scan_radarr_library(db: Session) -> dict:
     2. Write NFO files with tags for Jellyfin to read
     3. Detect duplicates with VOD content
     """
+    with _scan_lock:
+        return _scan_radarr_library(db)
+
+
+def _scan_radarr_library(db: Session) -> dict:
     radarr_url = get_setting(db, "radarr_url")
     radarr_key = get_setting(db, "radarr_api_key")
 

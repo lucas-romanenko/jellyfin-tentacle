@@ -5,6 +5,7 @@ and writes NFO files with tags for Jellyfin.
 """
 
 import logging
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -531,6 +532,11 @@ class SonarrService:
             return []
 
 
+# One Sonarr scan at a time, like Radarr's (#268): the webhook worker, the
+# nightly scan and "Scan now" could overlap and both insert a new series.
+_scan_lock = threading.Lock()
+
+
 def scan_sonarr_library(db: Session) -> dict:
     """
     Scan Sonarr library and:
@@ -538,6 +544,11 @@ def scan_sonarr_library(db: Session) -> dict:
     2. Write NFO files with tags for Jellyfin to read
     3. Detect duplicates with VOD content
     """
+    with _scan_lock:
+        return _scan_sonarr_library(db)
+
+
+def _scan_sonarr_library(db: Session) -> dict:
     sonarr_url = get_setting(db, "sonarr_url")
     sonarr_key = get_setting(db, "sonarr_api_key")
 
