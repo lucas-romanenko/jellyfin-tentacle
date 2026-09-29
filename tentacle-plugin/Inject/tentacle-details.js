@@ -2907,7 +2907,15 @@ var Details = {
                         fetch(serverUrl + '/Playlists/' + playlistId + '/Items?Ids=' + item.Id + '&UserId=' + userId, {
                             method: 'POST',
                             headers: headers
-                        }).then(function() {
+                        }).then(function(resp) {
+                            // fetch resolves on any status. The list holds every playlist
+                            // the user can see, including another user's public one, which
+                            // Jellyfin refuses with 403: that was reported as added (#279).
+                            if (resp.status === 403) {
+                                self.showToast("You can't add to this playlist");
+                                return;
+                            }
+                            if (!resp.ok) throw new Error('HTTP ' + resp.status);
                             self.showToast('Added to playlist');
                         }).catch(function(err) {
                             console.error('[Moonfin] Details: Failed to add to playlist', err);
