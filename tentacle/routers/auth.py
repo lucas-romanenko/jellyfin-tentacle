@@ -123,6 +123,8 @@ def _issue_session(db: Session, user: TentacleUser) -> str:
 
 # How long a session trusts the admin / disabled state it last saw in Jellyfin.
 _SESSION_RECHECK_SECONDS = 300
+# After an answer that could not be read, ask Jellyfin again this much later.
+_SESSION_RETRY_SECONDS = 60
 _session_checks: dict = {}  # jellyfin_user_id -> monotonic time of last good check
 
 
@@ -155,7 +157,18 @@ def _refresh_from_jellyfin(db: Session, user: TentacleUser) -> bool:
         return False
     if r.status_code != 200:
         return True
-    policy = (r.json() or {}).get("Policy") or {}
+    try:
+        body = r.json()
+    except ValueError:
+        body = None
+    if not isinstance(body, dict):
+        # A login page from an SSO proxy, a truncated reply while Jellyfin
+        # restarts: as good as "down". Keep the last known state, and don't
+        # ask again on every request (ask again in a minute).
+        logger.warning(f"Could not re-check {user.display_name}: Jellyfin answered HTTP 200 without a JSON user")
+        _session_checks[user.jellyfin_user_id] = now - _SESSION_RECHECK_SECONDS + _SESSION_RETRY_SECONDS
+        return True
+    policy = body.get("Policy") or {}
     if policy.get("IsDisabled"):
         _session_checks.pop(user.jellyfin_user_id, None)
         return False
