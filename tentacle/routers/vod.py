@@ -393,7 +393,9 @@ async def vod_head(kind: str, token_file: str, request: Request, db: Session = D
         finally:
             await resp.aclose()
     except httpx.HTTPError as e:
-        raise HTTPException(502, f"The provider did not answer: {e}")
+        # The error type only: an httpx error's text can carry the request
+        # URL, whose path holds the provider account.
+        raise HTTPException(502, f"The provider did not answer: {type(e).__name__}")
     finally:
         await client.aclose()
 
