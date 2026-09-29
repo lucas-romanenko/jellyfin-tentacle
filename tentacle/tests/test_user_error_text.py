@@ -98,6 +98,20 @@ class GrabText(_Db):
         self.assertIn("ConnectionError", str(ctx.exception))
 
 
+class ReplaceCopyText(_Db):
+    def test_replace_when_radarr_is_down(self):
+        from routers import library
+        from services import bad_copy
+        self.db.add(mdb.DownloadRequest(tmdb_id=42, media_type="movie", user_id=self.user.id))
+        self.db.commit()
+        with mock.patch.object(bad_copy.requests, "request", side_effect=ERR):
+            with self.assertRaises(HTTPException) as ctx:
+                library.replace_copy("movie", 42, library.ReplaceCopyBody(), db=self.db, user=self.user)
+        self.assertEqual(502, ctx.exception.status_code)
+        self.assertNotIn(ADDR, ctx.exception.detail)
+        self.assertIn("ConnectionError", ctx.exception.detail)
+
+
 class ActivityProblems(unittest.TestCase):
     def test_detail_only_for_admins(self):
         import inspect
