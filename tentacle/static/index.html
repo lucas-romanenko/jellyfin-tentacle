@@ -1476,6 +1476,15 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 .dl-item-bar-fill { height: 100%; border-radius: 2px; background: var(--accent); transition: width 0.5s ease; }
 .dl-item-pct { font-size: 11px; color: var(--text3); font-family: 'DM Mono', monospace; min-width: 36px; text-align: right; }
 .dl-requested-by { font-size: 11px; color: var(--text3); background: var(--bg3); padding: 2px 8px; border-radius: 4px; white-space: nowrap; }
+/* Phones: the title gets a line of its own, status, bar and percent go below
+   it. In one row the title was the only item allowed to shrink and ended at
+   0 px wide (#280). */
+@media (max-width: 600px) {
+  .dl-item { flex-wrap: wrap; row-gap: 6px; }
+  .dl-item-title { flex: 1 1 100%; }
+  .dl-item-status { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .dl-item-bar { flex: 1; width: auto; min-width: 40px; }
+}
 
 /* ── Mobile menu button + off-canvas backdrop (hidden on desktop) ── */
 .mobile-menu-btn {
