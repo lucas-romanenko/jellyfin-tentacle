@@ -786,6 +786,9 @@ app.include_router(livetv_router.router)
 app.add_exception_handler(livetv_router._TunerRefusal, livetv_router.tuner_refusal_handler)
 from routers import vod as vod_router
 app.include_router(vod_router.router)
+# A VOD range ended on purpose (a seek) closes its connection through an
+# exception uvicorn would log as a crash (#285).
+logging.getLogger("uvicorn.error").addFilter(vod_router.EarlyRangeEndFilter())
 app.include_router(notifications_router.router)
 app.include_router(health_router.router)
 app.include_router(youtube_router.router)
@@ -989,6 +992,12 @@ async def global_exception_handler(request: Request, exc: Exception):
     # Log the full detail server-side, but return a generic message to the client
     # so internal paths, library/version info, or secrets in exception text aren't
     # leaked to callers.
+    from routers.vod import is_early_range_end
+    if is_early_range_end(exc):
+        # A VOD range ended on purpose below its Content-Length (a seek);
+        # the server closes that connection, which is the point (#285).
+        logger.debug(f"{request.method} {request.url.path}: range ended early on purpose; connection closed")
+        return JSONResponse(status_code=500, content={"detail": "Internal server error"})
     logger.error(f"Unhandled exception on {request.method} {request.url.path}: {exc}", exc_info=True)
     return JSONResponse(
         status_code=500,

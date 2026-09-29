@@ -64,6 +64,37 @@ def idle_seconds(db) -> float:
         return DEFAULT_IDLE_SECONDS
 
 
+def _leaf_exceptions(exc):
+    subs = getattr(exc, "exceptions", None)
+    if not subs:
+        return [exc]
+    return [leaf for sub in subs for leaf in _leaf_exceptions(sub)]
+
+
+def is_early_range_end(exc) -> bool:
+    """Whether `exc` is only the server refusing to finish a body that ended
+    below its Content-Length: a VOD range ended on purpose (a seek superseded
+    it, the playback was pre-empted, a resume was given up). The provider's
+    Content-Length is passed on, so the server raises, and closing the
+    connection is exactly what tells that player its range is over (#285).
+    h11 says "Too little data for declared Content-Length"; httptools
+    "Response content shorter than Content-Length"."""
+    if exc is None:
+        return False
+    leaves = _leaf_exceptions(exc)
+    return all("Too little data for declared Content-Length" in str(e)
+               or "Response content shorter than Content-Length" in str(e) for e in leaves)
+
+
+class EarlyRangeEndFilter(logging.Filter):
+    """Drops uvicorn's "Exception in ASGI application" traceback for an early
+    range end; the connection still closes (the exception still reaches it)."""
+
+    def filter(self, record):
+        exc = record.exc_info[1] if record.exc_info else None
+        return not is_early_range_end(exc)
+
+
 class _VodResponse(StreamingResponse):
     """A streaming response whose cleanup is tied to the RESPONSE, not to
     the generator's `finally` or a background task: when the client hangs
