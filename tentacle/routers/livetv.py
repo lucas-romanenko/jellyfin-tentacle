@@ -137,15 +137,42 @@ def _raw_retryable(status) -> bool:
 # ({"error":"There is an Database Error",...}, an HTML page). A raw connection
 # whose first bytes are not an MPEG-TS sync byte and that is labelled as text,
 # or starts like JSON/HTML, is such a page: never proxied, waited out like a
-# refusal. Real TS always starts with 0x47, whatever its label says.
+# refusal. Real TS always starts with 0x47, whatever its label says -- or,
+# when a connection starts mid-packet (its first byte can be anything, "{" and
+# "<" included), shows the sync byte every 188 bytes from within the first
+# packet.
 _NOT_MEDIA_TYPES = ("text/html", "application/json", "text/plain", "application/xml", "text/xml")
 
 
 def _looks_like_error_page(content_type: str, first: bytes) -> bool:
     if first[:1] == b"G":
         return False
+    if any(first[k] == first[k + 188] == first[k + 376] == 0x47 for k in range(min(188, len(first) - 376))):
+        return False
     ct = (content_type or "").lower()
     return any(t in ct for t in _NOT_MEDIA_TYPES) or first.lstrip()[:1] in (b"{", b"<")
+
+
+async def _decidable_start(pieces, need: int = 565):
+    """The connection's pieces, the first ones merged until the start can be
+    judged: it begins with the sync byte, or holds three packets' worth (a
+    stream that starts mid-packet shows 0x47 every 188 bytes), or the
+    connection ended (an error page is short)."""
+    head = b""
+    try:
+        async for piece in pieces:
+            if head is not None:
+                head += piece
+                if head[:1] != b"G" and len(head) < need:
+                    continue
+                piece, head = head, None
+            yield piece
+    except httpx.HTTPError:
+        if head:
+            yield head      # what came before the drop still counts
+        raise
+    if head:
+        yield head
 
 
 def _raw_media_type(content_type: str) -> str:
@@ -3901,7 +3928,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     try:
                         last_mark = loop.time()
                         last_piece = None
-                        async for piece in raw_resp.aiter_bytes():
+                        async for piece in _decidable_start(raw_resp.aiter_bytes()):
                             if conn_first:
                                 conn_first = False
                                 if _looks_like_error_page(conn_ct, piece):
@@ -3950,7 +3977,10 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     cut = len(pending) - (len(pending) % 188) if align else len(pending)
                     if cut:
                         yield pending[:cut]
-                    if loop.time() - opened_at >= HEALTHY_AFTER:
+                    # A recovery only if it delivered: an error page (or nothing)
+                    # that took a while to come is still a failure, or a viewer's
+                    # budget would never run out.
+                    if last_piece is not None and loop.time() - opened_at >= HEALTHY_AFTER:
                         failing_since, slept, backoff, backoff_cap = None, 0.0, 1.0, _BACKOFF_CAP
                     if dropped_at is None:      # else: the outage never ended
                         dropped_at = loop.time()
