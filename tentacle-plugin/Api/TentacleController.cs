@@ -33,6 +33,7 @@ public class TentacleController : ControllerBase
     private readonly ILibraryManager _libraryManager;
     private readonly IPlaylistManager _playlistManager;
     private readonly IAuthorizationContext _authContext;
+    private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<TentacleController> _logger;
 
     public TentacleController(
@@ -41,6 +42,7 @@ public class TentacleController : ControllerBase
         ILibraryManager libraryManager,
         IPlaylistManager playlistManager,
         IAuthorizationContext authContext,
+        IHttpClientFactory httpClientFactory,
         ILogger<TentacleController> logger)
     {
         _homeScreenManager = homeScreenManager;
@@ -48,6 +50,7 @@ public class TentacleController : ControllerBase
         _libraryManager = libraryManager;
         _playlistManager = playlistManager;
         _authContext = authContext;
+        _httpClientFactory = httpClientFactory;
         _logger = logger;
     }
 
@@ -369,6 +372,67 @@ public class TentacleController : ControllerBase
     public ActionResult GetBoot()
     {
         return Ok(new { boot = Patching.IndexHtmlPatch.CacheBust });
+    }
+
+    /// <summary>
+    /// The settings page's "Test Connection": asks the Tentacle server's status from
+    /// Jellyfin's side, where the plugin makes its calls (#290). The page used to ask
+    /// from the admin's browser, which often can't resolve the server-side address
+    /// (http://tentacle:8888), is refused by Tentacle's CORS allowlist from any other
+    /// Jellyfin origin, or blocked as mixed content: "Connection failed" for a URL the
+    /// plugin uses fine. Admin only; it only ever asks {url}/api/widget/status and
+    /// answers the status fields, never the target's body.
+    /// </summary>
+    /// <param name="url">The Tentacle URL to test (the saved one when empty).</param>
+    [HttpGet("TestConnection")]
+    [Authorize(Policy = "RequiresElevation")]
+    public async Task<ActionResult> TestConnection([FromQuery] string? url)
+    {
+        var target = (string.IsNullOrWhiteSpace(url) ? Plugin.Instance?.Configuration?.TentacleUrl : url)?.Trim().TrimEnd('/');
+        if (string.IsNullOrEmpty(target)
+            || !Uri.TryCreate(target, UriKind.Absolute, out var baseUri)
+            || (baseUri.Scheme != Uri.UriSchemeHttp && baseUri.Scheme != Uri.UriSchemeHttps))
+        {
+            return BadRequest(new { error = "Enter an http:// or https:// URL" });
+        }
+
+        var client = _httpClientFactory.CreateClient();
+        client.Timeout = TimeSpan.FromSeconds(5);
+        try
+        {
+            using var response = await client.GetAsync(target + "/api/widget/status", HttpContext.RequestAborted).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                return StatusCode(502, new { error = $"Tentacle answered HTTP {(int)response.StatusCode}" });
+            }
+
+            var text = await response.Content.ReadAsStringAsync(HttpContext.RequestAborted).ConfigureAwait(false);
+            using var doc = System.Text.Json.JsonDocument.Parse(text);
+            var root = doc.RootElement;
+            long Count(string name) =>
+                root.TryGetProperty(name, out var v) && v.ValueKind == System.Text.Json.JsonValueKind.Number && v.TryGetInt64(out var n) ? n : 0;
+            if (root.ValueKind != System.Text.Json.JsonValueKind.Object || !root.TryGetProperty("status", out _))
+            {
+                throw new System.Text.Json.JsonException("no status field");
+            }
+
+            string? lastSync = root.TryGetProperty("last_sync", out var ls) && ls.ValueKind == System.Text.Json.JsonValueKind.String ? ls.GetString() : null;
+            return Ok(new { movies = Count("movies"), series = Count("series"), last_sync = lastSync });
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return StatusCode(502, new { error = "Not a Tentacle server (the answer isn't Tentacle's status)" });
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            if (HttpContext.RequestAborted.IsCancellationRequested)
+            {
+                throw;
+            }
+
+            var reason = ex is TaskCanceledException ? "Timed out after 5 s" : ex.Message;
+            return StatusCode(502, new { error = "Jellyfin can't reach it: " + reason });
+        }
     }
 
     /// <summary>

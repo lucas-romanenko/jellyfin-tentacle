@@ -59,6 +59,7 @@ Gotchas:
 | POST | `/Tentacle/Playlists/PruneDead` | admin | PruneDeadPlaylistEntries |  |
 | POST | `/Tentacle/Playlists/{playlistId}/Items/{entryId}/Move/{newIndex}` | user | MovePlaylistItem |  |
 | POST | `/Tentacle/Refresh` | admin | Refresh | yes |
+| GET | `/Tentacle/TestConnection` | admin | TestConnection |  |
 | GET | `/Tentacle/Tmdb/EpisodeRating` | user | GetEpisodeRating |  |
 | GET | `/Tentacle/Tmdb/SeasonRatings` | user | GetSeasonRatings |  |
 | GET | `/Tentacle/details.css` | none | GetDetailsCss |  |
