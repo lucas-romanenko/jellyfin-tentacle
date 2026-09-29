@@ -5889,6 +5889,25 @@ async function fillSetupUrls() {
       document.getElementById('live-setup-host').value = savedHost;
       document.getElementById('live-setup-port').value = savedPort || '8888';
       showSetupLocked();
+    } else if (!document.getElementById('live-setup-host').value) {
+      // Nothing saved: prefill (never save) the address Jellyfin reaches
+      // Tentacle on, as the YouTube page detects it, so the steps below
+      // never hand out http://localhost -- in Docker that is Jellyfin
+      // itself (#291). Saving stays the admin's click.
+      let detected = '';
+      try {
+        const st = await api('/api/youtube/status');
+        detected = (st && st.suggested_base_url) || '';
+      } catch (e) {}
+      let host = '', port = '';
+      try {
+        if (detected) { const u = new URL(detected); host = u.hostname; port = u.port; }
+      } catch (e) {}
+      if (!host) host = location.hostname;
+      document.getElementById('live-setup-host').value = host;
+      if (port) document.getElementById('live-setup-port').value = port;
+      document.getElementById('live-setup-detected').textContent =
+        detected ? 'Detected: check it, then Save' : 'From this browser: check it, then Save';
     }
   } catch (e) {}
   updateSetupUrls();
@@ -5900,6 +5919,7 @@ async function saveSetupAddress() {
   if (!host) { toast('Enter the server IP address', 'error'); return; }
   try {
     await api('/api/settings', { method: 'POST', body: { settings: { live_setup_host: host, live_setup_port: port } } });
+    document.getElementById('live-setup-detected').textContent = '';
     showSetupLocked();
     toast('Server address saved');
   } catch (e) { toast(e.message, 'error'); }
@@ -5919,7 +5939,7 @@ function showSetupLocked() {
 }
 
 function getSetupBase() {
-  const host = document.getElementById('live-setup-host').value || 'localhost';
+  const host = document.getElementById('live-setup-host').value || location.hostname || 'localhost';
   const port = document.getElementById('live-setup-port').value || '8888';
   return `http://${host}:${port}`;
 }
