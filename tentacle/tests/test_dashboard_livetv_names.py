@@ -66,5 +66,12 @@ class LiveTvNames(unittest.TestCase):
             self.assertEqual(msg, Page(html["live-test-result"][-1]).text)
 
 
+    def test_migrate_provider_names(self):
+        src = ESC + "const state = {providers: null}; function showModal() {}\n" + functions("pages.js", ["showMigrate"])
+        provs = [{"id": i, "name": n} for i, n in enumerate(NAMES)]
+        html = render(src, "API['/api/providers'] = %s;" % json.dumps(provs), "await showMigrate()")
+        self.assertEqual(NAMES, [t for t in Page(html["migrate-from"][-1]).texts if t.strip()])
+
+
 if __name__ == "__main__":
     unittest.main()
