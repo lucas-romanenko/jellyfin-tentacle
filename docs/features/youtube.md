@@ -76,6 +76,10 @@ presses play.
     A Live TV channel always polls `/streams` regardless, since that is how
     Tentacle knows what is on air — but that alone never adds finished
     broadcasts to the library.
+
+    A channel that only ever streams (or only posts Shorts) has no Videos tab
+    on YouTube at all. It can be added like any other: its finished streams
+    become its library, and its Shorts too when **Shorts** is ticked.
 | Skip shorter than | 60s | Ignores Shorts-length clips |
 | Start with | 30 | How many existing videos to pick up when you add the channel |
 | Show newest | 200 | How many stay listed; older ones drop off the library |

@@ -159,6 +159,29 @@ def parse_input_url(url: str) -> dict:
     raise ValueError("Not a YouTube channel or playlist URL")
 
 
+# yt-dlp's answer for a tab the channel doesn't have: a channel that only
+# streams has no Videos tab (Home and Live only), a Shorts-only one has Home and
+# Shorts. That is an empty tab, not a failed listing (#277).
+_NO_TAB_RE = re.compile(r"does not have an? (\w+) tab", re.IGNORECASE)
+
+
+def _missing_tab(error: Exception) -> bool:
+    return bool(_NO_TAB_RE.search(str(error)))
+
+
+def _list_tab(url: str, limit: int) -> dict:
+    """A tab's flat listing; a tab the channel does not have lists nothing."""
+    try:
+        return client.flat_listing(url, limit)
+    except YouTubeBlocked:
+        raise
+    except YouTubeError as e:
+        if not _missing_tab(e):
+            raise
+        logger.info(f"[YouTube] {url}: the channel has no such tab; nothing to list there")
+        return {"entries": []}
+
+
 def resolve_channel(url: str) -> dict:
     """One listing call to learn a channel's identity and artwork."""
     parsed = parse_input_url(url)
@@ -166,7 +189,31 @@ def resolve_channel(url: str) -> dict:
     if parsed["kind"] == "channel":
         listing_url = listing_url.rstrip("/") + "/videos"
 
-    info = client.flat_listing(listing_url, 1)
+    has_videos_tab = True
+    try:
+        info = client.flat_listing(listing_url, 1)
+    except YouTubeBlocked:
+        raise
+    except YouTubeError as e:
+        # A channel that only streams (or only posts Shorts) has no Videos tab.
+        # Its identity comes from a tab it does have, and it is added with no
+        # uploads, so its finished streams are its library (#277).
+        if parsed["kind"] != "channel" or not _missing_tab(e):
+            raise
+        info = None
+        for tab in ("streams", "shorts"):
+            try:
+                info = client.flat_listing(parsed["canonical"].rstrip("/") + "/" + tab, 1)
+                break
+            except YouTubeBlocked:
+                raise
+            except YouTubeError as e2:
+                if not _missing_tab(e2):
+                    raise
+        if info is None:
+            raise
+        info = dict(info, entries=[])
+        has_videos_tab = False
     if parsed["kind"] == "playlist":
         # A playlist listing names its owner in "channel"; the playlist's own
         # name is "title". Titling it by the owner made every playlist of a
@@ -188,6 +235,7 @@ def resolve_channel(url: str) -> dict:
         # broadcasts live has an empty one, and needs its finished streams kept
         # instead or its library is empty — decided here so nobody has to know.
         "has_uploads": bool(info.get("entries")),
+        "has_videos_tab": has_videos_tab,
         "channel_id": info.get("channel_id") or parsed.get("channel_id"),
         "handle": parsed.get("handle"),
         "playlist_id": parsed.get("playlist_id"),
@@ -515,7 +563,7 @@ def _light_check(db: Session, channel: YouTubeChannel, known: set):
     listed_status = {}
     if channel.live_enabled and not feeds.api_available():
         for url in [u for u in _tab_urls(channel) if u.endswith("/streams")]:
-            info = client.flat_listing(url, LIVE_PEEK)
+            info = _list_tab(url, LIVE_PEEK)
             for entry in (info.get("entries") or []):
                 if entry.get("id"):
                     listed_status[entry["id"]] = entry.get("live_status")
@@ -632,7 +680,7 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
     listing: dict = {}
     try:
         for url in _tab_urls(channel):
-            info = client.flat_listing(url, min(limit, tab_limit(channel, url)))
+            info = _list_tab(url, min(limit, tab_limit(channel, url)))
             tab = url.rsplit("/", 1)[-1] if "/playlist?" not in url else "playlist"
             library_tab = not (tab == "streams" and not channel.include_streams)
             count = 0

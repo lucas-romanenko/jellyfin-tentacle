@@ -751,9 +751,10 @@ def diagnose(request: Request, db: Session = Depends(get_db)):
             # "Nothing to show" has two opposite causes. Say which one this is
             # rather than listing every setting and leaving the user to guess.
             if not ch.include_videos:
-                fix = ("'Videos' is turned off for this channel, so its uploads are never "
-                       "looked at — only its live streams. Turn Videos on and press "
-                       "'Refresh now'.")
+                # Set on add for a channel with no Videos tab on YouTube (#277).
+                fix = (f"'{ch.title}' has no Videos tab on YouTube (it only streams, or only "
+                       f"posts Shorts), so its finished streams are its library. If none have "
+                       f"been found yet, press 'Check for new videos'.")
             elif not listing.get("videos"):
                 fix = (f"YouTube's Videos tab for '{ch.title}' returned nothing — the channel "
                        f"may only ever broadcast live. Its finished streams are kept instead "
@@ -1071,9 +1072,11 @@ def add_channel(body: ChannelCreate, request: Request, db: Session = Depends(get
         handle=info.get("handle"), playlist_id=info.get("playlist_id"),
         title=title, slug=slug,
         avatar_url=info.get("avatar_url"), banner_url=info.get("banner_url"),
-        include_videos=True,
-        # A channel that only ever broadcasts live has an empty uploads tab;
-        # keeping its finished streams is the only way it has a library at all.
+        # A channel that only streams or only posts Shorts has no Videos tab at
+        # all; asking for it on every refresh would only ever list nothing (#277).
+        include_videos=info.get("has_videos_tab", True),
+        # A channel that only ever broadcasts live has no uploads; keeping its
+        # finished streams is the only way it has a library at all.
         # Decided here so nobody has to know such channels exist.
         include_streams=not info.get("has_uploads", True),
         include_shorts=body.include_shorts,
