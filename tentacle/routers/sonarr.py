@@ -242,7 +242,10 @@ def sonarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
                 emit_library_event("series_removed", {"tmdb_id": tmdb_id, "title": title, "media_type": "series"})
                 log_activity(db, "sonarr_remove", f"Removed '{title}' from Sonarr library")
                 from routers.library import _cleanup_playlists_all_users
-                threading.Thread(target=_cleanup_playlists_all_users, args=(tmdb_id, "series"), daemon=True).start()
+                # Sonarr's folder: the clean-up removes that copy only, never the
+                # VOD one "first with this TMDB id" (#296)
+                threading.Thread(target=_cleanup_playlists_all_users, args=(tmdb_id, "series"),
+                                 kwargs={"arr_folder": series_data.get("path")}, daemon=True).start()
             logger.info(f"[Sonarr webhook] SeriesDelete for '{title}' (tmdb:{tmdb_id}) — removed {deleted} from DB")
         return {"status": "deleted", "tmdb_id": tmdb_id}
 

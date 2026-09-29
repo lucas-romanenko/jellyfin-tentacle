@@ -374,9 +374,23 @@ def _arr_copy_in_jellyfin(jf, tmdb_id: int, media_type: str, arr_folder: str) ->
         if path.lower().endswith(".strm"):
             continue
         folder = path.replace("\\", "/").rsplit("/", 1)[0] if media_type == "movie" else path
-        if want and _path_tail(folder, 1) == want:
+        if want and _path_tail(folder, 1) == want and (media_type == "movie" or _has_downloaded_episode(jf, item["Id"])):
             return item["Id"]
     return None
+
+
+def _has_downloaded_episode(jf, series_id: str) -> bool:
+    """A show's path is its folder, and the VOD copy's folder has the same name
+    as Sonarr's ("<Title> (<Year>)"): the download is the show with an episode
+    file that is not a .strm. A listing that fails counts as no."""
+    try:
+        data = jf._get("/Items", params={"ParentId": series_id, "Recursive": "true",
+                                         "IncludeItemTypes": "Episode", "Fields": "Path", "Limit": 50,
+                                         "EnableImages": "false", "EnableUserData": "false"})
+    except Exception:
+        return False
+    return any((e.get("Path") or "") and not (e.get("Path") or "").lower().endswith(".strm")
+               for e in ((data or {}).get("Items") or []))
 
 
 def _cleanup_playlists_all_users(tmdb_id: int, media_type: str, jellyfin_item_id: str = None,
@@ -384,7 +398,7 @@ def _cleanup_playlists_all_users(tmdb_id: int, media_type: str, jellyfin_item_id
     """Background: remove an item from all users' playlists.
 
     arr_folder: the Radarr/Sonarr folder of a deleted download. Only the item
-    in that folder is removed; "the first item with this TMDB id" can be the
+    in that folder (for a show: with a downloaded episode) is removed; "the first item with this TMDB id" can be the
     VOD copy that stays (#296)."""
     from models.database import SessionLocal
     from services.jellyfin import JellyfinService
