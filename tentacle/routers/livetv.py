@@ -3478,10 +3478,18 @@ def _select_hls_variant(playlist_text: str, base_url: str):
     return best
 
 
+def _tuner_channel(db: Session, channel_id: int):
+    """The channel the tuner may stream: one it lists. The lineup, the M3U and
+    the guide all list enabled channels only, so the stream routes answer a
+    disabled channel the same as an unknown id."""
+    return db.query(LiveChannel).filter(LiveChannel.id == channel_id,
+                                        LiveChannel.enabled == True).first()  # noqa: E712
+
+
 @router.head("/api/live/stream/{channel_id}")
 async def stream_head(channel_id: int, db: Session = Depends(get_db)):
     """HEAD handler for stream URLs — Jellyfin sends HEAD to validate before playing."""
-    channel = db.query(LiveChannel).filter(LiveChannel.id == channel_id).first()
+    channel = _tuner_channel(db, channel_id)
     if not channel:
         raise HTTPException(404, "Channel not found")
     return Response(
@@ -3505,6 +3513,10 @@ async def stream_proxy(channel_id: int, db: Session = Depends(get_db)):
       2. Proxy the HLS stream as continuous MPEG-TS bytes (fetch m3u8,
          download chunks, pipe raw bytes).
     """
+    # A channel the tuner does not list (disabled) takes no slot, stops no
+    # viewer and attaches to nothing: refuse it before anything else.
+    if not _tuner_channel(db, channel_id):
+        raise HTTPException(404, "Channel not found")
     # Already pulling this channel? Attach to it instead of opening a second
     # upstream connection for byte-identical data (recording + watching the
     # same channel is the common case). Costs the provider nothing and needs
@@ -3600,7 +3612,7 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
             sem.release_lease(lease)
 
     try:
-        channel = db.query(LiveChannel).filter(LiveChannel.id == channel_id).first()
+        channel = _tuner_channel(db, channel_id)
         if not channel:
             raise HTTPException(404, "Channel not found")
 
