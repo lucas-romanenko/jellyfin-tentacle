@@ -186,7 +186,9 @@ def _resubmit(import_id: int) -> None:
 
 
 def _song_key(song: dict) -> tuple:
-    return normalize(song["title"]), normalize(song["artist"])
+    """One song of a playlist. An export's album name counts: "Intro" on two of an
+    artist's albums is two songs (a link gives no album names)."""
+    return normalize(song["title"]), normalize(song["artist"]), normalize(song.get("album") or "")
 
 
 def resolve_job(import_id: int):
@@ -331,7 +333,9 @@ def albums_of(imp: MusicImport) -> tuple:
         if album:
             entry = albums.setdefault(album["mbid"], dict(album, cover=album.get("cover") or _cover(album["mbid"]),
                                                           songs=[]))
-            entry["songs"].append(clean_title(t["title"]))
+            song = clean_title(t["title"])
+            if song not in entry["songs"]:   # a song listed from its single and its album counts once
+                entry["songs"].append(song)
         else:
             skipped.append({"title": t["title"], "artist": t["artist"], "reason": result.get("reason") or ""})
     ordered = sorted(albums.values(), key=lambda a: (-len(a["songs"]), (a["artist"] or "").lower(), a["title"]))
