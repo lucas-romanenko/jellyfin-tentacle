@@ -15,6 +15,7 @@ import requests
 from models.database import get_db, Setting, get_setting, set_setting
 from routers.auth import require_admin, get_user_from_request
 from services.music.settings import SECRET_KEYS as MUSIC_SECRET_KEYS
+from services.secret_mask import looks_masked
 
 _log = logging.getLogger(__name__)
 
@@ -56,12 +57,17 @@ SENSITIVE_KEYS = {"tmdb_bearer_token", "tmdb_api_key", "radarr_api_key", "sonarr
 NEVER_SERVED = {"session_secret", "vod_token_secret"}
 
 
+# Passwords and shared secrets show no characters at all; API keys keep
+# their last four so the admin can tell which key is saved.
+PASSWORD_KEYS = {"navidrome_password", "music_webhook_secret", "internal_secret", "webhook_secret"}
+
+
 def _shown(result: dict) -> dict:
     """Mask the secrets in a settings listing (the proxy keeps its address)."""
     from services.secret_mask import mask, mask_url_login
     for key in SENSITIVE_KEYS:
         if result.get(key):
-            result[key] = mask(result[key])
+            result[key] = mask(result[key], whole=key in PASSWORD_KEYS)
     if result.get("youtube_proxy"):
         result["youtube_proxy"] = mask_url_login(result["youtube_proxy"])
     return result
@@ -278,7 +284,7 @@ def _trigger_post_setup_scan():
 def test_connection(body: ConnectionTest, db: Session = Depends(get_db)):
     if body.type == "tmdb":
         from services.tmdb import get_tmdb_token
-        token = body.bearer_token if (body.bearer_token and "..." not in body.bearer_token) else get_tmdb_token(db)
+        token = body.bearer_token if (body.bearer_token and not looks_masked(body.bearer_token)) else get_tmdb_token(db)
         if not token:
             raise HTTPException(400, "No TMDB token configured")
         try:
@@ -293,7 +299,7 @@ def test_connection(body: ConnectionTest, db: Session = Depends(get_db)):
             raise HTTPException(400, f"TMDB connection failed: {str(e)}")
 
     elif body.type == "mdblist":
-        key = body.api_key if (body.api_key and "..." not in body.api_key) else get_setting(db, "mdblist_api_key")
+        key = body.api_key if (body.api_key and not looks_masked(body.api_key)) else get_setting(db, "mdblist_api_key")
         if not key:
             raise HTTPException(400, "MDBList API key required")
         try:

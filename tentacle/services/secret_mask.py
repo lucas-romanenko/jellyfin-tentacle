@@ -1,8 +1,8 @@
 """How a stored secret is shown back, and how a Save recognises it unchanged.
 
-A masked value keeps only the last four characters ("••••wxyz"); a value of
-eight characters or fewer is shown as "••••" alone, so nothing short is shown
-whole. A proxy URL keeps its address and user and hides the password
+A masked API key keeps only the last four characters ("••••wxyz"); a
+password or shared secret, and any value of eight characters or fewer, is
+shown as "••••" alone. A proxy URL keeps its address and user and hides the password
 (http://user:••••@host:port).
 
 A Save that sends back exactly what was shown means "unchanged". The older
@@ -15,11 +15,12 @@ from urllib.parse import urlsplit, urlunsplit
 MASK = "••••"
 
 
-def mask(value: str) -> str:
+def mask(value: str, whole: bool = False) -> str:
+    """whole: show nothing of it (passwords, shared secrets)."""
     value = value or ""
     if not value:
         return ""
-    return MASK + value[-4:] if len(value) > 8 else MASK
+    return MASK + value[-4:] if len(value) > 8 and not whole else MASK
 
 
 def _legacy(value: str) -> str:
@@ -30,7 +31,7 @@ def is_shown_form(submitted: str, stored: str) -> bool:
     """True when `submitted` is what a masked listing showed for `stored`."""
     if not submitted or not stored:
         return False
-    return submitted in (mask(stored), _legacy(stored))
+    return submitted in (mask(stored), mask(stored, whole=True), _legacy(stored))
 
 
 def looks_masked(value: str) -> bool:

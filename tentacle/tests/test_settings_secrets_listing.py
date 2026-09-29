@@ -101,7 +101,9 @@ class Listings(_Base):
                 self.assertNotIn(value, text)
         self.assertEqual("••••" + "r" * 4, got["radarr_api_key"])
         self.assertEqual("••••", got["logodev_api_key"][:4])
-        self.assertEqual("••••", got["navidrome_password"])  # 8 characters: nothing shown
+        self.assertEqual("••••", got["navidrome_password"])
+        for key in ("internal_secret", "webhook_secret", "music_webhook_secret"):
+            self.assertEqual("••••", got[key], key)  # passwords and shared secrets: nothing shown
         self.assertEqual("http://someone:••••@gluetun:8888", got["youtube_proxy"])
 
 
@@ -126,6 +128,20 @@ class Saves(_Base):
         self.save({"radarr_api_key": "abc...xyz", "mdblist_api_key": "••••new-value"})
         self.assertEqual("abc...xyz", mdb.get_setting(self.db, "radarr_api_key"))
         self.assertEqual("••••new-value", mdb.get_setting(self.db, "mdblist_api_key"))
+
+    def test_a_password_shown_as_bullets_is_kept(self):
+        self.add_admin()
+        mdb.set_setting(self.db, "navidrome_password", "a-long-password-1")
+        self.save({"navidrome_password": settings.get_settings(self.db)["navidrome_password"]})
+        self.assertEqual("a-long-password-1", mdb.get_setting(self.db, "navidrome_password"))
+
+    def test_connection_tests_take_the_saved_key_for_a_masked_field(self):
+        from services.secret_mask import looks_masked
+        for shown in ("••••", "••••abcd", "abcd1234...wxyz"):
+            self.assertTrue(looks_masked(shown), shown)
+        self.assertFalse(looks_masked("eyJhbGciOiJIUzI1NiJ9.real"))
+        src = open(settings.__file__, encoding="utf-8").read()
+        self.assertNotIn('"..." not in body', src)
 
     def test_the_older_mask_form_still_means_unchanged(self):
         self.add_admin()
@@ -175,6 +191,8 @@ class MaskProperties(unittest.TestCase):
                 self.assertEqual("••••", shown, f"seed {seed}")
             self.assertTrue(is_shown_form(shown, value), f"seed {seed}")
             self.assertFalse(is_shown_form(value + "x", value), f"seed {seed}")
+            self.assertEqual("••••", mask(value, whole=True), f"seed {seed}")
+            self.assertTrue(is_shown_form(mask(value, whole=True), value), f"seed {seed}")
 
     def test_proxy_login_mask_and_restore(self):
         from services.secret_mask import mask_url_login, restore_url_login
