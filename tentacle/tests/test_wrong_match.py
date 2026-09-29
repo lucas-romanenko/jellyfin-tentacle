@@ -494,6 +494,23 @@ class TestSuggestions(_Base):
             r = wrong_match.suggest_matches(self.db, self.tmdb)
         self.assertEqual(36724, r["candidates"][0]["tmdb_id"], "Part II is 93 min")
 
+    def test_an_exact_length_beats_a_matching_language_that_is_only_close(self):
+        """#199, the live case: an English dub of the French film, probed at
+        83 min. Part III (English, 86 min) is "same length" too, but The
+        Decline is exactly 83: the gap decides, the language only breaks ties."""
+        with mock.patch.object(wrong_match, "probe_info", return_value={"minutes": 83, "audio_languages": ["en"]}):
+            r = wrong_match.suggest_matches(self.db, self.tmdb)
+        first, second = r["candidates"][:2]
+        self.assertEqual((674607, True, False), (first["tmdb_id"], first["runtime_matches"], first["language_matches"]))
+        self.assertEqual((44848, True, True), (second["tmdb_id"], second["runtime_matches"], second["language_matches"]))
+
+    def test_the_language_breaks_a_tie_in_length(self):
+        details = self.fake.get_movie_details
+        self.fake.get_movie_details = lambda tid: dict(details(tid), runtime=86) if tid == 674607 else details(tid)
+        with mock.patch.object(wrong_match, "probe_info", return_value={"minutes": 83, "audio_languages": ["en"]}):
+            r = wrong_match.suggest_matches(self.db, self.tmdb)
+        self.assertEqual(44848, r["candidates"][0]["tmdb_id"], "both 3 min off: the English film first")
+
     def test_the_current_film_is_never_suggested(self):
         with mock.patch.object(wrong_match, "probe_info", return_value=NO_PROBE):
             r = wrong_match.suggest_matches(self.db, self.tmdb)

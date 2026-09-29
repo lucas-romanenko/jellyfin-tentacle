@@ -507,10 +507,11 @@ def suggest_matches(db: Session, tmdb_id: int, query: Optional[str] = None) -> d
             gap = abs(c["runtime"] - actual)
         else:
             gap = 999
-        # Length first (when known), then the audio language, then how much
-        # of the label it shares, then fame.
-        return (0 if c["runtime_matches"] else 1, 0 if c["language_matches"] else 1,
-                gap if actual else 0, -c["_sim"], -c["_pop"])
+        # Length first (when known): same length, then how close; the audio
+        # language only breaks a tie in length (a single audio track is often
+        # a dub, #199); then how much of the label it shares, then fame.
+        return (0 if c["runtime_matches"] else 1, gap if actual else 0,
+                0 if c["language_matches"] else 1, -c["_sim"], -c["_pop"])
 
     candidates.sort(key=rank)
     for c in candidates:

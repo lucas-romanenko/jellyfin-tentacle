@@ -107,7 +107,7 @@ Tentacle asks **which movie it really is** and suggests candidates. Once the tit
 
 **Not sure which film it is?** Two more clues help:
 
-- **Audio language.** Jellyfin also records the language of the stream's audio. When the stream has a single audio language, films originally in that language get a **same language** badge and move up the list. A stream with several audio tracks (an original plus dubs) says little about the film, so it isn't used.
+- **Audio language.** Jellyfin also records the language of the stream's audio. When the stream has a single audio language, films originally in that language get a **same language** badge and move up the list. The length still counts first: a film of exactly the stream's length comes before one in the same language that is a few minutes off, since a single audio track is often a dub. A stream with several audio tracks (an original plus dubs) says little about the film, so it isn't used.
 - **Pictures from the stream.** **Not sure? Show pictures** grabs three stills from the stream, spread across its length, so you can see what it actually is before you pick. The pictures come straight from your provider, so they take a few seconds. If the provider only allows one stream at a time and someone is watching, try again later. They are cached for two weeks.
 
 If you still can't tell, **Leave it for now** closes the panel and changes nothing. The title stays flagged under **Library → Possible wrong movies**, so you can come back to it.
