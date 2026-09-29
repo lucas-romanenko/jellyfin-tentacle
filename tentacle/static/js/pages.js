@@ -7216,7 +7216,7 @@ async function loadHealthDeletions() {
       const meta = _DELETION_KIND_META[e.kind] || { label: e.kind, cls: 'badge-accent' };
       const d = _healthDate(e.created_at);
       const when = d ? `<span title="${d.toLocaleString()}">${timeAgo(d)}</span>` : '—';
-      const who = e.reason === 'manual' && e.user_name ? escapeHtml(e.user_name) : e.reason;
+      const who = e.reason === 'manual' && e.user_name ? e.user_name : e.reason;
       return `<tr>
         <td style="white-space:nowrap">${when}</td>
         <td><span class="badge ${meta.cls}" style="font-size:10px">${meta.label}</span></td>

@@ -58,5 +58,14 @@ class ActivityAndHealthText(unittest.TestCase):
         self.shown(VALUES + [v + s for v in VALUES for s in (" prov", " film", " show", " cat", " perr")], html["sum"])
 
 
+    def test_health_deletions_user_name(self):
+        src = (ESC + functions("pages.js", ["timeAgo"]) + "\nconst _DELETION_KIND_META = {};\n"
+               "function _healthDate(v) { return null; }\n" + functions("pages.js", ["loadHealthDeletions"]))
+        rows = [{"kind": "x", "name": v + " item", "reason": "manual", "user_name": v + " user", "detail": v + " why"}
+                for v in VALUES]
+        html = render(src, "API['/api/health/deletions'] = %s;" % json.dumps(rows), "await loadHealthDeletions()")
+        self.shown([v + s for v in VALUES for s in (" item", " user", " why")], html["health-deletions"])
+
+
 if __name__ == "__main__":
     unittest.main()
