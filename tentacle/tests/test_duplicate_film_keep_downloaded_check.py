@@ -88,6 +88,16 @@ class FilmKeepDownloaded(_Base):
             duplicates._apply_resolution(self.dup, "keep_radarr", self.db)
         self.assert_untouched()
 
+    def test_refused_when_radarr_is_not_configured(self):
+        # as for shows (Sonarr not configured): nothing can be checked, so nothing is deleted
+        self.db.query(Setting).filter(Setting.key.in_(["radarr_url", "radarr_api_key"])).delete(synchronize_session=False)
+        self.db.commit()
+        with self.assertRaises(HTTPException) as cm:
+            duplicates._apply_resolution(self.dup, "keep_radarr", self.db)
+        self.assertEqual(409, cm.exception.status_code)
+        self.radarr.get_movie_by_tmdb.assert_not_called()
+        self.assert_untouched()
+
     def test_with_a_download_the_vod_copy_is_still_removed(self):
         self.radarr.get_movie_files.return_value = [{"id": 1, "path": "/movies/Film (1999)/Film.mkv"}]
         duplicates._apply_resolution(self.dup, "keep_radarr", self.db)

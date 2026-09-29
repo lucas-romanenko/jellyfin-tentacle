@@ -167,13 +167,15 @@ def _require_movie_download(dup: Duplicate, db: Session) -> None:
     VOD copy; without a download that deletes the film. It happens after a
     Keep VOD that failed half-way (Radarr deleted the file, then removing the
     title failed), when the file was deleted in Radarr, and for a duplicate
-    between two providers (Resolve All sends Keep Downloaded for every one)."""
+    between two providers (Resolve All sends Keep Downloaded for every one).
+    Radarr not configured refuses too, as Sonarr not configured does for shows."""
     if not any((s.get("source") or "") == "radarr" for s in dup.sources or []):
         raise HTTPException(409, "Both copies of this film are VOD streams: there is no download to keep. "
                                  "Nothing was deleted; use Keep Both to dismiss it.")
     url, key = get_setting(db, "radarr_url"), get_setting(db, "radarr_api_key")
     if not url or not key:
-        return  # can't be asked: as before (Radarr's scan recorded this duplicate)
+        raise HTTPException(409, "Radarr isn't configured, so Tentacle can't check that this film was "
+                                 "downloaded. Nothing was deleted.")
     from services.radarr import RadarrService
     radarr = RadarrService(url, key)
     movie = radarr.get_movie_by_tmdb(dup.tmdb_id)
