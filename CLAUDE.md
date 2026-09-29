@@ -121,7 +121,11 @@ make deploy      # run the current origin/main on Lucas's server (app; the plugi
 make verify      # healthy, /api/version = the deployed commit; a deployed plugin is Active in Jellyfin
 ```
 
-Both must pass; report their output. To confirm a fix on Lucas's server
+Both must pass; report their output. In a Claude session make runs in a
+sandbox that can't reach the server: `make deploy` builds the plugin, then
+stops with one exact `ops ...` line, and `make verify` / `make
+deploy-release` do the same. Run that line as a command of its own (a
+600000 ms timeout for a deploy). To confirm a fix on Lucas's server
 before merging it (triage below), push the branch and run
 `make deploy REF=<branch>` and `make verify REF=<branch>` (verify then also
 fails unless the branch's head is what runs); after the merge, `make deploy`
