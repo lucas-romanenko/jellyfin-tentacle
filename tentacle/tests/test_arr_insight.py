@@ -256,7 +256,7 @@ class TestGrab(_Db):
         with mock.patch.object(arr_insight.requests, "post", return_value=_Resp({})) as post:
             r = arr_insight.grab(self.db, "movie", 100, 0, "g1", 4)
         self.assertTrue(r["ok"])
-        self.assertEqual({"guid": "g1", "indexerId": 4}, post.call_args.kwargs["json"])
+        self.assertEqual({"guid": "g1", "indexerId": 4, "movieId": 55}, post.call_args.kwargs["json"])
         self.assertTrue(post.call_args.args[0].startswith("http://r:7878/api/v3/release"))
 
     def test_an_unmatched_release_is_not_called_too_old(self):
@@ -268,6 +268,32 @@ class TestGrab(_Db):
         self.assertEqual(502, e.exception.status)
         self.assertIn("Unable to find matching movie", str(e.exception))
         self.assertIn(arr_insight.title_key("movie", 100), arr_insight._checks, "the list itself is fine")
+
+    def test_download_anyway_names_the_movie(self):
+        # Radarr answers 404 "Unable to find matching movie" to a grab of a
+        # release it couldn't map by name, unless the body names the movie.
+        _offer("movie", 100)
+
+        def radarr(url, headers=None, json=None, timeout=None):
+            if "movieId" not in json:
+                return _Resp({"message": "Unable to find matching movie, will need to be manually provided"}, 404)
+            return _Resp({})
+        with mock.patch.object(arr_insight.requests, "post", side_effect=radarr) as post:
+            r = arr_insight.grab(self.db, "movie", 100, 0, "g1", 4)
+        self.assertTrue(r["ok"])
+        self.assertEqual({"guid": "g1", "indexerId": 4, "movieId": 55}, post.call_args.kwargs["json"])
+
+    def test_download_anyway_names_the_series_and_episode(self):
+        _offer("series", 5)
+        with mock.patch.object(arr_insight.requests, "post", return_value=_Resp({})) as post:
+            arr_insight.grab(self.db, "series", 5, 0, "g1", 4)
+        self.assertEqual({"guid": "g1", "indexerId": 4, "seriesId": 77, "episodeId": 2},
+                         post.call_args.kwargs["json"])
+
+    def test_a_grab_without_a_kept_check_sends_only_the_release(self):
+        with mock.patch.object(arr_insight.requests, "post", return_value=_Resp({})) as post:
+            arr_insight.grab(self.db, "movie", 100, 0, "g1", 4)
+        self.assertEqual({"guid": "g1", "indexerId": 4}, post.call_args.kwargs["json"])
 
     def test_an_expired_list_says_check_again(self):
         _offer("series", 5)

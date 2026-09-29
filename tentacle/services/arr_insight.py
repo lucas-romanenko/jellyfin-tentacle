@@ -301,6 +301,12 @@ def grab(db: Session, media_type: str, tmdb_id: int, tvdb_id: int, guid: str, in
     if not (url and key):
         raise InsightError(503, f"{app.capitalize()} is not configured")
     body = {"guid": guid, "indexerId": indexer_id}
+    # Name the title the check was for: Radarr/Sonarr use these only for a
+    # release they couldn't map by its name ("Download anyway" on an
+    # "Unknown Movie" rejection), and answer 404 for one without them.
+    with _checks_lock:
+        hit = _checks.get(title_key(media_type, tmdb_id, tvdb_id))
+    body.update((hit or {}).get("ids") or {})
     try:
         r = requests.post(f"{url}/api/v3/release", headers={"X-Api-Key": key}, json=body, timeout=60)
     except Exception as e:
