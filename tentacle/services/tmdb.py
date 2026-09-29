@@ -33,6 +33,14 @@ def get_tmdb_token(db) -> str:
     return token if token else TMDB_DEFAULT_TOKEN
 
 
+def _year_within_one(a, b) -> bool:
+    """Two years ("2020", "2021") at most one apart; False if either is unknown."""
+    try:
+        return abs(int(str(a)[:4]) - int(str(b)[:4])) <= 1
+    except (TypeError, ValueError):
+        return False
+
+
 class TMDBService:
     def __init__(self, bearer_token: str, cache_dir: str, match_threshold: float = 0.7):
         self.bearer_token = bearer_token
@@ -226,28 +234,39 @@ class TMDBService:
         if hit:
             return cached or None
 
-        # Try with year, then without
-        for params in [
-            {"query": title, "year": year} if year else {"query": title},
-            {"query": title}
-        ]:
-            data = self._request("search/movie", params)
-            if data and data.get("results"):
-                match = self._find_best_match(
-                    data["results"], title, year, "title", "release_date"
-                )
-                if match:
-                    tmdb_id, tmdb_title, tmdb_year, score = match
-                    # Fetch full details
-                    full = self.get_movie_details(tmdb_id)
-                    if full:
-                        self._cache_set(cache_key, full)
-                        return full
-                    break
-            if year:
-                break  # Already tried without year in second iteration
+        # With the year, then without it (#265)
+        for params, results in self._search_passes("search/movie", title, year, "year", "release_date"):
+            match = self._find_best_match(results, title, year, "title", "release_date")
+            if match:
+                tmdb_id, tmdb_title, tmdb_year, score = match
+                # Fetch full details
+                full = self.get_movie_details(tmdb_id)
+                if full:
+                    self._cache_set(cache_key, full)
+                    return full
+                break
 
         return self._no_match(cache_key, title, strict)
+
+    def _search_passes(self, endpoint: str, title: str, year: Optional[str], year_param: str, date_key: str):
+        """(params, results) of each search pass, in order, for search_movie /
+        search_series: with the provider's year, then (only when that found
+        nothing good enough) once without it. Providers often label a title
+        with a local or streaming release year one off from TMDB's, which the
+        year filter then never finds (#265). The year-less pass keeps only
+        results within one year of the provider's, so a namesake decades
+        apart (Heat 1986 vs Heat 1995) is never taken for it. No year: one
+        search. A request that failed (429/5xx) stops here, as before."""
+        attempts = [{"query": title, year_param: year}, {"query": title}] if year else [{"query": title}]
+        for n, params in enumerate(attempts):
+            data = self._request(endpoint, params)
+            if self._lookup_failed():
+                return
+            results = (data or {}).get("results") or []
+            if n and year:
+                results = [r for r in results if _year_within_one(year, (r.get(date_key) or "")[:4])]
+            if results:
+                yield params, results
 
     def _no_match(self, cache_key: str, title: str, strict: bool):
         if self._lookup_failed():
@@ -268,23 +287,15 @@ class TMDBService:
         if hit:
             return cached or None
 
-        for params in [
-            {"query": title, "first_air_date_year": year} if year else {"query": title},
-            {"query": title}
-        ]:
-            data = self._request("search/tv", params)
-            if data and data.get("results"):
-                match = self._find_best_match(
-                    data["results"], title, year, "name", "first_air_date"
-                )
-                if match:
-                    tmdb_id, tmdb_title, tmdb_year, score = match
-                    full = self.get_series_details(tmdb_id)
-                    if full:
-                        self._cache_set(cache_key, full)
-                        return full
-                    break
-            if year:
+        for params, results in self._search_passes("search/tv", title, year, "first_air_date_year",
+                                                   "first_air_date"):
+            match = self._find_best_match(results, title, year, "name", "first_air_date")
+            if match:
+                tmdb_id, tmdb_title, tmdb_year, score = match
+                full = self.get_series_details(tmdb_id)
+                if full:
+                    self._cache_set(cache_key, full)
+                    return full
                 break
 
         return self._no_match(cache_key, title, strict)
