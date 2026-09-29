@@ -581,6 +581,14 @@ def reschedule_youtube_index() -> bool:
     return True
 
 
+def _resume_youtube_channels() -> None:
+    from routers.youtube import resume_unfinished_channels
+    try:
+        resume_unfinished_channels()
+    except Exception as e:
+        logger.warning(f"[YouTube] Could not resume unfinished channels: {e}")
+
+
 def setup_scheduler(db):
     """Setup cron scheduler from settings"""
     reschedule_main_sync()
@@ -647,6 +655,9 @@ def setup_scheduler(db):
     # The job checks the youtube_enabled setting itself, so the schedule can
     # stay in place whether or not the feature is turned on.
     reschedule_youtube_index()
+    # A channel whose first index a restart cut short is picked up a minute
+    # after start-up, background checks or not (#288).
+    schedule_once(_resume_youtube_channels, 60, "youtube_resume_first_index")
     # Music module: the daily reconcile (checks the setting itself when it runs).
     reschedule_music_reconcile()
     from services.youtube import traffic as _yt_traffic

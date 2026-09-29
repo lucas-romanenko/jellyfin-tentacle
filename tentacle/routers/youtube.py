@@ -1146,6 +1146,33 @@ def _start_refresh(channel_ids=None, guide: bool = False) -> bool:
     return True
 
 
+def resume_unfinished_channels() -> list:
+    """Index again the channels whose first index never finished. Returns their ids.
+
+    The refresh queue lives in memory, so a restart during a channel's first
+    index (an update, a crash) left it half-added: rows but no files, no
+    playlist, and a card saying its videos were being fetched, until the next
+    scheduled check, or for good with background checks off (#288). Run once
+    after start-up. A channel listed in full before is never queued, so a normal
+    restart sends nothing; a pause after a bot check still applies.
+    """
+    from models.database import SessionLocal
+    db = SessionLocal()
+    try:
+        if get_setting(db, "youtube_enabled", "false") != "true" or not client.available():
+            return []
+        ids = [c.id for c in db.query(YouTubeChannel.id).filter(
+            YouTubeChannel.enabled == True,  # noqa: E712
+            YouTubeChannel.last_full_check.is_(None)).all()]
+    finally:
+        db.close()
+    if ids:
+        logger.info(f"[YouTube] {len(ids)} channel(s) were never indexed in full (a restart cut "
+                    f"their first index short); indexing them now")
+        _start_refresh(channel_ids=ids)
+    return ids
+
+
 def _note_channel_error(db: Session, channel: YouTubeChannel, exc: Exception, title: str = None) -> None:
     """Record a failed sync on the channel as well as on the run.
 

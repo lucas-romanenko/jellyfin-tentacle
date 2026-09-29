@@ -219,6 +219,9 @@ exit address than a home one. If it keeps happening, a YouTube Data API key
 takes the background checks off YouTube's pages. The hourly
 `Requests to YouTube/Google` log line shows what Tentacle is sending.
 
+**A channel added just before a restart** finishes its first index a minute
+after Tentacle starts again, whether background checks are on or not.
+
 **Nothing is ever deleted because a listing failed.** A failed or bot-checked
 listing raises, and retention only runs after a listing that succeeded.
 
