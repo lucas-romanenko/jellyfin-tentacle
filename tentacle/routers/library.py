@@ -468,18 +468,31 @@ def _deleted_copy_is_rows(item, media_type: str, path: Optional[str]) -> bool:
     their last parts (folder/file for a film, the show folder for a series):
     Jellyfin, Radarr/Sonarr and Tentacle mount them at different prefixes.
     Without one (an older plugin), a VOD copy whose .strm is still on disk was
-    not the one deleted; anything else is taken as before."""
+    not the one deleted; anything else is taken as before.
+
+    A VOD copy still on disk (its .strm, or its show folder) was not the one
+    deleted, whatever the path says: Sonarr and Tentacle both name a show's
+    folder "<Title> (<Year>)", so in separate libraries the download's folder
+    has the VOD folder's name, and the one-part comparison matched it.
+    Jellyfin deletes a copy's files (a show's whole folder) before the plugin
+    forwards the deletion, so a copy it really deleted is gone from disk."""
     parts = 2 if media_type == "movie" else 1
     download = getattr(item, "radarr_path" if media_type == "movie" else "sonarr_path", None)
     own = [p for p in (item.strm_path, download) if p]
     tail = _path_tail(path, parts) if path else None
+    if item.strm_path:
+        try:
+            on_disk = Path(item.strm_path).exists()
+        except OSError:
+            on_disk = False  # can't tell: decide by the path, as before
+        if on_disk:
+            if tail and _path_tail(item.strm_path, parts) == tail:
+                logger.info(f"[Library] Jellyfin deleted {path}, which has the name of this title's "
+                            f"VOD copy {item.strm_path}; that is still on disk, so the row stays "
+                            f"(another copy, or a mount that lags Jellyfin's)")
+            return False
     if tail and own:
         return any(_path_tail(p, parts) == tail for p in own)
-    if item.strm_path and not download:
-        try:
-            return not Path(item.strm_path).exists()
-        except OSError:
-            return True
     return True
 
 
