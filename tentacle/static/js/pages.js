@@ -4822,7 +4822,7 @@ async function writeNfos(btn) {
 // ── PROVIDER MIGRATION ────────────────────────────────────────────────────
 async function showMigrate() {
   const providers = state.providers || await api('/api/providers').catch(() => []);
-  const opts = providers.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
+  const opts = providers.map(p => `<option value="${escapeAttr(String(p.id))}">${escapeAttr(p.name)}</option>`).join('');
   document.getElementById('migrate-from').innerHTML = opts;
   document.getElementById('migrate-to').innerHTML = opts;
   document.getElementById('migrate-preview').style.display = 'none';
