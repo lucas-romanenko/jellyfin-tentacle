@@ -194,6 +194,60 @@ def _pending_write(data: dict) -> None:
         logger.warning(f"[Jellyfin] Could not save pending rating restores to {path}: {e}")
 
 
+# A series whose seasons/episodes can't be listed is not updated: with no
+# snapshot, Jellyfin's cascade would give every episode the series' rating and
+# nothing could put an episode's own back (a TV-MA episode left visible to a
+# TV-PG profile for good). The update waits for the next push; only after this
+# many failed listings in a row is it made anyway (reported), so a series can't
+# stay out of its tag playlists for good. {series_id: {"count", "since"}}
+DEFER_SERIES_MAX_ATTEMPTS = 3
+
+
+def _deferred_series_path() -> Path:
+    return Path(os.getenv("DATA_DIR", "/data")) / "deferred_series_updates.json"
+
+
+# The same, in memory, used while the file can't be written: the count still
+# grows, so a series is never deferred for good.
+_deferred_series_mem: dict = {}
+_deferred_series_disk_ok = True
+
+
+def _deferred_series_load() -> dict:
+    with _PENDING_RESTORES_LOCK:
+        try:
+            data = json.loads(_deferred_series_path().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = {} if _deferred_series_disk_ok else dict(_deferred_series_mem)
+        if not isinstance(data, dict):
+            return {}
+        return {str(k): v for k, v in data.items()
+                if isinstance(v, dict) and isinstance(v.get("count"), int)}
+
+
+def _deferred_series_set(series_id: str, entry: Optional[dict]) -> None:
+    global _deferred_series_disk_ok
+    with _PENDING_RESTORES_LOCK:
+        data = _deferred_series_load()
+        if entry:
+            data[series_id] = entry
+        elif series_id in data:
+            del data[series_id]
+        else:
+            return
+        _deferred_series_mem.clear()
+        _deferred_series_mem.update(data)
+        path = _deferred_series_path()
+        try:
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data), encoding="utf-8")
+            os.replace(tmp, path)
+            _deferred_series_disk_ok = True
+        except OSError as e:
+            _deferred_series_disk_ok = False
+            logger.warning(f"[Jellyfin] Could not save deferred series updates to {path}: {e}")
+
+
 def _pending_restores_set(parent_id: str, entry) -> None:
     """Store (or, with None, clear) the pending restore of one series. `entry`
     is a full entry or, as before, a bare {child_id: [...]} map."""
@@ -996,18 +1050,31 @@ class JellyfinService:
                     c["official"], c["custom"] = self._own_after(
                         (c["official"], c["custom"]), now, self._copy_candidates(pending, c))
         if children is None:
+            deferred = _deferred_series_load().get(item_id) or {}
+            count = deferred.get("count", 0) + 1
+            if count < DEFER_SERIES_MAX_ATTEMPTS:
+                _deferred_series_set(item_id, {"count": count, "since": deferred.get("since") or time.time()})
+                logger.warning(
+                    f"[Jellyfin] Could not list the seasons/episodes of {item.get('Type')} {item_id}; "
+                    f"not updating it now, so Jellyfin can't give them its rating (attempt {count} of "
+                    f"{DEFER_SERIES_MAX_ATTEMPTS}; the next push tries again)")
+                return False
+            _deferred_series_set(item_id, None)
             logger.warning(
-                f"[Jellyfin] Could not list the seasons/episodes of {item.get('Type')} {item_id}; "
-                f"updating it anyway, so Jellyfin may give them its rating"
+                f"[Jellyfin] Could not list the seasons/episodes of {item.get('Type')} {item_id} "
+                f"{count} times in a row; updating it anyway, so Jellyfin may give them its rating"
                 + (" (a pending restore will still be applied)" if need else ""))
             _log_activity_safe(
                 "rating_cascade_unprotected",
                 f"Updated the tags of Jellyfin {item.get('Type', 'item').lower()} '{item.get('Name', '')}' "
-                f"({item_id}) without being able to list its seasons and episodes first. Jellyfin "
-                f"copies a series' parental rating onto all of them on every update, so episodes "
-                f"with a rating of their own may now carry the series' rating — check them in Jellyfin."
+                f"({item_id}) without being able to list its seasons and episodes first "
+                f"({DEFER_SERIES_MAX_ATTEMPTS} tries in a row). Jellyfin copies a series' parental "
+                f"rating onto all of them on every update, so episodes with a rating of their own may "
+                f"now carry the series' rating, and one rated above the series may now be visible to "
+                f"restricted profiles — check them in Jellyfin."
                 + (" A saved restore was still applied." if need else ""))
         else:
+            _deferred_series_set(item_id, None)
             seasons_to_restore = {cid for cid, c in need.items() if c["type"] == "Season"}
             # Values an earlier, unfinished push's cascade wrote. A child that
             # is not in that push's entry but shows one of them did not choose

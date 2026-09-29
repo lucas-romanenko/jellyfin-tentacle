@@ -15,6 +15,16 @@ Merged from Lucas's notes on 2026-09-28; the code wins.
      CommunityRating, OfficialRating, Taglines`;
   3. POST it to the global `/Items/{item_id}` (the full DTO → 500, Jellyfin
      #10724; `/Items/{id}/Tags/Add` doesn't exist).
+- **ItemUpdate on a Series/Season copies its parental rating** onto every
+  season and episode (every update, a tags-only one included).
+  `_post_cascading_update` lists the children first and writes their own
+  ratings back afterwards (`pending_rating_restores.json` keeps what a
+  failure left). If the listing fails (after one retry in the run), the
+  series is *not* updated that push: with no snapshot nothing could restore
+  an episode rated above the series. Only after `DEFER_SERIES_MAX_ATTEMPTS`
+  (3) failed listings in a row is it updated anyway, with a warning and a
+  `rating_cascade_unprotected` Activity entry (#161). The count lives in
+  `deferred_series_updates.json` in the data dir.
 - **Refreshing metadata** with `ReplaceAllMetadata=true` wipes the tags
   (TMDB has none): always `ReplaceAllMetadata=false`.
 - **NFO for downloads**: named exactly like the video

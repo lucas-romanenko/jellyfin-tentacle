@@ -198,16 +198,20 @@ class TestSeriesPush(_PendingDir):
         self.assertEqual(fake.posts, ["s1", "e2"])
 
     def test_a_series_whose_children_cannot_be_listed_still_gets_its_tags(self):
-        """Blocking it would keep it out of its playlists for good (round-2 review)."""
+        """Blocking it would keep it out of its playlists for good (round-2 review).
+        The update is deferred a bounded number of pushes (#161), then made."""
         for how in (True, "http"):
             with self.subTest(listing_fails=how):
                 from unittest import mock
                 import services.jellyfin as j
+                j._deferred_series_set("s1", None)
                 fake = _FakeJellyfin()
                 fake.list_fails = how
                 with mock.patch.object(j, "_log_activity_safe"), \
                         self.assertLogs("services.jellyfin", level="WARNING"):
-                    self.assertTrue(_service(fake).set_item_tags("s1", ["Netflix TV", "x"]))
+                    results = [_service(fake).set_item_tags("s1", ["Netflix TV", "x"])
+                               for _ in range(j.DEFER_SERIES_MAX_ATTEMPTS)]
+                self.assertEqual(results[-1], True)
                 self.assertEqual(fake.items["s1"]["Tags"], ["Netflix TV", "x"])
 
     def test_an_episode_rated_like_the_series_survives_its_seasons_restore(self):
@@ -550,6 +554,8 @@ class TestRound5(_PendingDir):
         fake.list_fails = True
         with mock.patch.object(j, "_log_activity_safe") as activity, \
                 self.assertLogs("services.jellyfin", level="WARNING"):
+            for _ in range(j.DEFER_SERIES_MAX_ATTEMPTS - 1):     # deferred first (#161)
+                self.assertFalse(_service(fake).set_item_tags("s1", ["Netflix TV", "x"]))
             self.assertTrue(_service(fake).set_item_tags("s1", ["Netflix TV", "x"]))
         self.assertEqual(fake.items["s1"]["Tags"], ["Netflix TV", "x"])
         activity.assert_called_once()
