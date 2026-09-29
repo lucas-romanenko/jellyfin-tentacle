@@ -516,6 +516,10 @@ def traffic_status(db: Session = Depends(get_db)):
         "api_key": _mask(key),
         "api": feeds.api_state(),
         "proxy": get_setting(db, "youtube_proxy", "") or "",
+        # What is really used, and why a saved one is not: YouTube requests
+        # are held until it is fixed (#244).
+        "proxy_in_use": traffic.proxy(),
+        "proxy_error": traffic.proxy_problem(),
         "pause": traffic.pause_state(),
         "this_hour": traffic.counts(),
         "last_hour": traffic.last_report(),
@@ -1246,7 +1250,12 @@ def _run_refresh_once(channel_ids=None):
         changed = []
         for i, channel in enumerate(channels):
             if traffic.paused():
-                logger.info("[YouTube] Refresh stopped: YouTube requests are paused after a bot check")
+                problem = traffic.proxy_problem()
+                logger.info(f"[YouTube] Refresh stopped: the saved proxy can't be used ({problem})" if problem
+                            else "[YouTube] Refresh stopped: YouTube requests are paused after a bot check")
+                if problem:
+                    _refresh_state["errors"] += 1
+                    _refresh_state["error_detail"] = f"The saved proxy can't be used: {problem}"
                 break
             if i:
                 # A few seconds apart, never at a fixed beat: someone waits on

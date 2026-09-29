@@ -85,6 +85,14 @@ def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
     from models.database import Setting
     sensitive_keys = SENSITIVE_KEYS
     from models.database import NON_EMPTY_DEFAULTS
+    if "youtube_proxy" in body.settings:
+        # Checked as the YouTube page checks it: a proxy that can't be used
+        # holds every YouTube request (services/youtube/traffic.py, #244).
+        from services.youtube import traffic
+        try:
+            body.settings["youtube_proxy"] = traffic.normalize_proxy(body.settings["youtube_proxy"] or "")
+        except ValueError as e:
+            raise HTTPException(400, str(e))
     for key, value in body.settings.items():
         # Don't overwrite sensitive keys if they look masked
         if key in sensitive_keys and value and "..." in value:
@@ -103,6 +111,9 @@ def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
                 continue
         set_setting(db, key, value)
 
+    if "youtube_proxy" in body.settings:
+        from services.youtube import traffic
+        traffic.configure(proxy=get_setting(db, "youtube_proxy", "") or "")
     # Mark setup complete if all required fields are filled
     required = ["jellyfin_url", "jellyfin_api_key"]
     all_set = all(get_setting(db, k) for k in required)

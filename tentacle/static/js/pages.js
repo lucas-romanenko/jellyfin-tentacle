@@ -3185,10 +3185,11 @@ function ytShowTraffic(t) {
   const status = document.getElementById('yt-traffic-status');
   const apiStatus = document.getElementById('yt-api-status');
   if (summary) {
-    summary.textContent = t.pause && t.pause.paused
+    summary.textContent = t.proxy_error ? "— held: the saved proxy can't be used"
+      : t.pause && t.pause.paused
       ? `— paused after a bot check until ${String(t.pause.until || '').replace('T', ' ')}`
       : (t.background_checks ? `— about every ${t.interval_minutes} min` : '— background checks off');
-    summary.style.color = t.pause && t.pause.paused ? 'var(--red)' : 'var(--text3)';
+    summary.style.color = t.proxy_error || (t.pause && t.pause.paused) ? 'var(--red)' : 'var(--text3)';
   }
   if (apiStatus) {
     const api = t.api || {};
@@ -3199,6 +3200,12 @@ function ytShowTraffic(t) {
   if (status) {
     const lines = [`Requests to YouTube so far this hour: ${escapeAttr(ytTrafficCounts(t.this_hour))}`];
     if (t.last_hour && t.last_hour.at) lines.push(`Last full hour: ${escapeAttr(ytTrafficCounts(t.last_hour.counts))}`);
+    if (t.proxy_error) {
+      // A saved proxy that can't be used holds every YouTube request, so
+      // nothing goes out from this network's own address by accident.
+      lines.push(`<span style="color:var(--red)">Nothing is sent to YouTube: the saved proxy can't be used ` +
+        `(${escapeAttr(t.proxy_error)}). Fix it below, or clear it to connect directly.</span>`);
+    }
     if (t.pause && t.pause.paused) {
       lines.push(`<span style="color:var(--red)">Paused after a bot check until ${escapeAttr(String(t.pause.until).replace('T', ' '))} ` +
         `(block ${t.pause.blocks_in_a_row} in a row). Videos already found keep playing.</span>`);

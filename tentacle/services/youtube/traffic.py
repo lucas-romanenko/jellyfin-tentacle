@@ -48,7 +48,10 @@ DEFAULT_INTERVAL_MINUTES = 60
 _SETTINGS_TTL = 60
 
 _lock = threading.RLock()
-_settings = {"proxy": "", "api_key": "", "loaded_at": 0.0}
+_settings = {"proxy": "", "proxy_error": "", "api_key": "", "loaded_at": 0.0}
+# While a saved proxy can't be used, YouTube requests are held and looked at
+# again this often (the settings cache), so a fixed proxy takes over at once.
+PROXY_HOLD_SECONDS = 60
 _pause = {"until": 0.0, "count": 0, "reason": "", "loaded": False}
 
 _purpose: contextvars.ContextVar = contextvars.ContextVar("youtube_purpose", default="background")
@@ -89,6 +92,7 @@ def configure(proxy: str = None, api_key: str = None) -> None:
     with _lock:
         if proxy is not None:
             _settings["proxy"] = normalize_proxy(proxy)
+            _settings["proxy_error"] = ""
         if api_key is not None:
             _settings["api_key"] = (api_key or "").strip()
         _settings["loaded_at"] = time.time()
@@ -105,13 +109,20 @@ def _refresh_settings() -> None:
             key = get_setting(db, "youtube_api_key", "") or ""
         finally:
             db.close()
+        # A saved proxy that can't be used holds every YouTube request. Using
+        # no proxy instead sent everything out from the household's own
+        # address, which is what the proxy was set up to prevent (#244).
+        error = ""
         try:
             proxy = normalize_proxy(proxy)
         except ValueError as e:
-            logger.warning(f"[YouTube] Ignoring the saved proxy: {e}")
+            error = str(e)
+            if error != _settings.get("proxy_error"):
+                logger.warning(f"[YouTube] The saved proxy can't be used, so nothing is sent to "
+                               f"YouTube until it is fixed on the YouTube page: {e}")
             proxy = ""
         with _lock:
-            _settings.update(proxy=proxy, api_key=key.strip(), loaded_at=time.time())
+            _settings.update(proxy=proxy, proxy_error=error, api_key=key.strip(), loaded_at=time.time())
     except Exception as e:
         logger.debug(f"[YouTube] Could not read traffic settings: {e}")
         _settings["loaded_at"] = time.time()
@@ -121,6 +132,22 @@ def proxy() -> str:
     """The proxy for YouTube traffic, or ""."""
     _refresh_settings()
     return _settings["proxy"]
+
+
+def proxy_problem() -> str:
+    """Why the saved proxy can't be used, or "" (none saved, or it is fine)."""
+    _refresh_settings()
+    return _settings["proxy_error"]
+
+
+def _proxy_held():
+    """The error that stops a request going out while the proxy can't be used."""
+    problem = proxy_problem()
+    if not problem:
+        return None
+    from services.youtube.errors import PausedByBotCheck
+    return PausedByBotCheck(f"YouTube requests are held: the saved proxy can't be used ({problem}) "
+                            f"Fix or clear it on the YouTube page.")
 
 
 def api_key() -> str:
@@ -184,10 +211,15 @@ def _save_pause() -> None:
 
 
 def paused() -> float:
-    """Seconds left in the pause after a bot check, or 0."""
+    """Seconds left in the pause after a bot check, or 0.
+
+    Also non-zero while a saved proxy can't be used: every check and refresh
+    stands down then, exactly as during a pause, instead of going out direct.
+    """
+    held = PROXY_HOLD_SECONDS if proxy_problem() else 0.0
     with _lock:
         _load_pause()
-        return max(0.0, _pause["until"] - time.time())
+        return max(held, _pause["until"] - time.time())
 
 
 def pause_state() -> dict:
@@ -244,7 +276,11 @@ def clear_pause() -> None:
 
 
 def ensure_allowed() -> None:
-    """Raise PausedByBotCheck while the pause after a bot check runs."""
+    """Raise PausedByBotCheck while the pause after a bot check runs, or while
+    the saved proxy can't be used."""
+    held = _proxy_held()
+    if held:
+        raise held
     left = paused()
     if left:
         from services.youtube.errors import PausedByBotCheck
@@ -369,6 +405,9 @@ def http_client():
     """
     global _client, _client_proxy
     import httpx
+    held = _proxy_held()
+    if held:
+        raise held
     wanted = proxy()
     with _lock:
         if _client is None or wanted != _client_proxy:
@@ -388,12 +427,18 @@ def http_client():
 
 def ffmpeg_proxy_args() -> list:
     """ffmpeg input options that route one -i through the proxy, if one is set."""
+    held = _proxy_held()
+    if held:
+        raise held
     p = proxy()
     return ["-http_proxy", p] if p else []
 
 
 def ydl_options() -> dict:
     """Options every yt-dlp call gets: the proxy, and a cache that survives restarts."""
+    held = _proxy_held()
+    if held:
+        raise held
     opts = {}
     p = proxy()
     if p:
@@ -411,7 +456,7 @@ def reset_for_tests() -> None:
     global _client, _client_proxy, _window_started
     with _lock:
         _counts.clear()
-        _settings.update(proxy="", api_key="", loaded_at=time.time())
+        _settings.update(proxy="", proxy_error="", api_key="", loaded_at=time.time())
         _pause.update(until=0.0, count=0, reason="", loaded=True)
         _client, _client_proxy = None, None
         _window_started = time.time()

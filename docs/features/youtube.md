@@ -134,7 +134,7 @@ optional settings:
 | Background checks | On | Off means channels only refresh when you press Refresh. |
 | Check about every | 60 min | At least 30 minutes, with ±20% jitter either way. |
 | YouTube Data API key | Not set | New uploads, video details and live status come from Google's official API instead of YouTube's pages, so the background checks never load a YouTube page. The key is free from the Google Cloud console, and the daily quota is far more than this uses. |
-| Proxy for YouTube traffic | None | An HTTP proxy for YouTube traffic only, e.g. `http://gluetun:8888` to route it through a VPN container. Watching YouTube videos goes through it too, because Google ties a video's stream link to the address that asked for it. |
+| Proxy for YouTube traffic | None | An HTTP proxy for YouTube traffic only, e.g. `http://gluetun:8888` to route it through a VPN container. Watching YouTube videos goes through it too, because Google ties a video's stream link to the address that asked for it. If a saved proxy can't be used (a SOCKS address, a bad port), nothing is sent to YouTube until it is fixed or cleared, and the page says so: Tentacle never falls back to your own address. |
 
 ## How playback works
 

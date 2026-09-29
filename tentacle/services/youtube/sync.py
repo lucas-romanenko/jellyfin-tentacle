@@ -842,9 +842,14 @@ def run_youtube_sync() -> dict:
         if get_setting(db, "youtube_background_checks", "true") == "false":
             return {"enabled": True, "background": False}
         if traffic.paused():
-            state = traffic.pause_state()
-            logger.info(f"[YouTube] Scheduled check skipped: YouTube requests are paused after a "
-                        f"bot check until {state['until']}")
+            problem = traffic.proxy_problem()
+            if problem:
+                logger.warning(f"[YouTube] Scheduled check skipped: the saved proxy can't be used "
+                               f"({problem}); nothing is sent to YouTube until it is fixed")
+            else:
+                state = traffic.pause_state()
+                logger.info(f"[YouTube] Scheduled check skipped: YouTube requests are paused after a "
+                            f"bot check until {state['until']}")
             return {"enabled": True, "paused": True}
         base = base_url(db)
         if not base:
