@@ -288,5 +288,10 @@ docs: `docs/features/music.md`; plugin side: `Api/MusicController.cs`
   (pins and trims; deletions only when exactly the expected leftovers
   remain, each logged), `pictures.py`, `players.py` (Navidrome, Jellyfin),
   `discover.py`, `spotify.py`.
+- The daily check's clean-up (`jobs._forget_gone_artists`, and
+  `library.sync_artist` for albums) removes only what Lidarr really dropped:
+  nothing on an empty artist list, no artist written after the list was read
+  (a request finished during the check), and no album still
+  `request_pending` (nor its artist).
 - Webhook `POST /api/music/webhook?secret=` (secret always required);
   status `GET /api/music/status`.
