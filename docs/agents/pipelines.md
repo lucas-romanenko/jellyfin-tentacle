@@ -16,7 +16,11 @@ Merged from Lucas's notes on 2026-09-28 and checked against the code then
      `'sonarr'`, write an NFO named exactly like the video
      (`Alien (1979) Bluray-1080p.nfo`) and push tags through the Jellyfin
      API. The webhook handler retries while Radarr is still finishing the
-     import (waits of 15, 30, 45, 60 s).
+     import (waits of 15, 30, 45, 60 s). An NFO that already exists only
+     gets Tentacle's `<tag>` lines changed (`refresh_arr_nfo`), never
+     rebuilt: a rebuild reset `<dateadded>`, which Jellyfin reads as
+     DateCreated, so every scan moved old downloads to the top of "Latest"
+     (#266). The scans run one at a time per app (`_scan_lock`, #268).
 2. **Tags**: VOD through NFO; downloads through the API
    (`set_item_tags`): "Downloaded Movies", "Recently Added Movies", list
    tags (e.g. "IMDB TOP 250"). Source tags carry the type suffix.

@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from models.database import get_db, Series, ListItem, ListSubscription, DownloadRequest, Duplicate, get_setting, log_activity
 from services.sonarr import scan_sonarr_library, SonarrService
-from services.nfo import update_nfo_tags, write_series_nfo
+from services.nfo import update_nfo_tags, write_series_nfo, refresh_arr_nfo
 from services.tagger import tentacle_owned_tags
 from services.logstream import emit_library_event
 
@@ -97,6 +97,7 @@ def write_nfos(db: Session = Depends(get_db)):
     all_series = db.query(Series).filter(Series.source == "sonarr").all()
     written = 0
     skipped = 0
+    owned = tentacle_owned_tags(db)
 
     for db_series in all_series:
         try:
@@ -148,11 +149,12 @@ def write_nfos(db: Session = Depends(get_db)):
             }
 
             nfo_path = series_folder / "tvshow.nfo"
-            if write_series_nfo(nfo_path, nfo_metadata, tags):
-                db_series.nfo_path = str(nfo_path)
+            if refresh_arr_nfo(nfo_path, write_series_nfo, nfo_metadata, tags, owned):
                 written += 1
             else:
                 skipped += 1
+            if nfo_path.exists():
+                db_series.nfo_path = str(nfo_path)
 
         except Exception as e:
             logger.debug(f"NFO write failed for {db_series.title}: {e}")

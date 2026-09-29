@@ -18,7 +18,7 @@ from services.radarr import file_loss_looks_like_an_outage
 DOWNLOADED_TV_TAG = "Downloaded TV"
 RECENTLY_ADDED_TV_TAG = "Recently Added TV"
 from services.tmdb import TMDBService
-from services.nfo import write_series_nfo
+from services.nfo import write_series_nfo, refresh_arr_nfo
 from services.tagger import apply_tag_rules, get_list_tags_for_tmdb_id, detect_source_tag_from_studios
 from services.exceptions import SonarrConnectionError
 from services.logstream import emit_library_event
@@ -818,6 +818,8 @@ def _scan_sonarr_library(db: Session) -> dict:
     db.commit()
 
     # Compute tags and write NFO files for all downloaded series
+    from services.tagger import tentacle_owned_tags
+    owned = tentacle_owned_tags(db)
     for tmdb_id, db_series in series_needing_nfo:
         try:
             # Build tag list: built-in + source tag + rule tags + list tags + user attribution
@@ -889,9 +891,10 @@ def _scan_sonarr_library(db: Session) -> dict:
 
             # tvshow.nfo goes in the series root folder
             nfo_path = series_folder / "tvshow.nfo"
-            if write_series_nfo(nfo_path, nfo_metadata, tags):
-                db_series.nfo_path = str(nfo_path)
+            if refresh_arr_nfo(nfo_path, write_series_nfo, nfo_metadata, tags, owned):
                 stats["nfo_written"] += 1
+            if nfo_path.exists():
+                db_series.nfo_path = str(nfo_path)
 
         except Exception as e:
             logger.debug(f"NFO/tag processing failed for {db_series.title}: {e}")

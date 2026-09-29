@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from datetime import timedelta
 from models.database import Movie, Duplicate, DownloadRequest, TentacleUser, get_setting, DeletionLog
 from services.tmdb import TMDBService
-from services.nfo import write_movie_nfo, make_folder_name
+from services.nfo import write_movie_nfo, make_folder_name, refresh_arr_nfo
 from services.tagger import apply_tag_rules, get_list_tags_for_tmdb_id, detect_source_tag_from_studios
 from services.exceptions import RadarrConnectionError
 from services.logstream import emit_library_event
@@ -370,6 +370,8 @@ def _scan_radarr_library(db: Session) -> dict:
     db.commit()
 
     # Compute tags and write NFO files for all downloaded movies
+    from services.tagger import tentacle_owned_tags
+    owned = tentacle_owned_tags(db)
     for tmdb_id, db_movie in movies_needing_nfo:
         try:
             # Build tag list: built-in + source tag + rule tags + list tags + user attribution
@@ -445,9 +447,10 @@ def _scan_radarr_library(db: Session) -> dict:
                     break
             folder_name = make_folder_name(db_movie.title, db_movie.year)
             nfo_path = video_file.with_suffix('.nfo') if video_file else movie_folder / f"{folder_name}.nfo"
-            if write_movie_nfo(nfo_path, nfo_metadata, tags):
-                db_movie.nfo_path = str(nfo_path)
+            if refresh_arr_nfo(nfo_path, write_movie_nfo, nfo_metadata, tags, owned):
                 stats["nfo_written"] += 1
+            if nfo_path.exists():
+                db_movie.nfo_path = str(nfo_path)
 
         except Exception as e:
             logger.debug(f"NFO/tag processing failed for {db_movie.title}: {e}")

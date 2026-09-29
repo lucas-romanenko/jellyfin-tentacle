@@ -243,6 +243,23 @@ def update_nfo_tags(nfo_path: Path, tags: List[str], owned: Optional[set] = None
         return False
 
 
+def refresh_arr_nfo(nfo_path: Path, write, metadata: dict, tags: List[str],
+                    owned: Optional[set] = None) -> bool:
+    """The NFO beside a Radarr/Sonarr download: only Tentacle's tags change.
+
+    An existing file keeps everything but Tentacle's <tag> lines, and is
+    written only when those differ (update_nfo_tags). Rebuilding it from the
+    template reset <dateadded>, which Jellyfin reads as the item's
+    DateCreated, so every scan moved every old download to the top of
+    "Latest", and dropped whatever Radarr/Sonarr or Jellyfin wrote there
+    (#266). A missing one is written in full with `write` (write_movie_nfo or
+    write_series_nfo). True when the file was written.
+    """
+    if nfo_path.exists():
+        return update_nfo_tags(nfo_path, tags, owned)
+    return bool(write(nfo_path, metadata, tags))
+
+
 def sanitize_filename(name: str) -> str:
     """Make string filesystem-safe"""
     import re

@@ -13,7 +13,7 @@ from typing import Optional
 
 from models.database import get_db, Provider, Movie, ListItem, ListSubscription, DownloadRequest, Duplicate, get_setting, log_activity
 from services.radarr import scan_radarr_library, RadarrService
-from services.nfo import update_nfo_tags, write_movie_nfo, make_folder_name
+from services.nfo import update_nfo_tags, write_movie_nfo, make_folder_name, refresh_arr_nfo
 from services.tagger import tentacle_owned_tags
 from services.migration import migrate_provider, preview_migration
 from services.logstream import log_event_generator, get_recent_logs, emit_library_event
@@ -123,6 +123,7 @@ def write_nfos(db: Session = Depends(get_db)):
         movies = db.query(Movie).filter(Movie.source == "radarr").all()
         written = 0
         skipped = 0
+        owned = tentacle_owned_tags(db)
 
         for db_movie in movies:
             try:
@@ -178,11 +179,12 @@ def write_nfos(db: Session = Depends(get_db)):
                         video_file = files[0]
                         break
                 nfo_path = video_file.with_suffix('.nfo') if video_file else movie_folder / f"{folder_name}.nfo"
-                if write_movie_nfo(nfo_path, nfo_metadata, tags):
-                    db_movie.nfo_path = str(nfo_path)
+                if refresh_arr_nfo(nfo_path, write_movie_nfo, nfo_metadata, tags, owned):
                     written += 1
                 else:
                     skipped += 1
+                if nfo_path.exists():
+                    db_movie.nfo_path = str(nfo_path)
 
             except Exception as e:
                 logger.debug(f"NFO write failed for {db_movie.title}: {e}")
