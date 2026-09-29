@@ -40,6 +40,9 @@ _NS = {
 # After the API refuses (quota spent, key invalid or restricted), use the free
 # path until this time instead of asking again.
 _api_off_until = 0.0
+# After a 5xx, a 429 or no answer at all: the API is having a moment, not
+# refusing this key, so it is left alone for a shorter while.
+API_HICCUP_SECONDS = 15 * 60
 _api_off_reason = ""
 
 
@@ -115,8 +118,9 @@ def api_state() -> dict:
 def _api_off(seconds: float, reason: str) -> None:
     global _api_off_until, _api_off_reason
     if time.time() >= _api_off_until:
-        logger.warning(f"[YouTube] The YouTube Data API refused ({reason}); using RSS feeds and "
-                       f"yt-dlp for the next {int(seconds // 3600) or 1} h instead")
+        span = f"{int(seconds // 3600)} h" if seconds >= 3600 else f"{int(seconds // 60)} min"
+        logger.warning(f"[YouTube] The YouTube Data API is not usable ({reason}); using RSS feeds "
+                       f"and yt-dlp for the next {span} instead")
     _api_off_until = time.time() + seconds
     _api_off_reason = reason
 
@@ -127,7 +131,10 @@ def _api_get(path: str, params: dict) -> dict:
     try:
         r = traffic.http_client().get(f"{API_URL}/{path}", params={**params, "key": traffic.api_key()},
                                       timeout=TIMEOUT)
+    except YouTubeError:
+        raise                   # held: a saved proxy can't be used
     except Exception as e:
+        _api_off(API_HICCUP_SECONDS, f"no answer: {type(e).__name__}")
         raise YouTubeUnavailable(f"The YouTube Data API did not answer: {e}")
     if r.status_code in (400, 403):
         try:
@@ -139,6 +146,8 @@ def _api_get(path: str, params: dict) -> dict:
         _api_off(6 * 3600 if "quota" in reason.lower() else 3600, reason)
         raise FeedUnavailable(f"The YouTube Data API refused: {reason}")
     if r.status_code >= 400:
+        if r.status_code == 429 or r.status_code >= 500:
+            _api_off(API_HICCUP_SECONDS, f"HTTP {r.status_code}")
         raise YouTubeUnavailable(f"The YouTube Data API answered HTTP {r.status_code}")
     return r.json()
 
@@ -233,12 +242,20 @@ def api_details(video_ids: list) -> dict:
 # ── The check ───────────────────────────────────────────────────────────────
 
 def newest_uploads(channel) -> list:
-    """The source's newest uploads: the API when a key works, else RSS."""
+    """The source's newest uploads: the API when a key works, else RSS.
+
+    Any API failure falls back to the feed. Only a refusal used to: a 5xx, a
+    429 or no answer at all made the scheduled check list every channel's tabs
+    with yt-dlp instead, on every run of the outage (#246).
+    """
     if api_available():
         try:
             return fetch_api_uploads(channel)
-        except FeedUnavailable:
-            pass
+        except YouTubeBlocked:
+            raise
+        except (FeedUnavailable, YouTubeError) as e:
+            logger.debug(f"[YouTube] API uploads for '{getattr(channel, 'title', '?')}' failed; "
+                         f"reading the feed: {e}")
     return fetch_rss(channel)
 
 
