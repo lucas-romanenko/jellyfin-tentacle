@@ -64,8 +64,11 @@ def chown_path(path) -> None:
     user Sonarr/Radarr run as, and a root-owned season folder made Sonarr's
     imports into it fail with "permission denied" weeks later. Nothing
     changes under a root-owned folder, or when Tentacle doesn't run as root.
+    A symlink is never re-owned: os.chown would change what it points at.
     """
     try:
+        if os.path.islink(path):
+            return
         if VOD_PUID is not None:
             os.chown(path, int(VOD_PUID), int(VOD_PGID or VOD_PUID))
             return
@@ -88,7 +91,8 @@ def repair_hybrid_ownership(db) -> list:
     rows with sonarr_path set): chown the show dir, its season dirs, and any
     real video files not owned by PUID. Narrow on purpose — only hybrid shows
     are ever written to by Sonarr, so the huge pure-VOD catalog is never
-    walked. No-op when PUID is unset."""
+    walked. Symlinked show or season folders are not walked: what they point
+    at isn't Tentacle's to re-own. No-op when PUID is unset."""
     if VOD_PUID is None:
         return []
     from models.database import Series as _Series
@@ -98,9 +102,9 @@ def repair_hybrid_ownership(db) -> list:
                                        _Series.strm_path.isnot(None)).all()
     for s in hybrids:
         show_dir = Path(s.strm_path)
-        if not show_dir.is_dir():
+        if not show_dir.is_dir() or show_dir.is_symlink():
             continue
-        targets = [show_dir] + [d for d in show_dir.iterdir() if d.is_dir()]
+        targets = [show_dir] + [d for d in show_dir.iterdir() if d.is_dir() and not d.is_symlink()]
         for d in targets:
             try:
                 changed = False
