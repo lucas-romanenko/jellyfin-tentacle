@@ -91,6 +91,20 @@ class RadarrService:
             logger.error(f"Failed to delete movie tmdb:{tmdb_id} from Radarr: {e}")
             return False
 
+    def get_movie_files(self, movie_id: int) -> list:
+        """Radarr's files for one movie. Raises on failure: callers delete
+        files by this list, so "couldn't read" must not look like "none"."""
+        r = self.session.get(f"{self.url}/api/v3/moviefile", params={"movieId": movie_id}, timeout=15)
+        r.raise_for_status()
+        return r.json()
+
+    def delete_movie_file(self, file_id: int) -> None:
+        """Delete one movie file (only that file, not its folder). A 404 means
+        it is already gone. Raises on any other failure."""
+        r = self.session.delete(f"{self.url}/api/v3/moviefile/{file_id}", timeout=30)
+        if r.status_code != 404:
+            r.raise_for_status()
+
     def search_movie(self, radarr_id: int) -> bool:
         """Ask Radarr to search its indexers for this movie now."""
         try:

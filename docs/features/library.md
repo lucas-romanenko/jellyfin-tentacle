@@ -75,7 +75,11 @@ The dashboard shows a duplicate count if any are detected. Click through to see 
 
 ### Resolving
 
-You can resolve duplicates individually or all at once. Resolving removes the duplicate record from the database — it doesn't delete any files. You decide which version to keep by managing it in your provider categories or Radarr.
+You can resolve duplicates individually or all at once:
+
+- **Keep Downloaded** deletes the VOD copy (its `.strm` and `.nfo` files) and keeps the download. Tentacle stops importing that title from your provider.
+- **Keep VOD** deletes the downloaded files through Radarr or Sonarr and removes the title there. When the download shares its folder with the VOD copy, only the downloaded video files are deleted; the `.strm` and `.nfo` files stay.
+- **Keep Both** changes nothing.
 
 !!! info "Hybrid series are not duplicates"
     If you use "Download More Episodes" to add missing episodes to a VOD series, that's an intentional hybrid — not a duplicate. Tentacle tracks this via the `sonarr_path` field and won't flag it.

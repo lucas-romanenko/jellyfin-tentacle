@@ -9,7 +9,9 @@ from pydantic import BaseModel
 from datetime import datetime, timezone
 from models.database import get_db, get_setting, Duplicate, Movie, Series, log_deletion
 from routers.auth import require_admin
-from services.duplicates import delete_vod_files, convert_record_to_downloaded
+from services.duplicates import (
+    delete_vod_files, convert_record_to_downloaded, is_downloaded_file, arr_folder_is_vod_folder,
+)
 from services.media_files import delete_series_files
 
 logger = logging.getLogger(__name__)
@@ -23,7 +25,8 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
                   downloaded-only record (tmdb_id is unique — one row per
                   title; deleting it would make the nightly VOD sync
                   re-import the provider copy as brand new)
-    keep_vod    = delete from Radarr (API + files), clear radarr_path
+    keep_vod    = delete the downloaded files from Radarr/Sonarr (never the
+                  VOD folder), remove the title there, clear radarr_path
     keep_both   = do nothing
     """
     if resolution == "keep_both":
@@ -63,21 +66,11 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
                      detail="Kept downloaded copy — VOD .strm/.nfo files deleted")
 
     elif resolution == "keep_vod":
-        # Delete the downloaded copy from the *arr that owns it (API + files).
-        # Never Radarr for a series: TMDB movie and TV ids are separate number
-        # spaces, so a series' id names an unrelated film in Radarr.
-        if is_series:
-            deleted_ok = _delete_from_sonarr(dup.tmdb_id, db)
-            arr = "Sonarr"
-        else:
-            deleted_ok = _delete_from_radarr(dup.tmdb_id, db)
-            arr = "Radarr"
-
-        # Only touch the DB if the API delete actually succeeded — otherwise
-        # the files are still on disk and the resolution should be retryable.
-        if not deleted_ok:
-            db.rollback()
-            raise HTTPException(502, f"Failed to delete tmdb:{dup.tmdb_id} from {arr} — files may still exist")
+        # Delete the downloaded copy from the *arr that owns it: its files
+        # through the file API, then the title. Never Radarr for a series:
+        # TMDB movie and TV ids are separate number spaces, so a series' id
+        # names an unrelated film in Radarr.
+        arr = _delete_downloaded_copy(dup, record, db)
 
         # The (single) row is the VOD one — just clear the downloaded-copy path
         path_attr = "sonarr_path" if is_series else "radarr_path"
@@ -100,48 +93,76 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
     db.commit()
 
 
-def _delete_from_radarr(tmdb_id: int, db: Session) -> bool:
-    """Delete a movie from Radarr via its API. Returns True on success.
+def _delete_downloaded_copy(dup: Duplicate, record, db: Session) -> str:
+    """Delete the downloaded copy of a duplicate from Radarr/Sonarr, keeping
+    the VOD copy. Returns the arr's name; raises HTTPException (and changes
+    nothing in Tentacle) when the download may still be on disk.
 
-    If Radarr is not configured there is nothing to delete on the *arr side, so
-    we treat it as success (the caller still removes the DB record).
+    Never deleteFiles=true on a folder that is also the VOD folder (the merged
+    layout): Radarr/Sonarr then delete the title's WHOLE folder, .strm and
+    .nfo included, and only after answering 200, so a folder they can't empty
+    fails unseen. Instead the imported files are deleted one by one (a failure
+    is an HTTP error Tentacle sees), never a .strm (Sonarr 4 lists Tentacle's
+    .strm files as episode files), then the title is removed without its
+    files. In separate folders the title goes with deleteFiles=true, which
+    also removes the arr's leftover extras and the empty folder.
+
+    Not configured means there is nothing to delete on the arr side.
     """
-    from services.radarr import RadarrService
+    is_series = dup.media_type != "movie"
+    arr = "Sonarr" if is_series else "Radarr"
+    prefix = "sonarr" if is_series else "radarr"
+    url, key = get_setting(db, f"{prefix}_url"), get_setting(db, f"{prefix}_api_key")
+    if not url or not key:
+        logger.warning(f"Cannot delete tmdb:{dup.tmdb_id} from {arr}: not configured")
+        return arr
 
-    radarr_url = get_setting(db, "radarr_url")
-    radarr_key = get_setting(db, "radarr_api_key")
-    if not radarr_url or not radarr_key:
-        logger.warning(f"Cannot delete tmdb:{tmdb_id} from Radarr — not configured")
-        return True
+    def fail(msg):
+        db.rollback()
+        raise HTTPException(502, f"{msg}; nothing was changed. Try again.")
 
     try:
-        radarr = RadarrService(radarr_url, radarr_key)
-        return bool(radarr.delete_movie(tmdb_id, delete_files=True))
+        if is_series:
+            from services.sonarr import SonarrService
+            svc = SonarrService(url, key)
+            title = svc.get_series_by_tmdb(dup.tmdb_id, raise_errors=True)
+        else:
+            from services.radarr import RadarrService
+            svc = RadarrService(url, key)
+            title = svc.get_movie_by_tmdb(dup.tmdb_id)
     except Exception as e:
-        logger.error(f"Failed to delete tmdb:{tmdb_id} from Radarr: {e}")
-        return False
-
-
-def _delete_from_sonarr(tmdb_id: int, db: Session) -> bool:
-    """Delete a series from Sonarr via its API. Returns True on success.
-
-    Same contract as _delete_from_radarr: not configured means nothing to
-    delete on the *arr side.
-    """
-    from services.sonarr import SonarrService
-
-    sonarr_url = get_setting(db, "sonarr_url")
-    sonarr_key = get_setting(db, "sonarr_api_key")
-    if not sonarr_url or not sonarr_key:
-        logger.warning(f"Cannot delete tmdb:{tmdb_id} from Sonarr — not configured")
-        return True
+        logger.error(f"Keep VOD: could not read tmdb:{dup.tmdb_id} from {arr}: {e}")
+        fail(f"Couldn't reach {arr}")
+    if not title:
+        fail(f"tmdb:{dup.tmdb_id} is not in {arr}, or {arr} could not be read")
 
     try:
-        sonarr = SonarrService(sonarr_url, sonarr_key)
-        return bool(sonarr.delete_series(tmdb_id, delete_files=True))
+        files = svc.get_episode_files(title["id"]) if is_series else svc.get_movie_files(title["id"])
     except Exception as e:
-        logger.error(f"Failed to delete tmdb:{tmdb_id} from Sonarr: {e}")
-        return False
+        logger.error(f"Keep VOD: could not list {arr}'s files for tmdb:{dup.tmdb_id}: {e}")
+        fail(f"Couldn't read {arr}'s files for this title")
+    downloaded = [f for f in files or [] if is_downloaded_file(f.get("path"))]
+    try:
+        if is_series:
+            svc.delete_episode_files([f["id"] for f in downloaded])
+        else:
+            for f in downloaded:
+                svc.delete_movie_file(f["id"])
+    except Exception as e:
+        logger.error(f"Keep VOD: {arr} could not delete the downloaded files of tmdb:{dup.tmdb_id}: {e}")
+        fail(f"{arr} could not delete the downloaded files (they may still be on disk)")
+
+    # With nothing downloaded there is nothing for deleteFiles to remove, and
+    # a folder that is also the VOD folder must never go with the title.
+    delete_files = bool(downloaded) and not arr_folder_is_vod_folder(dup.media_type, title.get("path"), record)
+    ok = (svc.delete_series_by_id(title["id"], delete_files=delete_files) if is_series
+          else svc.delete_movie_by_id(title["id"], delete_files=delete_files))
+    if not ok:
+        fail(f"{arr} refused to remove tmdb:{dup.tmdb_id}" + (" (its downloaded files are already deleted)"
+                                                              if downloaded else ""))
+    logger.info(f"Keep VOD: removed tmdb:{dup.tmdb_id} from {arr}: {len(downloaded)} downloaded file(s) deleted, "
+                f"{len(files or []) - len(downloaded)} .strm kept, deleteFiles={delete_files}")
+    return arr
 
 
 class ResolveRequest(BaseModel):

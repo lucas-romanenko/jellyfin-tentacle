@@ -13,9 +13,50 @@ silently undoing the user's resolution.
 """
 
 import logging
+import unicodedata
 from pathlib import Path
+from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+def is_downloaded_file(path: Optional[str]) -> bool:
+    """A file Radarr/Sonarr imported, not one of Tentacle's own .strm files.
+    Sonarr 4 counts .strm as video: a rescan of a folder the VOD sync also
+    writes to lists Tentacle's .strm files as the series' episode files."""
+    return bool(path) and not path.lower().endswith(".strm")
+
+
+def series_has_real_download(sonarr, series_id) -> Optional[bool]:
+    """True when Sonarr holds at least one episode file that is not a .strm,
+    False when it holds none, None when Sonarr could not be asked."""
+    try:
+        files = sonarr.get_episode_files(series_id)
+    except Exception as e:
+        logger.warning(f"Could not read Sonarr's episode files for series {series_id}: {e}")
+        return None
+    return any(is_downloaded_file(f.get("path")) for f in files or [])
+
+
+def _folder_name(path: Optional[str]) -> str:
+    name = (path or "").replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    return unicodedata.normalize("NFC", name).casefold()
+
+
+def arr_folder_is_vod_folder(media_type: str, arr_path: Optional[str], record) -> bool:
+    """Is the Radarr/Sonarr folder of this title also its VOD folder (the
+    merged layout)? Radarr/Sonarr see the folder under their own mount, so the
+    names are compared, not the paths. Errs towards True: the answer decides
+    whether the arr may delete the whole folder."""
+    if "/vod/" in (arr_path or "").replace("\\", "/").lower():
+        return True
+    strm_path = getattr(record, "strm_path", None) if record is not None else None
+    if strm_path and arr_path:
+        vod_folder = Path(strm_path).parent if media_type == "movie" else Path(strm_path)
+        if _folder_name(str(vod_folder)) == _folder_name(arr_path):
+            return True
+    from routers.activity import _has_vod_folder
+    return _has_vod_folder(media_type, arr_path)
 
 
 def delete_vod_files(strm_path: str):

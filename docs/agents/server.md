@@ -68,7 +68,14 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
 - **Recently Added** is a rolling window (default 30 days), refreshed on
   every scheduled sync.
 - **Duplicates**: found when a download also exists as VOD; resolved ones
-  are deleted from the DB.
+  stay in the DB with their resolution (the sync enforces keep_radarr).
+  Keep VOD (`routers/duplicates.py:_delete_downloaded_copy`) deletes the
+  imported files through Radarr's `moviefile` / Sonarr's `episodefile/bulk`
+  API (never a `.strm`: Sonarr 4 lists Tentacle's `.strm` files as episode
+  files), then removes the title with `deleteFiles=false` when its folder is
+  also the VOD folder (`services/duplicates.arr_folder_is_vod_folder`).
+  Radarr/Sonarr's `deleteFiles=true` deletes the title's whole folder, after
+  answering 200.
 - **Following** = Sonarr `monitorNewItems="all"` (stricter than
   `monitored`), mirrored in `Series.sonarr_monitored`, synced both ways on
   every Sonarr scan; unfollowing keeps `monitored=true`. Hidden for ended

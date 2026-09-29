@@ -96,6 +96,24 @@ class SonarrService:
             logger.error(f"Failed to delete series tmdb:{tmdb_id} from Sonarr: {e}")
             return False
 
+    def get_episode_files(self, series_id: int) -> list:
+        """Sonarr's episode files for one series. Sonarr 4 lists Tentacle's
+        .strm files here too. Raises on failure: callers decide "downloaded"
+        and delete files by this list, so "couldn't read" must not look like
+        "none"."""
+        r = self.session.get(f"{self.url}/api/v3/episodefile", params={"seriesId": series_id}, timeout=15)
+        r.raise_for_status()
+        return r.json()
+
+    def delete_episode_files(self, file_ids: list) -> None:
+        """Delete these episode files (only the files, not their folders).
+        Raises on failure."""
+        if not file_ids:
+            return
+        r = self.session.delete(f"{self.url}/api/v3/episodefile/bulk",
+                                json={"episodeFileIds": list(file_ids)}, timeout=60)
+        r.raise_for_status()
+
     def get_quality_profiles(self) -> list:
         try:
             r = self.session.get(f"{self.url}/api/v3/qualityprofile", timeout=10)
