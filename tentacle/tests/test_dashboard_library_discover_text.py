@@ -72,5 +72,14 @@ class LibraryAndDiscoverText(unittest.TestCase):
         html = render(src, "const _epPickerLoaded = {1: %s};" % json.dumps(eps), "_renderEpisodes(1)")
         self.shown_as_text(VALUES, html["ep-list-1"])
 
+    def test_activity_poster_address_and_bad_poster_cache(self):
+        src = ESC + "const _activityBadPosters = new Set();\n" + functions("pages.js", ["_activityPoster"])
+        addr = 'http://img.test/p"a\'th&x=1.jpg'
+        html = render(src, "", "written.a = [_activityPoster(%s)]; _activityBadPosters.add(%s); written.b = [_activityPoster(%s)]"
+                      % (json.dumps(addr), json.dumps(addr), json.dumps(addr)))
+        self.assertEqual([addr], Page(html["a"][0]).attrs("src"))  # getAttribute('src') gives this back
+        self.assertEqual([], Page(html["b"][0]).attrs("src"))       # a known bad poster shows the placeholder
+
+
 if __name__ == "__main__":
     unittest.main()

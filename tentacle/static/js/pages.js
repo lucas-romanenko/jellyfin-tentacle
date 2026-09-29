@@ -4976,7 +4976,7 @@ function _activityPosterFailed(img) {
 function _activityPoster(path) {
   const src = path ? _imgUrl(path, 'w185') : '';
   if (!src || _activityBadPosters.has(src)) return '<div class="activity-poster-placeholder">◫</div>';
-  return `<img alt="" src="${src}" loading="lazy" onerror="_activityPosterFailed(this)">`;
+  return `<img alt="" src="${escapeAttr(src)}" loading="lazy" onerror="_activityPosterFailed(this)">`;
 }
 
 // ── Search again / Remove on a Searching card ──────────────────────────
