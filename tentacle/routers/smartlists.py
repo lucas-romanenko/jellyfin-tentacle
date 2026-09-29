@@ -9,7 +9,7 @@ import logging
 import time
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 from fastapi import APIRouter, Depends, Request, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -225,13 +225,20 @@ def set_playlist_sort(req: PlaylistSortRequest, db: Session = Depends(get_db), u
     return update_playlist_sort(req.name, req.sort_by, req.sort_order, db, user_id=user.id)
 
 
+class SyncOneRequest(BaseModel):
+    name: str = ""
+    conditions: List[dict] = []
+    apply_to: str = "both"
+    output_tag: Optional[str] = None
+
+
 @router.post("/sync-one")
-def sync_one(body: dict, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+def sync_one(body: SyncOneRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Fast sync a single custom playlist — used by create/edit to avoid rebuilding all configs."""
-    name = body.get("name", "")
-    conditions = body.get("conditions", [])
-    apply_to = body.get("apply_to", "both")
-    output_tag = body.get("output_tag", name)
+    name = body.name
+    conditions = body.conditions
+    apply_to = body.apply_to
+    output_tag = body.output_tag if "output_tag" in body.model_fields_set else name
     if not name or not conditions:
         return {"error": "name and conditions required"}
     result = sync_single_custom_playlist(db, user.id, name, conditions, apply_to, output_tag)
@@ -345,12 +352,16 @@ def sync_status(user: TentacleUser = Depends(get_user_from_request)):
         return dict(_resync_state_for(user.id))
 
 
+class SyncRequest(BaseModel):
+    full: bool = False
+
+
 @router.post("/sync")
-def sync(body: dict = None, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
+def sync(body: Optional[SyncRequest] = None, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Run per-user playlist pipeline: sync configs → populate items → artwork → home config → notify plugin.
     Pass {"full": true} to force refresh ALL playlists — this runs in the background
     and returns {"status": "started"} immediately (poll /sync-status for completion)."""
-    full = (body or {}).get("full", False)
+    full = bool(body and body.full)
 
     if full:
         # Heavy full rebuild — hand off to a background thread and return now.
@@ -528,7 +539,7 @@ def playlist_health(db: Session = Depends(get_db), user: TentacleUser = Depends(
 
 class PreviewRequest(BaseModel):
     apply_to: str = "both"
-    conditions: list = []
+    conditions: List[dict] = []
 
 
 @router.post("/preview-count")

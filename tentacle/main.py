@@ -987,6 +987,16 @@ async def serve_frontend(full_path: str):
     )
 
 
+@app.exception_handler(OverflowError)
+async def _id_out_of_range(request: Request, exc: OverflowError):
+    # FastAPI accepts an int of any size in a path or query; SQLite refuses to
+    # bind one above 2**63-1. Such an id can't exist: answer like any unknown id
+    # (#286) instead of a 500 with a traceback. Any other overflow is a real bug.
+    if "too large to convert to SQLite" in str(exc):
+        return JSONResponse(status_code=404, content={"detail": "Not found"})
+    return await global_exception_handler(request, exc)
+
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     # Log the full detail server-side, but return a generic message to the client

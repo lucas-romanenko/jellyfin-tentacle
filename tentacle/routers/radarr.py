@@ -230,6 +230,8 @@ def radarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
         return {"status": "ok"}
 
     movie_data = payload.get("movie", {})
+    if not isinstance(movie_data, dict):
+        return {"status": "skipped", "reason": "no movie"}
     tmdb_id = movie_data.get("tmdbId")
     title = movie_data.get("title", "Unknown")
     logger.info(f"[Radarr webhook] {event_type} for '{title}' (tmdb:{tmdb_id})")

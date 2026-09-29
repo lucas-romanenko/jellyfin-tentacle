@@ -198,9 +198,14 @@ def sonarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
         return {"status": "ok"}
 
     series_data = payload.get("series", {})
+    if not isinstance(series_data, dict):
+        return {"status": "skipped", "reason": "no series"}
     tmdb_id = series_data.get("tmdbId") or 0
     title = series_data.get("title", "Unknown")
     episodes = payload.get("episodes", [])
+    if not isinstance(episodes, list):
+        episodes = []
+    episodes = [e for e in episodes if isinstance(e, dict)]
     logger.info(f"[Sonarr webhook] {event_type} for '{title}' (tmdb:{tmdb_id})")
 
     # EpisodeFileDelete with upgrade reason — file is being replaced, ignore
