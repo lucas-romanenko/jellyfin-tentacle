@@ -242,6 +242,27 @@ def _retire_unplayable(db: Session, channel: YouTubeChannel) -> int:
     return len(gone)
 
 
+# One channel at a time is indexed, whoever asked: the scheduled check and a
+# refresh someone started used to run side by side, both saw the same new upload
+# and the second insert failed on UNIQUE(video_id), which ended the scheduled
+# run (#245). A run that finds the lock taken waits for the channel in hand
+# (one channel's index), then indexes with what is current by then.
+_index_lock = threading.Lock()
+
+
+def channel_ref(channel: YouTubeChannel):
+    """(id, title) of a channel, or None when it was removed meanwhile.
+
+    A run holds its channels for minutes; one removed from the page in that time
+    raises ObjectDeletedError on its next attribute read (#278).
+    """
+    from sqlalchemy.orm.exc import ObjectDeletedError
+    try:
+        return channel.id, channel.title
+    except ObjectDeletedError:
+        return None
+
+
 def sync_channel(db: Session, channel: YouTubeChannel, base: str, on_progress=None,
                  light: bool = False) -> dict:
     """Index one channel, write any new media files, then apply retention.
@@ -249,6 +270,19 @@ def sync_channel(db: Session, channel: YouTubeChannel, base: str, on_progress=No
     `light`: the scheduled check, which reads the channel's feed first and lists
     its tabs only when something is new (see indexer._light_check).
     """
+    from sqlalchemy.exc import InvalidRequestError
+    with _index_lock:
+        try:
+            # Its settings as they are now: another run, or the page, may have
+            # changed them (or removed the channel) while this one waited.
+            db.refresh(channel)
+        except InvalidRequestError:
+            logger.info("[YouTube] A channel was removed before its turn; skipping it")
+            return {"skipped": True, "removed": True, "new": 0, "seen": 0}
+        return _sync_channel(db, channel, base, on_progress, light)
+
+
+def _sync_channel(db: Session, channel: YouTubeChannel, base: str, on_progress, light: bool) -> dict:
     result = indexer.index_channel(db, channel, on_progress=on_progress, light=light)
     if result.get("skipped"):
         return result
@@ -827,6 +861,10 @@ def run_youtube_sync() -> dict:
                 break
             if i:
                 time.sleep(traffic.spacing(*CHANNEL_GAP_SECONDS))
+            ref = channel_ref(channel)
+            if ref is None:
+                continue                        # removed from the page meanwhile
+            title = ref[1]
             totals["channels"] += 1
             try:
                 r = sync_channel(db, channel, base, light=True)
@@ -837,13 +875,28 @@ def run_youtube_sync() -> dict:
                     changed.append(channel)
             except YouTubeBlocked as e:
                 totals["errors"] += 1
-                logger.warning(f"[YouTube] '{channel.title}' failed: {e}")
+                logger.warning(f"[YouTube] '{title}' failed: {e}")
                 break
             except YouTubeError as e:
                 totals["errors"] += 1
-                logger.warning(f"[YouTube] '{channel.title}' failed: {e}")
+                logger.warning(f"[YouTube] '{title}' failed: {e}")
+            except Exception as e:
+                # A database error ("database is locked", a UNIQUE clash, a
+                # channel removed mid-index) is this channel's failure. It used
+                # to end the whole run: the channels after it went unchecked and
+                # nothing was published (#245, #253, #278).
+                totals["errors"] += 1
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+                logger.error(f"[YouTube] '{title}' failed: {e}", exc_info=True)
+        changed = [c for c in changed if channel_ref(c)]
         if changed:
-            publish_to_jellyfin(db, changed)
+            try:
+                publish_to_jellyfin(db, changed)
+            except Exception as e:
+                logger.warning(f"[YouTube] Publish to Jellyfin failed: {e}")
         try:
             totals["refilled"] = reconcile_playlists(db)
         except Exception as e:

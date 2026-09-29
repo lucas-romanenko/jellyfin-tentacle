@@ -1146,21 +1146,33 @@ def _start_refresh(channel_ids=None, guide: bool = False) -> bool:
     return True
 
 
-def _note_channel_error(db: Session, channel: YouTubeChannel, exc: Exception) -> None:
+def _note_channel_error(db: Session, channel: YouTubeChannel, exc: Exception, title: str = None) -> None:
     """Record a failed sync on the channel as well as on the run.
 
     The run's copy lives in a toast that is gone a few seconds later, and only
     listing failures inside index_channel ever reached the channel itself — so a
     crash anywhere after indexing (writing files, the guide, retention) left
     "indexed with 1 error" on screen and nothing anywhere to say what it was.
+
+    The channel may have been removed meanwhile: then there is nothing to record
+    on it. Reading its title for the message used to raise ObjectDeletedError
+    here and end the whole run (#278).
     """
+    from sqlalchemy import inspect as sa_inspect
     detail = f"{type(exc).__name__}: {exc}" if not str(exc) else str(exc)
+    if title is None:
+        from services.youtube.sync import channel_ref
+        title = (channel_ref(channel) or (None, "a removed channel"))[1]
     _refresh_state["errors"] += 1
-    _refresh_state["error_detail"] = f"{channel.title}: {detail}"
+    _refresh_state["error_detail"] = f"{title}: {detail}"
     try:
         db.rollback()
-        channel.last_error = detail[:400]
-        channel.error_count = (channel.error_count or 0) + 1
+        identity = sa_inspect(channel).identity
+        live = db.get(YouTubeChannel, identity[0]) if identity else None
+        if live is None:
+            return
+        live.last_error = detail[:400]
+        live.error_count = (live.error_count or 0) + 1
         db.commit()
     except Exception:                       # never let bookkeeping mask the real error
         logger.debug("[YouTube] Could not record the channel error", exc_info=True)
@@ -1194,7 +1206,7 @@ def _run_refresh_once(channel_ids=None):
     """Index the given channels (or every enabled one) with its own session."""
     from models.database import SessionLocal
     from services.youtube import livetv as yt_livetv
-    from services.youtube.sync import base_url, publish_to_jellyfin, sync_channel
+    from services.youtube.sync import base_url, channel_ref, publish_to_jellyfin, sync_channel
 
     db = SessionLocal()
     try:
@@ -1214,7 +1226,13 @@ def _run_refresh_once(channel_ids=None):
                 # this, but a burst of listings is what YouTube flags.
                 import time as _time
                 _time.sleep(traffic.spacing(*MANUAL_CHANNEL_GAP_SECONDS))
-            _refresh_state["channel"] = channel.title
+            ref = channel_ref(channel)
+            if ref is None:
+                # Removed from the page while this run was on an earlier one.
+                _refresh_state["channels_done"] += 1
+                continue
+            title = ref[1]
+            _refresh_state["channel"] = title
             _refresh_state["keep"] = channel.keep_count or 10
             _refresh_state["kept"] = 0
             channel_base = _refresh_state["new"]
@@ -1232,14 +1250,22 @@ def _run_refresh_once(channel_ids=None):
                 _refresh_state["retired"] += r.get("retired", 0)
                 r_written = r.get("written", 0) + r.get("retired", 0)
             except YouTubeError as e:
-                _note_channel_error(db, channel, e)
-                logger.warning(f"[YouTube] Refresh failed for '{channel.title}': {e}")
+                _note_channel_error(db, channel, e, title)
+                logger.warning(f"[YouTube] Refresh failed for '{title}': {e}")
             except Exception as e:
-                _note_channel_error(db, channel, e)
-                logger.error(f"[YouTube] Refresh crashed for '{channel.title}': {e}", exc_info=True)
+                db.rollback()
+                if channel_ref(channel) is None:
+                    # Removed while it was being indexed: its work simply ends.
+                    logger.info(f"[YouTube] '{title}' was removed during its refresh")
+                else:
+                    _note_channel_error(db, channel, e, title)
+                    logger.error(f"[YouTube] Refresh crashed for '{title}': {e}", exc_info=True)
             if r_written:
                 changed.append(channel)
             _refresh_state["channels_done"] += 1
+        # A channel removed during the run is not published either.
+        changed = [c for c in changed if channel_ref(c)]
+        channels = [c for c in channels if channel_ref(c)]
 
         # Publish when something changed — or whenever specific channels were
         # asked for, which is what a newly added one is: its playlist has to
@@ -1379,6 +1405,11 @@ def delete_channel(channel_id: int, db: Session = Depends(get_db)):
             EPGProgram.channel_id == yt_livetv.epg_channel_id(channel)
         ).delete(synchronize_session=False)
     db.delete(channel)   # cascades to videos
+    db.flush()
+    # ...and any row a running refresh committed after the videos above were
+    # read. SQLite does not enforce the foreign key, so it would outlive the
+    # channel and block that video for the channel added again (#278).
+    db.query(YouTubeVideo).filter(YouTubeVideo.channel_fk == channel_id).delete(synchronize_session=False)
     db.commit()
     logger.info(f"[YouTube] Removed channel '{title}' ({removed} file(s) deleted)")
 

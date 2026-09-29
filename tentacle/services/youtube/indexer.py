@@ -545,6 +545,26 @@ def _mark_blocked(db: Session, channel: YouTubeChannel, e: Exception) -> None:
     logger.warning(f"[YouTube] '{channel.title}' bot-checked; backing off: {e}")
 
 
+def _drop_orphans(db: Session) -> int:
+    """Delete video rows whose channel no longer exists.
+
+    A run that committed a new row just after the channel was removed left one
+    behind (SQLite does not enforce the foreign key). video_id is unique across
+    every source, so the channel added again skipped that video for ever as
+    "already indexed under another channel or playlist" (#278).
+    """
+    from services.youtube import library
+    orphans = db.query(YouTubeVideo).filter(
+        ~YouTubeVideo.channel_fk.in_(db.query(YouTubeChannel.id))).all()
+    for video in orphans:
+        library.remove_video(video)
+        db.delete(video)
+    if orphans:
+        db.commit()
+        logger.info(f"[YouTube] Removed {len(orphans)} video row(s) left behind by a removed channel")
+    return len(orphans)
+
+
 def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
                   on_progress=None, light: bool = False) -> dict:
     """Refresh one channel. Returns counts; raises on a blocked/unavailable listing.
@@ -558,6 +578,7 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
         logger.info(f"[YouTube] '{channel.title}' is backed off until {channel.blocked_until} — skipping")
         return {"skipped": True, "new": 0, "seen": 0}
 
+    _drop_orphans(db)
     limit = limit or listing_limit(channel)
     known = {v.video_id for v in db.query(YouTubeVideo.video_id).filter(
         YouTubeVideo.channel_fk == channel.id).all()}
