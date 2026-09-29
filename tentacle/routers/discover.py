@@ -19,11 +19,14 @@ from models.database import get_db, get_setting, Movie, Series, ListSubscription
 from routers.auth import get_user_from_request
 from services.cleaner import clean_list_title
 from services.ssrf import is_safe_url
+from services.exceptions import TMDBConnectionError
 from services.tmdb import TMDBService
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/discover", tags=["discover"])
+
+TMDB_UNREACHABLE = "TMDB could not be reached: showing what is available."
 
 
 def _get_tmdb(db: Session) -> Optional[TMDBService]:
@@ -305,10 +308,22 @@ def get_discover(
 
     known_ids = _known_tmdb_ids(db)
     sections = []
+    tmdb_down = []
+
+    def _tmdb_rows(fn, *args):
+        # A TMDB list that can't be reached (DNS, refused, reset) drops only its
+        # own section: the rest, and "From My Lists", still show (#273).
+        try:
+            return fn(*args)
+        except TMDBConnectionError as e:
+            if not tmdb_down:
+                logger.warning(f"[Discover] {e}")
+            tmdb_down.append(True)
+            return []
 
     if type == "series":
         # ── TV: Popular ──
-        popular = tmdb.get_popular("series")
+        popular = _tmdb_rows(tmdb.get_popular, "series")
         if popular:
             sections.append({
                 "id": "popular",
@@ -317,7 +332,7 @@ def get_discover(
             })
 
         # ── TV: On the Air ──
-        on_the_air = tmdb.get_on_the_air()
+        on_the_air = _tmdb_rows(tmdb.get_on_the_air)
         if on_the_air:
             sections.append({
                 "id": "on_the_air",
@@ -326,7 +341,7 @@ def get_discover(
             })
 
         # ── TV: Top Rated ──
-        top_rated = tmdb.get_top_rated("series")
+        top_rated = _tmdb_rows(tmdb.get_top_rated, "series")
         if top_rated:
             sections.append({
                 "id": "top_rated",
@@ -335,7 +350,7 @@ def get_discover(
             })
     else:
         # ── Movies: Popular ──
-        popular = tmdb.get_popular("movie")
+        popular = _tmdb_rows(tmdb.get_popular, "movie")
         if popular:
             sections.append({
                 "id": "popular",
@@ -344,7 +359,7 @@ def get_discover(
             })
 
         # ── Movies: Now Playing ──
-        now_playing = tmdb.get_now_playing()
+        now_playing = _tmdb_rows(tmdb.get_now_playing)
         if now_playing:
             sections.append({
                 "id": "now_playing",
@@ -353,7 +368,7 @@ def get_discover(
             })
 
         # ── Movies: Upcoming ──
-        upcoming = tmdb.get_upcoming()
+        upcoming = _tmdb_rows(tmdb.get_upcoming)
         if upcoming:
             sections.append({
                 "id": "upcoming",
@@ -370,6 +385,8 @@ def get_discover(
             "items": missing,
         })
 
+    if tmdb_down:
+        return {"sections": sections, "warning": TMDB_UNREACHABLE}
     return {"sections": sections}
 
 

@@ -16,6 +16,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 
 from models.database import create_tables, SessionLocal, seed_defaults, Setting, Provider, SyncRun
+from services.exceptions import TMDBConnectionError
 from routers import settings, providers, sync as sync_router, library, duplicates, lists as lists_router, widget, radarr as radarr_router, sonarr as sonarr_router, tags as tags_router, collections as collections_router, smartlists as smartlists_router, discover as discover_router, livetv as livetv_router, auth as auth_router, activity as activity_router, notifications as notifications_router, health as health_router, youtube as youtube_router, music as music_router
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -985,6 +986,15 @@ async def serve_frontend(full_path: str):
             "Expires": "0",
         }
     )
+
+
+@app.exception_handler(TMDBConnectionError)
+async def _tmdb_unreachable(request: Request, exc: TMDBConnectionError):
+    # TMDB down at the connection level (DNS, refused, reset) where a route
+    # doesn't handle it itself, e.g. a Discover detail or genre page (#273):
+    # say so, instead of a bare 500 with a traceback.
+    logger.warning(f"{request.method} {request.url.path}: {exc}")
+    return JSONResponse(status_code=503, content={"detail": "TMDB could not be reached. Try again later."})
 
 
 @app.exception_handler(OverflowError)

@@ -5417,9 +5417,10 @@ async function loadDiscover() {
     _discoverSections = data.sections || [];
     if (!_discoverSections.length) {
       tabsEl.innerHTML = '';
-      grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>No content found. Check your TMDB bearer token in Settings.</p></div>';
+      grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>${escHtml(data.warning || 'No content found. Check your TMDB bearer token in Settings.')}</p></div>`;
       return;
     }
+    if (data.warning) toast(data.warning, 'warning', 6000);
     // Render section tabs
     tabsEl.innerHTML = _discoverSections.map(sec => {
       const label = DISCOVER_SECTION_LABELS[sec.id] || sec.title;
