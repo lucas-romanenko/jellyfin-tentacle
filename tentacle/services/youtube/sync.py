@@ -211,7 +211,7 @@ def detect_base_url(db: Session, request_host: str = None, request_scheme: str =
     return {"url": None, "tried": tried}
 
 
-UNPLAYABLE_REASON = "unavailable (private, members-only or removed)"
+UNPLAYABLE_REASON = indexer.UNAVAILABLE_REASON
 
 
 def _retire_unplayable(db: Session, channel: YouTubeChannel) -> int:
@@ -231,7 +231,11 @@ def _retire_unplayable(db: Session, channel: YouTubeChannel) -> int:
         library.remove_video(video)
         video.removed_at = datetime.utcnow()
         video.strm_path = None
-        video.skip_reason = UNPLAYABLE_REASON
+        # Read again later (6 h, doubling to 48 h) like any video whose details
+        # could not be read, and restored if it plays by then. Retired without a
+        # next check, a video retired by mistake never came back (#241).
+        indexer._retry_later(video, UNPLAYABLE_REASON)
+    resolver.forget_unplayable(ids)
     if gone:
         db.commit()
         logger.info(f"[YouTube] Retired {len(gone)} video(s) from '{channel.title}' that can no longer be played")

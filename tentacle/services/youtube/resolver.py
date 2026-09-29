@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Optional
 
 from services.youtube import client, traffic
-from services.youtube.errors import VideoUnavailable, YouTubeBlocked, YouTubeError, YouTubeUnavailable
+from services.youtube.errors import VideoUnavailable, YouTubeBlocked, YouTubeError, YouTubeUnavailable, is_gone
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,9 @@ FAILURE_BACKOFF_MAX = 6 * 3600
 TRANSIENT_BACKOFF = 60
 _failures: dict = {}  # video_id -> (retry_at, consecutive_failures, message)
 # Consecutive "this video can't be played" failures (private, members-only,
-# removed, age-restricted): the indexer retires a library video after two.
+# removed, age-restricted): the indexer retires a library video after two. Only
+# a clear verdict counts (errors.is_gone): a bare "Video unavailable" is also
+# how yt-dlp words other failures, and retiring on it deleted playable videos.
 _unplayable: dict = {}
 _tracks: dict = {}    # (video_id, max_height) -> (expires_at, tracks)
 _persist_loaded = False
@@ -160,9 +162,9 @@ def _record_failure(video_id: str, error: Exception) -> None:
     if isinstance(error, YouTubeBlocked):
         return
     with _cache_lock:
-        if isinstance(error, VideoUnavailable):
+        if is_gone(error):
             _unplayable[video_id] = _unplayable.get(video_id, 0) + 1
-        else:
+        elif not isinstance(error, VideoUnavailable):
             _unplayable.pop(video_id, None)
         _, count, _ = _failures.get(video_id, (0, 0, ""))
         count += 1
@@ -255,6 +257,14 @@ def unplayable_ids(min_failures: int = 2) -> set:
     many times in a row — for the indexer to retire."""
     with _cache_lock:
         return {v for v, n in _unplayable.items() if n >= min_failures}
+
+
+def forget_unplayable(video_ids) -> None:
+    """Drop the failure counts of videos just retired: a re-read that brings one
+    back must not see the old count and retire it again at once."""
+    with _cache_lock:
+        for vid in video_ids:
+            _unplayable.pop(vid, None)
 
 
 def _persist_path() -> Path:

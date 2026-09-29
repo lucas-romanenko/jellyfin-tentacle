@@ -108,8 +108,9 @@ Tentacle keeps its YouTube traffic small and irregular without any setup:
 - **Never at a fixed beat.** Checks run about every hour, ±20%, at a random
   time after startup, and each check spreads the channels a minute or so
   apart.
-- **A pause after a bot check.** If YouTube answers with a 429, a captcha or
-  "confirm you're not a bot", every YouTube request stops:
+- **A pause after a bot check.** If YouTube answers with a 429, a captcha,
+  "confirm you're not a bot" or its session rate limit ("try again later"),
+  every YouTube request stops:
   - the first pause lasts an hour, and each block in a row doubles it, up to a day;
   - it survives a restart;
   - videos that were already found keep playing.
@@ -118,6 +119,9 @@ Tentacle keeps its YouTube traffic small and irregular without any setup:
     expires, and still after a restart. The video's playlist is reused too.
   - A video that can't be read (private, members-only) is retried later, not
     on every check.
+  - A library video that fails to play twice for a clear reason (private,
+    members-only, removed, age-restricted) leaves the library, and is read
+    again later (6 h, doubling up to 48 h): if it plays by then, it comes back.
 - **A count in the log.** Once an hour Tentacle logs one line with how many
   requests it made to YouTube and Google, split into background checks,
   playback and artwork.
