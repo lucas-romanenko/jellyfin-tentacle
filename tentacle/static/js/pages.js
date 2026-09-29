@@ -4652,7 +4652,9 @@ function resolveAllKeepRadarr() {
 async function _executeResolveAll() {
   try {
     const r = await api('/api/duplicates/resolve-all', { method: 'POST', body: { resolution: 'keep_radarr' } });
-    toast(`Resolved ${r.count} duplicates`);
+    toast(r.failed
+      ? `Resolved ${r.count} duplicates; ${r.failed} left pending (resolve them one by one to see why)`
+      : `Resolved ${r.count} duplicates`, r.failed ? 'warning' : undefined);
     loadDuplicates();
     _updateDupBadges();
   } catch (e) {

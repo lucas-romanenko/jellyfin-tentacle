@@ -77,9 +77,12 @@ The dashboard shows a duplicate count if any are detected. Click through to see 
 
 You can resolve duplicates individually or all at once:
 
-- **Keep Downloaded** deletes the VOD copy (its `.strm` and `.nfo` files) and keeps the download. Tentacle stops importing that title from your provider.
+- **Keep Downloaded** deletes the VOD copy (its `.strm` and `.nfo` files) and keeps the download. Tentacle stops importing that title from your provider. For a show, Tentacle first checks with Sonarr that at least one episode really was downloaded, and refuses otherwise.
 - **Keep VOD** deletes the downloaded files through Radarr or Sonarr and removes the title there. When the download shares its folder with the VOD copy, only the downloaded video files are deleted; the `.strm` and `.nfo` files stay.
 - **Keep Both** changes nothing.
+
+!!! info "Sonarr and `.strm` files"
+    Sonarr counts `.strm` files as episodes. When Sonarr holds a show in the same folder as its VOD copy, Sonarr lists Tentacle's `.strm` files as downloaded episodes. Tentacle only calls a show a duplicate when Sonarr has at least one episode that is not a `.strm`, and dismisses older duplicates that have none.
 
 !!! info "Hybrid series are not duplicates"
     If you use "Download More Episodes" to add missing episodes to a VOD series, that's an intentional hybrid — not a duplicate. Tentacle tracks this via the `sonarr_path` field and won't flag it.

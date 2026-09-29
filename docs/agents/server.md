@@ -75,7 +75,12 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   files), then removes the title with `deleteFiles=false` when its folder is
   also the VOD folder (`services/duplicates.arr_folder_is_vod_folder`).
   Radarr/Sonarr's `deleteFiles=true` deletes the title's whole folder, after
-  answering 200.
+  answering 200. A series only counts as downloaded when Sonarr lists an
+  episode file that is not a `.strm` (`series_has_real_download`): the
+  Sonarr scan records no duplicate otherwise and dismisses (keep_both)
+  pending ones like that, and Keep Downloaded on a series checks again
+  before deleting anything (409 when nothing is downloaded, 502 when
+  Sonarr can't be asked).
 - **Following** = Sonarr `monitorNewItems="all"` (stricter than
   `monitored`), mirrored in `Series.sonarr_monitored`, synced both ways on
   every Sonarr scan; unfollowing keeps `monitored=true`. Hidden for ended

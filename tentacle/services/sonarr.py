@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from models.database import Series, Duplicate, DownloadRequest, TentacleUser, get_setting, DeletionLog
 from services.radarr import file_loss_looks_like_an_outage
+from services.duplicates import series_has_real_download
 
 DOWNLOADED_TV_TAG = "Downloaded TV"
 RECENTLY_ADDED_TV_TAG = "Recently Added TV"
@@ -555,6 +556,30 @@ class SonarrService:
 _scan_lock = threading.Lock()
 
 
+def _dismiss_strm_only_duplicates(db: Session, sonarr: "SonarrService", all_series: list) -> int:
+    """Dismiss (keep_both) pending series duplicates that Sonarr only holds
+    Tentacle's .strm files for: nothing was downloaded, and Keep Downloaded
+    would delete the whole VOD show. Recorded by scans before this check
+    existed. Nothing is deleted; a duplicate Sonarr can't be asked about
+    stays pending."""
+    pending = db.query(Duplicate).filter(Duplicate.media_type == "series",
+                                         Duplicate.resolution == "pending").all()
+    if not pending:
+        return 0
+    by_tmdb = {s.get("tmdbId"): s for s in all_series if s.get("tmdbId")}
+    dismissed = 0
+    for dup in pending:
+        show = by_tmdb.get(dup.tmdb_id)
+        if not show or series_has_real_download(sonarr, show.get("id")) is not False:
+            continue
+        dup.resolution = "keep_both"
+        dup.resolved_at = datetime.utcnow()
+        dismissed += 1
+        logger.info(f"Sonarr scan: dismissed the duplicate of '{show.get('title')}' (tmdb:{dup.tmdb_id}): "
+                    f"Sonarr only lists Tentacle's VOD .strm files for it, nothing was downloaded")
+    return dismissed
+
+
 def scan_sonarr_library(db: Session) -> dict:
     """
     Scan Sonarr library and:
@@ -680,8 +705,15 @@ def _scan_sonarr_library(db: Session) -> dict:
                 existing.downloaded_at = sonarr_date
                 changed = True
             # If this was a VOD-only row, create a duplicate record
-            # Skip if sonarr_path already set (intentional add via "Download More Episodes")
-            if existing.source and existing.source.startswith("provider_") and not had_sonarr_path and tmdb_id not in existing_dup_tmdb_ids:
+            # Skip if sonarr_path already set (intentional add via "Download More Episodes").
+            # Sonarr 4 counts Tentacle's own .strm files as episode files, so
+            # a series Sonarr holds at the VOD folder has episodeFileCount > 0
+            # without a single download: no duplicate then (Keep Downloaded
+            # would delete the whole VOD show). Unknown (Sonarr didn't answer)
+            # is recorded as before; resolving it checks again.
+            if (existing.source and existing.source.startswith("provider_") and not had_sonarr_path
+                    and tmdb_id not in existing_dup_tmdb_ids
+                    and series_has_real_download(sonarr, show.get("id")) is not False):
                 db.add(Duplicate(
                     tmdb_id=tmdb_id,
                     media_type="series",
@@ -772,6 +804,8 @@ def _scan_sonarr_library(db: Session) -> dict:
             })
 
             series_needing_nfo.append((tmdb_id, new_series))
+
+    stats["false_duplicates_dismissed"] = _dismiss_strm_only_duplicates(db, sonarr, all_series)
 
     # Remove series no longer in Sonarr
     sonarr_tmdb_ids = set()

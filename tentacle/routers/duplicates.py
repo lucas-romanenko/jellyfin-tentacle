@@ -44,6 +44,8 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
     is_series = dup.media_type != "movie"
 
     if resolution == "keep_radarr":
+        if is_series:
+            _require_series_download(dup, db)
         # Delete VOD strm/nfo files. A series' VOD path is its show folder, not
         # a .strm, so it needs the folder-aware helper (extension-based, safe in
         # merged folders); the movie helper silently ignored it.
@@ -91,6 +93,35 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
                      detail=f"Kept VOD copy — downloaded files deleted from {arr}")
 
     db.commit()
+
+
+def _require_series_download(dup: Duplicate, db: Session) -> None:
+    """Refuse Keep Downloaded for a show Sonarr holds no real download of.
+
+    Sonarr 4 lists Tentacle's .strm files as episode files, so a show Sonarr
+    holds at the VOD folder looks downloaded without one. Keep Downloaded
+    would then delete every .strm, tvshow.nfo and the empty folders, and hand
+    the row to Sonarr so the VOD sync skips the show for good. Checked on
+    every resolve (a retry or Resolve All too); nothing is deleted unless
+    Sonarr lists at least one file that is not a .strm."""
+    from services.duplicates import series_has_real_download
+    url, key = get_setting(db, "sonarr_url"), get_setting(db, "sonarr_api_key")
+    if not url or not key:
+        raise HTTPException(409, "Sonarr isn't configured, so Tentacle can't check that this show was "
+                                 "downloaded. Nothing was deleted.")
+    from services.sonarr import SonarrService
+    sonarr = SonarrService(url, key)
+    try:
+        show = sonarr.get_series_by_tmdb(dup.tmdb_id, raise_errors=True)
+    except Exception as e:
+        logger.error(f"Keep Downloaded: could not read tmdb:{dup.tmdb_id} from Sonarr: {e}")
+        raise HTTPException(502, "Couldn't reach Sonarr to check the download. Nothing was deleted; try again.")
+    has = series_has_real_download(sonarr, show.get("id")) if show else False
+    if has is None:
+        raise HTTPException(502, "Couldn't read Sonarr's episode files. Nothing was deleted; try again.")
+    if not has:
+        raise HTTPException(409, "Nothing downloaded for this show: Sonarr only lists the VOD .strm files. "
+                                 "Nothing was deleted; use Keep Both to dismiss it.")
 
 
 def _delete_downloaded_copy(dup: Duplicate, record, db: Session) -> str:
