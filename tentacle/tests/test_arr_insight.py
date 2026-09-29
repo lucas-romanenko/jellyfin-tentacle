@@ -51,6 +51,10 @@ class TestSummarize(unittest.TestCase):
         s = arr_insight.summarize([rel("a"), rel("b", rejections=["720p is not wanted in profile"])], "Radarr")
         self.assertEqual("usable", s["state"])
         self.assertEqual("1 usable release found", s["short"])
+        # Radarr never grabs from an interactive search and never searches a
+        # missing movie again by itself: it will not "grab one shortly".
+        self.assertNotIn("shortly", s["summary"])
+        self.assertIn("Search again", s["summary"])
         self.assertEqual("a", s["releases"][0]["title"], "usable first")
 
     def test_all_rejected_says_why_and_the_best_quality(self):
@@ -178,6 +182,59 @@ class TestCheck(_Db):
                 arr_insight.check(self.db, "movie", 100)
         self.assertEqual(504, e.exception.status)
 
+    def test_one_search_per_title_at_a_time(self):
+        import threading
+        gate = threading.Event()
+
+        def slow(url, headers=None, params=None, timeout=None):
+            self.calls.append((url, dict(params or {}), timeout))
+            gate.wait(5)
+            return _Resp(self.releases)
+        out = []
+        with mock.patch.object(arr_insight.requests, "get", side_effect=slow):
+            ts = [threading.Thread(target=lambda: out.append(arr_insight.check(self.db, "movie", 100, max_age=0)))
+                  for _ in range(4)]
+            [t.start() for t in ts]
+            time.sleep(0.3)
+            gate.set()
+            [t.join(10) for t in ts]
+        self.assertEqual(4, len(out))
+        self.assertEqual(1, len(self.calls), "the other three waited for the running search")
+        self.assertEqual({}, arr_insight._inflight)
+
+    def test_a_failed_search_lets_the_next_caller_search(self):
+        import requests
+        with mock.patch.object(arr_insight.requests, "get", side_effect=requests.Timeout()):
+            with self.assertRaises(arr_insight.InsightError):
+                arr_insight.check(self.db, "movie", 100)
+        self.assertEqual({}, arr_insight._inflight)
+        arr_insight.check(self.db, "movie", 100)
+        self.assertEqual(1, len(self.calls))
+
+    def test_waiters_share_a_failure_instead_of_searching_again(self):
+        import requests, threading
+        gate = threading.Event()
+
+        def slow_fail(url, headers=None, params=None, timeout=None):
+            self.calls.append(url)
+            gate.wait(5)
+            raise requests.Timeout()
+        errs = []
+
+        def go():
+            try:
+                arr_insight.check(self.db, "movie", 100, max_age=0)
+            except arr_insight.InsightError as e:
+                errs.append(e.status)
+        with mock.patch.object(arr_insight.requests, "get", side_effect=slow_fail):
+            ts = [threading.Thread(target=go) for _ in range(4)]
+            [t.start() for t in ts]
+            time.sleep(0.3)
+            gate.set()
+            [t.join(10) for t in ts]
+        self.assertEqual([504] * 4, errs)
+        self.assertEqual(1, len(self.calls), "one failing search, not one per caller in turn")
+
     def test_unknown_title(self):
         activity._find_arr_record.side_effect = HTTPException(404, "This movie is not in Radarr")
         with self.assertRaises(arr_insight.InsightError) as e:
@@ -185,23 +242,44 @@ class TestCheck(_Db):
         self.assertEqual(404, e.exception.status)
 
 
+def _offer(media_type, tmdb, guid="g1", indexer_id=4, ids=None):
+    """A check for this title that listed one release."""
+    arr_insight._checks[arr_insight.title_key(media_type, tmdb)] = {
+        "at": time.time(), "ids": ids if ids is not None else ({"movieId": 55} if media_type == "movie" else
+                                                                {"seriesId": 77, "episodeId": 2}),
+        "data": {"releases": [{"guid": guid, "indexer_id": indexer_id}]}}
+
+
 class TestGrab(_Db):
     def test_grabs_by_guid_and_indexer(self):
+        _offer("movie", 100)
         with mock.patch.object(arr_insight.requests, "post", return_value=_Resp({})) as post:
             r = arr_insight.grab(self.db, "movie", 100, 0, "g1", 4)
         self.assertTrue(r["ok"])
         self.assertEqual({"guid": "g1", "indexerId": 4}, post.call_args.kwargs["json"])
         self.assertTrue(post.call_args.args[0].startswith("http://r:7878/api/v3/release"))
 
+    def test_an_unmatched_release_is_not_called_too_old(self):
+        _offer("movie", 100)
+        msg = {"message": "Unable to find matching movie, will need to be manually provided"}
+        with mock.patch.object(arr_insight.requests, "post", return_value=_Resp(msg, 404)):
+            with self.assertRaises(arr_insight.InsightError) as e:
+                arr_insight.grab(self.db, "movie", 100, 0, "g1", 4)
+        self.assertEqual(502, e.exception.status)
+        self.assertIn("Unable to find matching movie", str(e.exception))
+        self.assertIn(arr_insight.title_key("movie", 100), arr_insight._checks, "the list itself is fine")
+
     def test_an_expired_list_says_check_again(self):
-        arr_insight._checks[arr_insight.title_key("series", 5)] = {"at": time.time(), "data": {}}
-        with mock.patch.object(arr_insight.requests, "post", return_value=_Resp({}, 404)):
+        _offer("series", 5)
+        with mock.patch.object(arr_insight.requests, "post", return_value=_Resp(
+                {"message": "Couldn't find requested release in cache, try searching again"}, 404)):
             with self.assertRaises(arr_insight.InsightError) as e:
                 arr_insight.grab(self.db, "series", 5, 0, "g1", 4)
         self.assertEqual(409, e.exception.status)
         self.assertNotIn(arr_insight.title_key("series", 5), arr_insight._checks, "stale check dropped")
 
     def test_refused_carries_the_reason(self):
+        _offer("movie", 100)
         with mock.patch.object(arr_insight.requests, "post", return_value=_Resp({"message": "Download client unavailable"}, 500)):
             with self.assertRaises(arr_insight.InsightError) as e:
                 arr_insight.grab(self.db, "movie", 100, 0, "g1", 4)
@@ -249,6 +327,14 @@ class TestProblems(_Db):
         self.assertEqual("disk", p[0]["kind"])
         self.assertIn("Only 8 GB free", p[0]["message"])
 
+    def test_low_disk_on_windows_paths(self):
+        disks = [{"path": "C:\\", "freeSpace": 900 * 1024 ** 3, "totalSpace": 1000 * 1024 ** 3},
+                 {"path": "D:\\", "freeSpace": 5 * 1024 ** 3, "totalSpace": 4000 * 1024 ** 3}]
+        roots = {"radarr": [{"path": "d:\\Movies\\"}], "sonarr": []}
+        with self.fake([], [], disks, roots):
+            p = arr_insight.problems(self.db)
+        self.assertEqual([("disk", "D:\\")], [(x["kind"], x["disk"]) for x in p])
+
     def test_cached(self):
         with self.fake([], []):
             arr_insight.problems(self.db)
@@ -277,7 +363,40 @@ class TestComingUp(_Db):
         self.assertEqual("false", g.call_args.kwargs["params"]["unmonitored"])
 
 
+class TestComingUpFailing(_Db):
+    def test_a_failing_calendar_is_not_asked_on_every_poll(self):
+        import requests
+        with mock.patch.object(arr_insight.requests, "get", side_effect=requests.Timeout()) as g:
+            self.assertEqual([], arr_insight.coming_up(self.db))
+            self.assertEqual([], arr_insight.coming_up(self.db))
+        self.assertEqual(1, g.call_count)
+        arr_insight._calendar_cache["at"] -= 61
+        with mock.patch.object(arr_insight.requests, "get", return_value=_Resp([])) as g:
+            arr_insight.coming_up(self.db)
+        self.assertEqual(1, g.call_count, "asked again after a minute")
+
+
 class TestAutoChecks(_Db):
+    def test_a_failing_check_does_not_hold_back_the_rest(self):
+        old = _iso(NOW - timedelta(hours=3))
+        wanted = {"searching": [
+            {"media_type": "movie", "tmdb_id": t, "title": str(t), "waiting_since": old} for t in (1, 2, 3, 4)]}
+        checked = []
+
+        def check(db, mt, tm, tv):
+            checked.append(tm)
+            if tm in (1, 2):
+                raise arr_insight.InsightError(504, "slow indexers")
+        arr_insight._auto_failed.clear()
+        self.addCleanup(arr_insight._auto_failed.clear)
+        with mock.patch("models.database.SessionLocal", return_value=self.db), \
+                mock.patch.object(activity, "_get_wanted", return_value=wanted), \
+                mock.patch.object(arr_insight, "check", side_effect=check), \
+                mock.patch.object(self.db, "close"):
+            arr_insight.run_auto_checks()
+            arr_insight.run_auto_checks()
+        self.assertEqual([1, 2, 3, 4], checked, "the second run moves on to the others")
+
     def test_only_long_searching_unchecked_titles_a_couple_at_a_time(self):
         old = _iso(NOW - timedelta(hours=3))
         wanted = {"searching": [
@@ -315,6 +434,14 @@ class TestActivityEndpoints(_Db):
         with mock.patch.object(arr_insight, "check", return_value={"state": "none"}) as c:
             activity.check_releases(activity.ArrTitle(media_type="movie", tmdb_id=100, fresh=True), db=self.db, user=self.admin)
         self.assertEqual(0, c.call_args.kwargs["max_age"])
+
+    def test_the_pick_list_is_never_older_than_radarr_keeps_releases(self):
+        # An automatic check from hours ago still feeds the Searching card, but
+        # its releases can't be downloaded any more (Radarr/Sonarr keep them
+        # ~30 min), so opening the list searches again.
+        with mock.patch.object(arr_insight, "check", return_value={"state": "none"}) as c:
+            activity.check_releases(activity.ArrTitle(media_type="movie", tmdb_id=100), db=self.db, user=self.admin)
+        self.assertEqual(arr_insight.GRAB_FRESH, c.call_args.kwargs["max_age"])
 
     def test_grab_needs_a_release(self):
         with self.assertRaises(HTTPException) as e:
