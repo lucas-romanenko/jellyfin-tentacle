@@ -212,13 +212,19 @@ def api_to_details(item: dict) -> dict:
     thumb = next((thumbs[k]["url"] for k in ("maxres", "standard", "high", "medium", "default")
                   if k in thumbs and thumbs[k].get("url")), None)
     privacy = status.get("privacyStatus")
+    availability = None if privacy in (None, "public") else privacy
+    if (content.get("contentRating") or {}).get("ytRating") == "ytAgeRestricted":
+        # The API calls an age-restricted upload public. yt-dlp can't play one
+        # without cookies ("Sign in to confirm your age"), so it is skipped with
+        # yt-dlp's own availability value for it, as the yt-dlp path skips it (#276).
+        availability = "needs_auth"
     return {
         "id": item.get("id"),
         "title": snippet.get("title"),
         "description": snippet.get("description"),
         "duration": parse_duration(content.get("duration")) or None,
         "live_status": live_status,
-        "availability": None if privacy in (None, "public") else privacy,
+        "availability": availability,
         "release_timestamp": _epoch(live.get("scheduledStartTime")) if live_status in ("is_live", "is_upcoming") else None,
         "timestamp": _epoch(snippet.get("publishedAt")),
         "thumbnail": thumb,
