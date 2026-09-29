@@ -1248,9 +1248,11 @@ def add_missing_to_radarr(list_id: int, body: AddMissingBody = None, db: Session
     if body and body.tmdb_ids:
         target_ids = body.tmdb_ids
     else:
-        # Get all missing: list items not in Movie table
+        # Get all missing: the list's movies not in Movie table. A show's TMDB
+        # id names a different film (or none) in Radarr's movie namespace (#264).
         items = db.query(ListItem).filter(ListItem.list_id == list_id).all()
-        all_ids = [item.tmdb_id for item in items]
+        all_ids = [item.tmdb_id for item in items
+                   if item.tmdb_id and (item.media_type or "movie") != "series"]
         existing = {m.tmdb_id for m in db.query(Movie.tmdb_id).filter(Movie.tmdb_id.in_(all_ids)).all()}
         target_ids = [tid for tid in all_ids if tid not in existing]
 
@@ -1283,7 +1285,7 @@ def add_missing_to_sonarr(list_id: int, body: AddMissingBody = None, db: Session
         target_ids = body.tmdb_ids
     else:
         items = db.query(ListItem).filter(ListItem.list_id == list_id).all()
-        all_ids = [item.tmdb_id for item in items]
+        all_ids = [item.tmdb_id for item in items if item.tmdb_id and item.media_type == "series"]
         existing = {s.tmdb_id for s in db.query(Series.tmdb_id).filter(Series.tmdb_id.in_(all_ids)).all()}
         target_ids = [tid for tid in all_ids if tid not in existing]
 
