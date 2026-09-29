@@ -251,7 +251,15 @@ docs: `docs/features/music.md`; plugin side: `Api/MusicController.cs`
   `addOptions.monitor: none` unmonitors every album on the first scan: pass
   `albumsToMonitor: [rgid]`.
 - `services/musicbrainz.py`: 1 request/s, a contact e-mail in the user
-  agent (setting), file cache `musicbrainz_cache`.
+  agent (setting), file cache `musicbrainz_cache`. Pages go before the
+  worker, but give up after `INTERACTIVE_WAIT` (20 s) with
+  `MusicBrainzBusy` (503). The page routes (search, album, artist, song) are
+  `async` and run through `routers/music.py:_run_page`: at most
+  `PAGE_THREADS` (4) build at once, the rest wait on the event loop up to
+  `PAGE_QUEUE_WAIT` (then 503), and `MusicBrainz.from_settings(db,
+  page=True)` hands the session's connection back before each lookup. A
+  burst of music pages must never take the shared thread pool or the DB
+  pool (10 + 20): that stalled all of Tentacle (#243).
 - `services/music/`: `worker.py` (one thread; urgent > normal > background),
   `jobs.py`, `original.py` (the original-release rules, pure), `apply.py`
   (pins and trims; deletions only when exactly the expected leftovers

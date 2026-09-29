@@ -8,6 +8,8 @@ Tentacle shows no music anywhere.
 """
 import hmac
 import logging
+import threading
+import time
 from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlparse
 
@@ -188,21 +190,50 @@ def _via(request: Optional[Request]) -> str:
 
 
 def _musicbrainz_errors(fn):
-    """MusicBrainz or Lidarr trouble becomes a 502 with the reason, not a 500."""
+    """MusicBrainz or Lidarr trouble becomes a 502 with the reason, not a 500
+    (503 when MusicBrainz is too busy to take the page's lookups now)."""
     import functools
     from services.lidarr import LidarrError
     from services.music.library import MusicUnavailable
-    from services.musicbrainz import MusicBrainzError
+    from services.musicbrainz import MusicBrainzBusy, MusicBrainzError
 
     @functools.wraps(fn)
     def wrapper(*a, **kw):
         try:
             return fn(*a, **kw)
+        except MusicBrainzBusy as e:
+            raise HTTPException(503, e.message)
         except (MusicBrainzError, LidarrError) as e:
             raise HTTPException(e.status if e.status == 404 else 502, e.message)
         except MusicUnavailable as e:
             raise HTTPException(e.status, e.message)
     return wrapper
+
+
+# The pages below wait on MusicBrainz (one request a second for the whole server).
+# At most PAGE_THREADS of them run at once, on the shared thread pool; the others
+# wait on the event loop, holding no thread and no database connection, and give
+# up with a 503 after PAGE_QUEUE_WAIT. A burst of music pages can't stall the rest
+# of Tentacle (or run the database pool dry).
+PAGE_THREADS = 4
+PAGE_QUEUE_WAIT = 10.0
+_page_slots = threading.BoundedSemaphore(PAGE_THREADS)
+
+
+async def _run_page(db: Session, fn, *args):
+    """fn(*args) (a sync page builder) on a worker thread, once a page slot is free."""
+    import anyio
+    from services.musicbrainz import MusicBrainzBusy, release_connection
+    release_connection(db)   # the dependencies' queries took one; nothing is written here
+    deadline = time.monotonic() + PAGE_QUEUE_WAIT
+    while not _page_slots.acquire(blocking=False):
+        if time.monotonic() >= deadline:
+            raise HTTPException(503, MusicBrainzBusy().message)
+        await anyio.sleep(0.05)
+    try:
+        return await anyio.to_thread.run_sync(_musicbrainz_errors(fn), *args)
+    finally:
+        _page_slots.release()
 
 
 def _mbid(value: str) -> str:
@@ -224,37 +255,38 @@ def music_config(request: Request, db: Session = Depends(get_db),
 
 
 @webhook_router.get("/search")
-@_musicbrainz_errors
-def music_search(q: str, request: Request, db: Session = Depends(get_db),
-                 user: TentacleUser = Depends(music_user)):
+async def music_search(q: str, request: Request, db: Session = Depends(get_db),
+                       user: TentacleUser = Depends(music_user)):
     from services.music import browse
-    try:
-        return browse.search(db, q, who=str(user.id if user else ""))
-    except browse.StaleSearch:
-        return {"stale": True, "artists": [], "albums": [], "songs": []}
+    who = str(user.id if user else "")
+
+    def build():
+        try:
+            return browse.search(db, q, who=who)
+        except browse.StaleSearch:
+            return {"stale": True, "artists": [], "albums": [], "songs": []}
+    return await _run_page(db, build)
 
 
 @webhook_router.get("/album/{rgid}")
-@_musicbrainz_errors
-def music_album(rgid: str, db: Session = Depends(get_db), user: TentacleUser = Depends(music_user)):
+async def music_album(rgid: str, db: Session = Depends(get_db), user: TentacleUser = Depends(music_user)):
     from services.music import browse
-    return browse.album_page(db, _mbid(rgid))
+    return await _run_page(db, browse.album_page, db, _mbid(rgid))
 
 
 @webhook_router.get("/artist/{mbid}")
-@_musicbrainz_errors
-def music_artist(mbid: str, db: Session = Depends(get_db), user: TentacleUser = Depends(music_user)):
+async def music_artist(mbid: str, db: Session = Depends(get_db), user: TentacleUser = Depends(music_user)):
     from services.music import browse
-    return browse.artist_page(db, _mbid(mbid))
+    return await _run_page(db, browse.artist_page, db, _mbid(mbid))
 
 
 @webhook_router.get("/song")
-@_musicbrainz_errors
-def music_song(title: str, artist: str, db: Session = Depends(get_db), user: TentacleUser = Depends(music_user)):
+async def music_song(title: str, artist: str, db: Session = Depends(get_db),
+                     user: TentacleUser = Depends(music_user)):
     from services.music import browse
     if not title.strip():
         raise HTTPException(400, "No song title")
-    return browse.song_page(db, title, _mbid(artist))
+    return await _run_page(db, browse.song_page, db, title, _mbid(artist))
 
 
 class AlbumRequest(BaseModel):

@@ -29,6 +29,10 @@ APP = "Tentacle/1.0"
 # holds off this long after a page's last lookup, so a page's follow-up
 # lookups aren't interleaved with the worker's.
 INTERACTIVE_GRACE = 2.0
+# How long someone waiting on a page waits for their turn at MusicBrainz before
+# the page answers "busy" (503): a hung lookup ahead of it can take 15 s per
+# attempt. The background worker has no such limit.
+INTERACTIVE_WAIT = 20.0
 
 _gate = threading.Lock()
 _last_request = [0.0]
@@ -41,7 +45,8 @@ def _is_background() -> bool:
 
 
 def _take_turn(background: bool) -> None:
-    """Acquire the one-request-at-a-time gate; background callers give way to pages."""
+    """Acquire the one-request-at-a-time gate; background callers give way to pages.
+    A page gives up after INTERACTIVE_WAIT (MusicBrainzBusy)."""
     with _turns:
         if background:
             while True:
@@ -51,7 +56,13 @@ def _take_turn(background: bool) -> None:
                 _turns.wait(timeout=1.0 if _interactive["waiting"] else INTERACTIVE_GRACE - idle)
         else:
             _interactive["waiting"] += 1
-    _gate.acquire()
+    if background:
+        _gate.acquire()
+    elif not _gate.acquire(timeout=INTERACTIVE_WAIT):
+        with _turns:
+            _interactive["waiting"] -= 1
+            _turns.notify_all()
+        raise MusicBrainzBusy()
     if not background:
         with _turns:
             _interactive["waiting"] -= 1
@@ -66,6 +77,13 @@ class MusicBrainzError(Exception):
         super().__init__(message)
         self.message = message
         self.status = status
+
+
+class MusicBrainzBusy(MusicBrainzError):
+    """Too many pages are waiting on MusicBrainz (one request a second): try again shortly."""
+
+    def __init__(self):
+        super().__init__("MusicBrainz is busy with other lookups; try again in a moment.", 503)
 
 
 def user_agent(contact: str) -> str:
@@ -125,6 +143,13 @@ def get(path: str, params: Optional[dict] = None, *, contact: str,
         attempt += 1
 
 
+def release_connection(db) -> None:
+    """Hand a read-only session's database connection back to the pool. Objects already
+    loaded stay readable; nothing is done while the session has unsaved changes."""
+    if not (db.new or db.dirty or db.deleted):
+        db.close()
+
+
 # ── Cached lookups ────────────────────────────────────────────────────────
 # Same pattern as services/tmdb.py: one JSON file per request under
 # {data_dir}/musicbrainz_cache, kept for the "cache lifetime" setting.
@@ -135,19 +160,24 @@ SEARCH_TTL = 86400  # searches go stale sooner than lookups
 class MusicBrainz:
     """MusicBrainz for one Tentacle install: its contact, cache folder and lifetime."""
 
-    def __init__(self, contact: str, cache_dir: str, cache_days: int = 30):
+    def __init__(self, contact: str, cache_dir: str, cache_days: int = 30, before_lookup=None):
         self.contact = (contact or "").strip()
         self.cache_dir = Path(cache_dir) / "musicbrainz_cache"
         self.ttl = max(1, int(cache_days or 30)) * 86400
+        self._before_lookup = before_lookup
 
     @classmethod
-    def from_settings(cls, db) -> "MusicBrainz":
+    def from_settings(cls, db, page: bool = False) -> "MusicBrainz":
+        """page=True for a request someone waits on: the session's database connection
+        goes back to the pool before each lookup, so pages queued on MusicBrainz (one
+        request a second) don't use up the pool (the next query takes one again)."""
         from models.database import get_setting
         try:
             days = int(get_setting(db, "musicbrainz_cache_days", "30") or 30)
         except ValueError:
             days = 30
-        return cls(get_setting(db, "musicbrainz_contact"), get_setting(db, "data_dir", "/data"), days)
+        return cls(get_setting(db, "musicbrainz_contact"), get_setting(db, "data_dir", "/data"), days,
+                   before_lookup=(lambda: release_connection(db)) if page else None)
 
     # cache
     def _path(self, key: str) -> Path:
@@ -190,6 +220,8 @@ class MusicBrainz:
         hit, value = self._cached(key, ttl or self.ttl)
         if hit:
             return value
+        if self._before_lookup:
+            self._before_lookup()
         value = get(path, params, contact=self.contact)
         self._store(key, value)
         return value

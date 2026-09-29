@@ -96,7 +96,7 @@ def search(db: Session, q: str, who: str = "") -> dict:
         if _latest_search.get(who) != token:
             raise StaleSearch()
 
-    mb = MusicBrainz.from_settings(db)
+    mb = MusicBrainz.from_settings(db, page=True)
     artists = mb.search_artists(q)
     still_current()
     groups = mb.search_release_groups(q)
@@ -159,7 +159,7 @@ def _release_card(r: dict) -> dict:
 
 
 def album_page(db: Session, rgid: str) -> dict:
-    mb = MusicBrainz.from_settings(db)
+    mb = MusicBrainz.from_settings(db, page=True)
     prefs = rule.Prefs.from_settings(db)
     rg = mb.release_group(rgid)
     releases = mb.release_group_releases(rgid)
@@ -193,7 +193,7 @@ def album_page(db: Session, rgid: str) -> dict:
 # ── Artist page ──────────────────────────────────────────────────────────
 
 def artist_page(db: Session, mbid: str) -> dict:
-    mb = MusicBrainz.from_settings(db)
+    mb = MusicBrainz.from_settings(db, page=True)
     artist = mb.artist(mbid)
     groups = mb.artist_release_groups(mbid)
     statuses = _statuses(db, [g["id"] for g in groups])
@@ -272,7 +272,7 @@ def original_from_recordings(recordings: list, title: str, artists: list) -> dic
 
 
 def song_page(db: Session, title: str, artist_mbid: str) -> dict:
-    mb = MusicBrainz.from_settings(db)
+    mb = MusicBrainz.from_settings(db, page=True)
     found = original_album_for_song(mb, title, artist_mbid)
     out = {"title": title, "artist_mbid": artist_mbid, "highlight": {"title": normalize(title),
                                                                       "recordings": found["recordings"]}}
