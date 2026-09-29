@@ -527,9 +527,9 @@ async function testSetupJellyfin() {
   el.innerHTML = 'Testing...';
   try {
     const r = await api('/api/settings/test', { method: 'POST', body: { type: 'jellyfin', url, api_key: key } });
-    el.innerHTML = `<span style="color:var(--green)">${r.message}</span>`;
+    el.innerHTML = `<span style="color:var(--green)">${escHtml(r.message)}</span>`;
   } catch (e) {
-    el.innerHTML = `<span style="color:var(--red)">${e.message}</span>`;
+    el.innerHTML = `<span style="color:var(--red)">${escHtml(e.message)}</span>`;
   }
 }
 
@@ -608,9 +608,9 @@ async function testSetupArr(type) {
   el.innerHTML = 'Testing...';
   try {
     const r = await api('/api/settings/test', { method: 'POST', body: { type, url, api_key: key } });
-    el.innerHTML = `<span style="color:var(--green)">${r.message}</span>`;
+    el.innerHTML = `<span style="color:var(--green)">${escHtml(r.message)}</span>`;
   } catch (e) {
-    el.innerHTML = `<span style="color:var(--red)">${e.message}</span>`;
+    el.innerHTML = `<span style="color:var(--red)">${escHtml(e.message)}</span>`;
     return;
   }
   // Connected: offer the default quality profile right here.
@@ -887,8 +887,8 @@ function renderProviderCard(p) {
           <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px;flex-wrap:wrap">
             ${capBadges}
           </div>
-          <div class="provider-card-name" style="margin-top:6px">${p.name}</div>
-          <div class="provider-card-url">${(p.provider_type && p.provider_type !== 'xtream') ? ((p.m3u_url || '').split('?')[0] || 'M3U playlist') : p.server_url}</div>
+          <div class="provider-card-name" style="margin-top:6px">${escHtml(p.name)}</div>
+          <div class="provider-card-url">${escHtml((p.provider_type && p.provider_type !== 'xtream') ? ((p.m3u_url || '').split('?')[0] || 'M3U playlist') : p.server_url)}</div>
         </div>
         <div style="display:flex;align-items:center;gap:6px">
           <div class="dot dot-${statusColor}"></div>
@@ -1122,9 +1122,9 @@ function renderCatList() {
       <input type="checkbox" class="cat-checkbox" id="cat-${c.id}"
         ${c.whitelisted ? 'checked' : ''}
         onchange="toggleCatLocal(${c.id}, this.checked)">
-      <label for="cat-${c.id}" class="cat-name" title="${c.name}">${c.name}</label>
-      <span class="badge ${c.type === 'movie' ? 'badge-accent' : 'badge-pink'}">${c.type}</span>
-      ${c.source_tag ? `<span class="badge badge-gray">${c.source_tag}</span>` : ''}
+      <label for="cat-${c.id}" class="cat-name" title="${escHtml(c.name)}">${escHtml(c.name)}</label>
+      <span class="badge ${c.type === 'movie' ? 'badge-accent' : 'badge-pink'}">${escHtml(c.type)}</span>
+      ${c.source_tag ? `<span class="badge badge-gray">${escHtml(c.source_tag)}</span>` : ''}
       ${c.title_count ? `<span style="font-size:11px;color:var(--text3);font-family:'DM Mono',monospace">${c.title_count}</span>` : ''}
     </div>
   `).join('');
