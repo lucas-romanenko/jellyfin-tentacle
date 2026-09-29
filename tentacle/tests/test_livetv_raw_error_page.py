@@ -97,6 +97,48 @@ class ErrorPageAtRedial(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(A, body)
         self.assertLess(log.count(PANEL), 30, "the budget never ran out")
 
+    async def _clocked(self, script, clock, **kw):
+        import asyncio
+        from unittest.mock import patch
+        loop = asyncio.get_running_loop()
+        real_time = loop.time
+        loop.slow_callback_duration = 3600      # the clock jumps on purpose
+        with patch.object(loop, "time", lambda: real_time() + clock["t"]):
+            return await _play(script, **kw)
+
+    async def test_one_packet_then_silence_until_the_close_does_not_reset_the_budget(self):
+        """A panel whose source is offline sends a packet, holds the connection
+        and closes it: delivered, but not past HEALTHY_AFTER, so not a recovery."""
+        clock = {"t": 0.0}
+
+        class _OneThenHang(_Body):
+            async def __aiter__(self):
+                yield A
+                clock["t"] += 11.0
+        conns = [httpx.Response(200, headers={"content-type": "video/mp2t"}, stream=_OneThenHang([]),
+                                request=httpx.Request("GET", TOKENIZED)) for _ in range(60)]
+        script = {PANEL: [_redirect()] * 60 + [_resp(404, PANEL)],
+                  TOKENIZED: [_live([A], then=_dropped())] + conns}
+        body, log, slept = await self._clocked(script, clock, failure_budget=60, is_recording=lambda: False)
+        self.assertLess(log.count(PANEL), 30, "the budget never ran out")
+
+    async def test_a_late_start_that_keeps_delivering_is_still_a_recovery(self):
+        clock = {"t": 0.0}
+
+        class _Late(_Body):
+            async def __aiter__(self):
+                clock["t"] += 11.0
+                yield A
+                clock["t"] += 5.0
+                yield B
+                raise _dropped()
+        conns = [httpx.Response(200, headers={"content-type": "video/mp2t"}, stream=_Late([]),
+                                request=httpx.Request("GET", TOKENIZED)) for _ in range(4)]
+        script = {PANEL: [_redirect()] * 5 + [_resp(404, PANEL)],
+                  TOKENIZED: [_live([A], then=_dropped())] + conns}
+        body, log, slept = await self._clocked(script, clock, failure_budget=60, is_recording=lambda: False)
+        self.assertEqual(A + (A + B) * 4, body)
+
 
 class NoFalsePositive(unittest.IsolatedAsyncioTestCase):
     async def test_a_stream_starting_mid_packet_is_accepted(self):

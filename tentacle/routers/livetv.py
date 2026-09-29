@@ -3977,10 +3977,10 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     cut = len(pending) - (len(pending) % 188) if align else len(pending)
                     if cut:
                         yield pending[:cut]
-                    # A recovery only if it delivered: an error page (or nothing)
-                    # that took a while to come is still a failure, or a viewer's
-                    # budget would never run out.
-                    if last_piece is not None and loop.time() - opened_at >= HEALTHY_AFTER:
+                    # A recovery only if it delivered past HEALTHY_AFTER: an error
+                    # page, nothing, or a packet and then silence until the close
+                    # is still a failure, or a viewer's budget would never run out.
+                    if last_piece is not None and last_piece - opened_at >= HEALTHY_AFTER:
                         failing_since, slept, backoff, backoff_cap = None, 0.0, 1.0, _BACKOFF_CAP
                     if dropped_at is None:      # else: the outage never ended
                         dropped_at = loop.time()
