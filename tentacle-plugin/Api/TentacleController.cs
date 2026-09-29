@@ -88,7 +88,6 @@ public class TentacleController : ControllerBase
 
         // Step 2: Clear home config + discover + ratings caches
         _homeScreenManager.ClearCache();
-        TentacleResultsHandler.ClearItemCache();
         TentacleHomeController.ClearSectionCache();
         TentacleDiscoverController.ClearCache();
         TentacleMdbListController.ClearSettingsCache();
@@ -379,13 +378,13 @@ public class TentacleController : ControllerBase
     // Admin only: it returns any user's home config for the userId it is given,
     // and nothing in the web UI or the app calls it (#72).
     [Authorize(Policy = "RequiresElevation")]
-    public ActionResult GetHomeConfig([FromQuery] Guid userId)
+    public async Task<ActionResult> GetHomeConfig([FromQuery] Guid userId)
     {
         var req = HttpContext.Request;
         var apiKey = req.Query["api_key"].FirstOrDefault()
                      ?? req.Headers["X-Emby-Token"].FirstOrDefault()
                      ?? "";
-        var config = _homeScreenManager.GetHomeConfig(userId, apiKey);
+        var config = await _homeScreenManager.GetHomeConfigAsync(userId, apiKey, HttpContext.RequestAborted).ConfigureAwait(false);
         if (config == null)
         {
             return Ok(new { enabled = false, message = "No home config loaded" });

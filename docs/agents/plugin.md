@@ -17,7 +17,7 @@ Plugin.cs, PluginServiceRegistrator.cs   entry point; services (HomeScreenManage
 Configuration/                          PluginConfiguration (TentacleUrl), configPage.html
 Api/                                    controllers (see plugin-api.md); CallerIdentity (who may act as which user)
 Patching/                               HarmonyInit, IndexHtmlPatch (injects the CSS/JS into index.html), TransformedFileInfo
-HomeScreen/                             HomeScreenManager (per-user home config from the server), TentacleHeroSection, TentacleHomeSection
+HomeScreen/                             HomeScreenManager (per-user home config from the server, awaited and shared per user)
 Playlists/, Tasks/                      PlaylistManager, SmartListConfig, PlaylistRefreshTask
 Services/                               LibraryDeleteHandler (Jellyfin ItemRemoved → server, 2 s debounce), MdbListCacheService
 Inject/                                 the injected tentacle-*.js/.css and the logo (embedded resources)
@@ -52,6 +52,13 @@ user's id forwarded (`GetUserIdParam()`/`AppendUserId()` in
 - **Activity**: the JS polls `TentacleDiscover/Activity` every 3 s while the
   Discover tab is open; the server nudges Radarr/Sonarr's
   `RefreshMonitoredDownloads` (throttled) so progress moves.
+- **Home config reads are awaited, never blocked on**: every home endpoint
+  (Sections, each row, Hero, HeroConfig, Toolbar) needs the user's home
+  config. `HomeScreenManager.GetHomeConfigResultAsync` shares one in-flight
+  fetch per user and token and callers `await` it. The old sync-over-async
+  fetch behind a per-user `lock` starved Jellyfin's thread pool on a burst of
+  home loads and stalled all of Jellyfin (#256). Never add
+  `.GetAwaiter().GetResult()` or `.Result` on a request path.
 - **Home sections**: when Tentacle's home is on, the server turns
   Jellyfin's own home sections off per user (see server.md).
 - **Logo**: served at `/Tentacle/logo.png`; CSS in `tentacle-home.css`

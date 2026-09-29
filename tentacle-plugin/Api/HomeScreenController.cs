@@ -132,7 +132,7 @@ public class TentacleHomeController : ControllerBase
         }
 
         userId = caller.UserId;
-        var config = _homeScreenManager.GetHomeConfig(userId, GetApiKey());
+        var config = await _homeScreenManager.GetHomeConfigAsync(userId, GetApiKey(), HttpContext.RequestAborted).ConfigureAwait(false);
         if (config == null)
         {
             return Ok(new { enabled = false, sections = Array.Empty<object>() });
@@ -244,7 +244,7 @@ public class TentacleHomeController : ControllerBase
         // Read row config (max_items, sort) from home config
         var limit = 20;
         RowConfig? row = null;
-        var config = _homeScreenManager.GetHomeConfig(userId, GetApiKey());
+        var config = await _homeScreenManager.GetHomeConfigAsync(userId, GetApiKey(), HttpContext.RequestAborted).ConfigureAwait(false);
         if (config?.Rows != null)
         {
             row = config.Rows.FirstOrDefault(r => r.PlaylistId == playlistId);
@@ -407,7 +407,7 @@ public class TentacleHomeController : ControllerBase
         }
 
         userId = caller.UserId;
-        var config = _homeScreenManager.GetHomeConfig(userId, GetApiKey());
+        var config = await _homeScreenManager.GetHomeConfigAsync(userId, GetApiKey(), HttpContext.RequestAborted).ConfigureAwait(false);
         if (config?.Hero is not { Enabled: true } hero || string.IsNullOrEmpty(hero.PlaylistId))
         {
             return Ok(new QueryResult<BaseItemDto>());
@@ -615,7 +615,7 @@ public class TentacleHomeController : ControllerBase
             return Forbid();
         }
 
-        var homeConfig = _homeScreenManager.GetHomeConfig(caller.UserId, GetApiKey());
+        var homeConfig = await _homeScreenManager.GetHomeConfigAsync(caller.UserId, GetApiKey(), HttpContext.RequestAborted).ConfigureAwait(false);
         if (homeConfig?.Hero is { Enabled: true } hero && !string.IsNullOrEmpty(hero.PlaylistId))
         {
             // The sort and filters are here too so a client can tell that the
@@ -666,7 +666,7 @@ public class TentacleHomeController : ControllerBase
             return Forbid();
         }
 
-        var homeConfig = _homeScreenManager.GetHomeConfig(caller.UserId, GetApiKey());
+        var homeConfig = await _homeScreenManager.GetHomeConfigAsync(caller.UserId, GetApiKey(), HttpContext.RequestAborted).ConfigureAwait(false);
         // Every client fetches this at start-up, so it also carries the server's
         // answer on focus previews (all / local_only / off). Absent = local_only: a
         // preview of a provider (.strm) title opens a provider connection per card
