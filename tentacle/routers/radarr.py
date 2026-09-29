@@ -361,6 +361,9 @@ def radarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
             # scan_radarr_library() already triggered a library scan and pushed tags
             # for movies it found in Jellyfin. But for newly downloaded movies, Jellyfin
             # may not have indexed them yet. Wait for Jellyfin to scan, then retry.
+            # jf_item stays None when Jellyfin is not configured or the movie
+            # has no tags; the playlist block below reads it (#284).
+            jf_item = None
             jf_url = get_setting(db, "jellyfin_url")
             jf_key = get_setting(db, "jellyfin_api_key")
             jf_uid = get_setting(db, "jellyfin_user_id", "")

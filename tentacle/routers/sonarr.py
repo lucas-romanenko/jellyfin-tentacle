@@ -383,7 +383,7 @@ def _after_scan(db, tmdb_id, title, event_type, first_episode=None, episode_coun
                     jf_item = full_item
 
                 # Tentacle's own tags replaced, everything else kept (#180).
-                from services.tagger import merge_owned_tags, tentacle_owned_tags
+                from services.tagger import merge_owned_tags
                 merged = merge_owned_tags(jf_item.get("Tags"), db_series.tags or [], tentacle_owned_tags(db))
                 if jf.set_item_tags(jf_item["Id"], merged):
                     logger.info(f"[Sonarr webhook] Pushed tags to Jellyfin for '{title}': {merged}")
