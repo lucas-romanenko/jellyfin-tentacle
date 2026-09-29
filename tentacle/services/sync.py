@@ -1527,6 +1527,60 @@ def sweep_orphaned_vod_records(db: Session) -> int:
 
 # ── Main Sync Functions ────────────────────────────────────────────────────
 
+def _finish_run(db: Session, run: SyncRun, status: str, message: str) -> SyncRun:
+    """Record how a sync run ended after an error (#270).
+
+    Committed as before when the session can still write (what the sync did
+    up to the error is kept). When the error was a failed flush ("database is
+    locked", a constraint) the session refuses every statement until it is
+    rolled back: committing the run's end on it raised PendingRollbackError and
+    the row stayed "running" for good (the nightly skipped the provider every
+    night; "Sync now" said a sync was running). Then roll back (only the
+    uncommitted work is lost; each category commits its own) and record it,
+    or record it with a fresh session if even that fails."""
+    text = (message or "").strip()
+    message = text.splitlines()[0][:1000] if text else status.capitalize()
+    from sqlalchemy import inspect as sa_inspect
+    run_id = (sa_inspect(run).identity or (None,))[0]   # no load: the session may refuse one
+
+    def _stamp(row):
+        row.status = status
+        row.error_message = message
+        row.completed_at = datetime.utcnow()
+        if row.started_at:
+            row.duration_seconds = int((row.completed_at - row.started_at).total_seconds())
+
+    for attempt in ("as is", "after a rollback"):
+        try:
+            if attempt != "as is":
+                db.rollback()
+                run = db.merge(run)
+            _stamp(run)
+            db.commit()
+            return run
+        except Exception as e:
+            logger.warning(f"Could not record the end of sync run #{run_id} ({attempt}): {e}")
+            try:
+                db.rollback()
+            except Exception:
+                pass
+    from sqlalchemy.orm import sessionmaker
+    fresh = sessionmaker(bind=db.get_bind())()
+    try:
+        row = fresh.get(SyncRun, run_id)
+        if row is not None:
+            _stamp(row)
+            fresh.commit()
+            fresh.refresh(row)
+            fresh.expunge(row)
+            return row
+    except Exception as e:
+        logger.error(f"Could not record the end of sync run #{run_id}: {e}")
+    finally:
+        fresh.close()
+    return run
+
+
 def sync_provider(
     provider: Provider,
     sync_type: str,  # "full" | "movies" | "series"
@@ -1657,29 +1711,16 @@ def sync_provider(
     except SyncCancelledError as e:
         msg = str(e) or "Cancelled by user"
         logger.info(f"Sync cancelled: {msg}")
-        run.status = "cancelled"
-        run.error_message = msg
-        run.completed_at = datetime.utcnow()
-        run.duration_seconds = int((run.completed_at - run.started_at).total_seconds())
-        db.commit()
+        run = _finish_run(db, run, "cancelled", msg)
     except SyncError as e:
         logger.error(f"Sync error: {e}")
-        run.status = "failed"
-        run.error_message = str(e)
-        run.completed_at = datetime.utcnow()
-        db.commit()
+        run = _finish_run(db, run, "failed", str(e))
     except ProviderConnectionError as e:
         logger.error(f"Sync failed — provider unreachable: {e}")
-        run.status = "failed"
-        run.error_message = str(e)
-        run.completed_at = datetime.utcnow()
-        db.commit()
+        run = _finish_run(db, run, "failed", str(e))
     except Exception as e:
         logger.error(f"Sync failed: {e}", exc_info=True)
-        run.status = "failed"
-        run.error_message = str(e)
-        run.completed_at = datetime.utcnow()
-        db.commit()
+        run = _finish_run(db, run, "failed", str(e))
 
     return run
 

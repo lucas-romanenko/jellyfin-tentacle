@@ -88,6 +88,18 @@ added tags; 6. Jellyfin pipeline (scan, push tags, refresh playlists);
 `write_home_config()`; 10. playlist artwork; 11. `POST /Tentacle/Refresh` to
 clear the plugin's caches.
 
+## VOD sync runs
+
+`sync_provider()` (`services/sync.py`) creates a `SyncRun` row ("running")
+and always ends it; the manual trigger, the nightly guard and Cancel all
+read that row.
+
+- An error ends the run through `_finish_run()`: it commits the end as is,
+  and after a failed flush ("database is locked", a constraint) rolls the
+  session back first (only the category in progress is lost; each category
+  commits its own), or records it with a fresh session. A run left
+  "running" makes the nightly skip the provider every night (#270).
+
 ## How changes reach the clients
 
 | Channel | Client | How |
