@@ -221,7 +221,10 @@ User docs: `docs/features/live-tv.md`.
   Channels may share one `epg_channel_id` (one-to-many in the XMLTV output).
 - After an EPG sync Tentacle deletes and re-adds its XMLTV listing provider
   in Jellyfin, then runs RefreshGuide: re-POSTing a listing provider with
-  the same id does *not* remap new channels.
+  the same id does *not* remap new channels. `services/jellyfin_guide.py`
+  does it under one lock, decides from Jellyfin's config whether the copy
+  was saved (Jellyfin 10.11 can save it and answer 500), and keeps one
+  provider per Path, deleting leftover copies (#274).
 - Provider fields: `provider_type` (xtream, m3u_url, m3u_file),
   `user_agent`, `epg_url`, `require_tmdb_match`, `live_tv_enabled` (VOD and
   Live TV providers share the table; the flag keeps them apart).
