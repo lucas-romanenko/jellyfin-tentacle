@@ -50,17 +50,31 @@ NEGATIVE_ID_BLOCK = 1_000_000_000
 # Tentacle wins that race — a new season hits VOD before Sonarr grabs anything —
 # the folder is root-owned and Sonarr can no longer write into it. Setting
 # PUID/PGID to Sonarr's user hands ownership over at creation time. Unset =
-# current behavior (root-owned, fine for pure-VOD setups).
+# a created path takes its parent folder's owner (see chown_path).
 VOD_PUID = os.environ.get("PUID")
 VOD_PGID = os.environ.get("PGID")
 
 
 def chown_path(path) -> None:
-    """Best-effort chown of a created VOD path to PUID/PGID. No-op when unset."""
-    if VOD_PUID is None:
-        return
+    """Best-effort chown of a path Tentacle just created.
+
+    To PUID/PGID when set. Without them, a path root created takes the owner
+    of the folder it was created in (#239): library roots belong to the media
+    user Sonarr/Radarr run as, and a root-owned season folder made Sonarr's
+    imports into it fail with "permission denied" weeks later. Nothing
+    changes under a root-owned folder, or when Tentacle doesn't run as root.
+    """
     try:
-        os.chown(path, int(VOD_PUID), int(VOD_PGID or VOD_PUID))
+        if VOD_PUID is not None:
+            os.chown(path, int(VOD_PUID), int(VOD_PGID or VOD_PUID))
+            return
+        if not hasattr(os, "geteuid") or os.geteuid() != 0:
+            return
+        parent = os.stat(os.path.dirname(os.path.abspath(str(path))))
+        if (parent.st_uid, parent.st_gid) == (0, 0):
+            return
+        if (os.lstat(path).st_uid, os.lstat(path).st_gid) == (0, 0):
+            os.chown(path, parent.st_uid, parent.st_gid)
     except (OSError, ValueError) as e:
         logger.debug(f"chown_path failed for {path}: {e}")
 

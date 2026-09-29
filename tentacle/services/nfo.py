@@ -253,11 +253,18 @@ def refresh_arr_nfo(nfo_path: Path, write, metadata: dict, tags: List[str],
     DateCreated, so every scan moved every old download to the top of
     "Latest", and dropped whatever Radarr/Sonarr or Jellyfin wrote there
     (#266). A missing one is written in full with `write` (write_movie_nfo or
-    write_series_nfo). True when the file was written.
+    write_series_nfo), and owned like everything else Tentacle creates in a
+    library (PUID/PGID, else the folder's owner): a root-owned NFO in
+    Radarr's/Sonarr's folder blocked their own metadata writes (#239). True
+    when the file was written.
     """
     if nfo_path.exists():
         return update_nfo_tags(nfo_path, tags, owned)
-    return bool(write(nfo_path, metadata, tags))
+    if not write(nfo_path, metadata, tags):
+        return False
+    from services.sync import chown_path
+    chown_path(nfo_path)
+    return True
 
 
 def sanitize_filename(name: str) -> str:
