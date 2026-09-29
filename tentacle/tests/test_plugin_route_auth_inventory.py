@@ -36,7 +36,10 @@ ELEVATED = {
 
 _ACTION = re.compile(
     r"((?:[ \t]*(?:\[[^\n]+\]|//[^\n]*)[ \t]*\n)+)[ \t]*public[^\n]*\(", re.MULTILINE)
-_HTTP = re.compile(r'\[Http(Get|Post|Put|Delete|Patch)\("([^"]*)"\)\]')
+# [HttpGet], [HttpGet("route")], [HttpGet("route", Name = ...)], and the same
+# inside a combined attribute list ([HttpGet("x"), Authorize]).
+_HTTP = re.compile(r'\bHttp(Get|Post|Put|Delete|Patch)(?:\("([^"]*)"[^)]*\))?\s*[\],]')
+_HTTP_ANY = re.compile(r'\bHttp(?:Get|Post|Put|Delete|Patch)\b')
 
 
 def _actions():
@@ -46,12 +49,18 @@ def _actions():
             attrs = m.group(1)
             h = _HTTP.search(attrs)
             if h:
-                yield cs.name, h.group(1).upper(), h.group(2), attrs
+                yield cs.name, h.group(1).upper(), h.group(2) or "", attrs
 
 
 class TestPluginRouteAuthInventory(unittest.TestCase):
     def test_found_the_actions(self):
         self.assertGreater(len(list(_actions())), 60)
+
+    def test_every_http_attribute_is_inspected(self):
+        """A route attribute in a shape the scan does not read would skip its
+        action silently; count them and compare."""
+        attrs = sum(len(_HTTP_ANY.findall(cs.read_text(encoding="utf-8"))) for cs in PLUGIN.rglob("*.cs"))
+        self.assertEqual(attrs, len(list(_actions())))
 
     def test_every_action_is_authorized_or_allowlisted(self):
         missing = []
