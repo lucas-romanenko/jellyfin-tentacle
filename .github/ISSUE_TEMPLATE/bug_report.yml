@@ -1,0 +1,76 @@
+name: Bug report
+description: Something in Tentacle, its Jellyfin plugin or a client doesn't work as it should
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Bugs are reproduced on the maintainer's own install before anything is changed, so the versions below matter: a report without them usually gets a `needs-info` label first.
+        Please remove API keys, passwords, tokens and private addresses from anything you paste.
+  - type: input
+    id: tentacle-version
+    attributes:
+      label: Tentacle server version
+      description: "Open `http://<your-tentacle>:8888/api/version` and paste `commit` (and the image tag you run, e.g. `latest` or `1.9.0`)."
+      placeholder: "e.g. 1.9.0, commit 4f2c9a1"
+    validations:
+      required: true
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Tentacle plugin version
+      description: "Jellyfin → Dashboard → Plugins → Tentacle. Write `not installed` if you don't use it."
+      placeholder: "e.g. 2.271.0.0"
+    validations:
+      required: true
+  - type: input
+    id: jellyfin-version
+    attributes:
+      label: Jellyfin version
+      description: "Jellyfin → Dashboard (bottom of the page)."
+      placeholder: "e.g. 10.11.2"
+    validations:
+      required: true
+  - type: input
+    id: client
+    attributes:
+      label: Client and its version
+      description: "Where you see the problem: Tentacle's dashboard, Jellyfin web (browser), the Tentacle Android TV app (version), another Jellyfin app."
+      placeholder: "e.g. Tentacle Android TV 1.20.3 on a Chromecast with Google TV"
+    validations:
+      required: true
+  - type: textarea
+    id: modifications
+    attributes:
+      label: Local patches or modifications
+      description: "Anything that differs from a stock install: your own image build, edited files, custom CSS or JS in Jellyfin, other plugins that change the home screen or web UI, a reverse proxy in front. Write `none` if there are none."
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Go to ...
+        2. Click ...
+        3. See ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: "Tentacle's container log around the time of the problem (`docker logs --since 10m tentacle`), and Jellyfin's log if the plugin is involved. Remove secrets first."
+      render: text

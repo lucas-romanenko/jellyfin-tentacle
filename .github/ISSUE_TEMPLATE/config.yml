@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation
+    url: https://lucas-romanenko.github.io/jellyfin-tentacle/
+    about: Setup, features and integrations.
+  - name: Troubleshooting and FAQ
+    url: https://lucas-romanenko.github.io/jellyfin-tentacle/troubleshooting/
+    about: Common problems and their fixes; please check here before opening a bug.
+  - name: Questions and ideas
+    url: https://github.com/lucas-romanenko/jellyfin-tentacle/discussions
+    about: Ask how to do something or talk an idea through.

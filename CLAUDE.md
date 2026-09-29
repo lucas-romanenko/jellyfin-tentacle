@@ -121,7 +121,11 @@ make deploy      # run the current origin/main on Lucas's server (app; the plugi
 make verify      # healthy, /api/version = the deployed commit; a deployed plugin is Active in Jellyfin
 ```
 
-Both must pass; report their output. This is private: the image is built
+Both must pass; report their output. To confirm a fix on Lucas's server
+before merging it (triage below), push the branch and run
+`make deploy REF=<branch>` and `make verify REF=<branch>` (verify then also
+fails unless the branch's head is what runs); after the merge, `make deploy`
+and `make verify` put main back. This is private: the image is built
 on the server itself, nothing goes to a registry or a release, and other
 installs are untouched. `make deploy-release` switches Lucas's server back
 to the latest public release (image `latest`, and the released plugin if a
@@ -130,17 +134,55 @@ the server (outside this repo; `TENTACLE_DEPLOY` in the Makefile names it).
 A private plugin build is versioned `<newest release>.<commit count>` (e.g.
 `2.270.0.1189`), so the next real plugin release supersedes it.
 
+Plugin builds on the workbench run under a lock shared by parallel
+sessions: build with `dotnet build --disable-build-servers`, or the
+MSBuild/Roslyn build server outlives the build, inherits the lock's file
+descriptor and holds it for ever (every later build waits; `dotnet
+build-server shutdown` frees it).
+
 Logs: `services/log_redaction.py` strips credentials from every log record
 (uvicorn's access log included): Xtream paths and any query parameter
 named like a secret (`*secret*`, `*token*`, `*password*`, `*api_key*`,
 `key`, ...). A new credential in a URL needs such a name, or a rule there.
 
+## Triage (GitHub issues and pull requests)
+
+Sessions follow the workbench's github-triage skill (a gatekeeper: sort
+every item, reproduce bugs on Lucas's install before changing code, never
+build features without his `approved` label). Tentacle specifics:
+
+- "Lucas's install" = the commit his server reports at `/api/version` and
+  the plugin version his Jellyfin reports (how to read them:
+  his private manual). Reproduce against that commit, not main.
+- Not reproduced: label `needs-info` and ask for Tentacle server version
+  (`/api/version` commit), plugin version (Dashboard → Plugins), Jellyfin
+  version, the client (web, Android TV app and its version, other) and any
+  local patches or modifications. The bug report template asks the same.
+- Reproduced: failing test first, fix on `fix/<n>-<slug>`, push the
+  branch, `make deploy REF=fix/<n>-<slug>` + `make verify REF=...`, confirm
+  on Lucas's install, merge to main (pull requests: squash only), `make
+  deploy` + `make verify`, comment Cause and Change, close.
+- A plugin change restarts Jellyfin on deploy: first check that nobody is
+  watching (how: the private manual).
+- Labels: `needs-info`, `needs-lucas` (a feature or idea waiting for
+  Lucas), `approved` (only Lucas adds it: a feature may be built),
+  plus GitHub's defaults.
+- Issue forms: `.github/ISSUE_TEMPLATE/` (bug report, feature request;
+  `config.yml` keeps blank issues for questions and links the docs,
+  troubleshooting page and Discussions).
+
 ## Releasing is Lucas's decision
 
 Releasing publishes to other people's servers and Jellyfin installs, so
-only Lucas tags or creates releases. A Claude session may prepare release
-notes (what changed since the last tag: `git log vA.B.C..main`) and say
-"ready to release"; it never creates a tag or a release itself.
+only Lucas tags or creates releases. Agents never tag or release (the
+workbench's guard asks before any tag push, `gh release` change or `gh
+workflow run`, and before a push that changes
+`tentacle-plugin/manifest.json`). A session ends with
+draft release notes (user-visible changes by area, issue numbers in
+brackets, upgrade notes; `git log vA.B.C..main`) and "ready to release
+vX.Y.Z", plus "and plugin-vX.Y.Z" when `tentacle-plugin/` changed since the
+last plugin tag (`git diff --stat plugin-vA.B.C origin/main --
+tentacle-plugin`).
 
 | Trigger | Workflow | Publishes |
 |---|---|---|
@@ -199,9 +241,11 @@ deploys and checks his own is in his homelab manual.
 
 ### Plugin release (Lucas)
 
-Tag `plugin-vX.Y.Z` on main and push it. Check: the GitHub release has
+Tag `plugin-vX.Y.Z` on main and push it (with a server release on the same
+commit, tag the plugin first). Check: the GitHub release has
 `tentacle-plugin-vX.Y.Z.zip`, and main has the bot's "Update plugin manifest
-for vX.Y.Z" commit.
+for vX.Y.Z" commit. Notes: `gh release edit plugin-vX.Y.Z --notes-file
+notes.md --latest=false`, so the server release stays "latest".
 
 ## Open items
 
