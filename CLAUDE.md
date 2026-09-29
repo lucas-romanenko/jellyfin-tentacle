@@ -163,8 +163,11 @@ Plugin Release workflow edits it; never edit it by hand.
    git -C /code/jellyfin-tentacle tag -a v1.9.0 -m "v1.9.0"
    git -C /code/jellyfin-tentacle push origin v1.9.0
    ```
-   The last published image is 1.8.8 (its git tag no longer exists), so the
-   next is 1.9.0 or later. Semver: `vX.Y.Z`, pre-releases `vX.Y.Z-rc.N`.
+   The last release is v1.9.0 (2026-09-29, with plugin-v2.271.0), so the
+   next is 1.9.1 or 1.10.0. Semver: `vX.Y.Z`, pre-releases `vX.Y.Z-rc.N`.
+   The docs deploy on a tag needs the `github-pages` environment to allow
+   it: its deployment rules allow the branch `main` and tags `v*` (added
+   2026-09-29, after the v1.9.0 docs deploy was refused).
 3. Optional: `gh release create v1.9.0 --verify-tag --notes-file notes.md`
    for release notes on GitHub (it fires Docker Publish again for the same
    tag; the concurrency group runs them in turn and the result is the same).
