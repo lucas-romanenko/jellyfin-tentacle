@@ -653,6 +653,12 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
                 YouTubeVideo.channel_fk == channel.id,
                 YouTubeVideo.video_id.in_(seen_ids[i:i + 500]),
             ).update({YouTubeVideo.last_seen: now}, synchronize_session=False)
+    # Committed before anything below asks YouTube: the UPDATE holds SQLite's one
+    # write lock until the commit, and a detail read can take tens of seconds.
+    # Every other writer in Tentacle (music, Live TV, the sync) failed with
+    # "database is locked" while it waited (#253). From here on each video is
+    # read first and written in its own short transaction.
+    db.commit()
 
     added, skipped = 0, 0
     skips: dict = {}
