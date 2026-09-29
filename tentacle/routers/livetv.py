@@ -4725,6 +4725,12 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
     return response
 
 
+def _m3u_text(text) -> str:
+    """One M3U field: a CR or LF in a name would start a new line, and an M3U
+    tuner would read what follows as another channel (#260)."""
+    return re.sub(r"[\r\n]+", " ", str(text)) if text else ""
+
+
 @router.get("/api/live/playlist.m3u")
 def live_playlist_m3u(request: Request, db: Session = Depends(get_db)):
     """Generate M3U playlist for Jellyfin M3U tuner import.
@@ -4741,20 +4747,21 @@ def live_playlist_m3u(request: Request, db: Session = Depends(get_db)):
     for ch in channels:
         number = ch.stream_id or str(ch.id)
         epg_id = ch.guide_epg_id or f"tentacle-{ch.id}"
-        logo = f' tvg-logo="{ch.logo_url}"' if ch.logo_url else ""
-        group = f' group-title="{ch.group_title}"' if ch.group_title else ""
+        logo = f' tvg-logo="{_m3u_text(ch.logo_url)}"' if ch.logo_url else ""
+        group = f' group-title="{_m3u_text(ch.group_title)}"' if ch.group_title else ""
         lines.append(
-            f'#EXTINF:-1 tvg-id="{epg_id}" tvg-chno="{number}"{logo}{group},{ch.guide_name}'
+            f'#EXTINF:-1 tvg-id="{_m3u_text(epg_id)}" tvg-chno="{_m3u_text(number)}"{logo}{group},'
+            f'{_m3u_text(ch.guide_name)}'
         )
         lines.append(f"{base_url}/api/live/stream/{ch.id}")
 
     # The same YouTube channels the HDHomeRun lineup carries — a user who set
     # Tentacle up as an M3U tuner gets the same channel list either way.
     for yt in youtube_livetv.live_channels(db):
-        logo = f' tvg-logo="{yt["logo_url"]}"' if yt["logo_url"] else ""
+        logo = f' tvg-logo="{_m3u_text(yt["logo_url"])}"' if yt["logo_url"] else ""
         lines.append(
             f'#EXTINF:-1 tvg-id="{yt["guide_number"]}" tvg-chno="{yt["guide_number"]}"'
-            f'{logo} group-title="{yt["group_title"]}",{yt["name"]}'
+            f'{logo} group-title="{_m3u_text(yt["group_title"])}",{_m3u_text(yt["name"])}'
         )
         lines.append(f"{base_url}/api/youtube/live/{yt['youtube_channel_id']}/stream.ts")
 

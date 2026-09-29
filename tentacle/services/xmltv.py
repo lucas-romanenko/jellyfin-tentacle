@@ -54,6 +54,18 @@ def _reject_doctype_bytes(head: bytes):
         )
 
 
+# Characters XML 1.0 does not allow, even escaped. ElementTree writes them
+# through unchanged, and one in any channel name or programme text made the
+# served guide not well-formed: Jellyfin then dropped the guide of EVERY
+# channel (#260). Stripped at output, so every source (Xtream and M3U names,
+# admin custom names, YouTube text) is covered; valid text is unchanged.
+_INVALID_XML_CHARS = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff\ud800-\udfff]")
+
+
+def _clean(text):
+    return _INVALID_XML_CHARS.sub("", text) if isinstance(text, str) else text
+
+
 def generate_xmltv(channels: list[dict], programs: list[dict]) -> str:
     """
     Generate XMLTV XML string from channel and program data.
@@ -65,11 +77,11 @@ def generate_xmltv(channels: list[dict], programs: list[dict]) -> str:
     root = ET.Element("tv", attrib={"generator-name": "Tentacle"})
 
     for ch in channels:
-        channel_el = ET.SubElement(root, "channel", attrib={"id": ch["id"]})
+        channel_el = ET.SubElement(root, "channel", attrib={"id": _clean(ch["id"])})
         name_el = ET.SubElement(channel_el, "display-name")
-        name_el.text = ch["name"]
+        name_el.text = _clean(ch["name"])
         if ch.get("logo_url"):
-            ET.SubElement(channel_el, "icon", attrib={"src": ch["logo_url"]})
+            ET.SubElement(channel_el, "icon", attrib={"src": _clean(ch["logo_url"])})
 
     for prog in programs:
         start_str = prog["start"].strftime("%Y%m%d%H%M%S +0000")
@@ -79,21 +91,21 @@ def generate_xmltv(channels: list[dict], programs: list[dict]) -> str:
             attrib={
                 "start": start_str,
                 "stop": stop_str,
-                "channel": prog["channel_id"],
+                "channel": _clean(prog["channel_id"]),
             },
         )
         title_el = ET.SubElement(prog_el, "title")
-        title_el.text = prog.get("title") or ""
+        title_el.text = _clean(prog.get("title") or "")
         if prog.get("sub_title"):
-            ET.SubElement(prog_el, "sub-title").text = prog["sub_title"]
+            ET.SubElement(prog_el, "sub-title").text = _clean(prog["sub_title"])
         if prog.get("description"):
             desc_el = ET.SubElement(prog_el, "desc")
-            desc_el.text = prog["description"]
+            desc_el.text = _clean(prog["description"])
         if prog.get("category"):
             cat_el = ET.SubElement(prog_el, "category")
-            cat_el.text = prog["category"]
+            cat_el.text = _clean(prog["category"])
         if prog.get("icon_url"):
-            ET.SubElement(prog_el, "icon", attrib={"src": prog["icon_url"]})
+            ET.SubElement(prog_el, "icon", attrib={"src": _clean(prog["icon_url"])})
 
     return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(root, encoding="unicode")
 
