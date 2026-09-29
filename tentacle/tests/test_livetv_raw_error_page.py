@@ -149,7 +149,7 @@ class NoFalsePositive(unittest.IsolatedAsyncioTestCase):
                 data = lead + b"z" * 99 + A + B + A
                 script = {PANEL: [_redirect(), _resp(404, PANEL)], TOKENIZED: [_page(data, ct)]}
                 body, *_ = await _play(script, failure_budget=120)
-                self.assertEqual(data, body, (lead, ct))
+                self.assertEqual(A + B + A, body, (lead, ct))    # the partial packet in front is dropped
 
     async def test_a_mid_packet_start_in_small_pieces_is_accepted(self):
         """The first read can be a few bytes: the start is judged on enough of it."""
@@ -159,7 +159,38 @@ class NoFalsePositive(unittest.IsolatedAsyncioTestCase):
                   TOKENIZED: [httpx.Response(200, headers={"content-type": "video/mp2t"}, stream=_Body(pieces),
                                              request=httpx.Request("GET", TOKENIZED))]}
         body, *_ = await _play(script, failure_budget=120)
-        self.assertEqual(data, body)
+        self.assertEqual(A + B + A, body)
+
+    async def test_a_mid_packet_start_keeps_later_drops_on_packet_boundaries(self):
+        """Once a mid-packet start is accepted, a later drop still cuts on a
+        packet boundary: the tail of a cut packet never reaches the recording."""
+        first = b"<" + b"z" * 99 + A + B + A + B[:50]
+        script = {PANEL: [_redirect(), _redirect(), _resp(404, PANEL)],
+                  TOKENIZED: [httpx.Response(200, headers={"content-type": "video/mp2t"},
+                                             stream=_Body([first], _dropped()),
+                                             request=httpx.Request("GET", TOKENIZED)),
+                              _live([B])]}
+        body, *_ = await _play(script, failure_budget=120)
+        self.assertEqual(A + B + A + B, body)
+
+    async def test_held_bytes_are_flushed_on_a_drop_and_the_stream_redials(self):
+        part = b"z" * 300          # a start still being held when the connection breaks
+        script = {PANEL: [_redirect(), _redirect(), _resp(404, PANEL)],
+                  TOKENIZED: [httpx.Response(200, headers={"content-type": "video/mp2t"},
+                                             stream=_Body([part[:100], part[100:]], _dropped()),
+                                             request=httpx.Request("GET", TOKENIZED)),
+                              _live([B])]}
+        body, *_ = await _play(script, failure_budget=120)
+        self.assertTrue(body.endswith(B))
+
+    async def test_an_error_page_dropped_while_held_is_not_proxied(self):
+        script = {PANEL: [_redirect(), _redirect(), _resp(404, PANEL)],
+                  TOKENIZED: [httpx.Response(200, headers={"content-type": "text/html"},
+                                             stream=_Body([ERR[:10], ERR[10:]], _dropped()),
+                                             request=httpx.Request("GET", TOKENIZED)),
+                              _live([B])]}
+        body, *_ = await _play(script, failure_budget=120)
+        self.assertEqual(B, body)
 
     async def test_an_error_page_labelled_as_video_is_still_refused(self):
         for page in (ERR, HTML):

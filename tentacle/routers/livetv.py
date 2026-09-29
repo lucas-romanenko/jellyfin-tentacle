@@ -144,16 +144,24 @@ def _raw_retryable(status) -> bool:
 _NOT_MEDIA_TYPES = ("text/html", "application/json", "text/plain", "application/xml", "text/xml")
 
 
-def _looks_like_error_page(content_type: str, first: bytes) -> bool:
+def _ts_sync_offset(first: bytes):
+    """Where the first whole MPEG-TS packet starts in a connection's first
+    bytes: 0 when they start with the sync byte, k when 0x47 comes at k,
+    k+188 and k+376 (a start mid-packet), else None."""
     if first[:1] == b"G":
-        return False
-    if any(first[k] == first[k + 188] == first[k + 376] == 0x47 for k in range(min(188, len(first) - 376))):
+        return 0
+    return next((k for k in range(min(188, len(first) - 376))
+                 if first[k] == first[k + 188] == first[k + 376] == 0x47), None)
+
+
+def _looks_like_error_page(content_type: str, first: bytes) -> bool:
+    if _ts_sync_offset(first) is not None:
         return False
     ct = (content_type or "").lower()
     return any(t in ct for t in _NOT_MEDIA_TYPES) or first.lstrip()[:1] in (b"{", b"<")
 
 
-async def _decidable_start(pieces, need: int = 565):
+async def _decidable_start(pieces, need: int = 564):
     """The connection's pieces, the first ones merged until the start can be
     judged: it begins with the sync byte, or holds three packets' worth (a
     stream that starts mid-packet shows 0x47 every 188 bytes), or the
@@ -3941,6 +3949,12 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                                     backoff_cap = _REFUSAL_BACKOFF_CAP
                                     logger.warning(f"[LiveTV] Raw stream for channel {channel_id}: {reason}")
                                     break
+                                k = _ts_sync_offset(piece)
+                                if k:
+                                    # Started mid-packet: the partial packet in
+                                    # front is unusable, and without it the
+                                    # stream stays cut on packet boundaries.
+                                    piece = piece[k:]
                                 if redialled:
                                     # An outage recovered from: counted once
                                     # the fresh connection really delivers.
