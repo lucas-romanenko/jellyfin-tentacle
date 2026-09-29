@@ -21,7 +21,12 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
-scheduler = BackgroundScheduler()
+# APScheduler 3 drops a run that starts more than misfire_grace_time after its
+# trigger (default 1 s), so a backup freezing the container or a clock step
+# skipped that night's sync (#271). Late runs now run once when the scheduler
+# wakes; the daily jobs below allow hours.
+scheduler = BackgroundScheduler(job_defaults={"coalesce": True, "max_instances": 1,
+                                              "misfire_grace_time": 300})
 
 
 def run_scheduled_sync():
@@ -422,7 +427,8 @@ def reschedule_main_sync(cron: str = None) -> bool:
             minute=parts[0], hour=parts[1],
             day=parts[2], month=parts[3], day_of_week=parts[4]
         )
-        scheduler.add_job(run_scheduled_sync, trigger, id="main_sync", replace_existing=True)
+        scheduler.add_job(run_scheduled_sync, trigger, id="main_sync", replace_existing=True,
+                          misfire_grace_time=6 * 3600)
         logger.info(f"Sync scheduled: {cron}")
         return True
     except Exception as e:
@@ -449,7 +455,7 @@ def reschedule_music_reconcile(time_str: str = None) -> bool:
         logger.warning(f"Invalid music check time '{time_str}' — using {DEFAULTS['music_reconcile_time']}")
         hour, minute = (int(x) for x in DEFAULTS["music_reconcile_time"].split(":"))
     scheduler.add_job(scheduled_reconcile, CronTrigger(hour=hour, minute=minute), id="music_reconcile",
-                      replace_existing=True, max_instances=1, coalesce=True)
+                      replace_existing=True, max_instances=1, coalesce=True, misfire_grace_time=3600)
     logger.info(f"Music check scheduled: daily at {hour:02d}:{minute:02d}")
     return True
 
@@ -596,6 +602,7 @@ def setup_scheduler(db):
         replace_existing=True,
         max_instances=1,
         coalesce=True,
+        misfire_grace_time=3600,
     )
     logger.info("Stream health sweep scheduled: daily at 04:30")
 

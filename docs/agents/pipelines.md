@@ -71,7 +71,10 @@ and bumps the version.
 ## Nightly sync
 
 `sync_schedule` (cron, default `0 3 * * *`), `run_scheduled_sync()` in
-`main.py`:
+`main.py`. A run the scheduler wakes late for (container frozen by a backup,
+clock step) still runs once within 6 h (`misfire_grace_time`; the other
+daily jobs 1 h, everything else 5 min); APScheduler's default of 1 s dropped
+it. A container that is down at the trigger still skips that night.
 
 1. refresh list subscriptions; 2. VOD sync from active providers; 3. Radarr
 scan; 4. Sonarr scan (and Following state for every series); 5. recently
