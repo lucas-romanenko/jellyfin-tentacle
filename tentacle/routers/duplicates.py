@@ -11,6 +11,7 @@ from models.database import get_db, get_setting, Duplicate, Movie, Series, log_d
 from routers.auth import require_admin
 from services.duplicates import (
     delete_vod_files, convert_record_to_downloaded, is_downloaded_file, arr_folder_is_vod_folder,
+    carry_user_data, UserDataCarryError,
 )
 from services.media_files import delete_series_files
 
@@ -28,6 +29,8 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
     keep_vod    = delete the downloaded files from Radarr/Sonarr (never the
                   VOD folder), remove the title there, clear radarr_path
     keep_both   = do nothing
+    Before either deletes a copy, every Jellyfin user's played state, resume
+    point and favourite on it are merged onto the copy that stays.
     """
     if resolution == "keep_both":
         return
@@ -46,6 +49,7 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
     if resolution == "keep_radarr":
         if is_series:
             _require_series_download(dup, db)
+        _carry_user_data(dup, record, "download", db)
         # Delete VOD strm/nfo files. A series' VOD path is its show folder, not
         # a .strm, so it needs the folder-aware helper (extension-based, safe in
         # merged folders); the movie helper silently ignored it.
@@ -72,6 +76,7 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
         # through the file API, then the title. Never Radarr for a series:
         # TMDB movie and TV ids are separate number spaces, so a series' id
         # names an unrelated film in Radarr.
+        _carry_user_data(dup, record, "vod", db)
         arr = _delete_downloaded_copy(dup, record, db)
 
         # The (single) row is the VOD one — just clear the downloaded-copy path
@@ -93,6 +98,16 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
                      detail=f"Kept VOD copy — downloaded files deleted from {arr}")
 
     db.commit()
+
+
+def _carry_user_data(dup: Duplicate, record, keep: str, db: Session) -> None:
+    """Users' watched state on the removed copy goes to the kept one first;
+    when that can't be done, nothing is deleted."""
+    try:
+        carry_user_data(db, dup, record, keep)
+    except UserDataCarryError as e:
+        db.rollback()
+        raise HTTPException(e.status, e.message)
 
 
 def _require_series_download(dup: Duplicate, db: Session) -> None:

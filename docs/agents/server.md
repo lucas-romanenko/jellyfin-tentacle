@@ -80,7 +80,13 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   Sonarr scan records no duplicate otherwise and dismisses (keep_both)
   pending ones like that, and Keep Downloaded on a series checks again
   before deleting anything (409 when nothing is downloaded, 502 when
-  Sonarr can't be asked).
+  Sonarr can't be asked). Before either Keep deletes a copy,
+  `services/duplicates.carry_user_data` merges every Jellyfin user's
+  UserData (`/UserItems/{id}/UserData?userId=`) from the removed copy's
+  item onto the kept one (films by path, shows per season/episode):
+  Jellyfin 10.11 does not share it between two items of one TMDB id.
+  Jellyfin down, or a film's kept copy not scanned yet while the other has
+  user data: nothing is deleted (502 / 409).
 - **Following** = Sonarr `monitorNewItems="all"` (stricter than
   `monitored`), mirrored in `Series.sonarr_monitored`, synced both ways on
   every Sonarr scan; unfollowing keeps `monitored=true`. Hidden for ended

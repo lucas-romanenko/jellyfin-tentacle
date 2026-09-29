@@ -81,6 +81,8 @@ You can resolve duplicates individually or all at once:
 - **Keep VOD** deletes the downloaded files through Radarr or Sonarr and removes the title there. When the download shares its folder with the VOD copy, only the downloaded video files are deleted; the `.strm` and `.nfo` files stay.
 - **Keep Both** changes nothing.
 
+When the two copies are separate items in Jellyfin, each user's watched state on the copy that is removed (played, play count, resume point, favourite) is carried over to the copy that stays before anything is deleted. If Jellyfin can't be reached, or the copy you keep isn't in Jellyfin yet while users have watched state on the other one, nothing is deleted and the duplicate stays pending: scan the library in Jellyfin and try again.
+
 !!! info "Sonarr and `.strm` files"
     Sonarr counts `.strm` files as episodes. When Sonarr holds a show in the same folder as its VOD copy, Sonarr lists Tentacle's `.strm` files as downloaded episodes. Tentacle only calls a show a duplicate when Sonarr has at least one episode that is not a `.strm`, and dismisses older duplicates that have none.
 
