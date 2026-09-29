@@ -360,8 +360,32 @@ def _get_followers_for_series(db, tmdb_id: int) -> list:
     ]
 
 
-def _cleanup_playlists_all_users(tmdb_id: int, media_type: str, jellyfin_item_id: str = None):
-    """Background: remove an item from all users' playlists."""
+def _arr_copy_in_jellyfin(jf, tmdb_id: int, media_type: str, arr_folder: str) -> Optional[str]:
+    """The Jellyfin item of the Radarr/Sonarr copy of a title: the one with
+    this TMDB id whose folder is the app's folder (by name; the apps and
+    Jellyfin mount it at different prefixes), never a VOD .strm. None when
+    Jellyfin no longer lists it."""
+    want = _path_tail(arr_folder, 1)
+    jf_type = "Movie" if media_type == "movie" else "Series"
+    for item in jf._fetch_all_items(jf_type):
+        if (item.get("ProviderIds") or {}).get("Tmdb") != str(tmdb_id):
+            continue
+        path = (jf.get_item_by_id(item["Id"]) or {}).get("Path") or ""
+        if path.lower().endswith(".strm"):
+            continue
+        folder = path.replace("\\", "/").rsplit("/", 1)[0] if media_type == "movie" else path
+        if want and _path_tail(folder, 1) == want:
+            return item["Id"]
+    return None
+
+
+def _cleanup_playlists_all_users(tmdb_id: int, media_type: str, jellyfin_item_id: str = None,
+                                 arr_folder: str = None):
+    """Background: remove an item from all users' playlists.
+
+    arr_folder: the Radarr/Sonarr folder of a deleted download. Only the item
+    in that folder is removed; "the first item with this TMDB id" can be the
+    VOD copy that stays (#296)."""
     from models.database import SessionLocal
     from services.jellyfin import JellyfinService
     from services.smartlists import remove_item_from_playlists
@@ -379,9 +403,12 @@ def _cleanup_playlists_all_users(tmdb_id: int, media_type: str, jellyfin_item_id
             if not users:
                 return
             jf = JellyfinService(jf_url, jf_key, users[0].jellyfin_user_id)
-            jf_type = "Movie" if media_type == "movie" else "Series"
-            jf_item = jf.search_by_tmdb_id(tmdb_id, media_type=jf_type)
-            jf_item_id = jf_item["Id"] if jf_item else None
+            if arr_folder:
+                jf_item_id = _arr_copy_in_jellyfin(jf, tmdb_id, media_type, arr_folder)
+            else:
+                jf_type = "Movie" if media_type == "movie" else "Series"
+                jf_item = jf.search_by_tmdb_id(tmdb_id, media_type=jf_type)
+                jf_item_id = jf_item["Id"] if jf_item else None
 
         if not jf_item_id:
             logger.debug(f"No Jellyfin item found for tmdb:{tmdb_id}, skipping playlist cleanup")

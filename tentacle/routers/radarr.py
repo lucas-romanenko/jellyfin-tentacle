@@ -234,6 +234,11 @@ def radarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
         return {"status": "skipped", "reason": "no movie"}
     tmdb_id = movie_data.get("tmdbId")
     title = movie_data.get("title", "Unknown")
+    # The deleted download's folder: its playlist clean-up must find that
+    # copy, not "the first item with this TMDB id" (maybe the VOD one, #296).
+    movie_file = payload.get("movieFile") if isinstance(payload.get("movieFile"), dict) else {}
+    file_path = str(movie_file.get("path") or "").replace("\\", "/")
+    arr_folder = file_path.rsplit("/", 1)[0] if "/" in file_path else movie_data.get("folderPath")
     logger.info(f"[Radarr webhook] {event_type} for '{title}' (tmdb:{tmdb_id})")
 
     if not tmdb_id:
@@ -264,7 +269,8 @@ def radarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
             emit_library_event("movie_removed", {"tmdb_id": tmdb_id, "title": title, "media_type": "movie"})
             log_activity(db, "radarr_remove", f"Removed '{title}' from Radarr library")
             from routers.library import _cleanup_playlists_all_users
-            threading.Thread(target=_cleanup_playlists_all_users, args=(tmdb_id, "movie"), daemon=True).start()
+            threading.Thread(target=_cleanup_playlists_all_users, args=(tmdb_id, "movie"),
+                             kwargs={"arr_folder": arr_folder}, daemon=True).start()
         logger.info(f"[Radarr webhook] MovieFileDelete for '{title}' (tmdb:{tmdb_id}) — removed {deleted} from DB")
         return {"status": "deleted", "tmdb_id": tmdb_id}
 
@@ -285,7 +291,8 @@ def radarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
             emit_library_event("movie_removed", {"tmdb_id": tmdb_id, "title": title, "media_type": "movie"})
             log_activity(db, "radarr_remove", f"Removed '{title}' from Radarr library")
             from routers.library import _cleanup_playlists_all_users
-            threading.Thread(target=_cleanup_playlists_all_users, args=(tmdb_id, "movie"), daemon=True).start()
+            threading.Thread(target=_cleanup_playlists_all_users, args=(tmdb_id, "movie"),
+                             kwargs={"arr_folder": arr_folder}, daemon=True).start()
         logger.info(f"[Radarr webhook] MovieDelete for '{title}' (tmdb:{tmdb_id}) — removed {deleted} from DB")
         return {"status": "deleted", "tmdb_id": tmdb_id}
 
