@@ -1,22 +1,44 @@
 #!/usr/bin/env bash
-# The full test suite, as CI runs it (.github/workflows/tests.yml): the
-# Python unit tests with the real requirements. The workbench's global
-# pre-push hook (~/homelab/git-hooks) runs this before main moves.
+# The full test suite, as CI runs it (.github/workflows/tests.yml calls this
+# script): the Python unit tests with the real requirements. The workbench's
+# global pre-push hook (~/homelab/git-hooks) runs this before main moves.
 #
 # The virtualenv lives outside the repo, one per requirements.txt version,
 # so it's built once and reused (also by the hook's temporary checkouts).
+# CHECK_PYTHON=python uses that interpreter instead (CI installs the
+# requirements itself). Extra arguments go to unittest (e.g. -v).
+#
+# The suite runs with a TMPDIR of its own, and anything left in it afterwards
+# fails the check: every test removes what it creates (tests/tmp_dirs.py).
+# A run used to leave about a thousand t.db / cache / .strm dirs in /tmp.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-req=tentacle/requirements.txt
-venv="${XDG_CACHE_HOME:-$HOME/.cache}/jellyfin-tentacle/check-venv-$(sha256sum "$req" | cut -c1-12)"
-if [ ! -f "$venv/.ready" ]; then
-	echo "check: building the test virtualenv in $venv (once per requirements.txt)…"
-	rm -rf "$venv"
-	python3 -m venv "$venv"
-	"$venv/bin/pip" install --quiet --disable-pip-version-check -r "$req"
-	touch "$venv/.ready"
+python=${CHECK_PYTHON:-}
+if [ -z "$python" ]; then
+	req=tentacle/requirements.txt
+	venv="${XDG_CACHE_HOME:-$HOME/.cache}/jellyfin-tentacle/check-venv-$(sha256sum "$req" | cut -c1-12)"
+	if [ ! -f "$venv/.ready" ]; then
+		echo "check: building the test virtualenv in $venv (once per requirements.txt)…"
+		rm -rf "$venv"
+		python3 -m venv "$venv"
+		"$venv/bin/pip" install --quiet --disable-pip-version-check -r "$req"
+		touch "$venv/.ready"
+	fi
+	python=$venv/bin/python
 fi
 
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/tentacle-check.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT
+
 cd tentacle
-exec "$venv/bin/python" -m unittest discover -s tests
+status=0
+TMPDIR=$tmp "$python" -m unittest discover -s tests "$@" || status=$?
+
+left=$(find "$tmp" -mindepth 1 -maxdepth 1 | wc -l)
+if [ "$left" -gt 0 ]; then
+	echo "check: the tests left $left item(s) in TMPDIR; each test must remove what it creates (use temp_dir from tests/tmp_dirs.py):" >&2
+	(cd "$tmp" && find . -mindepth 1 -maxdepth 2 | sed 's|^\./||' | sort | head -30) >&2 || true   # head closes the pipe early
+	[ "$status" -ne 0 ] || status=1
+fi
+exit "$status"

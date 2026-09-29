@@ -21,5 +21,8 @@ jobs:
         # of the app failed in CI while passing locally.
         run: pip install -r tentacle/requirements.txt
       - name: Run unit tests
-        working-directory: tentacle
-        run: python -m unittest discover -s tests -v
+        # The same script as the workbench's pre-push check: it also fails when
+        # a test leaves files in TMPDIR.
+        run: scripts/check -v
+        env:
+          CHECK_PYTHON: python

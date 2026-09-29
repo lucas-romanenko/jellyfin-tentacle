@@ -108,7 +108,10 @@ make check       # = scripts/check: the full unit suite, as CI runs it (a venv c
 ```
 
 The workbench's pre-push hook runs the check before main moves (about
-4 min). CI (`tests.yml`) runs the same suite on every push and pull request.
+4 min). CI (`tests.yml`) runs the same script on every push and pull request.
+The suite runs with its own TMPDIR and the check fails if anything is left in
+it: a test's scratch dirs come from `temp_dir(self)` (`tests/tmp_dirs.py`),
+never a bare `tempfile.mkdtemp()`, and no test writes into the source tree.
 Merging to main publishes nothing (see below).
 
 Every coding task ends, after main is pushed, with:
