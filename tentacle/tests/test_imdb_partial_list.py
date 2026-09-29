@@ -11,19 +11,19 @@ No network: requests.post (GraphQL) and requests.get (Servarr) are stubbed
 with responses shaped like the ones the parsers read, and TMDB is a stand-in.
 Run from tentacle/:  python -m unittest discover -s tests -p "test_imdb_partial_list.py"
 """
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 import requests
+from tmp_dirs import temp_dir
 
 
 def _fresh_db():
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
     import models.database as mdb
-    engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db")
+    engine = create_engine(f"sqlite:///{temp_dir()}/t.db")
     mdb.Base.metadata.create_all(engine)
     return sessionmaker(bind=engine)()
 
@@ -82,7 +82,7 @@ class _ListCase(unittest.TestCase):
         from models.database import (ListItem, ListSubscription, Movie, Series,
                                      TentacleUser)
         self.db = _fresh_db()
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = Path(temp_dir(self))
         self.user = TentacleUser(jellyfin_user_id="u1", display_name="Rob")
         self.db.add(self.user)
         self.db.commit()

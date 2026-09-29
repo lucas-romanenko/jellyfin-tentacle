@@ -13,13 +13,13 @@ Listing and details dicts are shaped like yt-dlp's (flat entries carry id and
 title; unavailable playlist entries are listed as "[Private video]").
 Run from tentacle/:  python -m unittest discover -s tests -p "test_youtube_placeholder_titles.py"
 """
-import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
 from test_youtube_indexer_followup import _channel, _fresh_db, _tabs
+from tmp_dirs import temp_dir
 
 BASE = "http://192.0.2.20:8888"
 VID = "dn4JZxXnbDk"
@@ -35,7 +35,7 @@ class _Case(unittest.TestCase):
     def setUp(self):
         self.db = _fresh_db()
         self.channel = _channel(self.db, live_enabled=False, title="Kakė Makė")
-        self.root = Path(tempfile.mkdtemp())
+        self.root = Path(temp_dir(self))
 
     def tearDown(self):
         self.db.close()

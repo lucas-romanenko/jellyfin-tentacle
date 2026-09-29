@@ -7,7 +7,6 @@ automatically, so a transient failure removed user configuration permanently.
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
 import json
-import tempfile
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -16,6 +15,7 @@ from services.smartlists import (
     HOME_CONFIG_BACKUPS, UNRESOLVED_ROW_GRACE_DAYS, _backup_home_config,
     _unresolved_for_days,
 )
+from tmp_dirs import temp_dir
 
 
 class TestUnresolvedAge(unittest.TestCase):
@@ -35,7 +35,7 @@ class TestUnresolvedAge(unittest.TestCase):
 
 class TestBackup(unittest.TestCase):
     def setUp(self):
-        self.dir = Path(tempfile.mkdtemp())
+        self.dir = Path(temp_dir(self))
         self.path = self.dir / "user.json"
         self.path.write_text(json.dumps({"rows": [{"display_name": "Disney+ TV"}]}))
 
@@ -71,7 +71,7 @@ class TestWriteHomeConfigRowPreservation(unittest.TestCase):
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
         self.mock = mock
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = Path(temp_dir(self))
         engine = create_engine(f"sqlite:///{self.tmp}/t.db")
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()

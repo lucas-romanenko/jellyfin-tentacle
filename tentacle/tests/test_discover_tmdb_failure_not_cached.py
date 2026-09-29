@@ -4,11 +4,11 @@ A 429/5xx from TMDB made get_by_genre / get_new_on_provider store [] (or the
 pages read before the failure) for 12 hours, so a one-off rate limit emptied a
 Discover row for half a day. Run from tentacle/:  python -m unittest discover -s tests
 """
-import tempfile
 import unittest
 from unittest import mock
 
 from services.tmdb import TMDBService
+from tmp_dirs import temp_dir
 
 
 class _R:
@@ -34,7 +34,7 @@ def _page(ids):
 
 class TestFailureNotCached(unittest.TestCase):
     def setUp(self):
-        self.t = TMDBService("tok", tempfile.mkdtemp())
+        self.t = TMDBService("tok", temp_dir(self))
 
     def _run(self, call):
         # First call: TMDB rate-limits. Second call: TMDB is fine again.

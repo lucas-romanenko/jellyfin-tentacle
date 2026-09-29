@@ -6,7 +6,6 @@ main.reschedule_main_sync() read the setting straight from the DB: a stored
 "  " was truthy, failed the 5-field check, and no nightly job was scheduled.
 """
 import logging
-import tempfile
 import unittest
 from unittest import mock
 
@@ -14,6 +13,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 import models.database as mdb
+from tmp_dirs import temp_dir
 
 try:
     import main
@@ -26,7 +26,7 @@ class StartupSchedule(unittest.TestCase):
     def setUp(self):
         logging.disable(logging.CRITICAL)
         self.addCleanup(logging.disable, logging.NOTSET)
-        engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db")
+        engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db")
         mdb.Base.metadata.create_all(engine)
         self.Session = sessionmaker(bind=engine)
         self.jobs = []

@@ -11,7 +11,6 @@ RequiresElevation, as the plugin refresh is.
 """
 import logging
 import shutil
-import tempfile
 import unittest
 from unittest import mock
 
@@ -20,6 +19,7 @@ from sqlalchemy.orm import sessionmaker
 
 import models.database as mdb
 from models.database import Setting
+from tmp_dirs import temp_dir
 
 
 def setUpModule():
@@ -55,7 +55,7 @@ def _jellyfin_answering_as(is_admin):
 
 class AdminProbe(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.mkdtemp()
+        tmp = temp_dir(self)
         self.addCleanup(shutil.rmtree, tmp, True)
         engine = create_engine(f"sqlite:///{tmp}/t.db")
         mdb.Base.metadata.create_all(engine)

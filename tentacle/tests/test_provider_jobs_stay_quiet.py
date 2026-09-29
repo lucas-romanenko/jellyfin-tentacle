@@ -11,7 +11,6 @@ the three 509 storms that cut one NHL recording into four files. The health
 sweep already stood aside for live TV; the sync, discovery, the known-bad
 recheck and the "wrong movie" frame grabs did not.
 """
-import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -19,11 +18,12 @@ from unittest import mock
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from tmp_dirs import temp_dir
 
 
 def _db():
     import models.database as mdb
-    engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db", connect_args={"check_same_thread": False})
+    engine = create_engine(f"sqlite:///{temp_dir()}/t.db", connect_args={"check_same_thread": False})
     mdb.Base.metadata.create_all(engine)
     return sessionmaker(bind=engine)()
 
@@ -238,7 +238,7 @@ class RecheckKnownBadIsPolite(unittest.TestCase):
         self.sh = sh
         self.db = _db()
         self.addCleanup(self.db.close)
-        d = Path(tempfile.mkdtemp())
+        d = Path(temp_dir(self))
         for i in range(3):
             f = d / f"t{i}.strm"
             f.write_text(f"http://panel.test/movie/u/p/{100 + i}.mkv")
@@ -332,7 +332,7 @@ class FrameGrabsRefuseWhileLive(unittest.TestCase):
         import services.wrong_match as wm
         db = _db()
         self.addCleanup(db.close)
-        strm = Path(tempfile.mkdtemp()) / "m.strm"
+        strm = Path(temp_dir(self)) / "m.strm"
         strm.write_text("http://panel.test/movie/u/p/5.mkv")
         db.add(mdb.Movie(tmdb_id=5, title="Film", source="provider_1", strm_path=str(strm)))
         db.commit()

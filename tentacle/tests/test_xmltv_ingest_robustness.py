@@ -13,7 +13,6 @@ Run from the tentacle/ directory:  python -m unittest discover -s tests
 import logging
 import os
 import shutil
-import tempfile
 import unittest
 from datetime import datetime, timedelta
 from unittest import mock
@@ -27,6 +26,7 @@ import models.database as mdb
 import routers.livetv as livetv_router
 import services.xmltv as xmltv
 from services.xmltv import _parse_xmltv_time, parse_xmltv, generate_xmltv
+from tmp_dirs import temp_dir
 
 
 def setUpModule():
@@ -109,7 +109,7 @@ class EpgSyncStoresAndServes(unittest.TestCase):
     """The real sync and the real /hdhr/xmltv.xml, with the feed in the disk cache."""
 
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = temp_dir(self)
         self.addCleanup(shutil.rmtree, self.tmp, True)
         engine = create_engine(f"sqlite:///{self.tmp}/t.db")
         mdb.Base.metadata.create_all(engine)

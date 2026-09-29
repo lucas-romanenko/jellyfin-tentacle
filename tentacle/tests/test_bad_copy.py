@@ -3,7 +3,6 @@
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
 import json
-import tempfile
 import unittest
 from datetime import datetime, timedelta
 from unittest import mock
@@ -12,6 +11,7 @@ from fastapi import HTTPException
 
 import models.database as mdb
 from services import bad_copy
+from tmp_dirs import temp_dir
 
 
 class _Resp:
@@ -69,7 +69,7 @@ class _Base(unittest.TestCase):
     def setUp(self):
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
-        engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db")
+        engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db")
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()
         self.addCleanup(self.db.close)

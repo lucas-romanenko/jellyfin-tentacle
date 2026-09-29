@@ -8,7 +8,6 @@ file/folder Jellyfin still lists is not an orphan.
 """
 import logging
 import shutil
-import tempfile
 import unittest
 from unittest import mock
 
@@ -19,13 +18,14 @@ import models.database as mdb
 from models.database import Movie, Series, DownloadRequest, Setting, TentacleUser
 import services.jellyfin as jellyfin
 from services.jellyfin import JellyfinService, sweep_orphaned_downloads
+from tmp_dirs import temp_dir
 
 
 class SweepByPath(unittest.TestCase):
     def setUp(self):
         logging.disable(logging.CRITICAL)
         self.addCleanup(logging.disable, logging.NOTSET)
-        tmp = tempfile.mkdtemp()
+        tmp = temp_dir(self)
         self.addCleanup(shutil.rmtree, tmp, True)
         engine = create_engine(f"sqlite:///{tmp}/t.db")
         mdb.Base.metadata.create_all(engine)

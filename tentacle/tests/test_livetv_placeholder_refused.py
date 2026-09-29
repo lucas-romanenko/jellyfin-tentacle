@@ -24,6 +24,7 @@ import routers.livetv as livetv
 from test_livetv_hls_transient_errors import BASE, PLAYLIST_CT, _drive, _playlist, _resp
 from test_livetv_open_single_fetch import PANEL, TOKENIZED, _open, _redirect
 from test_livetv_raw_reconnect import _dropped, _live, _play
+from tmp_dirs import temp_dir
 
 BLACK = "http://provider.test/video/black.ts"
 MASTER_URL = "http://provider.test/live/u/p/220.m3u8"
@@ -273,11 +274,10 @@ class RunningStreams(_Base):
 class Reporting(unittest.TestCase):
     def test_live_streams_lists_placeholder_refusals(self):
         import shutil
-        import tempfile
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
         import models.database as mdb
-        tmp = tempfile.mkdtemp()
+        tmp = temp_dir(self)
         self.addCleanup(shutil.rmtree, tmp, True)
         engine = create_engine(f"sqlite:///{tmp}/t.db")
         mdb.Base.metadata.create_all(engine)

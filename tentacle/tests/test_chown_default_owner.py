@@ -11,18 +11,18 @@ os.geteuid / os.chown are faked: the test suite does not run as root.
 """
 import os
 import shutil
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 import services.sync as sync
 from services.nfo import refresh_arr_nfo, write_movie_nfo
+from tmp_dirs import temp_dir
 
 
 class _Fs(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = Path(temp_dir(self))
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.owner = {}          # path -> (uid, gid) as the fake filesystem sees it
         self.chowned = []

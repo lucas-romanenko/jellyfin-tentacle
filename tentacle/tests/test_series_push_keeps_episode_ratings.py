@@ -13,6 +13,7 @@ The fake below implements the cascade exactly as the 10.11.8 source does.
 Run from tentacle/:  python -m unittest discover -s tests -p "test_series_push_keeps_episode_ratings.py"
 """
 import unittest
+from tmp_dirs import temp_dir
 
 
 class _FakeJellyfin:
@@ -129,9 +130,8 @@ def _service(fake):
 class _PendingDir(unittest.TestCase):
     def setUp(self):
         import os
-        import tempfile
         from unittest import mock
-        self.data_dir = tempfile.mkdtemp()
+        self.data_dir = temp_dir(self)
         patcher = mock.patch.dict(os.environ, {"DATA_DIR": self.data_dir})
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -516,13 +516,12 @@ class TestRound4(_PendingDir):
         self.assertIn("e2", activity.call_args.args[1])
 
     def test_the_activity_entry_names_the_series_and_episodes(self):
-        import tempfile
         from unittest import mock
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
         import models.database as mdb
         import services.jellyfin as j
-        engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db")
+        engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db")
         mdb.Base.metadata.create_all(engine)
         Session = sessionmaker(bind=engine)
         with mock.patch.object(mdb, "SessionLocal", Session):

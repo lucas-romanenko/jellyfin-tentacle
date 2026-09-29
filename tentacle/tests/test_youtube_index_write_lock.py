@@ -12,7 +12,6 @@ other writer uses a short busy timeout so a held lock shows at once.
 Run from tentacle/:  python -m unittest discover -s tests -p test_youtube_index_write_lock.py
 """
 import sqlite3
-import tempfile
 import unittest
 from datetime import datetime
 from unittest import mock
@@ -23,11 +22,12 @@ from sqlalchemy.orm import sessionmaker
 import models.database as mdb
 from models.database import YouTubeChannel, YouTubeVideo
 from services.youtube import indexer, traffic
+from tmp_dirs import temp_dir
 
 
 class NoWriteLockDuringANetworkRead(unittest.TestCase):
     def setUp(self):
-        self.path = f"{tempfile.mkdtemp()}/t.db"
+        self.path = f"{temp_dir(self)}/t.db"
         engine = create_engine(f"sqlite:///{self.path}", connect_args={"check_same_thread": False})
 
         @event.listens_for(engine, "connect")

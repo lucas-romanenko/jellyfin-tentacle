@@ -10,7 +10,6 @@ Jellyfin: POST /Tentacle/Deletions/{type}/{id}/Confirm answers 200 once for a
 deletion the plugin forwarded.
 """
 import logging
-import tempfile
 import unittest
 from unittest import mock
 
@@ -22,6 +21,7 @@ from sqlalchemy.orm import sessionmaker
 import models.database as mdb
 import routers.library as library
 from models.database import DownloadRequest, Movie, TentacleUser
+from tmp_dirs import temp_dir
 
 
 def setUpModule():
@@ -39,7 +39,7 @@ class _Resp:
 
 class DeleteAuth(unittest.TestCase):
     def setUp(self):
-        engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db", connect_args={"check_same_thread": False})
+        engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db", connect_args={"check_same_thread": False})
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()
         self.addCleanup(self.db.close)

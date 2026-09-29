@@ -13,11 +13,11 @@ YoutubeDL.process_video_result, so a real extraction never has it as None).
 Run from tentacle/:  python -m unittest discover -s tests -p "test_youtube_made_for_kids.py"
 """
 import sqlite3
-import tempfile
 import unittest
 from unittest import mock
 
 from test_youtube_indexer_followup import _channel, _fresh_db, _tabs
+from tmp_dirs import temp_dir
 
 VID = "abcdefghijk"
 
@@ -71,7 +71,7 @@ class TestGuessedValuesAreReset(unittest.TestCase):
     def _db(self):
         from sqlalchemy import create_engine
         import models.database as mdb
-        path = f"{tempfile.mkdtemp()}/t.db"
+        path = f"{temp_dir(self)}/t.db"
         mdb.Base.metadata.create_all(create_engine(f"sqlite:///{path}"))
         conn = sqlite3.connect(path)
         conn.execute("INSERT INTO youtube_channels (id, input_url, kind, title, slug) "

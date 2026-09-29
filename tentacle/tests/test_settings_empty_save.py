@@ -9,7 +9,6 @@ nothing edited also created empty rows for keys that were never set.
 
 Run from tentacle/:  python -m unittest discover -s tests -p "test_settings_empty_save.py"
 """
-import tempfile
 import unittest
 
 from sqlalchemy import create_engine
@@ -17,11 +16,12 @@ from sqlalchemy.orm import sessionmaker
 
 import models.database as mdb
 from models.database import Setting, get_setting
+from tmp_dirs import temp_dir
 
 
 class TestEmptySave(unittest.TestCase):
     def setUp(self):
-        engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db")
+        engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db")
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()
         mdb.seed_defaults(self.db)

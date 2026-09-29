@@ -10,7 +10,6 @@ Includes the regression cover for #1 through routers/providers.py::delete_provid
 
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -24,11 +23,12 @@ _ensure_web_stubs()
 import models.database as mdb  # noqa: E402
 from models.database import Movie, Series, Provider  # noqa: E402
 from services.media_files import delete_movie_files, delete_series_files  # noqa: E402
+from tmp_dirs import temp_dir
 
 
 class TestSeriesDeleteMergedFolder(unittest.TestCase):
     def setUp(self):
-        self.show = Path(tempfile.mkdtemp()) / "Brooklyn Nine-Nine (2013)"
+        self.show = Path(temp_dir(self)) / "Brooklyn Nine-Nine (2013)"
         s1 = self.show / "Season 01"
         s4 = self.show / "Season 04"
         s1.mkdir(parents=True)
@@ -69,7 +69,7 @@ class TestSeriesDeleteMergedFolder(unittest.TestCase):
 
     def test_pure_vod_show_is_still_removed_completely(self):
         """Must-not-change: a show folder holding only Tentacle's files disappears."""
-        show = Path(tempfile.mkdtemp()) / "Community (2009)"
+        show = Path(temp_dir(self)) / "Community (2009)"
         (show / "Season 01").mkdir(parents=True)
         (show / "tvshow.nfo").write_text("x")
         (show / "Season 01" / "Community (2009) S01E01.strm").write_text("http://x")
@@ -79,7 +79,7 @@ class TestSeriesDeleteMergedFolder(unittest.TestCase):
     def test_nfo_matching_a_strm_stem_is_removed(self):
         """Must-not-change: <stem>.nfo next to <stem>.strm (and nothing else with that
         stem) counts as Tentacle's, as in the existing test_media_files fixture."""
-        show = Path(tempfile.mkdtemp()) / "Community (2009)"
+        show = Path(temp_dir(self)) / "Community (2009)"
         (show / "Season 01").mkdir(parents=True)
         (show / "Season 01" / "Community S01E01.strm").write_text("http://x")
         (show / "Season 01" / "Community S01E01.nfo").write_text("x")
@@ -95,7 +95,7 @@ class TestMovieDeleteMergedFolder(unittest.TestCase):
         <video stem>.nfo. In a merged movie folder that stem equals the .strm stem, so
         at 0e1805f delete_movie_files() still deletes the downloaded movie's .nfo
         (cc231e0 fixed the series path only)."""
-        folder = Path(tempfile.mkdtemp()) / "Heat (1995)"
+        folder = Path(temp_dir(self)) / "Heat (1995)"
         folder.mkdir()
         strm = folder / "Heat (1995).strm"
         strm.write_text("http://provider/movie/1.mp4")
@@ -109,7 +109,7 @@ class TestMovieDeleteMergedFolder(unittest.TestCase):
 
     def test_pure_vod_movie_folder_is_removed(self):
         """Must-not-change."""
-        folder = Path(tempfile.mkdtemp()) / "Heat (1995)"
+        folder = Path(temp_dir(self)) / "Heat (1995)"
         folder.mkdir()
         strm = folder / "Heat (1995).strm"
         strm.write_text("http://x")
@@ -123,7 +123,7 @@ class TestDeleteProviderMergedFolder(unittest.TestCase):
 
     def _setup(self):
         import routers.providers as providers
-        tmp = tempfile.mkdtemp()
+        tmp = temp_dir(self)
         engine = create_engine(f"sqlite:///{tmp}/t.db")
         mdb.Base.metadata.create_all(engine)
         db = sessionmaker(bind=engine)()

@@ -9,7 +9,6 @@ Needs fastapi + apscheduler to import main; skipped otherwise.
 """
 import logging
 import shutil
-import tempfile
 import unittest
 from unittest import mock
 
@@ -17,6 +16,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 import models.database as mdb
+from tmp_dirs import temp_dir
 
 try:
     import main
@@ -34,7 +34,7 @@ def _flush_error(db):
 @unittest.skipIf(main is None, "fastapi/apscheduler not installed")
 class NightlyAfterFailedScan(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = temp_dir(self)
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         engine = create_engine(f"sqlite:///{self.tmp}/t.db", connect_args={"check_same_thread": False})
         mdb.Base.metadata.create_all(engine)

@@ -13,7 +13,6 @@ every segment opened a new connection, and a bot check stopped nothing.
 import json
 import logging
 import os
-import tempfile
 import unittest
 from datetime import datetime, timedelta
 from unittest import mock
@@ -26,6 +25,7 @@ from models.database import YouTubeChannel, YouTubeVideo, get_setting, set_setti
 from services.youtube import client, feeds, indexer, resolver, traffic
 from services.youtube import sync as ysync
 from services.youtube.errors import PausedByBotCheck, VideoUnavailable, YouTubeBlocked, classify
+from tmp_dirs import temp_dir
 
 
 def setUpModule():
@@ -40,7 +40,7 @@ class _Db(unittest.TestCase):
     """A fresh database that SessionLocal also points at, and clean module state."""
 
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = temp_dir(self)
         engine = create_engine(f"sqlite:///{self.tmp}/t.db")
         mdb.Base.metadata.create_all(engine)
         self.Session = sessionmaker(bind=engine)

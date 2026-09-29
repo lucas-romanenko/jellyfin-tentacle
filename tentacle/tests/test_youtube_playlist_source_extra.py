@@ -11,7 +11,6 @@ and add_channel refused it with 409 "already added" whenever the owner's
 channel, or another playlist of the same owner, was already a source.
 """
 import logging
-import tempfile
 import unittest
 from unittest import mock
 
@@ -24,6 +23,7 @@ from models.database import TentacleUser, YouTubeChannel
 from routers import youtube
 from services.youtube import client, indexer
 from services.youtube import sync as ysync
+from tmp_dirs import temp_dir
 
 OWNER = "UC" + "o" * 22
 PL1, PL2 = "PL" + "1" * 32, "PL" + "2" * 32
@@ -48,7 +48,7 @@ class PlaylistTitle(unittest.TestCase):
 
 class AddingNextToTheOwner(unittest.TestCase):
     def setUp(self):
-        engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db")
+        engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db")
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()
         self.addCleanup(self.db.close)

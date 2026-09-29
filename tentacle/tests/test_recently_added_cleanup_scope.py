@@ -7,7 +7,6 @@ tag back — so that list playlist empties.
 
 Run from tentacle/:  python -m unittest discover -s tests -p "test_recently_added_cleanup_scope.py"
 """
-import tempfile
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -17,11 +16,12 @@ from sqlalchemy.orm import sessionmaker
 
 import models.database as mdb
 from services import tagger
+from tmp_dirs import temp_dir
 
 
 class TestRecentlyAddedStripIsTooBroad(unittest.TestCase):
     def test_list_tag_containing_recently_added_survives(self):
-        tmp = Path(tempfile.mkdtemp())
+        tmp = Path(temp_dir(self))
         engine = create_engine(f"sqlite:///{tmp}/t.db")
         mdb.Base.metadata.create_all(engine)
         db = sessionmaker(bind=engine)()
@@ -39,7 +39,7 @@ class TestRecentlyAddedStripIsTooBroad(unittest.TestCase):
                       f"list tag stripped by the recency cleanup: {tags}")
 
     def test_a_stale_tentacle_recency_tag_is_still_removed(self):
-        tmp = Path(tempfile.mkdtemp())
+        tmp = Path(temp_dir(self))
         engine = create_engine(f"sqlite:///{tmp}/t.db")
         mdb.Base.metadata.create_all(engine)
         db = sessionmaker(bind=engine)()

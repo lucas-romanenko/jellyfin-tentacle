@@ -4,11 +4,11 @@ Mutation-tested on 9bde42e: both tests pass as-is, and each fails when the
 guard it names is reverted, while the rest of the suite (293 tests) stays green.
 Run from tentacle/:  python -m unittest discover -s tests
 """
-import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
+from tmp_dirs import temp_dir
 
 
 class StreamHealthSkipsOptedOutTitles(unittest.TestCase):
@@ -17,7 +17,7 @@ class StreamHealthSkipsOptedOutTitles(unittest.TestCase):
 
     def test_strm_disabled_title_is_never_probed(self):
         import services.stream_health as sh
-        strm = Path(tempfile.mkdtemp()) / "Heat (1995).strm"
+        strm = Path(temp_dir(self)) / "Heat (1995).strm"
         strm.write_text("http://provider.example/movie/u/p/123.mkv")
         item = SimpleNamespace(strm_disabled=True, strm_path=str(strm), provider_id=1,
                                tmdb_id=949, title="Heat")

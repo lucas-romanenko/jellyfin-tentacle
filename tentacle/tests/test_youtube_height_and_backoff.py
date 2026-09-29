@@ -3,7 +3,6 @@
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
 import re
-import tempfile
 import unittest
 from unittest import mock
 
@@ -16,6 +15,7 @@ from services.youtube import resolver
 from services.youtube.errors import (
     VideoUnavailable, YouTubeBlocked, YouTubeError, YouTubeUnavailable,
 )
+from tmp_dirs import temp_dir
 
 LADDER = """#EXTM3U
 #EXT-X-INDEPENDENT-SEGMENTS
@@ -61,7 +61,7 @@ class _RouteBase(unittest.TestCase):
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
         from models.database import YouTubeChannel, YouTubeVideo
-        tmp = tempfile.mkdtemp()
+        tmp = temp_dir(self)
         engine = create_engine(f"sqlite:///{tmp}/t.db")
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()

@@ -9,6 +9,7 @@ problem, so the message sent people looking in the wrong place entirely.
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
 import unittest
+from tmp_dirs import temp_dir
 
 
 class TestUnknownApiPaths(unittest.TestCase):
@@ -90,19 +91,23 @@ class TestAssetCacheBusting(unittest.TestCase):
         self.assertEqual(served, self.main._asset_version())
 
     def test_changing_a_script_changes_the_version(self):
+        # On a copy: a run cut short must never leave the real script edited.
+        import shutil
         from pathlib import Path
-        before = dict(self._versions())["pages"]
-        path = Path("static/js/pages.js")
-        original = path.read_bytes()
-        try:
+        from unittest import mock
+        path = Path(temp_dir(self)) / "pages.js"
+        shutil.copyfile("static/js/pages.js", path)
+        files = tuple(str(path) if n == "static/js/pages.js" else n for n in self.main._ASSET_FILES)
+        with mock.patch.object(self.main, "_ASSET_FILES", files):
+            before = dict(self._versions())["pages"]
+            original = path.read_bytes()
             path.write_bytes(original + b"\n// touched by a test\n")
             after = dict(self._versions())["pages"]
-        finally:
             path.write_bytes(original)
-        self.assertNotEqual(before, after)
-        # ...and restoring the file restores the version, so the value depends
-        # on content rather than on when it was last written.
-        self.assertEqual(dict(self._versions())["pages"], before)
+            self.assertNotEqual(before, after)
+            # ...and restoring the file restores the version, so the value
+            # depends on content rather than on when it was last written.
+            self.assertEqual(dict(self._versions())["pages"], before)
 
     def test_both_scripts_move_together(self):
         # One digest covers both files, so a change to either invalidates both
@@ -164,8 +169,7 @@ class TestRunningCodeMatchesTheImage(unittest.TestCase):
     def setUp(self):
         import hashlib
         import os
-        import tempfile as _tf
-        self.dir = _tf.mkdtemp()
+        self.dir = temp_dir(self)
         self.cwd = os.getcwd()
         os.chdir(self.dir)
         os.makedirs("services")

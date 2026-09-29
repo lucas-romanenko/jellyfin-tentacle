@@ -14,12 +14,12 @@ Two defects hid each other in the VOD series sync:
 Fixing the first without the second would turn a missed duplicate into a crash.
 """
 import re
-import tempfile
 import unittest
 from pathlib import Path
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from tmp_dirs import temp_dir
 
 SYNC = (Path(__file__).resolve().parents[1] / "services" / "sync.py").read_text(encoding="utf-8")
 
@@ -28,7 +28,7 @@ class RecorderTreatsSonarrLikeRadarr(unittest.TestCase):
     def setUp(self):
         import models.database as mdb
         self.mdb = mdb
-        engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db")
+        engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db")
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()
         self.addCleanup(self.db.close)

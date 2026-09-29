@@ -9,7 +9,6 @@ nothing produces that tag any more -- so it read as a user's own tag, and
 names ("a deleted list") was the one it could not handle.
 """
 import shutil
-import tempfile
 import unittest
 
 from sqlalchemy import create_engine
@@ -18,11 +17,12 @@ from sqlalchemy.orm import sessionmaker
 import models.database as mdb
 from models.database import ListSubscription, TagRule, TentacleUser
 from services.tagger import merge_owned_tags, tentacle_owned_tags
+from tmp_dirs import temp_dir
 
 
 class RetiredTags(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.mkdtemp()
+        tmp = temp_dir(self)
         self.addCleanup(shutil.rmtree, tmp, True)
         engine = create_engine(f"sqlite:///{tmp}/t.db")
         mdb.Base.metadata.create_all(engine)

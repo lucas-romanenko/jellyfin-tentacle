@@ -9,13 +9,13 @@ Run from the tentacle/ directory:  python -m unittest discover -s tests
 - A 429 or 5xx still says nothing about the title and must not be cached.
 """
 import logging
-import tempfile
 import unittest
 from unittest import mock
 
 import requests
 
 from services.tmdb import TMDBService
+from tmp_dirs import temp_dir
 
 
 def setUpModule():
@@ -36,7 +36,7 @@ def _response(status, body=None):
 
 class NegativeCache(unittest.TestCase):
     def setUp(self):
-        self.tmdb = TMDBService("token", tempfile.mkdtemp())
+        self.tmdb = TMDBService("token", temp_dir(self))
         self.tmdb.session = mock.Mock()
 
     def test_a_series_404_is_asked_once(self):

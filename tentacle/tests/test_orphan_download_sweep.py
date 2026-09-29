@@ -11,7 +11,6 @@ Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
 import logging
 import shutil
-import tempfile
 import unittest
 
 from sqlalchemy import create_engine
@@ -20,6 +19,7 @@ from sqlalchemy.orm import sessionmaker
 import models.database as mdb
 from models.database import Movie, Series, DownloadRequest, Setting, TentacleUser, DeletionLog
 import services.jellyfin as jellyfin
+from tmp_dirs import temp_dir
 
 def setUpModule():
     logging.disable(logging.CRITICAL)
@@ -59,7 +59,7 @@ class FakeJellyfinGet:
 
 class TestOrphanDownloadSweep(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.mkdtemp()
+        tmp = temp_dir(self)
         self.addCleanup(shutil.rmtree, tmp, True)
         engine = create_engine(f"sqlite:///{tmp}/t.db")
         mdb.Base.metadata.create_all(engine)

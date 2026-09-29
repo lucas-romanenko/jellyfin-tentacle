@@ -13,7 +13,6 @@ Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
 import logging
 import shutil
-import tempfile
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -26,6 +25,7 @@ from models.database import ListItem, ListSubscription, Movie, Series, TagRule, 
 from routers.lists import apply_list_tags_to_library
 from services.nfo import write_movie_nfo
 from services.tagger import refresh_recently_added_tags, retire_tag
+from tmp_dirs import temp_dir
 
 
 def setUpModule():
@@ -41,7 +41,7 @@ OLD = datetime.utcnow() - timedelta(days=400)
 
 class _Db(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = temp_dir(self)
         self.addCleanup(shutil.rmtree, self.tmp, True)
         engine = create_engine(f"sqlite:///{self.tmp}/t.db")
         mdb.Base.metadata.create_all(engine)

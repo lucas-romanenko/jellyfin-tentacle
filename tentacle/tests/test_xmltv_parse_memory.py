@@ -11,12 +11,12 @@ the memory.
 import logging
 import os
 import shutil
-import tempfile
 import tracemalloc
 import unittest
 from unittest import mock
 
 import services.xmltv as xmltv
+from tmp_dirs import temp_dir
 
 
 def setUpModule():
@@ -43,7 +43,7 @@ def _write_feed(path, programmes):
 
 class ParseMemory(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = temp_dir(self)
         self.addCleanup(shutil.rmtree, self.tmp, True)
         patcher = mock.patch.object(xmltv, "XMLTV_CACHE_DIR", self.tmp)
         patcher.start()

@@ -14,7 +14,6 @@ Drives the real refresh_list(); only the network is faked.
 """
 import logging
 import shutil
-import tempfile
 import unittest
 from unittest import mock
 
@@ -25,6 +24,7 @@ from sqlalchemy.orm import sessionmaker
 import models.database as mdb
 import routers.lists as lists
 from models.database import ListItem, ListSubscription, Movie, Series, TentacleUser
+from tmp_dirs import temp_dir
 
 
 def setUpModule():
@@ -90,7 +90,7 @@ TMDB_TABLE = {"tt1": {"tmdb_id": 1, "title": "Film 1", "media_type": "movie"},
 
 class _Db(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = temp_dir(self)
         self.addCleanup(shutil.rmtree, self.tmp, True)
         engine = create_engine(f"sqlite:///{self.tmp}/t.db")
         mdb.Base.metadata.create_all(engine)
@@ -249,7 +249,7 @@ class TmdbFindReportsFailures(unittest.TestCase):
 
     def _service(self, status):
         from services.tmdb import TMDBService
-        tmp = tempfile.mkdtemp()
+        tmp = temp_dir(self)
         self.addCleanup(shutil.rmtree, tmp, True)
         svc = TMDBService(bearer_token="x", cache_dir=tmp)
 

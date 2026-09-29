@@ -8,7 +8,6 @@ A barrier holds both scans at the TMDB lookup of the new title, standing in
 for TMDB's latency, on a real SQLite file.
 """
 import shutil
-import tempfile
 import threading
 import unittest
 from unittest import mock
@@ -20,6 +19,7 @@ import models.database as mdb
 import services.radarr as radarr
 import services.sonarr as sonarr
 import services.tmdb as tmdb
+from tmp_dirs import temp_dir
 
 NEW_MOVIE = {"tmdbId": 588009, "title": "New Film", "year": 2020, "hasFile": True,
              "path": "/nonexistent/movies/New Film (2020)",
@@ -31,7 +31,7 @@ NEW_SERIES = {"tmdbId": 4607, "tvdbId": 0, "title": "New Show", "year": 2020,
 
 class ConcurrentArrScans(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = temp_dir(self)
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         engine = create_engine(f"sqlite:///{self.tmp}/t.db",
                                connect_args={"check_same_thread": False, "timeout": 30})

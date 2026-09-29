@@ -13,7 +13,6 @@ Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
 import json
 import re
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -23,6 +22,7 @@ from sqlalchemy.orm import sessionmaker
 
 import models.database as mdb
 import services.smartlists as ssl
+from tmp_dirs import temp_dir
 
 HOME_JS = Path("../tentacle-plugin/Inject/tentacle-home.js")
 MEDIABAR_JS = Path("../tentacle-plugin/Inject/tentacle-mediabar.js")
@@ -133,7 +133,7 @@ class TestR1CancelledReloadIsRetried(unittest.TestCase):
 
 class TestR3CorruptConfigIsNotSeededOver(unittest.TestCase):
     def _db(self, admin=False):
-        tmp = Path(tempfile.mkdtemp())
+        tmp = Path(temp_dir(self))
         db = _session(tmp)
         db.add(mdb.TentacleUser(id=1, jellyfin_user_id="jf-1", display_name="U", is_admin=admin))
         db.commit()

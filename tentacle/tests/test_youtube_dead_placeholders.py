@@ -10,7 +10,6 @@ detail read on it again.
 
 Run from tentacle/:  python -m unittest discover -s tests -p test_youtube_dead_placeholders.py
 """
-import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -20,6 +19,7 @@ from test_youtube_indexer_followup import _channel, _fresh_db, _tabs
 from models.database import YouTubeVideo
 from services.youtube import indexer, library, sync
 from services.youtube.errors import VideoUnavailable, YouTubeBlocked
+from tmp_dirs import temp_dir
 
 BASE = "http://192.0.2.20:8888"
 VID = "abcdefghijk"
@@ -31,7 +31,7 @@ class DeadPlaceholderRowsLeave(unittest.TestCase):
         self.db = _fresh_db()
         self.channel = _channel(self.db, live_enabled=False, title="Playlist A", kind="playlist",
                                 playlist_id="PLabcdefabcdefabcdef", keep_count=41, min_duration=0)
-        self.root = Path(tempfile.mkdtemp())
+        self.root = Path(temp_dir(self))
 
     def tearDown(self):
         self.db.close()

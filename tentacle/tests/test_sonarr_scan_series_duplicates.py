@@ -10,12 +10,12 @@ only ever pass when Sonarr reported an empty path. Found live: with realistic
 data, in either order, no series duplicate was ever recorded, while the Radarr
 scan (which has no such condition) flags every movie overlap.
 """
-import tempfile
 import unittest
 from unittest import mock
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from tmp_dirs import temp_dir
 
 SHOW = {"tmdbId": 1403, "tvdbId": 9, "title": "Show", "path": "/tv/Show (2013)",
         "monitorNewItems": "none", "statistics": {"episodeFileCount": 3}}
@@ -33,7 +33,7 @@ class SeriesDuplicateDetection(unittest.TestCase):
     def setUp(self):
         import models.database as mdb
         self.mdb = mdb
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = temp_dir(self)
         engine = create_engine(f"sqlite:///{self.tmp}/t.db", connect_args={"check_same_thread": False})
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()

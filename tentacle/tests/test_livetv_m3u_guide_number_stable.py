@@ -11,7 +11,6 @@ stream_id, so every such sync renumbered the channels, Jellyfin deleted and
 re-created them, and their timers recorded nothing. The URL hash is now the
 row's match key (m3u_key); stream_id stays what it was.
 """
-import tempfile
 import unittest
 
 from sqlalchemy import create_engine
@@ -21,10 +20,11 @@ import models.database as mdb
 from models.database import LiveChannel, LiveChannelGroup, Provider
 import routers.livetv as livetv
 from services.m3u_parser import parse_m3u
+from tmp_dirs import temp_dir
 
 
 def _session():
-    tmp = tempfile.mkdtemp()
+    tmp = temp_dir()
     engine = create_engine(f"sqlite:///{tmp}/t.db")
     mdb.Base.metadata.create_all(engine)
     return sessionmaker(bind=engine)()

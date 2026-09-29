@@ -11,7 +11,6 @@ lingering after focus moved on -- and on a connection-limited account that
 is what cut a running recording off (androidtv#47).
 """
 import re
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -20,6 +19,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 import models.database as mdb
+from tmp_dirs import temp_dir
 
 try:
     import routers.smartlists as rsl
@@ -30,7 +30,7 @@ PLUGIN = Path(__file__).resolve().parents[2] / "tentacle-plugin"
 
 
 def _db():
-    engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db")
+    engine = create_engine(f"sqlite:///{temp_dir()}/t.db")
     mdb.Base.metadata.create_all(engine)
     db = sessionmaker(bind=engine)()
     user = mdb.TentacleUser(id=1, jellyfin_user_id="jf-1", display_name="User 1")

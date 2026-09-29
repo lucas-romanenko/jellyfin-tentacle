@@ -12,7 +12,6 @@ also created empty rows for keys that were never set.
 """
 import logging
 import shutil
-import tempfile
 import unittest
 
 from sqlalchemy import create_engine
@@ -20,6 +19,7 @@ from sqlalchemy.orm import sessionmaker
 
 import models.database as mdb
 from models.database import NON_EMPTY_DEFAULTS, Setting, get_setting
+from tmp_dirs import temp_dir
 
 
 def setUpModule():
@@ -32,7 +32,7 @@ def tearDownModule():
 
 class EmptySave(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.mkdtemp()
+        tmp = temp_dir(self)
         self.addCleanup(shutil.rmtree, tmp, True)
         engine = create_engine(f"sqlite:///{tmp}/t.db")
         mdb.Base.metadata.create_all(engine)

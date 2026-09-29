@@ -19,7 +19,6 @@ Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
 import json
 import re
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -29,6 +28,7 @@ from sqlalchemy.orm import sessionmaker
 
 import models.database as mdb
 import services.smartlists as ssl
+from tmp_dirs import temp_dir
 
 try:
     import routers.smartlists as rsl
@@ -66,7 +66,7 @@ SMARTLISTS = [
 @unittest.skipIf(rsl is None, "fastapi not installed")
 class TestAddRowCarriesSortAndShape(unittest.TestCase):
     def _add(self, pid):
-        tmp = Path(tempfile.mkdtemp())
+        tmp = Path(temp_dir(self))
         db = _session(tmp)
         user = _user(db)
         with mock.patch.object(rsl, "HOME_CONFIG_DIR", str(tmp / "home-configs")), \
@@ -94,7 +94,7 @@ class TestAddRowCarriesSortAndShape(unittest.TestCase):
     def test_the_row_matches_what_a_regeneration_would_write(self):
         """add-row and write_home_config() must agree, or the row changes under the user at the next sync."""
         row = self._add("pl-yt")
-        tmp = Path(tempfile.mkdtemp())
+        tmp = Path(temp_dir(self))
         db = _session(tmp)
         _user(db)
         path = tmp / "home.json"
@@ -110,7 +110,7 @@ class TestAddRowCarriesSortAndShape(unittest.TestCase):
 
 class TestNewUserWithPlaylistsGetsStarterRows(unittest.TestCase):
     def test_first_write_seeds_the_starter_rows_before_merging(self):
-        tmp = Path(tempfile.mkdtemp())
+        tmp = Path(temp_dir(self))
         db = _session(tmp)
         _user(db)
         path = tmp / "home.json"
@@ -131,7 +131,7 @@ class TestNewUserWithPlaylistsGetsStarterRows(unittest.TestCase):
                          "a new user with only a YouTube playlist got a home config with no rows")
 
     def test_an_existing_config_is_never_reseeded(self):
-        tmp = Path(tempfile.mkdtemp())
+        tmp = Path(temp_dir(self))
         db = _session(tmp)
         _user(db)
         path = tmp / "home.json"
@@ -192,7 +192,7 @@ class TestRandomSortShuffles(unittest.TestCase):
         self.assertEqual(jf.added, ["c", "a", "d", "b"])
 
     def test_update_playlist_sort_asks_for_the_shuffle_only_for_random(self):
-        tmp = Path(tempfile.mkdtemp())
+        tmp = Path(temp_dir(self))
         folder = tmp / "Netflix Movies"
         folder.mkdir()
         (folder / "config.json").write_text(json.dumps(RANDOM_CFG))

@@ -13,13 +13,13 @@ test_tmdb_failure_prune.py does).
 Run from tentacle/:  python -m unittest discover -s tests -p "test_imdb_tmdb_failure.py"
 """
 import shutil
-import tempfile
 import unittest
 from unittest import mock
 
 import requests
 
 from test_imdb_partial_list import _ListCase, _Resp, _gql_page
+from tmp_dirs import temp_dir
 
 
 class _TMDBResp:
@@ -45,7 +45,7 @@ def _tmdb(cache_dir, answer):
 
 class TestFindByImdbId(unittest.TestCase):
     def setUp(self):
-        self.cache = tempfile.mkdtemp()
+        self.cache = temp_dir(self)
 
     def tearDown(self):
         shutil.rmtree(self.cache, ignore_errors=True)
@@ -86,7 +86,7 @@ class TestListRefreshDuringATMDBOutage(_ListCase):
         from routers import lists
         page = _Resp(200, _gql_page([("tt0000101", "Movie One", "movie"),
                                      ("tt0000201", "Show One", "tvSeries")]))
-        cache = tempfile.mkdtemp()
+        cache = temp_dir(self)
         self.addCleanup(shutil.rmtree, cache, True)
         tmdb = _tmdb(cache, lambda *a, **k: _TMDBResp(429))
         with mock.patch.object(lists.requests, "post", return_value=page), \

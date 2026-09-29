@@ -8,7 +8,6 @@ of 176 series, 25 "listing stopped early", repeated TMDB 404s for one id, and
 tag-push and playlist-move timeouts for the next nine minutes.
 """
 import logging
-import tempfile
 import threading
 import time
 import unittest
@@ -19,6 +18,7 @@ from sqlalchemy.orm import sessionmaker
 
 import models.database as mdb
 import routers.sonarr as sonarr
+from tmp_dirs import temp_dir
 
 
 def setUpModule():
@@ -36,7 +36,7 @@ def _event(event_type, tmdb_id, title, episodes=()):
 
 class Coalescing(unittest.TestCase):
     def setUp(self):
-        engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db", connect_args={"check_same_thread": False})
+        engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db", connect_args={"check_same_thread": False})
         mdb.Base.metadata.create_all(engine)
         self.Session = sessionmaker(bind=engine)
         self.db = self.Session()
@@ -143,7 +143,7 @@ class Coalescing(unittest.TestCase):
 
 class NotificationForSeveralEpisodes(unittest.TestCase):
     def test_one_notification_names_the_count(self):
-        engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db")
+        engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db")
         mdb.Base.metadata.create_all(engine)
         db = sessionmaker(bind=engine)()
         self.addCleanup(db.close)

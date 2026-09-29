@@ -15,7 +15,6 @@ that is shared, public or ownerless is listed for other users too, so:
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
 import json
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -26,6 +25,7 @@ from sqlalchemy.orm import sessionmaker
 import models.database as mdb
 import services.jellyfin as jellyfin
 import services.smartlists as sl
+from tmp_dirs import temp_dir
 
 
 def _session(tmp):
@@ -112,7 +112,7 @@ def _settings(db, key, default=""):
 
 class CleanupBase(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = Path(temp_dir(self))
         self.db = _session(self.tmp)
         self.db.add(mdb.TentacleUser(id=1, jellyfin_user_id="jf-1", display_name="User 1"))
         self.db.add(mdb.TentacleUser(id=2, jellyfin_user_id="jf-2", display_name="User 2"))

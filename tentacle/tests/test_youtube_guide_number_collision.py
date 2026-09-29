@@ -10,7 +10,6 @@ Live TV and the guide mapped both schedules onto the other.
 """
 import logging
 import shutil
-import tempfile
 import unittest
 import xml.etree.ElementTree as ET
 
@@ -22,6 +21,7 @@ from sqlalchemy.orm import sessionmaker
 import models.database as mdb
 import routers.livetv as livetv_router
 from services.youtube import livetv as yt_livetv
+from tmp_dirs import temp_dir
 
 
 def setUpModule():
@@ -34,7 +34,7 @@ def tearDownModule():
 
 class GuideNumberCollision(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.mkdtemp()
+        tmp = temp_dir(self)
         self.addCleanup(shutil.rmtree, tmp, True)
         engine = create_engine(f"sqlite:///{tmp}/t.db")
         mdb.Base.metadata.create_all(engine)

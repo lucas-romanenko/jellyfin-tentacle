@@ -14,13 +14,14 @@ was issued is never stopped on that lookup's answer.
 import asyncio, tempfile, unittest
 from unittest import mock
 from fastapi import HTTPException
+from tmp_dirs import temp_dir
 
 
 def _fresh_db():
     import models.database as mdb
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
-    engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db", connect_args={"check_same_thread": False})
+    engine = create_engine(f"sqlite:///{temp_dir()}/t.db", connect_args={"check_same_thread": False})
     mdb.Base.metadata.create_all(engine)
     global SM
     SM = sessionmaker(bind=engine)

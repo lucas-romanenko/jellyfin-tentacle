@@ -8,7 +8,6 @@ tombstones, and must not start a playlist sweep per call.
 
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
-import tempfile
 import unittest
 
 from sqlalchemy import create_engine
@@ -21,6 +20,7 @@ _ensure_web_stubs()
 import models.database as mdb  # noqa: E402
 from models.database import DownloadRequest, Duplicate, Movie  # noqa: E402
 import routers.library as library  # noqa: E402
+from tmp_dirs import temp_dir
 
 
 class _FakeThread:
@@ -39,7 +39,7 @@ class _FakeThreading:
 
 class TestDeleteLibraryItemUnknownTitle(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.mkdtemp()
+        tmp = temp_dir(self)
         engine = create_engine(f"sqlite:///{tmp}/t.db")
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()

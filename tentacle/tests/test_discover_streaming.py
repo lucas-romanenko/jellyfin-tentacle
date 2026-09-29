@@ -2,7 +2,6 @@
 
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
-import tempfile
 import unittest
 from unittest import mock
 
@@ -10,11 +9,12 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from tmp_dirs import temp_dir
 
 
 def _db():
     import models.database as mdb
-    engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db", connect_args={"check_same_thread": False})
+    engine = create_engine(f"sqlite:///{temp_dir()}/t.db", connect_args={"check_same_thread": False})
     mdb.Base.metadata.create_all(engine)
     return sessionmaker(bind=engine)()
 
@@ -28,7 +28,7 @@ class TestStreamingRoutes(unittest.TestCase):
         self.db = _db()
         self.db.add(TentacleUser(id=1, jellyfin_user_id="u1", display_name="lucas", is_admin=True))
         mdb.set_setting(self.db, "tmdb_token", "x")
-        mdb.set_setting(self.db, "data_dir", tempfile.mkdtemp())
+        mdb.set_setting(self.db, "data_dir", temp_dir(self))
         # A Netflix title already in the library, to prove it gets marked.
         self.db.add(Movie(tmdb_id=603, title="Owned", source="radarr"))
         self.db.commit()
@@ -93,7 +93,7 @@ class TestStreamingRoutes(unittest.TestCase):
 class TestTmdbProviderQuery(unittest.TestCase):
     def test_builds_a_flatrate_region_query_sorted_newest(self):
         from services.tmdb import TMDBService
-        svc = TMDBService("token", tempfile.mkdtemp())
+        svc = TMDBService("token", temp_dir(self))
         seen = {}
         def fake_request(endpoint, params=None):
             seen["endpoint"] = endpoint
@@ -113,7 +113,7 @@ class TestTmdbProviderQuery(unittest.TestCase):
 
     def test_series_uses_first_air_date(self):
         from services.tmdb import TMDBService
-        svc = TMDBService("token", tempfile.mkdtemp())
+        svc = TMDBService("token", temp_dir(self))
         seen = {}
         with mock.patch.object(svc, "_request", lambda e, params=None: seen.update(endpoint=e, params=params) or {"results": []}):
             svc.get_new_on_provider("series", 337, region="CA", pages=1)
@@ -132,7 +132,7 @@ class TestGenreRoutes(unittest.TestCase):
         self.db = _db()
         self.db.add(TentacleUser(id=1, jellyfin_user_id="u1", display_name="lucas", is_admin=True))
         mdb.set_setting(self.db, "tmdb_token", "x")
-        mdb.set_setting(self.db, "data_dir", tempfile.mkdtemp())
+        mdb.set_setting(self.db, "data_dir", temp_dir(self))
         self.db.add(Movie(tmdb_id=603, title="Owned", source="radarr"))
         self.db.commit()
         app = FastAPI()
@@ -209,7 +209,7 @@ class TestFromMyListsPicker(unittest.TestCase):
         self.db = _db()
         self.db.add(TentacleUser(id=1, jellyfin_user_id="u1", display_name="lucas", is_admin=True))
         mdb.set_setting(self.db, "tmdb_token", "x")
-        mdb.set_setting(self.db, "data_dir", tempfile.mkdtemp())
+        mdb.set_setting(self.db, "data_dir", temp_dir(self))
         self.db.add(ListSubscription(id=10, name="IMDb Top 250", type="imdb_rss", url="u", tag="t", active=True, user_id=1))
         self.db.add(ListSubscription(id=11, name="Letterboxd", type="letterboxd", url="u2", tag="t2", active=True, user_id=1))
         # missing items in each list

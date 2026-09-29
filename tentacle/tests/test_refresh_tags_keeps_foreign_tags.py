@@ -9,7 +9,6 @@ Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
 import logging
 import shutil
-import tempfile
 import unittest
 from unittest import mock
 
@@ -20,6 +19,7 @@ import models.database as mdb
 from services.jellyfin import JellyfinService as _RealJellyfin
 from models.database import Movie, Series, Setting, ListSubscription, TagRule, TentacleUser
 from services.tagger import tentacle_owned_tags, merge_owned_tags
+from tmp_dirs import temp_dir
 
 
 def setUpModule():
@@ -69,7 +69,7 @@ class FakeJellyfin:
 
 class TestRefreshTagsKeepsForeignTags(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.mkdtemp()
+        tmp = temp_dir(self)
         self.addCleanup(shutil.rmtree, tmp, True)
         engine = create_engine(f"sqlite:///{tmp}/t.db")
         mdb.Base.metadata.create_all(engine)

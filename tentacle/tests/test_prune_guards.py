@@ -7,7 +7,6 @@ a provider category returning an empty list, and a VOD mount going away.
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
 import os
-import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -18,10 +17,11 @@ from sqlalchemy.orm import sessionmaker
 import models.database as mdb
 from models.database import Movie, Provider, ProviderCategory
 import services.sync as sync
+from tmp_dirs import temp_dir
 
 
 def _session():
-    tmp = tempfile.mkdtemp()
+    tmp = temp_dir()
     engine = create_engine(f"sqlite:///{tmp}/t.db")
     mdb.Base.metadata.create_all(engine)
     return sessionmaker(bind=engine)()
@@ -123,7 +123,7 @@ class TestVodSweep(unittest.TestCase):
         p = Provider(name="P", server_url="", username="", password="")
         self.db.add(p)
         self.db.commit()
-        self.root = Path(tempfile.mkdtemp())
+        self.root = Path(temp_dir(self))
         self.paths = []
         for i in range(100):
             folder = self.root / f"M{i}"
@@ -140,7 +140,7 @@ class TestVodSweep(unittest.TestCase):
 
     def test_unavailable_mount_deletes_nothing(self):
         # An empty root means the storage is gone, not that every title was deleted.
-        empty = Path(tempfile.mkdtemp())
+        empty = Path(temp_dir(self))
         count, _ = sync._sweep_one_type(self.db, Movie, "movie", empty, datetime.utcnow())
         self.assertEqual(count, 0)
         self.assertEqual(self.db.query(Movie).count(), 100)
@@ -179,7 +179,7 @@ class TestGuardsAreIndependent(unittest.TestCase):
         self.provider = Provider(name="P", server_url="", username="", password="")
         self.db.add(self.provider)
         self.db.commit()
-        self.root = Path(tempfile.mkdtemp())
+        self.root = Path(temp_dir(self))
         for i in range(100):
             folder = self.root / f"M{i}"
             folder.mkdir()

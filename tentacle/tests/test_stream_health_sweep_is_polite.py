@@ -9,12 +9,12 @@ streaming from -- and the recording stalled twice while it ran. The sweep did
 not pace itself, did not look at whether live TV was being proxied, and carried
 on after the provider had started answering 509.
 """
-import tempfile
 import unittest
 from unittest import mock
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from tmp_dirs import temp_dir
 
 
 class _Sweep(unittest.TestCase):
@@ -24,7 +24,7 @@ class _Sweep(unittest.TestCase):
         import models.database as mdb
         import services.stream_health as sh
         self.mdb, self.sh = mdb, sh
-        engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db", connect_args={"check_same_thread": False})
+        engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db", connect_args={"check_same_thread": False})
         mdb.Base.metadata.create_all(engine)
         self.Session = sessionmaker(bind=engine)
         db = self.Session()

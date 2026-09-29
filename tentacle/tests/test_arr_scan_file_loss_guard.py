@@ -11,12 +11,12 @@ every downloaded row in one pass -- no cap, no deletion-log entry -- taking
 date_added and tags with them and firing a removal event per title. This is the
 same shape as the provider-outage prune (#25/#26), on the downloaded side.
 """
-import tempfile
 import unittest
 from unittest import mock
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from tmp_dirs import temp_dir
 
 
 def _radarr_movie(i, has_file=True):
@@ -35,7 +35,7 @@ class _Base(unittest.TestCase):
     def setUp(self):
         import models.database as mdb
         self.mdb = mdb
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = temp_dir(self)
         engine = create_engine(f"sqlite:///{self.tmp}/t.db", connect_args={"check_same_thread": False})
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()

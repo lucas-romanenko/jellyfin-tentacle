@@ -6,7 +6,6 @@ UnboundLocalError and the rest of the follow-up (NFO, Jellyfin push,
 playlists, "ready to watch") was skipped.
 """
 import shutil
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -16,11 +15,12 @@ from sqlalchemy.orm import sessionmaker
 
 import models.database as mdb
 import routers.sonarr as sonarr
+from tmp_dirs import temp_dir
 
 
 class AfterScanListTag(unittest.TestCase):
     def setUp(self):
-        d = tempfile.mkdtemp()
+        d = temp_dir(self)
         self.addCleanup(shutil.rmtree, d, ignore_errors=True)
         engine = create_engine(f"sqlite:///{d}/t.db", connect_args={"check_same_thread": False})
         mdb.Base.metadata.create_all(engine)

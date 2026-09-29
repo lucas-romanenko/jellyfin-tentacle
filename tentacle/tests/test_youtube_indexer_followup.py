@@ -21,17 +21,17 @@ What is still wrong:
 Needs sqlalchemy only (as CI has).
 Run from tentacle/:  python -m unittest tests.test_youtube_indexer_followup
 """
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
+from tmp_dirs import temp_dir
 
 
 def _fresh_db():
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
     import models.database as mdb
-    engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db")
+    engine = create_engine(f"sqlite:///{temp_dir()}/t.db")
     mdb.Base.metadata.create_all(engine)
     return sessionmaker(bind=engine)()
 
@@ -71,7 +71,7 @@ class _IndexerCase(unittest.TestCase):
     def _sync(self, details, streams=(), videos=()):
         """Full sync against a temporary media root; returns the .strm names."""
         from services.youtube import indexer, library, sync
-        root = Path(tempfile.mkdtemp())
+        root = Path(temp_dir(self))
         with mock.patch.object(indexer.client, "flat_listing",
                                side_effect=_tabs(streams, videos)), \
              mock.patch.object(indexer.client, "video_details", return_value=details), \
@@ -138,7 +138,7 @@ class TestABroadcastWhoseStatusClearsIsStillFiltered(_IndexerCase):
         live = {"title": "Tonight's stream", "availability": "public",
                 "live_status": "is_live", "duration": None,
                 "release_timestamp": 1789574400}
-        root = Path(tempfile.mkdtemp())
+        root = Path(temp_dir(self))
         with mock.patch.object(indexer.client, "flat_listing",
                                side_effect=_tabs([{"id": "aaaaaaaaaaa"}])), \
              mock.patch.object(indexer.client, "video_details", return_value=live), \

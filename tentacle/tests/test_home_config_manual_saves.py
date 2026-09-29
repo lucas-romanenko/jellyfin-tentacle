@@ -16,7 +16,6 @@ The router/YouTube tests need fastapi; they are skipped without it.
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
 import json
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -25,6 +24,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 import models.database as mdb
+from tmp_dirs import temp_dir
 
 try:
     import routers.smartlists as rsl
@@ -60,7 +60,7 @@ class TestWriteHomeJsonKeepsABackup(unittest.TestCase):
     """The write every Home Screen edit goes through must keep a snapshot."""
 
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = Path(temp_dir(self))
         self.home = self.tmp / "home-configs"
         self.db = _session(self.tmp)
         self.user = _user(self.db)
@@ -100,7 +100,7 @@ class TestWriteHomeJsonKeepsABackup(unittest.TestCase):
 class TestRemoveRowIsRecoverable(unittest.TestCase):
 
     def test_removing_a_row_leaves_a_backup_containing_it(self):
-        tmp = Path(tempfile.mkdtemp())
+        tmp = Path(temp_dir(self))
         db = _session(tmp)
         user = _user(db)
 

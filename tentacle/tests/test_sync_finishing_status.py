@@ -8,7 +8,6 @@ running". The guard is right; the status now says "finishing".
 
 Run from tentacle/:  python -m unittest discover -s tests -p "test_sync_finishing_status.py"
 """
-import tempfile
 import unittest
 from datetime import datetime
 
@@ -17,13 +16,14 @@ from sqlalchemy.orm import sessionmaker
 
 import models.database as mdb
 from models.database import Provider, SyncRun
+from tmp_dirs import temp_dir
 
 
 class TestFinishing(unittest.TestCase):
     def setUp(self):
         import routers.sync as rs
         self.rs = rs
-        engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db")
+        engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db")
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()
         self.p = Provider(name="P", server_url="http://p", username="u", password="x", active=True)

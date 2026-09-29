@@ -8,7 +8,6 @@ the original date) was lost. A missing NFO is still written from the row.
 """
 import re
 import shutil
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -17,6 +16,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 import models.database as mdb
+from tmp_dirs import temp_dir
 
 OWNER_MOVIE_NFO = ('<?xml version="1.0"?>\n<movie>\n  <title>Heat</title>\n'
                    '  <dateadded>2020-01-01 00:00:00</dateadded>\n'
@@ -28,7 +28,7 @@ OWNER_SERIES_NFO = ('<?xml version="1.0"?>\n<tvshow>\n  <title>Breaking Bad</tit
 
 class _Base(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = Path(temp_dir(self))
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         engine = create_engine(f"sqlite:///{self.tmp}/t.db", connect_args={"check_same_thread": False})
         mdb.Base.metadata.create_all(engine)

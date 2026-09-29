@@ -2,7 +2,6 @@
 
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
-import tempfile
 import unittest
 from datetime import datetime, timedelta
 from unittest import mock
@@ -11,6 +10,7 @@ from fastapi import HTTPException
 
 import models.database as mdb
 import routers.activity as activity
+from tmp_dirs import temp_dir
 
 PAST = (datetime.utcnow() - timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
 FUTURE = (datetime.utcnow() + timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -69,7 +69,7 @@ class _Base(unittest.TestCase):
     def setUp(self):
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
-        tmp = tempfile.mkdtemp()
+        tmp = temp_dir(self)
         engine = create_engine(f"sqlite:///{tmp}/t.db")
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()
@@ -252,7 +252,7 @@ class TestRemove(_Base):
         no vod_*_path setting, and the check must not need one."""
         import tempfile, pathlib
         from services import sync
-        root = pathlib.Path(tempfile.mkdtemp())
+        root = pathlib.Path(temp_dir(self))
         saved = sync.VOD_MOVIES_ROOT, sync.VOD_SERIES_ROOT
         sync.VOD_MOVIES_ROOT, sync.VOD_SERIES_ROOT = root / "movies", root / "shows"
         self.addCleanup(lambda: setattr(sync, "VOD_MOVIES_ROOT", saved[0]) or setattr(sync, "VOD_SERIES_ROOT", saved[1]))

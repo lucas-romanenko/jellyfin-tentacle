@@ -12,18 +12,18 @@ and viewers 100 for the same reason: a viewer who is cut off changes
 channel; a recording that is cut off is gone for good.
 """
 import asyncio
-import tempfile
 import unittest
 from unittest import mock
 
 from fastapi.responses import StreamingResponse
+from tmp_dirs import temp_dir
 
 
 def _fresh_db():
     import models.database as mdb
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
-    engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db",
+    engine = create_engine(f"sqlite:///{temp_dir()}/t.db",
                            connect_args={"check_same_thread": False})
     mdb.Base.metadata.create_all(engine)
     return sessionmaker(bind=engine)()

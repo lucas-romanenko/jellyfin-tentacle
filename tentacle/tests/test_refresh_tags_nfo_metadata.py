@@ -13,6 +13,7 @@ from sqlalchemy.orm import sessionmaker
 import models.database as mdb
 from models.database import Movie, Series, Setting
 from services.nfo import write_movie_nfo, write_series_nfo
+from tmp_dirs import temp_dir
 
 
 def setUpModule(): logging.disable(logging.CRITICAL)
@@ -28,7 +29,7 @@ FULL = {"tmdb_id": 603, "title": "The Matrix", "year": "1999", "overview": "Neo.
 
 class RefreshTagsKeepsNfoMetadata(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, tmp, True)
+        tmp = temp_dir(self)
         engine = create_engine(f"sqlite:///{tmp}/t.db"); mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)(); self.addCleanup(self.db.close)
         self.db.add(Setting(key="data_dir", value=tmp))

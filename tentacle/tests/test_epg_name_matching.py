@@ -10,7 +10,6 @@ import json
 import logging
 import os
 import shutil
-import tempfile
 import unittest
 from datetime import datetime, timedelta
 from unittest import mock
@@ -25,6 +24,7 @@ import routers.livetv as livetv_router
 import services.xmltv as xmltv
 from services.channel_names import channel_name_key
 from services.epg_match import coverage_report, coverage_summary, resolve_guide_ids
+from tmp_dirs import temp_dir
 
 
 def setUpModule():
@@ -176,7 +176,7 @@ class EpgSyncMatchesByName(unittest.TestCase):
     """The real sync and the real guide, with the feed in the disk cache."""
 
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = temp_dir(self)
         self.addCleanup(shutil.rmtree, self.tmp, True)
         engine = create_engine(f"sqlite:///{self.tmp}/t.db")
         mdb.Base.metadata.create_all(engine)

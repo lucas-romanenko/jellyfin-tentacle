@@ -3,21 +3,21 @@
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
 import pathlib
-import tempfile
 import unittest
 from datetime import datetime, timedelta
 from unittest import mock
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from tmp_dirs import temp_dir
 
 
 def _db():
     import models.database as mdb
-    engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db", connect_args={"check_same_thread": False})
+    engine = create_engine(f"sqlite:///{temp_dir()}/t.db", connect_args={"check_same_thread": False})
     mdb.Base.metadata.create_all(engine)
     db = sessionmaker(bind=engine)()
-    for k, v in (("radarr_url", "http://r"), ("radarr_api_key", "k"), ("data_dir", tempfile.mkdtemp())):
+    for k, v in (("radarr_url", "http://r"), ("radarr_api_key", "k"), ("data_dir", temp_dir())):
         mdb.set_setting(db, k, v)
     db.commit()
     return db

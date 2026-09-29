@@ -14,18 +14,18 @@ clients fed from it. Different channels are NOT shared: they genuinely need
 their own upstream.
 """
 import asyncio
-import tempfile
 import unittest
 from unittest import mock
 
 from fastapi.responses import StreamingResponse
+from tmp_dirs import temp_dir
 
 
 def _fresh_db():
     import models.database as mdb
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
-    engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db")
+    engine = create_engine(f"sqlite:///{temp_dir()}/t.db")
     mdb.Base.metadata.create_all(engine)
     return sessionmaker(bind=engine)()
 

@@ -11,7 +11,6 @@ Run from the tentacle/ directory:  python -m unittest discover -s tests
 - #172: download requests were matched by tmdb_id alone, but TMDB numbers
   movies and shows separately: a request for movie N showed show N.
 """
-import tempfile
 import time
 import unittest
 from unittest import mock
@@ -19,13 +18,14 @@ from unittest import mock
 import models.database as mdb
 import routers.activity as activity
 from test_activity_searching import _Resp
+from tmp_dirs import temp_dir
 
 
 class _Db(unittest.TestCase):
     def setUp(self):
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
-        engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db",
+        engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db",
                                connect_args={"check_same_thread": False})
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()

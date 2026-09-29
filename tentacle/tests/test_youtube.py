@@ -2,7 +2,6 @@
 
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
-import tempfile
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -13,6 +12,7 @@ from services.youtube.errors import (
     VideoUnavailable, YouTubeBlocked, YouTubeUnavailable, classify,
 )
 from services.youtube.indexer import VIDEO_ID_RE, parse_input_url, slugify
+from tmp_dirs import temp_dir
 
 
 class FakeVideo:
@@ -73,7 +73,7 @@ class TestErrorClassification(unittest.TestCase):
 
 class TestLibraryWriter(unittest.TestCase):
     def setUp(self):
-        self.root = Path(tempfile.mkdtemp())
+        self.root = Path(temp_dir(self))
         # These tests are about the .strm and the NFO. Artwork is fetched over
         # the network, which a test must never do — TestArtwork covers it.
         self._real_download = library._download
@@ -219,14 +219,13 @@ class TestLiveTv(unittest.TestCase):
     """YouTube live streams surfaced as a Live TV channel."""
 
     def setUp(self):
-        import tempfile as _tf
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
         import models.database as mdb
         from models.database import EPGProgram, YouTubeChannel, YouTubeVideo
         self.mdb, self.EPGProgram = mdb, EPGProgram
         self.YouTubeChannel, self.YouTubeVideo = YouTubeChannel, YouTubeVideo
-        engine = create_engine(f"sqlite:///{_tf.mkdtemp()}/t.db")
+        engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db")
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()
         self.channel = YouTubeChannel(
@@ -315,13 +314,12 @@ class TestLiveStatusRefresh(unittest.TestCase):
     """A scheduled stream has to become playable when it actually goes live."""
 
     def setUp(self):
-        import tempfile as _tf
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
         import models.database as mdb
         from models.database import YouTubeChannel, YouTubeVideo
         self.YouTubeVideo = YouTubeVideo
-        engine = create_engine(f"sqlite:///{_tf.mkdtemp()}/t.db")
+        engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db")
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()
         self.channel = YouTubeChannel(input_url="u", kind="channel",
@@ -465,13 +463,12 @@ class TestFinishedStreamsStayOutOfTheLibrary(unittest.TestCase):
     """
 
     def setUp(self):
-        import tempfile as _tf
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
         import models.database as mdb
         from models.database import YouTubeChannel, YouTubeVideo
         self.YouTubeVideo = YouTubeVideo
-        engine = create_engine(f"sqlite:///{_tf.mkdtemp()}/t.db")
+        engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db")
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()
         self.channel = YouTubeChannel(
@@ -537,13 +534,12 @@ class TestPostLiveStatus(unittest.TestCase):
     """
 
     def setUp(self):
-        import tempfile as _tf
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
         import models.database as mdb
         from models.database import YouTubeChannel, YouTubeVideo
         self.YouTubeVideo = YouTubeVideo
-        engine = create_engine(f"sqlite:///{_tf.mkdtemp()}/t.db")
+        engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db")
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()
         self.channel = YouTubeChannel(
@@ -596,14 +592,13 @@ class TestPlaylistIsUploadsOnly(unittest.TestCase):
     """
 
     def setUp(self):
-        import tempfile as _tf
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
         import models.database as mdb
         from models.database import TentacleUser, YouTubeChannel, YouTubeVideo
         self.mdb = mdb
         self.YouTubeVideo = YouTubeVideo
-        engine = create_engine(f"sqlite:///{_tf.mkdtemp()}/t.db")
+        engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db")
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()
         self.db.add(TentacleUser(jellyfin_user_id="u1", display_name="lucas", is_admin=True))
@@ -704,13 +699,12 @@ class TestStreamPreferenceIsReversible(unittest.TestCase):
     """
 
     def setUp(self):
-        import tempfile as _tf
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
         import models.database as mdb
         from models.database import YouTubeChannel, YouTubeVideo
         self.YouTubeVideo = YouTubeVideo
-        engine = create_engine(f"sqlite:///{_tf.mkdtemp()}/t.db")
+        engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db")
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()
         self.channel = YouTubeChannel(
@@ -771,9 +765,8 @@ class TestColumnDefaultsSurviveUpgrade(unittest.TestCase):
 
     def setUp(self):
         import sqlite3
-        import tempfile as _tf
         self.sqlite3 = sqlite3
-        self.path = _tf.mkdtemp() + "/t.db"
+        self.path = temp_dir(self) + "/t.db"
         self.conn = sqlite3.connect(self.path)
         self.cursor = self.conn.cursor()
         self.cursor.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
@@ -831,7 +824,6 @@ class TestSkippedVideosAreRemembered(unittest.TestCase):
     """
 
     def setUp(self):
-        import tempfile as _tf
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
         import models.database as mdb
@@ -839,7 +831,7 @@ class TestSkippedVideosAreRemembered(unittest.TestCase):
         from services.youtube import client, indexer
         self.YouTubeVideo = YouTubeVideo
         self.indexer = indexer
-        engine = create_engine(f"sqlite:///{_tf.mkdtemp()}/t.db")
+        engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db")
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()
         self.channel = YouTubeChannel(
@@ -1048,11 +1040,10 @@ class TestArtwork(unittest.TestCase):
         rating = None
 
     def setUp(self):
-        import tempfile as _tf
         from pathlib import Path
         from services.youtube import library
         self.library = library
-        self.root = Path(_tf.mkdtemp())
+        self.root = Path(temp_dir(self))
         self.video, self.channel = self._Video(), self._Channel()
         self.fetched = []
 
@@ -1173,9 +1164,8 @@ class TestReprobe(unittest.TestCase):
     """
 
     def setUp(self):
-        import tempfile as _tf
         from pathlib import Path
-        self.root = Path(_tf.mkdtemp())
+        self.root = Path(temp_dir(self))
         self.strm = self.root / "v.strm"
         self.strm.write_text("http://t/api/youtube/v/x/master.m3u8")
 
@@ -1323,9 +1313,8 @@ class TestStrmFollowsTheAddress(unittest.TestCase):
     """
 
     def setUp(self):
-        import tempfile as _tf
         from pathlib import Path
-        self.root = Path(_tf.mkdtemp())
+        self.root = Path(temp_dir(self))
         self.strm = self.root / "v.strm"
         self.strm.write_text("https://old.example.com/api/youtube/v/kQA2wNKxy_8/master.m3u8")
 
@@ -1370,14 +1359,13 @@ class TestAddingAChannel(unittest.TestCase):
     """
 
     def setUp(self):
-        import tempfile as _tf
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
         import models.database as mdb
         from models.database import TentacleUser, YouTubeChannel
         from routers import youtube
         self.youtube, self.YouTubeChannel = youtube, YouTubeChannel
-        engine = create_engine(f"sqlite:///{_tf.mkdtemp()}/t.db")
+        engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db")
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()
         self.db.add(TentacleUser(jellyfin_user_id="a" * 32, display_name="u", is_admin=True))
@@ -1510,13 +1498,12 @@ class TestKeepNewest(unittest.TestCase):
         self.assertGreater(listing_limit(self._channel(None)), 0)
 
     def test_retention_counts_videos_not_broadcasts(self):
-        import tempfile as _tf
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
         import models.database as mdb
         from models.database import YouTubeChannel, YouTubeVideo
         from services.youtube import library, sync
-        engine = create_engine(f"sqlite:///{_tf.mkdtemp()}/t.db")
+        engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db")
         mdb.Base.metadata.create_all(engine)
         db = sessionmaker(bind=engine)()
         ch = YouTubeChannel(input_url="u", kind="channel", title="C", slug="c",
@@ -1542,9 +1529,8 @@ class TestKeepNewest(unittest.TestCase):
 class TestRetiredSubscriptionTable(unittest.TestCase):
     def test_the_old_table_is_dropped_and_dropping_twice_is_fine(self):
         import sqlite3
-        import tempfile as _tf
         import models.database as mdb
-        conn = sqlite3.connect(_tf.mkdtemp() + "/t.db")
+        conn = sqlite3.connect(temp_dir(self) + "/t.db")
         cur = conn.cursor()
         cur.execute("CREATE TABLE youtube_row_subscriptions (id INTEGER PRIMARY KEY)")
         conn.commit()
@@ -1559,13 +1545,12 @@ class TestChannelListForLiveTv(unittest.TestCase):
     the lineup, so the channel list has to say what the guide knows."""
 
     def setUp(self):
-        import tempfile as _tf
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
         import models.database as mdb
         from models.database import EPGProgram, YouTubeChannel
         from services.youtube import livetv
-        engine = create_engine(f"sqlite:///{_tf.mkdtemp()}/t.db")
+        engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db")
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()
         self.on = YouTubeChannel(input_url="u", kind="channel", title="On", slug="on",
@@ -1636,7 +1621,6 @@ class TestKeepNewestStopsFetching(unittest.TestCase):
     """
 
     def setUp(self):
-        import tempfile as _tf
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
         import models.database as mdb
@@ -1644,7 +1628,7 @@ class TestKeepNewestStopsFetching(unittest.TestCase):
         from services.youtube import client, indexer
         from services.youtube.errors import VideoUnavailable
         self.YouTubeVideo, self.indexer, self.Unavailable = YouTubeVideo, indexer, VideoUnavailable
-        engine = create_engine(f"sqlite:///{_tf.mkdtemp()}/t.db")
+        engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db")
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()
         self.channel = YouTubeChannel(
@@ -1790,7 +1774,6 @@ class _PublishFixture(unittest.TestCase):
     playlist call replaced by a recorder."""
 
     def setUp(self):
-        import tempfile as _tf
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
         import models.database as mdb
@@ -1799,7 +1782,7 @@ class _PublishFixture(unittest.TestCase):
         import services.smartlists as sm
         from services.youtube import resolver, sync as ysync
         self.sm, self.ysync, self.resolver = sm, ysync, resolver
-        engine = create_engine(f"sqlite:///{_tf.mkdtemp()}/t.db")
+        engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db")
         mdb.Base.metadata.create_all(engine)
         self.Session = sessionmaker(bind=engine)
         self.db = self.Session()
@@ -2154,9 +2137,8 @@ class TestRemovingAChannelRemovesItsFolder(unittest.TestCase):
     """
 
     def setUp(self):
-        import tempfile as _tf
         from pathlib import Path
-        self.root = Path(_tf.mkdtemp())
+        self.root = Path(temp_dir(self))
 
     def test_an_emptied_channel_folder_is_removed(self):
         from pathlib import Path
@@ -2275,14 +2257,13 @@ class TestTentacleAddressIsWorkedOut(unittest.TestCase):
     """
 
     def setUp(self):
-        import tempfile as _tf
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
         import models.database as mdb
         from models.database import set_setting
         from services.youtube import sync as ysync
         self.ysync = ysync
-        engine = create_engine(f"sqlite:///{_tf.mkdtemp()}/t.db")
+        engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db")
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()
         set_setting(self.db, "jellyfin_url", "http://192.168.2.52:8096")
@@ -2340,13 +2321,12 @@ class TestTentacleAddressIsWorkedOut(unittest.TestCase):
 
 class TestEnablingWithABlankAddress(unittest.TestCase):
     def setUp(self):
-        import tempfile as _tf
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
         import models.database as mdb
         from routers import youtube
         self.youtube = youtube
-        engine = create_engine(f"sqlite:///{_tf.mkdtemp()}/t.db")
+        engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db")
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()
         self._real = (youtube.detect_base_url, youtube.check_base_url)
@@ -2390,13 +2370,12 @@ class TestTheAddressResolvesItself(unittest.TestCase):
     """base_url() works the address out and keeps it when nothing is saved."""
 
     def setUp(self):
-        import tempfile as _tf
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
         import models.database as mdb
         from services.youtube import sync as ysync
         self.ysync = ysync
-        engine = create_engine(f"sqlite:///{_tf.mkdtemp()}/t.db")
+        engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db")
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()
         self._real = ysync.detect_base_url

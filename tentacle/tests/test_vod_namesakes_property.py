@@ -38,7 +38,6 @@ import os
 import random
 import shutil
 import sys
-import tempfile
 import unittest
 from pathlib import Path as _RealPath
 
@@ -49,6 +48,7 @@ import models.database as mdb
 from models.database import Movie, Provider, ProviderCategory
 import services.sync as sync
 from services.tmdb import TMDBConnectionError
+from tmp_dirs import temp_dir
 
 # Seeds that found a violation during development (kept so they run every time):
 # 42 60 189 (a renumbered namesake stream re-matched and the old row was pruned),
@@ -693,7 +693,7 @@ def _run(cases, classes):
     logging.disable(logging.CRITICAL)
     try:
         for v2, seed in cases:
-            root = tempfile.mkdtemp()
+            root = temp_dir()
             try:
                 bad, _ = run_seed(seed, root, v2=v2)
             finally:

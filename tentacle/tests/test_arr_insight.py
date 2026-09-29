@@ -2,7 +2,6 @@
 
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
-import tempfile
 import time
 import unittest
 from datetime import datetime, timedelta
@@ -13,6 +12,7 @@ from fastapi import HTTPException
 import models.database as mdb
 import routers.activity as activity
 from services import arr_insight
+from tmp_dirs import temp_dir
 
 NOW = datetime.utcnow()
 
@@ -94,7 +94,7 @@ class _Db(unittest.TestCase):
     def setUp(self):
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
-        engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db")
+        engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db")
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()
         for k, v in {"radarr_url": "http://r:7878", "radarr_api_key": "k",

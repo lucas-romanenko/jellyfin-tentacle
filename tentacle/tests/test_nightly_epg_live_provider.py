@@ -9,7 +9,6 @@ normal way matched, so after setup the guide ran dry within days while the log
 still said "Syncing Live TV EPG data". Drives the real run_scheduled_sync().
 """
 import logging
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -20,6 +19,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 import models.database as mdb
+from tmp_dirs import temp_dir
 
 try:
     import main
@@ -40,7 +40,7 @@ def tearDownModule():
 @unittest.skipIf(main is None, "fastapi/apscheduler not installed")
 class NightlyEpgForLiveProvider(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = Path(temp_dir(self))
         engine = create_engine(f"sqlite:///{self.tmp}/t.db")
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()

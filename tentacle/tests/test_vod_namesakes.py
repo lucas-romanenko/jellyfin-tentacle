@@ -9,7 +9,6 @@ both import, into separate folders, and nothing already imported moves,
 is rewritten or is re-matched. Self-contained: no network.
 """
 import shutil
-import tempfile
 import unittest
 from pathlib import Path as _RealPath
 
@@ -19,6 +18,7 @@ from sqlalchemy.orm import sessionmaker
 import models.database as mdb
 from models.database import Movie, Provider, ProviderCategory
 import services.sync as sync
+from tmp_dirs import temp_dir
 
 
 def _meta(tid, title, year):
@@ -86,7 +86,7 @@ class Base(unittest.TestCase):
     require_tmdb = True
 
     def setUp(self):
-        tmp = tempfile.mkdtemp()
+        tmp = temp_dir(self)
         self.addCleanup(shutil.rmtree, tmp, True)
         engine = create_engine(f"sqlite:///{tmp}/t.db")
         mdb.Base.metadata.create_all(engine)
@@ -365,7 +365,7 @@ class DetailsNotFoundIsCached(unittest.TestCase):
     def setUp(self):
         import tempfile, shutil
         from services.tmdb import TMDBService
-        d = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, d, True)
+        d = temp_dir(self)
         self.svc = TMDBService("token", d)
         self.calls = []
 

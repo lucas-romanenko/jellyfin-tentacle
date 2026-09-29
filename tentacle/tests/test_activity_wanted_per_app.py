@@ -7,7 +7,6 @@ in either app dropped both: a Sonarr search re-read Radarr's whole /movie
 library (megabytes of JSON on a big install) up to three times per search.
 Every refresh also read Sonarr's /series twice.
 """
-import tempfile
 import time
 import unittest
 from collections import Counter
@@ -15,6 +14,7 @@ from unittest import mock
 
 import models.database as mdb
 from routers import activity
+from tmp_dirs import temp_dir
 
 
 class _Resp:
@@ -33,7 +33,7 @@ class WantedPerApp(unittest.TestCase):
     def setUp(self):
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
-        engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db",
+        engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db",
                                connect_args={"check_same_thread": False})
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()

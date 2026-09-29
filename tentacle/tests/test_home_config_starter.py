@@ -9,7 +9,6 @@ default toolbar), but still never touches a config that already exists.
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
 import json
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -21,6 +20,7 @@ import models.database as mdb
 import routers.smartlists as rsl
 import services.jellyfin as jellyfin
 import services.smartlists as sl
+from tmp_dirs import temp_dir
 
 
 class FakeJf:
@@ -41,7 +41,7 @@ class FakeJf:
 
 class StarterConfig(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = Path(temp_dir(self))
         engine = create_engine(f"sqlite:///{self.tmp}/t.db")
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()

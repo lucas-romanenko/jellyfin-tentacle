@@ -7,7 +7,6 @@ Run from tentacle/:  python -m unittest discover -s tests
 """
 import logging
 import shutil
-import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -18,6 +17,7 @@ from sqlalchemy.orm import sessionmaker
 import models.database as mdb
 from models.database import Movie, Series, Provider, ProviderCategory
 import services.sync as sync
+from tmp_dirs import temp_dir
 
 
 def setUpModule():
@@ -38,7 +38,7 @@ class _EmptyClient:
 
 class DeletionGuardWiring(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = Path(temp_dir(self))
         engine = create_engine(f"sqlite:///{self.tmp}/t.db")
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()

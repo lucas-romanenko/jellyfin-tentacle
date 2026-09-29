@@ -14,7 +14,6 @@ HTTP layer is faked.
 """
 import logging
 import shutil
-import tempfile
 import unittest
 from unittest import mock
 
@@ -24,6 +23,7 @@ from sqlalchemy.orm import sessionmaker
 import models.database as mdb
 import services.jellyfin as jellyfin
 from models.database import Movie, Series, TentacleUser
+from tmp_dirs import temp_dir
 
 
 def setUpModule():
@@ -86,7 +86,7 @@ class FakeServer:
 
 class _Db(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.mkdtemp()
+        tmp = temp_dir(self)
         self.addCleanup(shutil.rmtree, tmp, True)
         engine = create_engine(f"sqlite:///{tmp}/t.db")
         mdb.Base.metadata.create_all(engine)

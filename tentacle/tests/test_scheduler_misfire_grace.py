@@ -7,7 +7,6 @@ These tests run APScheduler's own executor check (run_job) on the jobs as
 main.py schedules them, with the trigger well in the past.
 """
 import logging
-import tempfile
 import unittest
 from datetime import datetime, timedelta
 from unittest import mock
@@ -16,6 +15,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 import models.database as mdb
+from tmp_dirs import temp_dir
 
 try:
     import main
@@ -30,7 +30,7 @@ class DailyJobsSurviveAFreeze(unittest.TestCase):
     def setUp(self):
         logging.disable(logging.CRITICAL)
         self.addCleanup(logging.disable, logging.NOTSET)
-        engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db")
+        engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db")
         mdb.Base.metadata.create_all(engine)
         # A scheduler configured like main's, started paused so jobs are real
         # (defaults applied) but nothing runs on its own.

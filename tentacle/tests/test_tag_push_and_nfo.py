@@ -10,7 +10,6 @@ Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
 import logging
 import shutil
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -21,6 +20,7 @@ from sqlalchemy.orm import sessionmaker
 import models.database as mdb
 from models.database import Movie, Series, Setting
 from services.jellyfin import JellyfinService as _RealJellyfin
+from tmp_dirs import temp_dir
 
 
 def setUpModule():
@@ -61,7 +61,7 @@ class FakeJellyfin:
 
 class _Db(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = temp_dir(self)
         self.addCleanup(shutil.rmtree, self.tmp, True)
         engine = create_engine(f"sqlite:///{self.tmp}/t.db")
         mdb.Base.metadata.create_all(engine)
@@ -129,7 +129,7 @@ class RefreshTagsKeepsNfoMetadata(_Db):
 class UpdateNfoTags(unittest.TestCase):
     def test_rewriting_tags_leaves_every_other_line_alone_and_is_idempotent(self):
         from services.nfo import update_nfo_tags
-        tmp = Path(tempfile.mkdtemp())
+        tmp = Path(temp_dir(self))
         self.addCleanup(shutil.rmtree, tmp, True)
         nfo = tmp / "movie.nfo"
         nfo.write_text("<?xml version=\"1.0\"?>\n<movie>\n  <title>X</title>\n  <tag>A</tag>\n"
@@ -151,7 +151,7 @@ class NfoTagWrites(unittest.TestCase):
 
     def setUp(self):
         from services.nfo import write_movie_nfo
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = temp_dir(self)
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.path = Path(self.tmp) / "movie.nfo"
         write_movie_nfo(self.path, {"tmdb_id": 603, "title": "The Matrix", "year": 1999},

@@ -13,7 +13,6 @@ Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
 import logging
 import shutil
-import tempfile
 import unittest
 
 from sqlalchemy import create_engine
@@ -23,6 +22,7 @@ import models.database as mdb
 import routers.livetv as livetv
 from models.database import LiveChannel, LiveChannelGroup
 from services.m3u_parser import parse_m3u
+from tmp_dirs import temp_dir
 
 
 def setUpModule():
@@ -40,7 +40,7 @@ class _Client:
 
 class _Base(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.mkdtemp()
+        tmp = temp_dir(self)
         self.addCleanup(shutil.rmtree, tmp, True)
         engine = create_engine(f"sqlite:///{tmp}/t.db")
         mdb.Base.metadata.create_all(engine)

@@ -14,13 +14,13 @@ sync_provider.
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
 import shutil
-import tempfile
 import unittest
 
 from models.database import Movie
 import services.sync as sync
 from services.tmdb import TMDBService
 from nightly_harness import NightlyHarness
+from tmp_dirs import temp_dir
 
 
 class _Resp:
@@ -67,7 +67,7 @@ class TestTmdbCache(unittest.TestCase):
         """Must-not-change: an HTTP 429 must not be remembered as "no TMDB match".
         (Passes at 97d25e1: _cache_set stores the None, but _cache_get returns that None
         and search_movie reads it as a cache miss, so negative entries never hit.)"""
-        cache = tempfile.mkdtemp()
+        cache = temp_dir(self)
         http = FakeTMDBHttp()
         tmdb = TMDBService("token", cache)
         tmdb.session = http
@@ -82,7 +82,7 @@ class TestTmdbCache(unittest.TestCase):
 class TestTmdbFailureDuringSync(NightlyHarness):
     def setUp(self):
         super().setUp()
-        self.cache = tempfile.mkdtemp()
+        self.cache = temp_dir(self)
         self.http = FakeTMDBHttp()
         cache, http = self.cache, self.http
 

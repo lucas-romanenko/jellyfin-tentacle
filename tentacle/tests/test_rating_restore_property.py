@@ -44,12 +44,12 @@ import json
 import os
 import random
 import shutil
-import tempfile
 import threading
 import unittest
 from unittest import mock
 
 import requests
+from tmp_dirs import temp_dir
 
 RATINGS = ["TV-Y", "TV-Y7", "TV-G", "TV-PG", "TV-14", "TV-MA"]
 CUSTOMS = ["C-KIDS", "C-TEEN", "C-ADULT"]
@@ -510,7 +510,7 @@ class Scenario:
 def _run_seed(seed, steps=None):
     steps = steps or int(os.environ.get("RATING_PROPERTY_STEPS", "25"))
     import services.jellyfin as j
-    data_dir = tempfile.mkdtemp(prefix=f"rating-prop-{seed}-")
+    data_dir = temp_dir(prefix=f"rating-prop-{seed}-")
     sc = Scenario(seed, data_dir)
     try:
         with mock.patch.dict(os.environ, {"DATA_DIR": data_dir}), \

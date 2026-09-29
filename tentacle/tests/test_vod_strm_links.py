@@ -4,7 +4,6 @@ way; and the code that keys titles by their provider stream id still works.
 
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
-import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -12,13 +11,14 @@ from unittest import mock
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from tmp_dirs import temp_dir
 
 SECRET = "k" * 64
 
 
 def _db():
     import models.database as mdb
-    engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db", connect_args={"check_same_thread": False})
+    engine = create_engine(f"sqlite:///{temp_dir()}/t.db", connect_args={"check_same_thread": False})
     mdb.Base.metadata.create_all(engine)
     return sessionmaker(bind=engine)()
 
@@ -102,7 +102,7 @@ class ExistingFilesAreRewrittenInPlace(unittest.TestCase):
         self.provider = Provider(name="P", server_url="http://cf.panel.test", username="u", password="p")
         self.db.add(self.provider)
         self.db.commit()
-        self.dir = Path(tempfile.mkdtemp())
+        self.dir = Path(temp_dir(self))
         self.strm = self.dir / "Film (2026).strm"
         self.movie = Movie(tmdb_id=99, title="Film", year="2026", source="provider_1",
                            provider_id=self.provider.id, strm_path=str(self.strm))

@@ -13,10 +13,10 @@ import os
 import sqlite3
 import subprocess
 import sys
-import tempfile
 import textwrap
 import unittest
 import shutil
+from tmp_dirs import temp_dir
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 APP = os.path.dirname(HERE)
@@ -59,7 +59,7 @@ def _run(code, data_dir):
 
 class PreMultiUserUpgrade(unittest.TestCase):
     def setUp(self):
-        self.dir = tempfile.mkdtemp()
+        self.dir = temp_dir(self)
         self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
         self.db_path = os.path.join(self.dir, "tentacle.db")
 

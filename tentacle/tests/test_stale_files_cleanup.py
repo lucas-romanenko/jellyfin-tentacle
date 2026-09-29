@@ -9,7 +9,6 @@ that have nothing to do with any .strm.
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
 import shutil
-import tempfile
 import unittest
 from pathlib import Path as _RealPath
 
@@ -23,11 +22,12 @@ _ensure_web_stubs()
 import models.database as mdb  # noqa: E402
 from models.database import Movie, Provider  # noqa: E402
 import routers.settings as settings  # noqa: E402
+from tmp_dirs import temp_dir
 
 
 class TestStaleFilesCleanup(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.mkdtemp()
+        tmp = temp_dir(self)
         self.addCleanup(shutil.rmtree, tmp, True)
         engine = create_engine(f"sqlite:///{tmp}/t.db")
         mdb.Base.metadata.create_all(engine)

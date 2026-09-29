@@ -16,7 +16,6 @@ Run from tentacle/:  python -m unittest tests.test_duplicate_keep_vod_merged_fol
 """
 import logging
 import shutil
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -27,6 +26,7 @@ from sqlalchemy.orm import sessionmaker
 
 from models.database import Base, Duplicate, Movie, Series, Setting
 from routers import duplicates
+from tmp_dirs import temp_dir
 
 
 def setUpModule(): logging.disable(logging.CRITICAL)
@@ -113,7 +113,7 @@ class FakeSonarr(_FakeArr):
 
 class _Base(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.mkdtemp()
+        tmp = temp_dir(self)
         self.addCleanup(shutil.rmtree, tmp, True)
         self.root = Path(tmp)
         engine = create_engine(f"sqlite:///{tmp}/t.db", connect_args={"check_same_thread": False})

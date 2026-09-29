@@ -2,7 +2,6 @@
 
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
-import tempfile
 import time
 import unittest
 from datetime import datetime, timedelta
@@ -10,6 +9,7 @@ from unittest import mock
 
 import models.database as mdb
 import routers.activity as activity
+from tmp_dirs import temp_dir
 
 
 def _iso(dt: datetime) -> str:
@@ -94,7 +94,7 @@ class _Base(unittest.TestCase):
     def setUp(self):
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
-        tmp = tempfile.mkdtemp()
+        tmp = temp_dir(self)
         engine = create_engine(f"sqlite:///{tmp}/t.db")
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()

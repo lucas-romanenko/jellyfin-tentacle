@@ -5,16 +5,16 @@ container formats -- so the NFOs it shares with a VOD copy are left alone.
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
 import shutil
-import tempfile
 import unittest
 from pathlib import Path
 
 from services.media_files import MEDIA_SUFFIXES, delete_movie_files, delete_series_files
+from tmp_dirs import temp_dir
 
 
 class TestMovieNfoNextToADownload(unittest.TestCase):
     def setUp(self):
-        self.root = Path(tempfile.mkdtemp())
+        self.root = Path(temp_dir(self))
         self.addCleanup(shutil.rmtree, self.root, True)
         self.folder = self.root / "Heat (1995)"
         self.folder.mkdir()
@@ -45,7 +45,7 @@ class TestMovieNfoNextToADownload(unittest.TestCase):
 
 class TestShowNfoNextToAnIso(unittest.TestCase):
     def test_an_iso_download_keeps_the_shared_tvshow_nfo(self):
-        root = Path(tempfile.mkdtemp())
+        root = Path(temp_dir(self))
         self.addCleanup(shutil.rmtree, root, True)
         show = root / "Sky Stories (2003)"
         (show / "Season 01").mkdir(parents=True)

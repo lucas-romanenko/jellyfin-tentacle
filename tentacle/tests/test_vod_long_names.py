@@ -10,12 +10,12 @@ Names that already fit must not change — a different path is a new Jellyfin
 item, and watched state would be lost.
 Run from tentacle/:  python -m unittest discover -s tests -p "test_vod_long_names.py"
 """
-import tempfile
 import unittest
 from pathlib import Path
 
 from services.nfo import vod_folder_name
 import services.sync as sync
+from tmp_dirs import temp_dir
 
 LONG = "アニメ" * 30        # 90 characters, 270 bytes
 
@@ -28,7 +28,7 @@ class TestFolderName(unittest.TestCase):
     def test_a_long_cjk_title_can_be_written(self):
         name = vod_folder_name(LONG, "2020")
         self.assertLessEqual(_bytes(name) + len(".strm"), 255)
-        d = Path(tempfile.mkdtemp()) / name
+        d = Path(temp_dir(self)) / name
         d.mkdir()
         (d / f"{name}.strm").write_text("x")
         (d / f"{name}.nfo").write_text("x")
@@ -60,7 +60,7 @@ class _Client:
 
 class TestEpisodeNames(unittest.TestCase):
     def _write(self, folder_name):
-        show = Path(tempfile.mkdtemp()) / folder_name
+        show = Path(temp_dir(self)) / folder_name
         show.mkdir()
         n = sync._write_episode_strms(_Client(), {"1": [{"id": 7, "episode_num": 3}]}, show, folder_name)
         return n, [p.name for p in (show / "Season 01").iterdir()]

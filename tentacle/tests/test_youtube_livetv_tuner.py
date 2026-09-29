@@ -27,7 +27,6 @@ Needs fastapi + httpx + sqlalchemy. Run from tentacle/:
 import os
 import stat
 import sys
-import tempfile
 import threading
 import unittest
 from unittest import mock
@@ -38,6 +37,7 @@ from fastapi.testclient import TestClient
 import models.database as mdb
 import routers.livetv as livetv_router
 import routers.youtube as youtube_router
+from tmp_dirs import temp_dir
 
 DEADLINE = 15.0
 
@@ -92,7 +92,7 @@ class _Base(unittest.TestCase):
     def setUp(self):
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = temp_dir(self)
         engine = create_engine(f"sqlite:///{self.tmp}/t.db")
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()

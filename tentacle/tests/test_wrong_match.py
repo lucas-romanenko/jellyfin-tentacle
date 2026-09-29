@@ -6,7 +6,6 @@ showed the documentary as In Library, and hid the user's Radarr request for it.
 
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
-import tempfile
 import unittest
 from pathlib import Path as _RealPath
 from unittest import mock
@@ -19,6 +18,7 @@ import models.database as mdb  # noqa: E402
 from models.database import BlockedStream, DownloadRequest, MatchSuspect, Movie  # noqa: E402
 from nightly_harness import NightlyHarness, FakeTMDB  # noqa: E402
 from services import wrong_match  # noqa: E402
+from tmp_dirs import temp_dir
 
 
 class TestStreamKey(unittest.TestCase):
@@ -601,7 +601,7 @@ class TestProbeInfo(_Base):
 class TestFrames(_Base):
     def setUp(self):
         super().setUp()
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = temp_dir(self)
         self.grabs = []
 
         def grab(ffmpeg, url, ua, sec):

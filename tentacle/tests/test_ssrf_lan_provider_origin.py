@@ -11,6 +11,7 @@ import unittest
 from unittest import mock
 
 from services import ssrf
+from tmp_dirs import temp_dir
 
 DNS = {
     "tuliprox.lan": ["192.168.2.52"],
@@ -76,14 +77,13 @@ class StreamRouteUsesTheProviderOrigin(unittest.TestCase):
     """The public /api/live/stream route, end to end up to the fetch."""
 
     def setUp(self):
-        import tempfile
         import models.database as mdb
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
         p = mock.patch.object(ssrf.socket, "getaddrinfo", _gai)
         p.start()
         self.addCleanup(p.stop)
-        engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db")
+        engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db")
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()
 

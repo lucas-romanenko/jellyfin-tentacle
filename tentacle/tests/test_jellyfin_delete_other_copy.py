@@ -9,7 +9,6 @@ surviving VOD item -- from every user's playlists.
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
 import shutil
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -24,11 +23,12 @@ _ensure_web_stubs()
 import models.database as mdb  # noqa: E402
 from models.database import DownloadRequest, Duplicate, Movie, Series  # noqa: E402
 import routers.library as library  # noqa: E402
+from tmp_dirs import temp_dir
 
 
 class _Base(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = Path(temp_dir(self))
         self.addCleanup(shutil.rmtree, self.tmp, True)
         engine = create_engine(f"sqlite:///{self.tmp}/t.db")
         mdb.Base.metadata.create_all(engine)

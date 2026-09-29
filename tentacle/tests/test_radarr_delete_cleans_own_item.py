@@ -9,7 +9,6 @@ playlists.
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
 import shutil
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -25,6 +24,7 @@ import models.database as mdb  # noqa: E402
 from models.database import Movie, set_setting  # noqa: E402
 import routers.library as library  # noqa: E402
 import routers.radarr as radarr  # noqa: E402
+from tmp_dirs import temp_dir
 
 VOD = {"Id": "vod", "ProviderIds": {"Tmdb": "999007"}, "Path": "/media/vod/movies/Film (2001)/Film (2001).strm"}
 DL = {"Id": "dl", "ProviderIds": {"Tmdb": "999007"}, "Path": "/media/movies/Film (2001)/Film (2001) WEBDL-1080p.mkv"}
@@ -32,7 +32,7 @@ DL = {"Id": "dl", "ProviderIds": {"Tmdb": "999007"}, "Path": "/media/movies/Film
 
 class _Base(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+        self.tmp = Path(temp_dir(self))
         self.addCleanup(shutil.rmtree, self.tmp, True)
         engine = create_engine(f"sqlite:///{self.tmp}/t.db")
         mdb.Base.metadata.create_all(engine)

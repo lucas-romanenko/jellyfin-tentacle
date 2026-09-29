@@ -15,7 +15,6 @@ blocklisted release is never grabbed again.
 
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
-import tempfile
 import unittest
 
 from sqlalchemy import create_engine
@@ -24,12 +23,13 @@ from sqlalchemy.orm import sessionmaker
 import models.database as mdb
 from models.database import Setting
 import services.download_health as dh
+from tmp_dirs import temp_dir
 
 CLIENT_DOWN = "Unable to communicate with qBittorrent. Connection refused"
 
 
 def _session_factory():
-    tmp = tempfile.mkdtemp()
+    tmp = temp_dir()
     engine = create_engine(f"sqlite:///{tmp}/t.db")
     mdb.Base.metadata.create_all(engine)
     return sessionmaker(bind=engine)

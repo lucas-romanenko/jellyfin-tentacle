@@ -17,7 +17,6 @@ Two regressions this pins:
 Requires: fastapi (routers.livetv imports it). Run from the tentacle/
 directory:  python -m unittest discover -s tests
 """
-import tempfile
 import unittest
 
 from sqlalchemy import create_engine
@@ -27,10 +26,11 @@ import models.database as mdb
 from models.database import LiveChannelGroup, Provider
 import routers.livetv as livetv
 import services.discovery as discovery
+from tmp_dirs import temp_dir
 
 
 def _session():
-    tmp = tempfile.mkdtemp()
+    tmp = temp_dir()
     engine = create_engine(f"sqlite:///{tmp}/t.db")
     mdb.Base.metadata.create_all(engine)
     return sessionmaker(bind=engine)()

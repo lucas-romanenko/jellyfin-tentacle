@@ -20,6 +20,7 @@ _ensure_web_stubs()
 
 from sqlalchemy import create_engine  # noqa: E402
 from sqlalchemy.orm import sessionmaker  # noqa: E402
+from tmp_dirs import temp_dir  # noqa: E402
 
 RG = "11111111-1111-1111-1111-111111111111"
 RG2 = "22222222-2222-2222-2222-222222222222"
@@ -406,7 +407,7 @@ class TestSongsAndSearch(unittest.TestCase):
         self.assertFalse(_has_official({"releases": [{"status": "Bootleg"}]}))
         self.assertTrue(_has_official({"releases": [{"status": "Bootleg"}, {"status": "Official"}]}))
         self.assertTrue(_has_official({}))  # unknown: keep
-        mb = MusicBrainz("me@example.com", "/tmp")
+        mb = MusicBrainz("me@example.com", temp_dir(self))
         with mock.patch.object(mb, "_browse_all", return_value=[]) as browse:
             mb.artist_release_groups("x")
         self.assertEqual(browse.call_args.args[1]["release-group-status"], "website-default")

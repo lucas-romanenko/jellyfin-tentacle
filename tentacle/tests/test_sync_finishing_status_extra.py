@@ -11,7 +11,6 @@ and the nightly job runs scans, tags, EPG and per-user playlist rebuilds (1 h
 "completed", and a new manual sync was refused as "already running".
 """
 import logging
-import tempfile
 import unittest
 from datetime import datetime
 from unittest import mock
@@ -23,6 +22,7 @@ from sqlalchemy.orm import sessionmaker
 import models.database as mdb
 import routers.sync as sync_router
 from models.database import Provider, SyncRun
+from tmp_dirs import temp_dir
 
 
 def setUpModule():
@@ -35,7 +35,7 @@ def tearDownModule():
 
 class _Db(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.mkdtemp()
+        tmp = temp_dir(self)
         engine = create_engine(f"sqlite:///{tmp}/t.db", connect_args={"check_same_thread": False})
         mdb.Base.metadata.create_all(engine)
         self.Session = sessionmaker(bind=engine)

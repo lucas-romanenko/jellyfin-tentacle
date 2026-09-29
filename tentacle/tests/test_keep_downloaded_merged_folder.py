@@ -15,6 +15,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 import models.database as mdb
 from models.database import Movie, Series, Duplicate, Provider
+from tmp_dirs import temp_dir
 
 
 def setUpModule(): logging.disable(logging.CRITICAL)
@@ -23,7 +24,7 @@ def tearDownModule(): logging.disable(logging.NOTSET)
 
 class Base(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, tmp, True)
+        tmp = temp_dir(self)
         self.root = Path(tmp)
         engine = create_engine(f"sqlite:///{tmp}/t.db"); mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)(); self.addCleanup(self.db.close)

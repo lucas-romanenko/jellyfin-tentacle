@@ -10,7 +10,6 @@ no HEAD), and a movie started on the TV was what made the provider 509 the
 recording running at the same time.
 """
 import asyncio
-import tempfile
 import unittest
 from unittest import mock
 
@@ -19,6 +18,7 @@ from fastapi import HTTPException
 from starlette.requests import Request
 
 from test_livetv_raw_reconnect import _Body, _dropped
+from tmp_dirs import temp_dir
 
 PANEL = "http://provider.test"
 
@@ -27,7 +27,7 @@ def _fresh_db():
     import models.database as mdb
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
-    engine = create_engine(f"sqlite:///{tempfile.mkdtemp()}/t.db",
+    engine = create_engine(f"sqlite:///{temp_dir()}/t.db",
                            connect_args={"check_same_thread": False})
     mdb.Base.metadata.create_all(engine)
     return sessionmaker(bind=engine)()

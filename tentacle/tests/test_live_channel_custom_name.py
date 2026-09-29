@@ -7,7 +7,6 @@ syncs never touch it, and the lineup, the M3U and the XMLTV all show it.
 
 Run from tentacle/:  python -m unittest tests.test_live_channel_custom_name
 """
-import tempfile
 import unittest
 
 from fastapi import FastAPI
@@ -18,6 +17,7 @@ from sqlalchemy.orm import sessionmaker
 import models.database as mdb
 import routers.livetv as livetv_router
 from routers.auth import require_admin
+from tmp_dirs import temp_dir
 
 PROVIDER_NAME = "US: TORONTO MAPLE LEAFS"
 
@@ -29,7 +29,7 @@ class _Client:
 
 class CustomChannelName(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = temp_dir(self)
         engine = create_engine(f"sqlite:///{self.tmp}/t.db")
         mdb.Base.metadata.create_all(engine)
         self.db = sessionmaker(bind=engine)()
