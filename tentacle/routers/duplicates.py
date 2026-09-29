@@ -59,6 +59,8 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
     if resolution == "keep_radarr":
         if is_series:
             _require_series_download(dup, db)
+        else:
+            _require_movie_download(dup, db)
         _carry_user_data(dup, record, "download", db)
         # Delete VOD strm/nfo files. A series' VOD path is its show folder, not
         # a .strm, so it needs the folder-aware helper (extension-based, safe in
@@ -156,6 +158,35 @@ def _require_series_download(dup: Duplicate, db: Session) -> None:
         raise HTTPException(502, "Couldn't read Sonarr's episode files. Nothing was deleted; try again.")
     if not has:
         raise HTTPException(409, "Nothing downloaded for this show: Sonarr only lists the VOD .strm files. "
+                                 "Nothing was deleted; use Keep Both to dismiss it.")
+
+
+def _require_movie_download(dup: Duplicate, db: Session) -> None:
+    """Refuse Keep Downloaded for a film Radarr holds no downloaded file of,
+    as _require_series_download does for shows. Keep Downloaded deletes the
+    VOD copy; without a download that deletes the film. It happens after a
+    Keep VOD that failed half-way (Radarr deleted the file, then removing the
+    title failed), when the file was deleted in Radarr, and for a duplicate
+    between two providers (Resolve All sends Keep Downloaded for every one)."""
+    if not any((s.get("source") or "") == "radarr" for s in dup.sources or []):
+        raise HTTPException(409, "Both copies of this film are VOD streams: there is no download to keep. "
+                                 "Nothing was deleted; use Keep Both to dismiss it.")
+    url, key = get_setting(db, "radarr_url"), get_setting(db, "radarr_api_key")
+    if not url or not key:
+        return  # can't be asked: as before (Radarr's scan recorded this duplicate)
+    from services.radarr import RadarrService
+    radarr = RadarrService(url, key)
+    movie = radarr.get_movie_by_tmdb(dup.tmdb_id)
+    if not movie:
+        raise HTTPException(409, "Radarr doesn't list this film (or couldn't be read), so there is no download "
+                                 "to keep. Nothing was deleted.")
+    try:
+        files = radarr.get_movie_files(movie["id"])
+    except Exception as e:
+        logger.error(f"Keep Downloaded: could not read Radarr's files for tmdb:{dup.tmdb_id}: {e}")
+        raise HTTPException(502, "Couldn't read Radarr's files for this film. Nothing was deleted; try again.")
+    if not any(is_downloaded_file(f.get("path")) for f in files or []):
+        raise HTTPException(409, "Nothing downloaded for this film: Radarr has no file for it. "
                                  "Nothing was deleted; use Keep Both to dismiss it.")
 
 
