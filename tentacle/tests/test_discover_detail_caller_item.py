@@ -36,6 +36,8 @@ class CallerScopedItemId(_lib.TestDiscoverDetail):
         self.addCleanup(p.stop)
         discover._visible_cache.clear()
         self.addCleanup(discover._visible_cache.clear)
+        discover._visible_down_until[0] = 0
+        self.addCleanup(discover._visible_down_until.__setitem__, 0, 0)
 
     def setUp(self):
         super().setUp()
@@ -61,10 +63,18 @@ class CallerScopedItemId(_lib.TestDiscoverDetail):
 
     def test_unknown_answer_leaves_it_out_and_is_not_cached(self):
         self.as_caller("other")
-        for failure in (requests.ConnectionError("down"), _resp(503)):
-            with mock.patch("requests.get", **({"side_effect": failure} if isinstance(failure, Exception)
-                                                else {"return_value": failure})):
-                self.assertIsNone(self.detail("movie", 603)["jellyfin_item_id"])
+        with mock.patch("requests.get", return_value=_resp(503)):
+            self.assertIsNone(self.detail("movie", 603)["jellyfin_item_id"])
+        with mock.patch("requests.get", return_value=_resp(200)):
+            self.assertEqual("item-1", self.detail("movie", 603)["jellyfin_item_id"])
+
+    def test_after_a_connection_failure_jellyfin_is_not_waited_on_again_for_a_while(self):
+        self.as_caller("other")
+        with mock.patch("requests.get", side_effect=requests.ConnectionError("down")) as get:
+            self.assertIsNone(self.detail("movie", 603)["jellyfin_item_id"])
+            self.assertIsNone(self.detail("movie", 603)["jellyfin_item_id"])
+        self.assertEqual(1, get.call_count, "every click waited on an unreachable Jellyfin")
+        discover._visible_down_until[0] = 0  # the pause is over
         with mock.patch("requests.get", return_value=_resp(200)):
             self.assertEqual("item-1", self.detail("movie", 603)["jellyfin_item_id"])
 

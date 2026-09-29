@@ -192,6 +192,10 @@ _visible_lock = threading.Lock()
 VISIBLE_TTL = 600
 VISIBLE_CACHE_MAX = 5000
 VISIBLE_TIMEOUT = 5
+# After Jellyfin failed to answer, other callers don't wait on it again for
+# this long (the id is left out meanwhile, as for a failure).
+VISIBLE_FAILURE_TTL = 30
+_visible_down_until = [0.0]
 
 
 def _caller_can_open(db: Session, request: Request, item_id: str) -> bool:
@@ -218,6 +222,8 @@ def _caller_can_open(db: Session, request: Request, item_id: str) -> bool:
         hit = _visible_cache.get(key)
         if hit and now - hit[0] < VISIBLE_TTL:
             return hit[1]
+    if now < _visible_down_until[0]:
+        return False
     url = (get_setting(db, "jellyfin_url", "") or "").rstrip("/")
     api_key = get_setting(db, "jellyfin_api_key", "")
     visible = False
@@ -232,7 +238,8 @@ def _caller_can_open(db: Session, request: Request, item_id: str) -> bool:
             visible = r.status_code == 200
         except Exception as e:
             logger.info(f"Discover detail: could not check item {key[1]} for the caller: {e}")
-            return False  # not cached: ask again next time
+            _visible_down_until[0] = now + VISIBLE_FAILURE_TTL
+            return False  # not cached per item: asked again after the pause
     with _visible_lock:
         if len(_visible_cache) >= VISIBLE_CACHE_MAX:
             _visible_cache.clear()
