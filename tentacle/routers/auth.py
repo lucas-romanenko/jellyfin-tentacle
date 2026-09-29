@@ -453,7 +453,7 @@ def get_jellyfin_users(db: Session = Depends(get_db)):
             raise HTTPException(400, "Could not reach Jellyfin at the saved address. "
                                      "Check the address, then continue.")
         logger.error(f"Failed to fetch Jellyfin users: {e}")
-        raise HTTPException(502, f"Could not reach Jellyfin: {e}")
+        raise HTTPException(502, f"Could not reach Jellyfin ({type(e).__name__})")
 
 
 @router.post("/login")
@@ -478,7 +478,8 @@ def login(body: LoginRequest, response: Response, request: Request, db: Session 
     except requests.HTTPError:
         raise HTTPException(401, "Invalid username or password")
     except Exception as e:
-        raise HTTPException(502, f"Could not reach Jellyfin: {e}")
+        logger.error(f"Login: could not reach Jellyfin: {e}")
+        raise HTTPException(502, f"Could not reach Jellyfin ({type(e).__name__})")
 
     data = r.json()
     jf_user_id = data["User"]["Id"]
