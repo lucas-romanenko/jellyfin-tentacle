@@ -16,9 +16,15 @@ logger = logging.getLogger(__name__)
 OWNED_SUFFIXES = {".strm", ".nfo"}
 
 # Real media. Their presence means another tool owns files in this folder, so
-# shared metadata (tvshow.nfo) must be left alone.
+# shared metadata (tvshow.nfo) must be left alone. Every video extension
+# Radarr/Sonarr import (their MediaFileExtensions, less .strm and playlist or
+# generic data formats), compared lower-case: a download named ".MKV" or an
+# ".iso" rip is someone else's content too (#282).
 MEDIA_SUFFIXES = {
     ".mkv", ".mp4", ".avi", ".m4v", ".ts", ".webm", ".mov", ".wmv", ".mpg", ".mpeg", ".m2ts",
+    ".mts", ".mk3d", ".m2v", ".iso", ".img", ".vob", ".flv", ".rm", ".rmvb", ".divx", ".xvid",
+    ".ogm", ".ogv", ".asf", ".3gp", ".qt", ".dvr-ms", ".wtv", ".nrg", ".pva", ".nsv", ".ty",
+    ".avc", ".vp3", ".svq3", ".nuv", ".viv", ".dv", ".fli", ".bivx",
 }
 
 
@@ -56,7 +62,7 @@ def delete_movie_files(strm_path) -> int:
         # downloaded copy can share that stem ("Heat (1995).mkv"), and Radarr's
         # NFO for it has the same name — then it describes the download, not us.
         nfo = strm.with_suffix(".nfo")
-        has_download = any(strm.with_suffix(ext).exists() for ext in MEDIA_SUFFIXES)
+        has_download = _has_same_stem_media(strm)
         if nfo.exists() and not has_download:
             nfo.unlink()
             deleted += 1
@@ -116,6 +122,16 @@ def delete_series_files(show_dir) -> int:
     except OSError as e:
         logger.warning(f"Failed to delete series files at {show_dir}: {e}")
     return deleted
+
+
+def _has_same_stem_media(strm: Path) -> bool:
+    """True when a download with the .strm's name sits beside it, in any case
+    ("Heat (1995).MKV") and any importable format ("Heat (1995).iso")."""
+    try:
+        return any(f.stem == strm.stem and f.suffix.lower() in MEDIA_SUFFIXES and f.is_file()
+                   for f in strm.parent.iterdir())
+    except OSError:
+        return True  # can't tell: keep the NFO
 
 
 def _has_media_files(root: Path) -> bool:
