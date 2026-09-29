@@ -524,14 +524,97 @@ def suggest_matches(db: Session, tmdb_id: int, query: Optional[str] = None) -> d
     }
 
 
-def rematch_movie(db: Session, tmdb_id: int, new_tmdb_id: int, user_name: str = None) -> dict:
-    """This VOD stream is really `new_tmdb_id`: move the copy to that film.
+def _radarr_folder_ids(db: Session, name: str) -> set:
+    """TMDB ids of Radarr downloads in a folder of this NAME: in the merged
+    Radarr/VOD layout Radarr sees /data/movies/X and Tentacle /media/vod/movies/X."""
+    return {tid for tid, path in db.query(Movie.tmdb_id, Movie.radarr_path)
+            .filter(Movie.radarr_path.isnot(None)).all() if Path(path).parent.name == name}
 
-    Same stream, new identity: the .strm and NFO move to the right film's
-    folder with its metadata, tags tied to the old film (lists, rules) are
-    recomputed, and a MatchOverride keeps the sync from undoing it. If the
-    right film is already in the library, this copy is simply a duplicate —
-    it is removed and its stream blocked instead.
+
+def _folder_is_this_copys(db: Session, row: Movie) -> bool:
+    """True when the copy's folder holds nothing but this copy: no download
+    (any importable video), no other .strm or NFO, no sub-folder, no other
+    row's file. Subtitles and artwork are the stream's own. Then "Fix it" can
+    rewrite the NFO where it is, and Jellyfin keeps the item (#294)."""
+    from services.media_files import MEDIA_SUFFIXES
+    strm = Path(row.strm_path)
+    folder = strm.parent
+    own = {strm.name, strm.with_suffix(".nfo").name}
+    if row.nfo_path:
+        own.add(Path(row.nfo_path).name)
+    try:
+        for f in folder.iterdir():
+            if f.name in own:
+                continue
+            if f.is_dir() or f.suffix.lower() in MEDIA_SUFFIXES | {".strm", ".nfo"}:
+                return False
+    except OSError:
+        return False
+    if _radarr_folder_ids(db, folder.name):
+        return False
+    return db.query(Movie).filter(Movie.id != row.id,
+                                  Movie.strm_path.like(str(folder).replace("%", "_") + "/%")).first() is None
+
+
+def _folder_taken(db: Session, row: Movie, folder: Path, new_tmdb_id: int) -> bool:
+    """Another title owns `folder` (#293, the sync's #155/#185 rule): another
+    row's .strm, a Radarr download of another film in a folder of that name,
+    an NFO naming another TMDB id, or a video that isn't this copy."""
+    from services.media_files import MEDIA_SUFFIXES
+    from services.sync import _nfo_tmdb_ids
+    if db.query(Movie).filter(Movie.id != row.id,
+                              Movie.strm_path.like(str(folder).replace("%", "_") + "/%")).first() is not None:
+        return True
+    if _radarr_folder_ids(db, folder.name) - {new_tmdb_id}:
+        return True
+    if not folder.is_dir():
+        return False
+    try:
+        entries = [f for f in folder.iterdir() if str(f) != row.strm_path]
+    except OSError:
+        return True  # cannot look inside: do not write into it
+    own_nfo = str(Path(row.strm_path).with_suffix(".nfo"))
+    if _nfo_tmdb_ids(folder, [f.name for f in entries
+                              if f.suffix.lower() == ".nfo" and str(f) != own_nfo]) - {new_tmdb_id}:
+        return True
+    return any(f.suffix.lower() in MEDIA_SUFFIXES | {".strm"} for f in entries)
+
+
+def _refresh_in_jellyfin(db: Session, tmdb_id: int, jf_item_id: Optional[str],
+                         strm_path: str) -> Optional[str]:
+    """Have Jellyfin re-read the rewritten NFO into this .strm's existing
+    item (same id: users' data and playlist entries stay). Without the item
+    (not scanned yet, Jellyfin down), a library scan reads it later. Returns
+    the item id when it was refreshed."""
+    url, key = get_setting(db, "jellyfin_url", ""), get_setting(db, "jellyfin_api_key", "")
+    if not (url and key):
+        return None
+    try:
+        from services.jellyfin import JellyfinService
+        jf = JellyfinService(url, key, get_setting(db, "jellyfin_user_id", ""))
+        item = jellyfin_item_for_strm(jf, tmdb_id, strm_path, jf_item_id)
+        if item is not None and jf.refresh_item_metadata(item["Id"], replace_all=True):
+            return item["Id"]
+        jf.trigger_library_scan(None)
+    except Exception as e:
+        logger.warning(f"[WrongMatch] Jellyfin refresh for tmdb:{tmdb_id} failed: {e}; "
+                       f"the next library scan picks up the fix")
+    return None
+
+
+def rematch_movie(db: Session, tmdb_id: int, new_tmdb_id: int, user_name: str = None) -> dict:
+    """This VOD stream is really `new_tmdb_id`: the copy becomes that film.
+
+    Same stream, new identity: the NFO is rewritten with the right film's
+    metadata, tags tied to the old film (lists, rules) are recomputed, and a
+    MatchOverride keeps the sync from undoing it. The .strm stays where it is
+    when the folder is only this copy's, so Jellyfin keeps the item and every
+    user's watched state, resume point, favourite and playlist entries
+    (#294); the folder keeps the label's name. A copy sharing its folder
+    (a download there) moves to the right film's folder, or to
+    "<Title (Year)> [tmdbid-N]" when another title owns that one (#293).
+    If the right film is already in the library, this copy is simply a
+    duplicate — it is removed and its stream blocked instead.
     """
     from services.media_files import delete_movie_files
     from services.nfo import vod_folder_name, write_movie_nfo
@@ -580,21 +663,34 @@ def rematch_movie(db: Session, tmdb_id: int, new_tmdb_id: int, user_name: str = 
             tags.append(t)
 
     old_strm, old_title, old_jf = row.strm_path, row.title, row.jellyfin_item_id
-    root = Path(old_strm).parent.parent
-    folder = vod_folder_name(new.get("title") or "", new.get("year"))
-    new_dir = root / folder
-    new_strm, new_nfo = new_dir / f"{folder}.strm", new_dir / f"{folder}.nfo"
     try:
         from services.sync import chown_path
     except Exception:  # pragma: no cover
         def chown_path(_p):
             return None
-    new_dir.mkdir(parents=True, exist_ok=True)
-    chown_path(new_dir)
-    new_strm.write_text(stream_url, encoding="utf-8")
-    chown_path(new_strm)
-    write_movie_nfo(new_nfo, new, tags)
-    chown_path(new_nfo)
+    in_place = _folder_is_this_copys(db, row)
+    if in_place:
+        new_strm = Path(old_strm)
+        new_nfo = Path(row.nfo_path) if row.nfo_path else new_strm.with_suffix(".nfo")
+        write_movie_nfo(new_nfo, new, tags)
+        chown_path(new_nfo)
+    else:
+        root = Path(old_strm).parent.parent
+        title, year = new.get("title") or "", new.get("year")
+        folder = vod_folder_name(title, year)
+        if _folder_taken(db, row, root / folder, new_tmdb_id):
+            claimed = vod_folder_name(title, year, tag=f" [tmdbid-{new_tmdb_id}]")
+            logger.info(f"[WrongMatch] '{folder}' belongs to another title; writing tmdb:{new_tmdb_id} "
+                        f"to '{claimed}'")
+            folder = claimed
+        new_dir = root / folder
+        new_strm, new_nfo = new_dir / f"{folder}.strm", new_dir / f"{folder}.nfo"
+        new_dir.mkdir(parents=True, exist_ok=True)
+        chown_path(new_dir)
+        new_strm.write_text(stream_url, encoding="utf-8")
+        chown_path(new_strm)
+        write_movie_nfo(new_nfo, new, tags)
+        chown_path(new_nfo)
     moved = Path(old_strm) != new_strm
     if moved:
         delete_movie_files(old_strm)
@@ -618,7 +714,8 @@ def rematch_movie(db: Session, tmdb_id: int, new_tmdb_id: int, user_name: str = 
     row.backdrop_path = new.get("backdrop_path")
     row.strm_path, row.nfo_path = str(new_strm), str(new_nfo)
     row.tags = tags
-    row.jellyfin_item_id = None
+    if not in_place:
+        row.jellyfin_item_id = None
     ov = db.query(MatchOverride).filter(MatchOverride.provider_id == row.provider_id,
                                         MatchOverride.media_type == "movie",
                                         MatchOverride.stream_key == key).first()
@@ -637,11 +734,19 @@ def rematch_movie(db: Session, tmdb_id: int, new_tmdb_id: int, user_name: str = 
     logger.info(f"[WrongMatch] Re-matched stream {key if key.isdigit() else '(URL)'}: '{old_title}' → "
                 f"'{row.title}' ({row.year}) by {user_name}")
 
-    # The old copy's files are gone: a scan drops its Jellyfin item (never a
-    # DELETE -- see _delete_from_jellyfin) and brings in the new folder.
-    # Same path (the right film has the same folder name): the item stays and
-    # becomes the fixed film on the scan, so it keeps its playlist entries.
-    _delete_from_jellyfin(db, tmdb_id, old_jf, old_strm, cleanup_playlists=moved)
+    if in_place:
+        # Same path: Jellyfin re-reads the NFO into the same item, which keeps
+        # every user's data and playlist entries (#294).
+        item_id = _refresh_in_jellyfin(db, tmdb_id, old_jf, old_strm)
+        if item_id and item_id != row.jellyfin_item_id:
+            row.jellyfin_item_id = item_id
+            db.commit()
+    else:
+        # The old copy's files are gone: a scan drops its Jellyfin item (never a
+        # DELETE -- see _delete_from_jellyfin) and brings in the new folder.
+        # Same path (the right film has the same folder name): the item stays and
+        # becomes the fixed film on the scan, so it keeps its playlist entries.
+        _delete_from_jellyfin(db, tmdb_id, old_jf, old_strm, cleanup_playlists=moved)
     _refresh_caches()
     return {"ok": True, "title": row.title, "year": row.year, "tmdb_id": new_tmdb_id,
             "message": f"Fixed: this is {row.title} ({row.year}). Jellyfin is picking it up now."}

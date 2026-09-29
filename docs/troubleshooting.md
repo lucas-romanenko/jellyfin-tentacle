@@ -103,7 +103,7 @@ Fix it from the title itself (admins only):
 - **Android TV:** the **Wrong movie? Fix it** button on the title's page
 - **Dashboard:** open the title in Library, **Wrong movie? Fix it**
 
-Tentacle asks **which movie it really is** and suggests candidates. Once the title has been played, Jellyfin knows the stream's real length, and films of that length are listed first (a mislabelled stream is usually a similarly named film). Pick the right one and the copy moves there: new folder, the right metadata, same stream. Tentacle remembers the fix so the nightly sync keeps it. On the web and the dashboard you can also search for the title yourself.
+Tentacle asks **which movie it really is** and suggests candidates. Once the title has been played, Jellyfin knows the stream's real length, and films of that length are listed first (a mislabelled stream is usually a similarly named film). Pick the right one and the copy becomes that film: the right metadata, same stream. The file stays where it is, so Jellyfin keeps the title and everyone's watched state, resume point, favourites and playlist entries; only its folder keeps the old label's name. (If a download shares that folder, the copy moves to the right film's own folder instead, or to `<Title (Year)> [tmdbid-N]` when another film already has that name.) Tentacle remembers the fix so the nightly sync keeps it. On the web and the dashboard you can also search for the title yourself.
 
 **Not sure which film it is?** Two more clues help:
 

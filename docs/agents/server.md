@@ -174,6 +174,15 @@ user_id)` computes them every time from source tags, list subscriptions
   `ItemRemoved` (2 s debounce) and calls `DELETE /api/library/item/...`.
 - The nightly `sweep_orphaned_downloads()` removes downloaded records
   Jellyfin no longer has.
+- "Fix it" (`services/wrong_match.py:rematch_movie`) keeps the `.strm`'s
+  path when its folder holds only that copy: it rewrites the NFO and asks
+  Jellyfin for a full refresh of the same item, so users' data and playlist
+  entries stay (a new path is a new Jellyfin item, #294). A copy sharing its
+  folder with a download moves, and never into a folder another title owns
+  (`_folder_taken`, #293).
+- Never act on "the first Jellyfin item with this TMDB id": the same film
+  can be there twice (VOD + download). Resolve the item from its path or
+  its own id.
 
 ## UI words
 

@@ -1224,17 +1224,21 @@ class JellyfinService:
                     f"&ReplaceAllMetadata=false&ReplaceAllImages=false")
         return self._post(path)
 
-    def refresh_item_metadata(self, item_id: str) -> bool:
+    def refresh_item_metadata(self, item_id: str, replace_all: bool = False) -> bool:
         """Trigger a metadata refresh on a single item (identify, fetch images).
 
         Uses Default mode so Jellyfin fills in missing metadata/images
-        without replacing existing fields like tags.
+        without replacing existing fields like tags. `replace_all` re-reads
+        everything (a full refresh that replaces metadata and images): only
+        for a .strm whose NFO now names another film ("Fix it"), whose tags
+        live in that NFO, so nothing set through the API is lost.
         """
+        mode, replace = ("FullRefresh", "true") if replace_all else ("Default", "false")
         params = {
-            "MetadataRefreshMode": "Default",
-            "ImageRefreshMode": "Default",
-            "ReplaceAllMetadata": "false",
-            "ReplaceAllImages": "false",
+            "MetadataRefreshMode": mode,
+            "ImageRefreshMode": mode,
+            "ReplaceAllMetadata": replace,
+            "ReplaceAllImages": replace,
         }
         try:
             r = self.session.post(

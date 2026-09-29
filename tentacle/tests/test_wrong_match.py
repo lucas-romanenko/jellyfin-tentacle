@@ -71,6 +71,7 @@ class FakeJf:
     def __init__(self, db):
         self.db = db
         self.deleted = []
+        self.refreshed = []
         self.row_present_at_delete = None
         self.items = {}
         self.extra = []
@@ -97,6 +98,10 @@ class FakeJf:
         return next((i for i in self._all() if i["Id"] == item_id), None)
 
     def trigger_library_scan(self, *a, **k):
+        return True
+
+    def refresh_item_metadata(self, item_id, replace_all=False):
+        self.refreshed.append((item_id, replace_all))
         return True
 
     def search_by_tmdb_id(self, tmdb_id, media_type="Movie", **k):
@@ -661,7 +666,17 @@ class TestRematch(_Base):
     def rematch(self, new=674607):
         return wrong_match.rematch_movie(self.db, self.tmdb, new, user_name="Lucas")
 
-    def test_the_copy_moves_to_the_right_film(self):
+    def _share_the_folder_with_a_download(self):
+        """The merged Radarr/VOD layout: a download of the labelled film sits in
+        the copy's folder, so the copy has to move out of it."""
+        folder = _RealPath(self.movie(self.tmdb).strm_path).parent
+        (folder / f"{folder.name} WEBDL-1080p.mkv").write_bytes(b"video")
+        return folder
+
+    def test_the_copy_becomes_the_right_film_where_it_is(self):
+        """#294: same stream, new identity, same path -- so Jellyfin keeps the
+        item, and with it every user's watched state, resume point, favourite
+        and playlist entries."""
         old = self.movie(self.tmdb)
         old_strm = _RealPath(old.strm_path)
         url = old_strm.read_text()
@@ -671,16 +686,87 @@ class TestRematch(_Base):
         self.assertIsNone(self.movie(self.tmdb))
         row = self.movie(674607)
         self.assertEqual(("The Decline", "2020", 83), (row.title, row.year, row.runtime))
+        self.assertEqual(str(old_strm), row.strm_path, "the .strm stays where it is")
+        self.assertEqual(url, old_strm.read_text(), "same stream, new identity")
+        nfo = old_strm.with_suffix(".nfo").read_text()
+        self.assertIn("<title>The Decline</title>", nfo)
+        self.assertIn("674607", nfo)
+        self.assertEqual([old_strm.name], [p.name for p in old_strm.parent.glob("*.strm")])
+        self.assertFalse(any(old_strm.parent.parent.glob("The Decline*")), "no second folder")
+        self.assertIn("Tag1 Movies", row.tags, "source category tags are kept")
+        self.assertEqual([(f"jf-{self.tmdb}", True)], self.jf.refreshed,
+                         "Jellyfin re-reads the NFO into the same item")
+        self.assertEqual(f"jf-{self.tmdb}", row.jellyfin_item_id)
+        self.assertEqual([], self.jf.deleted)
+        import time as _t
+        _t.sleep(0.2)
+        self.assertEqual([], self.cleanup.call_args_list, "the item stays in every playlist")
+
+    def test_without_its_jellyfin_item_a_scan_picks_up_the_new_nfo(self):
+        self.jf.items.clear()
+        self.jf.sync_items = lambda: None
+        self.rematch()
+        self.assertEqual([], self.jf.refreshed)
+        self.jf.trigger_library_scan.assert_called_once()
+
+    def test_a_namesake_already_in_the_right_films_folder_is_never_overwritten(self):
+        """#293: another film owns "The Decline (2020)" (a namesake, or a name
+        that sanitises to the same folder). Fixing this copy must not write
+        over that film's .strm and NFO."""
+        other = self.movie(FakeTMDB.ids["Movie 8"])
+        old = _RealPath(other.strm_path)
+        folder = old.parent.parent / "The Decline (2020)"
+        folder.mkdir()
+        other_strm = folder / "The Decline (2020).strm"
+        old.rename(other_strm)
+        old.with_suffix(".nfo").rename(other_strm.with_suffix(".nfo"))
+        other.strm_path, other.nfo_path = str(other_strm), str(other_strm.with_suffix(".nfo"))
+        self.db.commit()
+        other_url, other_nfo = other_strm.read_text(), other_strm.with_suffix(".nfo").read_text()
+        self._share_the_folder_with_a_download()   # so the copy has to move
+        self.rematch()
+        self.db.expire_all()
+        self.assertEqual(other_url, other_strm.read_text(), "the other film's .strm plays the fixed stream")
+        self.assertEqual(other_nfo, other_strm.with_suffix(".nfo").read_text())
+        row = self.movie(674607)
+        self.assertNotEqual(str(other_strm), row.strm_path)
+        self.assertEqual("The Decline (2020) [tmdbid-674607]", _RealPath(row.strm_path).parent.name)
+        self.assertEqual(str(other_strm), self.movie(other.tmdb_id).strm_path)
+
+    def test_a_download_of_another_film_in_the_right_films_folder_is_never_written_into(self):
+        """#293, second case: the folder holds another film's download and its
+        NFO, with no Tentacle row."""
+        root = _RealPath(self.movie(self.tmdb).strm_path).parent.parent
+        folder = root / "The Decline (2020)"
+        folder.mkdir()
+        (folder / "The Decline (2020).mkv").write_bytes(b"video")
+        (folder / "The Decline (2020).nfo").write_text("<movie><tmdbid>999111</tmdbid></movie>")
+        self._share_the_folder_with_a_download()
+        self.rematch()
+        self.db.expire_all()
+        self.assertEqual("The Decline (2020) [tmdbid-674607]", _RealPath(self.movie(674607).strm_path).parent.name)
+        self.assertIn("999111", (folder / "The Decline (2020).nfo").read_text())
+        self.assertEqual(["The Decline (2020).mkv", "The Decline (2020).nfo"], sorted(p.name for p in folder.iterdir()))
+
+    def test_a_copy_sharing_its_folder_with_a_download_moves_to_the_right_film(self):
+        old_strm = _RealPath(self.movie(self.tmdb).strm_path)
+        url = old_strm.read_text()
+        folder = self._share_the_folder_with_a_download()
+        self.rematch()
+        self.db.expire_all()
+        row = self.movie(674607)
         new_strm = _RealPath(row.strm_path)
         self.assertEqual("The Decline (2020)", new_strm.parent.name)
-        self.assertEqual(url, new_strm.read_text(), "same stream, new identity")
-        self.assertIn("<title>The Decline</title>", new_strm.with_suffix(".nfo").read_text())
+        self.assertEqual(url, new_strm.read_text())
         self.assertFalse(old_strm.exists())
-        self.assertIn("Tag1 Movies", row.tags, "source category tags are kept")
+        self.assertTrue((folder / f"{folder.name} WEBDL-1080p.mkv").exists(), "the download stays")
+        self.assertIsNone(row.jellyfin_item_id)
         self.jf.trigger_library_scan.assert_called_once()
+        self.assertPlaylistsCleanedFor(f"jf-{self.tmdb}")
 
     def test_an_old_strm_that_cannot_be_deleted_changes_nothing(self):
         import services.media_files as mf
+        self._share_the_folder_with_a_download()
         old = self.movie(self.tmdb).strm_path
         real = mf.delete_movie_files
         with mock.patch.object(mf, "delete_movie_files", side_effect=lambda p: 0 if str(p) == old else real(p)):
@@ -742,7 +828,8 @@ class TestRematch(_Base):
                           "Path": "/downloads/Movie 9 (2020)/Movie 9 (2020).mkv"}]
         self.rematch()
         self.assertEqual([], self.jf.deleted)
-        self.assertPlaylistsCleanedFor(f"jf-{self.tmdb}")
+        self.assertEqual([(f"jf-{self.tmdb}", True)], self.jf.refreshed,
+                         "only the .strm's own item is refreshed, never the download")
 
     def test_tmdb_down_while_rebuilding_a_fixed_copy_neither_fails_the_sync_nor_imports_the_wrong_label(self):
         self.rematch()
