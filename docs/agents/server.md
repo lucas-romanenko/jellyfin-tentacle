@@ -248,6 +248,13 @@ User docs: `docs/features/live-tv.md`.
   proxied). A mid-packet start's partial packet is dropped. 401/403/404 stop
   at once. A re-dial counts as a reconnect only once it delivers, and as a
   recovery (backoff and budget reset) only once it delivered past 10 s.
+- The HLS worker (`hls_to_mpegts()`) classifies statuses with the same
+  `_raw_retryable()`: a 5xx on a playlist, a re-resolve or a segment is
+  waited out (a 5xx segment is fetched again, not skipped). An expired token
+  (401/403/404/407/410 from a token URL) re-resolves the channel URL, at most
+  `_MAX_RERESOLVE` times in a row; a 407 from the channel URL itself (an
+  ended session while the token is renewed) does not count for a recording
+  and is waited out on the refusal cap. Viewers keep the three tries.
 - Channel ids are the provider's `stream_id` (stable across changes), used
   as `GuideNumber`; Jellyfin keys the channel, its timers and favourites on
   `hdhr_<GuideNumber>`, so it must never change. M3U channels have no

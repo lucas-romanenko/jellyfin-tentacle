@@ -247,6 +247,10 @@ def _raw_media_type(content_type: str) -> str:
 # the CHANNEL url again, which hands out a fresh token -- at most
 # _MAX_RERESOLVE times in a row without a segment arriving in between;
 # after that the account really is refusing and the stream ends as before.
+# Except a 407 from the channel URL itself on a RECORDING: this provider
+# family answers 407 for an ended session for a few seconds while the token
+# is renewed, so it is waited out like a refusal, as the raw path does
+# (_raw_retryable). 401/403 there still end it: the login is refused.
 _TOKEN_EXPIRED_STATUS = {401, 403, 404, 407, 410}
 _MAX_RERESOLVE = 3
 # #184: a running HLS stream refused (429/509) for _REVIVE_AFTER s in a row
@@ -4225,7 +4229,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
         # recording plus a new file. So wait transient failures out on a
         # growing delay and give up only after an unbroken run of them; a
         # status that will never fix itself still stops the stream at once.
-        RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504, 509}
+        # Which statuses are transient: _raw_retryable (see _is_retryable).
         FAILURE_BUDGET = failure_budget   # seconds of unbroken failure; 0 = until the client leaves
         BACKOFF_START = 1.0
         backoff_cap = _BACKOFF_CAP   # short while the tuner reader waits; longer after a 429/509
@@ -4268,7 +4272,10 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
             if isinstance(exc, _ProviderPlaceholder):
                 return True
             if isinstance(exc, httpx.HTTPStatusError):
-                return exc.response.status_code in RETRYABLE_STATUS
+                # The same rule as the open and the raw re-dial: any 5xx,
+                # including 513 and Cloudflare's 520-524, is waited out. Ending
+                # on one cut running recordings for good (#298 on the raw path).
+                return _raw_retryable(exc.response.status_code)
             # Timeouts, resets and refused connections are all worth another go.
             return isinstance(exc, httpx.TransportError)
 
@@ -4492,6 +4499,14 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         st = e.response.status_code
                         if st in (401, 403, 407):
                             backoff_cap = _REFUSAL_BACKOFF_CAP
+                        if st == 407 and is_recording is not None and is_recording():
+                            # The channel URL itself answered 407: an ended
+                            # session while the token is renewed, not a refused
+                            # login. Not counted for a recording; waited out on
+                            # the refusal cap, as the raw path does (#298).
+                            reresolve_run -= 1
+                            await _backoff_sleep()
+                            return False
                         if counted and _gone_grace(st):
                             reresolve_run -= 1
                             backoff_cap = _REFUSAL_BACKOFF_CAP
@@ -4535,7 +4550,10 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 and three quick 1-2 s re-resolves ended a recording over a
                 7.5 s blip. It counts only after _GONE_GRACE of unbroken
                 404/410 (a channel really removed). Viewers keep the 3-try
-                rule; 401/403/407 are never graced."""
+                rule; 401/403/407 are never graced here -- a 407 from the
+                channel URL on a recording is waited out in _reresolve
+                instead (keyed on the channel URL's answer: the token URL's
+                407 that triggers every re-resolve must not be)."""
                 nonlocal gone_since
                 if status not in (404, 410) or not (is_recording is not None and is_recording()):
                     return False
@@ -4755,7 +4773,8 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                                     in_placeholder = True
                                     await _note_placeholder(channel_id, e.segment)
                                 break   # it will not turn into the channel in a second
-                            if attempt == CHUNK_RETRIES_IN_PLACE or not _is_retryable(e):
+                            if (attempt == CHUNK_RETRIES_IN_PLACE or _token_expired(e)
+                                    or not _is_retryable(e)):
                                 break
                             if _note_failure(e, "Chunk fetch"):
                                 return
