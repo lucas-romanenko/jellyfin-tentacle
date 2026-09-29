@@ -3,7 +3,8 @@
 Two ways in; neither needs a Spotify account or key:
 - a public playlist link: Tentacle reads the playlist's embed page, which lists
   its first 100 songs (title and artist);
-- an Exportify CSV (exportify.net), for playlists of any size, private ones too.
+- an Exportify CSV (exportify.net), private playlists too: its first MAX_TRACKS
+  distinct songs (the rest are counted and shown as left out).
 
 Each song is resolved to the studio album it first came out on (discover.Resolver):
 the export's album name when it is a studio album, else the albums Deezer has
@@ -34,6 +35,9 @@ logger = logging.getLogger(__name__)
 
 EMBED_URL = "https://open.spotify.com/embed/playlist/{id}"
 TIMEOUT = 15
+# Songs per import: at one MusicBrainz request a second, shared with every other
+# music job, 2,000 songs already take hours. Songs past it are counted, not dropped
+# silently (MusicImport.left_out).
 MAX_TRACKS = 2000
 CHUNK = 25   # songs per worker turn: other waiting jobs (Discover, requests) run in between
 _PLAYLIST_ID = re.compile(r"playlist[/:]([A-Za-z0-9]{22})")
@@ -120,21 +124,27 @@ def parse_exportify(data: bytes, filename: str = "") -> tuple:
 
 
 def _dedupe(songs: list) -> list:
+    return _distinct(songs)[:MAX_TRACKS]
+
+
+def _distinct(songs: list) -> list:
     out, seen = [], set()
     for s in songs:
         key = _song_key(s)
         if key not in seen:
             seen.add(key)
             out.append(s)
-    return out[:MAX_TRACKS]
+    return out
 
 
 # ── Importing ────────────────────────────────────────────────────────────
 
 def start_import(db, user_id: Optional[int], name: str, source: str, url: str, songs: list) -> MusicImport:
-    songs = _dedupe(songs)
+    distinct = _distinct(songs)
+    songs = distinct[:MAX_TRACKS]
     imp = MusicImport(user_id=user_id, name=name[:200], source=source, url=url or "", status="resolving",
-                      done=0, total=len(songs), tracks=[dict(s, result=None) for s in songs], outcomes={})
+                      done=0, total=len(songs), tracks=[dict(s, result=None) for s in songs], outcomes={},
+                      left_out=len(distinct) - len(songs))
     db.add(imp)
     db.commit()
     _submit(imp.id)
@@ -363,6 +373,7 @@ def summaries(db, user) -> list:
         out.append({"id": imp.id, "name": imp.name, "source": imp.source, "status": imp.status,
                     "error": imp.error, "done": imp.done, "total": imp.total, "albums": len(albums),
                     "skipped": len(skipped), "refreshable": imp.source == "spotify_url",
+                    "left_out": imp.left_out or 0,
                     "created_at": imp.created_at.isoformat() if imp.created_at else None})
     return out
 

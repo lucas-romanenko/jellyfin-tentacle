@@ -108,8 +108,9 @@ choose. Tentacle never guesses.
 **Discover → Music → From Spotify → Import a playlist.** Either:
 
 - **paste a public playlist link**, which reads the first 100 songs, or
-- **upload an [Exportify](https://exportify.net) CSV**, for any size of
-  playlist, private ones too.
+- **upload an [Exportify](https://exportify.net) CSV**, private playlists
+  too: its first 2,000 songs (the import says how many were left out; split a
+  bigger export into several files).
 
 No Spotify account or key is needed. Tentacle finds the original studio album
 of every song and shows you the list, with the songs each album covers.

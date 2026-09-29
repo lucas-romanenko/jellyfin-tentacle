@@ -475,6 +475,7 @@ def _import_detail(db, imp) -> dict:
         return dict(a, status=status, progress=progress, refused=None if outcome in (None, "requested") else outcome)
     return {"id": imp.id, "name": imp.name, "source": imp.source, "status": imp.status, "error": imp.error,
             "done": imp.done, "total": imp.total, "refreshable": imp.source == "spotify_url",
+            "left_out": imp.left_out or 0,
             "albums": [with_status(a) for a in albums], "skipped": skipped}
 
 
@@ -488,7 +489,8 @@ def list_imports(db: Session = Depends(get_db), user: TentacleUser = Depends(mus
 @_spotify_errors
 def create_import(url: str = Form(""), file: Optional[UploadFile] = File(None), db: Session = Depends(get_db),
                   user: TentacleUser = Depends(music_user)):
-    """A public playlist link (its first 100 songs) or an Exportify CSV (any size)."""
+    """A public playlist link (its first 100 songs) or an Exportify CSV (its first
+    2,000 distinct songs; `left_out` counts the rest)."""
     from services.music import spotify
     if file is not None and file.filename:
         data = file.file.read(MAX_EXPORT + 1)
@@ -503,7 +505,7 @@ def create_import(url: str = Form(""), file: Optional[UploadFile] = File(None), 
     else:
         raise HTTPException(400, "Paste a playlist link or choose an Exportify CSV")
     imp = spotify.start_import(db, user.id if user else None, name, source, link, songs)
-    return {"id": imp.id, "name": imp.name, "total": imp.total}
+    return {"id": imp.id, "name": imp.name, "total": imp.total, "left_out": imp.left_out or 0}
 
 
 @webhook_router.get("/imports/{import_id}")

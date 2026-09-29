@@ -345,9 +345,10 @@ function _musicSpotify(d, grid) {
            ${i.error ? `<div class="music-row-sub">${escapeAttr(i.error)}</div>` : ''}`
         : i.status === 'error' ? `<div class="music-row-sub" style="color:var(--red)">${escapeAttr(i.error || 'Failed')}</div>`
         : `<div class="music-row-sub">${i.total} songs → ${i.albums} albums${i.skipped ? ` · ${i.skipped} song${i.skipped === 1 ? '' : 's'} not matched` : ''}</div>`;
+      const leftOut = i.left_out ? `<div class="music-row-sub">${i.left_out} more song${i.left_out === 1 ? '' : 's'} in the file left out (the limit is ${i.total})</div>` : '';
       return `<div class="music-row" onclick="openMusicImport(${i.id})">
           <div class="music-row-icon">♫</div>
-          <div class="music-row-main"><div class="music-row-title">${escapeAttr(i.name)}</div>${progress}</div>
+          <div class="music-row-main"><div class="music-row-title">${escapeAttr(i.name)}</div>${progress}${leftOut}</div>
           <div class="music-lib-actions" onclick="event.stopPropagation()">
             ${i.status === 'error' ? `<button class="btn btn-secondary btn-sm" onclick="retryMusicImport(${i.id}, this)" title="Carry on finding albums">Retry</button>` : ''}
             ${i.refreshable ? `<button class="btn btn-secondary btn-sm" onclick="refreshMusicImport(${i.id}, this)" title="Read the playlist again">Refresh</button>` : ''}
@@ -382,7 +383,7 @@ function showMusicImport() {
       <div class="form-hint">Reads the first 100 songs. No Spotify account or key needed.</div>
     </div>
     <div class="form-group" style="margin-top:14px">
-      <div class="form-label">Or an Exportify file (any size, private playlists too)</div>
+      <div class="form-label">Or an Exportify file (up to 2,000 songs, private playlists too)</div>
       <input type="file" id="music-import-file" accept=".csv,text/csv" onchange="startMusicImport(null)">
       <div class="form-hint">Export the playlist at <a href="https://exportify.net" target="_blank" rel="noopener" style="color:var(--accent)">exportify.net</a> and choose the CSV it saves.</div>
     </div>
@@ -403,7 +404,9 @@ async function startMusicImport(btn) {
     const body = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(body.detail || r.statusText);
     closeModal('modal-music');
-    toast(`Importing “${escapeAttr(body.name)}”: finding albums for ${body.total} songs…`, 'info', 6000);
+    toast(`Importing “${escapeAttr(body.name)}”: finding albums for ${body.total} songs…` +
+      (body.left_out ? ` The file has ${body.total + body.left_out} songs; only the first ${body.total} are imported.` : ''),
+      body.left_out ? 'warning' : 'info', body.left_out ? 12000 : 6000);
     musicState.dTab = 'spotify';
     await _loadMusicDiscover();
   } catch (e) {
@@ -445,6 +448,7 @@ async function openMusicImport(id, keepOpen) {
       <div class="music-rows" style="margin-top:8px">${d.skipped.map(s => `<div class="music-row-sub"><b style="color:var(--text2)">${escapeAttr(s.title)}</b> · ${escapeAttr(s.artist)}: ${escapeAttr(s.reason)}</div>`).join('')}</div></details>` : '';
   _musicModal(d.name, `<div id="music-import-${id}">
       ${d.error ? `<p style="color:${d.status === 'error' ? 'var(--red)' : 'var(--text2)'}">${escapeAttr(d.error)}</p>` : ''}
+      ${d.left_out ? `<p class="form-hint">The file has ${d.total + d.left_out} songs; the first ${d.total} were imported. Split it to import the rest.</p>` : ''}
       ${progress}
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">
         <span class="form-hint" style="margin:0">${d.total} songs → ${d.albums.length} albums, ${available.length} not in your library</span>

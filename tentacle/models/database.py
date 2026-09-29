@@ -610,6 +610,7 @@ class MusicImport(Base):
     #   year} | {reason}}]
     tracks = Column(JSON)
     outcomes = Column(JSON)                      # {release group id: "requested" | why not}
+    left_out = Column(Integer, default=0)        # songs past MAX_TRACKS, not imported (shown)
     error = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow)

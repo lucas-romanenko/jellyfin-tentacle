@@ -52,5 +52,41 @@ class TestSameTitleOnTwoAlbums(_DiscoverBase):
         self.assertEqual(len(spotify._dedupe(songs)), 1)
 
 
+class TestLargeExport(_DiscoverBase):
+    """#287: songs past the limit were dropped without a word."""
+
+    def setUp(self):
+        super().setUp()
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        import routers.music as music
+        from models.database import get_db
+        from routers.auth import get_user_from_request
+        app = FastAPI()
+        app.include_router(music.webhook_router)
+        app.dependency_overrides[get_db] = lambda: self.Session()
+        app.dependency_overrides[get_user_from_request] = lambda: self.user
+        self.client = TestClient(app)
+
+    def upload(self, rows):
+        csv = "Track Name,Artist Name(s),Album Name\n" + "".join(f"Song {i},A,Album {i}\n" for i in range(rows))
+        return self.client.post("/api/music/imports", files={"file": ("big.csv", csv.encode(), "text/csv")})
+
+    def test_songs_past_the_limit_are_counted_and_shown(self):
+        from services.music import spotify
+        r = self.upload(2500)
+        self.assertEqual(r.status_code, 200, r.text)
+        body = r.json()
+        self.assertEqual((body["total"], body["left_out"]), (spotify.MAX_TRACKS, 500))
+        detail = self.client.get(f"/api/music/imports/{body['id']}").json()
+        self.assertEqual((detail["total"], detail["left_out"]), (2000, 500))
+        [summary] = self.client.get("/api/music/imports").json()["imports"]
+        self.assertEqual(summary["left_out"], 500)
+
+    def test_a_file_under_the_limit_leaves_nothing_out(self):
+        body = self.upload(1999).json()
+        self.assertEqual((body["total"], body["left_out"]), (1999, 0))
+
+
 if __name__ == "__main__":
     unittest.main()
