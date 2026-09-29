@@ -16,6 +16,11 @@ class ProviderConnectionError(TentacleError):
         super().__init__(f"Provider '{provider_name}' connection failed: {detail}")
 
 
+class ProviderDataError(TentacleError):
+    """An IPTV provider answered, but not with data (an HTML page, broken JSON)"""
+    pass
+
+
 class TMDBMatchError(TentacleError):
     """TMDB lookup or matching failed"""
     def __init__(self, title: str, detail: str = ""):

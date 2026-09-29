@@ -28,7 +28,8 @@ from services.m3u_parser import episode_from_title, container_from_url
 from services.duplicates import delete_vod_files, convert_record_to_downloaded
 from services.media_files import delete_movie_files, delete_series_files, MEDIA_SUFFIXES
 from services.tagger import compute_tags, get_list_tags_for_tmdb_id, apply_tag_rules
-from services.exceptions import ProviderConnectionError, SyncCancelledError, SyncError, TMDBConnectionError
+from services.exceptions import (ProviderConnectionError, ProviderDataError, SyncCancelledError, SyncError,
+                                 TMDBConnectionError)
 
 logger = logging.getLogger(__name__)
 
@@ -189,7 +190,15 @@ class XtreamClient:
         try:
             r = self.session.get(f"{self.base}&action={action}{extra}", timeout=self.timeout)
             r.raise_for_status()
-            data = r.json()
+            try:
+                data = r.json()
+            except ValueError:
+                # A login/Cloudflare page or a cut-off body, with status 200 (#267)
+                body = (getattr(r, "text", "") or "").lstrip()[:200].lower()
+                if body.startswith("<") or "html" in body:
+                    raise ProviderDataError("the provider returned a web page instead of data "
+                                            "(check the server URL and the account)")
+                raise ProviderDataError("the provider's answer was not valid data")
             return data if isinstance(data, list) else []
         except requests.ConnectionError as e:
             raise ProviderConnectionError(self.username, str(e))
@@ -1527,6 +1536,30 @@ def sweep_orphaned_vod_records(db: Session) -> int:
 
 # ── Main Sync Functions ────────────────────────────────────────────────────
 
+def _provider_error_reason(e: Exception) -> str:
+    """A short reason, for the run and Activity, why a category fetch failed
+    (#267). Provider URLs carry the account's login: never quote one."""
+    if isinstance(e, ProviderDataError):
+        return str(e)
+    if isinstance(e, requests.HTTPError):
+        status = getattr(getattr(e, "response", None), "status_code", None)
+        if status is None:
+            m = re.match(r"\s*(\d{3})\b", str(e))
+            status = m.group(1) if m else None
+        return f"the provider answered HTTP {status}" if status else "the provider answered with an error"
+    if isinstance(e, requests.Timeout):
+        return "the provider did not answer in time"
+    if isinstance(e, (ProviderConnectionError, requests.ConnectionError)):
+        return "the provider could not be reached"
+    text = str(e).strip().splitlines()[0] if str(e).strip() else type(e).__name__
+    return re.sub(r"https?://\S+", "<provider URL>", text)[:200]
+
+
+def _unread_summary(unread: list, total: int) -> str:
+    """"N of M categories could not be read (reason)", with the first reason."""
+    return f"{len(unread)} of {total} categor{'y' if total == 1 else 'ies'} could not be read ({unread[0][1]})"
+
+
 def _finish_run(db: Session, run: SyncRun, status: str, message: str) -> SyncRun:
     """Record how a sync run ended after an error (#270).
 
@@ -1698,7 +1731,22 @@ def sync_provider(
         if removed:
             logger.info(f"Sync pruned {removed} item(s) removed upstream by provider {provider.name}")
 
+        # Categories the provider could not be read for (#267): all of them is a
+        # failed run, some a completed one with a warning. Pruning already
+        # skipped them (fetch_ok).
+        unread = [u for c in (m_cleanup, s_cleanup) if c for u in c.get("unread", ())]
+        total_cats = sum(c.get("categories", 0) for c in (m_cleanup, s_cleanup) if c)
         run.status = "completed"
+        run.error_message = None
+        if unread:
+            summary = _unread_summary(unread, total_cats)
+            logger.warning(f"Sync of {provider.name}: {summary}")
+            if len(unread) >= total_cats:
+                run.status = "failed"
+                run.error_message = (f"The provider could not be read for any of its {total_cats} "
+                                     f"categor{'y' if total_cats == 1 else 'ies'} ({unread[0][1]})")
+            else:
+                run.error_message = summary
         run.category_stats = category_stats
         run.new_movies = new_movies_feed[:50]  # Keep last 50 for feed
         run.new_series = new_series_feed[:50]
@@ -1760,6 +1808,8 @@ def _sync_movies(
     # True only if every whitelisted category was fetched successfully. If any
     # fetch failed, the seen set is incomplete and we must NOT prune.
     fetch_ok = True
+    # Categories that could not be read, as (name, reason): reported on the run (#267)
+    unread = []
 
     # Load existing TMDB IDs from this provider to avoid re-processing
     existing_provider_tmdb_ids = {
@@ -1976,6 +2026,7 @@ def _sync_movies(
         except Exception as e:
             logger.error(f"Failed to fetch streams for {cat.category_name}: {e}")
             fetch_ok = False  # a failed fetch means our "seen" set is incomplete
+            unread.append((cat.category_name, _provider_error_reason(e)))
             continue
 
         _prev_count = cat.title_count
@@ -1988,6 +2039,7 @@ def _sync_movies(
                 f"an emptied category. Nothing will be pruned from this sync."
             )
             fetch_ok = False
+            unread.append((cat.category_name, f"it returned no titles (it held {_prev_count} last time)"))
             continue
 
         total_in_cat = len(streams)
@@ -2333,7 +2385,8 @@ def _sync_movies(
 
     if blocked_skips:
         logger.info(f"[Sync] Skipped {blocked_skips} blocked (mislabelled) stream(s) from {provider.name}")
-    return stats, feed, category_stats, {"seen_ids": seen_ids_all, "fetch_ok": fetch_ok}
+    return stats, feed, category_stats, {"seen_ids": seen_ids_all, "fetch_ok": fetch_ok,
+                                          "categories": len(whitelisted_cats), "unread": unread}
 
 
 def _sync_series(
@@ -2366,6 +2419,7 @@ def _sync_series(
     # existing), and whether all categories fetched cleanly — see _sync_movies.
     seen_ids_all = set()
     fetch_ok = True
+    unread = []
     existing_provider_tmdb_ids = {
         s.tmdb_id for s in db.query(Series.tmdb_id).filter(
             Series.provider_id == provider.id
@@ -2401,6 +2455,7 @@ def _sync_series(
         except Exception as e:
             logger.error(f"Failed to fetch series for {cat.category_name}: {e}")
             fetch_ok = False  # a failed fetch means our "seen" set is incomplete
+            unread.append((cat.category_name, _provider_error_reason(e)))
             continue
 
         _prev_count = cat.title_count
@@ -2413,6 +2468,7 @@ def _sync_series(
                 f"an emptied category. Nothing will be pruned from this sync."
             )
             fetch_ok = False
+            unread.append((cat.category_name, f"it returned no series (it held {_prev_count} last time)"))
             continue
 
         total_in_cat = len(series_list)
@@ -2691,4 +2747,5 @@ def _sync_series(
         f"{stats['skipped']} skipped, {stats['failed']} failed"
     )
 
-    return stats, feed, category_stats, {"seen_ids": seen_ids_all, "fetch_ok": fetch_ok}
+    return stats, feed, category_stats, {"seen_ids": seen_ids_all, "fetch_ok": fetch_ok,
+                                          "categories": len(whitelisted_cats), "unread": unread}

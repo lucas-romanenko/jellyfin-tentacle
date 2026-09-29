@@ -134,6 +134,10 @@ def run_scheduled_sync():
                                     pause=pause)
                 phase = "complete" if run.status == "completed" else "cancelled" if run.status == "cancelled" else "error"
                 _notify_sync_progress(provider.id, phase, "", {})
+                if run.status == "failed" or (run.status == "completed" and run.error_message):
+                    # A provider that could not be read (#267) or a failed run is said, not only logged
+                    log_activity(db, "vod_sync", f"Scheduled sync of {provider.name} "
+                                 f"{'failed' if run.status == 'failed' else 'completed'} — {run.error_message}")
             except Exception as e:
                 _rollback(db)
                 logger.error(f"Scheduled sync failed for {provider.name}: {e}")

@@ -149,7 +149,11 @@ def _run_sync_background(provider_id: int, sync_type: str):
                 msg = f"VOD sync — {total_scanned} streams scanned, {total_matched} already in library, no new content"
             else:
                 msg = "VOD sync completed — no streams found in enabled categories"
+            if run.error_message:   # some categories could not be read (#267)
+                msg += f" — {run.error_message}"
             log_activity(db, "vod_sync", msg)
+        elif run.status == "failed":
+            log_activity(db, "vod_sync", f"VOD sync of {provider.name} failed — {run.error_message}")
 
         # Full pipeline: Jellyfin library scan → wait for indexing → push tags → refresh playlists
         if run.status == "completed" and not cancel_event.is_set():

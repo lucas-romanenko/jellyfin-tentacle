@@ -99,6 +99,14 @@ read that row.
   session back first (only the category in progress is lost; each category
   commits its own), or records it with a fresh session. A run left
   "running" makes the nightly skip the provider every night (#270).
+- A category the provider could not be read for (down, a timeout, an HTTP
+  error, an HTML page instead of JSON, or an empty answer for a category
+  that held titles) is counted with a short reason
+  (`_provider_error_reason()`; never a URL, it carries the login). Every
+  category failing makes the run `failed`; some failing keeps it
+  `completed` with `error_message` "N of M categories could not be read
+  (reason)". Both go to Activity, for "Sync now" and the nightly. Pruning
+  is skipped either way (`fetch_ok`), as before (#267).
 
 ## How changes reach the clients
 
