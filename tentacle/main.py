@@ -29,6 +29,20 @@ scheduler = BackgroundScheduler(job_defaults={"coalesce": True, "max_instances":
                                               "misfire_grace_time": 300})
 
 
+def _rollback(db):
+    """Make the nightly job's shared session usable again after a failed step.
+
+    A step that failed on a flush/commit leaves the session "rolled back due
+    to a previous exception"; without this, the handler's own log_activity
+    raised PendingRollbackError and every later step of the night was
+    skipped (#269). A no-op on a healthy session.
+    """
+    try:
+        db.rollback()
+    except Exception as e:
+        logger.warning(f"Nightly sync: could not roll back the session: {e}")
+
+
 def run_scheduled_sync():
     """Run sync for all active providers on schedule"""
     from services.sync import sync_provider
@@ -64,6 +78,7 @@ def run_scheduled_sync():
                     # client ID was already said once, at WARNING (#160).
                     logger.info(f"List '{lst.name}': {lst.last_fetch_note}")
             except Exception as e:
+                _rollback(db)
                 logger.warning(f"Failed to refresh list '{lst.name}': {e}")
         db.commit()
 
@@ -119,6 +134,7 @@ def run_scheduled_sync():
                 phase = "complete" if run.status == "completed" else "cancelled" if run.status == "cancelled" else "error"
                 _notify_sync_progress(provider.id, phase, "", {})
             except Exception as e:
+                _rollback(db)
                 logger.error(f"Scheduled sync failed for {provider.name}: {e}")
                 log_activity(db, "sync", f"Scheduled sync failed for {provider.name}: {e}")
             finally:
@@ -139,6 +155,7 @@ def run_scheduled_sync():
                 log_activity(db, "radarr_scan", f"Radarr scan — {new_count} new movie(s) imported")
             logger.info(f"Radarr scan complete: {radarr_stats}")
         except Exception as e:
+            _rollback(db)
             logger.error(f"Radarr scan failed: {e}")
             log_activity(db, "radarr_scan", f"Radarr scan failed: {e}")
 
@@ -151,6 +168,7 @@ def run_scheduled_sync():
                 log_activity(db, "sonarr_scan", f"Sonarr scan — {new_count} new series imported")
             logger.info(f"Sonarr scan complete: {sonarr_stats}")
         except Exception as e:
+            _rollback(db)
             logger.error(f"Sonarr scan failed: {e}")
             log_activity(db, "sonarr_scan", f"Sonarr scan failed: {e}")
 
@@ -158,6 +176,7 @@ def run_scheduled_sync():
         try:
             refresh_recently_added_tags(db)
         except Exception as e:
+            _rollback(db)
             logger.error(f"Tag refresh failed: {e}")
 
         # Run full Jellyfin pipeline: library scan → wait → push tags → refresh playlists → home config
@@ -174,6 +193,7 @@ def run_scheduled_sync():
                 log_activity(db, "jellyfin_push", f"Jellyfin pipeline — {tags_pushed} tag(s) pushed")
             logger.info(f"Jellyfin pipeline complete: {pipeline_stats}")
         except Exception as e:
+            _rollback(db)
             logger.error(f"Jellyfin pipeline failed: {e}")
             log_activity(db, "jellyfin_push", f"Jellyfin pipeline failed: {e}")
 
@@ -184,6 +204,7 @@ def run_scheduled_sync():
                 tmdb = TMDBService(bearer, data_dir)
                 tmdb.cleanup_cache()
         except Exception as e:
+            _rollback(db)
             logger.error(f"TMDB cache cleanup failed: {e}")
 
         # Discover new provider content: VOD categories + Live TV groups.
@@ -197,6 +218,7 @@ def run_scheduled_sync():
             if discovered["vod_new"] or discovered["live_new"]:
                 logger.info(f"Discovery: {len(discovered['vod_new'])} new VOD categories, {len(discovered['live_new'])} new Live TV groups")
         except Exception as e:
+            _rollback(db)
             logger.error(f"Provider content discovery failed: {e}")
 
         # Sweep orphaned downloads (radarr/sonarr records no longer in Jellyfin).
@@ -210,6 +232,7 @@ def run_scheduled_sync():
             if orphans:
                 log_activity(db, "orphan_sweep", f"Removed {orphans} orphaned download(s) from DB")
         except Exception as e:
+            _rollback(db)
             logger.error(f"Orphan sweep failed: {e}")
 
         # Flag VOD movies that play a different film than their label (found
@@ -222,6 +245,7 @@ def run_scheduled_sync():
                 log_activity(db, "wrong_match", f"{found['flagged']} VOD movie(s) may be the wrong film — "
                                                 f"see Library → Possible wrong movies")
         except Exception as e:
+            _rollback(db)
             logger.error(f"Wrong-match check failed: {e}")
 
         # EPG sync for Live TV providers + Jellyfin guide refresh
@@ -285,6 +309,7 @@ def run_scheduled_sync():
                 except Exception as e:
                     logger.error(f"Jellyfin guide refresh failed: {e}")
         except Exception as e:
+            _rollback(db)
             logger.error(f"EPG sync failed: {e}")
 
         # Sweep VOD DB records whose .strm files no longer exist on disk
@@ -295,6 +320,7 @@ def run_scheduled_sync():
             if vod_orphans:
                 log_activity(db, "vod_sweep", f"Removed {vod_orphans} orphaned VOD record(s) with missing files")
         except Exception as e:
+            _rollback(db)
             logger.error(f"VOD sweep failed: {e}")
 
         # Repair season-folder ownership on hybrid shows (no-op unless PUID set)
@@ -302,6 +328,7 @@ def run_scheduled_sync():
             from services.sync import repair_hybrid_ownership
             repair_hybrid_ownership(db)
         except Exception as e:
+            _rollback(db)
             logger.error(f"Hybrid ownership repair failed: {e}")
 
         # Per-user: sync smartlist configs + write home configs
@@ -326,6 +353,7 @@ def run_scheduled_sync():
                         if dupes:
                             logger.info(f"[Nightly] Removed {dupes} duplicate playlist(s) for user {user.id}")
                     except Exception as e:
+                        _rollback(db)
                         logger.warning(f"[Nightly] Duplicate playlist cleanup failed for user {user.id}: {e}")
                     write_home_config(db, user_id=user.id)
                     logger.info(
@@ -343,6 +371,7 @@ def run_scheduled_sync():
                             f"— see [SmartLists] lines above"
                         )
                 except Exception as e:
+                    _rollback(db)
                     logger.error(f"Per-user sync failed for user {user.id}: {e}")
             # Notify plugin to clear caches once at end
             try:
@@ -352,6 +381,7 @@ def run_scheduled_sync():
                 pass
             logger.info(f"Per-user sync complete for {len(users)} user(s)")
         except Exception as e:
+            _rollback(db)
             logger.error(f"Per-user sync failed: {e}")
 
         logger.info("Syncing playlist artwork")
@@ -359,10 +389,12 @@ def run_scheduled_sync():
             from routers.collections import sync_playlist_artwork
             sync_playlist_artwork(db)
         except Exception as e:
+            _rollback(db)
             logger.error(f"Artwork sync failed: {e}")
 
         logger.info("Scheduled sync complete")
     except Exception as e:
+        _rollback(db)
         logger.error(f"Scheduled sync failed: {e}", exc_info=True)
         # Surface the failure in the activity feed so it isn't silently swallowed.
         try:
