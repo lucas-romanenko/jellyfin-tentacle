@@ -187,7 +187,8 @@ def _run_sync_background(provider_id: int, sync_type: str):
         logger.info(f"Background sync {run.status}: run #{run.id}")
     except Exception as e:
         logger.error(f"Background sync failed: {e}", exc_info=True)
-        _notify_sync_progress(provider_id, "error", "", {"error": str(e)})
+        from services.log_redaction import redact  # the error text can carry the login URL
+        _notify_sync_progress(provider_id, "error", "", {"error": redact(str(e))})
     finally:
         _after_sync.pop(provider_id, None)
         _running_syncs.pop(provider_id, None)
