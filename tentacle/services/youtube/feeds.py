@@ -149,7 +149,17 @@ def _api_get(path: str, params: dict) -> dict:
         if r.status_code == 429 or r.status_code >= 500:
             _api_off(API_HICCUP_SECONDS, f"HTTP {r.status_code}")
         raise YouTubeUnavailable(f"The YouTube Data API answered HTTP {r.status_code}")
-    return r.json()
+    try:
+        data = r.json()
+        if not isinstance(data, dict):
+            raise ValueError("not a JSON object")
+        return data
+    except ValueError:
+        # A 200 that is not the API's JSON: a proxy's or a captive portal's
+        # page. It escaped every YouTube handler as a JSONDecodeError, so the
+        # channel failed instead of falling back to its feed.
+        _api_off(API_HICCUP_SECONDS, "an answer that is not JSON")
+        raise YouTubeUnavailable("The YouTube Data API answered with something that is not JSON")
 
 
 def uploads_playlist(channel) -> Optional[str]:
