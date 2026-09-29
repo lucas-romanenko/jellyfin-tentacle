@@ -214,7 +214,11 @@ User docs: `docs/features/live-tv.md`.
   401/403/404 stop at once. A re-dial counts as a reconnect only once it
   delivers.
 - Channel ids are the provider's `stream_id` (stable across changes), used
-  as `GuideNumber`.
+  as `GuideNumber`; Jellyfin keys the channel, its timers and favourites on
+  `hdhr_<GuideNumber>`, so it must never change. M3U channels have no
+  provider id: `stream_id` is the hash of the first name + URL seen, and
+  `m3u_key` the hash of the current ones, which a sync matches by. A URL
+  change (rotated token, new host) moves `m3u_key` only (#259).
 - Two-phase sync: groups with counts, then channels for enabled groups; a
   channel sync chains into an EPG sync. The EPG (XMLTV, cached on disk) is
   stored for *all* provider channels, so newly enabled ones have a guide.

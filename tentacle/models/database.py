@@ -745,6 +745,11 @@ class LiveChannel(Base):
     custom_name = Column(String, nullable=True)
     channel_number = Column(Integer, nullable=True)  # User-assignable
     stream_id = Column(String, nullable=True)  # Xtream stream_id or M3U index
+    # M3U only: the hash of the channel's CURRENT name + URL, what a sync
+    # matches the playlist by. stream_id is the GuideNumber Jellyfin keys the
+    # channel, its timers and favourites on, so it keeps its first value when
+    # the URL changes (#259). NULL (rows from before it existed) = stream_id.
+    m3u_key = Column(String, nullable=True)
 
     # Stream info
     stream_url = Column(String, nullable=False)

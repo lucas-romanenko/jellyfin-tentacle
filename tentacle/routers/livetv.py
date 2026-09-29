@@ -2467,11 +2467,12 @@ def _upsert_channels_from_m3u(
     remembered_off = set(switched_off)
     returned_off = set()
 
-    # Build lookup of existing channels by stream_id
-    existing = {
-        ch.stream_id: ch
-        for ch in db.query(LiveChannel).filter(LiveChannel.provider_id == provider_id).all()
-    }
+    # Build lookup of existing channels by their match key: the hash of the
+    # name + URL they were last seen with (m3u_key; stream_id for rows from
+    # before it existed). stream_id itself is the GuideNumber and never moves.
+    all_rows = db.query(LiveChannel).filter(LiveChannel.provider_id == provider_id).all()
+    existing = {(ch.m3u_key or ch.stream_id): ch for ch in all_rows}
+    taken_numbers = {ch.stream_id for ch in all_rows}
 
     groups = set()
     seen_ids = set()
@@ -2484,12 +2485,14 @@ def _upsert_channels_from_m3u(
     # flags, channel numbers and sort order thrown away, and Jellyfin handed a
     # lineup of new channel ids. Where a name has exactly ONE row that is about
     # to be orphaned and exactly ONE new entry, it is that row that moved: give
-    # it the new id and keep everything else. Anything ambiguous (the same name
-    # twice) is left to the ordinary add/remove path rather than guessed at.
+    # it the new match key and keep everything else -- its stream_id too, which
+    # is the GuideNumber Jellyfin keys the channel's timers and favourites on
+    # (#259). Anything ambiguous (the same name twice) is left to the ordinary
+    # add/remove path rather than guessed at.
     incoming = {_m3u_stable_id(ch["name"], ch["stream_url"]) for ch in parsed_channels}
     orphans: dict[str, list] = {}
-    for row_sid, row in existing.items():
-        if row_sid not in incoming:
+    for row_key, row in existing.items():
+        if row_key not in incoming:
             orphans.setdefault(row.name, []).append(row)
     arrivals: dict[str, list[str]] = {}
     for ch in parsed_channels:
@@ -2500,9 +2503,9 @@ def _upsert_channels_from_m3u(
         rows = orphans.get(name, [])
         if len(sids) == 1 and len(rows) == 1:
             row = rows[0]
-            del existing[row.stream_id]
-            row.stream_id = sids[0]
-            existing[row.stream_id] = row
+            del existing[row.m3u_key or row.stream_id]
+            row.m3u_key = sids[0]
+            existing[sids[0]] = row
 
     for ch in parsed_channels:
         name = ch["name"]
@@ -2527,10 +2530,18 @@ def _upsert_channels_from_m3u(
             row.updated_at = datetime.utcnow()
             updated_count += 1
         else:
+            # A new channel's number is its key, as always -- unless a row that
+            # moved still holds that number (a URL that went and came back).
+            number_id, n = sid, 0
+            while number_id in taken_numbers:
+                n += 1
+                number_id = _m3u_stable_id(name, f"{stream_url}#{n}")
+            taken_numbers.add(number_id)
             db.add(LiveChannel(
                 provider_id=provider_id,
                 name=name,
-                stream_id=sid,
+                stream_id=number_id,
+                m3u_key=sid,
                 stream_url=stream_url,
                 logo_url=ch.get("logo_url"),
                 group_title=group,
@@ -2577,7 +2588,7 @@ def _upsert_channels_from_m3u(
                     switched_off.append(row.name)   # the user's own "off"
             db.query(LiveChannel).filter(
                 LiveChannel.provider_id == provider_id,
-                LiveChannel.stream_id.in_(removed_ids),
+                LiveChannel.id.in_([existing[k].id for k in removed_ids]),
             ).delete(synchronize_session=False)
 
     kept_off = list(dict.fromkeys(n for n in switched_off if n not in returned_off))
