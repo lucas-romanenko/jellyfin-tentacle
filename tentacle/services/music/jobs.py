@@ -35,8 +35,17 @@ def _now() -> str:
 
 # ── Requests ─────────────────────────────────────────────────────────────
 
-def finish_request(album_id: int, rgid: str, choice: dict = None, sleep=time.sleep):
-    """The worker job that completes a request: pin the original, then search."""
+def _request_done(row: MusicAlbum) -> None:
+    row.request_pending, row.request_choice = False, None
+
+
+def finish_request(album_id: int, rgid: str, choice: dict = None, sleep=time.sleep, resumed: bool = False):
+    """The worker job that completes a request: pin the original, then search.
+
+    The album's row stays `request_pending` until this has pinned and searched (or
+    handed the album to review), so a request whose job was lost is finished later
+    (finish_pending_requests). `resumed`: such a later run, which leaves an album
+    that has files since to the daily check (a pin then could change files)."""
     def job(db):
         client = library.lidarr_client(db)
         album = client.album(album_id)
@@ -46,6 +55,11 @@ def finish_request(album_id: int, rgid: str, choice: dict = None, sleep=time.sle
             sleep(delay)
             album = client.album(album_id)
         row = library.upsert_album(db, album)
+        if resumed and int((album.get("statistics") or {}).get("trackFileCount") or 0):
+            _request_done(row)
+            db.commit()
+            logger.info(f"[Request] album '{row.title}' has files already; left to the daily check")
+            return
         if not album.get("releases"):
             row.verdict = {"state": "Waiting for Lidarr to load this album's releases; the daily check "
                                     "will pin it."}
@@ -65,6 +79,7 @@ def finish_request(album_id: int, rgid: str, choice: dict = None, sleep=time.sle
                                        reason=target.reason, options=target.options,
                                        have=row.track_file_count).to_dict()
             row.checked_at = datetime.utcnow()
+            _request_done(row)   # the review's pick pins and searches (resolve_review)
             db.commit()
             logger.info(f"[Request] album '{row.title}' needs review before searching: {target.message}")
             return
@@ -72,9 +87,54 @@ def finish_request(album_id: int, rgid: str, choice: dict = None, sleep=time.sle
         client.search_albums([album_id])
         logger.info(f"[Request] album '{row.title}': pinned {target.get('title')} "
                     f"({target.get('trackCount')} tracks, {target.get('format')}); search started")
+        _request_done(row)
+        db.commit()
         row, album = library.sync_album(db, client, album_id)
         library.check_album(db, row, album, mb, prefs)
     return job
+
+
+def finish_pending_requests(db, errors: list = None) -> int:
+    """Finish requests whose pin-and-search job never ran (Tentacle restarted, or the
+    job failed). Runs at startup and at the start of every daily check."""
+    worker.run_urgent_jobs()   # a request's own job, if still queued, goes first
+    rows = db.query(MusicAlbum).filter(MusicAlbum.request_pending.is_(True)).all()
+    done = 0
+    for row in rows:
+        title = f"{row.artist_name} - {row.title}"
+        if not row.lidarr_album_id:
+            _request_done(row)
+            db.commit()
+            continue
+        try:
+            finish_request(row.lidarr_album_id, row.mbid, row.request_choice, resumed=True)(db)
+            done += 1
+            logger.info(f"[Request] '{title}': finished a request that was left unfinished")
+        except LidarrError as e:
+            if e.status == 404:   # removed from Lidarr since: nothing is owed
+                _request_done(row)
+                db.commit()
+            elif errors is not None:
+                errors.append(f"{title}: {e.message}")
+        except (MusicBrainzError, library.MusicUnavailable) as e:
+            if errors is not None:
+                errors.append(f"{title}: {e.message}")
+    return done
+
+
+def resume_requests() -> None:
+    """At startup: queue the requests a restart interrupted (if any)."""
+    from models.database import SessionLocal
+    db = SessionLocal()
+    try:
+        if not music_settings.is_enabled(db):
+            return
+        if db.query(MusicAlbum).filter(MusicAlbum.request_pending.is_(True)).count():
+            worker.submit(lambda job_db: finish_pending_requests(job_db), worker.URGENT, "unfinished requests")
+    except Exception as e:   # never block startup
+        logger.warning(f"[Music] Couldn't look for unfinished requests: {e}")
+    finally:
+        db.close()
 
 
 def resolve_review(album_id: int, rgid: str, choice: dict):
@@ -117,9 +177,10 @@ def _reconcile(db, trigger: str):
     client = library.lidarr_client(db)
     mb = MusicBrainz.from_settings(db)
     prefs = rule.Prefs.from_settings(db)
+    counts, errors, checked = Counter(), [], 0
+    finish_pending_requests(db, errors)
     artists = client.artists()
     progress.update(running=True, done=0, total=len(artists), started=_now(), trigger=trigger)
-    counts, errors, checked = Counter(), [], 0
     for i, artist in enumerate(artists):
         worker.run_urgent_jobs()
         progress["done"] = i + 1

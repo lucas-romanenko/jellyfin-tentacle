@@ -658,8 +658,11 @@ def setup_scheduler(db):
     # A channel whose first index a restart cut short is picked up a minute
     # after start-up, background checks or not (#288).
     schedule_once(_resume_youtube_channels, 60, "youtube_resume_first_index")
-    # Music module: the daily reconcile (checks the setting itself when it runs).
+    # Music module: the daily reconcile (checks the setting itself when it runs),
+    # and any request a restart interrupted before its pin and search.
     reschedule_music_reconcile()
+    from services.music.jobs import resume_requests
+    resume_requests()
     from services.youtube import traffic as _yt_traffic
     scheduler.add_job(
         _yt_traffic.hourly_report,

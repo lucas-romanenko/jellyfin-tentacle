@@ -587,6 +587,10 @@ class MusicAlbum(Base):
     check_error = Column(Text)
     requested_by = Column(Integer, ForeignKey("tentacle_users.id"))
     requested_at = Column(DateTime)
+    # A request whose pin and search haven't happened yet (jobs.finish_request):
+    # kept in the database so a restart or a lost reply can't drop it (#242).
+    request_pending = Column(Boolean, default=False)
+    request_choice = Column(JSON)   # the user's pick of a tracklist, for that job
     updated_at = Column(DateTime, default=datetime.utcnow)
 
 

@@ -381,6 +381,15 @@ def _lidarr_defaults(db: Session) -> dict:
     return {"root": root, "quality": int(quality), "metadata": int(metadata)}
 
 
+def _added_after_all(client, rgid: str) -> Optional[dict]:
+    """The album, if an add whose answer failed landed in Lidarr anyway."""
+    from services.lidarr import LidarrError
+    try:
+        return client.album_by_mbid(rgid)
+    except LidarrError:
+        return None
+
+
 def request_album(db: Session, rgid: str, *, user_id: Optional[int], via: str,
                   choice: Optional[dict] = None) -> dict:
     """Ask Lidarr for one album (a MusicBrainz release group), pinned to its original.
@@ -423,7 +432,16 @@ def request_album(db: Session, rgid: str, *, user_id: Optional[int], via: str,
                             addOptions={"searchForNewAlbum": False})
             logger.info(f"[Request] album {rgid} via {via}: adding to Lidarr (quality profile "
                         f"{defaults['quality']}, metadata profile {defaults['metadata']}, root {defaults['root']})")
-            album = client.add_album(resource) or client.album_by_mbid(rgid)
+            try:
+                album = client.add_album(resource) or client.album_by_mbid(rgid)
+            except LidarrError as e:
+                # The add can land although its answer doesn't: a new artist's metadata
+                # takes Lidarr longer than the timeout, or Lidarr restarts mid-add.
+                album = _added_after_all(client, rgid)
+                if not album:
+                    raise
+                logger.info(f"[Request] album {rgid} via {via}: Lidarr's answer failed ({e.message}), "
+                            "but the album is in Lidarr: carrying on")
             if not album or not album.get("id"):
                 raise RequestRefused("Lidarr accepted the album but doesn't list it yet. Try again in a minute.")
         elif not album.get("monitored"):
@@ -438,6 +456,9 @@ def request_album(db: Session, rgid: str, *, user_id: Optional[int], via: str,
     row.requested_at = datetime.utcnow()
     row.category = ""
     row.verdict = {"state": "Requested: pinning the original release…"}
+    # Owed until finish_request has pinned and searched; picked up again after a
+    # restart and by the daily check (jobs.finish_pending_requests).
+    row.request_pending, row.request_choice = True, choice
     db.commit()
     worker.submit(jobs.finish_request(album["id"], rgid, choice), worker.URGENT, f"request {album.get('title')}")
     return {"status": "requested", "added_to_lidarr": added, "title": album.get("title"),

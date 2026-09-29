@@ -260,6 +260,13 @@ docs: `docs/features/music.md`; plugin side: `Api/MusicController.cs`
   page=True)` hands the session's connection back before each lookup. A
   burst of music pages must never take the shared thread pool or the DB
   pool (10 + 20): that stalled all of Tentacle (#243).
+- An album request: `request_album` adds (a failed answer to the add is
+  checked with `album_by_mbid` before it counts as refused: it may have
+  landed), marks the row `request_pending` and queues `jobs.finish_request`
+  (pin the original, search). The worker's queue is in memory only, so a
+  pending row is finished at startup (`resume_requests`) and at the start of
+  each daily check (`finish_pending_requests`), unless the album has files by
+  then (#242).
 - `services/music/`: `worker.py` (one thread; urgent > normal > background),
   `jobs.py`, `original.py` (the original-release rules, pure), `apply.py`
   (pins and trims; deletions only when exactly the expected leftovers

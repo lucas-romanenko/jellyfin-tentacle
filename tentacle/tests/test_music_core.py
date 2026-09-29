@@ -118,6 +118,9 @@ class FakeLidarr(BaseHTTPRequestHandler):
         if u.path == "/api/v1/album":
             added = copy.deepcopy(st["after_add"])
             st.setdefault("albums", {})[added["id"]] = added
+            if st.get("add_answer_delay"):   # Lidarr keeps the album, the answer comes late
+                import time
+                time.sleep(st["add_answer_delay"])
             return self._send(201, added)
         if u.path == "/api/v1/command":
             return self._send(201, {"id": 9, "name": body.get("name")})
