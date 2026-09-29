@@ -167,7 +167,7 @@ class TestOrphanSweepBlastRadius(TestOrphanDownloadSweep):
         fake = FakeJellyfinGet(self.jf_movies, self.jf_series)
         self._run(fake)
         for p in fake.params_seen:
-            self.assertEqual(p["Fields"], "ProviderIds")
+            self.assertEqual(p["Fields"], "ProviderIds,Path")  # path: #261
             self.assertEqual(p["EnableImages"], "false")
 
 

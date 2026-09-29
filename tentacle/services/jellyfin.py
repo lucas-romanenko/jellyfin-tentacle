@@ -385,8 +385,9 @@ class JellyfinService:
                 })
             if ids_only:
                 # The lightest possible rows, for callers that only need
-                # provider ids (the orphan sweep reads the whole library).
-                params.update({"Fields": "ProviderIds", "EnableImages": "false",
+                # provider ids and paths (the orphan sweep reads the whole
+                # library and matches by path too, #261).
+                params.update({"Fields": "ProviderIds,Path", "EnableImages": "false",
                                "EnableUserData": "false", "EnableTotalRecordCount": "true"})
             data = self._get("/Items", params=params)
             if not data:
@@ -1848,6 +1849,16 @@ SWEEP_MAX_FRACTION = 0.05
 SWEEP_MIN_ALLOWANCE = 50
 
 
+def _path_tail(path, parts: int):
+    """The last `parts` components of a path, case-folded ("a/b.mkv"), or None."""
+    if not path:
+        return None
+    pieces = [p for p in str(path).replace("\\", "/").split("/") if p]
+    if len(pieces) < parts:
+        return None
+    return "/".join(pieces[-parts:]).casefold()
+
+
 def sweep_orphaned_downloads(db) -> int:
     """Remove Tentacle DB records for downloaded content no longer in Jellyfin.
 
@@ -1920,8 +1931,31 @@ def sweep_orphaned_downloads(db) -> int:
                        "downloaded series are recorded — not treating that as deletions")
         sonarr_series = []
 
-    orphan_movies = [m for m in radarr_movies if m.tmdb_id not in jf_movie_ids]
-    orphan_series = [s for s in sonarr_series if s.tmdb_id not in jf_series_ids]
+    # Radarr/Sonarr and Jellyfin can match the same folder to different TMDB
+    # entries (or Jellyfin to none): a row whose file (movies: folder + file
+    # name, so a VOD .strm of the same film doesn't count) or series folder
+    # Jellyfin still lists is not an orphan. Matching by id alone swept such
+    # rows, with their download requests, and the next scan re-imported them,
+    # night after night (#261). The paths differ per container (/data/... in
+    # the *arr, /media/... here), hence the tail.
+    jf_movie_tails = {_path_tail(i.get("Path"), 2) for i in movie_items} - {None}
+    jf_series_tails = {_path_tail(i.get("Path"), 1) for i in series_items} - {None}
+
+    def _still_listed(row_tmdb, ids, tail, tails, title):
+        if row_tmdb in ids:
+            return True
+        if tail and tail in tails:
+            logger.info(f"[Orphan sweep] Keeping '{title}': Jellyfin lists its files under another "
+                        f"TMDB id than tmdb:{row_tmdb} (a different match in Jellyfin or the *arr)")
+            return True
+        return False
+
+    orphan_movies = [m for m in radarr_movies
+                     if not _still_listed(m.tmdb_id, jf_movie_ids, _path_tail(m.radarr_path, 2),
+                                          jf_movie_tails, m.title)]
+    orphan_series = [s for s in sonarr_series
+                     if not _still_listed(s.tmdb_id, jf_series_ids, _path_tail(s.sonarr_path, 1),
+                                          jf_series_tails, s.title)]
 
     allowance = max(SWEEP_MIN_ALLOWANCE, int(total_rows * SWEEP_MAX_FRACTION))
     candidates = len(orphan_movies) + len(orphan_series)
