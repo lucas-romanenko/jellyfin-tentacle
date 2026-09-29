@@ -204,6 +204,15 @@ guide at `/api/live/xmltv.xml`, streams through `/api/live/stream/{id}`
 (follows provider redirects with the provider's user agent, HLS → MPEG-TS).
 User docs: `docs/features/live-tv.md`.
 
+- Raw MPEG-TS streams re-dial from the channel URL when the provider drops
+  them (`stream_generator()` in `_stream_proxy_inner`). Waited out like a
+  509 (the viewer budget; no limit while a recording is attached): transport
+  errors, `_raw_retryable()` statuses (the open set plus 407 and any 5xx:
+  providers answer 407 for an ended session, 513/520-524 for minutes), and a
+  200 whose first bytes are an error page (`_looks_like_error_page()`: not
+  the TS sync byte 0x47 and a text type or a `{`/`<` start; never proxied).
+  401/403/404 stop at once. A re-dial counts as a reconnect only once it
+  delivers.
 - Channel ids are the provider's `stream_id` (stable across changes), used
   as `GuideNumber`.
 - Two-phase sync: groups with counts, then channels for enabled groups; a

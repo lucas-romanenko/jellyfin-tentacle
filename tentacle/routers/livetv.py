@@ -120,6 +120,42 @@ async def _send_checked(client, url: str, headers: dict, guard=None):
 # Opening a stream: statuses worth waiting out, and for how long. Kept well under
 # a tuner client's patience; the running worker has its own, longer budget.
 _OPEN_RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504, 509}
+
+
+def _raw_retryable(status) -> bool:
+    """A raw MPEG-TS open or re-dial also waits out 407 -- what this provider
+    family answers for an ended session, even from the token URL a fresh 302
+    has just handed out -- and any 5xx, including the non-standard 513 and
+    Cloudflare's 520-524. Both cleared within minutes in production, while
+    ending on them cut running recordings for good (#298). 401/403/404 still
+    stop at once: at the channel URL they mean the login or the channel."""
+    return status is not None and (status in _OPEN_RETRYABLE_STATUS or status == 407
+                                   or 500 <= status < 600)
+
+
+# #299: some panels answer a stream request with 200 OK and an error body
+# ({"error":"There is an Database Error",...}, an HTML page). A raw connection
+# whose first bytes are not an MPEG-TS sync byte and that is labelled as text,
+# or starts like JSON/HTML, is such a page: never proxied, waited out like a
+# refusal. Real TS always starts with 0x47, whatever its label says.
+_NOT_MEDIA_TYPES = ("text/html", "application/json", "text/plain", "application/xml", "text/xml")
+
+
+def _looks_like_error_page(content_type: str, first: bytes) -> bool:
+    if first[:1] == b"G":
+        return False
+    ct = (content_type or "").lower()
+    return any(t in ct for t in _NOT_MEDIA_TYPES) or first.lstrip()[:1] in (b"{", b"<")
+
+
+def _raw_media_type(content_type: str) -> str:
+    """What the tuner is told a raw stream is: the provider's type, unless it
+    is missing or names text (an error page's label on a stream that turned
+    out to be real TS, or one that will be re-dialled until it is)."""
+    ct = (content_type or "").lower()
+    if not ct or any(t in ct for t in _NOT_MEDIA_TYPES):
+        return "video/mp2t"
+    return content_type
 # What a provider answers once a tokenized stream URL has expired (seen in
 # production: 407 about an hour into an HLS stream). Recovered by resolving
 # the CHANNEL url again, which hands out a fresh token -- at most
@@ -3705,10 +3741,15 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     await resp.aclose()
                     resp = None
                 retryable = (
-                    e.response.status_code in _OPEN_RETRYABLE_STATUS
+                    _raw_retryable(e.response.status_code)
                     if isinstance(e, httpx.HTTPStatusError)
                     else isinstance(e, httpx.TransportError)
                 )
+                if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 407:
+                    # The session this token belongs to has ended (#298):
+                    # asking the same token again cannot work, a fresh walk
+                    # from the channel URL hands out a new one.
+                    open_url = stream_url
                 # Whichever is larger: wall clock (slow connects count) or the waits
                 # we chose (so the bound holds even if the clock is not advancing).
                 waited = max(loop.time() - open_started, open_slept)
@@ -3804,7 +3845,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
         # Raw TS or other binary stream — pipe THIS response. The generator takes
         # ownership of it and of the client and cleans both up.
         logger.info(f"[LiveTV] Raw stream (CT: {content_type}) — proxying bytes for channel {channel_id}")
-        upstream_ct = content_type or "video/mp2t"
+        upstream_ct = _raw_media_type(content_type)
         raw_client, raw_resp = client, resp
 
         async def stream_generator():
@@ -3833,11 +3874,14 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
             status_entry = _status_open(channel_id)
             health = status_entry["health"]
             dropped_at = None   # while re-dialling: when the data stopped
+            redialled = False   # this connection came from a re-dial, not yet delivering
             try:
                 while True:
                     opened_at = loop.time()
                     _status_set(channel_id, "streaming")
                     reason = "the provider closed the stream"
+                    conn_ct = raw_resp.headers.get("content-type", "")
+                    conn_first = True
                     # Batch into ~128 KB pieces ourselves. aiter_bytes(chunk_size=)
                     # does the same, but keeps its partial batch to itself when the
                     # connection breaks -- the last fraction of a second before
@@ -3847,6 +3891,25 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         last_mark = loop.time()
                         last_piece = None
                         async for piece in raw_resp.aiter_bytes():
+                            if conn_first:
+                                conn_first = False
+                                if _looks_like_error_page(conn_ct, piece):
+                                    # Not the channel (#299): nothing of it is
+                                    # sent, and it is waited out like a refusal.
+                                    reason = (f"the provider answered with an error page "
+                                              f"({conn_ct or 'no content type'}): "
+                                              f"{piece[:120].decode('utf-8', 'replace')!r}")
+                                    health["errors"] += 1
+                                    backoff_cap = _REFUSAL_BACKOFF_CAP
+                                    logger.warning(f"[LiveTV] Raw stream for channel {channel_id}: {reason}")
+                                    break
+                                if redialled:
+                                    # An outage recovered from: counted once
+                                    # the fresh connection really delivers.
+                                    redialled = False
+                                    health["reconnects"] += 1
+                                    health["reconnecting_seconds"] += loop.time() - dropped_at
+                                    dropped_at = None
                             last_piece = loop.time()
                             if loop.time() - last_mark >= _RAW_MARK_EVERY:
                                 # Still delivering: an HLS stream on the same
@@ -3878,7 +3941,9 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         yield pending[:cut]
                     if loop.time() - opened_at >= HEALTHY_AFTER:
                         failing_since, slept, backoff, backoff_cap = None, 0.0, 1.0, _BACKOFF_CAP
-                    dropped_at = loop.time()
+                    if dropped_at is None:      # else: the outage never ended
+                        dropped_at = loop.time()
+                    redialled = False
                     await raw_resp.aclose()
 
                     # Re-open, waiting out refusals, until it works or the budget is spent.
@@ -3923,19 +3988,17 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                             if new_resp is not None:
                                 await new_resp.aclose()
                             status = e.response.status_code if isinstance(e, httpx.HTTPStatusError) else None
-                            if isinstance(e, httpx.TransportError) or status in _OPEN_RETRYABLE_STATUS:
+                            if isinstance(e, httpx.TransportError) or _raw_retryable(status):
                                 reason = str(e) or type(e).__name__
                                 health["errors"] += 1
-                                if status in _REFUSAL_STATUS:
+                                if status in _REFUSAL_STATUS or status == 407:
                                     backoff_cap = _REFUSAL_BACKOFF_CAP
                                 continue
                             logger.error(f"[LiveTV] Raw stream for channel {channel_id} cannot be "
                                          f"re-opened, stopping: {e}")
                             return
                         raw_resp = new_resp
-                        health["reconnects"] += 1
-                        health["reconnecting_seconds"] += loop.time() - dropped_at
-                        dropped_at = None
+                        redialled = True
                         break
             finally:
                 if dropped_at is not None:     # ended while still re-dialling
