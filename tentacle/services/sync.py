@@ -665,6 +665,29 @@ def _merge_source_tag(tmdb_id: int, media_type: str, source_tag: str, provider_i
             pass  # NFO update is best-effort
 
 
+def _plays_delisted_episode(strm_file: Path, client, listed: set) -> bool:
+    """True when this episode .strm plays an episode of THIS Xtream provider
+    whose id the show no longer lists (#263): the provider replaced the upload
+    under a new id, and the old one plays nothing. The file is keyed by its
+    SxxEyy, so the episode listed there now is the one to play. Not for M3U
+    (its ids are made from the URL) or a link that is not ours."""
+    if not isinstance(client, XtreamClient) or not listed:
+        return False
+    try:
+        current = strm_file.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return False
+    from urllib.parse import urlparse
+    from services import vod_tokens
+    m = vod_tokens._TOKEN_URL.search(current)
+    if m:
+        return (m.group(1) == "series" and int(m.group(2)) == getattr(client, "provider_id", None)
+                and int(m.group(3)) not in listed)
+    host = (urlparse(client.server).hostname or "").lower()
+    ref = _direct_ref(current, embedded=True, prefix=urlparse(client.server).path or "")
+    return ref is not None and ref[0] == host and ref[1] == "series" and ref[2] not in listed
+
+
 def _write_episode_strms(client: "XtreamClient", episodes: dict, show_dir: Path, folder_name: str) -> int:
     """Write .strm files for any episodes that don't already exist on disk.
 
@@ -674,6 +697,17 @@ def _write_episode_strms(client: "XtreamClient", episodes: dict, show_dir: Path,
     another form, or plays another provider (a takeover, #154).
     """
     ep_count = 0
+    # Every episode id the show lists now (#263: a file playing another is stale)
+    listed = set()
+    try:
+        for eps in episodes.values():
+            if isinstance(eps, list) and eps and isinstance(eps[0], list):
+                eps = eps[0]
+            for ep in eps if isinstance(eps, list) else ():
+                if isinstance(ep, dict):
+                    listed.add(int(ep.get("id")))
+    except (TypeError, ValueError):
+        listed = set()   # an id we can't read: can't tell what is gone
     for season_num, eps in episodes.items():
         if isinstance(eps, list) and eps and isinstance(eps[0], list):
             eps = eps[0]
@@ -716,6 +750,10 @@ def _write_episode_strms(client: "XtreamClient", episodes: dict, show_dir: Path,
                 _write_strm(strm_file, expected)
                 chown_path(strm_file)
                 logger.info(f"[Sync] Rewrote {strm_file.name}: stream address changed")
+            elif _plays_delisted_episode(strm_file, client, listed):
+                _write_strm(strm_file, expected)
+                chown_path(strm_file)
+                logger.info(f"[Sync] Rewrote {strm_file.name}: its old episode id is no longer listed")
     return ep_count
 
 
@@ -1822,6 +1860,91 @@ def sync_provider(
     return run
 
 
+def _place_relisted_movies(db: Session, client, provider: Provider, index: "_MovieIndex", stats: dict,
+                           seen_ids_all: set, unmatched: list, met_streams: dict, listed_refs: set,
+                           fetch_ok: bool, may_restore) -> None:
+    """After every category of a movie sync, two repairs by what each film's
+    .strm plays (one read of each file of ours; the sync reads them anyway).
+
+    #262: a stream no label placed (no TMDB match) that a film's .strm already
+    plays is that film, relabelled by the provider (a year or name change):
+    it keeps it, counted as existing and seen -- a stream never leaves the
+    film whose .strm plays it (#185). Before, the film was pruned after two
+    syncs although its stream was still listed.
+
+    #263: a film whose .strm plays a stream of this provider that is no longer
+    listed anywhere (a complete fetch only), met this sync under another
+    stream id, is pointed at that stream in place (same path: the Jellyfin
+    item and its user data stay). While both ids are listed nothing flips,
+    as before. Not for M3U (its ids are made from the URL), an opted-out
+    film, a file two rows share, or a stream another film's .strm plays."""
+    xtream = isinstance(client, XtreamClient)
+    if not unmatched and not (fetch_ok and xtream and met_streams):
+        return
+    plays = {}    # (kind, number) -> tmdb_id of the film of ours whose .strm plays it
+    row_ref = {}  # tmdb_id -> what its .strm plays
+    for tid, path in index.own_strm.items():
+        if not path or path in index.shared:
+            continue
+        try:
+            current = Path(path).read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeDecodeError):
+            continue
+        ref = _play_ref(current, unwrap=True)
+        if ref is None or index.is_other_provider(_stream_origin(current, unwrap=True)):
+            continue
+        row_ref[tid] = ref
+        plays[ref] = tid if plays.get(ref, tid) == tid else None   # two rows: nobody's
+
+    def ref_of(stream):
+        return _play_ref(client.movie_stream_url(stream.get("stream_id"), stream.get("container_extension", "mp4")))
+
+    kept = 0
+    for stream, tag in unmatched:
+        tid = plays.get(ref_of(stream))
+        if tid is None:
+            continue
+        logger.info(f"[Sync] '{stream.get('name')}' (stream {stream.get('stream_id')}) is still "
+                    f"'{(index.own_meta.get(tid) or {}).get('title')}' (TMDB {tid}): relabelled by the provider")
+        _merge_source_tag(tid, "movie", tag, provider.id, db)
+        seen_ids_all.add(tid)
+        stats["skipped"] -= 1
+        stats["existing"] += 1
+        kept += 1
+
+    repointed = 0
+    if fetch_ok and xtream:
+        for tid, streams in met_streams.items():
+            have = row_ref.get(tid)
+            if have is None or have in listed_refs or tid not in index.own_strm:
+                continue
+            target = next((st for st in streams
+                           if plays.get(ref_of(st), tid) == tid and ref_of(st) != have and may_restore(st, tid)),
+                          None)
+            if target is None:
+                continue
+            record = db.query(Movie).filter(Movie.tmdb_id == tid, Movie.provider_id == provider.id).first()
+            if record is None or record.strm_disabled or not record.strm_path:
+                continue
+            strm = Path(record.strm_path)
+            expected = client.movie_stream_url(target.get("stream_id"), target.get("container_extension", "mp4"))
+            try:
+                _write_strm(strm, expected)
+                chown_path(strm)
+            except OSError as e:
+                logger.warning(f"[Sync] Could not point {strm.name} at its new stream: {e}")
+                continue
+            plays[ref_of(target)] = tid
+            record.date_updated = datetime.utcnow()
+            repointed += 1
+            logger.info(f"[Sync] {strm.name}: stream {have[1]} is no longer listed; "
+                        f"now plays stream {target.get('stream_id')}")
+    if kept or repointed:
+        db.commit()
+        logger.info(f"[Sync] {provider.name}: {kept} relabelled film(s) kept, "
+                    f"{repointed} .strm file(s) moved to a re-listed stream")
+
+
 def _sync_movies(
     provider: Provider,
     client: XtreamClient,
@@ -1934,6 +2057,11 @@ def _sync_movies(
     # or no match), by title: once a claim adds a film with that title, they
     # are placed the way the next sync's title map will place them (S4).
     unplaced = {}
+    # #262/#263: what the provider lists this sync, by what a .strm would play;
+    # streams with no match at all; the streams each existing film was met with.
+    listed_refs = set()
+    unmatched = []        # (stream, source tag)
+    met_streams = {}      # tmdb_id -> [stream]
 
     def _import_movie(stream, metadata, source_tag, lookup_key, claim=False):
         """Write a new film's .strm/.nfo and add its row (committed with the
@@ -2092,6 +2220,11 @@ def _sync_movies(
             continue
 
         total_in_cat = len(streams)
+        for listed in streams:
+            ref = _play_ref(client.movie_stream_url(listed.get("stream_id"),
+                                                    listed.get("container_extension", "mp4")))
+            if ref:
+                listed_refs.add(ref)
 
         # Phase 1: Clean titles and split into known vs needs-TMDB
         cleaned = []
@@ -2263,6 +2396,7 @@ def _sync_movies(
                     # Existing VOD movie — restore its .strm if it vanished from disk
                     _repair_movie_strm(client, stream, known_id, provider, db,
                                        restore=_may_restore(stream, known_id, guessed))
+                    met_streams.setdefault(known_id, []).append(stream)
                     cat_existing += 1
                     stats["existing"] += 1
                     if item_idx % 10 == 0 or item_idx == total_in_cat:
@@ -2272,6 +2406,7 @@ def _sync_movies(
             if not metadata:
                 if require_tmdb:
                     unplaced.setdefault(lookup_key, []).append((stream, cat.source_tag))
+                    unmatched.append((stream, cat.source_tag))
                     cat_skipped += 1
                     stats["skipped"] += 1
                     if item_idx % 10 == 0 or item_idx == total_in_cat:
@@ -2302,6 +2437,7 @@ def _sync_movies(
                 # Existing VOD movie — restore its .strm if it vanished from disk
                 _repair_movie_strm(client, stream, tmdb_id, provider, db,
                                    restore=_may_restore(stream, tmdb_id))
+                met_streams.setdefault(tmdb_id, []).append(stream)
                 cat_existing += 1
                 stats["existing"] += 1
                 if item_idx % 10 == 0 or item_idx == total_in_cat:
@@ -2315,6 +2451,7 @@ def _sync_movies(
                 # Existing VOD movie — restore its .strm if it vanished from disk
                 _repair_movie_strm(client, stream, tmdb_id, provider, db,
                                    restore=_may_restore(stream, tmdb_id))
+                met_streams.setdefault(tmdb_id, []).append(stream)
                 cat_existing += 1
                 stats["existing"] += 1
                 if item_idx % 10 == 0 or item_idx == total_in_cat:
@@ -2426,6 +2563,9 @@ def _sync_movies(
                     _merge_source_tag(kid, "movie", tag, provider.id, db)
                     seen_ids_all.add(kid)
         db.commit()
+
+    _place_relisted_movies(db, client, provider, index, stats, seen_ids_all, unmatched,
+                           met_streams, listed_refs, fetch_ok, _may_restore)
 
     logger.info(
         f"Movies complete: {stats['new']} new, {stats['existing']} existing, "

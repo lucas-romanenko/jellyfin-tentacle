@@ -112,6 +112,15 @@ read that row.
   keeping results within one year of the provider's (a local or streaming
   release year is often one off; a remake decades apart is not taken). No
   year: one search (#265).
+- A stream stays with the film whose `.strm` plays it (#185). After every
+  category, `_place_relisted_movies()` applies that by the files: a stream
+  no label placed that a film's `.strm` plays is that film, relabelled
+  (counted as existing and seen, so never pruned, #262); a film met this
+  sync whose `.strm` plays a stream of this provider no longer listed
+  anywhere (a complete fetch, Xtream only) is pointed at its current
+  stream in place (#263). Episodes: a file whose episode id the show no
+  longer lists gets the id listed at its SxxEyy (`_plays_delisted_episode`).
+  While both ids are listed nothing flips.
 - `.strm` files are written with `_write_strm()`: a hidden temp file in the
   same folder, then a rename, so a write cut short leaves the old file
   whole. An existing `.strm` that is empty or blank is rewritten like a
