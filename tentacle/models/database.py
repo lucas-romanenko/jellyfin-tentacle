@@ -997,6 +997,11 @@ def _migrate_columns():
         ("series", "last_downloaded_episode", "TEXT"),
         ("tentacle_users", "notifications_enabled", "BOOLEAN DEFAULT 1"),
     ]
+    # Recreate tables that need PK changes (HomeRowOrder, AutoPlaylistToggle)
+    # before the generic pass, which would otherwise give their old layout a
+    # user_id column and nothing else (#295).
+    _migrate_home_row_order(cursor, conn)
+    _migrate_auto_playlist_toggles(cursor, conn)
     for table, column, col_type in migrations:
         existing = _existing_columns(cursor, table)
         if not existing:
@@ -1041,9 +1046,6 @@ def _migrate_columns():
                 continue
             _backfill_default(cursor, conn, table_name, col)
 
-    # Recreate tables that need PK changes (HomeRowOrder, AutoPlaylistToggle)
-    _migrate_home_row_order(cursor, conn)
-    _migrate_auto_playlist_toggles(cursor, conn)
     _drop_retired_tables(cursor, conn)
     _reset_guessed_made_for_kids(cursor, conn)
     conn.close()
@@ -1091,60 +1093,61 @@ def _drop_retired_tables(cursor, conn):
         logger.error(f"[migrate] Could not drop youtube_row_subscriptions: {e}")
 
 
+def _recreate_per_user_table(conn, table, old_name, columns):
+    """Recreate a pre-multi-user table with the model's id primary key (#295).
+
+    Before multi-user support home_row_order and auto_playlist_toggles were
+    keyed by playlist_id / key alone. The recreate is decided by the id
+    column: user_id is no proof, because the generic pass adds it on its own.
+    The whole copy is one transaction, and a copy left half done by an older
+    build (its data only in `old_name`) is finished from there.
+    """
+    import sqlite3
+    from sqlalchemy.schema import CreateIndex, CreateTable
+
+    cursor = conn.cursor()
+    model = Base.metadata.tables[table]
+    has_old = bool(cursor.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (old_name,)).fetchone())
+    existing = _existing_columns(cursor, table)
+    if not has_old and (not existing or "id" in existing):
+        return  # current schema, a fresh install, or no table yet
+    conn.commit()
+    try:
+        cursor.execute("BEGIN IMMEDIATE")
+        if existing and "id" not in existing:
+            if has_old:
+                raise RuntimeError(f"both {table} (old layout) and {old_name} exist")
+            cursor.execute(f"ALTER TABLE {table} RENAME TO {old_name}")
+            existing = set()
+        old_cols = _existing_columns(cursor, old_name)
+        if not existing:
+            cursor.execute(str(CreateTable(model).compile(dialect=engine.dialect)))
+        keep = [c for c in columns if c in old_cols]
+        cols = ", ".join(f'"{c}"' for c in keep)
+        cursor.execute(f"INSERT OR IGNORE INTO {table} ({cols}) SELECT {cols} FROM {old_name}")
+        copied = cursor.rowcount
+        cursor.execute(f"DROP TABLE {old_name}")
+        if not existing:
+            for index in model.indexes:
+                cursor.execute(str(CreateIndex(index).compile(dialect=engine.dialect)))
+        conn.commit()
+        logger.info(f"[migrate] Recreated {table} for per-user rows ({copied} row(s) kept)")
+    except (sqlite3.Error, RuntimeError) as e:
+        conn.rollback()
+        logger.error(f"[migrate] Could not recreate {table} with an id column: {e}")
+
+
 def _migrate_home_row_order(cursor, conn):
     """Recreate home_row_order with id PK + user_id column."""
-    try:
-        cursor.execute("SELECT user_id FROM home_row_order LIMIT 1")
-        return  # Already migrated
-    except Exception:
-        pass
-    try:
-        cursor.execute("ALTER TABLE home_row_order RENAME TO _home_row_order_old")
-        cursor.execute("""
-            CREATE TABLE home_row_order (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER REFERENCES tentacle_users(id),
-                playlist_id TEXT NOT NULL,
-                display_order INTEGER NOT NULL DEFAULT 0,
-                UNIQUE(user_id, playlist_id)
-            )
-        """)
-        cursor.execute("""
-            INSERT INTO home_row_order (playlist_id, display_order)
-            SELECT playlist_id, display_order FROM _home_row_order_old
-        """)
-        cursor.execute("DROP TABLE _home_row_order_old")
-        conn.commit()
-    except Exception:
-        pass
+    _recreate_per_user_table(conn, "home_row_order", "_home_row_order_old",
+                             ("user_id", "playlist_id", "display_order"))
 
 
 def _migrate_auto_playlist_toggles(cursor, conn):
     """Recreate auto_playlist_toggles with id PK + user_id column."""
-    try:
-        cursor.execute("SELECT user_id FROM auto_playlist_toggles LIMIT 1")
-        return  # Already migrated
-    except Exception:
-        pass
-    try:
-        cursor.execute("ALTER TABLE auto_playlist_toggles RENAME TO _auto_toggles_old")
-        cursor.execute("""
-            CREATE TABLE auto_playlist_toggles (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER REFERENCES tentacle_users(id),
-                key TEXT NOT NULL,
-                enabled BOOLEAN DEFAULT 0,
-                UNIQUE(user_id, key)
-            )
-        """)
-        cursor.execute("""
-            INSERT INTO auto_playlist_toggles (key, enabled)
-            SELECT key, enabled FROM _auto_toggles_old
-        """)
-        cursor.execute("DROP TABLE _auto_toggles_old")
-        conn.commit()
-    except Exception:
-        pass
+    _recreate_per_user_table(conn, "auto_playlist_toggles", "_auto_toggles_old",
+                             ("user_id", "key", "enabled"))
 
 
 def create_tables():
