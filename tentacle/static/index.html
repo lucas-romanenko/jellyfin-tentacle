@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="theme-color" content="#0c0c10">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -26,7 +26,7 @@
   --border2: rgba(255,255,255,0.12);
   --text: #e2e2ec;
   --text2: #9090a8;
-  --text3: #5a5a72;
+  --text3: #82829c;  /* 4.6:1 on --bg2 (WCAG AA); #5a5a72 was 2.6:1 */
   --accent: #6c63ff;
   --accent-dim: rgba(108,99,255,0.15);
   --accent-hover: #7d75ff;
@@ -1696,6 +1696,12 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
   .dl-requested-by { display: none; }
   .dl-item-bar { width: 70px; }
 }
+/* Touch screens of any width: 16 px inputs so focusing one never zooms the
+   page (tablets above 768 px included). This, not a locked viewport scale,
+   stops the auto-zoom, so pinch-zoom stays available (#281). */
+@media (pointer: coarse) {
+  input, select, textarea { font-size: 16px !important; }
+}
 </style>
 </head>
 <body>
@@ -1986,7 +1992,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
         </div>
 
         <div id="vod-provider-bar" style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
-          <select class="form-input" id="vod-provider-select" style="width:240px;padding:6px 10px;font-size:13px" onchange="onVodProviderChange()">
+          <select class="form-input" id="vod-provider-select" aria-label="VOD provider" style="width:240px;padding:6px 10px;font-size:13px" onchange="onVodProviderChange()">
           </select>
           <span id="vod-provider-status" style="font-size:12px;color:var(--text3)"></span>
         </div>
@@ -2753,7 +2759,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
           <!-- Row 1: Search + Sort -->
           <div class="lib-filters-row">
             <input class="search-box" id="lib-search" placeholder="Search titles..." oninput="searchLibrary()" style="width:220px">
-            <select class="lib-sort-select" id="lib-sort" onchange="setLibSort(this.value)">
+            <select class="lib-sort-select" id="lib-sort" aria-label="Sort library" onchange="setLibSort(this.value)">
               <option value="date_desc">Recently Added</option>
               <option value="title_asc">Title A–Z</option>
               <option value="title_desc">Title Z–A</option>
@@ -2864,10 +2870,10 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
             </div>
             <div style="padding:0 16px 16px">
               <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-                <select id="home-hero-select" class="form-input" style="max-width:360px;flex:1" onchange="updateHeroPick()">
+                <select id="home-hero-select" aria-label="Hero content" class="form-input" style="max-width:360px;flex:1" onchange="updateHeroPick()">
                   <option value="">-- disabled --</option>
                 </select>
-                <select id="home-hero-sort" class="form-input" style="max-width:180px" onchange="updateHeroSort()">
+                <select id="home-hero-sort" aria-label="Hero sort order" class="form-input" style="max-width:180px" onchange="updateHeroSort()">
                   <option value="random_desc">Random</option>
                   <option value="communityrating_desc">Top Rated</option>
                   <option value="releasedate_desc">Newest First</option>
@@ -2875,7 +2881,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
                   <option value="name_asc">A &rarr; Z</option>
                   <option value="datecreated_desc">Recently Added</option>
                 </select>
-                <select id="home-hero-item-count" class="form-input" style="max-width:120px" onchange="updateHeroSort()">
+                <select id="home-hero-item-count" aria-label="Hero item count" class="form-input" style="max-width:120px" onchange="updateHeroSort()">
                   <option value="5">5 items</option>
                   <option value="10" selected>10 items</option>
                   <option value="15">15 items</option>
@@ -2916,7 +2922,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
                   <div style="font-size:11px;color:var(--text3);margin-top:2px">Get notified when a movie or episode finishes downloading and is ready to watch. Shows a toast popup in Jellyfin and the Android TV app.</div>
                 </div>
                 <label style="position:relative;display:inline-block;width:40px;height:22px;flex-shrink:0">
-                  <input type="checkbox" id="notif-enabled-checkbox" onchange="toggleNotificationsFromCheckbox(this.checked)" style="opacity:0;width:0;height:0">
+                  <input type="checkbox" id="notif-enabled-checkbox" aria-label="Download notifications" onchange="toggleNotificationsFromCheckbox(this.checked)" style="opacity:0;width:0;height:0">
                   <span style="position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:var(--bg3);border-radius:11px;transition:.2s"></span>
                   <span id="notif-slider" style="position:absolute;height:16px;width:16px;left:3px;bottom:3px;background:white;border-radius:50%;transition:.2s"></span>
                 </label>
@@ -2960,7 +2966,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
                   <div style="font-size:13px;color:var(--text)">Previews when a card is focused</div>
                   <div style="font-size:11px;color:var(--text3);margin-top:2px">Android TV plays a preview of a focused card. For a provider (IPTV) title that opens a provider connection per card scrolled over, which can cut off a running recording. "Local files only" (the default) keeps previews for downloaded media.</div>
                 </div>
-                <select id="card-previews-select" onchange="saveCardPreviews(this.value)" style="flex-shrink:0;font-size:12px;padding:4px 6px;background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:6px">
+                <select id="card-previews-select" aria-label="Card previews" onchange="saveCardPreviews(this.value)" style="flex-shrink:0;font-size:12px;padding:4px 6px;background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:6px">
                   <option value="all">All cards</option>
                   <option value="local_only">Local files only</option>
                   <option value="off">Off</option>
@@ -3145,10 +3151,10 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
               <div class="card-title">Channels <span id="live-ch-count" style="color:var(--text3);font-weight:400"></span></div>
               <div style="display:flex;gap:8px;align-items:center">
                 <input class="form-input" id="live-ch-search" placeholder="Search channels..." style="width:200px;padding:5px 10px;font-size:12px" oninput="searchLiveChannels()">
-                <select class="form-input" id="live-ch-group-filter" style="width:160px;padding:5px 10px;font-size:12px" onchange="filterLiveChannels()">
+                <select class="form-input" id="live-ch-group-filter" aria-label="Filter channels by group" style="width:160px;padding:5px 10px;font-size:12px" onchange="filterLiveChannels()">
                   <option value="">All Groups</option>
                 </select>
-                <select class="form-input" id="live-ch-epg-filter" style="width:120px;padding:5px 10px;font-size:12px" onchange="filterLiveChannelsByEpg()">
+                <select class="form-input" id="live-ch-epg-filter" aria-label="Filter channels by guide data" style="width:120px;padding:5px 10px;font-size:12px" onchange="filterLiveChannelsByEpg()">
                   <option value="">All</option>
                   <option value="has_epg">Has EPG</option>
                   <option value="no_epg">No EPG</option>

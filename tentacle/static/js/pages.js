@@ -927,7 +927,7 @@ function renderLibCard(item) {
 
   // Normal in-library card
   const poster = item.poster_path
-    ? `<img src="https://image.tmdb.org/t/p/w185${item.poster_path}" loading="lazy" onerror="this.outerHTML='<div class=\\'lib-card-poster-placeholder\\'>◫</div>'">`
+    ? `<img alt="" src="https://image.tmdb.org/t/p/w185${item.poster_path}" loading="lazy" onerror="this.outerHTML='<div class=\\'lib-card-poster-placeholder\\'>◫</div>'">`
     : `<div class="lib-card-poster-placeholder">◫</div>`;
 
   let badges = '';
@@ -995,7 +995,7 @@ async function showAddToArrModal(tmdbId, title, year, posterPath, mediaType, tvd
   const info = document.getElementById('add-radarr-movie-info');
   const posterSrc = _imgUrl(posterPath, 'w185');
   const posterImg = posterSrc
-    ? `<img src="${posterSrc}" style="border-radius:8px;width:80px;height:120px;object-fit:cover">`
+    ? `<img alt="" src="${posterSrc}" style="border-radius:8px;width:80px;height:120px;object-fit:cover">`
     : `<div style="width:80px;height:120px;background:var(--bg3);border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--text3)">&#9707;</div>`;
   info.innerHTML = `${posterImg}<div style="display:flex;flex-direction:column;justify-content:center"><div style="font-weight:600;font-size:17px">${title || 'Unknown'}</div><div style="color:var(--text2);font-size:14px">${year || ''}</div></div>`;
 
@@ -1289,7 +1289,7 @@ async function showManageEpisodesModal(tmdbId, title, year, posterPath) {
   const info = document.getElementById('add-radarr-movie-info');
   const managePosterSrc = _imgUrl(posterPath, 'w185');
   const posterImg = managePosterSrc
-    ? `<img src="${managePosterSrc}" style="border-radius:8px;width:80px;height:120px;object-fit:cover">`
+    ? `<img alt="" src="${managePosterSrc}" style="border-radius:8px;width:80px;height:120px;object-fit:cover">`
     : `<div style="width:80px;height:120px;background:var(--bg3);border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--text3)">&#9707;</div>`;
   info.innerHTML = `${posterImg}<div style="display:flex;flex-direction:column;justify-content:center"><div style="font-weight:600;font-size:17px">${title || 'Unknown'}</div><div style="color:var(--text2);font-size:14px">${year || ''}</div></div>`;
 
@@ -1411,7 +1411,7 @@ async function showDownloadMoreModal(tmdbId, title, year, posterPath) {
   const info = document.getElementById('add-radarr-movie-info');
   const dlMorePosterSrc = _imgUrl(posterPath, 'w185');
   const posterImg = dlMorePosterSrc
-    ? `<img src="${dlMorePosterSrc}" style="border-radius:8px;width:80px;height:120px;object-fit:cover">`
+    ? `<img alt="" src="${dlMorePosterSrc}" style="border-radius:8px;width:80px;height:120px;object-fit:cover">`
     : `<div style="width:80px;height:120px;background:var(--bg3);border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--text3)">&#9707;</div>`;
   info.innerHTML = `${posterImg}<div style="display:flex;flex-direction:column;justify-content:center"><div style="font-weight:600;font-size:17px">${title || 'Unknown'}</div><div style="color:var(--text2);font-size:14px">${year || ''}</div></div>`;
 
@@ -1704,7 +1704,7 @@ async function showMediaDetail(tmdbId, mediaType) {
     const isSeries = mediaType === 'series';
     document.getElementById('detail-body').innerHTML = `
       <div class="detail-layout" style="display:flex;gap:20px">
-        ${data.poster_path ? `<img src="${_imgUrl(data.poster_path, 'w185')}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
+        ${data.poster_path ? `<img alt="" src="${_imgUrl(data.poster_path, 'w185')}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
         <div style="flex:1">
           <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${data.year || '—'} · ${data.runtime ? data.runtime+'m' : ''} · ★ ${data.rating || '—'}</div>
           <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${data.overview || 'No overview available.'}</p>
@@ -1855,7 +1855,7 @@ async function _fmLoad(q) {
     _fm.cands = d.candidates || [];
     list.innerHTML = _fm.cands.length ? _fm.cands.map((c, i) => `
       <button class="fm-cand" onclick="_fmPick(${i})">
-        ${c.poster_path ? `<img src="${_imgUrl(c.poster_path, 'w92')}" loading="lazy">` : '<div class="fm-noposter"></div>'}
+        ${c.poster_path ? `<img alt="" src="${_imgUrl(c.poster_path, 'w92')}" loading="lazy">` : '<div class="fm-noposter"></div>'}
         <span class="fm-cand-text"><span class="fm-cand-title">${escapeAttr(c.title)}</span>
           <span class="fm-cand-meta">${escapeAttr([c.year, c.runtime ? c.runtime + ' min' : '', c.language_name || ''].filter(Boolean).join(' · '))}
             ${c.runtime_matches ? '<span class="badge badge-green">same length</span>' : ''}
@@ -1927,7 +1927,7 @@ async function loadMatchSuspects() {
     card.style.display = '';
     document.getElementById('wrong-match-list').innerHTML = suspects.length ? suspects.map(x => `
       <div class="wm-row">
-        ${x.poster_path ? `<img src="${_imgUrl(x.poster_path, 'w92')}" class="wm-poster" loading="lazy" onerror="this.style.visibility='hidden'">` : '<div class="wm-poster"></div>'}
+        ${x.poster_path ? `<img alt="" src="${_imgUrl(x.poster_path, 'w92')}" class="wm-poster" loading="lazy" onerror="this.style.visibility='hidden'">` : '<div class="wm-poster"></div>'}
         <div class="wm-info">
           <div class="wm-title">${escapeAttr(x.title || '')}</div>
           <div class="wm-meta">Plays <strong>${x.actual_minutes} min</strong> — this film is ${x.expected_minutes} min</div>
@@ -2197,7 +2197,7 @@ async function showCoverageDetail(tmdbId, mediaType, title, year, posterPath) {
     document.getElementById('detail-title').textContent = data.title;
     document.getElementById('detail-body').innerHTML = `
       <div class="detail-layout" style="display:flex;gap:20px">
-        ${data.poster_path ? `<img src="${_imgUrl(data.poster_path, 'w185')}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
+        ${data.poster_path ? `<img alt="" src="${_imgUrl(data.poster_path, 'w185')}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
         <div style="flex:1">
           <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${data.year || '—'} · ${data.runtime ? data.runtime+'m' : ''} · ★ ${data.rating || '—'}</div>
           <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${data.overview || 'No overview available.'}</p>
@@ -2224,7 +2224,7 @@ async function showCoverageDetail(tmdbId, mediaType, title, year, posterPath) {
       document.getElementById('detail-title').textContent = data.title || title || 'Unknown';
       document.getElementById('detail-body').innerHTML = `
         <div class="detail-layout" style="display:flex;gap:20px">
-          ${data.poster_path ? `<img src="${_imgUrl(data.poster_path, 'w185')}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
+          ${data.poster_path ? `<img alt="" src="${_imgUrl(data.poster_path, 'w185')}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
           <div style="flex:1">
             <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${data.year || '—'} · ${data.runtime ? data.runtime+'m · ' : ''}★ ${data.rating || '—'}</div>
             <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${data.overview || 'No overview available.'}</p>
@@ -2244,7 +2244,7 @@ async function showCoverageDetail(tmdbId, mediaType, title, year, posterPath) {
       document.getElementById('detail-title').textContent = title || 'Unknown';
       document.getElementById('detail-body').innerHTML = `
         <div class="detail-layout" style="display:flex;gap:20px">
-          ${posterPath ? `<img src="${_imgUrl(posterPath, 'w185')}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
+          ${posterPath ? `<img alt="" src="${_imgUrl(posterPath, 'w185')}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
           <div style="flex:1">
             <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${year || '—'}</div>
             <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">Not in library yet.</p>
@@ -2564,7 +2564,7 @@ async function loadAutoPlaylists() {
         const control = p.locked
           ? `<span title="Always on — remove the channel from the YouTube page to remove this" style="display:inline-block;width:36px;text-align:center;color:var(--green);font-size:14px;flex-shrink:0">&#10003;</span>`
           : `<label style="position:relative;display:inline-block;width:36px;height:20px;flex-shrink:0;cursor:pointer">
-              <input type="checkbox" ${checked} onchange="toggleAutoPlaylist('${escapeAttr(p.key)}')"
+              <input type="checkbox" ${checked} aria-label="${escapeAttr(p.name || p.key)}" onchange="toggleAutoPlaylist('${escapeAttr(p.key)}')"
                 style="opacity:0;width:0;height:0;position:absolute">
               <span style="position:absolute;top:0;left:0;right:0;bottom:0;background:${toggleBg};border-radius:10px;transition:0.2s"></span>
               <span style="position:absolute;top:2px;left:${togglePos};width:16px;height:16px;background:white;border-radius:50%;transition:0.2s"></span>
@@ -3265,7 +3265,7 @@ async function loadYouTubeChannels() {
       : '';
     const checked = c.last_checked ? new Date(c.last_checked).toLocaleString() : 'not yet';
     return `<div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)">
-      ${c.avatar_url ? `<img src="${escapeAttr(c.avatar_url)}" style="width:40px;height:40px;border-radius:50%;object-fit:cover">` : '<div style="width:40px;height:40px;border-radius:50%;background:var(--bg3)"></div>'}
+      ${c.avatar_url ? `<img alt="" src="${escapeAttr(c.avatar_url)}" style="width:40px;height:40px;border-radius:50%;object-fit:cover">` : '<div style="width:40px;height:40px;border-radius:50%;background:var(--bg3)"></div>'}
       <div style="flex:1">
         <div style="font-weight:600">${escapeAttr(c.title)} ${live} ${blocked}</div>
         <div style="font-size:12px;color:var(--text3)">${c.library_count} in library · keeps newest ${c.keep_count}${shorts}${replays} · checked ${escapeAttr(checked)}</div>
@@ -3697,7 +3697,7 @@ function renderToolbarButtons(buttons) {
       <span style="display:flex;align-items:center;color:var(--text2);flex-shrink:0">${TOOLBAR_ICONS[btn.id] || ''}</span>
       <span class="row-name">${TOOLBAR_LABELS[btn.id] || btn.id}</span>
       <label style="position:relative;display:inline-block;width:36px;height:20px;flex-shrink:0;margin-left:auto">
-        <input type="checkbox" ${btn.enabled ? 'checked' : ''} onchange="toggleToolbarButton(${i}, this.checked)" style="opacity:0;width:0;height:0">
+        <input type="checkbox" ${btn.enabled ? 'checked' : ''} aria-label="Show the ${escapeAttr(TOOLBAR_LABELS[btn.id] || btn.id)} button" onchange="toggleToolbarButton(${i}, this.checked)" style="opacity:0;width:0;height:0">
         <span style="position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:${btn.enabled ? 'var(--accent)' : 'var(--bg3)'};border-radius:10px;transition:.2s"></span>
         <span style="position:absolute;height:14px;width:14px;left:${btn.enabled ? '19px' : '3px'};bottom:3px;background:white;border-radius:50%;transition:.2s"></span>
       </label>
@@ -4969,7 +4969,7 @@ function _activityPosterFailed(img) {
 function _activityPoster(path) {
   const src = path ? _imgUrl(path, 'w185') : '';
   if (!src || _activityBadPosters.has(src)) return '<div class="activity-poster-placeholder">◫</div>';
-  return `<img src="${src}" loading="lazy" onerror="_activityPosterFailed(this)">`;
+  return `<img alt="" src="${src}" loading="lazy" onerror="_activityPosterFailed(this)">`;
 }
 
 // ── Search again / Remove on a Searching card ──────────────────────────
@@ -5627,7 +5627,7 @@ function renderDiscoverGrid(items) {
   grid.innerHTML = items.map(item => {
     const posterSrc = _imgUrl(item.poster_path, 'w185');
     const poster = posterSrc
-      ? `<img src="${posterSrc}" loading="lazy" onerror="this.outerHTML='<div class=\\'lib-card-poster-placeholder\\'>◫</div>'">`
+      ? `<img alt="" src="${posterSrc}" loading="lazy" onerror="this.outerHTML='<div class=\\'lib-card-poster-placeholder\\'>◫</div>'">`
       : `<div class="lib-card-poster-placeholder">◫</div>`;
     const tvdbId = item.tvdb_id || 0;
     const tmdbId = item.tmdb_id || 0;
@@ -5721,7 +5721,7 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
     const detailPosterSrc = _imgUrl(data.poster_path, 'w185');
     document.getElementById('detail-body').innerHTML = `
       <div class="detail-layout" style="display:flex;gap:20px">
-        ${detailPosterSrc ? `<img src="${detailPosterSrc}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
+        ${detailPosterSrc ? `<img alt="" src="${detailPosterSrc}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
         <div style="flex:1">
           <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${data.year || year || '—'} · ${data.runtime ? data.runtime+'m · ' : ''}★ ${data.rating || '—'}</div>
           <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${data.overview || 'No overview available.'}</p>
@@ -5738,7 +5738,7 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
     document.getElementById('detail-title').textContent = title || 'Unknown';
     document.getElementById('detail-body').innerHTML = `
       <div class="detail-layout" style="display:flex;gap:20px">
-        ${_imgUrl(posterPath, 'w185') ? `<img src="${_imgUrl(posterPath, 'w185')}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
+        ${_imgUrl(posterPath, 'w185') ? `<img alt="" src="${_imgUrl(posterPath, 'w185')}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
         <div style="flex:1">
           <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${year || '—'}</div>
           <p style="font-size:13px;color:var(--text2)">Could not load details.</p>
@@ -6079,9 +6079,9 @@ function renderLiveGroups(groups) {
 
   el.innerHTML = groups.map((g, i) => `
     <div class="live-group-row" data-group-id="${g.id}" data-group-idx="${i}" data-group-name="${(g.name || '').toLowerCase()}">
-      <span class="group-name">${g.name}</span>
+      <span class="group-name">${escapeAttr(g.name || '')}</span>
       <span class="group-count">${g.channel_count || 0} ch</span>
-      <button class="live-toggle ${g.enabled ? 'on' : ''}" onclick="toggleLiveGroup(${g.id}, this, event)"></button>
+      <button type="button" class="live-toggle ${g.enabled ? 'on' : ''}" aria-label="Show ${escapeAttr(g.name || '')} in Live TV" aria-pressed="${g.enabled ? 'true' : 'false'}" onclick="toggleLiveGroup(${g.id}, this, event)"></button>
     </div>`).join('');
   liveState.lastToggledIdx = null;
   updateGroupsSummary(groups);
@@ -6100,6 +6100,12 @@ function filterLiveGroups() {
     const name = row.dataset.groupName || '';
     row.style.display = name.includes(q) ? '' : 'none';
   });
+}
+
+// A Live TV on/off switch: its look and what a screen reader announces.
+function _setLiveToggle(btn, on) {
+  btn.classList.toggle('on', !!on);
+  btn.setAttribute('aria-pressed', on ? 'true' : 'false');
 }
 
 function toggleLiveGroup(groupId, btn, evt) {
@@ -6122,7 +6128,7 @@ function toggleLiveGroup(groupId, btn, evt) {
   liveState.lastToggledIdx = idx;
   const g = liveState.groups.find(g => g.id === groupId);
   if (g) g.enabled = enabled;
-  if (enabled) btn.classList.add('on'); else btn.classList.remove('on');
+  _setLiveToggle(btn, enabled);
   updateGroupsSummary(liveState.groups);
 }
 
@@ -6207,11 +6213,11 @@ async function loadLiveYouTubeChannels() {
   document.getElementById('live-youtube-count').textContent = `(${on.length} on Live TV)`;
   el.innerHTML = [...on, ...off].map(c => `
     <div class="live-ch-row">
-      ${c.avatar_url ? `<img class="live-ch-logo" src="${escapeAttr(c.avatar_url)}" loading="lazy" onerror="this.style.display='none'">` : '<div class="live-ch-logo"></div>'}
+      ${c.avatar_url ? `<img alt="" class="live-ch-logo" src="${escapeAttr(c.avatar_url)}" loading="lazy" onerror="this.style.display='none'">` : '<div class="live-ch-logo"></div>'}
       <span class="live-ch-name">${escapeAttr(c.title)}${c.live_enabled ? ytLiveState(c) : ''}</span>
       <span class="live-ch-group">${c.live_enabled ? `Channel ${escapeAttr(String(c.guide_number || ''))}` : 'not on Live TV'}</span>
       <span class="live-ch-epg-badge ${c.guide_programmes ? 'has-epg' : 'no-epg'}">${c.guide_programmes ? `${c.guide_programmes} in guide` : 'No guide entries'}</span>
-      <button class="live-toggle ${c.live_enabled ? 'on' : ''}" onclick="toggleLiveYouTube(${c.id}, ${!c.live_enabled})" style="flex-shrink:0"></button>
+      <button type="button" class="live-toggle ${c.live_enabled ? 'on' : ''}" aria-label="Show ${escapeAttr(c.title || '')} in Live TV" aria-pressed="${c.live_enabled ? 'true' : 'false'}" onclick="toggleLiveYouTube(${c.id}, ${!c.live_enabled})" style="flex-shrink:0"></button>
     </div>`).join('');
   return on.length;
 }
@@ -6249,12 +6255,12 @@ function renderLiveChannels(channels, total) {
 
   el.innerHTML = channels.map((ch, i) => `
     <div class="live-ch-row" data-ch-idx="${i}">
-      ${ch.logo_url ? `<img class="live-ch-logo" src="${ch.logo_url}" loading="lazy" onerror="this.style.display='none'">` : `<div class="live-ch-logo"></div>`}
+      ${ch.logo_url ? `<img alt="" class="live-ch-logo" src="${ch.logo_url}" loading="lazy" onerror="this.style.display='none'">` : `<div class="live-ch-logo"></div>`}
       <span class="live-ch-name">${escapeAttr(ch.name)}${ch.custom_name ? ` <span style="color:var(--text3);font-size:11px">(${escapeAttr(ch.provider_name)})</span>` : ''}</span>
       <span class="live-ch-group">${escapeAttr(ch.group_title || '')}</span>
       <button type="button" class="live-ch-epg-badge ${ch.has_epg_data ? 'has-epg' : 'no-epg'}" title="${escapeAttr(_liveGuideTitle(ch))}" onclick="setLiveChannelGuideId(${i})">${ch.has_epg_data ? (ch.epg_match === 'name' ? 'EPG (by name)' : ch.epg_match === 'override' ? 'EPG (set)' : 'Has EPG') : 'No EPG'}</button>
       <button class="btn btn-secondary btn-sm live-ch-rename" title="Rename this channel in Jellyfin's guide" onclick="renameLiveChannel(${i})" style="flex-shrink:0">Rename</button>
-      <button class="live-toggle ${ch.enabled ? 'on' : ''}" onclick="toggleLiveChannel(${i}, this, event)" style="flex-shrink:0"></button>
+      <button type="button" class="live-toggle ${ch.enabled ? 'on' : ''}" aria-label="Show ${escapeAttr(ch.name || '')} in Live TV" aria-pressed="${ch.enabled ? 'true' : 'false'}" onclick="toggleLiveChannel(${i}, this, event)" style="flex-shrink:0"></button>
     </div>`).join('');
 }
 
@@ -6352,7 +6358,7 @@ function toggleLiveChannel(idx, btn, evt) {
       c.enabled = enabled;
       liveState.dirtyChannels[c.id] = enabled;
       const row = document.querySelector(`.live-ch-row[data-ch-idx="${i}"] .live-toggle`);
-      if (row) { if (enabled) row.classList.add('on'); else row.classList.remove('on'); }
+      if (row) _setLiveToggle(row, enabled);
     }
     liveState.lastToggledChIdx = idx;
     _updateDirtyBadge();
@@ -6362,7 +6368,7 @@ function toggleLiveChannel(idx, btn, evt) {
   liveState.lastToggledChIdx = idx;
   ch.enabled = enabled;
   liveState.dirtyChannels[ch.id] = enabled;
-  if (enabled) btn.classList.add('on'); else btn.classList.remove('on');
+  _setLiveToggle(btn, enabled);
   _updateDirtyBadge();
 }
 
@@ -6372,7 +6378,7 @@ function toggleAllChannels(enabled) {
     ch.enabled = enabled;
     liveState.dirtyChannels[ch.id] = enabled;
     const row = document.querySelector(`.live-ch-row[data-ch-idx="${i}"] .live-toggle`);
-    if (row) { if (enabled) row.classList.add('on'); else row.classList.remove('on'); }
+    if (row) _setLiveToggle(row, enabled);
   });
   _updateDirtyBadge();
 }
