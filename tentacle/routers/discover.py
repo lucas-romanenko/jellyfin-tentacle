@@ -305,13 +305,16 @@ def get_discover(
     tmdb = _get_tmdb(db)
     if not tmdb:
         return {"sections": []}
+    # One timeout per page load, not one per section: at 10 s each they added
+    # up past the plugin's 15 s. Cached sections still show.
+    tmdb.fail_fast = True
 
     known_ids = _known_tmdb_ids(db)
     sections = []
     tmdb_down = []
 
     def _tmdb_rows(fn, *args):
-        # A TMDB list that can't be reached (DNS, refused, reset) drops only its
+        # A TMDB list that can't be reached (DNS, refused, reset, no answer) drops only its
         # own section: the rest, and "From My Lists", still show (#273).
         try:
             return fn(*args)
