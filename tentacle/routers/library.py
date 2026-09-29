@@ -7,6 +7,7 @@ import threading
 import requests
 import logging
 import re
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -427,12 +428,42 @@ def _deletion_authorised(request: Request, db: Session, media_type: str, tmdb_id
         return False
 
 
+def _path_tail(path: str, parts: int) -> Optional[str]:
+    bits = [b for b in (path or "").replace("\\", "/").split("/") if b]
+    return "/".join(bits[-parts:]) if len(bits) >= parts else None
+
+
+def _deleted_copy_is_rows(item, media_type: str, path: Optional[str]) -> bool:
+    """Whether the item Jellyfin deleted was this row's copy (#296). The same
+    title can be in Jellyfin twice (the VOD .strm and a download in another
+    library), and the plugin reports a deletion by TMDB id. With the deleted
+    item's path (plugins from #296 on), compare it to the row's own files by
+    their last parts (folder/file for a film, the show folder for a series):
+    Jellyfin, Radarr/Sonarr and Tentacle mount them at different prefixes.
+    Without one (an older plugin), a VOD copy whose .strm is still on disk was
+    not the one deleted; anything else is taken as before."""
+    parts = 2 if media_type == "movie" else 1
+    download = getattr(item, "radarr_path" if media_type == "movie" else "sonarr_path", None)
+    own = [p for p in (item.strm_path, download) if p]
+    tail = _path_tail(path, parts) if path else None
+    if tail and own:
+        return any(_path_tail(p, parts) == tail for p in own)
+    if item.strm_path and not download:
+        try:
+            return not Path(item.strm_path).exists()
+        except OSError:
+            return True
+    return True
+
+
 @router.delete("/item/{media_type}/{tmdb_id}")
 def delete_library_item(
     media_type: str,
     tmdb_id: int,
     request: Request,
     db: Session = Depends(get_db),
+    item_id: Optional[str] = None,
+    path: Optional[str] = None,
 ):
     """Lightweight: remove from Tentacle DB + playlists only (Jellyfin item already gone).
 
@@ -469,12 +500,36 @@ def delete_library_item(
         return {"success": True, "deleted": False}
 
     title = item.title if hasattr(item, "title") else str(tmdb_id)
+    from services.bad_copy import is_replacing
+    if not _deleted_copy_is_rows(item, media_type, path):
+        # Another copy of the title was deleted (e.g. a download next to the
+        # VOD copy): the row's own copy is still there, so the row stays. Only
+        # a pending pairing goes -- one copy is left; a "keep downloaded"
+        # tombstone stays. The deleted download's request goes with it, as the
+        # Radarr/Sonarr delete webhooks do.
+        db.query(Duplicate).filter(
+            Duplicate.tmdb_id == tmdb_id,
+            Duplicate.media_type == media_type,
+            Duplicate.resolution == "pending",
+        ).delete()
+        if (item.source or "").startswith("provider_") and not is_replacing(db, media_type, tmdb_id):
+            db.query(DownloadRequest).filter(
+                DownloadRequest.tmdb_id == tmdb_id,
+                DownloadRequest.media_type == media_type,
+            ).delete()
+        db.commit()
+        logger.info(f"[Library] Jellyfin deleted another copy of {media_type} '{title}' (tmdb:{tmdb_id}, "
+                    f"{path or 'no path'}); its catalogue row stays")
+        if item_id:
+            threading.Thread(target=_cleanup_playlists_all_users,
+                             args=(tmdb_id, media_type, item_id), daemon=True).start()
+        return {"success": True, "deleted": False}
+
     db.delete(item)
 
     # Also clean up DownloadRequest + duplicate tombstones (a deliberate full
     # delete is a clean slate — the title may re-import from VOD later).
     # Not while a bad copy is being replaced: the request still stands.
-    from services.bad_copy import is_replacing
     if not is_replacing(db, media_type, tmdb_id):
         db.query(DownloadRequest).filter(
             DownloadRequest.tmdb_id == tmdb_id,
@@ -490,12 +545,16 @@ def delete_library_item(
                  detail="Deleted via Jellyfin native UI — Tentacle DB record and playlists cleaned up")
     emit_library_event(f"{media_type}_removed", {"tmdb_id": tmdb_id, "media_type": media_type})
 
-    # Remove from all users' playlists in background
-    threading.Thread(
-        target=_cleanup_playlists_all_users,
-        args=(tmdb_id, media_type),
-        daemon=True,
-    ).start()
+    # Remove the deleted item from all users' playlists in background, by its
+    # own id. Never "the first item with this TMDB id": after the delete that
+    # can only be a surviving copy (#296). Without an id (an older plugin), the
+    # next playlist refresh prunes the dead entry.
+    if item_id:
+        threading.Thread(
+            target=_cleanup_playlists_all_users,
+            args=(tmdb_id, media_type, item_id),
+            daemon=True,
+        ).start()
 
     return {"success": True, "deleted": True}
 

@@ -171,7 +171,14 @@ user_id)` computes them every time from source tags, list subscriptions
   every user's playlists in the background. `can_delete` in the discover
   detail response tells clients whether to show the button.
 - Deleted in Jellyfin's own UI: the plugin's `LibraryDeleteHandler` sees
-  `ItemRemoved` (2 s debounce) and calls `DELETE /api/library/item/...`.
+  `ItemRemoved` (2 s debounce) and calls `DELETE /api/library/item/...`
+  with the deleted item's `item_id` and `path`. The row goes only when the
+  path is the row's own copy (its `.strm`, or its Radarr/Sonarr file,
+  compared by folder/file name); deleting the other copy of a title in
+  Jellyfin twice (VOD + download) keeps the row and drops only a pending
+  duplicate record (#296). Playlist entries are removed by the deleted
+  item's id; an older plugin sends none, and the next playlist refresh
+  prunes the dead entry.
 - The nightly `sweep_orphaned_downloads()` removes downloaded records
   Jellyfin no longer has.
 - "Fix it" (`services/wrong_match.py:rematch_movie`) keeps the `.strm`'s

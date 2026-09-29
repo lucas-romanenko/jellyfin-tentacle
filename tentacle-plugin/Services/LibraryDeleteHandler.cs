@@ -21,7 +21,10 @@ public class LibraryDeleteHandler : IHostedService, IDisposable
     private readonly HttpClient _httpClient;
     private Timer? _debounceTimer;
     private readonly object _lock = new();
-    private readonly List<(string mediaType, string tmdbId)> _pendingDeletes = new();
+    // The deleted item's own id and path go with its TMDB id: the same title can
+    // be in Jellyfin twice (a VOD .strm and a download), and the backend must act
+    // on the copy that was deleted, never on "the first item with this TMDB id".
+    private readonly List<(string mediaType, string tmdbId, string itemId, string path)> _pendingDeletes = new();
 
     /// <summary>Upper bound on in-flight DELETE notifications to the backend.</summary>
     private const int MaxConcurrentNotifications = 4;
@@ -139,7 +142,7 @@ public class LibraryDeleteHandler : IHostedService, IDisposable
 
         lock (_lock)
         {
-            _pendingDeletes.Add((mediaType, tmdbId));
+            _pendingDeletes.Add((mediaType, tmdbId, item.Id.ToString("N"), path ?? string.Empty));
 
             // Debounce 2 seconds to batch rapid deletions
             _debounceTimer?.Dispose();
@@ -178,11 +181,11 @@ public class LibraryDeleteHandler : IHostedService, IDisposable
 
     private void ProcessPendingDeletes()
     {
-        List<(string mediaType, string tmdbId)> batch;
+        List<(string mediaType, string tmdbId, string itemId, string path)> batch;
         lock (_lock)
         {
             if (_pendingDeletes.Count == 0) return;
-            batch = new List<(string, string)>(_pendingDeletes);
+            batch = new List<(string, string, string, string)>(_pendingDeletes);
             _pendingDeletes.Clear();
         }
 
@@ -215,7 +218,7 @@ public class LibraryDeleteHandler : IHostedService, IDisposable
             TaskScheduler.Default);
     }
 
-    private async Task ProcessBatchAsync(List<(string mediaType, string tmdbId)> batch, string tentacleUrl)
+    private async Task ProcessBatchAsync(List<(string mediaType, string tmdbId, string itemId, string path)> batch, string tentacleUrl)
     {
         var gate = _gate;
         var failures = 0;
@@ -227,7 +230,8 @@ public class LibraryDeleteHandler : IHostedService, IDisposable
             await gate.WaitAsync().ConfigureAwait(false);
             try
             {
-                var url = $"{tentacleUrl.TrimEnd('/')}/api/library/item/{entry.mediaType}/{entry.tmdbId}";
+                var url = $"{tentacleUrl.TrimEnd('/')}/api/library/item/{entry.mediaType}/{entry.tmdbId}"
+                    + $"?item_id={Uri.EscapeDataString(entry.itemId)}&path={Uri.EscapeDataString(entry.path)}";
                 var response = await _httpClient.DeleteAsync(url).ConfigureAwait(false);
 
                 if (response.IsSuccessStatusCode)

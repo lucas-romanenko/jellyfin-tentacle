@@ -119,8 +119,15 @@ class PluginHalf(unittest.TestCase):
 
     def test_every_forwarded_deletion_is_recorded_before_it_is_sent(self):
         record = self.handler.index("RecentDeletions.Record(mediaType, tmdbId);")
-        queue = self.handler.index("_pendingDeletes.Add((mediaType, tmdbId));")
+        queue = self.handler.index("_pendingDeletes.Add((mediaType, tmdbId,")
         self.assertLess(record, queue)
+
+    def test_the_deleted_items_own_id_and_path_are_forwarded(self):
+        # #296: the backend must act on the copy that was deleted, never on
+        # "the first item with this TMDB id".
+        self.assertIn('_pendingDeletes.Add((mediaType, tmdbId, item.Id.ToString("N"), path', self.handler)
+        self.assertIn("?item_id={Uri.EscapeDataString(entry.itemId)}&path={Uri.EscapeDataString(entry.path)}",
+                      self.handler)
 
     def test_the_confirm_route_requires_elevation_and_is_single_use(self):
         route = self.controller.index('[HttpPost("Deletions/{mediaType}/{tmdbId}/Confirm")]')
