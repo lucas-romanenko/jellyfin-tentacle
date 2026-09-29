@@ -36,7 +36,7 @@ from services.epg_categories import infer_category
 from services.youtube import livetv as youtube_livetv
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
@@ -4832,7 +4832,7 @@ def _third_party_icon(url: Optional[str], provider_hosts: "set[str]") -> Optiona
 @router.get("/api/live/xmltv.xml")
 def hdhr_xmltv(db: Session = Depends(get_db)):
     """Serve XMLTV guide data for enabled channels."""
-    from services.xmltv import generate_xmltv
+    from services.xmltv import iter_xmltv
 
     # Get enabled channels with EPG IDs
     channels = (
@@ -4874,20 +4874,27 @@ def hdhr_xmltv(db: Session = Depends(get_db)):
         epg_ids.add(yt["epg_channel_id"])
         epg_id_to_guide_numbers.setdefault(yt["epg_channel_id"], []).append(yt["guide_number"])
 
-    # Get programs for enabled channels, remapping channel_id to GuideNumber(s)
-    # When multiple channels share an EPG ID, duplicate programs for each
-    programs = []
-    inferred_categories = 0
+    # Programmes for enabled channels, remapping channel_id to GuideNumber(s).
+    # When multiple channels share an EPG ID, programmes are repeated for each.
+    # Rows are read in batches and written out as they come, so a large
+    # lineup with a long guide no longer holds every programme (as ORM rows,
+    # dicts, an element tree and one string) in memory per request.
     emit_sub_titles = _emit_sub_titles(db)
     provider_hosts = _provider_hosts(db, channels)
-    if epg_ids:
-        db_programs = (
-            db.query(EPGProgram)
+
+    def programs():
+        if not epg_ids:
+            return
+        inferred_categories = 0
+        rows = (
+            db.query(EPGProgram.channel_id, EPGProgram.title, EPGProgram.sub_title,
+                     EPGProgram.description, EPGProgram.start, EPGProgram.stop,
+                     EPGProgram.category, EPGProgram.icon_url)
             .filter(EPGProgram.channel_id.in_(epg_ids))
             .filter(EPGProgram.stop >= datetime.utcnow())
-            .all()
+            .yield_per(2000)
         )
-        for p in db_programs:
+        for p in rows:
             guide_numbers = epg_id_to_guide_numbers.get(p.channel_id, [])
             for gn in guide_numbers:
                 # Xtream providers commonly send no category, and without one
@@ -4899,7 +4906,7 @@ def hdhr_xmltv(db: Session = Depends(get_db)):
                     category = infer_category(p.title, guide_number_group.get(gn))
                     if category:
                         inferred_categories += 1
-                programs.append({
+                yield {
                     "channel_id": gn,
                     "title": p.title,
                     "sub_title": p.sub_title if emit_sub_titles else None,
@@ -4910,13 +4917,57 @@ def hdhr_xmltv(db: Session = Depends(get_db)):
                     # Stored for YouTube Live and provider programmes alike, and
                     # dropped here until #147: Jellyfin saves it as the art.
                     "icon_url": _third_party_icon(p.icon_url, provider_hosts),
-                })
+                }
+        if inferred_categories:
+            logger.info(
+                f"[LiveTV] XMLTV: inferred a category for {inferred_categories} programme(s) "
+                f"the provider sent none for"
+            )
 
-    if inferred_categories:
-        logger.info(
-            f"[LiveTV] XMLTV: inferred a category for {inferred_categories} programme(s) "
-            f"the provider sent none for"
-        )
+    # Written to a file first, then sent: the database is read only while the
+    # guide is written (one snapshot, as before), never for as long as a slow
+    # client takes to download it.
+    path = _write_guide_file(iter_xmltv(xmltv_channels, programs()))
+    return _GuideFileResponse(path, media_type="application/xml")
 
-    xml_content = generate_xmltv(xmltv_channels, programs)
-    return Response(content=xml_content, media_type="application/xml")
+
+_GUIDE_FILE_PREFIX = "tentacle-xmltv-"
+
+
+def _write_guide_file(chunks) -> str:
+    """The guide in a temporary file; the file is removed if writing fails.
+    Leftovers of a process that stopped mid-write are removed first."""
+    import glob
+    import os
+    import tempfile
+    import time
+    for old in glob.glob(os.path.join(tempfile.gettempdir(), _GUIDE_FILE_PREFIX + "*")):
+        try:
+            if time.time() - os.path.getmtime(old) > 3600:
+                os.unlink(old)
+        except OSError:
+            pass
+    fd, path = tempfile.mkstemp(prefix=_GUIDE_FILE_PREFIX, suffix=".xml")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            for chunk in chunks:
+                f.write(chunk)
+    except BaseException:
+        os.unlink(path)
+        raise
+    return path
+
+
+class _GuideFileResponse(FileResponse):
+    """A guide file sent once and then removed, also when the client goes
+    away mid-download."""
+
+    async def __call__(self, scope, receive, send):
+        import os
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            try:
+                os.unlink(self.path)
+            except OSError:
+                pass
