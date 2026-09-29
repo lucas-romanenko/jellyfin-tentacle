@@ -38,6 +38,12 @@ Gotchas:
 - The TV client's `refreshPluginCache()` calls `/Tentacle/Refresh`, which is
   admin-only, with the user's token (a non-admin gets 403, which it only
   logs). Nothing calls that function today.
+- When the plugin cannot read the user's home config from the server
+  (timeout, refused, 5xx), `/TentacleHome/Sections` and `/HeroConfig`
+  answer **503**, never the `enabled: false` that means "home turned off"
+  (#257): clients keep the rows and hero they show. `/TentacleHome/Toolbar`
+  still answers 200 with the default buttons, marked `fallback: true`, so a
+  client that already has the user's own toolbar keeps it.
 
 ## Routes
 

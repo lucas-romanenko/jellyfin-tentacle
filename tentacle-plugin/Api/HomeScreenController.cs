@@ -132,7 +132,16 @@ public class TentacleHomeController : ControllerBase
         }
 
         userId = caller.UserId;
-        var config = await _homeScreenManager.GetHomeConfigAsync(userId, GetApiKey(), HttpContext.RequestAborted).ConfigureAwait(false);
+        var home = await _homeScreenManager.GetHomeConfigResultAsync(userId, GetApiKey(), HttpContext.RequestAborted).ConfigureAwait(false);
+        if (home.Failed)
+        {
+            // Could not read the config (backend restarting, slow, 5xx): not "home
+            // disabled". An error lets clients keep the rows they show; the web home
+            // used to empty them on a live refresh, until the next version change (#257).
+            return StatusCode(503, new { enabled = false, error = "Tentacle did not answer", sections = Array.Empty<object>() });
+        }
+
+        var config = home.Config;
         if (config == null)
         {
             return Ok(new { enabled = false, sections = Array.Empty<object>() });
@@ -615,7 +624,14 @@ public class TentacleHomeController : ControllerBase
             return Forbid();
         }
 
-        var homeConfig = await _homeScreenManager.GetHomeConfigAsync(caller.UserId, GetApiKey(), HttpContext.RequestAborted).ConfigureAwait(false);
+        var home = await _homeScreenManager.GetHomeConfigResultAsync(caller.UserId, GetApiKey(), HttpContext.RequestAborted).ConfigureAwait(false);
+        if (home.Failed)
+        {
+            // Not "hero off": the media bar keeps what it shows on an error (#257).
+            return StatusCode(503, new { enabled = false, error = "Tentacle did not answer" });
+        }
+
+        var homeConfig = home.Config;
         if (homeConfig?.Hero is { Enabled: true } hero && !string.IsNullOrEmpty(hero.PlaylistId))
         {
             // The sort and filters are here too so a client can tell that the
@@ -666,7 +682,8 @@ public class TentacleHomeController : ControllerBase
             return Forbid();
         }
 
-        var homeConfig = await _homeScreenManager.GetHomeConfigAsync(caller.UserId, GetApiKey(), HttpContext.RequestAborted).ConfigureAwait(false);
+        var home = await _homeScreenManager.GetHomeConfigResultAsync(caller.UserId, GetApiKey(), HttpContext.RequestAborted).ConfigureAwait(false);
+        var homeConfig = home.Config;
         // Every client fetches this at start-up, so it also carries the server's
         // answer on focus previews (all / local_only / off). Absent = local_only: a
         // preview of a provider (.strm) title opens a provider connection per card
@@ -684,7 +701,9 @@ public class TentacleHomeController : ControllerBase
         // not built playlists for) never gets one. The web navbar falls back to its own defaults
         // on an empty list, but the Android TV app hid every button, Search and Libraries
         // included. Answer with the same defaults write_home_config() uses (services/smartlists.py).
-        return Ok(new { buttons = DefaultToolbar, cardPreviews });
+        // When the config could not be read at all, the defaults are only a stand-in:
+        // `fallback` tells a client that already shows the user's own toolbar to keep it (#257).
+        return Ok(new { buttons = DefaultToolbar, cardPreviews, fallback = home.Failed });
     }
 
     /// <summary>

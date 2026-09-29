@@ -230,6 +230,9 @@
                 if (seq !== self._toolbarSeq || api.getCurrentUserId() !== userId) {
                     return 'stale';
                 }
+                // Defaults the plugin answered because it could not read the
+                // user's config: keep the user's own toolbar if we have it (#257).
+                if (data && data.fallback && self.toolbarConfig) return;
                 if (data && data.buttons && data.buttons.length > 0) {
                     self.toolbarConfig = data.buttons;
                     console.log('[Tentacle] Toolbar config loaded:', self.toolbarConfig.map(function (b) { return b.id + ':' + b.enabled; }));

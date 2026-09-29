@@ -1038,7 +1038,10 @@
     apiGet('TentacleHome/Sections?userId=' + MH.userId)
       .then(function (data) {
         if (gen !== MH.generation) return;
-        if (!data.sections) return;
+        // Only a successful "enabled" answer may change the rows. `enabled: false`
+        // with no sections emptied the whole container (#257); the next visit to
+        // Home falls back to the native home if the home really was turned off.
+        if (!data || data.enabled !== true || !Array.isArray(data.sections)) return;
 
         var newSections = data.sections.filter(function (s) { return s.type === 'row' || s.type === 'builtin'; });
         var mergeCW = !!data.mergeContinueWatching;
@@ -1129,7 +1132,12 @@
             .catch(function () {});
         });
       })
-      .catch(function () {});
+      .catch(function () {
+        // The plugin could not read the home config (503) or the request failed:
+        // keep the rows, and forget the version so the next poll asks again
+        // instead of waiting for the next change (#257).
+        if (gen === MH.generation) MH.lastVersion = -1;
+      });
   }
 
   // ── Utilities ─────────────────────────────────────────────────────────
