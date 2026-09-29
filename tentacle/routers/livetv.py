@@ -117,6 +117,40 @@ async def _send_checked(client, url: str, headers: dict, guard=None):
             raise HTTPException(502, "Stream redirect points to a non-public host")
     raise HTTPException(502, "Too many redirects")
 
+
+# A running HLS stream's playlist reads: headers in, body within this long.
+_HLS_PLAYLIST_READ = 10.0
+# Its segment reads: this many times the segment's own duration (at least
+# _HLS_SEGMENT_READ_MIN s). A segment slower than that cannot keep a live
+# stream going anyway: the playlist window moves on while it arrives.
+_HLS_SEGMENT_READ_FACTOR = 3.0
+_HLS_SEGMENT_READ_MIN = 20.0
+
+
+def _segment_read_limit(target_duration) -> float:
+    try:
+        seconds = float(target_duration) * _HLS_SEGMENT_READ_FACTOR
+    except (TypeError, ValueError):
+        seconds = 0.0
+    return max(_HLS_SEGMENT_READ_MIN, seconds)
+
+
+async def _aread_within(resp, seconds: float) -> bytes:
+    """resp.aread() with a bound on the whole body. httpx's read timeout is
+    per read: a body that trickles a byte at a time never reaches it, and a
+    running recording would wait on it for as long as the provider likes.
+    Past the bound it is a ReadTimeout, retried like any other.
+
+    asyncio.timeout(), not wait_for(): on Python 3.11 wait_for() can swallow
+    a cancellation that arrives as the read completes, and the stream would
+    go on pulling from the provider after its client left."""
+    try:
+        async with asyncio.timeout(seconds):
+            return await resp.aread()
+    except TimeoutError:
+        raise httpx.ReadTimeout(f"the body did not arrive within {seconds:.0f}s",
+                                request=resp.request) from None
+
 # Opening a stream: statuses worth waiting out, and for how long. Kept well under
 # a tuner client's patience; the running worker has its own, longer budget.
 _OPEN_RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504, 509}
@@ -4227,7 +4261,8 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     r.raise_for_status()
                     if "mpegurl" not in r.headers.get("content-type", "").lower():
                         raise _NotAPlaylist("the channel now answers with a stream, not a playlist")
-                    return (await r.aread()).decode("utf-8", errors="replace"), str(r.url)
+                    return ((await _aread_within(r, _HLS_PLAYLIST_READ)).decode("utf-8", errors="replace"),
+                            str(r.url))
                 finally:
                     await r.aclose()
 
@@ -4421,7 +4456,8 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         v_resp = await _send_checked(hls_client, variant, ua_headers, guard)
                         try:
                             v_resp.raise_for_status()
-                            variant_text = (await v_resp.aread()).decode("utf-8", errors="replace")
+                            variant_text = (await _aread_within(v_resp, _HLS_PLAYLIST_READ)).decode(
+                                "utf-8", errors="replace")
                         finally:
                             await v_resp.aclose()
                     except Exception as e:
@@ -4546,7 +4582,8 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                                 pr = await _send_checked(hls_client, probe, ua_headers, guard)
                                 try:
                                     pr.raise_for_status()
-                                    same = hashlib.sha1(await pr.aread()).digest() == last_payload_hash
+                                    body = await _aread_within(pr, _segment_read_limit(target_duration))
+                                    same = hashlib.sha1(body).digest() == last_payload_hash
                                 finally:
                                     await pr.aclose()
                             except Exception as e:
@@ -4594,7 +4631,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                                 if placeholder:
                                     raise _ProviderPlaceholder(placeholder)
                                 chunk_resp.raise_for_status()
-                                payload = await chunk_resp.aread()
+                                payload = await _aread_within(chunk_resp, _segment_read_limit(target_duration))
                             finally:
                                 await chunk_resp.aclose()
                             break
@@ -4691,7 +4728,8 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     pl_resp = await _send_checked(hls_client, current_base, ua_headers, guard)
                     try:
                         pl_resp.raise_for_status()
-                        refreshed = (await pl_resp.aread()).decode("utf-8", errors="replace")
+                        refreshed = (await _aread_within(pl_resp, _HLS_PLAYLIST_READ)).decode(
+                            "utf-8", errors="replace")
                     finally:
                         await pl_resp.aclose()
                 except Exception as e:
