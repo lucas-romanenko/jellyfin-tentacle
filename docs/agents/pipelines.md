@@ -107,6 +107,11 @@ read that row.
   `completed` with `error_message` "N of M categories could not be read
   (reason)". Both go to Activity, for "Sync now" and the nightly. Pruning
   is skipped either way (`fetch_ok`), as before (#267).
+- `.strm` files are written with `_write_strm()`: a hidden temp file in the
+  same folder, then a rename, so a write cut short leaves the old file
+  whole. An existing `.strm` that is empty or blank is rewritten like a
+  missing one (`_strm_is_blank()`; a movie only from the row's own stream,
+  as for a restore), since it plays nothing (#283).
 
 ## How changes reach the clients
 

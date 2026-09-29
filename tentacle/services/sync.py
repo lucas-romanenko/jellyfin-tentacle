@@ -292,6 +292,44 @@ def _direct_ref(url_text: str, embedded: bool = False, prefix: str = ""):
     return (m.group(1).lower(), m.group(2).lower(), int(m.group(3))) if m else None
 
 
+def _strm_is_blank(strm_file: Path) -> bool:
+    """An existing .strm with no address in it (0 bytes or whitespace): what a
+    write cut short leaves (#283). Rewritten for any provider type, M3U too."""
+    try:
+        return strm_file.stat().st_size < 64 and not strm_file.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
+def _write_strm(strm_file: Path, url: str) -> None:
+    """Write a .strm through a hidden temp file and a rename, so a write cut
+    short (disk full, the container stopped, a power loss) leaves the old file
+    whole instead of an empty one nothing repaired (#283). An existing file's
+    owner and mode carry over; the caller still runs chown_path."""
+    import uuid
+    # A short name: the .strm's own can already be at the 255-byte limit
+    tmp = strm_file.with_name(f".tentacle-{uuid.uuid4().hex[:12]}.tmp")
+    try:
+        tmp.write_text(url, encoding="utf-8")
+        try:
+            st = os.stat(strm_file)
+        except OSError:
+            st = None
+        if st is not None:
+            try:
+                os.chmod(tmp, st.st_mode & 0o7777)
+                os.chown(tmp, st.st_uid, st.st_gid)
+            except OSError:
+                pass  # not ours to give away (no root): the file is still written
+        os.replace(tmp, strm_file)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
 def _strm_needs_rewrite(strm_file: Path, expected: str, client) -> bool:
     """An existing .strm is rewritten only when it plays the SAME stream of
     THIS Xtream provider as the sync would write today, in a different form:
@@ -310,7 +348,9 @@ def _strm_needs_rewrite(strm_file: Path, expected: str, client) -> bool:
         current = strm_file.read_text(encoding="utf-8").strip()
     except (OSError, UnicodeDecodeError):
         return False
-    if not current or current == expected:
+    if not current:
+        return True   # 0 bytes / blank: a write cut short, never a link of anyone's (#283)
+    if current == expected:
         return False
     from urllib.parse import urlparse
     from services import vod_tokens
@@ -665,11 +705,15 @@ def _write_episode_strms(client: "XtreamClient", episodes: dict, show_dir: Path,
             strm_file = season_dir / f"{ep_filename}.strm"
             expected = client.episode_stream_url(ep_id, container)
             if not strm_file.exists():
-                strm_file.write_text(expected, encoding='utf-8')
+                _write_strm(strm_file, expected)
                 chown_path(strm_file)
                 ep_count += 1
+            elif _strm_is_blank(strm_file):
+                _write_strm(strm_file, expected)
+                chown_path(strm_file)
+                logger.info(f"[Sync] Rewrote {strm_file.name}: it was empty")
             elif _strm_needs_rewrite(strm_file, expected, client) or _strm_plays_other_provider(strm_file, client):
-                strm_file.write_text(expected, encoding='utf-8')
+                _write_strm(strm_file, expected)
                 chown_path(strm_file)
                 logger.info(f"[Sync] Rewrote {strm_file.name}: stream address changed")
     return ep_count
@@ -695,8 +739,13 @@ def _repair_movie_strm(client, stream: dict, tmdb_id: int, provider: Provider, d
         strm = Path(record.strm_path)
         expected = client.movie_stream_url(stream.get("stream_id"), stream.get("container_extension", "mp4"))
         if strm.exists():
-            if _strm_needs_rewrite(strm, expected, client) or _strm_plays_other_provider(strm, client):
-                strm.write_text(expected, encoding="utf-8")
+            if _strm_is_blank(strm):
+                if restore:   # only the row's own stream may fill it (#185 E25), as for a missing one
+                    _write_strm(strm, expected)
+                    chown_path(strm)
+                    logger.info(f"[Sync] Rewrote {strm.name}: it was empty")
+            elif _strm_needs_rewrite(strm, expected, client) or _strm_plays_other_provider(strm, client):
+                _write_strm(strm, expected)
                 chown_path(strm)
                 logger.info(f"[Sync] Rewrote {strm.name}: stream address changed")
             return False
@@ -706,7 +755,7 @@ def _repair_movie_strm(client, stream: dict, tmdb_id: int, provider: Provider, d
             return False
         strm.parent.mkdir(parents=True, exist_ok=True)
         chown_path(strm.parent)
-        strm.write_text(expected, encoding="utf-8")
+        _write_strm(strm, expected)
         chown_path(strm)
         # The NFO goes with it when the whole folder was lost (or an opt-out
         # deleted both) — without it Jellyfin has to guess the match again.
@@ -1937,7 +1986,7 @@ def _sync_movies(
                 stream.get("stream_id"),
                 stream.get("container_extension", "mp4")
             )
-            strm_file.write_text(stream_url, encoding='utf-8')
+            _write_strm(strm_file, stream_url)
             chown_path(strm_file)
 
             # Write full NFO with all metadata

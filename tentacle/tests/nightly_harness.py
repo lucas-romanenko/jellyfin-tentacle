@@ -144,7 +144,7 @@ class NightlyHarness(unittest.TestCase):
     def sync_only(self):
         """A manual "Sync now" (routers/sync.py) — prune, no sweep."""
         run = sync.sync_provider(self.provider, "full", self.db)
-        if self.client.raise_for and "could not be read" in (run.error_message or ""):
+        if getattr(self.client, "raise_for", None) and "could not be read" in (run.error_message or ""):
             # Every category failing is a failed run (#267); the nightly goes on
             # to the sweep either way.
             self.assertIn(run.status, ("completed", "failed"), run.error_message)
