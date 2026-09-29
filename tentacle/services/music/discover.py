@@ -830,8 +830,11 @@ def _type_of(rg: dict) -> str:
 
 
 def build_lists(db, mb: MusicBrainz) -> dict:
+    # Stamp the ids this build started from: a list added or removed meanwhile
+    # then makes the result stale, so the next ensure_fresh builds again (#252).
+    ids = list_ids(db)
     out = []
-    for sid in list_ids(db):
+    for sid in ids:
         worker.run_urgent_jobs()
         try:
             out.append(build_list(mb, sid))
@@ -839,7 +842,7 @@ def build_lists(db, mb: MusicBrainz) -> dict:
             if e.status != 404:
                 raise
             logger.warning(f"[Discover] MusicBrainz has no list {sid}; skipped")
-    return {"built": time.time(), "ids": list_ids(db), "lists": out}
+    return {"built": time.time(), "ids": ids, "lists": out}
 
 
 def _trending_job(db):
