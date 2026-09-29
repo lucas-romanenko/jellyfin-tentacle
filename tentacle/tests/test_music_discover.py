@@ -659,14 +659,39 @@ class TestSpotifyImport(_DiscoverBase):
         with self.assertRaises(spotify.SpotifyImportError):
             spotify.refresh_import(self.db, csv_import)
 
-    def test_a_musicbrainz_outage_stops_the_import_with_the_reason(self):
+    def test_a_musicbrainz_outage_pauses_the_import_with_the_reason_and_it_carries_on(self):
+        # #248: a 503 used to stop an import at "error" for good.
         from services.music import discover, spotify
+        later = []
         imp = spotify.start_import(self.db, self.user.id, "P", "exportify_csv", "", self.SONGS)
-        with mock.patch.object(discover.Resolver, "song", side_effect=discover.MusicBrainzError("rate limited", 503)):
+        with mock.patch.object(discover.Resolver, "song", side_effect=discover.MusicBrainzError("rate limited", 503)), \
+                mock.patch.object(spotify, "_later", side_effect=lambda delay, fn: later.append(fn)):
             self.run_jobs()
         self.db.refresh(imp)
-        self.assertEqual(imp.status, "error")
+        self.assertEqual(imp.status, "resolving")
         self.assertIn("rate limited", imp.error)
+        spotify.summaries(self.db, self.user)
+        self.assertEqual(self.jobs, [])            # a page poll doesn't hammer MusicBrainz meanwhile
+        [retry] = later
+        retry()                                     # the back-off is over
+        with mock.patch.object(discover.Resolver, "song", side_effect=self._resolve):
+            self.run_jobs()
+        self.db.refresh(imp)
+        self.assertEqual((imp.status, imp.done, imp.error), ("ready", 3, None))
+
+    def test_a_setting_to_fix_stops_the_import_and_retry_carries_on(self):
+        from services.music import discover, spotify
+        imp = spotify.start_import(self.db, self.user.id, "P", "exportify_csv", "", self.SONGS)
+        no_contact = discover.MusicBrainzError("Set a contact email", transient=False)
+        with mock.patch.object(discover.Resolver, "song", side_effect=no_contact):
+            self.run_jobs()
+        self.db.refresh(imp)
+        self.assertEqual((imp.status, imp.error), ("error", "MusicBrainz: Set a contact email"))
+        spotify.retry_import(self.db, imp)
+        with mock.patch.object(discover.Resolver, "song", side_effect=self._resolve):
+            self.run_jobs()
+        self.db.refresh(imp)
+        self.assertEqual((imp.status, imp.done), ("ready", 3))
 
     def test_imports_are_private_to_their_owner(self):
         import models.database as mdb

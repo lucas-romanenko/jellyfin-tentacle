@@ -341,13 +341,15 @@ function _musicSpotify(d, grid) {
     html += '<div class="music-rows">' + imports.map(i => {
       const progress = i.status === 'resolving'
         ? `<div class="music-progress"><div style="width:${i.total ? Math.round(100 * i.done / i.total) : 0}%"></div></div>
-           <div class="music-row-sub">Finding albums: ${i.done} of ${i.total} songs</div>`
+           <div class="music-row-sub">Finding albums: ${i.done} of ${i.total} songs</div>
+           ${i.error ? `<div class="music-row-sub">${escapeAttr(i.error)}</div>` : ''}`
         : i.status === 'error' ? `<div class="music-row-sub" style="color:var(--red)">${escapeAttr(i.error || 'Failed')}</div>`
         : `<div class="music-row-sub">${i.total} songs → ${i.albums} albums${i.skipped ? ` · ${i.skipped} song${i.skipped === 1 ? '' : 's'} not matched` : ''}</div>`;
       return `<div class="music-row" onclick="openMusicImport(${i.id})">
           <div class="music-row-icon">♫</div>
           <div class="music-row-main"><div class="music-row-title">${escapeAttr(i.name)}</div>${progress}</div>
           <div class="music-lib-actions" onclick="event.stopPropagation()">
+            ${i.status === 'error' ? `<button class="btn btn-secondary btn-sm" onclick="retryMusicImport(${i.id}, this)" title="Carry on finding albums">Retry</button>` : ''}
             ${i.refreshable ? `<button class="btn btn-secondary btn-sm" onclick="refreshMusicImport(${i.id}, this)" title="Read the playlist again">Refresh</button>` : ''}
             <button class="btn btn-secondary btn-sm" onclick="deleteMusicImport(${i.id}, this)" title="Forget this playlist">Remove</button>
           </div>
@@ -442,7 +444,7 @@ async function openMusicImport(id, keepOpen) {
   const skipped = d.skipped.length ? `<details style="margin-top:14px"><summary style="cursor:pointer;font-size:13px">${d.skipped.length} song${d.skipped.length === 1 ? '' : 's'} not matched to a studio album</summary>
       <div class="music-rows" style="margin-top:8px">${d.skipped.map(s => `<div class="music-row-sub"><b style="color:var(--text2)">${escapeAttr(s.title)}</b> · ${escapeAttr(s.artist)}: ${escapeAttr(s.reason)}</div>`).join('')}</div></details>` : '';
   _musicModal(d.name, `<div id="music-import-${id}">
-      ${d.error ? `<p style="color:var(--red)">${escapeAttr(d.error)}</p>` : ''}
+      ${d.error ? `<p style="color:${d.status === 'error' ? 'var(--red)' : 'var(--text2)'}">${escapeAttr(d.error)}</p>` : ''}
       ${progress}
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">
         <span class="form-hint" style="margin:0">${d.total} songs → ${d.albums.length} albums, ${available.length} not in your library</span>
@@ -480,6 +482,18 @@ async function refreshMusicImport(id, btn) {
   try {
     await api(`/api/music/imports/${id}/refresh`, { method: 'POST' });
     toast('Reading the playlist again…', 'info');
+    await _loadMusicDiscover();
+  } catch (e) {
+    toast(escapeAttr(e.message), 'error', 8000);
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function retryMusicImport(id, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    await api(`/api/music/imports/${id}/retry`, { method: 'POST' });
+    toast('Carrying on finding albums…', 'info');
     await _loadMusicDiscover();
   } catch (e) {
     toast(escapeAttr(e.message), 'error', 8000);

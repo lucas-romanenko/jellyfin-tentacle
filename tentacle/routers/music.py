@@ -541,6 +541,15 @@ def refresh_import(import_id: int, db: Session = Depends(get_db), user: Tentacle
     return {"id": imp.id, "total": imp.total}
 
 
+@webhook_router.post("/imports/{import_id}/retry")
+@_spotify_errors
+def retry_import(import_id: int, db: Session = Depends(get_db), user: TentacleUser = Depends(music_user)):
+    """Carry on with an import that stopped at an error."""
+    from services.music import spotify
+    imp = spotify.retry_import(db, spotify.get_import(db, user, import_id))
+    return {"id": imp.id, "status": imp.status}
+
+
 @webhook_router.delete("/imports/{import_id}")
 @_spotify_errors
 def delete_import(import_id: int, db: Session = Depends(get_db), user: TentacleUser = Depends(music_user)):

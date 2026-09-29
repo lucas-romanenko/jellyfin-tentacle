@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import re
+import threading
 from datetime import datetime
 from typing import Optional
 
@@ -38,7 +39,8 @@ CHUNK = 25   # songs per worker turn: other waiting jobs (Discover, requests) ru
 _PLAYLIST_ID = re.compile(r"playlist[/:]([A-Za-z0-9]{22})")
 _NEXT_DATA = re.compile(r'<script id="__NEXT_DATA__" type="application/json">(.+?)</script>', re.S)
 
-_active = set()   # import ids with a resolve job queued or running
+_active = set()   # import ids with a resolve job queued, running or waiting to retry
+RETRY_AFTER = 300   # seconds before an import MusicBrainz failed on tries again by itself
 
 
 class SpotifyImportError(Exception):
@@ -120,7 +122,7 @@ def parse_exportify(data: bytes, filename: str = "") -> tuple:
 def _dedupe(songs: list) -> list:
     out, seen = [], set()
     for s in songs:
-        key = (normalize(s["title"]), normalize(s["artist"]))
+        key = _song_key(s)
         if key not in seen:
             seen.add(key)
             out.append(s)
@@ -144,13 +146,22 @@ def refresh_import(db, imp: MusicImport) -> MusicImport:
     if imp.source != "spotify_url" or not imp.url:
         raise SpotifyImportError("Only playlists imported from a link can be refreshed. Upload a new export instead.")
     name, songs = fetch_playlist(imp.url)
-    known = {(normalize(t["title"]), normalize(t["artist"])): t for t in imp.tracks or []}
-    tracks = [known.get((normalize(s["title"]), normalize(s["artist"]))) or dict(s, result=None)
-              for s in _dedupe(songs)]
+    known = {_song_key(t): t for t in imp.tracks or []}
+    tracks = [known.get(_song_key(s)) or dict(s, result=None) for s in _dedupe(songs)]
     imp.name, imp.tracks, imp.total = name[:200], tracks, len(tracks)
     imp.done = sum(1 for t in tracks if t.get("result") is not None)
     imp.status, imp.error, imp.updated_at = "resolving", None, datetime.utcnow()
     flag_modified(imp, "tracks")
+    db.commit()
+    _submit(imp.id)
+    return imp
+
+
+def retry_import(db, imp: MusicImport) -> MusicImport:
+    """Carry on with an import that stopped at an error (the songs already found stay)."""
+    if imp.status != "error":
+        raise SpotifyImportError("That playlist isn't stopped at an error.", 409)
+    imp.status, imp.error, imp.updated_at = "resolving", None, datetime.utcnow()
     db.commit()
     _submit(imp.id)
     return imp
@@ -163,61 +174,126 @@ def _submit(import_id: int) -> None:
     worker.submit(resolve_job(import_id), worker.NORMAL, f"Spotify import #{import_id}")
 
 
+def _later(delay: float, fn) -> None:
+    timer = threading.Timer(delay, fn)
+    timer.daemon = True
+    timer.start()
+
+
+def _resubmit(import_id: int) -> None:
+    _active.discard(import_id)
+    _submit(import_id)
+
+
+def _song_key(song: dict) -> tuple:
+    return normalize(song["title"]), normalize(song["artist"])
+
+
 def resolve_job(import_id: int):
-    """Worker job: resolve every song not resolved yet (so it resumes after a restart)."""
+    """Worker job: resolve up to CHUNK songs not resolved yet, then queue the next turn
+    (so it resumes after a restart, and a long playlist doesn't hold up other work).
+
+    A turn only adds its results to the row as it is then: a Refresh or a Remove while
+    it runs isn't overwritten. MusicBrainz being busy or unreachable keeps the import
+    going (it tries again by itself after RETRY_AFTER, with a note); any other failure
+    stops it at "error", with the reason and a Retry, never "resolving" for good."""
     def job(db):
         from services.music.discover import Resolver
         from services.musicbrainz import MusicBrainz, MusicBrainzError
-        requeued = False
+        waiting = False
         try:
             imp = db.get(MusicImport, import_id)
             if not imp:
                 return
-            resolver = Resolver(db, MusicBrainz.from_settings(db))
-            tracks = [dict(t) for t in imp.tracks or []]
-            resolved_now = 0
-            for i, t in enumerate(tracks):
-                if t.get("result") is not None:
-                    continue
-                if resolved_now == 0:
+            todo = [dict(t) for t in imp.tracks or [] if t.get("result") is None][:CHUNK]
+            results = {}
+            try:
+                if todo:
+                    resolver = Resolver(db, MusicBrainz.from_settings(db))
                     # This turn's songs: which albums they're on, matched in batches.
-                    pending = [x for x in tracks[i:] if x.get("result") is None][:CHUNK]
-                    resolver.prepare_songs([(x["title"], x["artist"], x.get("album") or "",
-                                             x.get("album_artist") or "") for x in pending])
-                if resolved_now >= CHUNK:
-                    # Back in line, so a long playlist doesn't hold up everything else.
-                    _store(db, imp, tracks)
-                    worker.submit(resolve_job(import_id), worker.NORMAL, f"Spotify import #{import_id}")
-                    requeued = True
+                    resolver.prepare_songs([(t["title"], t["artist"], t.get("album") or "",
+                                             t.get("album_artist") or "") for t in todo])
+                for n, t in enumerate(todo, 1):
+                    worker.run_urgent_jobs()
+                    try:
+                        result = resolver.song(t["title"], t["artist"], t.get("album") or "",
+                                               t.get("album_artist") or "")
+                    except MusicBrainzError as e:
+                        if e.status != 404:
+                            raise
+                        result = {"reason": "MusicBrainz doesn't know this song."}
+                    results[_song_key(t)] = result
+                    if n % 5 == 0 and _store(db, import_id, results) is None:
+                        return   # removed meanwhile
+            except MusicBrainzError as e:
+                if not e.transient:
+                    _store(db, import_id, results, status="error", error=f"MusicBrainz: {e.message}")
                     return
-                resolved_now += 1
-                worker.run_urgent_jobs()
-                try:
-                    t["result"] = resolver.song(t["title"], t["artist"], t.get("album") or "",
-                                                t.get("album_artist") or "")
-                except MusicBrainzError as e:
-                    if e.status != 404:
-                        imp.status, imp.error = "error", f"MusicBrainz: {e.message}"
-                        _store(db, imp, tracks)
-                        return
-                    t["result"] = {"reason": "MusicBrainz doesn't know this song."}
-                if i % 5 == 4:
-                    _store(db, imp, tracks)
-            imp.status, imp.error = "ready", None
-            _store(db, imp, tracks)
+                note = (f"MusicBrainz is unavailable right now ({e.message}); trying again in "
+                        f"{max(1, RETRY_AFTER // 60)} minutes.")
+                if _store(db, import_id, results, error=note) is not None:
+                    logger.info(f"[Music] Spotify import #{import_id}: {note}")
+                    _later(RETRY_AFTER, lambda: _resubmit(import_id))
+                    waiting = True
+                return
+            imp = _store(db, import_id, results)
+            if imp is None:
+                return
+            if any(t.get("result") is None for t in imp.tracks or []):
+                # More songs (or ones a Refresh added meanwhile): back in line.
+                worker.submit(resolve_job(import_id), worker.NORMAL, f"Spotify import #{import_id}")
+                waiting = True
+                return
+            _store(db, import_id, {}, status="ready")
             logger.info(f"[Music] Spotify import '{imp.name}': {imp.done} songs resolved")
+        except Exception as e:
+            _stop_on_error(db, import_id, e)
+            raise
         finally:
-            if not requeued:
+            if not waiting:
                 _active.discard(import_id)
     return job
 
 
-def _store(db, imp: MusicImport, tracks: list) -> None:
-    imp.tracks = [dict(t) for t in tracks]
-    imp.done = sum(1 for t in tracks if t.get("result") is not None)
-    imp.updated_at = datetime.utcnow()
-    flag_modified(imp, "tracks")
-    db.commit()
+def _store(db, import_id: int, results: dict, status: Optional[str] = None, error: Optional[str] = None):
+    """Add this turn's results to the import as it is now (re-read: a Refresh may have
+    changed its songs). Clears the error note unless one is given. None: removed."""
+    from sqlalchemy.orm.exc import ObjectDeletedError, StaleDataError
+    db.rollback()   # read the row afresh
+    try:
+        imp = db.get(MusicImport, import_id)
+        if imp is None:
+            return None
+        tracks = []
+        for t in imp.tracks or []:
+            if t.get("result") is None and _song_key(t) in results:
+                t = dict(t, result=results[_song_key(t)])
+            tracks.append(dict(t))
+        imp.tracks = tracks
+        imp.done = sum(1 for t in tracks if t.get("result") is not None)
+        if status:
+            imp.status = status
+        imp.error = error
+        imp.updated_at = datetime.utcnow()
+        flag_modified(imp, "tracks")
+        db.commit()
+        return imp
+    except (ObjectDeletedError, StaleDataError):
+        db.rollback()
+        return None
+
+
+def _stop_on_error(db, import_id: int, e: Exception) -> None:
+    """An unexpected failure: stop the import at "error" so it isn't restarted on every poll."""
+    try:
+        db.rollback()
+        imp = db.get(MusicImport, import_id)
+        if imp is not None:
+            imp.status = "error"
+            imp.error = f"Finding albums stopped ({getattr(e, 'message', None) or e.__class__.__name__}). Try again."
+            db.commit()
+    except Exception:
+        db.rollback()
 
 
 def request_job(import_id: int, rgids: list, user_id: Optional[int]):

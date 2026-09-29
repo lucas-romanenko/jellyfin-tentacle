@@ -73,10 +73,14 @@ _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 class MusicBrainzError(Exception):
-    def __init__(self, message: str, status: Optional[int] = None):
+    def __init__(self, message: str, status: Optional[int] = None, transient: Optional[bool] = None):
         super().__init__(message)
         self.message = message
         self.status = status
+        # Worth trying again later by itself: MusicBrainz busy (503, 429), failing
+        # (5xx) or unreachable (no status). Not a missing entry or a setting to fix.
+        self.transient = transient if transient is not None else (
+            status is None or status == 429 or status >= 500)
 
 
 class MusicBrainzBusy(MusicBrainzError):
@@ -99,7 +103,7 @@ def get(path: str, params: Optional[dict] = None, *, contact: str,
     """GET {BASE_URL}{path} as JSON, rate-limited to one request per second."""
     if not valid_contact(contact):
         raise MusicBrainzError("Set a contact email for MusicBrainz in Tentacle's settings "
-                               "(MusicBrainz requires one in every request).")
+                               "(MusicBrainz requires one in every request).", transient=False)
     query = dict(params or {})
     query["fmt"] = "json"
     attempt = 0

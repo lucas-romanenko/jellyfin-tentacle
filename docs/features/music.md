@@ -120,6 +120,11 @@ with the reason.
 A linked playlist can be **refreshed** later: new songs are looked up, and
 known ones keep their result.
 
+When MusicBrainz is busy or can't be reached, the import says so and carries
+on by itself a few minutes later; songs already found are kept. An import
+that stops for another reason (a setting to fix, for example) shows why, with
+a **Retry** button.
+
 ## Library → Music
 
 Your monitored albums, by artist, with filters for *In library*,
