@@ -44,6 +44,12 @@ Gotchas:
   (#257): clients keep the rows and hero they show. `/TentacleHome/Toolbar`
   still answers 200 with the default buttons, marked `fallback: true`, so a
   client that already has the user's own toolbar keeps it.
+- `POST /Tentacle/Playlists/PruneDead` with `"Async": true` answers 202
+  `{runId}` at once and prunes in the background (one prune at a time); the
+  server polls `GET .../PruneDead/{runId}` (running / done with the summary /
+  failed; 404 after a Jellyfin restart) and holds its playlist lock until
+  then (#181). Without the flag (an older server) it answers the summary
+  when done, as before.
 
 ## Routes
 
@@ -57,6 +63,7 @@ Gotchas:
 | GET | `/Tentacle/MdbList/Ratings` | user | GetRatings |  |
 | GET | `/Tentacle/Playlists/Ownerless` | admin | GetOwnerlessPlaylists |  |
 | POST | `/Tentacle/Playlists/PruneDead` | admin | PruneDeadPlaylistEntries |  |
+| GET | `/Tentacle/Playlists/PruneDead/{runId}` | admin | GetPruneRun |  |
 | POST | `/Tentacle/Playlists/{playlistId}/Items/{entryId}/Move/{newIndex}` | user | MovePlaylistItem |  |
 | POST | `/Tentacle/Refresh` | admin | Refresh | yes |
 | GET | `/Tentacle/TestConnection` | admin | TestConnection |  |

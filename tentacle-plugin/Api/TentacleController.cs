@@ -219,6 +219,29 @@ public class TentacleController : ControllerBase
 
         /// <summary>Gets or sets a value indicating whether to skip the mass-removal guards.</summary>
         public bool Force { get; set; }
+
+        /// <summary>
+        /// Gets or sets a value indicating whether to answer at once (202 with a run id to
+        /// poll at GET Playlists/PruneDead/{runId}) instead of when the prune is done.
+        /// </summary>
+        public bool Async { get; set; }
+    }
+
+    // One prune at a time: a second request (a slow run overlapping the next hour's)
+    // waits instead of rewriting the same playlists alongside it.
+    private static readonly SemaphoreSlim PruneGate = new(1, 1);
+    private static readonly object PruneRunsLock = new();
+    // Runs started with Async, by id: the one running and the last few finished ones.
+    private static readonly Dictionary<string, PruneRun> PruneRuns = new();
+    private static PruneRun? _currentPruneRun;
+
+    private sealed class PruneRun
+    {
+        public string Id { get; } = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
+
+        public DateTime Started { get; } = DateTime.UtcNow;
+
+        public Task<object>? Work { get; set; }
     }
 
     // A playlist this big with not ONE entry resolving looks like storage that is
@@ -241,6 +264,93 @@ public class TentacleController : ControllerBase
     [HttpPost("Playlists/PruneDead")]
     [Authorize(Policy = "RequiresElevation")]
     public async Task<ActionResult> PruneDeadPlaylistEntries([FromBody] PruneDeadRequest? body)
+    {
+        if (body?.Async == true)
+        {
+            // The server polls the run (#181 follow-up): on a large library while
+            // Jellyfin is busy the prune outlasted any fixed timeout, and the server
+            // released its playlist lock while this was still rewriting playlists.
+            // A run already going is joined, not doubled.
+            PruneRun run;
+            lock (PruneRunsLock)
+            {
+                if (_currentPruneRun is { Work.IsCompleted: false } current)
+                {
+                    run = current;
+                }
+                else
+                {
+                    run = new PruneRun();
+                    var request = body;
+                    run.Work = Task.Run(() => RunPruneAsync(request));
+                    _currentPruneRun = run;
+                    PruneRuns[run.Id] = run;
+                    foreach (var old in PruneRuns.Values.Where(r => r.Work!.IsCompleted).OrderByDescending(r => r.Started).Skip(5).ToList())
+                    {
+                        PruneRuns.Remove(old.Id);
+                    }
+                }
+            }
+
+            return StatusCode(202, new { runId = run.Id, state = "running" });
+        }
+
+        return Ok(await RunPruneAsync(body).ConfigureAwait(false));
+    }
+
+    /// <summary>
+    /// State of a prune started with Async: running, done (with the summary the
+    /// synchronous call answers) or failed. 404 when this Jellyfin doesn't know the
+    /// run (it restarted meanwhile).
+    /// </summary>
+    /// <param name="runId">The id POST Playlists/PruneDead answered.</param>
+    [HttpGet("Playlists/PruneDead/{runId}")]
+    [Authorize(Policy = "RequiresElevation")]
+    public ActionResult GetPruneRun([FromRoute] string runId)
+    {
+        PruneRun? run;
+        lock (PruneRunsLock)
+        {
+            PruneRuns.TryGetValue(runId, out run);
+        }
+
+        if (run?.Work == null)
+        {
+            return NotFound();
+        }
+
+        if (!run.Work.IsCompleted)
+        {
+            return Ok(new { runId, state = "running" });
+        }
+
+        if (run.Work.IsCompletedSuccessfully)
+        {
+            return Ok(new { runId, state = "done", result = run.Work.Result });
+        }
+
+        return Ok(new { runId, state = "failed", error = run.Work.Exception?.GetBaseException().Message ?? "cancelled" });
+    }
+
+    private async Task<object> RunPruneAsync(PruneDeadRequest? body)
+    {
+        await PruneGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            return await PruneAsync(body).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Tentacle prune: failed");
+            throw;
+        }
+        finally
+        {
+            PruneGate.Release();
+        }
+    }
+
+    private async Task<object> PruneAsync(PruneDeadRequest? body)
     {
         List<Playlist> playlists;
         if (body?.Ids is { Count: > 0 } ids)
@@ -288,7 +398,7 @@ public class TentacleController : ControllerBase
                 "Tentacle prune: REFUSING — {Dead} of {Total} playlist entries across {Count} playlist(s) do not resolve. "
                 + "That many at once looks like media storage being unavailable, not deleted items. Nothing removed.",
                 totalDead, totalEntries, playlists.Count);
-            return Ok(new { checkedPlaylists = playlists.Count, prunedPlaylists = 0, removed = 0, refused = true, dead = totalDead });
+            return new { checkedPlaylists = playlists.Count, prunedPlaylists = 0, removed = 0, refused = true, dead = totalDead };
         }
 
         // Pass 2: remove.
@@ -320,14 +430,14 @@ public class TentacleController : ControllerBase
             }
         }
 
-        return Ok(new
+        return new
         {
             checkedPlaylists = playlists.Count,
             prunedPlaylists = pruned,
             removed,
             refused = false,
             skipped,
-        });
+        };
     }
 
     /// <summary>

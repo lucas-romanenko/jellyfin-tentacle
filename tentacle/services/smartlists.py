@@ -1620,7 +1620,21 @@ def prune_dead_entries(db: Session, user_id: int = None, only_names: list = None
     PruneDead: YouTube retention and Radarr file replacements leave entries that
     Jellyfin hides from every read, so a refresh can never see them to remove
     them. Covers the managed playlists of one user (or all). Returns how many
-    entries were removed; 0 when there were none or the plugin can't do it."""
+    entries were removed; 0 when there were none or the plugin can't do it.
+
+    Skipped while Jellyfin scans the library or refreshes the guide: the prune
+    resolves every entry through Jellyfin's database, competes with them, and
+    holds the playlist lock meanwhile (every slow run coincided with one, #181).
+    This is the hourly sweep; the next hour catches up."""
+    from services.jellyfin import JellyfinService
+
+    jellyfin_url = get_setting(db, "jellyfin_url", "")
+    jellyfin_key = get_setting(db, "jellyfin_api_key", "")
+    if jellyfin_url and jellyfin_key:
+        busy = JellyfinService(jellyfin_url, jellyfin_key).running_library_tasks()
+        if busy:
+            logger.info(f"[SmartLists] Dead-entry prune skipped this hour: Jellyfin is running {', '.join(busy)}")
+            return 0
     with _playlist_refresh_lock:
         return _prune_dead_entries_locked(db, user_id=user_id, only_names=only_names)
 

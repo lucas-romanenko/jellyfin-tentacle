@@ -33,7 +33,16 @@ def is_youtube_video(item: dict) -> bool:
 
 
 # Seconds to wait for the plugin's PruneDead answer (see prune_dead_playlist_entries).
+# A current plugin answers at once with a run id; only an old one prunes inside the call.
 PRUNE_DEAD_READ_TIMEOUT = 900
+# Polling a prune run: seconds between polls, failed polls in a row before giving
+# up, and a ceiling on the whole wait (the playlist lock is held throughout).
+PRUNE_POLL_SECONDS = 5
+PRUNE_POLL_MAX_FAILURES = 24
+PRUNE_POLL_MAX_SECONDS = 3 * 3600
+# Jellyfin scheduled tasks that keep its database busy; the hourly prune skips
+# an hour while one runs (each slow prune run coincided with one, #181).
+BUSY_LIBRARY_TASKS = ("RefreshLibrary", "RefreshGuide")
 
 
 class PartialListing(RuntimeError):
@@ -1519,17 +1528,24 @@ class JellyfinService:
         playlist.xml and is warned about on every read. The Tentacle plugin
         removes them in-process. Returns the plugin's summary, or None when the
         plugin is missing or too old for the route (404/405) or the call failed.
+
+        A current plugin runs the prune in the background and answers 202 with a
+        run id; this polls the run until the plugin says it is done, so the
+        caller's playlist lock is held exactly as long as the plugin works. With
+        one long call Tentacle gave up at its read timeout while Jellyfin was
+        busy, released the lock under a plugin still rewriting playlists, and
+        lost the summary (#181). An old plugin prunes inside the call and answers
+        the summary directly.
         """
         if not playlist_ids:
             return {"checkedPlaylists": 0, "prunedPlaylists": 0, "removed": 0}
         path = "/Tentacle/Playlists/PruneDead"
         try:
             # One call for every playlist: the plugin's storage-offline guard
-            # works across the whole run. On a large library that takes longer
-            # than a minute (~80 s for 30 playlists of up to 16k entries), and a
-            # 60 s timeout gave up every hour while the plugin carried on, with
-            # the refresh lock released under it and the summary lost (#181).
-            r = self.session.post(f"{self.url}{path}", json={"Ids": list(playlist_ids)},
+            # works across the whole run. The long read timeout is for an old
+            # plugin, which prunes inside the call (~80 s for 30 playlists of up
+            # to 16k entries, far longer while Jellyfin scans).
+            r = self.session.post(f"{self.url}{path}", json={"Ids": list(playlist_ids), "Async": True},
                                   timeout=(10, PRUNE_DEAD_READ_TIMEOUT))
             self._check_401(r, path)
             if r.status_code in (404, 405):
@@ -1538,12 +1554,63 @@ class JellyfinService:
             if r.status_code >= 400:
                 logger.warning(f"[Jellyfin] Pruning dead playlist entries failed: HTTP {r.status_code}")
                 return None
-            return r.json()
+            body = r.json()
+            if r.status_code == 202 and isinstance(body, dict) and body.get("runId"):
+                return self._wait_for_prune_run(str(body["runId"]))
+            return body
         except requests.HTTPError:
             raise
         except Exception as e:
             logger.warning(f"[Jellyfin] Pruning dead playlist entries failed: {e}")
             return None
+
+    def _wait_for_prune_run(self, run_id: str) -> Optional[dict]:
+        """Poll a plugin prune run until it has finished; its summary, or None."""
+        path = f"/Tentacle/Playlists/PruneDead/{run_id}"
+        deadline = time.monotonic() + PRUNE_POLL_MAX_SECONDS
+        failures = 0
+        while True:
+            time.sleep(PRUNE_POLL_SECONDS)
+            try:
+                r = self.session.get(f"{self.url}{path}", timeout=(10, 30))
+                self._check_401(r, path)
+                if r.status_code == 404:
+                    logger.warning("[Jellyfin] Jellyfin no longer knows the dead-entry prune it was running "
+                                   "(restarted?) — it will be tried again next hour")
+                    return None
+                if r.status_code >= 400:
+                    raise RuntimeError(f"HTTP {r.status_code}")
+                run = r.json() or {}
+                failures = 0
+                if run.get("state") == "done":
+                    return run.get("result") or {}
+                if run.get("state") == "failed":
+                    logger.warning(f"[Jellyfin] Pruning dead playlist entries failed in Jellyfin: {run.get('error')}")
+                    return None
+            except requests.HTTPError:
+                raise
+            except Exception as e:
+                failures += 1
+                if failures >= PRUNE_POLL_MAX_FAILURES:
+                    logger.warning(f"[Jellyfin] Lost track of the dead-entry prune after {failures} failed polls: {e}")
+                    return None
+            if time.monotonic() > deadline:
+                logger.warning(f"[Jellyfin] The dead-entry prune is still running after "
+                               f"{PRUNE_POLL_MAX_SECONDS // 60} min — no longer waiting for it")
+                return None
+
+    def running_library_tasks(self) -> List[str]:
+        """Names of Jellyfin's library scan / guide refresh tasks running now.
+        [] when there are none or Jellyfin can't say (never blocks the caller)."""
+        try:
+            r = self.session.get(f"{self.url}/ScheduledTasks", params={"isHidden": "false"}, timeout=10)
+            if r.status_code >= 400:
+                return []
+            tasks = r.json()
+            return [t.get("Name") or t.get("Key") for t in tasks or []
+                    if isinstance(t, dict) and t.get("Key") in BUSY_LIBRARY_TASKS and t.get("State") == "Running"]
+        except Exception:
+            return []
 
     def get_ownerless_playlists(self) -> Optional[List[dict]]:
         """Playlists with no owner, from the Tentacle plugin: [{id, name, entries,

@@ -63,6 +63,10 @@ class TestPruneDeadEntries(_Base):
         p = mock.patch.object(jellyfin.JellyfinService, "prune_dead_playlist_entries", prune)
         p.start()
         self.addCleanup(p.stop)
+        # Jellyfin idle (the hourly prune skips while it scans, #181).
+        p = mock.patch.object(jellyfin.JellyfinService, "running_library_tasks", return_value=[])
+        p.start()
+        self.addCleanup(p.stop)
 
     def test_every_users_managed_playlists_are_sent_in_one_call(self):
         self.assertEqual(3, sl.prune_dead_entries(self.db))
@@ -117,7 +121,9 @@ class TestJellyfinServicePrune(unittest.TestCase):
         self.assertEqual({"removed": 2}, s.prune_dead_playlist_entries(["a", "b"]))
         url = s.session.post.call_args.args[0]
         self.assertTrue(url.endswith("/Tentacle/Playlists/PruneDead"))
-        self.assertEqual({"Ids": ["a", "b"]}, s.session.post.call_args.kwargs["json"])
+        # Async: a current plugin answers 202 with a run id to poll (#181);
+        # an old one ignores the flag and answers the summary, as here.
+        self.assertEqual({"Ids": ["a", "b"], "Async": True}, s.session.post.call_args.kwargs["json"])
 
     def test_old_plugin_is_none(self):
         self.assertIsNone(self.svc(404).prune_dead_playlist_entries(["a"]))
