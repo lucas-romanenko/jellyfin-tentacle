@@ -842,6 +842,44 @@ class TestBatches(unittest.TestCase):
         self.assertEqual(self.r.album("Weezer", "Weezer", near="2026-09-19")["mbid"], R3)
         self.assertEqual(self.r.album("Weezer", "Weezer")["mbid"], R1)      # no date: the earliest
 
+    def test_an_album_pushed_out_of_a_capped_batch_is_asked_again(self):
+        # #251: a batch's results are cut at 100; an album that ranked below the cut
+        # was taken as "not on MusicBrainz" and silently dropped from New releases.
+        import random
+        seed = random.randrange(1 << 30)
+        pushed_out = random.Random(seed).randrange(8)
+        wanted = [(f"Album {i}", f"Artist {i}", "") for i in range(8)]
+        for i in range(8):
+            self.mb.groups[(f"Album {i}", f"Artist {i}")] = [rg(f"{i:08d}-0000-0000-0000-000000000000",
+                                                                 f"Album {i}", f"Artist {i}", A1)]
+        real = self.mb.find_release_groups_batch
+        filler = [rg(f"ffffffff-0000-0000-0000-{n:012d}", f"Album {pushed_out} Tribute {n}", "Cover Band", A2,
+                     score=90) for n in range(100)]
+
+        def capped(items):
+            out = real(items)
+            if len(items) > 1:   # longer titles and other artists crowd out the real match
+                out = [g for g in out if g["title"] != f"Album {pushed_out}"]
+                out = (out + filler)[:100]
+            return out
+        with mock.patch.object(self.mb, "find_release_groups_batch", side_effect=capped):
+            self.r.prefetch(wanted)
+        with mock.patch.object(self.discover, "find_album", return_value=None) as single:
+            card = self.r.album(f"Album {pushed_out}", f"Artist {pushed_out}")
+        self.assertIsNotNone(card, f"seed={seed}")
+        self.assertEqual(card["title"], f"Album {pushed_out}")
+        single.assert_not_called()                       # found by the smaller batches
+        self.assertIsNotNone(self.r.album("Album 0" if pushed_out else "Album 1",
+                                          "Artist 0" if pushed_out else "Artist 1"))
+
+    def test_an_album_capped_on_its_own_is_left_to_the_one_album_lookup(self):
+        filler = [rg(f"ffffffff-0000-0000-0000-{n:012d}", f"Hello {n}", "Adele Tribute", A2) for n in range(100)]
+        with mock.patch.object(self.mb, "find_release_groups_batch", return_value=filler):
+            self.r.prefetch([("Hello", "Adele", "")])
+        with mock.patch.object(self.discover, "find_album", return_value=rg(R1, "Hello", "Adele", A1)) as single:
+            self.assertEqual(self.r.album("Hello", "Adele")["mbid"], R1)
+        single.assert_called_once()
+
     def test_a_title_that_is_only_a_single_is_not_an_album(self):
         self.mb.groups[("Hit", "Star")] = [rg(R1, "Hit", "Star", A1, kind="Single")]
         self.r.prefetch([("Hit", "Star", "")])

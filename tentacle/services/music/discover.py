@@ -56,6 +56,7 @@ NEW_RELEASES_MAX = 150
 ALL_TIME_DEPTH = 2000              # how many of ListenBrainz's most-listened albums get sorted into genres
 PER_GENRE = 48
 MIN_GENRE_ALBUMS = 6              # a genre with fewer isn't worth a tab
+BATCH_RESULTS = 100               # MusicBrainz's cap on one search's results (the batches ask for it)
 
 # Apple's per-genre album charts (its genre ids); the names are Apple's, as its
 # charts label their items.
@@ -338,17 +339,30 @@ class Resolver:
             if title and artist and key not in self._albums and key not in seen:
                 seen.add(key)
                 todo.append((title, artist, near, key))
-        for i in range(0, len(todo), self.BATCH):
+        batches = [todo[i:i + self.BATCH] for i in range(0, len(todo), self.BATCH)]
+        while batches:
             worker.run_urgent_jobs()
-            batch = todo[i:i + self.BATCH]
+            batch = batches.pop(0)
             groups = self.mb.find_release_groups_batch(
                 [(clean_title(t), artist_candidates(a)) for t, a, _, _ in batch])
+            capped = len(groups) >= BATCH_RESULTS
+            unsure = []
             for title, artist, near, key in batch:
                 found = _choose_album(groups, title, artist, near)
-                if found is _MISSING:
+                if capped and (found is None or found is _MISSING):
+                    # The results were cut at 100: the album (or its studio edition) may
+                    # just have ranked below the cut. That isn't "MusicBrainz doesn't have it".
+                    unsure.append((title, artist, near, key))
+                elif found is _MISSING:
                     self._missing.add(key)
                 else:
                     self._albums[key] = _card(found) if found else None
+            # Asked again in halves, down to one album per request; one still capped on
+            # its own is left to the one-album lookup in album().
+            if len(unsure) > 1:
+                batches[:0] = [unsure[:len(unsure) // 2], unsure[len(unsure) // 2:]]
+            elif unsure and len(batch) > 1:
+                batches.insert(0, unsure)
 
     def album(self, title: str, artist: str, near: str = "", fallback: bool = True) -> Optional[dict]:
         """The studio album with this title by this artist, as a card; None when there is
