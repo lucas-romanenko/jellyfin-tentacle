@@ -389,9 +389,9 @@ class _DiscoverBase(_Base):
     def setUp(self):
         super().setUp()
         from services.music import discover
-        discover.jobs.update(trending=False, all_time=False)
-        discover._failed.update(trending=0.0, all_time=0.0)
-        self.addCleanup(lambda: discover.jobs.update(trending=False, all_time=False))
+        discover.jobs.update(trending=False, all_time=False, lists=False)
+        discover._failed.update(trending=0.0, all_time=0.0, lists=0.0)
+        self.addCleanup(lambda: discover.jobs.update(trending=False, all_time=False, lists=False))
         from services.music import spotify
         spotify._active.clear()
         self.addCleanup(spotify._active.clear)
@@ -510,6 +510,61 @@ class TestFreshness(_DiscoverBase):
         set_setting(self.db, "music_chart_country", "ca")
         discover.ensure_fresh(self.db)
         self.assertEqual(len(self.jobs), 1)
+
+
+class TestChartOutages(_DiscoverBase):
+    """#247: a build where every source failed was saved as fresh (and empty) for 20 h,
+    over the last good charts."""
+
+    GOOD = {"country": "us", "built": 0, "errors": [], "artists": [{"mbid": A1, "name": "Star"}],
+            "songs": [], "releases": [], "yours": []}
+
+    def run_trending(self, chart, genre_chart):
+        from services.music import discover
+        with mock.patch.object(discover, "apple_chart", side_effect=chart), \
+                mock.patch.object(discover, "itunes_genre_albums", side_effect=genre_chart), \
+                mock.patch.object(discover, "lb_fresh_releases", side_effect=discover.requests.ConnectionError("down")), \
+                mock.patch.object(discover, "_deezer_picture", return_value=""):
+            discover.ensure_fresh(self.db)
+            job = next(j for j in self.jobs if j is discover._trending_job)
+            self.jobs.clear()
+            with self.assertRaises(getattr(discover, "ChartsUnavailable", Exception)):
+                job(self.db)
+
+    def test_an_outage_keeps_the_last_charts_and_is_retried_soon(self):
+        from services.music import discover
+        discover._save(self.db, trending=dict(self.GOOD, built=time.time() - 21 * 3600))   # due for its daily rebuild
+
+        def down(*a, **kw):
+            raise discover.requests.ConnectionError("no network")
+        self.run_trending(down, down)
+        data = discover.load(self.db)
+        self.assertEqual(data["trending"]["artists"], self.GOOD["artists"])   # yesterday's charts stay
+        self.assertIn("couldn't be read", data["trending_error"])
+        discover.ensure_fresh(self.db)
+        self.assertNotIn(discover._trending_job, self.jobs)   # not on every page view
+        discover._failed["trending"] -= discover.RETRY_AFTER_FAILURE + 1
+        discover.ensure_fresh(self.db)
+        self.assertIn(discover._trending_job, self.jobs)      # but after the back-off, not in 20 h
+
+    def test_a_country_without_charts_is_reported(self):
+        from models.database import set_setting
+        from services.music import discover
+        set_setting(self.db, "music_chart_country", "zz")
+        self.run_trending(lambda *a, **kw: [], lambda *a, **kw: [])
+        data = discover.load(self.db)
+        self.assertNotIn("trending", data)
+        self.assertIn("'ZZ'", data["trending_error"])
+
+    def test_listenbrainz_with_nothing_is_not_cached_for_a_month(self):
+        from services.music import discover
+        discover._save(self.db, all_time={"built": time.time() - 31 * 86400, "genres": {"Rock": [{"mbid": R1}]}})
+        with mock.patch.object(discover, "lb_top_release_groups", return_value=[]):
+            with self.assertRaises(getattr(discover, "ChartsUnavailable", Exception)):
+                discover._all_time_job(self.db)
+        data = discover.load(self.db)
+        self.assertEqual(data["all_time"]["genres"], {"Rock": [{"mbid": R1}]})
+        self.assertIn("ListenBrainz", data["all_time_error"])
 
 
 class TestPage(_DiscoverBase):

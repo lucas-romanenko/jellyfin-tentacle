@@ -634,6 +634,15 @@ def _deezer_picture(db, name: str) -> str:
 
 # ── Building ─────────────────────────────────────────────────────────────
 
+class ChartsUnavailable(Exception):
+    """A section's sources gave nothing: kept as a failure (the last good section stays,
+    and it is tried again after RETRY_AFTER_FAILURE), never saved as fresh and empty."""
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.message = message
+
+
 def chart_country(db) -> str:
     value = (get_setting(db, "music_chart_country", "us") or "us").strip().lower()
     return value if re.fullmatch(r"[a-z]{2}", value) else "us"
@@ -686,6 +695,13 @@ def build_trending(db, resolver: "Resolver", country: str) -> dict:
     songs = [x for x in songs_f.result() if is_record(x)]
     albums = [x for x in albums_f.result() if is_record(x)]
     by_genre = {name: [x for x in f.result() if is_record(x)] for name, f in genre_f.items()}
+    if not songs and not albums and not any(by_genre.values()):
+        # Nothing to build from: a network outage, or a country Apple has no charts for.
+        if len(errors) == 2 + len(APPLE_GENRES):
+            raise ChartsUnavailable("Apple Music's charts couldn't be read. Showing the last ones built; "
+                                    "Tentacle tries again in a while.")
+        raise ChartsUnavailable(f"Apple Music has no charts for '{country.upper()}'. "
+                                "Check the chart country in Settings → Music.")
 
     # Artists: by how high and how often they chart, songs and albums together.
     scores = {}
@@ -775,6 +791,8 @@ def build_all_time(db, mb: MusicBrainz, save_progress=None) -> dict:
                 entries.append(r)
         if len(page) < 100:
             break
+    if not entries:
+        raise ChartsUnavailable("ListenBrainz returned no albums. Tentacle tries again in a while.")
     genres, by_id = {}, {r["release_group_mbid"]: r for r in entries}
     for done, rg in _release_groups(mb, list(by_id), progress=True):
         if rg and _is_studio(rg):
@@ -786,6 +804,9 @@ def build_all_time(db, mb: MusicBrainz, save_progress=None) -> dict:
                     albums.append(_card(rg, listens=r.get("listen_count"), cover=_caa(r)))
         if save_progress and done:
             save_progress(genres, done, len(entries))
+    if not genres:
+        raise ChartsUnavailable("None of ListenBrainz's albums could be sorted into genres. "
+                                "Tentacle tries again in a while.")
     return {"built": time.time(), "genres": genres, "checked": len(entries)}
 
 
@@ -864,7 +885,7 @@ def _trending_job(db):
         mb = MusicBrainz.from_settings(db)
         _save(db, trending=build_trending(db, Resolver(db, mb), chart_country(db)), trending_error=None)
         _failed["trending"] = 0.0
-    except MusicBrainzError as e:
+    except (MusicBrainzError, ChartsUnavailable) as e:
         _failed["trending"] = time.time()
         _save(db, trending_error=e.message)
         raise
@@ -880,7 +901,7 @@ def _all_time_job(db):
         result = build_all_time(db, mb, progress)
         _save(db, all_time=result, all_time_partial=None, all_time_error=None)
         _failed["all_time"] = 0.0
-    except (MusicBrainzError, requests.RequestException, ValueError) as e:
+    except (MusicBrainzError, ChartsUnavailable, requests.RequestException, ValueError) as e:
         _failed["all_time"] = time.time()
         _save(db, all_time_error=getattr(e, "message", None) or f"ListenBrainz unavailable ({e.__class__.__name__})")
         raise
