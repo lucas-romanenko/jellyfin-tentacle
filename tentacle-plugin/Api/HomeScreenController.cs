@@ -607,7 +607,7 @@ public class TentacleHomeController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogWarning("[Tentacle Home] Failed to fetch playlists: {Error}", ex.Message);
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = TentacleDiscoverController.DescribeFailure(ex).Message });
         }
     }
 
@@ -737,7 +737,7 @@ public class TentacleHomeController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogWarning("[Tentacle Home] Failed to set hero: {Error}", ex.Message);
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = TentacleDiscoverController.DescribeFailure(ex).Message });
         }
     }
 
@@ -772,7 +772,7 @@ public class TentacleHomeController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogWarning("[Tentacle Home] Failed to reorder: {Error}", ex.Message);
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = TentacleDiscoverController.DescribeFailure(ex).Message });
         }
     }
 
