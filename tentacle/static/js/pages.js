@@ -1930,10 +1930,13 @@ async function loadMatchSuspects() {
         ${x.poster_path ? `<img alt="" src="${_imgUrl(x.poster_path, 'w92')}" class="wm-poster" loading="lazy" onerror="this.style.visibility='hidden'">` : '<div class="wm-poster"></div>'}
         <div class="wm-info">
           <div class="wm-title">${escapeAttr(x.title || '')}</div>
-          <div class="wm-meta">Plays <strong>${x.actual_minutes} min</strong> — this film is ${x.expected_minutes} min</div>
+          <div class="wm-meta">${x.reason === 'relist_followed' ? 'Your provider re-listed its stream under a new id; your fix followed it'
+            : x.reason === 'relist_blocked' ? 'A re-listed stream, labelled like one you blocked as the wrong movie'
+            : `Plays <strong>${x.actual_minutes} min</strong> — this film is ${x.expected_minutes} min`}</div>
         </div>
         <div class="wm-actions">
-          <button class="btn btn-primary btn-sm" onclick="openFixMatch(${x.tmdb_id}, '${escapeJS(x.title || '')}')">Fix it</button>
+          ${x.reason === 'relist_followed' ? `<button class="btn btn-primary btn-sm" onclick="undoFollowedFix(${x.tmdb_id})">Undo</button>`
+            : `<button class="btn btn-primary btn-sm" onclick="openFixMatch(${x.tmdb_id}, '${escapeJS(x.title || '')}')">Fix it</button>`}
           <button class="btn btn-secondary btn-sm" onclick="dismissMatchSuspect(${x.tmdb_id})">It's fine</button>
         </div>
       </div>`).join('') : '<div class="wm-meta" style="padding:4px 0">Nothing flagged right now.</div>';
@@ -1946,6 +1949,12 @@ async function loadMatchSuspects() {
 
 async function dismissMatchSuspect(tmdbId) {
   try { await api(`/api/library/match-suspects/${tmdbId}/dismiss`, { method: 'POST' }); loadMatchSuspects(); }
+  catch (e) { toast(e.message, 'error'); }
+}
+
+async function undoFollowedFix(tmdbId) {
+  if (!confirm('The re-listed stream is not this film? Your fix goes back to the old stream, and the re-listed one is added by its own name on the next sync. If the old stream stays gone, this copy is removed after two syncs, like any film your provider dropped.')) return;
+  try { const r = await api(`/api/library/match-suspects/${tmdbId}/undo-follow`, { method: 'POST' }); toast(r.message || 'Undone'); loadMatchSuspects(); }
   catch (e) { toast(e.message, 'error'); }
 }
 
@@ -7274,7 +7283,7 @@ async function loadHealthDeletions() {
     // Activity (inline handlers)
     _activityPosterFailed, activitySearchAgain, activityRemove, activityStopMissing, _smAll, _smCount, _smGo, openReleaseCheck, _rcLoad, _rcGrab, replaceCopy,
     // Wrong movie (mislabelled provider streams)
-    reportWrongMovie, dismissMatchSuspect, unblockStream, openFixMatch, _fmLoad, _fmFrames, _fmPick, _fmRemove,
+    reportWrongMovie, dismissMatchSuspect, undoFollowedFix, unblockStream, openFixMatch, _fmLoad, _fmFrames, _fmPick, _fmRemove,
     // Lists page
     loadLists, loadListCards,
     saveQuickList, onQuickListUrlInput, onQuickListNameInput, onModalUrlInput, onModalNameInput,
