@@ -27,7 +27,7 @@ class TestPlaylistReadsAreChecked(unittest.TestCase):
     def test_hero_checks_playlist_access_before_reading_items(self):
         body = _method_body((API / "HomeScreenController.cs").read_text(), "GetHeroItems")
         check = body.find("CallerIdentity.CanReadPlaylist(playlist, user)")
-        read = body.find("GetManageableItems()")
+        read = min(i for i in (body.find("GetManageableItems()"), body.find("VisibleEntries(")) if i >= 0)
         self.assertGreater(check, 0, "GetHeroItems reads a playlist without CanReadPlaylist")
         self.assertLess(check, read)
 
@@ -39,7 +39,8 @@ class TestPlaylistReadsAreChecked(unittest.TestCase):
             for m in re.finditer(r"public [^\n]*\b(\w+)\(", src):
                 name = m.group(1)
                 body = _method_body(src, name)
-                if "GetManageableItems()" not in body or name == "MovePlaylistItem":
+                reads = "GetManageableItems()" in body or "VisibleEntries(" in body
+                if not reads or name == "MovePlaylistItem":
                     continue
                 with self.subTest(action=f"{cs.name}:{name}"):
                     self.assertIn("CanReadPlaylist", body)
