@@ -5,13 +5,16 @@ does only what the request still owes, and only while the user still wants it.
   worker job, and the first try already waited a minute for its releases.
 - An album unmonitored in Lidarr since the request is left alone (the resume
   used to monitor it again and search it).
-- A request still unfinished after REQUEST_GIVE_UP_DAYS is given up with a
-  message on the album, instead of being retried every day for good.
+- A request that can't be finished yet stays owed and is tried again at the
+  next check (one read a day), however old it is.
 - An album removed from Lidarr since leaves Tentacle's snapshot (it used to stay
   as a "wanted" album nobody could get).
 - The same album requested twice at once (a double click, the dashboard and
   Jellyfin, two users) no longer fails the second request with a 500 (both
   inserted its row), and it is searched once.
+- A request whose row was removed before its own job ran (the ArtistAdd
+  webhook synced the new artist while Lidarr still listed no albums for it) is
+  still pinned and searched by that job.
 
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
@@ -96,28 +99,16 @@ class TestResume(_Resume):
         self.assertEqual(self.album_reads(), 1)
         self.assertTrue(self.row().request_pending)   # tried again at the next check
 
-    def test_a_request_unfinished_for_two_weeks_is_given_up_with_a_message(self):
-        from services.music import jobs, worker
-        self.owed(days_ago=jobs.REQUEST_GIVE_UP_DAYS + 1)
+    def test_an_old_request_that_cant_be_finished_yet_stays_owed(self):
+        self.owed(days_ago=40)
         FakeLidarr.state["albums"][10]["releases"] = []
         self.resume()
-        row = self.row()
-        self.assertFalse(row.request_pending)
-        self.assertIn("Request it again", row.verdict["state"])
-        self.assertIn("given up", worker.state["last_error"]["message"])
-        self.resume()
-        self.assertEqual(self.album_reads(), 1)       # not tried again
-
-    def test_a_recent_request_is_not_given_up(self):
-        from services.music import jobs
-        self.owed(days_ago=jobs.REQUEST_GIVE_UP_DAYS - 1)
-        FakeLidarr.state["albums"][10]["releases"] = []
         self.resume()
         self.assertTrue(self.row().request_pending)
+        self.assertEqual(self.album_reads(), 2)       # one read per check
 
-    def test_a_request_that_can_be_finished_is_finished_even_when_old(self):
-        from services.music import jobs
-        self.owed(days_ago=jobs.REQUEST_GIVE_UP_DAYS + 5)
+    def test_an_old_request_that_can_be_finished_is_finished(self):
+        self.owed(days_ago=40)
         self.resume()
         self.assertTrue(self.searched())
         self.assertFalse(self.row().request_pending)
@@ -150,11 +141,10 @@ class TestResume(_Resume):
 class TestResumeProperty(_Resume):
     """Random states of an owed album at the resume. Invariants: the resume never monitors,
     never searches an album with files or unmonitored, reads the album once (and once more
-    after a pin), never waits, and an
-    album stays owed only while it can still be finished and is under two weeks old."""
+    after a pin), never waits, and an album stays owed exactly while it can't be finished
+    yet but is still wanted (monitored, no files, in Lidarr)."""
 
     def test_random_states(self):
-        from services.music import jobs
         from services.musicbrainz import MusicBrainzError
         seeds = int(os.environ.get("GM_SEEDS", "1000"))
         base = int(os.environ.get("GM_SEED", "20260929"))
@@ -198,7 +188,7 @@ class TestResumeProperty(_Resume):
                     problems.append("removed album kept")
             else:
                 still_owed = bool(row.request_pending)
-                should_be_owed = not can_finish and monitored and not files and age <= jobs.REQUEST_GIVE_UP_DAYS
+                should_be_owed = not can_finish and monitored and not files
                 if still_owed != should_be_owed:
                     problems.append(f"owed={still_owed} expected {should_be_owed}")
                 if can_finish and not self.searched():
@@ -218,9 +208,8 @@ class TestResumeFaultsOverDays(_Resume):
     it never monitors; it never searches an album that is unmonitored, has files or
     is gone; a request is searched at most once more than the searches whose answer
     was lost; one successful read (two after a pin); an album Lidarr no longer has
-    leaves the snapshot; a row stays owed only while under REQUEST_GIVE_UP_DAYS; a
-    day on which the request can be finished finishes it; after the give-up age
-    nothing is owed any more, and a settled request is never touched again."""
+    leaves the snapshot; a day on which the request can be finished finishes it; a
+    request settles only with a reason, and a settled request is never touched again."""
 
     def setUp(self):
         super().setUp()
@@ -258,11 +247,10 @@ class TestResumeFaultsOverDays(_Resume):
 
     def test_random_faults_over_the_days(self):
         from models.database import MusicAlbum
-        from services.music import jobs
         from services.musicbrainz import MusicBrainzError
         seeds = int(os.environ.get("GM_SEEDS", "1000"))
         base = int(os.environ.get("GM_SEED", "20260929"))
-        bad, stats = [], {"finished": 0, "given_up": 0, "left_alone": 0, "removed": 0, "files": 0,
+        bad, stats = [], {"finished": 0, "still_owed": 0, "left_alone": 0, "removed": 0, "files": 0,
                           "lost_searches": 0, "faults": 0}
         for n in range(seeds):
             seed = base + n
@@ -279,7 +267,7 @@ class TestResumeFaultsOverDays(_Resume):
                 album["releases"] = []
             never_loads = rnd.random() < 0.15   # Lidarr never loads this album's releases
             searches, settled_at, problems = 0, None, []
-            for day in range(jobs.REQUEST_GIVE_UP_DAYS + 3):
+            for day in range(17):
                 albums = FakeLidarr.state["albums"]
                 if 10 in albums:
                     a = albums[10]
@@ -327,8 +315,6 @@ class TestResumeFaultsOverDays(_Resume):
                 if gone and owed_before and "GET" not in fail and row is not None:
                     problems.append(f"{where}: an album Lidarr no longer has kept its row")
                 owed = row is not None and bool(row.request_pending)
-                if owed and day > jobs.REQUEST_GIVE_UP_DAYS:
-                    problems.append(f"{where}: still owed after the give-up age")
                 if can_finish and (owed or not now_searched):
                     problems.append(f"{where}: could be finished and wasn't")
                 if owed_before and not owed and settled_at is None:
@@ -338,8 +324,6 @@ class TestResumeFaultsOverDays(_Resume):
                         stats["removed"] += 1
                     elif now_searched:
                         stats["finished"] += 1
-                    elif "Request it again" in state:
-                        stats["given_up"] += 1
                     elif "unmonitored" in state:
                         stats["left_alone"] += 1
                     elif files:
@@ -348,7 +332,7 @@ class TestResumeFaultsOverDays(_Resume):
                         problems.append(f"{where}: settled without a reason: {state!r}")
             stats["lost_searches"] += FakeLidarr.state["lost_searches"]
             if settled_at is None:
-                problems.append("never settled")
+                stats["still_owed"] += 1   # every day it could be finished was checked above
             if problems:
                 bad.append((seed, problems[:3]))
         print(f"\n[resume-faults] {seeds} seeds from {base}: failures={len(bad)} {stats} {bad[:3]}")
@@ -378,6 +362,30 @@ class TestSameAlbumTwiceAtOnce(_Resume):
         self.assertEqual(out["status"], "requested")
         self.assertEqual(self.db.query(MusicAlbum).filter_by(mbid=RG).count(), 1)
         self.run_jobs()
+        searches = [c for c in self.calls("POST", "/api/v1/command") if (c[2] or {}).get("name") == "AlbumSearch"]
+        self.assertEqual(len(searches), 1)
+        self.assertFalse(self.row().request_pending)
+
+    def test_a_row_removed_before_its_own_job_is_still_finished(self):
+        """Lidarr sends ArtistAdd while it adds the album; the webhook's sync of the new
+        artist sees no albums yet (Lidarr is still refreshing it) and removes the row the
+        request just wrote. The request's own job, which runs after, still pins and searches."""
+        from services.media_requests import request_album
+        from services.music import jobs
+        request_album(self.db, RG, user_id=1, via="test")
+        own, self.jobs[:] = list(self.jobs), []
+        real_get = FakeLidarr.do_GET
+
+        def refreshing(handler):
+            if handler.path.startswith("/api/v1/album?") and "artistId=" in handler.path:
+                return handler._send(200, [])
+            return real_get(handler)
+        with mock.patch.object(FakeLidarr, "do_GET", refreshing), \
+                mock.patch.object(jobs, "retry_pictures_later", lambda *a, **k: None):
+            job, _ = jobs.handle_webhook({"eventType": "ArtistAdd", "artist": {"id": 1}})
+            job(self.db)
+        for fn in own:
+            fn(self.db)
         searches = [c for c in self.calls("POST", "/api/v1/command") if (c[2] or {}).get("name") == "AlbumSearch"]
         self.assertEqual(len(searches), 1)
         self.assertFalse(self.row().request_pending)

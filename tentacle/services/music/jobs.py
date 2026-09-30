@@ -14,7 +14,7 @@ import json
 import logging
 import time
 from collections import Counter
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from models.database import MusicAlbum, MusicArtist, get_setting, set_setting
 from services.lidarr import LidarrError
@@ -25,9 +25,6 @@ logger = logging.getLogger(__name__)
 
 # How long to wait for Lidarr to load a new album's releases (about a minute).
 RELEASE_WAIT = (2, 3, 5, 5, 10, 10, 15, 15)
-# A request still unfinished this long after it was made is given up, with a
-# message on the album (Lidarr never loaded its releases, or kept failing).
-REQUEST_GIVE_UP_DAYS = 14
 
 progress = {"running": False, "done": 0, "total": 0, "started": None, "trigger": None}
 
@@ -59,10 +56,12 @@ def finish_request(album_id: int, rgid: str, choice: dict = None, sleep=time.sle
                 break
             sleep(delay)
             album = client.album(album_id)
+        existed = db.query(MusicAlbum).filter(MusicAlbum.mbid == album.get("foreignAlbumId")).first()
         row = library.upsert_album(db, album)
-        if not row.request_pending:
+        if existed is not None and not row.request_pending:
             # Finished already: the same album was requested twice at once, and the
-            # other request's job pinned and searched it. Once is enough.
+            # other request's job pinned and searched it. Once is enough. (A row this
+            # job had to write again, removed meanwhile, is still owed.)
             db.commit()
             return
         if resumed and int((album.get("statistics") or {}).get("trackFileCount") or 0):
@@ -139,22 +138,7 @@ def finish_pending_requests(db, errors: list = None) -> int:
         except (MusicBrainzError, library.MusicUnavailable) as e:
             if errors is not None:
                 errors.append(f"{title}: {e.message}")
-        _give_up_if_too_old(db, row)
     return done
-
-
-def _give_up_if_too_old(db, row: MusicAlbum) -> None:
-    """A request still owed REQUEST_GIVE_UP_DAYS after it was made stops being retried
-    every day; the album says so, and a new request tries again."""
-    cutoff = datetime.utcnow() - timedelta(days=REQUEST_GIVE_UP_DAYS)
-    if not row.request_pending or not row.requested_at or row.requested_at > cutoff:
-        return
-    _request_done(row)
-    row.verdict = {"state": f"Not pinned or searched: Tentacle couldn't finish this request in "
-                            f"{REQUEST_GIVE_UP_DAYS} days (Lidarr didn't load its releases, or kept "
-                            f"failing). Request it again to retry."}
-    db.commit()
-    worker.record_error(f"'{row.artist_name} - {row.title}': request given up after {REQUEST_GIVE_UP_DAYS} days")
 
 
 def resume_requests() -> None:
