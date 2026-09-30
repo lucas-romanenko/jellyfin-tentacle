@@ -188,10 +188,14 @@ build features without his `approved` label). Tentacle specifics:
 ## Releasing is Lucas's decision
 
 Releasing publishes to other people's servers and Jellyfin installs, so
-only Lucas tags or creates releases. Agents never tag or release (the
-workbench's guard asks before any tag push, `gh release` change or `gh
-workflow run`, and before a push that changes
-`tentacle-plugin/manifest.json`). A session ends with
+only Lucas tags or creates releases. Agents never tag or release: GitHub
+refuses it (ruleset "release tags": `v*` and `plugin-v*` only from a deploy
+key, and agents have none), and the workbench's guard refuses tag pushes,
+`gh release` changes and `gh workflow run` (it asks before a push that
+changes `tentacle-plugin/manifest.json`). main moves only through a pull
+request whose `unit` check passed (ruleset "main"): push a branch, `gh pr
+create`, `gh pr checks <n> --watch`, `gh pr merge <n> --squash
+--delete-branch`. A session ends with
 draft release notes (user-visible changes by area, issue numbers in
 brackets, upgrade notes; `git log vA.B.C..main`) and "ready to release
 vX.Y.Z", plus "and plugin-vX.Y.Z" when `tentacle-plugin/` changed since the
@@ -213,21 +217,26 @@ Plugin Release workflow edits it; never edit it by hand.
 
 ### Server release (Lucas)
 
+The one way to make a release tag is `tentacle-tag` on Lucas's server, run
+by him (it pushes with a release deploy key only he has; details and install
+are in his homelab manual, docs/tentacle.md "Rulesets and releases"). It
+checks the tag is new and well formed, the commit is on main and its Tests
+(`unit`) passed, then pushes an annotated tag. The GitHub UI can't create a
+release tag any more (the ruleset has no admin bypass).
+
 1. Main is green: the Tests run for the commit passed
    (`gh run list -R lucas-romanenko/jellyfin-tentacle --branch main -L 3`).
-2. Tag that commit and push the tag (or create the release in the GitHub UI
-   on a new tag `vX.Y.Z` targeting main, which does the same):
+2. On the server's host shell:
    ```
-   git -C /code/jellyfin-tentacle pull --ff-only
-   git -C /code/jellyfin-tentacle tag -a v1.9.0 -m "v1.9.0"
-   git -C /code/jellyfin-tentacle push origin v1.9.0
+   tentacle-tag jellyfin-tentacle v1.10.0            # main's tip
+   tentacle-tag jellyfin-tentacle v1.10.0 <sha>      # or a given commit on main
    ```
    The last release is v1.9.0 (2026-09-29, with plugin-v2.271.0), so the
    next is 1.9.1 or 1.10.0. Semver: `vX.Y.Z`, pre-releases `vX.Y.Z-rc.N`.
    The docs deploy on a tag needs the `github-pages` environment to allow
    it: its deployment rules allow the branch `main` and tags `v*` (added
    2026-09-29, after the v1.9.0 docs deploy was refused).
-3. Optional: `gh release create v1.9.0 --verify-tag --notes-file notes.md`
+3. Optional: `gh release create v1.10.0 --verify-tag --notes-file notes.md`
    for release notes on GitHub (it fires Docker Publish again for the same
    tag; the concurrency group runs them in turn and the result is the same).
 
@@ -255,11 +264,16 @@ deploys and checks his own is in his homelab manual.
 
 ### Plugin release (Lucas)
 
-Tag `plugin-vX.Y.Z` on main and push it (with a server release on the same
-commit, tag the plugin first). Check: the GitHub release has
-`tentacle-plugin-vX.Y.Z.zip`, and main has the bot's "Update plugin manifest
-for vX.Y.Z" commit. Notes: `gh release edit plugin-vX.Y.Z --notes-file
-notes.md --latest=false`, so the server release stays "latest".
+`tentacle-tag jellyfin-tentacle plugin-vX.Y.Z <sha>` (with a server release
+on the same commit, tag the plugin first, then `tentacle-tag
+jellyfin-tentacle vX.Y.Z <sha>` on the same sha: the manifest commit moves
+main's tip). Plugin Release pushes the manifest commit to main with its own
+deploy key (secret `MANIFEST_DEPLOY_KEY` of environment `plugin-manifest`,
+which only `plugin-v*` tags may use; main's ruleset has no other bypass).
+Check: the GitHub release has `tentacle-plugin-vX.Y.Z.zip`, and main has the
+bot's "Update plugin manifest for vX.Y.Z" commit (with a Tests run). Notes:
+`gh release edit plugin-vX.Y.Z --notes-file notes.md --latest=false`, so the
+server release stays "latest".
 
 ## Open items
 
