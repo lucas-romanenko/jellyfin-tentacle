@@ -240,8 +240,8 @@ User docs: `docs/features/live-tv.md`.
   duration) for a segment. httpx's read timeout is per read, so a body that
   trickles never reaches it. Past the bound it is a ReadTimeout, retried
   like a stall; the next read of that kind gets twice the time (up to 4x)
-  and a body that arrives resets it, so a provider that turned slow but
-  still delivers is waited for.
+  and a body that arrives within the plain bound resets it, so a provider
+  that turned slow but still delivers is waited for.
 - Two-phase sync: groups with counts, then channels for enabled groups; a
   channel sync chains into an EPG sync. The EPG (XMLTV, cached on disk) is
   stored for *all* provider channels, so newly enabled ones have a guide.

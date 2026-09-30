@@ -66,6 +66,26 @@ class _Slow(httpx.AsyncByteStream):
         pass
 
 
+class _SlowGrowing(httpx.AsyncByteStream):
+    """A live playlist that takes 12 s to arrive (3 s parts); each one that is
+    read to the end adds a segment (the fourth ends the stream)."""
+
+    def __init__(self, state):
+        self.state = state
+
+    async def __aiter__(self):
+        done = self.state["done"]
+        body = _playlist(*range(1, done + 3), end=done >= 3)
+        step = len(body) // 4 + 1
+        for i in range(0, len(body), step):
+            await asyncio.sleep(3.0)
+            yield body[i:i + step]
+        self.state["done"] += 1
+
+    async def aclose(self):
+        pass
+
+
 def _trickle(url, ct):
     return httpx.Response(200, headers=ct, stream=_Trickle(), request=httpx.Request("GET", url))
 
@@ -178,6 +198,20 @@ class RunningStreamTrickle(unittest.IsolatedAsyncioTestCase):
         out, t, log = await _run(script, failure_budget=0, is_recording=lambda: True)
         self.assertEqual(DATA[1] + DATA[2] + DATA[3], out, "a slow but complete playlist was cut every time")
         self.assertLess(t, 120)
+
+    async def test_a_playlist_that_stays_slow_is_cut_once_not_every_other_time(self):
+        # After the first cut every refresh arrives in 12 s, inside the doubled
+        # bound. It keeps the doubled bound: had it gone back to 10 s, every
+        # other refresh would be cut and the stream would fall behind.
+        state = {"done": 0}
+        slow = lambda: httpx.Response(200, headers=PLAYLIST_CT, stream=_SlowGrowing(state),
+                                      request=httpx.Request("GET", BASE))
+        script = {BASE: [_ok(BASE, _playlist(1), PLAYLIST_CT), slow]}
+        for n in range(1, 6):
+            script[SEG.format(n)] = [_ok(SEG.format(n), DATA[n], TS_CT)]
+        out, t, log = await _run(script, failure_budget=0, is_recording=lambda: True)
+        self.assertEqual(b"".join(DATA[n] for n in range(1, 6)), out)
+        self.assertEqual(1 + 1 + 4, log.count(BASE), "a refresh was cut again after the first cut")
 
     async def test_the_bound_doubles_after_a_cut_up_to_four_times_and_resets_on_a_body(self):
         import routers.livetv as livetv

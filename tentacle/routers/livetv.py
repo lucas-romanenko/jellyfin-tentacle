@@ -146,13 +146,16 @@ async def _aread_within(resp, seconds: float, stretch=None) -> bytes:
 
     stretch ({"x": 1.0}, one per stream and kind of read): a read cut at its
     bound gives the next one twice the time, up to _HLS_READ_STRETCH_MAX; a
-    body that arrives puts it back. A provider that has turned slow but still
-    delivers is waited for; a trickle is still cut.
+    body that arrives within the plain bound puts it back (one that needed
+    the extra time keeps it, or every other read of a slow provider would be
+    cut again). A provider that has turned slow but still delivers is waited
+    for; a trickle is still cut.
 
     asyncio.timeout(), not wait_for(): on Python 3.11 wait_for() can swallow
     a cancellation that arrives as the read completes, and the stream would
     go on pulling from the provider after its client left."""
     factor = stretch["x"] if stretch else 1.0
+    t0 = asyncio.get_running_loop().time()
     try:
         async with asyncio.timeout(seconds * factor):
             body = await resp.aread()
@@ -161,7 +164,7 @@ async def _aread_within(resp, seconds: float, stretch=None) -> bytes:
             stretch["x"] = min(factor * 2, _HLS_READ_STRETCH_MAX)
         raise httpx.ReadTimeout(f"the body did not arrive within {seconds * factor:.0f}s",
                                 request=resp.request) from None
-    if stretch is not None:
+    if stretch is not None and asyncio.get_running_loop().time() - t0 <= seconds:
         stretch["x"] = 1.0
     return body
 
