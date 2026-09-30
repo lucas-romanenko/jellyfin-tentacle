@@ -80,7 +80,7 @@ def finish_request(album_id: int, rgid: str, choice: dict = None, sleep=time.sle
             row.verdict = {"state": "Waiting for Lidarr to load this album's releases; the daily check "
                                     "will pin it."}
             db.commit()
-            worker.record_error(f"'{album.get('title')}': Lidarr hadn't loaded its releases after a minute")
+            worker.record_error(f"'{album.get('title')}': Lidarr hasn't loaded this album's releases yet; trying again at the next check")
             return
         if not album.get("monitored"):
             client.set_monitored([album_id], True)
