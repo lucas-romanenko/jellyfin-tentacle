@@ -50,6 +50,22 @@ class _Trickle(httpx.AsyncByteStream):
         pass
 
 
+class _Slow(httpx.AsyncByteStream):
+    """The whole body, in 4 parts 3 s apart: 12 s, never a per-read timeout."""
+
+    def __init__(self, body):
+        self.body = body
+
+    async def __aiter__(self):
+        step = len(self.body) // 4 + 1
+        for i in range(0, len(self.body), step):
+            await asyncio.sleep(3.0)
+            yield self.body[i:i + step]
+
+    async def aclose(self):
+        pass
+
+
 def _trickle(url, ct):
     return httpx.Response(200, headers=ct, stream=_Trickle(), request=httpx.Request("GET", url))
 
@@ -145,13 +161,55 @@ class RunningStreamTrickle(unittest.IsolatedAsyncioTestCase):
                   SEG.format(2): [lambda: _trickle(SEG.format(2), TS_CT)]}
         out, t, log = await _run(script, failure_budget=60, is_recording=lambda: False)
         self.assertEqual(DATA[1], out)
-        self.assertLess(t, 60 + 2 * 20 + 15, "the viewer's budget did not bound a trickle")
+        # the budget, plus the read in flight when it runs out (the bound grows
+        # to 4x after cuts), plus one capped backoff
+        self.assertLess(t, 60 + 4 * 20 + 15, "the viewer's budget did not bound a trickle")
+
+    async def test_a_playlist_that_has_turned_slow_but_arrives_keeps_the_recording_going(self):
+        # Every refresh takes 12 s: past the 10 s bound, but it does arrive.
+        # The bound grows after a cut, so the next read gets it; a fixed bound
+        # cut every refresh and the recording got nothing more.
+        slow = lambda: httpx.Response(200, headers=PLAYLIST_CT, stream=_Slow(_playlist(1, 2, 3, end=True)),
+                                      request=httpx.Request("GET", BASE))
+        script = {BASE: [_ok(BASE, _playlist(1), PLAYLIST_CT), slow],
+                  SEG.format(1): [_ok(SEG.format(1), DATA[1], TS_CT)],
+                  SEG.format(2): [_ok(SEG.format(2), DATA[2], TS_CT)],
+                  SEG.format(3): [_ok(SEG.format(3), DATA[3], TS_CT)]}
+        out, t, log = await _run(script, failure_budget=0, is_recording=lambda: True)
+        self.assertEqual(DATA[1] + DATA[2] + DATA[3], out, "a slow but complete playlist was cut every time")
+        self.assertLess(t, 120)
+
+    async def test_the_bound_doubles_after_a_cut_up_to_four_times_and_resets_on_a_body(self):
+        import routers.livetv as livetv
+        loop = asyncio.get_running_loop()
+        loop.slow_callback_duration = 3600
+        real_sleep = asyncio.sleep
+        clock = {"t": 0.0}
+
+        async def vsleep(delay, *a):
+            end = clock["t"] + delay
+            while clock["t"] < end:
+                clock["t"] = min(end, clock["t"] + 0.25)
+                await real_sleep(0)
+
+        stretch = {"x": 1.0}
+        took = []
+        with patch("asyncio.sleep", vsleep), patch.object(loop, "time", lambda: clock["t"]):
+            for _ in range(4):
+                t0 = clock["t"]
+                with self.assertRaises(httpx.ReadTimeout):
+                    await livetv._aread_within(_trickle(SEG.format(1), TS_CT), 10.0, stretch)
+                took.append(round(clock["t"] - t0))
+            self.assertEqual([10, 20, 40, 40], took)
+            await livetv._aread_within(_ok(SEG.format(1), DATA[1], TS_CT), 10.0, stretch)
+            self.assertEqual(1.0, stretch["x"])
 
     def test_the_segment_bound_scales_with_the_segment(self):
         import routers.livetv as livetv
         self.assertEqual(20.0, livetv._segment_read_limit(2))
         self.assertEqual(30.0, livetv._segment_read_limit(10))
         self.assertEqual(20.0, livetv._segment_read_limit(None))
+        self.assertEqual(20.0, livetv._segment_read_limit("abc"))
 
 
 if __name__ == "__main__":
