@@ -130,11 +130,11 @@ Both must pass; report their output. In a Claude session make runs in a
 sandbox that can't reach the server: `make deploy` builds the plugin, then
 stops with one exact `ops ...` line, and `make verify` / `make
 deploy-release` do the same. Run that line as a command of its own (a
-600000 ms timeout for a deploy). To confirm a fix on Lucas's server
-before merging it (triage below), push the branch and run
-`make deploy REF=<branch>` and `make verify REF=<branch>` (verify then also
-fails unless the branch's head is what runs); after the merge, `make deploy`
-and `make verify` put main back. This is private: the image is built
+600000 ms timeout for a deploy). Lucas's server runs main or a release
+tag (`make deploy REF=vX.Y.Z`), never a branch or a pull request: those
+are tried on his staging instance first (a contained copy with no media
+and no keys; how: his private manual), and contributed code never runs on
+the workbench (its tests come from CI). This is private: the image is built
 on the server itself, nothing goes to a registry or a release, and other
 installs are untouched. `make deploy-release` switches Lucas's server back
 to the latest public release (image `latest`, and the released plugin if a
@@ -168,9 +168,14 @@ build features without his `approved` label). Tentacle specifics:
   version, the client (web, Android TV app and its version, other) and any
   local patches or modifications. The bug report template asks the same.
 - Reproduced: failing test first, fix on `fix/<n>-<slug>`, push the
-  branch, `make deploy REF=fix/<n>-<slug>` + `make verify REF=...`, confirm
-  on Lucas's install, merge to main (pull requests: squash only), `make
-  deploy` + `make verify`, comment Cause and Change, close.
+  branch, open a pull request and confirm it on staging where staging can
+  show it, merge to main (pull requests: squash only), `make deploy` +
+  `make verify`, confirm on Lucas's install, comment Cause and Change,
+  close.
+- Pull requests from others: read the diff and CI's result; never check
+  them out to run or build here. A PR that changes `tentacle/Dockerfile`,
+  `requirements.txt` or `.dockerignore` can't be staged (its build steps
+  would run on the server): Lucas reviews it.
 - A plugin change restarts Jellyfin on deploy: first check that nobody is
   watching (how: the private manual).
 - Labels: `needs-info`, `needs-lucas` (a feature or idea waiting for
