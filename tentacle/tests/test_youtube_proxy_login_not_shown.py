@@ -14,6 +14,7 @@ same way).
 import io
 import logging
 import unittest
+from unittest import mock
 
 from models.database import get_setting, set_setting
 from services.youtube import traffic
@@ -24,6 +25,15 @@ PROXY = "http://someone:proxy-pw-5e1@gluetun:8888"
 
 class TrafficPageKeepsTheLoginOut(_pages._SavedProxy):
     _app = _pages.ThePagesSayWhatIsInUse._app
+
+    def setUp(self):
+        super().setUp()
+        # A Save reschedules the channel check on the app's scheduler; keep
+        # that job out of the modules that run after this one.
+        import main
+        p = mock.patch.object(main, "reschedule_youtube_index")
+        p.start()
+        self.addCleanup(p.stop)
 
     def client(self):
         from routers import youtube as yt_router
