@@ -85,6 +85,11 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   every scheduled sync.
 - **Duplicates**: found when a download also exists as VOD; resolved ones
   stay in the DB with their resolution (the sync enforces keep_radarr).
+  A duplicate is resolved once: the request first claims it (`pending` ->
+  `resolving`, committed before anything is deleted; any other request gets
+  409 / Resolve All skips it), `_apply_resolution` marks it in the same
+  commit as its own changes, a failure puts it back to `pending`, and so
+  does startup (`release_interrupted_resolutions`).
   Keep VOD (`routers/duplicates.py:_delete_downloaded_copy`) deletes the
   imported files through Radarr's `moviefile` / Sonarr's `episodefile/bulk`
   API (never a `.strm`: Sonarr 4 lists Tentacle's `.strm` files as episode
