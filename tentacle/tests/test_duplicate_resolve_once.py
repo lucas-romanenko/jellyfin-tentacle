@@ -189,6 +189,42 @@ class FailureAndRestart(_Base):
         duplicates._apply_resolution(dup, "keep_radarr", self.db)
         self.assertEqual("keep_radarr", self.state(949))
 
+    def _crash_right_after_the_deletion_log(self, resolution):
+        # log_deletion commits the resolution's changes (row converted / path
+        # cleared); a crash right after it must find the duplicate resolved,
+        # not pending with a copy deleted (the other Keep would then delete
+        # the last copy).
+        dup_id = self.add_film(949, "Heat (1995)")
+        real = duplicates.log_deletion
+
+        def log_then_crash(*a, **k):
+            real(*a, **k)
+            raise _Crash()
+        with mock.patch.object(duplicates, "log_deletion", log_then_crash):
+            with self.assertRaises(_Crash):
+                self.resolve(dup_id, resolution)
+        self.db.close(); self.db = self.Session(); self.addCleanup(self.db.close)   # restart
+        duplicates.release_interrupted_resolutions(self.db)
+        self.assertEqual(resolution, self.state(949))
+
+    def test_a_crash_right_after_keep_downloaded_is_saved_leaves_it_resolved(self):
+        self._crash_right_after_the_deletion_log("keep_radarr")
+        with self.assertRaises(HTTPException) as cm:
+            self.resolve(1, "keep_vod")
+        self.assertEqual(409, cm.exception.status_code)
+        self.assertTrue(self.films[949][1].exists(), "Keep VOD deleted the download after Keep Downloaded")
+
+    def test_a_crash_right_after_keep_vod_is_saved_leaves_it_resolved(self):
+        self._crash_right_after_the_deletion_log("keep_vod")
+        with self.assertRaises(HTTPException) as cm:
+            self.resolve(1, "keep_radarr")
+        self.assertEqual(409, cm.exception.status_code)
+        self.assertTrue(self.films[949][0].exists(), "Keep Downloaded deleted the VOD copy after Keep VOD")
+
+
+class _Crash(BaseException):
+    """The process dies (not an error the route handles)."""
+
 
 class Concurrent(_Base):
     def test_a_single_keep_vod_racing_resolve_all_never_deletes_both_copies(self):

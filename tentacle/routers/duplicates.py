@@ -31,7 +31,9 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
     keep_both   = do nothing
     Before either deletes a copy, every Jellyfin user's played state, resume
     point and favourite on it are merged onto the copy that stays.
-    The duplicate is marked resolved in the same commit as these changes.
+    The duplicate is marked resolved in the first commit that saves these
+    changes (log_deletion commits), and again at the end in case that commit
+    failed and rolled back.
     """
     if resolution == "keep_both":
         _mark_resolved(dup, resolution)
@@ -70,6 +72,7 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
         # and the Radarr/Sonarr scan sees an existing record — not a new movie.
         if record and record.source != downloaded_source:
             convert_record_to_downloaded(record, dup.media_type)
+        _mark_resolved(dup, resolution)   # log_deletion commits: the mark goes with the changes
         log_deletion(db, kind="duplicate-resolve", name=title or f"tmdb:{dup.tmdb_id}",
                      media_type=dup.media_type, reason="manual",
                      detail="Kept downloaded copy — VOD .strm/.nfo files deleted")
@@ -96,6 +99,7 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
         if radarr_movie:
             db.delete(radarr_movie)
             logger.info(f"Removed Radarr DB record for tmdb:{dup.tmdb_id}")
+        _mark_resolved(dup, resolution)   # log_deletion commits: the mark goes with the changes
         log_deletion(db, kind="duplicate-resolve", name=title or f"tmdb:{dup.tmdb_id}",
                      media_type=dup.media_type, reason="manual",
                      detail=f"Kept VOD copy — downloaded files deleted from {arr}")
