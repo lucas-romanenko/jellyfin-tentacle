@@ -785,14 +785,6 @@ def _rematch_in_place(db: Session, row: Movie, key: str, new: dict, tags: list, 
             logger.warning(f"[WrongMatch] Fix it for tmdb:{tmdb_id}: Jellyfin didn't take the update ({e}); "
                            f"nothing changed")
             raise WrongMatchError(502, JELLYFIN_DOWN)
-        # Fill what was just cleared (poster, rating, cast) from the NFO and the
-        # new TMDB id; ReplaceAllMetadata stays off, so nothing else is touched.
-        refreshed = jf.refresh_item_identity(item["Id"])
-    elif jf is not None:
-        try:
-            jf.trigger_library_scan(None)
-        except Exception:
-            pass
     try:
         _apply_rematch(db, row, key, new, tags, tmdb_id, new_tmdb_id, user_name,
                        strm, nfo, item["Id"] if item else row.jellyfin_item_id)
@@ -803,6 +795,17 @@ def _rematch_in_place(db: Session, row: Movie, key: str, new: dict, tags: list, 
         _restore_nfos(strm.parent, snapshot)
         logger.error(f"[WrongMatch] Fix it for tmdb:{tmdb_id} could not be saved: {e}")
         raise WrongMatchError(500, "Couldn't save the fix, so nothing was changed. Try again.")
+    # Only now that the fix is saved: a refresh or scan is queued in Jellyfin and
+    # downloads the new film's images, which no ItemUpdate can take back.
+    if item is not None:
+        # Fill what was just cleared (poster, rating, cast) from the NFO and the
+        # new TMDB id; ReplaceAllMetadata stays off, so nothing else is touched.
+        refreshed = jf.refresh_item_identity(item["Id"])
+    elif jf is not None:
+        try:
+            jf.trigger_library_scan(None)
+        except Exception:
+            pass
     _audit_rematch(db, key, old_title, row, tmdb_id, new_tmdb_id, user_name)
     if refreshed is False:
         from models.database import log_activity

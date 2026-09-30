@@ -63,7 +63,8 @@ class FakeJellyfin:
                      "Studios": [{"Name": "Old Studio"}], "People": [{"Name": "Old Actor"}],
                      "OfficialRating": "G", "CustomRating": "Family", "CriticRating": 80,
                      "ForcedSortName": "Old sort", "ProductionLocations": ["Oldland"], "LockData": False,
-                     "LockedFields": [], "DateCreated": "2026-01-01T10:00:00.0000000Z", "ProductionYear": 1990}
+                     "LockedFields": [], "DateCreated": "2026-01-01T10:00:00.0000000Z", "ProductionYear": 1990,
+                     "ImageTags": {"Primary": "old-poster"}}
         self.exists = True
         self.saver = False
         self.fail = {}           # call -> "down" | "fail" | "lost"
@@ -97,8 +98,14 @@ class FakeJellyfin:
             raise JellyfinUnavailable("read timed out")
 
     def refresh_item_identity(self, item_id):
+        """Queued in Jellyfin: it downloads the NFO's / TMDB's images, which
+        no ItemUpdate touches (10.11.8 ItemUpdateController never sets
+        ImageInfos), so an undo can't take them back."""
         self.refreshes.append(item_id)
-        return "refresh" not in self.fail      # never raises: any failure reads False
+        mode = self.fail.get("refresh")
+        if mode in (None, "lost"):
+            self.item["ImageTags"] = {"Primary": "poster-of-tmdb-" + self.item["ProviderIds"].get("Tmdb", "")}
+        return mode is None                    # never raises: any failure reads False
 
     def trigger_library_scan(self, *a):
         self.scans += 1
@@ -255,6 +262,27 @@ class TestNothingChangesWhenJellyfinCantBeTold(_Base):
         self.unchanged()
         self.assertFalse((self.folder / "movie.nfo").exists())
 
+    def test_a_failed_save_sends_no_refresh(self):
+        """The refresh is queued only once the fix is saved: an earlier one
+        downloads the new film's poster, and putting the identity back can't
+        undo that, so the old film would show the new film's artwork."""
+        with mock.patch.object(wrong_match, "_apply_rematch", side_effect=RuntimeError("database is locked")):
+            with self.assertRaises(wrong_match.WrongMatchError) as e:
+                self.fix()
+        self.assertEqual(500, e.exception.status)
+        self.assertEqual([], self.jf.refreshes)
+        self.assertEqual({"Primary": "old-poster"}, self.jf.item["ImageTags"])
+        self.unchanged()
+
+    def test_a_failed_save_sends_no_scan(self):
+        """Not in Jellyfin yet: no scan may read the new NFO before it is put back."""
+        self.jf.exists = False
+        with mock.patch.object(wrong_match, "_apply_rematch", side_effect=RuntimeError("database is locked")):
+            with self.assertRaises(wrong_match.WrongMatchError):
+                self.fix()
+        self.assertEqual(0, self.jf.scans)
+        self.assertEqual(OLD_NFO, self.nfo.read_bytes())
+
     def test_a_failed_refresh_still_saves_and_says_so(self):
         self.jf.fail["refresh"] = "fail"
         r = self.fix()
@@ -366,6 +394,9 @@ class TestProperty(_Base):
                     bad.append(f"{ctx}: failed ({status}) but the NFOs changed: {sorted(p.name for p in now_nfos)}")
                 if jf.item["ProviderIds"] != before_item["ProviderIds"] or jf.item["OfficialRating"] != before_item["OfficialRating"]:
                     bad.append(f"{ctx}: failed ({status}) but Jellyfin changed")
+                if jf.item["ImageTags"] != before_item["ImageTags"] or jf.refreshes or jf.scans:
+                    bad.append(f"{ctx}: failed ({status}) but a refresh/scan reached Jellyfin "
+                               f"(images {jf.item['ImageTags']})")
                 continue
             row = self.db.query(Movie).filter_by(tmdb_id=NEW).first()
             if row is None or row.strm_path != str(self.strm) or not self.db.query(MatchOverride).count():
