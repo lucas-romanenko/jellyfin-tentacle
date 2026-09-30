@@ -109,6 +109,11 @@ make check       # = scripts/check: the full unit suite, as CI runs it (a venv c
 
 The workbench's pre-push hook runs the check before main moves (about
 4 min). CI (`tests.yml`) runs the same script on every push and pull request.
+The suite runs without the network (`tests/hermetic.py`: no DNS, loopback
+connections only, no proxy), so it passes or fails the same in CI, on a
+laptop and in a sandbox: mock the service in the test (TMDB: `no_tmdb(self)`);
+a test that truly needs the network is `@live` and runs only with
+`TENTACLE_LIVE_TESTS=1`, never in `make check`.
 The suite runs with its own TMPDIR and the check fails if anything is left in
 it: a test's scratch dirs come from `temp_dir(self)` (`tests/tmp_dirs.py`),
 never a bare `tempfile.mkdtemp()`, and no test writes into the source tree.

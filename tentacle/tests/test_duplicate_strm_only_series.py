@@ -23,6 +23,7 @@ from sqlalchemy.orm import sessionmaker
 
 import models.database as mdb
 from models.database import Duplicate, Series
+from hermetic import no_tmdb
 from tmp_dirs import temp_dir
 
 
@@ -77,6 +78,7 @@ class _Base(unittest.TestCase):
         FakeSonarr.files_error = False
         mock.patch("services.sonarr.SonarrService", FakeSonarr).start()
         self.addCleanup(mock.patch.stopall)
+        no_tmdb(self)
 
 
 class ScanRecordsNoFalseDuplicate(_Base):
