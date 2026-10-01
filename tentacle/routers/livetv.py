@@ -53,7 +53,7 @@ from models.database import (
     log_activity,
 )
 from routers.auth import require_admin, require_internal_or_admin
-from services.ssrf import is_safe_url, lan_origin_guard
+from services.ssrf import explain_url, is_safe_url, lan_origin_guard
 from urllib.parse import urljoin
 
 logger = logging.getLogger(__name__)
@@ -3617,9 +3617,15 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
         # the admin deliberately configured on a LAN address (a local
         # re-streamer: tuliprox, xTeVe, Threadfin) is the one exception, and
         # only for its own origin -- see services.ssrf.lan_origin_guard (#76).
-        guard = lan_origin_guard(provider.server_url) if provider else is_safe_url
-        if not guard(stream_url):
-            logger.warning(f"[LiveTV] Blocked stream URL (non-public host) for channel {channel_id}: {stream_url}")
+        # Both resolve DNS with a blocking getaddrinfo: off the event loop, so a
+        # resolver that hangs (seconds per lookup in an outage) doesn't freeze
+        # every running stream with it. The log says what the name resolved to,
+        # or that it didn't resolve: a DNS outage is not an SSRF refusal.
+        guard = (await asyncio.to_thread(lan_origin_guard, provider.server_url)) if provider else is_safe_url
+        allowed, why = await asyncio.to_thread(explain_url, guard, stream_url)
+        if not allowed:
+            logger.warning(f"[LiveTV] Blocked stream URL for channel {channel_id} "
+                           f"({why or 'non-public host'}): {stream_url}")
             raise HTTPException(502, "Stream URL points to a non-public host")
 
         upstream = await _stream_proxy_inner(channel_id, user_agent, stream_url,
