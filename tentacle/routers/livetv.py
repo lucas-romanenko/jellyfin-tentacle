@@ -1089,10 +1089,34 @@ _pending_opens: "dict[int, asyncio.Future]" = {}
 # and the redirect chain. A follower waits this long before opening its own.
 _PENDING_OPEN_WAIT = 45.0
 
-# Segments of slack before a client is considered too slow. HLS segments are
-# usually 6s, so this is minutes of buffer -- a consumer further behind than
+# Slack before a client is considered too slow. A consumer further behind than
 # this is broken, and must not be allowed to stall the upstream or its peers.
+# Counted in pieces AND bytes, and a client loses its oldest piece only when it
+# is over BOTH: an HLS piece is a whole segment (usually 6s, so 32 of them is
+# minutes), but the raw TS path sends ~128 KB pieces, and 32 of those is only a
+# few seconds of an HD channel -- less than the backlog the provider hands over
+# after any pause (a stalled event loop, a frozen container, the replay a panel
+# sends on every re-dial). Dropping it then cut that much out of a recording.
 _SUBSCRIBER_QUEUE_MAX = 32
+_SUBSCRIBER_QUEUE_BYTES = 64 * 1024 * 1024
+
+
+class _ClientQueue(asyncio.Queue):
+    """An unbounded queue that knows how many bytes it holds; the slack above
+    is enforced by _SharedUpstream._publish."""
+
+    def _init(self, maxsize):
+        super()._init(maxsize)
+        self.nbytes = 0
+
+    def _put(self, item):
+        super()._put(item)
+        self.nbytes += len(item) if item else 0
+
+    def _get(self):
+        item = super()._get()
+        self.nbytes -= len(item) if item else 0
+        return item
 
 # How soon a pump that outlived its cancel() is cancelled again (see _cancel_pump).
 _PUMP_RECANCEL_SECONDS = 1.0
@@ -1327,25 +1351,24 @@ class _SharedUpstream:
         self._pump_started = False
 
     def subscribe(self) -> "asyncio.Queue":
-        q = asyncio.Queue(maxsize=_SUBSCRIBER_QUEUE_MAX)
+        q = _ClientQueue()
         self.subscribers.add(q)
         return q
 
     def _publish(self, item):
         for q in list(self.subscribers):
-            try:
-                q.put_nowait(item)
-            except asyncio.QueueFull:
-                # Drop this client's oldest segment rather than stalling the
-                # upstream (and therefore every other client on the channel).
+            q.put_nowait(item)
+            # Past its slack, drop this client's oldest piece rather than
+            # stalling the upstream (and therefore every other client on the
+            # channel). Never the end-of-stream marker, which is the newest.
+            while q.qsize() > _SUBSCRIBER_QUEUE_MAX and q.nbytes > _SUBSCRIBER_QUEUE_BYTES:
                 try:
                     q.get_nowait()
-                    q.put_nowait(item)
-                    logger.warning(
-                        f"[LiveTV] Client on channel {self.channel_id} is behind — "
-                        f"dropped a segment for it")
-                except (asyncio.QueueEmpty, asyncio.QueueFull):
-                    pass
+                except asyncio.QueueEmpty:
+                    break
+                logger.warning(
+                    f"[LiveTV] Client on channel {self.channel_id} is behind — "
+                    f"dropped a segment for it")
 
     async def _pump(self, body_iterator):
         self._pump_started = True
