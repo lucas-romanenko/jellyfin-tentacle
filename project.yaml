@@ -1,6 +1,6 @@
 # How agents may work on this repo: read by the maintainer's work tracker.
 lane: server-public      # public repo; main also runs on the maintainer's own server
 verify: make check       # read-only: the full unit suite, as CI runs it
-merge: false             # agents open pull requests; the maintainer merges
+merge: approved          # agents merge a pull request only after the maintainer approves it, at that head
 deploy: false            # the maintainer deploys and releases
 needs_lucas_labels: [needs-lucas, security]
