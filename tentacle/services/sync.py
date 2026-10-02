@@ -199,6 +199,14 @@ class XtreamClient:
                     raise ProviderDataError("the provider returned a web page instead of data "
                                             "(check the server URL and the account)")
                 raise ProviderDataError("the provider's answer was not valid data")
+            if isinstance(data, dict):
+                user_info = data.get("user_info")
+                if isinstance(user_info, dict) and not user_info.get("auth", 1):
+                    # The panel refused the login (a wrong or expired account) and
+                    # answers every action like this. Read as [] it looked like an
+                    # emptied category: after EMPTY_CATEGORY_STRIKES nights the run
+                    # was "completed" with no message again (#267).
+                    raise ProviderDataError("the provider refused the login: check the account and its expiry")
             return data if isinstance(data, list) else []
         except requests.ConnectionError as e:
             raise ProviderConnectionError(self.username, str(e))
