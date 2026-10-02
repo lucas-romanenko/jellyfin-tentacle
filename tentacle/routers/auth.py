@@ -445,6 +445,13 @@ def get_jellyfin_users(db: Session = Depends(get_db)):
             for u in users
         ]
     except Exception as e:
+        if db.query(TentacleUser).count() == 0:
+            # Nobody has signed in yet, so nobody can open Settings to correct
+            # the address: a 400 sends the dashboard back to the setup wizard,
+            # whose routes stay open until the first sign-in anyway.
+            logger.warning(f"Failed to fetch Jellyfin users before the first sign-in: {e}")
+            raise HTTPException(400, "Could not reach Jellyfin at the saved address. "
+                                     "Check the address, then continue.")
         logger.error(f"Failed to fetch Jellyfin users: {e}")
         raise HTTPException(502, f"Could not reach Jellyfin: {e}")
 

@@ -114,11 +114,9 @@ def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
     if "youtube_proxy" in body.settings:
         from services.youtube import traffic
         traffic.configure(proxy=get_setting(db, "youtube_proxy", "") or "")
-    # Mark setup complete if all required fields are filled
-    required = ["jellyfin_url", "jellyfin_api_key"]
-    all_set = all(get_setting(db, k) for k in required)
-    if all_set:
-        set_setting(db, "setup_complete", "true")
+    # setup_complete is the wizard's own to set (Get Started, Skip everything).
+    # Setting it on any save with a Jellyfin address and key ended the wizard
+    # at its first step: steps 2-6 were never shown again.
 
     if "music_reconcile_time" in body.settings:
         try:

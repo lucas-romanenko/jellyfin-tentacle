@@ -96,10 +96,15 @@ async function showLoginOverlay() {
     const resp = await fetch('/api/auth/users');
     if (!resp.ok) {
       if (resp.status === 400) {
-        // Jellyfin URL not configured — go to setup wizard
+        // Jellyfin URL not configured, or (before anyone has signed in) one
+        // that doesn't answer — go to setup wizard to enter or correct it
         overlay.style.display = 'none';
         if (shell) shell.removeAttribute('inert');
         document.getElementById('setup-overlay').style.display = 'flex';
+        const err = await resp.json().catch(() => ({}));
+        if (err.detail && err.detail !== 'Jellyfin URL not configured') {
+          document.getElementById('setup-jellyfin-result').innerHTML = `<span style="color:var(--red)">${escHtml(err.detail)}</span>`;
+        }
       } else {
         // Connection error (bad API key, unreachable, etc.)
         grid.innerHTML = '<div style="color:var(--red)">Cannot connect to Jellyfin. Check Settings.</div>';
@@ -283,6 +288,8 @@ async function checkSetup() {
       if (s.jellyfin_url) document.getElementById('setup-jellyfin-url').value = s.jellyfin_url;
       if (s.radarr_url) document.getElementById('setup-radarr-url').value = s.radarr_url;
       if (s.sonarr_url) document.getElementById('setup-sonarr-url').value = s.sonarr_url;
+      // Signed in already (the page was reloaded after step 2): go on at step 3.
+      if (s.jellyfin_url && s.jellyfin_api_key) setupGoTo(3);
     }
   } catch (e) {}
 }
