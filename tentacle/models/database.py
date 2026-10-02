@@ -1241,6 +1241,24 @@ def seed_defaults(db):
             db.commit()
         except IntegrityError:
             db.rollback()  # another worker inserted it first — fine
+    _forget_stored_builtin_tmdb_token(db)
+
+
+def _forget_stored_builtin_tmdb_token(db):
+    """A stored tmdb_bearer_token equal to the built-in token means "none of
+    my own": until #383 any Settings save stored the built-in token that
+    GET /api/settings/raw filled into the field. Clear it, so the field shows
+    "Using built-in key" again and a later built-in token reaches this install.
+    The token every TMDB call uses stays the same (get_tmdb_token falls back
+    to the built-in one), and a token of the user's own is never equal to it.
+    """
+    from services.tmdb import TMDB_DEFAULT_TOKEN
+    row = db.query(Setting).filter(Setting.key == "tmdb_bearer_token",
+                                   Setting.value == TMDB_DEFAULT_TOKEN).first()
+    if row is not None:
+        row.value = ""
+        db.commit()
+        logger.info("[migrate] Cleared a stored copy of the built-in TMDB token (Settings shows the built-in key again)")
 
 
 def migrate_orphaned_data_to_user(db, user_id: int):

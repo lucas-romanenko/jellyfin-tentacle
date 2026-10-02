@@ -108,10 +108,12 @@ def get_settings_raw(db: Session = Depends(get_db)):
     result = {s.key: s.value for s in settings if s.key not in NEVER_SERVED}
     if _bootstrap(db):
         _shown(result)
-    # Inject effective TMDB token (built-in fallback) if not explicitly set
-    if not result.get("tmdb_bearer_token") and not result.get("tmdb_api_key"):
-        from services.tmdb import TMDB_DEFAULT_TOKEN
-        result["tmdb_bearer_token"] = TMDB_DEFAULT_TOKEN
+    # No built-in TMDB token here (#383): the page posts every field back, so
+    # the first Save of anything stored it as the user's own token (the field
+    # then hid its "Using built-in key" placeholder for good, and a new
+    # built-in token would never reach that install). The server's own TMDB
+    # calls fall back to it (services/tmdb.get_tmdb_token), the plugin gets it
+    # from /plugin-keys.
     return result
 
 
@@ -124,6 +126,7 @@ def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
     for key in NEVER_SERVED & set(body.settings):
         _log.warning(f"Settings save: {key} is not settable here; ignored")
         body.settings.pop(key)
+    from services.tmdb import TMDB_DEFAULT_TOKEN
     if "youtube_proxy" in body.settings:
         # Checked as the YouTube page checks it: a proxy that can't be used
         # holds every YouTube request (services/youtube/traffic.py, #244).
@@ -139,6 +142,10 @@ def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
         # A secret sent back exactly as the masked listing showed it is unchanged
         if key in sensitive_keys and is_shown_form(value, get_setting(db, key, "") or ""):
             continue
+        if key == "tmdb_bearer_token" and value == TMDB_DEFAULT_TOKEN:
+            # The built-in token, posted back by a page loaded before #383:
+            # store "no token of your own", which is what it stands for.
+            value = ""
         if value in ("", None):
             if key in NON_EMPTY_DEFAULTS:
                 # A cleared "Recently added days" or match threshold (the
