@@ -5905,7 +5905,11 @@ async function fillSetupUrls() {
       let detected = '';
       try {
         const st = await api('/api/youtube/status');
-        detected = (st && st.suggested_base_url) || '';
+        // A saved YouTube address that doesn't answer is still the YouTube
+        // page's suggestion; here offer only what answers, else the browser's.
+        detected = (st && st.reachable && st.reachable.ok === false)
+          ? ((st.detected && st.detected.url) || '')
+          : ((st && st.suggested_base_url) || '');
       } catch (e) {}
       let host = '', port = '';
       try {
