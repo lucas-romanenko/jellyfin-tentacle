@@ -461,7 +461,10 @@ def test_provider(provider_id: int, db: Session = Depends(get_db)):
         p.status = "error"
         p.last_tested = datetime.utcnow()
         db.commit()
-        raise HTTPException(400, str(e))
+        # requests' error text carries the player_api.php?username=&password=
+        # URL; the Live TV provider test already redacts the same text.
+        from services.log_redaction import redact
+        raise HTTPException(400, redact(str(e)))
 
 
 @router.post("/{provider_id}/fetch-categories")
@@ -476,7 +479,8 @@ def fetch_categories(provider_id: int, db: Session = Depends(get_db)):
     try:
         vod_cats, series_cats, vod_counts, series_counts = fetch_provider_categories(p)
     except Exception as e:
-        raise HTTPException(400, f"Failed to fetch categories: {str(e)}")
+        from services.log_redaction import redact  # the error text carries the login URL
+        raise HTTPException(400, f"Failed to fetch categories: {redact(str(e))}")
 
     # Get existing categories for this provider
     existing = {
