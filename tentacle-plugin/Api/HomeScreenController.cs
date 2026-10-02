@@ -439,6 +439,15 @@ public class TentacleHomeController : ControllerBase
             return Ok(new QueryResult<BaseItemDto>());
         }
 
+        // The hero's playlist id comes from the caller's own home config, which
+        // they can set to any GUID (POST /TentacleHome/Hero stores it as given).
+        // Same rule as a row: only a playlist this user may read. Empty rather
+        // than 403, like every other reason there is no hero to show.
+        if (!CallerIdentity.CanReadPlaylist(playlist, user))
+        {
+            return Ok(new QueryResult<BaseItemDto>());
+        }
+
         var dtoOptions = new DtoOptions
         {
             Fields = new[]
