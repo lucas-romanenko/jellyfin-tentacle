@@ -347,8 +347,13 @@ def touch_strm(video) -> bool:
 
 def remove_video(video) -> int:
     """Delete one video's own folder. Never touches a shared parent."""
+    return remove_folder(video.folder_path)
+
+
+def remove_folder(folder_path) -> int:
+    """Delete one video folder by its path (see remove_video)."""
     deleted = 0
-    folder = Path(video.folder_path) if video.folder_path else None
+    folder = Path(folder_path) if folder_path else None
     if not folder or not folder.is_dir():
         return 0
     try:
