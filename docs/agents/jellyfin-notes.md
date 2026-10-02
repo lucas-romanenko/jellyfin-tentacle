@@ -1,7 +1,7 @@
 # Jellyfin, Radarr and Sonarr: hard-won notes
 
 What their APIs actually do (Jellyfin 10.11), found building Tentacle.
-Merged from Lucas's notes on 2026-09-28; the code wins.
+The code wins where they differ.
 
 ## Jellyfin
 
@@ -54,7 +54,7 @@ Merged from Lucas's notes on 2026-09-28; the code wins.
   (`/media/movies`, `/media/shows`, `/media/vod/...`) aren't Radarr's or
   Sonarr's. When calling their APIs, use *their* root folders (Radarr's is
   `/data/movies` in the common setup); Tentacle's own media paths are fixed
-  (see CLAUDE.md) and mapped by the compose volumes.
+  (see [server.md](server.md#stack)) and mapped by the compose volumes.
 - **Hybrid series** need a Sonarr root folder on the VOD shows directory
   (the same host folder as Tentacle's `/media/vod/shows`); Tentacle finds
   it by "vod" in the path.

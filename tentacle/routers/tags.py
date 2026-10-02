@@ -178,13 +178,16 @@ def delete_rule(rule_id: int, db: Session = Depends(get_db), user: TentacleUser 
         from services.smartlists import (
             _user_smartlists_path, _scan_existing, _get_jellyfin_user_id,
             write_home_config, _notify_jellyfin_plugin, bump_playlist_version,
+            playlist_names_still_made,
         )
         from services.jellyfin import JellyfinService
         import shutil
 
         smartlists_path = _user_smartlists_path(db, user.id)
         existing = _scan_existing(smartlists_path)
-        if rule_name in existing:
+        # Only if nothing else of this user's makes that playlist: a list on
+        # the same tag or a built-in of that name keeps it (#382).
+        if rule_name in existing and rule_name not in playlist_names_still_made(db, user.id):
             folder, old_data = existing[rule_name]
             # Delete Jellyfin playlist
             jf_url = get_setting(db, "jellyfin_url")

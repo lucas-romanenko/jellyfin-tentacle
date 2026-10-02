@@ -589,6 +589,14 @@ def get_desired_smartlists(db: Session, user_id: int = None) -> list:
     return smartlists
 
 
+def _rollback_quietly(db: Session) -> None:
+    """Leave the shared session usable for the next user after a failed one."""
+    try:
+        db.rollback()
+    except Exception:
+        pass
+
+
 def _scan_existing(smartlists_path: Path) -> dict:
     """Scan existing SmartList folders and return {name: (folder_path, config_data)}."""
     existing = {}
@@ -602,8 +610,10 @@ def _scan_existing(smartlists_path: Path) -> dict:
             try:
                 data = json.loads(config_file.read_text(encoding="utf-8"))
                 name = data.get("Name", "")
-                if name:
+                if isinstance(name, str) and name:
                     existing[name] = (folder, data)
+                elif name:
+                    logger.warning(f"[SmartLists] Skipping {config_file}: its Name is not text")
             except Exception:
                 continue
     return existing
@@ -727,6 +737,15 @@ def _enabled_toggle_names(db: Session, user_id: int) -> set:
     return names
 
 
+def playlist_names_still_made(db: Session, user_id: int) -> set:
+    """Names of the playlists something of this user's still makes: what
+    get_desired_smartlists() builds, plus the switched-on ones the orphan
+    sweep in sync_smartlists() protects. One name can have two producers (a
+    list and a rule on one tag, a rule named like a built-in), so a fast path
+    that removes a playlist by name must leave these alone (#382)."""
+    return {s["name"] for s in get_desired_smartlists(db, user_id=user_id)} | _enabled_toggle_names(db, user_id)
+
+
 def sync_smartlists(db: Session, user_id: int = None) -> dict:
     """Sync per-user SmartList config files to disk. Returns {created, updated, total}.
 
@@ -742,7 +761,15 @@ def sync_smartlists(db: Session, user_id: int = None) -> dict:
             return {"created": 0, "updated": 0, "removed": 0, "total": 0}
         combined = {"created": 0, "updated": 0, "removed": 0, "total": 0}
         for u in users:
-            result = sync_smartlists(db, user_id=u.id)
+            # One user's failure (a Jellyfin error, a config file that can't be
+            # read) must not stop the others, as in the nightly loop.
+            try:
+                result = sync_smartlists(db, user_id=u.id)
+            except Exception as e:
+                _rollback_quietly(db)
+                logger.warning(f"[SmartLists] Playlist sync failed for user {u.id}: {e}", exc_info=True)
+                combined["errors"] = combined.get("errors", 0) + 1
+                continue
             for key in ("created", "updated", "removed", "total"):
                 combined[key] += result.get(key, 0)
         # Artwork sync is global (once after all users)
@@ -1683,8 +1710,14 @@ def _refresh_smartlist_playlists_inner(db: Session, user_id: int = None, only_na
             return {"processed": 0, "created": 0, "updated": 0, "changed": 0, "errors": 0}
         combined = {"processed": 0, "created": 0, "updated": 0, "changed": 0, "errors": 0}
         for u in users:
-            result = _refresh_smartlist_playlists_inner(db, user_id=u.id, only_names=only_names,
-                                                        reorder_names=reorder_names)
+            try:  # one user's failure must not stop the others
+                result = _refresh_smartlist_playlists_inner(db, user_id=u.id, only_names=only_names,
+                                                            reorder_names=reorder_names)
+            except Exception as e:
+                _rollback_quietly(db)
+                logger.warning(f"[SmartLists] Playlist refresh failed for user {u.id}: {e}", exc_info=True)
+                combined["errors"] += 1
+                continue
             for key in ("processed", "created", "updated", "changed", "errors"):
                 combined[key] += result.get(key, 0)
         return combined
@@ -2072,14 +2105,17 @@ def _process_single_playlist_locked(jf, folder: Path, config: dict, user_id: str
 
     # Deduplicate items — Jellyfin can return the same content twice if it exists
     # in multiple libraries (e.g. "TV Shows" + "4K TV"). Keep first occurrence only.
+    # Keyed on the type too: TMDB numbers films and shows separately, so a film
+    # and a show with the same TMDB id are two titles (#384).
     seen_tmdb = set()
     deduped = []
     for item in items:
         tmdb_id = (item.get("ProviderIds") or {}).get("Tmdb")
-        if tmdb_id and tmdb_id in seen_tmdb:
+        key = (item.get("Type"), tmdb_id)
+        if tmdb_id and key in seen_tmdb:
             continue
         if tmdb_id:
-            seen_tmdb.add(tmdb_id)
+            seen_tmdb.add(key)
         deduped.append(item)
     if len(deduped) < len(items):
         logger.info(f"[SmartLists] '{name}': deduplicated {len(items)} → {len(deduped)} items")
@@ -2475,11 +2511,22 @@ def sync_single_custom_playlist(db: Session, user_id: int, rule_name: str, condi
     existing = _scan_existing(smartlists_path)
     is_new = rule_name not in existing
 
+    # A name this user's list, built-in, source or YouTube playlist already
+    # makes is that one's playlist (get_desired_smartlists skips the rule):
+    # refill it as it is, never rewrite it with the rule's filters (#382).
+    owner = next((s for s in get_desired_smartlists(db, user_id=user_id) if s["name"] == rule_name), None)
+    served_by_other = owner is not None and owner.get("source") != "custom"
+    if served_by_other and is_new:
+        return {"success": True, "name": rule_name, "item_count": 0, "is_new": False}
+
     # Never adopt a playlist another user's SmartList already owns (see
     # _playlist_ids_of_other_users).
     other_playlist_ids = _playlist_ids_of_other_users(db, user_id)
 
-    if is_new:
+    if served_by_other:
+        folder, config = existing[rule_name]
+        logger.info(f"[SmartLists] '{rule_name}' is made by a {owner.get('source')} playlist of the same name — left as it is")
+    elif is_new:
         folder_id = str(uuid.uuid4())
         folder = smartlists_path / folder_id
         folder.mkdir(parents=True, exist_ok=True)
@@ -2512,8 +2559,9 @@ def sync_single_custom_playlist(db: Session, user_id: int, rule_name: str, condi
                 config["UserPlaylists"] = [{"UserId": jf_user_id, "JellyfinPlaylistId": playlist_id}]
 
     # Write config to disk
-    config_file = folder / "config.json"
-    config_file.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    if not served_by_other:
+        config_file = folder / "config.json"
+        config_file.write_text(json.dumps(config, indent=2), encoding="utf-8")
 
     # Populate the Jellyfin playlist with matching items
     jf = JellyfinService(jellyfin_url, jellyfin_key, user_id=jf_user_id)
@@ -2681,9 +2729,14 @@ def toggle_auto_playlist_fast(db: Session, user_id: int, key: str, enabled: bool
 
         logger.info(f"[SmartLists] Fast toggle ON '{name}': {item_count} items")
     else:
-        # Disable: delete Jellyfin playlist + remove config folder
+        # Disable: delete Jellyfin playlist + remove config folder, unless
+        # another producer of this user's still makes a playlist of that name
+        # (a rule on the list's tag, #382): that one keeps it, and the next
+        # full sync gives it that producer's definition.
         item_count = 0
-        if name in existing:
+        if name in existing and name in playlist_names_still_made(db, user_id):
+            logger.info(f"[SmartLists] Fast toggle OFF '{name}': kept, another playlist source of this user makes it")
+        elif name in existing:
             folder, old_data = existing[name]
             # Delete Jellyfin playlist
             for entry in (old_data.get("UserPlaylists") or []):

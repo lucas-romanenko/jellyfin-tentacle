@@ -1454,13 +1454,16 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 }
 
 /* ── Library downloads section ── */
+/* The row wraps whenever the title would get less than 220 px, whatever the
+   screen: what squeezes the title is the row's own width, and above 768 px the
+   sidebar makes a tablet's row narrower than a phone's (#280). */
 .dl-item {
-  display: flex; align-items: center; gap: 12px;
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap; row-gap: 6px;
   padding: 8px 16px; border-bottom: 1px solid var(--border);
 }
 .dl-item:last-child { border-bottom: none; }
 .dl-item-title {
-  font-size: 13px; font-weight: 500; flex: 1; min-width: 0;
+  font-size: 13px; font-weight: 500; flex: 1 1 220px; min-width: 0;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .dl-item-status {

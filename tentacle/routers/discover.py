@@ -185,6 +185,68 @@ def _bust_jellyfin_ids_cache():
     _jf_ids_cache["ts"] = {"movie": 0, "series": 0}
 
 
+# (caller's Jellyfin user id, item id) -> (checked at, visible). Visibility
+# follows the caller's Jellyfin policy, which changes rarely.
+_visible_cache: dict = {}
+_visible_lock = threading.Lock()
+VISIBLE_TTL = 600
+VISIBLE_CACHE_MAX = 5000
+VISIBLE_TIMEOUT = 5
+# After Jellyfin failed to answer, other callers don't wait on it again for
+# this long (the id is left out meanwhile, as for a failure).
+VISIBLE_FAILURE_TTL = 30
+_visible_down_until = [0.0]
+
+
+def _caller_can_open(db: Session, request: Request, item_id: str) -> bool:
+    """Whether Jellyfin shows this item to the caller.
+
+    The in-library map is built as the configured Jellyfin user, so an item it
+    finds may be hidden from the caller. Asks Jellyfin as the caller
+    (GET /Items/{id}?userId=, which applies parental rating, blocked tags and
+    library access). 404 = hidden; a failure or another status counts as not
+    visible this time and is not cached. Skipped when the caller is that
+    configured user."""
+    import time as _time
+    try:
+        user = get_user_from_request(request, db)
+    except Exception:
+        return False
+    caller = (user.jellyfin_user_id or "").replace("-", "")
+    configured = (get_setting(db, "jellyfin_user_id", "") or "").replace("-", "")
+    if configured and caller == configured:
+        return True
+    key = (caller, str(item_id).replace("-", ""))
+    now = _time.time()
+    with _visible_lock:
+        hit = _visible_cache.get(key)
+        if hit and now - hit[0] < VISIBLE_TTL:
+            return hit[1]
+    if now < _visible_down_until[0]:
+        return False
+    url = (get_setting(db, "jellyfin_url", "") or "").rstrip("/")
+    api_key = get_setting(db, "jellyfin_api_key", "")
+    visible = False
+    if url and api_key and caller:
+        try:
+            import requests
+            r = requests.get(f"{url}/Items/{item_id}", params={"userId": caller},
+                             headers={"X-Emby-Token": api_key}, timeout=VISIBLE_TIMEOUT)
+            if r.status_code not in (200, 404):
+                logger.info(f"Discover detail: Jellyfin answered {r.status_code} checking item {key[1]}")
+                return False  # not cached: ask again next time
+            visible = r.status_code == 200
+        except Exception as e:
+            logger.info(f"Discover detail: could not check item {key[1]} for the caller: {e}")
+            _visible_down_until[0] = now + VISIBLE_FAILURE_TTL
+            return False  # not cached per item: asked again after the pause
+    with _visible_lock:
+        if len(_visible_cache) >= VISIBLE_CACHE_MAX:
+            _visible_cache.clear()
+        _visible_cache[key] = (now, visible)
+    return visible
+
+
 def _is_in_library(item: dict, known_ids: dict) -> bool:
     """Check if item is in library using the correct media-type-specific ID set.
 
@@ -305,13 +367,16 @@ def get_discover(
     tmdb = _get_tmdb(db)
     if not tmdb:
         return {"sections": []}
+    # One timeout per page load, not one per section: at 10 s each they added
+    # up past the plugin's 15 s. Cached sections still show.
+    tmdb.fail_fast = True
 
     known_ids = _known_tmdb_ids(db)
     sections = []
     tmdb_down = []
 
     def _tmdb_rows(fn, *args):
-        # A TMDB list that can't be reached (DNS, refused, reset) drops only its
+        # A TMDB list that can't be reached (DNS, refused, reset, no answer) drops only its
         # own section: the rest, and "From My Lists", still show (#273).
         try:
             return fn(*args)
@@ -526,8 +591,12 @@ def get_discover_detail(
         stored_id = None
     resolved_id = live_id or stored_id
     if resolved_id:
-        details["jellyfin_item_id"] = resolved_id
-        details["jellyfin_url"] = _jellyfin_web_url(db, resolved_id)
+        # Only a caller Jellyfin shows the item to gets an id to open it by
+        # (parental rating, blocked tags, library access); in_library and the
+        # stored id follow Jellyfin as before.
+        if _caller_can_open(db, request, resolved_id):
+            details["jellyfin_item_id"] = resolved_id
+            details["jellyfin_url"] = _jellyfin_web_url(db, resolved_id)
         if db_item is not None and getattr(db_item, "jellyfin_item_id", None) != resolved_id:
             try:
                 db_item.jellyfin_item_id = resolved_id

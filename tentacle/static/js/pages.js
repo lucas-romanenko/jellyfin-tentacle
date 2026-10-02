@@ -2979,8 +2979,8 @@ function _applyCoverageFilter() {
   }
 
   if (showAdd) {
-    const missingMovies = data.missing_movies || data.missing.filter(m => m.media_type !== 'series').length;
-    const missingSeries = data.missing_series || data.missing.filter(m => m.media_type === 'series').length;
+    const missingMovies = data.missing_movies ?? data.missing.filter(m => m.media_type !== 'series').length;
+    const missingSeries = data.missing_series ?? data.missing.filter(m => m.media_type === 'series').length;
     let btnsHtml = '';
     if (missingMovies > 0) {
       btnsHtml += `<button class="btn btn-primary btn-sm coverage-add-all-action" data-target="radarr" onclick="addAllMissingToArr('radarr')">Add ${missingMovies} to Radarr</button>`;
@@ -5905,7 +5905,11 @@ async function fillSetupUrls() {
       let detected = '';
       try {
         const st = await api('/api/youtube/status');
-        detected = (st && st.suggested_base_url) || '';
+        // A saved YouTube address that doesn't answer is still the YouTube
+        // page's suggestion; here offer only what answers, else the browser's.
+        detected = (st && st.reachable && st.reachable.ok === false)
+          ? ((st.detected && st.detected.url) || '')
+          : ((st && st.suggested_base_url) || '');
       } catch (e) {}
       let host = '', port = '';
       try {

@@ -36,7 +36,7 @@ from services.epg_categories import infer_category
 from services.youtube import livetv as youtube_livetv
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
@@ -53,7 +53,7 @@ from models.database import (
     log_activity,
 )
 from routers.auth import require_admin, require_internal_or_admin
-from services.ssrf import is_safe_url, lan_origin_guard
+from services.ssrf import explain_url, is_safe_url, lan_origin_guard
 from urllib.parse import urljoin
 
 logger = logging.getLogger(__name__)
@@ -117,6 +117,57 @@ async def _send_checked(client, url: str, headers: dict, guard=None):
             raise HTTPException(502, "Stream redirect points to a non-public host")
     raise HTTPException(502, "Too many redirects")
 
+
+# A running HLS stream's playlist reads: headers in, body within this long.
+_HLS_PLAYLIST_READ = 10.0
+# Its segment reads: this many times the segment's own duration (at least
+# _HLS_SEGMENT_READ_MIN s). A segment slower than that cannot keep a live
+# stream going anyway: the playlist window moves on while it arrives.
+_HLS_SEGMENT_READ_FACTOR = 3.0
+_HLS_SEGMENT_READ_MIN = 20.0
+# After a read is cut at its bound, the next one of that kind gets twice the
+# time, up to this many times the bound; a body that arrives resets it.
+_HLS_READ_STRETCH_MAX = 4.0
+
+
+def _segment_read_limit(target_duration) -> float:
+    try:
+        seconds = float(target_duration) * _HLS_SEGMENT_READ_FACTOR
+    except (TypeError, ValueError):
+        seconds = 0.0
+    return max(_HLS_SEGMENT_READ_MIN, seconds)
+
+
+async def _aread_within(resp, seconds: float, stretch=None) -> bytes:
+    """resp.aread() with a bound on the whole body. httpx's read timeout is
+    per read: a body that trickles a byte at a time never reaches it, and a
+    running recording would wait on it for as long as the provider likes.
+    Past the bound it is a ReadTimeout, retried like any other.
+
+    stretch ({"x": 1.0}, one per stream and kind of read): a read cut at its
+    bound gives the next one twice the time, up to _HLS_READ_STRETCH_MAX; a
+    body that arrives within the plain bound puts it back (one that needed
+    the extra time keeps it, or every other read of a slow provider would be
+    cut again). A provider that has turned slow but still delivers is waited
+    for; a trickle is still cut.
+
+    asyncio.timeout(), not wait_for(): on Python 3.11 wait_for() can swallow
+    a cancellation that arrives as the read completes, and the stream would
+    go on pulling from the provider after its client left."""
+    factor = stretch["x"] if stretch else 1.0
+    t0 = asyncio.get_running_loop().time()
+    try:
+        async with asyncio.timeout(seconds * factor):
+            body = await resp.aread()
+    except TimeoutError:        # asyncio.timeout's own: httpx raises only its own exceptions
+        if stretch is not None:
+            stretch["x"] = min(factor * 2, _HLS_READ_STRETCH_MAX)
+        raise httpx.ReadTimeout(f"the body did not arrive within {seconds * factor:.0f}s",
+                                request=resp.request) from None
+    if stretch is not None and asyncio.get_running_loop().time() - t0 <= seconds:
+        stretch["x"] = 1.0
+    return body
+
 # Opening a stream: statuses worth waiting out, and for how long. Kept well under
 # a tuner client's patience; the running worker has its own, longer budget.
 _OPEN_RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504, 509}
@@ -137,15 +188,50 @@ def _raw_retryable(status) -> bool:
 # ({"error":"There is an Database Error",...}, an HTML page). A raw connection
 # whose first bytes are not an MPEG-TS sync byte and that is labelled as text,
 # or starts like JSON/HTML, is such a page: never proxied, waited out like a
-# refusal. Real TS always starts with 0x47, whatever its label says.
+# refusal. Real TS always starts with 0x47, whatever its label says -- or,
+# when a connection starts mid-packet (its first byte can be anything, "{" and
+# "<" included), shows the sync byte every 188 bytes from within the first
+# packet.
 _NOT_MEDIA_TYPES = ("text/html", "application/json", "text/plain", "application/xml", "text/xml")
 
 
-def _looks_like_error_page(content_type: str, first: bytes) -> bool:
+def _ts_sync_offset(first: bytes):
+    """Where the first whole MPEG-TS packet starts in a connection's first
+    bytes: 0 when they start with the sync byte, k when 0x47 comes at k,
+    k+188 and k+376 (a start mid-packet), else None."""
     if first[:1] == b"G":
+        return 0
+    return next((k for k in range(min(188, len(first) - 376))
+                 if first[k] == first[k + 188] == first[k + 376] == 0x47), None)
+
+
+def _looks_like_error_page(content_type: str, first: bytes) -> bool:
+    if _ts_sync_offset(first) is not None:
         return False
     ct = (content_type or "").lower()
     return any(t in ct for t in _NOT_MEDIA_TYPES) or first.lstrip()[:1] in (b"{", b"<")
+
+
+async def _decidable_start(pieces, need: int = 564):
+    """The connection's pieces, the first ones merged until the start can be
+    judged: it begins with the sync byte, or holds three packets' worth (a
+    stream that starts mid-packet shows 0x47 every 188 bytes), or the
+    connection ended (an error page is short)."""
+    head = b""
+    try:
+        async for piece in pieces:
+            if head is not None:
+                head += piece
+                if head[:1] != b"G" and len(head) < need:
+                    continue
+                piece, head = head, None
+            yield piece
+    except httpx.HTTPError:
+        if head:
+            yield head      # what came before the drop still counts
+        raise
+    if head:
+        yield head
 
 
 def _raw_media_type(content_type: str) -> str:
@@ -203,6 +289,9 @@ _STREAM_ANSWER_LIMIT = 120.0
 class _NotAPlaylist(httpx.TransportError):
     """The channel URL answered with a stream where a playlist was expected."""
 _OPEN_RETRY_BUDGET = 20.0   # seconds
+# How long the open waits for the first playlist's body once its headers are in
+# (the variant read after it has the same bound).
+_OPEN_PLAYLIST_READ = 10.0
 
 # Backoff while a RUNNING stream re-dials. A transport error is retried on a
 # short cap (the tuner reader is waiting). A refusal -- 429/509, the account
@@ -1089,10 +1178,34 @@ _pending_opens: "dict[int, asyncio.Future]" = {}
 # and the redirect chain. A follower waits this long before opening its own.
 _PENDING_OPEN_WAIT = 45.0
 
-# Segments of slack before a client is considered too slow. HLS segments are
-# usually 6s, so this is minutes of buffer -- a consumer further behind than
+# Slack before a client is considered too slow. A consumer further behind than
 # this is broken, and must not be allowed to stall the upstream or its peers.
+# Counted in pieces AND bytes, and a client loses its oldest piece only when it
+# is over BOTH: an HLS piece is a whole segment (usually 6s, so 32 of them is
+# minutes), but the raw TS path sends ~128 KB pieces, and 32 of those is only a
+# few seconds of an HD channel -- less than the backlog the provider hands over
+# after any pause (a stalled event loop, a frozen container, the replay a panel
+# sends on every re-dial). Dropping it then cut that much out of a recording.
 _SUBSCRIBER_QUEUE_MAX = 32
+_SUBSCRIBER_QUEUE_BYTES = 64 * 1024 * 1024
+
+
+class _ClientQueue(asyncio.Queue):
+    """An unbounded queue that knows how many bytes it holds; the slack above
+    is enforced by _SharedUpstream._publish."""
+
+    def _init(self, maxsize):
+        super()._init(maxsize)
+        self.nbytes = 0
+
+    def _put(self, item):
+        super()._put(item)
+        self.nbytes += len(item) if item else 0
+
+    def _get(self):
+        item = super()._get()
+        self.nbytes -= len(item) if item else 0
+        return item
 
 # How soon a pump that outlived its cancel() is cancelled again (see _cancel_pump).
 _PUMP_RECANCEL_SECONDS = 1.0
@@ -1327,25 +1440,24 @@ class _SharedUpstream:
         self._pump_started = False
 
     def subscribe(self) -> "asyncio.Queue":
-        q = asyncio.Queue(maxsize=_SUBSCRIBER_QUEUE_MAX)
+        q = _ClientQueue()
         self.subscribers.add(q)
         return q
 
     def _publish(self, item):
         for q in list(self.subscribers):
-            try:
-                q.put_nowait(item)
-            except asyncio.QueueFull:
-                # Drop this client's oldest segment rather than stalling the
-                # upstream (and therefore every other client on the channel).
+            q.put_nowait(item)
+            # Past its slack, drop this client's oldest piece rather than
+            # stalling the upstream (and therefore every other client on the
+            # channel). Never the end-of-stream marker, which is the newest.
+            while q.qsize() > _SUBSCRIBER_QUEUE_MAX and q.nbytes > _SUBSCRIBER_QUEUE_BYTES:
                 try:
                     q.get_nowait()
-                    q.put_nowait(item)
-                    logger.warning(
-                        f"[LiveTV] Client on channel {self.channel_id} is behind — "
-                        f"dropped a segment for it")
-                except (asyncio.QueueEmpty, asyncio.QueueFull):
-                    pass
+                except asyncio.QueueEmpty:
+                    break
+                logger.warning(
+                    f"[LiveTV] Client on channel {self.channel_id} is behind — "
+                    f"dropped a segment for it")
 
     async def _pump(self, body_iterator):
         self._pump_started = True
@@ -3629,9 +3741,15 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
         # the admin deliberately configured on a LAN address (a local
         # re-streamer: tuliprox, xTeVe, Threadfin) is the one exception, and
         # only for its own origin -- see services.ssrf.lan_origin_guard (#76).
-        guard = lan_origin_guard(provider.server_url) if provider else is_safe_url
-        if not guard(stream_url):
-            logger.warning(f"[LiveTV] Blocked stream URL (non-public host) for channel {channel_id}: {stream_url}")
+        # Both resolve DNS with a blocking getaddrinfo: off the event loop, so a
+        # resolver that hangs (seconds per lookup in an outage) doesn't freeze
+        # every running stream with it. The log says what the name resolved to,
+        # or that it didn't resolve: a DNS outage is not an SSRF refusal.
+        guard = (await asyncio.to_thread(lan_origin_guard, provider.server_url)) if provider else is_safe_url
+        allowed, why = await asyncio.to_thread(explain_url, guard, stream_url)
+        if not allowed:
+            logger.warning(f"[LiveTV] Blocked stream URL for channel {channel_id} "
+                           f"({why or 'non-public host'}): {stream_url}")
             raise HTTPException(502, "Stream URL points to a non-public host")
 
         upstream = await _stream_proxy_inner(channel_id, user_agent, stream_url,
@@ -3754,6 +3872,17 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
             try:
                 resp = await _send_checked(client, open_url, {"User-Agent": user_agent}, guard)
                 resp.raise_for_status()
+                if "mpegurl" in resp.headers.get("content-type", "").lower():
+                    # The first playlist, bounded like the variant read below:
+                    # headers followed by no body (or a byte now and then) is
+                    # waited out as a failed open, not for the client's 120 s
+                    # read timeout while the tuner gives up and the slot and a
+                    # provider connection stay held.
+                    try:
+                        playlist_bytes = await asyncio.wait_for(resp.aread(), _OPEN_PLAYLIST_READ)
+                    except asyncio.TimeoutError:
+                        raise httpx.ReadTimeout(f"the playlist did not arrive within "
+                                                f"{_OPEN_PLAYLIST_READ:.0f}s", request=resp.request)
                 break
             except httpx.HTTPError as e:
                 if resp is not None:
@@ -3779,7 +3908,12 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 if not retryable or waited + open_backoff > _OPEN_RETRY_BUDGET:
                     logger.error(f"[LiveTV] Tokenized URL failed for channel {channel_id}"
                                  f"{f' after {waited:.0f}s of retries' if waited >= 1 else ''}: {e}")
-                    raise HTTPException(502, f"Failed to connect to stream: {e}")
+                    # The status or the error type, not the text: httpx puts the
+                    # request URL in it, and for Xtream that path holds the
+                    # account (/live/<user>/<pass>/). The log line above is redacted.
+                    why = (f"the provider answered {e.response.status_code}"
+                           if isinstance(e, httpx.HTTPStatusError) else type(e).__name__)
+                    raise HTTPException(502, f"Failed to connect to stream: {why}")
                 if (not open_reresolved and open_url != stream_url and rival_delivering is not None
                         and isinstance(e, httpx.HTTPStatusError)
                         and e.response.status_code in _REFUSAL_STATUS
@@ -3813,7 +3947,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
 
         if is_hls:
             # HLS playlist — read the playlist text, then we're done with this client
-            playlist_text = (await resp.aread()).decode("utf-8", errors="replace")
+            playlist_text = playlist_bytes.decode("utf-8", errors="replace")
             playlist_base = tokenized_url
             # Look at the media playlist before answering: a provider with
             # nothing for the channel serves one that holds only a placeholder
@@ -3913,7 +4047,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     try:
                         last_mark = loop.time()
                         last_piece = None
-                        async for piece in raw_resp.aiter_bytes():
+                        async for piece in _decidable_start(raw_resp.aiter_bytes()):
                             if conn_first:
                                 conn_first = False
                                 if _looks_like_error_page(conn_ct, piece):
@@ -3926,6 +4060,12 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                                     backoff_cap = _REFUSAL_BACKOFF_CAP
                                     logger.warning(f"[LiveTV] Raw stream for channel {channel_id}: {reason}")
                                     break
+                                k = _ts_sync_offset(piece)
+                                if k:
+                                    # Started mid-packet: the partial packet in
+                                    # front is unusable, and without it the
+                                    # stream stays cut on packet boundaries.
+                                    piece = piece[k:]
                                 if redialled:
                                     # An outage recovered from: counted once
                                     # the fresh connection really delivers.
@@ -3962,7 +4102,10 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     cut = len(pending) - (len(pending) % 188) if align else len(pending)
                     if cut:
                         yield pending[:cut]
-                    if loop.time() - opened_at >= HEALTHY_AFTER:
+                    # A recovery only if it delivered past HEALTHY_AFTER: an error
+                    # page, nothing, or a packet and then silence until the close
+                    # is still a failure, or a viewer's budget would never run out.
+                    if last_piece is not None and last_piece - opened_at >= HEALTHY_AFTER:
                         failing_since, slept, backoff, backoff_cap = None, 0.0, 1.0, _BACKOFF_CAP
                     if dropped_at is None:      # else: the outage never ended
                         dropped_at = loop.time()
@@ -4099,6 +4242,8 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
         BACKOFF_START = 1.0
         backoff_cap = _BACKOFF_CAP   # short while the tuner reader waits; longer after a 429/509
         CHUNK_RETRIES_IN_PLACE = 3
+        # How long this stream's playlist and segment bodies may take (_aread_within).
+        playlist_stretch, segment_stretch = {"x": 1.0}, {"x": 1.0}
         # A segment that will never arrive (404 / 410 / 403 on ONE chunk) is
         # skipped, not fatal: panels routinely 404 a segment that is not written
         # yet or has just expired, and ending the stream there is the truncated
@@ -4239,7 +4384,8 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     r.raise_for_status()
                     if "mpegurl" not in r.headers.get("content-type", "").lower():
                         raise _NotAPlaylist("the channel now answers with a stream, not a playlist")
-                    return (await r.aread()).decode("utf-8", errors="replace"), str(r.url)
+                    body = await _aread_within(r, _HLS_PLAYLIST_READ, playlist_stretch)
+                    return body.decode("utf-8", errors="replace"), str(r.url)
                 finally:
                     await r.aclose()
 
@@ -4433,7 +4579,8 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         v_resp = await _send_checked(hls_client, variant, ua_headers, guard)
                         try:
                             v_resp.raise_for_status()
-                            variant_text = (await v_resp.aread()).decode("utf-8", errors="replace")
+                            variant_text = (await _aread_within(v_resp, _HLS_PLAYLIST_READ, playlist_stretch)).decode(
+                                "utf-8", errors="replace")
                         finally:
                             await v_resp.aclose()
                     except Exception as e:
@@ -4558,7 +4705,9 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                                 pr = await _send_checked(hls_client, probe, ua_headers, guard)
                                 try:
                                     pr.raise_for_status()
-                                    same = hashlib.sha1(await pr.aread()).digest() == last_payload_hash
+                                    body = await _aread_within(pr, _segment_read_limit(target_duration),
+                                                               segment_stretch)
+                                    same = hashlib.sha1(body).digest() == last_payload_hash
                                 finally:
                                     await pr.aclose()
                             except Exception as e:
@@ -4606,7 +4755,8 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                                 if placeholder:
                                     raise _ProviderPlaceholder(placeholder)
                                 chunk_resp.raise_for_status()
-                                payload = await chunk_resp.aread()
+                                payload = await _aread_within(chunk_resp, _segment_read_limit(target_duration),
+                                                              segment_stretch)
                             finally:
                                 await chunk_resp.aclose()
                             break
@@ -4703,7 +4853,8 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     pl_resp = await _send_checked(hls_client, current_base, ua_headers, guard)
                     try:
                         pl_resp.raise_for_status()
-                        refreshed = (await pl_resp.aread()).decode("utf-8", errors="replace")
+                        refreshed = (await _aread_within(pl_resp, _HLS_PLAYLIST_READ, playlist_stretch)).decode(
+                            "utf-8", errors="replace")
                     finally:
                         await pl_resp.aclose()
                 except Exception as e:
@@ -4844,7 +4995,7 @@ def _third_party_icon(url: Optional[str], provider_hosts: "set[str]") -> Optiona
 @router.get("/api/live/xmltv.xml")
 def hdhr_xmltv(db: Session = Depends(get_db)):
     """Serve XMLTV guide data for enabled channels."""
-    from services.xmltv import generate_xmltv
+    from services.xmltv import iter_xmltv
 
     # Get enabled channels with EPG IDs
     channels = (
@@ -4886,20 +5037,27 @@ def hdhr_xmltv(db: Session = Depends(get_db)):
         epg_ids.add(yt["epg_channel_id"])
         epg_id_to_guide_numbers.setdefault(yt["epg_channel_id"], []).append(yt["guide_number"])
 
-    # Get programs for enabled channels, remapping channel_id to GuideNumber(s)
-    # When multiple channels share an EPG ID, duplicate programs for each
-    programs = []
-    inferred_categories = 0
+    # Programmes for enabled channels, remapping channel_id to GuideNumber(s).
+    # When multiple channels share an EPG ID, programmes are repeated for each.
+    # Rows are read in batches and written out as they come, so a large
+    # lineup with a long guide no longer holds every programme (as ORM rows,
+    # dicts, an element tree and one string) in memory per request.
     emit_sub_titles = _emit_sub_titles(db)
     provider_hosts = _provider_hosts(db, channels)
-    if epg_ids:
-        db_programs = (
-            db.query(EPGProgram)
+
+    def programs():
+        if not epg_ids:
+            return
+        inferred_categories = 0
+        rows = (
+            db.query(EPGProgram.channel_id, EPGProgram.title, EPGProgram.sub_title,
+                     EPGProgram.description, EPGProgram.start, EPGProgram.stop,
+                     EPGProgram.category, EPGProgram.icon_url)
             .filter(EPGProgram.channel_id.in_(epg_ids))
             .filter(EPGProgram.stop >= datetime.utcnow())
-            .all()
+            .yield_per(2000)
         )
-        for p in db_programs:
+        for p in rows:
             guide_numbers = epg_id_to_guide_numbers.get(p.channel_id, [])
             for gn in guide_numbers:
                 # Xtream providers commonly send no category, and without one
@@ -4911,7 +5069,7 @@ def hdhr_xmltv(db: Session = Depends(get_db)):
                     category = infer_category(p.title, guide_number_group.get(gn))
                     if category:
                         inferred_categories += 1
-                programs.append({
+                yield {
                     "channel_id": gn,
                     "title": p.title,
                     "sub_title": p.sub_title if emit_sub_titles else None,
@@ -4922,13 +5080,57 @@ def hdhr_xmltv(db: Session = Depends(get_db)):
                     # Stored for YouTube Live and provider programmes alike, and
                     # dropped here until #147: Jellyfin saves it as the art.
                     "icon_url": _third_party_icon(p.icon_url, provider_hosts),
-                })
+                }
+        if inferred_categories:
+            logger.info(
+                f"[LiveTV] XMLTV: inferred a category for {inferred_categories} programme(s) "
+                f"the provider sent none for"
+            )
 
-    if inferred_categories:
-        logger.info(
-            f"[LiveTV] XMLTV: inferred a category for {inferred_categories} programme(s) "
-            f"the provider sent none for"
-        )
+    # Written to a file first, then sent: the database is read only while the
+    # guide is written (one snapshot, as before), never for as long as a slow
+    # client takes to download it.
+    path = _write_guide_file(iter_xmltv(xmltv_channels, programs()))
+    return _GuideFileResponse(path, media_type="application/xml")
 
-    xml_content = generate_xmltv(xmltv_channels, programs)
-    return Response(content=xml_content, media_type="application/xml")
+
+_GUIDE_FILE_PREFIX = "tentacle-xmltv-"
+
+
+def _write_guide_file(chunks) -> str:
+    """The guide in a temporary file; the file is removed if writing fails.
+    Leftovers of a process that stopped mid-write are removed first."""
+    import glob
+    import os
+    import tempfile
+    import time
+    for old in glob.glob(os.path.join(tempfile.gettempdir(), _GUIDE_FILE_PREFIX + "*")):
+        try:
+            if time.time() - os.path.getmtime(old) > 3600:
+                os.unlink(old)
+        except OSError:
+            pass
+    fd, path = tempfile.mkstemp(prefix=_GUIDE_FILE_PREFIX, suffix=".xml")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            for chunk in chunks:
+                f.write(chunk)
+    except BaseException:
+        os.unlink(path)
+        raise
+    return path
+
+
+class _GuideFileResponse(FileResponse):
+    """A guide file sent once and then removed, also when the client goes
+    away mid-download."""
+
+    async def __call__(self, scope, receive, send):
+        import os
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            try:
+                os.unlink(self.path)
+            except OSError:
+                pass

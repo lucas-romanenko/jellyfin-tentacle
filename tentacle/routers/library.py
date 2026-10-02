@@ -71,6 +71,14 @@ def get_library_items(
 ):
     # List mode: return all items from the list with in_library status
     if list_id is not None:
+        # Lists are per user; every /api/lists route checks the owner, and so
+        # does this view of a list's contents (404 for another user's list).
+        from models.database import ListSubscription
+        owned = db.query(ListSubscription.id).filter(ListSubscription.id == list_id)
+        if not user.is_admin:
+            owned = owned.filter(ListSubscription.user_id == user.id)
+        if owned.first() is None:
+            raise HTTPException(404, "List not found")
         return _get_list_items(list_id, search, sort, list_status, limit, offset, db)
 
     movies_q = db.query(Movie)
@@ -374,9 +382,23 @@ def _arr_copy_in_jellyfin(jf, tmdb_id: int, media_type: str, arr_folder: str) ->
         if path.lower().endswith(".strm"):
             continue
         folder = path.replace("\\", "/").rsplit("/", 1)[0] if media_type == "movie" else path
-        if want and _path_tail(folder, 1) == want:
+        if want and _path_tail(folder, 1) == want and (media_type == "movie" or _has_downloaded_episode(jf, item["Id"])):
             return item["Id"]
     return None
+
+
+def _has_downloaded_episode(jf, series_id: str) -> bool:
+    """A show's path is its folder, and the VOD copy's folder has the same name
+    as Sonarr's ("<Title> (<Year>)"): the download is the show with an episode
+    file that is not a .strm. A listing that fails counts as no."""
+    try:
+        data = jf._get("/Items", params={"ParentId": series_id, "Recursive": "true",
+                                         "IncludeItemTypes": "Episode", "Fields": "Path", "Limit": 50,
+                                         "EnableImages": "false", "EnableUserData": "false"})
+    except Exception:
+        return False
+    return any((e.get("Path") or "") and not (e.get("Path") or "").lower().endswith(".strm")
+               for e in ((data or {}).get("Items") or []))
 
 
 def _cleanup_playlists_all_users(tmdb_id: int, media_type: str, jellyfin_item_id: str = None,
@@ -384,7 +406,7 @@ def _cleanup_playlists_all_users(tmdb_id: int, media_type: str, jellyfin_item_id
     """Background: remove an item from all users' playlists.
 
     arr_folder: the Radarr/Sonarr folder of a deleted download. Only the item
-    in that folder is removed; "the first item with this TMDB id" can be the
+    in that folder (for a show: with a downloaded episode) is removed; "the first item with this TMDB id" can be the
     VOD copy that stays (#296)."""
     from models.database import SessionLocal
     from services.jellyfin import JellyfinService
@@ -468,18 +490,31 @@ def _deleted_copy_is_rows(item, media_type: str, path: Optional[str]) -> bool:
     their last parts (folder/file for a film, the show folder for a series):
     Jellyfin, Radarr/Sonarr and Tentacle mount them at different prefixes.
     Without one (an older plugin), a VOD copy whose .strm is still on disk was
-    not the one deleted; anything else is taken as before."""
+    not the one deleted; anything else is taken as before.
+
+    A VOD copy still on disk (its .strm, or its show folder) was not the one
+    deleted, whatever the path says: Sonarr and Tentacle both name a show's
+    folder "<Title> (<Year>)", so in separate libraries the download's folder
+    has the VOD folder's name, and the one-part comparison matched it.
+    Jellyfin deletes a copy's files (a show's whole folder) before the plugin
+    forwards the deletion, so a copy it really deleted is gone from disk."""
     parts = 2 if media_type == "movie" else 1
     download = getattr(item, "radarr_path" if media_type == "movie" else "sonarr_path", None)
     own = [p for p in (item.strm_path, download) if p]
     tail = _path_tail(path, parts) if path else None
+    if item.strm_path:
+        try:
+            on_disk = Path(item.strm_path).exists()
+        except OSError:
+            on_disk = False  # can't tell: decide by the path, as before
+        if on_disk:
+            if tail and _path_tail(item.strm_path, parts) == tail:
+                logger.info(f"[Library] Jellyfin deleted {path}, which has the name of this title's "
+                            f"VOD copy {item.strm_path}; that is still on disk, so the row stays "
+                            f"(another copy, or a mount that lags Jellyfin's)")
+            return False
     if tail and own:
         return any(_path_tail(p, parts) == tail for p in own)
-    if item.strm_path and not download:
-        try:
-            return not Path(item.strm_path).exists()
-        except OSError:
-            return True
     return True
 
 

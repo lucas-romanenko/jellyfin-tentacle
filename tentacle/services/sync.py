@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from models.database import (
     Provider, ProviderCategory, Movie, Series,
-    SyncRun, CategorySnapshot, Duplicate, get_setting, log_deletion
+    SyncRun, CategorySnapshot, Duplicate, get_setting, set_setting, log_deletion
 )
 from services.tmdb import TMDBService
 from services.nfo import write_movie_nfo, write_series_nfo, make_folder_name, vod_folder_name, fit_file_stem
@@ -64,10 +64,16 @@ def chown_path(path) -> None:
     user Sonarr/Radarr run as, and a root-owned season folder made Sonarr's
     imports into it fail with "permission denied" weeks later. Nothing
     changes under a root-owned folder, or when Tentacle doesn't run as root.
+    The chown never follows a symlink (a link is skipped; one swapped in
+    between the check and the chown changes only the link itself), so what a
+    link points at is never re-owned. A real folder reached through a
+    symlinked show folder is library content and is handed over as usual.
     """
     try:
+        if os.path.islink(path):
+            return
         if VOD_PUID is not None:
-            os.chown(path, int(VOD_PUID), int(VOD_PGID or VOD_PUID))
+            os.chown(path, int(VOD_PUID), int(VOD_PGID or VOD_PUID), follow_symlinks=False)
             return
         if not hasattr(os, "geteuid") or os.geteuid() != 0:
             return
@@ -75,7 +81,7 @@ def chown_path(path) -> None:
         if (parent.st_uid, parent.st_gid) == (0, 0):
             return
         if (os.lstat(path).st_uid, os.lstat(path).st_gid) == (0, 0):
-            os.chown(path, parent.st_uid, parent.st_gid)
+            os.chown(path, parent.st_uid, parent.st_gid, follow_symlinks=False)
     except (OSError, ValueError) as e:
         logger.debug(f"chown_path failed for {path}: {e}")
 
@@ -88,7 +94,10 @@ def repair_hybrid_ownership(db) -> list:
     rows with sonarr_path set): chown the show dir, its season dirs, and any
     real video files not owned by PUID. Narrow on purpose — only hybrid shows
     are ever written to by Sonarr, so the huge pure-VOD catalog is never
-    walked. No-op when PUID is unset."""
+    walked. It skips a symlinked show folder and symlinked season folders (the
+    video files behind them are not re-owned; season folders reached through
+    a symlinked show folder are still handed over when the sync writes into
+    them). No-op when PUID is unset."""
     if VOD_PUID is None:
         return []
     from models.database import Series as _Series
@@ -98,9 +107,9 @@ def repair_hybrid_ownership(db) -> list:
                                        _Series.strm_path.isnot(None)).all()
     for s in hybrids:
         show_dir = Path(s.strm_path)
-        if not show_dir.is_dir():
+        if not show_dir.is_dir() or show_dir.is_symlink():
             continue
-        targets = [show_dir] + [d for d in show_dir.iterdir() if d.is_dir()]
+        targets = [show_dir] + [d for d in show_dir.iterdir() if d.is_dir() and not d.is_symlink()]
         for d in targets:
             try:
                 changed = False
@@ -199,6 +208,14 @@ class XtreamClient:
                     raise ProviderDataError("the provider returned a web page instead of data "
                                             "(check the server URL and the account)")
                 raise ProviderDataError("the provider's answer was not valid data")
+            if isinstance(data, dict):
+                user_info = data.get("user_info")
+                if isinstance(user_info, dict) and not user_info.get("auth", 1):
+                    # The panel refused the login (a wrong or expired account) and
+                    # answers every action like this. Read as [] it looked like an
+                    # emptied category: after EMPTY_CATEGORY_STRIKES nights the run
+                    # was "completed" with no message again (#267).
+                    raise ProviderDataError("the provider refused the login: check the account and its expiry")
             return data if isinstance(data, list) else []
         except requests.ConnectionError as e:
             raise ProviderConnectionError(self.username, str(e))
@@ -318,7 +335,7 @@ def _write_strm(strm_file: Path, url: str) -> None:
         if st is not None:
             try:
                 os.chmod(tmp, st.st_mode & 0o7777)
-                os.chown(tmp, st.st_uid, st.st_gid)
+                os.chown(tmp, st.st_uid, st.st_gid, follow_symlinks=False)
             except OSError:
                 pass  # not ours to give away (no root): the file is still written
         os.replace(tmp, strm_file)
@@ -1326,6 +1343,69 @@ def check_and_record_duplicate(
 EMPTY_CATEGORY_STRIKES = 3
 
 
+# A TMDB lookup that FAILED (429/5xx/timeout/unreachable/refused key) is not
+# "TMDB has no such title" (#377). With "Require TMDB match" off, such a title
+# used to be imported under a provider-only id, and from then on the known-title
+# map skipped its lookup for good. Now it is left for the next sync, like a
+# title with the setting on, for up to LOOKUP_RETRY_DAYS from its first failed
+# lookup; after that it is imported without a match as before, so an install
+# that can never reach TMDB still gets its titles. The first-failure times live
+# in one setting per provider and type, rewritten at the end of each sync with
+# only the titles that failed again (matched or vanished titles drop out).
+LOOKUP_RETRY_DAYS = 3
+
+
+def _save_failed_lookups(db: Session, failed_lookups: "_FailedLookups", kind: str) -> None:
+    if failed_lookups.deferred:
+        logger.info(f"[Sync] {failed_lookups.deferred} {kind} title(s) whose TMDB lookup failed are left for the "
+                    f"next sync instead of being imported without a match (after {LOOKUP_RETRY_DAYS} days of "
+                    f"failed lookups they are imported anyway)")
+    try:
+        failed_lookups.save(db)
+    except Exception as e:
+        db.rollback()
+        logger.warning(f"[Sync] Could not save the failed TMDB lookups: {e}")
+
+
+class _FailedLookups:
+    def __init__(self, db: Session, provider_id: int, media_type: str):
+        import json
+        self.key = f"tmdb_failed_lookups:{provider_id}:{media_type}"
+        try:
+            prior = json.loads(get_setting(db, self.key) or "{}")
+        except ValueError:
+            prior = {}
+        self.prior = prior if isinstance(prior, dict) else {}
+        self.tonight = {}
+        self.deferred = 0
+
+    def defer(self, lookup_key, now: datetime) -> bool:
+        """True: skip the title tonight and look it up again next sync."""
+        name, year = lookup_key
+        k = f"{name}|{year or ''}"
+        first = self.tonight.get(k) or self.prior.get(k)
+        try:
+            first = datetime.fromisoformat(first) if first else now
+            # A clock set back since: never later than now (no longer wait)
+            first = min(first.replace(tzinfo=None), now)
+        except (TypeError, ValueError, AttributeError):
+            first = now
+        if now - first >= timedelta(days=LOOKUP_RETRY_DAYS):
+            return False
+        self.tonight[k] = first.isoformat()
+        self.deferred += 1
+        return True
+
+    def save(self, db: Session) -> None:
+        import json
+        from models.database import Setting
+        if self.tonight:
+            set_setting(db, self.key, json.dumps(self.tonight, sort_keys=True))
+        elif self.prior or db.query(Setting).filter(Setting.key == self.key).first() is not None:
+            db.query(Setting).filter(Setting.key == self.key).delete()
+            db.commit()
+
+
 def _category_went_empty(db: Session, cat: ProviderCategory, returned: int) -> bool:
     """True when a category returned nothing but is known to hold titles.
 
@@ -1965,6 +2045,8 @@ def _sync_movies(
     ).all()
 
     logger.info(f"Movies: {len(whitelisted_cats)} whitelisted categories")
+    failed_lookups = _FailedLookups(db, provider.id, "movie")
+    lookup_now = datetime.utcnow()
 
     stats = {"new": 0, "existing": 0, "failed": 0, "skipped": 0}
     feed = []
@@ -2242,6 +2324,7 @@ def _sync_movies(
         # Pre-resolve: check which items we can skip entirely
         needs_tmdb = []  # (index, clean_name, year)
         tmdb_results = {}  # index → metadata
+        failed_idx = set()  # indices whose lookup failed (not "no match", #377)
         known_by_idx = {}  # index → tmdb_id of an already-imported film (no lookup)
 
         for idx, (stream, raw_name, clean_name, year) in enumerate(cleaned):
@@ -2277,6 +2360,7 @@ def _sync_movies(
                     idx, metadata, failed = future.result()
                     if failed:
                         lookup_failed += 1
+                        failed_idx.add(idx)
                     elif metadata:
                         tmdb_results[idx] = metadata
             if lookup_failed:
@@ -2404,7 +2488,7 @@ def _sync_movies(
                     continue
 
             if not metadata:
-                if require_tmdb:
+                if require_tmdb or (idx in failed_idx and failed_lookups.defer(lookup_key, lookup_now)):
                     unplaced.setdefault(lookup_key, []).append((stream, cat.source_tag))
                     unmatched.append((stream, cat.source_tag))
                     cat_skipped += 1
@@ -2574,6 +2658,7 @@ def _sync_movies(
 
     if blocked_skips:
         logger.info(f"[Sync] Skipped {blocked_skips} blocked (mislabelled) stream(s) from {provider.name}")
+    _save_failed_lookups(db, failed_lookups, "movie")
     return stats, feed, category_stats, {"seen_ids": seen_ids_all, "fetch_ok": fetch_ok,
                                           "categories": len(whitelisted_cats), "unread": unread}
 
@@ -2622,6 +2707,8 @@ def _sync_series(
             Series.provider_id == provider.id
         ).all()
     }
+    failed_lookups = _FailedLookups(db, provider.id, "series")
+    lookup_now = datetime.utcnow()
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -2672,6 +2759,7 @@ def _sync_series(
         # Phase 2: Batch TMDB lookups for items that need it
         needs_tmdb = []
         tmdb_results = {}
+        failed_idx = set()  # indices whose lookup failed (not "no match", #377)
 
         for idx, (series, raw_name, clean_name, year) in enumerate(cleaned):
             if not clean_name:
@@ -2700,6 +2788,7 @@ def _sync_series(
                     idx, metadata, failed = future.result()
                     if failed:
                         lookup_failed += 1
+                        failed_idx.add(idx)
                     elif metadata:
                         tmdb_results[idx] = metadata
             if lookup_failed:
@@ -2753,7 +2842,7 @@ def _sync_series(
                     continue
 
             if not metadata:
-                if require_tmdb:
+                if require_tmdb or (idx in failed_idx and failed_lookups.defer(lookup_key, lookup_now)):
                     cat_skipped += 1
                     stats["skipped"] += 1
                     if item_idx % 10 == 0 or item_idx == total_in_cat:
@@ -2936,5 +3025,6 @@ def _sync_series(
         f"{stats['skipped']} skipped, {stats['failed']} failed"
     )
 
+    _save_failed_lookups(db, failed_lookups, "series")
     return stats, feed, category_stats, {"seen_ids": seen_ids_all, "fetch_ok": fetch_ok,
                                           "categories": len(whitelisted_cats), "unread": unread}

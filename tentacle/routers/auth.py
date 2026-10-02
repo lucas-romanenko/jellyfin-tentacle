@@ -123,9 +123,12 @@ def _issue_session(db: Session, user: TentacleUser) -> str:
 
 # How long a session trusts the admin / disabled state it last saw in Jellyfin.
 _SESSION_RECHECK_SECONDS = 300
-# After an answer that could not be read, ask Jellyfin again this much later.
+# After an answer that could not be used, ask Jellyfin again this much later.
 _SESSION_RETRY_SECONDS = 60
-_session_checks: dict = {}  # jellyfin_user_id -> monotonic time of last good check
+# jellyfin_user_id -> monotonic time of the last good check (or the time that
+# puts the next check _SESSION_RETRY_SECONDS away)
+_session_checks: dict = {}
+_session_checks_lock = threading.Lock()
 
 
 def _refresh_from_jellyfin(db: Session, user: TentacleUser) -> bool:
@@ -139,9 +142,16 @@ def _refresh_from_jellyfin(db: Session, user: TentacleUser) -> bool:
     and nothing Tentacle does needs Jellyfin to be up to be refused.
     """
     now = time.monotonic()
-    last = _session_checks.get(user.jellyfin_user_id)
-    if last is not None and now - last < _SESSION_RECHECK_SECONDS:
-        return True
+    with _session_checks_lock:
+        last = _session_checks.get(user.jellyfin_user_id)
+        if last is not None and now - last < _SESSION_RECHECK_SECONDS:
+            return True
+        # Until this check has an answer, and after one that can't be used
+        # (Jellyfin down, timing out, an error status, a body that isn't a
+        # user), ask again in a minute: the last known state stands meanwhile.
+        # Every request used to ask for itself, up to the 5 s timeout each.
+        # A good answer, a 404 or a disabled account replace this below.
+        _session_checks[user.jellyfin_user_id] = now - _SESSION_RECHECK_SECONDS + _SESSION_RETRY_SECONDS
     jf_url = get_setting(db, "jellyfin_url")
     jf_key = get_setting(db, "jellyfin_api_key", "")
     if not jf_url or not jf_key:
@@ -156,6 +166,7 @@ def _refresh_from_jellyfin(db: Session, user: TentacleUser) -> bool:
         _session_checks.pop(user.jellyfin_user_id, None)
         return False
     if r.status_code != 200:
+        logger.warning(f"Could not re-check {user.display_name}: Jellyfin answered HTTP {r.status_code}")
         return True
     try:
         body = r.json()
@@ -166,18 +177,32 @@ def _refresh_from_jellyfin(db: Session, user: TentacleUser) -> bool:
         # restarts: as good as "down". Keep the last known state, and don't
         # ask again on every request (ask again in a minute).
         logger.warning(f"Could not re-check {user.display_name}: Jellyfin answered HTTP 200 without a JSON user")
-        _session_checks[user.jellyfin_user_id] = now - _SESSION_RECHECK_SECONDS + _SESSION_RETRY_SECONDS
         return True
-    policy = body.get("Policy") or {}
-    if policy.get("IsDisabled"):
+    policy = body.get("Policy")
+    if not isinstance(policy, dict) or not isinstance(policy.get("IsAdministrator"), bool):
+        # A JSON object that isn't a user ({"error": ...} from a gateway, a
+        # cut or rewritten Policy): read as one, it removed a real admin's
+        # rights, and "false" as a string would have granted them.
+        logger.warning(f"Could not re-check {user.display_name}: Jellyfin's answer has no readable user policy")
+        return True
+    if policy.get("IsDisabled") is True:
         _session_checks.pop(user.jellyfin_user_id, None)
         return False
-    is_admin = bool(policy.get("IsAdministrator", False))
+    is_admin = policy["IsAdministrator"]
     if bool(user.is_admin) != is_admin:
         logger.info(f"{user.display_name}: admin {'granted' if is_admin else 'removed'} in Jellyfin")
         user.is_admin = is_admin
-        db.commit()
-    _session_checks[user.jellyfin_user_id] = now
+        try:
+            db.commit()
+        except Exception:
+            # Not saved (e.g. "database is locked"): ask again on the next
+            # request instead of in a minute, so a removed admin isn't kept.
+            db.rollback()
+            _session_checks.pop(user.jellyfin_user_id, None)
+            raise
+    with _session_checks_lock:
+        # max(): a check that took longer than a newer mark never moves it back.
+        _session_checks[user.jellyfin_user_id] = max(now, _session_checks.get(user.jellyfin_user_id, now))
     return True
 
 
@@ -253,7 +278,7 @@ def _resolve_token_user(db: Session, api_key: str) -> Optional[str]:
             _token_cache[api_key] = (token_uid, now + _TOKEN_CACHE_TTL)
             _token_profiles[token_uid] = {
                 "name": profile.get("Name") or token_uid,
-                "is_admin": bool((profile.get("Policy") or {}).get("IsAdministrator", False)),
+                "is_admin": (profile.get("Policy") or {}).get("IsAdministrator") is True,
                 "image_tag": profile.get("PrimaryImageTag"),
             }
             return token_uid
@@ -420,6 +445,13 @@ def get_jellyfin_users(db: Session = Depends(get_db)):
             for u in users
         ]
     except Exception as e:
+        if db.query(TentacleUser).count() == 0:
+            # Nobody has signed in yet, so nobody can open Settings to correct
+            # the address: a 400 sends the dashboard back to the setup wizard,
+            # whose routes stay open until the first sign-in anyway.
+            logger.warning(f"Failed to fetch Jellyfin users before the first sign-in: {e}")
+            raise HTTPException(400, "Could not reach Jellyfin at the saved address. "
+                                     "Check the address, then continue.")
         logger.error(f"Failed to fetch Jellyfin users: {e}")
         raise HTTPException(502, f"Could not reach Jellyfin: {e}")
 
@@ -452,7 +484,7 @@ def login(body: LoginRequest, response: Response, request: Request, db: Session 
     jf_user_id = data["User"]["Id"]
     jf_user_name = data["User"]["Name"]
     jf_image_tag = data["User"].get("PrimaryImageTag")
-    jf_is_admin = data["User"].get("Policy", {}).get("IsAdministrator", False)
+    jf_is_admin = (data["User"].get("Policy") or {}).get("IsAdministrator") is True
 
     def _update(existing: TentacleUser) -> None:
         existing.display_name = jf_user_name
@@ -465,6 +497,12 @@ def login(body: LoginRequest, response: Response, request: Request, db: Session 
     with _user_create_lock:
         user = _user_row(db, jf_user_id)
         is_first_user = db.query(TentacleUser).count() == 0
+        if is_first_user and not jf_is_admin:
+            # The first user is the owner: it inherits the existing data and
+            # becomes the account Tentacle reads Jellyfin as (jellyfin_user_id).
+            # That has to be a Jellyfin administrator, so a non-admin who signs
+            # in first is turned away and the install waits for one.
+            raise HTTPException(403, "The first sign-in must be a Jellyfin administrator")
 
         try:
             if not user:

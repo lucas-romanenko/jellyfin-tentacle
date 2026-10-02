@@ -15,6 +15,7 @@ from unittest import mock
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from hermetic import no_tmdb
 from tmp_dirs import temp_dir
 
 SHOW = {"tmdbId": 1403, "tvdbId": 9, "title": "Show", "path": "/tv/Show (2013)",
@@ -31,6 +32,7 @@ class _Sonarr:
 
 class SeriesDuplicateDetection(unittest.TestCase):
     def setUp(self):
+        no_tmdb(self)
         import models.database as mdb
         self.mdb = mdb
         self.tmp = temp_dir(self)

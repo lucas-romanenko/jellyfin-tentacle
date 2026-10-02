@@ -1,9 +1,7 @@
 # Tentacle server (`tentacle/`): internals
 
 Reference for coding agents; the overview is in [CLAUDE.md](../../CLAUDE.md).
-Merged from Lucas's long-standing working notes on 2026-09-28 and checked
-against the code then (corrections noted); where this and the code
-disagree, the code wins, and fix this file.
+Where this and the code disagree, the code wins, and fix this file.
 
 ## Stack
 
@@ -23,6 +21,19 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
                         xtream_client, m3u_parser, media_requests, lidarr, musicbrainz, music/
 ```
 
+- `/api/health`: the container healthcheck. `/api/version`
+  (unauthenticated): commit, build date, `code.matches` (the running files
+  match the image's fingerprint).
+- Paths inside the container are fixed (users map host folders with
+  volumes; Settings → Library Paths checks them): `/data` (DB, caches,
+  per-user `smartlists/` and `home-configs/`), `/media/movies` (Radarr),
+  `/media/shows` (Sonarr), `/media/vod/movies`, `/media/vod/shows` (VOD
+  `.strm`), `/media/youtube`.
+- Logs: `services/log_redaction.py` strips credentials from every log record
+  (uvicorn's access log included): Xtream paths and any query parameter
+  named like a secret (`*secret*`, `*token*`, `*password*`, `*api_key*`,
+  `key`, ...). A new credential in a URL needs such a name, or a rule there.
+
 ## Auth and users (`routers/auth.py`)
 
 - Login is a Jellyfin user picker: `GET /api/auth/users` (no auth), then
@@ -37,9 +48,14 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   `require_internal_or_admin` (the plugin's server-to-server calls).
   Admin-only routers declare `dependencies=[Depends(require_admin)]`.
 - Bootstrap: with no `TentacleUser` yet, `require_admin` lets the setup
-  wizard through.
+  wizard through. Until then `GET /api/auth/users` also answers 400 when the
+  saved Jellyfin address doesn't answer, so the dashboard reopens the wizard
+  instead of a login screen nobody can get past. `setup_complete` is set only
+  by the wizard's "Get Started" or "Skip everything", never by a settings save.
 - Roles: admin status is copied from Jellyfin's `Policy.IsAdministrator` on
   every login; the first user (lowest id) is the owner and can't lose admin;
+  the login refuses a non-admin while no user exists (the owner becomes
+  `jellyfin_user_id`, the account Tentacle reads Jellyfin as);
   Settings → Users toggles admin through Jellyfin's policy API. Non-admins
   see only Library and Jellyfin pages (`data-admin-only` in the nav,
   `applyUserRole()`).
@@ -226,15 +242,25 @@ User docs: `docs/features/live-tv.md`.
   errors, `_raw_retryable()` statuses (the open set plus 407 and any 5xx:
   providers answer 407 for an ended session, 513/520-524 for minutes), and a
   200 whose first bytes are an error page (`_looks_like_error_page()`: not
-  the TS sync byte 0x47 and a text type or a `{`/`<` start; never proxied).
-  401/403/404 stop at once. A re-dial counts as a reconnect only once it
-  delivers.
+  MPEG-TS -- the sync byte 0x47 first, or 0x47 every 188 bytes from within
+  the first packet for a start mid-packet, judged on the first 564 bytes
+  held by `_decidable_start()` -- and a text type or a `{`/`<` start; never
+  proxied). A mid-packet start's partial packet is dropped. 401/403/404 stop
+  at once. A re-dial counts as a reconnect only once it delivers, and as a
+  recovery (backoff and budget reset) only once it delivered past 10 s.
 - Channel ids are the provider's `stream_id` (stable across changes), used
   as `GuideNumber`; Jellyfin keys the channel, its timers and favourites on
   `hdhr_<GuideNumber>`, so it must never change. M3U channels have no
   provider id: `stream_id` is the hash of the first name + URL seen, and
   `m3u_key` the hash of the current ones, which a sync matches by. A URL
   change (rotated token, new host) moves `m3u_key` only (#259).
+- A running HLS stream reads every playlist and segment body within a total
+  bound (`_aread_within()`): 10 s for a playlist, max(20 s, 3 x the target
+  duration) for a segment. httpx's read timeout is per read, so a body that
+  trickles never reaches it. Past the bound it is a ReadTimeout, retried
+  like a stall; the next read of that kind gets twice the time (up to 4x)
+  and a body that arrives within the plain bound resets it, so a provider
+  that turned slow but still delivers is waited for.
 - Two-phase sync: groups with counts, then channels for enabled groups; a
   channel sync chains into an EPG sync. The EPG (XMLTV, cached on disk) is
   stored for *all* provider channels, so newly enabled ones have a guide.
@@ -288,5 +314,10 @@ docs: `docs/features/music.md`; plugin side: `Api/MusicController.cs`
   (pins and trims; deletions only when exactly the expected leftovers
   remain, each logged), `pictures.py`, `players.py` (Navidrome, Jellyfin),
   `discover.py`, `spotify.py`.
+- The daily check's clean-up (`jobs._forget_gone_artists`, and
+  `library.sync_artist` for albums) removes only what Lidarr really dropped:
+  nothing on an empty artist list, no artist written after the list was read
+  (a request finished during the check), and no album still
+  `request_pending` (nor its artist).
 - Webhook `POST /api/music/webhook?secret=` (secret always required);
   status `GET /api/music/status`.

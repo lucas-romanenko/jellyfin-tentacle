@@ -406,14 +406,15 @@ class JellyfinService:
             logger.debug(f"[Jellyfin] Could not read server id: {e}")
             return None
 
-    def _fetch_all_items(self, media_type: str = "Movie") -> List[dict]:
-        """Fetch all items of a type from Jellyfin with ProviderIds and Tags.
-        Paginates automatically for libraries with more than 10,000 items."""
-        items, _complete = self._fetch_all_items_checked(media_type)
+    def _fetch_all_items(self, media_type: str = "Movie", with_path: bool = False) -> List[dict]:
+        """Fetch all items of a type from Jellyfin with ProviderIds and Tags
+        (and Path with with_path). Paginates automatically for libraries with
+        more than 10,000 items."""
+        items, _complete = self._fetch_all_items_checked(media_type, with_path=with_path)
         return items
 
     def _fetch_all_items_checked(self, media_type: str = "Movie", user_scoped: bool = False,
-                                 ids_only: bool = False) -> tuple:
+                                 ids_only: bool = False, with_path: bool = False) -> tuple:
         """Same as _fetch_all_items, plus whether every page actually arrived.
 
         A page that times out returns None from _get, and silently breaking out
@@ -435,7 +436,7 @@ class JellyfinService:
             params = {
                 "IncludeItemTypes": media_type,
                 "Recursive": "true",
-                "Fields": "ProviderIds,Tags",
+                "Fields": "ProviderIds,Tags,Path" if with_path else "ProviderIds,Tags",
                 "Limit": page_size,
                 "StartIndex": start_index,
             }
@@ -520,19 +521,31 @@ class JellyfinService:
         return list(variants)
 
     def search_by_tmdb_id(self, tmdb_id: int, media_type: str = "Movie",
-                          title: str = None, year: str = None) -> Optional[dict]:
+                          title: str = None, year: str = None,
+                          file_name: str = None) -> Optional[dict]:
         """Find a Jellyfin item by TMDB ID, with title+year fallback.
 
         Jellyfin has no server-side filter for a specific provider ID value.
         We fetch all items and filter client-side. Falls back to normalized
         title+year matching for items without TMDB metadata (e.g. scanned MKVs).
+
+        file_name: only an item whose file has this name (any folder, any
+        case) matches. Right after a quality upgrade the listing can still hold
+        the replaced file's item, which Jellyfin removes on its next scan, and
+        a VOD copy of the same film shares its TMDB id.
         """
-        items = self._fetch_all_items(media_type)
+        items = self._fetch_all_items(media_type, with_path=bool(file_name))
         tmdb_str = str(tmdb_id)
+
+        def same_file(item):
+            if not file_name:
+                return True
+            name = re.split(r"[\\/]", item.get("Path") or "")[-1]
+            return name.casefold() == file_name.casefold()
 
         # Primary: match by TMDB ID
         for item in items:
-            if item.get("ProviderIds", {}).get("Tmdb") == tmdb_str:
+            if item.get("ProviderIds", {}).get("Tmdb") == tmdb_str and same_file(item):
                 return item
 
         # Fallback: match by normalized title + year
@@ -541,7 +554,8 @@ class JellyfinService:
             for item in items:
                 item_norm = self._normalize_title(item.get("Name", ""))
                 if (item_norm in variants
-                        and (not year or str(item.get("ProductionYear", "")) == str(year))):
+                        and (not year or str(item.get("ProductionYear", "")) == str(year))
+                        and same_file(item)):
                     return item
 
         return None
