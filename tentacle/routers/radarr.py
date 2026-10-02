@@ -48,10 +48,66 @@ def _check_webhook_auth(request: Request, db: Session) -> None:
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/radarr", tags=["radarr"], dependencies=[Depends(require_admin)])
 
-# Per-movie lock to prevent duplicate webhook processing (e.g. Download + MovieAdded
-# firing close together for the same movie). Only one background thread per tmdb_id.
+# Per-movie lock: one background pass per tmdb_id at a time. An event for a
+# movie that is busy (e.g. its Download while the MovieAdded pass still waits
+# for the library-wide scan lock, #268) is queued in _webhook_pending and run
+# by the holder after its pass, never dropped (#380). Events queued meanwhile
+# are coalesced into one pass: a Download outranks a MovieAdded, and the pass
+# owes the "ready to watch" notice if any of them was a first download.
 _webhook_locks: dict[int, threading.Lock] = {}
 _webhook_locks_guard = threading.Lock()
+_webhook_pending: dict = {}   # tmdb_id -> {"title", "event_type", "is_upgrade"}; guarded by _webhook_locks_guard
+
+
+def _queue_pending_event(tmdb_id, title, event_type, is_upgrade) -> None:
+    """Caller holds _webhook_locks_guard."""
+    entry = _webhook_pending.get(tmdb_id)
+    if entry is None:
+        _webhook_pending[tmdb_id] = {"title": title, "event_type": event_type, "is_upgrade": is_upgrade}
+        return
+    entry["title"] = title or entry["title"]
+    if event_type != "Download":
+        return   # a MovieAdded adds nothing to the pass already queued
+    # A first download (not an upgrade) among them keeps the notice owed.
+    entry["is_upgrade"] = is_upgrade and (entry["event_type"] != "Download" or entry["is_upgrade"])
+    entry["event_type"] = "Download"
+
+
+def _run_webhook_passes(tmdb_id, title, event_type, is_upgrade, process) -> None:
+    """Run process(...) for this movie now, or queue the event behind the pass
+    that is running for it; the holder runs every queued event, in order."""
+    with _webhook_locks_guard:
+        # Bound the dict: prune unlocked (idle) locks if it grows large.
+        if len(_webhook_locks) > 512:
+            for k in [k for k, l in _webhook_locks.items() if not l.locked()]:
+                _webhook_locks.pop(k, None)
+        lock = _webhook_locks.setdefault(tmdb_id, threading.Lock())
+        if not lock.acquire(blocking=False):
+            _queue_pending_event(tmdb_id, title, event_type, is_upgrade)
+            logger.info(f"[Radarr webhook] {event_type} for tmdb:{tmdb_id} queued behind the one being processed")
+            return
+    try:
+        while True:
+            try:
+                process(tmdb_id, title, event_type, is_upgrade)
+            except Exception as e:   # a failed pass still runs the ones queued behind it
+                logger.error(f"[Radarr webhook] Processing {event_type} for tmdb:{tmdb_id} failed: {e}", exc_info=True)
+            with _webhook_locks_guard:
+                entry = _webhook_pending.pop(tmdb_id, None)
+                if entry is None:
+                    # Released under the guard: an event arriving now either
+                    # found the lock held and is in _webhook_pending (seen just
+                    # above), or finds it free and runs itself.
+                    lock.release()
+                    return
+            title, event_type, is_upgrade = entry["title"], entry["event_type"], entry["is_upgrade"]
+            logger.info(f"[Radarr webhook] Processing the {event_type} queued for tmdb:{tmdb_id}")
+    except BaseException:
+        with _webhook_locks_guard:
+            _webhook_pending.pop(tmdb_id, None)
+            if lock.locked():
+                lock.release()
+        raise
 
 _scan_running = False
 
@@ -417,30 +473,16 @@ def radarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
     # Download / MovieAdded — scan and tag
     _forget_missing_from_disk(tmdb_id)
 
-    def _webhook_background(tmdb_id, title, event_type):
+    # A quality upgrade replaces the file of a film that was already ready:
+    # its requester is not told "ready to watch" again (#380).
+    is_upgrade = event_type == "Download" and payload.get("isUpgrade") is True
+
+    def _webhook_background(tmdb_id, title, event_type, is_upgrade=False):
         import time
         from datetime import datetime
         from models.database import SessionLocal, get_setting
         from pathlib import Path
         from services.jellyfin import JellyfinService
-
-        # Per-movie lock: if another webhook event for the same movie is already
-        # being processed (e.g. Download + MovieAdded close together), skip.
-        with _webhook_locks_guard:
-            if tmdb_id in _webhook_locks and _webhook_locks[tmdb_id].locked():
-                logger.info(f"[Radarr webhook] Skipping duplicate processing for tmdb:{tmdb_id}")
-                return
-            # Bound the dict: prune unlocked (idle) locks if it grows large.
-            if len(_webhook_locks) > 512:
-                for k in [k for k, l in _webhook_locks.items() if not l.locked()]:
-                    _webhook_locks.pop(k, None)
-            if tmdb_id not in _webhook_locks:
-                _webhook_locks[tmdb_id] = threading.Lock()
-            lock = _webhook_locks[tmdb_id]
-
-        if not lock.acquire(blocking=False):
-            logger.info(f"[Radarr webhook] Skipping duplicate processing for tmdb:{tmdb_id}")
-            return
 
         db = SessionLocal()
         try:
@@ -617,7 +659,7 @@ def radarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
                     replaced = is_replacing(db, "movie", tmdb_id)
                     if replaced:
                         clear_replacing(db, "movie", tmdb_id)
-                    if dr:
+                    if dr and (replaced or not is_upgrade):
                         create_notification(
                             db, user_id=dr.user_id, tmdb_id=tmdb_id, media_type="movie",
                             title=db_movie.title,
@@ -648,10 +690,10 @@ def radarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
         except Exception as e:
             logger.error(f"[Radarr webhook] Background processing failed: {e}", exc_info=True)
         finally:
-            lock.release()
             db.close()
 
-    thread = threading.Thread(target=_webhook_background, args=(tmdb_id, title, event_type), daemon=True)
+    thread = threading.Thread(target=_run_webhook_passes,
+                              args=(tmdb_id, title, event_type, is_upgrade, _webhook_background), daemon=True)
     thread.start()
 
     return {"status": "processing", "event": event_type, "tmdb_id": tmdb_id}
