@@ -589,6 +589,14 @@ def get_desired_smartlists(db: Session, user_id: int = None) -> list:
     return smartlists
 
 
+def _rollback_quietly(db: Session) -> None:
+    """Leave the shared session usable for the next user after a failed one."""
+    try:
+        db.rollback()
+    except Exception:
+        pass
+
+
 def _scan_existing(smartlists_path: Path) -> dict:
     """Scan existing SmartList folders and return {name: (folder_path, config_data)}."""
     existing = {}
@@ -602,8 +610,10 @@ def _scan_existing(smartlists_path: Path) -> dict:
             try:
                 data = json.loads(config_file.read_text(encoding="utf-8"))
                 name = data.get("Name", "")
-                if name:
+                if isinstance(name, str) and name:
                     existing[name] = (folder, data)
+                elif name:
+                    logger.warning(f"[SmartLists] Skipping {config_file}: its Name is not text")
             except Exception:
                 continue
     return existing
@@ -751,7 +761,15 @@ def sync_smartlists(db: Session, user_id: int = None) -> dict:
             return {"created": 0, "updated": 0, "removed": 0, "total": 0}
         combined = {"created": 0, "updated": 0, "removed": 0, "total": 0}
         for u in users:
-            result = sync_smartlists(db, user_id=u.id)
+            # One user's failure (a Jellyfin error, a config file that can't be
+            # read) must not stop the others, as in the nightly loop.
+            try:
+                result = sync_smartlists(db, user_id=u.id)
+            except Exception as e:
+                _rollback_quietly(db)
+                logger.warning(f"[SmartLists] Playlist sync failed for user {u.id}: {e}", exc_info=True)
+                combined["errors"] = combined.get("errors", 0) + 1
+                continue
             for key in ("created", "updated", "removed", "total"):
                 combined[key] += result.get(key, 0)
         # Artwork sync is global (once after all users)
@@ -1692,8 +1710,14 @@ def _refresh_smartlist_playlists_inner(db: Session, user_id: int = None, only_na
             return {"processed": 0, "created": 0, "updated": 0, "changed": 0, "errors": 0}
         combined = {"processed": 0, "created": 0, "updated": 0, "changed": 0, "errors": 0}
         for u in users:
-            result = _refresh_smartlist_playlists_inner(db, user_id=u.id, only_names=only_names,
-                                                        reorder_names=reorder_names)
+            try:  # one user's failure must not stop the others
+                result = _refresh_smartlist_playlists_inner(db, user_id=u.id, only_names=only_names,
+                                                            reorder_names=reorder_names)
+            except Exception as e:
+                _rollback_quietly(db)
+                logger.warning(f"[SmartLists] Playlist refresh failed for user {u.id}: {e}", exc_info=True)
+                combined["errors"] += 1
+                continue
             for key in ("processed", "created", "updated", "changed", "errors"):
                 combined[key] += result.get(key, 0)
         return combined

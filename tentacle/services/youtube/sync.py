@@ -645,10 +645,19 @@ def publish_to_jellyfin(db: Session, channels: list, on_stage=None) -> None:
         users = db.query(TentacleUser).all()
         for user in users:
             # sync_smartlists is what creates a playlist that is newly desired;
-            # refresh only fills ones that already exist.
-            sync_smartlists(db, user_id=user.id)
-            refresh_smartlist_playlists(db, user_id=user.id, only_names=names)
-            write_home_config(db, user_id=user.id)
+            # refresh only fills ones that already exist. One user's failure
+            # must not stop the others.
+            try:
+                sync_smartlists(db, user_id=user.id)
+                refresh_smartlist_playlists(db, user_id=user.id, only_names=names)
+                write_home_config(db, user_id=user.id)
+            except Exception as e:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+                short = True
+                logger.warning(f"[YouTube] Publishing playlists failed for user {user.id}: {e}", exc_info=True)
         bump_playlist_version()
         _notify_jellyfin_plugin(db)
 
