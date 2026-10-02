@@ -289,6 +289,7 @@ def _sync_channel(db: Session, channel: YouTubeChannel, base: str, on_progress, 
 
     written, art = 0, 0
     retitled = set(result.get("retitled") or ())
+    title, new_folders = channel.title, []
     for video in db.query(YouTubeVideo).filter(
         YouTubeVideo.channel_fk == channel.id,
         YouTubeVideo.removed_at.is_(None),
@@ -308,9 +309,24 @@ def _sync_channel(db: Session, channel: YouTubeChannel, base: str, on_progress, 
         try:
             art += library.write_video(video, channel, base).get("artwork", 0)
             written += 1
+            new_folders.append(video.folder_path)
         except OSError as e:
             logger.warning(f"[YouTube] Could not write files for {video.video_id}: {e}")
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        if channel_ref(channel) is None:
+            # Removed from the page while these files were being written. The
+            # removal could not see them (their paths were not saved yet), and
+            # no row is left to find them by later: Jellyfin would keep them as
+            # videos that never play. Take them away now.
+            for folder in new_folders:
+                library.remove_folder(folder)
+            library.remove_channel_folder(title)
+            logger.info(f"[YouTube] '{title}' was removed while its files were written; "
+                        f"removed the {len(new_folders)} just written")
+        raise
     if retitled:
         retitle_in_jellyfin(db, channel, retitled)
 
