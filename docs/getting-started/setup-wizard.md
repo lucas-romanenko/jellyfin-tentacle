@@ -1,40 +1,64 @@
 # Setup Wizard
 
-When you first open Tentacle, the setup wizard guides you through the essential configuration. Only one thing is truly required — connecting to Jellyfin. Everything else is optional and can be configured later.
+When you first open Tentacle, the setup wizard guides you through the essential configuration. Two steps are required: connecting to Jellyfin and signing in with your Jellyfin administrator account. Everything else is optional and can be configured later.
 
-## Step 1: Connect to Jellyfin
+The wizard has six steps.
+
+## Step 1: Connect Jellyfin
 
 Enter your Jellyfin server details:
 
-- **Jellyfin URL** — The address of your Jellyfin server (e.g., `http://192.168.1.100:8096`)
-- **API Key** — Generate one in Jellyfin → Dashboard → API Keys → Create
+- **Jellyfin URL**: the address of your Jellyfin server (e.g., `http://192.168.1.100:8096`)
+- **API Key**: generate one in Jellyfin → Dashboard → API Keys → Create
 
-Click **Test Connection** to verify. You should see a green "Connected" status.
+Click **Test Connection** to verify. You should see your Jellyfin version followed by "connected" (e.g., "Jellyfin 10.11.8 connected"). Then click **Next**.
 
 !!! tip "Docker networking"
     If Jellyfin and Tentacle are on the same Docker network, you can use the container name: `http://jellyfin:8096`
 
-## Step 2: TMDB (Automatic)
+## Step 2: Login to Jellyfin
 
-Tentacle ships with a built-in TMDB API key — metadata works out of the box with zero configuration. You'll see a green checkmark next to TMDB automatically.
+Sign in with your main Jellyfin **administrator** account (**Jellyfin Username** and **Jellyfin Password**), then click **Login & Continue**.
 
-If you prefer to use your own TMDB key, you can override it in Settings later. Get one free at [themoviedb.org/settings/api](https://www.themoviedb.org/settings/api).
+The first account to sign in becomes the Tentacle **owner**, so use an administrator here. Other Jellyfin users can sign in later; see [Multi-User](../features/multi-user.md).
 
 ## Step 3: Radarr & Sonarr (Optional)
 
 If you use Radarr and/or Sonarr for downloading content:
 
-- **URL** — Your Radarr/Sonarr address (e.g., `http://192.168.1.100:7878`)
-- **API Key** — Found in Radarr/Sonarr → Settings → General → API Key
+- **URL**: your Radarr/Sonarr address (e.g., `http://192.168.1.100:7878`)
+- **API Key**: found in Radarr/Sonarr → Settings → General → API Key
 
-Click **Test** to verify each connection.
+Click **Test Radarr** / **Test Sonarr** to verify each connection. Once a test passes, a **Default quality profile** list appears: pick the profile Tentacle uses when it sends a title to Radarr or Sonarr.
 
-!!! info "Post-setup scan"
-    When you finish the wizard with Radarr or Sonarr configured, Tentacle automatically scans their libraries in the background. Your existing content will appear in the Library page within a few minutes.
+Don't use them? Click **Skip — I don't use Radarr/Sonarr** to go straight to step 5.
 
-## Step 4: Check Library Paths
+!!! info "Library scan"
+    When you click **Next** with Radarr or Sonarr filled in, Tentacle starts scanning their libraries in the background. Your existing content will appear in the Library page within a few minutes.
 
-After completing the wizard, go to **Settings → Library Paths** to verify your volume mounts:
+## Step 4: Webhook Setup
+
+Shown only when you entered Radarr or Sonarr in step 3. Webhooks let Radarr and Sonarr tell Tentacle when something new has downloaded.
+
+**Tentacle URL** is filled in with the address you opened the dashboard on. Change it if Radarr and Sonarr reach Tentacle at a different address. The wizard then shows the **Radarr Webhook URL** and/or **Sonarr Webhook URL** with a **Copy** button. Add each one in that app under **Settings → Connect → Webhook**. More detail: [Radarr](../integrations/radarr.md), [Sonarr](../integrations/sonarr.md).
+
+## Step 5: Optional Services
+
+All optional:
+
+- **TMDB Bearer Token**: Tentacle ships with a built-in TMDB key, so metadata works out of the box. Enter your own token only if you prefer it. Get one free at [themoviedb.org/settings/api](https://www.themoviedb.org/settings/api).
+- **Trakt Client ID**
+- **Logo.dev API Key**
+
+Click **Get Started** to save and finish the setup. Or click **Skip everything — I'll configure later**, which closes the wizard right away (without step 6).
+
+## Step 6: Install the Jellyfin Plugin
+
+The plugin adds a custom home screen and a Discover tab to Jellyfin. It's optional but recommended. The step shows the **Plugin Manifest URL** with a **Copy** button and the install steps. They are the same as in [Jellyfin Plugin](../integrations/jellyfin-plugin.md). Click **Done** (or **Skip — I'll install later**) to open the dashboard.
+
+## After Setup
+
+Go to **Settings → Library Paths** to verify your volume mounts:
 
 | Path | Status | What it means |
 |------|--------|---------------|
@@ -45,23 +69,16 @@ After completing the wizard, go to **Settings → Library Paths** to verify your
 
 Red paths mean the volume isn't mounted in your Docker Compose. This is fine if you don't use that feature.
 
-## What Happens After Setup
-
-Once Jellyfin is connected, Tentacle:
-
-1. **Creates your user account** — the first Jellyfin admin to log in becomes the Tentacle owner
-2. **Scans Radarr/Sonarr** (if configured) — imports your existing library
-3. **Shows the dashboard** — you're ready to add providers, configure playlists, and customize your home screen
+Everything from the wizard can be changed later: Jellyfin, Radarr, Sonarr and TMDB in **Settings → Connections**; Trakt, Logo.dev and the webhook URLs in **Settings → Integrations**.
 
 ## Next Steps
 
 After the wizard, here's the recommended order:
 
-1. **Add a streaming provider** — Go to the VOD page to add an IPTV provider for on-demand content, or the Live TV page for channels
-2. **Enable playlists** — Go to Jellyfin → Playlists to toggle on auto-generated playlists
-3. **Customize your home screen** — Go to Jellyfin → Home Screen to set up hero spotlight and playlist rows
-4. **Install the plugin** — [Install the Tentacle Jellyfin plugin](../integrations/jellyfin-plugin.md) to see the custom home screen, Discover tab, and Activity tab inside Jellyfin
-5. **Set up webhooks** — Configure [Radarr](../integrations/radarr.md) and [Sonarr](../integrations/sonarr.md) webhooks for real-time library updates
+1. **Add a streaming provider**: go to **Settings → Providers** and click **+ Add Provider**. One provider serves both VOD and [Live TV](../features/live-tv.md): pick its categories on the **VOD** page and its channel groups on the **Live TV** page
+2. **Enable playlists**: go to Jellyfin → Playlists to toggle on auto-generated playlists
+3. **Customize your home screen**: go to Jellyfin → Home Screen to set up hero spotlight and playlist rows
+4. **Install the plugin** (if you skipped step 6): [Install the Tentacle Jellyfin plugin](../integrations/jellyfin-plugin.md) to see the custom home screen, Discover tab, and Activity tab inside Jellyfin
 
 ---
 

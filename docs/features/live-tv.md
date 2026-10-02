@@ -6,9 +6,9 @@ Tentacle replaces tools like Threadfin as an HDHomeRun tuner emulator for Jellyf
 
 Tentacle emulates an HDHomeRun network tuner device. When Jellyfin discovers the tuner, it sees Tentacle as a native TV device — no third-party tools needed.
 
-1. You add a Live TV provider in Tentacle
-2. Tentacle fetches channel groups and their channels
-3. You enable the groups you want
+1. You add your IPTV provider in **Settings → Providers**
+2. Tentacle fetches the channel groups, and the channels of the groups you enable
+3. You enable the groups you want on the **Live TV** page
 4. Tentacle serves channel data via HDHomeRun endpoints
 5. Jellyfin discovers the tuner and loads your channels with EPG
 
@@ -18,9 +18,9 @@ Jellyfin  ←→  HDHomeRun API  ←→  Tentacle  ←→  IPTV Provider
                lineup.json)        proxy)
 ```
 
-## Adding a Live TV Provider
+## Adding a Provider for Live TV
 
-Go to the **Live TV** page and add a provider. Live TV providers are separate from VOD providers — they use the same credentials format but are configured independently.
+Go to **Settings → Providers** and click **+ Add Provider**. There is one list of providers for VOD and Live TV: the provider you add there is used for both. When you save it, Tentacle tests the connection, and if the account has live channels it turns Live TV on for that provider and fetches its channel groups. Until a provider is added, the Live TV page says "No IPTV provider configured. Add a provider in Settings first."
 
 ### Provider Types
 
@@ -35,23 +35,25 @@ Go to the **Live TV** page and add a provider. Live TV providers are separate fr
 === "M3U File"
     - **M3U File** — Path to a local M3U file
 
-!!! info "Same provider, different configs"
-    You can use the same provider for both VOD and Live TV — just add it separately on each page. VOD and Live TV use different provider entries even if the credentials are the same.
+Live TV is turned on by the connection test of an **Xtream** provider. An M3U provider added in Settings → Providers is used for VOD only: the dashboard doesn't turn Live TV on for it.
+
+!!! info "One provider for VOD and Live TV"
+    Don't add the same account twice. The VOD page picks the provider's movie and series categories, the Live TV page its channel groups.
 
 ### User-Agent
 
-Some providers require a specific User-Agent header to allow streaming. If your provider blocks connections, try setting the User-Agent in the provider settings (e.g., `TiviMate/4.7.0`).
+Some providers only allow certain apps. Tentacle identifies itself as TiviMate (`TiviMate/4.7.0 (Linux; Android 12)`), which most providers accept. The dashboard has no setting to change it.
 
 ## Channel Groups
 
-After adding a provider, click **Sync** to fetch channel groups. Groups are organized by your provider (Sports, Entertainment, News, etc.) and show the channel count for each.
+Tentacle fetches the channel groups by itself after the provider's connection test. To fetch them again, click **Refresh** on the Live TV page's **Groups** tab (**Sync Groups** while the list is still empty). Groups are organized by your provider (Sports, Entertainment, News, etc.) and show the channel count for each.
 
 ### Enabling Groups
 
-Toggle on the groups you want. Only channels from enabled groups are served to Jellyfin. This lets you keep your channel list manageable.
+Toggle on the groups you want, then click **Save & Sync Channels**. Only channels from enabled groups are served to Jellyfin. This lets you keep your channel list manageable.
 
 !!! tip "Two-phase sync"
-    Phase 1 (Sync Groups) fetches just the group list with channel counts — this is fast. Phase 2 (Sync Channels) fetches the actual channels for enabled groups only, then automatically chains into an EPG sync.
+    Phase 1 (fetching groups) gets just the group list with channel counts — this is fast. Phase 2 (**Save & Sync Channels**) fetches the actual channels for enabled groups only, then automatically chains into an EPG sync.
 
 ### Bulk Actions
 

@@ -44,7 +44,7 @@ Admin status is synced from Jellyfin on every login. If a user is a Jellyfin adm
 
 ### Owner
 
-The first user to log into Tentacle becomes the **owner**. The owner:
+The first user to log into Tentacle becomes the **owner**: sign in with a Jellyfin administrator account in step 2 of the [setup wizard](../getting-started/setup-wizard.md). The owner:
 
 - Is always an admin
 - Cannot have admin status removed by anyone
