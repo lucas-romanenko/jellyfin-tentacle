@@ -14,9 +14,15 @@ function escapeAttr(str) {
   if (!str) return '';
   return String(str).replace(/&/g,'&amp;').replace(/'/g,'&#39;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
+// For a value inside a quoted JS string in an inline handler:
+// onclick="f('${escapeJS(x)}')". The browser decodes character references in
+// the attribute before the JS runs, so & < > are escaped too (a title that
+// contains the text "&#39;" stays that text), and so are line breaks, which
+// would end the string.
 function escapeJS(str) {
   if (!str) return '';
-  return String(str).replace(/\\/g,'\\\\').replace(/'/g,'\\x27').replace(/"/g,'\\x22').replace(/`/g,'\\x60').replace(/\u2018/g,'\\x27').replace(/\u2019/g,'\\x27').replace(/\u201C/g,'\\x22').replace(/\u201D/g,'\\x22');
+  return String(str).replace(/\\/g,'\\\\').replace(/'/g,'\\x27').replace(/"/g,'\\x22').replace(/`/g,'\\x60').replace(/\u2018/g,'\\x27').replace(/\u2019/g,'\\x27').replace(/\u201C/g,'\\x22').replace(/\u201D/g,'\\x22')
+    .replace(/&/g,'\\x26').replace(/</g,'\\x3c').replace(/>/g,'\\x3e').replace(/\r/g,'\\r').replace(/\n/g,'\\n').replace(/\u2028/g,'\\u2028').replace(/\u2029/g,'\\u2029');
 }
 // Quality profile picker for an add. "Default" (the profile picked in
 // Settings) sends nothing; any other choice is sent as this request's
@@ -936,7 +942,7 @@ function renderLibCard(item) {
   const sourceBadge = badges ? `<div class="lib-card-source" style="display:flex;flex-direction:column;gap:3px;align-items:flex-end">${badges}</div>` : '';
 
   return `
-    <div class="lib-card" data-tmdb-id="${item.tmdb_id}" onclick="showMediaDetail(${item.tmdb_id}, '${escapeAttr(item.media_type)}')">
+    <div class="lib-card" data-tmdb-id="${item.tmdb_id}" onclick="showMediaDetail(${item.tmdb_id}, '${escapeJS(item.media_type)}')">
       <div class="lib-card-poster">
         ${poster}
         ${sourceBadge}
@@ -1660,8 +1666,8 @@ function renderSourcePills(breakdown) {
     .sort((a,b) => b[1]-a[1])
     .map(([tag, count]) => `
       <button class="badge ${active === tag ? 'badge-accent' : 'badge-gray'}" style="cursor:pointer;font-size:12px;padding:4px 10px"
-        onclick="filterByTag('${escapeAttr(tag)}')">
-        ${tag} <span style="opacity:0.6;margin-left:4px">${count}</span>
+        onclick="filterByTag('${escapeJS(tag)}')">
+        ${escapeAttr(tag)} <span style="opacity:0.6;margin-left:4px">${count}</span>
       </button>`).join('');
   el.innerHTML = allBtn + pills;
 }
@@ -1719,7 +1725,7 @@ async function showMediaDetail(tmdbId, mediaType) {
             ${data.strm_path ? `<br>Path: ${data.strm_path}` : ''}
           </div>
           ${data.is_vod ? `<label class="detail-follow-toggle" style="margin-top:10px" title="Turn this off to keep the title in the catalog but stop Tentacle writing or repairing its .strm files — for shows you have switched to downloaded copies">
-            <input type="checkbox" ${data.strm_managed ? 'checked' : ''} onchange="toggleStrmManaged('${mediaType}', ${tmdbId}, this.checked)">
+            <input type="checkbox" ${data.strm_managed ? 'checked' : ''} onchange="toggleStrmManaged('${escapeJS(mediaType)}', ${tmdbId}, this.checked)">
             <span class="detail-follow-label">Manage .strm files</span>
           </label>` : ''}
           ${data.source === 'radarr' ? `<div style="margin-top:10px">
@@ -2234,7 +2240,7 @@ async function showCoverageDetail(tmdbId, mediaType, title, year, posterPath) {
             <div style="margin-top:8px;padding-top:12px;border-top:1px solid var(--border)">
               <span class="badge" style="background:var(--red-dim);color:var(--red);margin-bottom:8px">Not in library</span>
               <div style="margin-top:8px">
-                <button class="btn btn-primary btn-sm" onclick="closeModal('modal-media-detail');showAddToArrModal(${tmdbId},'${escapeJS(data.title||'')}','${escapeJS(data.year||'')}','${escapeJS(data.poster_path||'')}','${mediaType}')">Add to ${arrLabel}</button>${_trailerBtn(data.trailer_url)}
+                <button class="btn btn-primary btn-sm" onclick="closeModal('modal-media-detail');showAddToArrModal(${tmdbId},'${escapeJS(data.title||'')}','${escapeJS(data.year||'')}','${escapeJS(data.poster_path||'')}','${escapeJS(mediaType)}')">Add to ${arrLabel}</button>${_trailerBtn(data.trailer_url)}
               </div>
             </div>
           </div>
@@ -2564,7 +2570,7 @@ async function loadAutoPlaylists() {
         const control = p.locked
           ? `<span title="Always on — remove the channel from the YouTube page to remove this" style="display:inline-block;width:36px;text-align:center;color:var(--green);font-size:14px;flex-shrink:0">&#10003;</span>`
           : `<label style="position:relative;display:inline-block;width:36px;height:20px;flex-shrink:0;cursor:pointer">
-              <input type="checkbox" ${checked} aria-label="${escapeAttr(p.name || p.key)}" onchange="toggleAutoPlaylist('${escapeAttr(p.key)}')"
+              <input type="checkbox" ${checked} aria-label="${escapeAttr(p.name || p.key)}" onchange="toggleAutoPlaylist('${escapeJS(p.key)}')"
                 style="opacity:0;width:0;height:0;position:absolute">
               <span style="position:absolute;top:0;left:0;right:0;bottom:0;background:${toggleBg};border-radius:10px;transition:0.2s"></span>
               <span style="position:absolute;top:2px;left:${togglePos};width:16px;height:16px;background:white;border-radius:50%;transition:0.2s"></span>
@@ -3003,11 +3009,11 @@ function coverageCard(item, showAdd = false) {
   const year = item.year ? ` (${item.year})` : '';
   const isSeries = (item.media_type || 'movie') === 'series';
   const addBtn = showAdd
-    ? `<button class="card-add-btn" title="Add to ${isSeries ? 'Sonarr' : 'Radarr'}" data-tmdb="${item.tmdb_id}" onclick="event.stopPropagation();showAddToArrModal(${item.tmdb_id},'${escapeJS(item.title)}','${escapeJS(item.year||'')}','${escapeJS(item.poster_path||'')}','${isSeries ? 'series' : 'movie'}')">+</button>`
+    ? `<button class="card-add-btn" title="Add to ${isSeries ? 'Sonarr' : 'Radarr'}" data-tmdb="${item.tmdb_id}" onclick="event.stopPropagation();showAddToArrModal(${item.tmdb_id},'${escapeJS(item.title)}','${escapeJS(item.year||'')}','${escapeJS(item.poster_path||'')}','${escapeJS(isSeries ? 'series' : 'movie')}')">+</button>`
     : '';
   const mt = item.media_type || 'movie';
   const clickAttr = item.tmdb_id
-    ? `onclick="showCoverageDetail(${item.tmdb_id},'${mt}','${escapeJS(item.title||'')}','${escapeJS(item.year||'')}','${escapeJS(item.poster_path||'')}')" style="cursor:pointer"`
+    ? `onclick="showCoverageDetail(${item.tmdb_id},'${escapeJS(mt)}','${escapeJS(item.title||'')}','${escapeJS(item.year||'')}','${escapeJS(item.poster_path||'')}')" style="cursor:pointer"`
     : '';
   return `<div class="coverage-card" ${clickAttr}>
     ${poster}${addBtn}
@@ -3112,7 +3118,7 @@ function ytShowAddress(inputId, st) {
   // Offer what was worked out whenever the saved address is missing or does
   // not answer — one click, no LAN address to know.
   const offer = found && (!st.base_url || (r && !r.ok))
-    ? ` Detected <code>${escapeAttr(found)}</code> <a href="#" onclick="ytUseAddress('${inputId}', '${escapeJS(found)}');return false">use it</a>`
+    ? ` Detected <code>${escapeAttr(found)}</code> <a href="#" onclick="ytUseAddress('${escapeJS(inputId)}', '${escapeJS(found)}');return false">use it</a>`
     : '';
   if (!st.base_url) {
     status.innerHTML = 'Not set.' + offer;
@@ -3754,14 +3760,14 @@ function renderHomeRows() {
     const maxItemsInput = isBuiltin ? '' : `
       <input type="number" min="5" max="30" value="${Math.min(row.max_items || 20, 30)}"
         onclick="event.stopPropagation()" onmousedown="event.stopPropagation()"
-        onchange="saveRowMaxItemsByKey('${key}', this.value)"
+        onchange="saveRowMaxItemsByKey('${escapeJS(key)}', this.value)"
         style="width:52px;padding:3px 4px;font-size:11px;text-align:center;background:var(--bg1);border:1px solid var(--border);border-radius:4px;color:var(--text);cursor:text"
         title="Max items in this row">`;
     // Card shape. Some content has no portrait artwork — a YouTube thumbnail
     // in a poster slot is cropped to a strip of its middle — so each row picks.
     const shapeSelect = isBuiltin ? '' : `
       <select onclick="event.stopPropagation()" onmousedown="event.stopPropagation()"
-        onchange="saveRowShapeByKey('${key}', this.value)"
+        onchange="saveRowShapeByKey('${escapeJS(key)}', this.value)"
         style="padding:3px 4px;font-size:11px;background:var(--bg1);border:1px solid var(--border);border-radius:4px;color:var(--text);cursor:pointer"
         title="Card shape for this row">
         <option value="poster" ${row.shape !== 'wide' ? 'selected' : ''}>Poster</option>
@@ -3776,7 +3782,7 @@ function renderHomeRows() {
         ${shapeSelect}
         ${maxItemsInput}
         ${badge}
-        <button onclick="event.stopPropagation();removeHomeRowByKey('${key}')"
+        <button onclick="event.stopPropagation();removeHomeRowByKey('${escapeJS(key)}')"
           style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:14px;padding:6px 8px;border-radius:4px"
           onmouseover="this.style.color='var(--red)'" onmouseout="this.style.color='var(--text3)'"
           title="Remove row">&#10005;</button>
@@ -4060,8 +4066,7 @@ function _sortDropdown(name) {
     ['datecreated_desc', 'Recently Added'],
     ['random_asc', 'Random'],
   ];
-  const escaped = name.replace(/'/g, "\\'");
-  return `<select onchange="setPlaylistSort('${escaped}', this.value)"
+  return `<select onchange="setPlaylistSort('${escapeJS(name)}', this.value)"
     style="font-size:11px;padding:3px 8px;background:var(--bg2);color:var(--text2);border:1px solid var(--border);border-radius:4px;cursor:pointer"
     title="Sort order">${opts.map(([v, l]) => `<option value="${v}"${v === val ? ' selected' : ''}>${l}</option>`).join('')}</select>`;
 }
@@ -4595,7 +4600,7 @@ function renderDupList() {
           ${dup.resolution === 'pending' ? `
             <div class="dup-actions">
               ${hasRadarr ? `<button class="btn btn-success btn-sm" onclick="resolveDup(${dup.id}, 'keep_radarr')">Keep Downloaded</button>` : ''}
-              ${hasVod ? `<button class="btn btn-secondary btn-sm" onclick="resolveDup(${dup.id}, 'keep_vod', '${dup.media_type}')">Keep VOD</button>` : ''}
+              ${hasVod ? `<button class="btn btn-secondary btn-sm" onclick="resolveDup(${dup.id}, 'keep_vod', '${escapeJS(dup.media_type)}')">Keep VOD</button>` : ''}
               <button class="btn btn-secondary btn-sm" onclick="resolveDup(${dup.id}, 'keep_both')">Keep Both</button>
             </div>` : ''}
         </div>
@@ -4756,7 +4761,8 @@ function appendLogLine(entry) {
 }
 
 function escapeHtml(str) {
-  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  if (str === null || str === undefined) return '';
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
 function clearLogPanel() {
@@ -5308,13 +5314,13 @@ function renderActivity(data) {
           ${item.check ? `<div class="activity-check ${escapeAttr(item.check.state)}" title="${escapeAttr(item.check.summary)}">${escapeAttr(item.check.short)}</div>` : ''}
           <div class="activity-countdown activity-searching">${waited ? 'Searching for ' + escapeAttr(waited) : 'Searching'}</div>
           <div class="activity-actions">
-            <button class="activity-act-btn" ${busy ? 'disabled' : ''} onclick="activitySearchAgain('${escapeAttr(key)}')">${busy === 'search' ? 'Searching…' : 'Search again'}</button>
+            <button class="activity-act-btn" ${busy ? 'disabled' : ''} onclick="activitySearchAgain('${escapeJS(key)}')">${busy === 'search' ? 'Searching…' : 'Search again'}</button>
             <button class="activity-act-btn" ${busy ? 'disabled' : ''} title="Check what your indexers have and why nothing downloaded; pick a release yourself"
-              onclick="openReleaseCheck('${escapeAttr(key)}')">Why? / Pick</button>
+              onclick="openReleaseCheck('${escapeJS(key)}')">Why? / Pick</button>
             ${isShow ? `<button class="activity-act-btn" ${busy ? 'disabled' : ''} title="Stop Sonarr looking for the missing episodes; keep everything downloaded"
-              onclick="activityStopMissing('${escapeAttr(key)}')">${busy === 'stop' ? 'Stopping…' : 'Stop looking'}</button>` : ''}
+              onclick="activityStopMissing('${escapeJS(key)}')">${busy === 'stop' ? 'Stopping…' : 'Stop looking'}</button>` : ''}
             <button class="activity-act-btn activity-act-remove${armed ? ' armed' : ''}" ${busy ? 'disabled' : ''} title="${escapeAttr(removeTitle)}"
-              onclick="activityRemove('${escapeAttr(key)}')">${removeText}</button>
+              onclick="activityRemove('${escapeJS(key)}')">${removeText}</button>
           </div>
         </div>
       </div>`;
@@ -5431,7 +5437,7 @@ async function loadDiscover() {
     // Render section tabs
     tabsEl.innerHTML = _discoverSections.map(sec => {
       const label = DISCOVER_SECTION_LABELS[sec.id] || sec.title;
-      return `<button class="discover-sec-tab" data-section="${sec.id}" onclick="switchDiscoverSection('${sec.id}')">${label}<span style="font-size:11px;background:var(--bg3);color:var(--text3);padding:1px 7px;border-radius:10px">${sec.items.length}</span></button>`;
+      return `<button class="discover-sec-tab" data-section="${sec.id}" onclick="switchDiscoverSection('${escapeJS(sec.id)}')">${escapeAttr(label)}<span style="font-size:11px;background:var(--bg3);color:var(--text3);padding:1px 7px;border-radius:10px">${sec.items.length}</span></button>`;
     }).join('') +
       `<button class="discover-sec-tab" data-section="streaming" onclick="switchDiscoverSection('streaming')">New on Streaming</button>` +
       `<button class="discover-sec-tab" data-section="genres" onclick="switchDiscoverSection('genres')">Genres</button>`;
@@ -5504,7 +5510,7 @@ async function loadStreamingSection() {
   if (pills) {
     pills.innerHTML = _streamingProviders.map(p => {
       const active = p.slug === _streamingActiveProvider;
-      return `<button onclick="selectStreamingProvider('${p.slug}')" style="padding:6px 14px;border-radius:16px;border:1px solid ${active ? 'var(--accent)' : 'var(--border2)'};background:${active ? 'var(--accent)' : 'var(--bg2)'};color:${active ? '#fff' : 'var(--text3)'};font-size:12px;font-weight:500;cursor:pointer;font-family:'DM Sans',sans-serif">${p.name}</button>`;
+      return `<button onclick="selectStreamingProvider('${escapeJS(p.slug)}')" style="padding:6px 14px;border-radius:16px;border:1px solid ${active ? 'var(--accent)' : 'var(--border2)'};background:${active ? 'var(--accent)' : 'var(--bg2)'};color:${active ? '#fff' : 'var(--text3)'};font-size:12px;font-weight:500;cursor:pointer;font-family:'DM Sans',sans-serif">${escapeAttr(p.name)}</button>`;
     }).join('');
   }
   grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text3)"><span class="toast-spinner"></span> Loading…</div>';
@@ -5545,7 +5551,7 @@ async function loadGenreSection() {
   if (pills) {
     const modeBtn = (m, label) => {
       const on = _genreMode === m;
-      return `<button onclick="setGenreMode('${m}')" style="padding:6px 14px;border-radius:16px;border:1px solid ${on ? 'var(--accent)' : 'var(--border2)'};background:${on ? 'var(--accent)' : 'var(--bg2)'};color:${on ? '#fff' : 'var(--text3)'};font-size:12px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif">${label}</button>`;
+      return `<button onclick="setGenreMode('${escapeJS(m)}')" style="padding:6px 14px;border-radius:16px;border:1px solid ${on ? 'var(--accent)' : 'var(--border2)'};background:${on ? 'var(--accent)' : 'var(--bg2)'};color:${on ? '#fff' : 'var(--text3)'};font-size:12px;font-weight:600;cursor:pointer;font-family:'DM Sans',sans-serif">${label}</button>`;
     };
     const genrePills = genres.map(g => {
       const active = g.id === _genreActive;
@@ -5594,7 +5600,7 @@ async function loadListsSection() {
   if (pills) {
     pills.innerHTML = tabs.map(t => {
       const active = t.id === _missingActiveList;
-      return `<button onclick="selectList('${t.id}')" style="padding:6px 14px;border-radius:16px;border:1px solid ${active ? 'var(--accent)' : 'var(--border2)'};background:${active ? 'var(--accent)' : 'var(--bg2)'};color:${active ? '#fff' : 'var(--text3)'};font-size:12px;font-weight:500;cursor:pointer;font-family:'DM Sans',sans-serif">${t.name}</button>`;
+      return `<button onclick="selectList('${escapeJS(t.id)}')" style="padding:6px 14px;border-radius:16px;border:1px solid ${active ? 'var(--accent)' : 'var(--border2)'};background:${active ? 'var(--accent)' : 'var(--bg2)'};color:${active ? '#fff' : 'var(--text3)'};font-size:12px;font-weight:500;cursor:pointer;font-family:'DM Sans',sans-serif">${escapeAttr(t.name)}</button>`;
     }).join('');
   }
   grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text3)"><span class="toast-spinner"></span> Loading…</div>';
@@ -5655,9 +5661,9 @@ function renderDiscoverGrid(items) {
       badge = `<span class="badge badge-blue" style="font-size:9px;padding:1px 5px">In ${item.media_type === 'series' ? 'Sonarr' : 'Radarr'}</span>`;
     } else {
       badge = `<span class="badge" style="font-size:9px;padding:1px 5px;background:var(--bg3);color:var(--text3)">${item.media_type === 'movie' ? 'Movie' : 'Show'}</span>`;
-      addBtn = `<button onclick="event.stopPropagation();showAddToArrModal(${tmdbId},'${escapeJS(item.title)}','${escapeJS(item.year||'')}','${escapeJS(item.poster_path||'')}','${item.media_type}',${tvdbId})" class="lib-card-add-btn" title="Add to ${item.media_type === 'series' ? 'Sonarr' : 'Radarr'}">+</button>`;
+      addBtn = `<button onclick="event.stopPropagation();showAddToArrModal(${tmdbId},'${escapeJS(item.title)}','${escapeJS(item.year||'')}','${escapeJS(item.poster_path||'')}','${escapeJS(item.media_type)}',${tvdbId})" class="lib-card-add-btn" title="Add to ${item.media_type === 'series' ? 'Sonarr' : 'Radarr'}">+</button>`;
     }
-    const clickHandler = `onclick="showDiscoverDetail(${tmdbId},'${escapeAttr(item.media_type)}','${escapeJS(item.title)}','${escapeJS(item.year||'')}','${escapeJS(item.poster_path||'')}',${!!item.in_library},${tvdbId})"`;
+    const clickHandler = `onclick="showDiscoverDetail(${tmdbId},'${escapeJS(item.media_type)}','${escapeJS(item.title)}','${escapeJS(item.year||'')}','${escapeJS(item.poster_path||'')}',${!!item.in_library},${tvdbId})"`;
     const listTag = item.list_name ? `<div style="font-size:10px;color:var(--accent);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeAttr(item.list_name)}</div>` : '';
     return `
       <div class="lib-card" ${clickHandler}>
@@ -5722,7 +5728,7 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
     } else if (data.requested) {
       actionBtn = `<span class="badge badge-blue" style="font-size:12px;padding:4px 10px">In ${isSeries ? 'Sonarr' : 'Radarr'} — searching for release</span>`;
     } else {
-      actionBtn = `<button class="btn btn-primary btn-sm" onclick="closeModal('modal-media-detail');showAddToArrModal(${detailTmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}','${mediaType}',${detailTvdbId})">Add to ${arrLabel}</button>`;
+      actionBtn = `<button class="btn btn-primary btn-sm" onclick="closeModal('modal-media-detail');showAddToArrModal(${detailTmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}','${escapeJS(mediaType)}',${detailTvdbId})">Add to ${arrLabel}</button>`;
     }
     document.getElementById('detail-title').textContent = data.title || title || 'Unknown';
     const detailPosterSrc = _imgUrl(data.poster_path, 'w185');
@@ -6999,8 +7005,8 @@ async function loadHealthMissing() {
         <td>${name}</td>
         ${aired}
         <td style="white-space:nowrap;text-align:right"><div style="display:flex;gap:6px;justify-content:flex-end">
-          <button class="btn btn-secondary btn-sm" onclick="healthDiagnose('${kind}', ${it.id}, this)">Diagnose</button>
-          <button class="btn btn-secondary btn-sm" onclick="healthSearchMissing('${kind}', ${it.id}, this)">Search</button>
+          <button class="btn btn-secondary btn-sm" onclick="healthDiagnose('${escapeJS(kind)}', ${it.id}, this)">Diagnose</button>
+          <button class="btn btn-secondary btn-sm" onclick="healthSearchMissing('${escapeJS(kind)}', ${it.id}, this)">Search</button>
         </div></td>
       </tr>`;
     }).join('');
@@ -7038,7 +7044,7 @@ async function healthDiagnose(kind, id, btn) {
           <td style="font-size:12px;white-space:nowrap">${_fmtBytes(c.size_bytes)}</td>
           <td style="font-size:12px;white-space:nowrap">${c.protocol === 'torrent' ? (c.seeders ?? '?') + ' seeds' : escapeHtml(c.protocol || '')}</td>
           <td style="font-size:11px;color:var(--text3)">${c.rejected ? escapeHtml((c.rejections || []).join('; ')) : '<span class="badge badge-green" style="font-size:10px">Grabbable</span>'}</td>
-          <td style="text-align:right"><button class="btn ${c.rejected ? 'btn-secondary' : 'btn-primary'} btn-sm" onclick="healthGrabRelease('${kind}', '${escapeAttr(c.guid)}', ${c.indexer_id}, this)">Grab</button></td>
+          <td style="text-align:right"><button class="btn ${c.rejected ? 'btn-secondary' : 'btn-primary'} btn-sm" onclick="healthGrabRelease('${escapeJS(kind)}', '${escapeJS(c.guid)}', ${c.indexer_id}, this)">Grab</button></td>
         </tr>`).join('');
       inner = `
         <div style="font-size:12px;color:var(--text2);margin-bottom:6px">
@@ -7155,11 +7161,11 @@ async function loadHealthDownloads() {
         ? `<div style="font-size:12px;color:var(--amber);margin-top:2px">${escapeHtml(d.reason)}</div>` : '';
       let actions = '';
       if (d.queue_id != null && d.status === 'stuck') {
-        actions = `<button class="btn btn-primary btn-sm" onclick="healthFixDownload('${d.source}', ${d.queue_id}, this)">Fix</button>
-                   <button class="btn btn-secondary btn-sm" onclick="healthRemoveDownload('${d.source}', ${d.queue_id}, true, this)">Remove</button>`;
+        actions = `<button class="btn btn-primary btn-sm" onclick="healthFixDownload('${escapeJS(d.source)}', ${d.queue_id}, this)">Fix</button>
+                   <button class="btn btn-secondary btn-sm" onclick="healthRemoveDownload('${escapeJS(d.source)}', ${d.queue_id}, true, this)">Remove</button>`;
       } else if (d.queue_id != null && d.status === 'import_blocked') {
-        actions = `<button class="btn btn-primary btn-sm" onclick="healthImportDownload('${d.source}', '${escapeAttr(d.download_id || '')}', this)">Import</button>
-                   <button class="btn btn-secondary btn-sm" onclick="healthRemoveDownload('${d.source}', ${d.queue_id}, false, this)">Remove</button>`;
+        actions = `<button class="btn btn-primary btn-sm" onclick="healthImportDownload('${escapeJS(d.source)}', '${escapeJS(d.download_id || '')}', this)">Import</button>
+                   <button class="btn btn-secondary btn-sm" onclick="healthRemoveDownload('${escapeJS(d.source)}', ${d.queue_id}, false, this)">Remove</button>`;
       }
       return `<tr>
         <td><span class="badge ${meta.cls}" style="font-size:10px">${meta.label}</span></td>
