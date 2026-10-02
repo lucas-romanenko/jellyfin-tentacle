@@ -397,7 +397,7 @@ public class TentacleDiscoverController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogWarning("[Tentacle Discover] Failed to toggle follow: {Error}", ex.Message);
-            return StatusCode(500, new { detail = ex.Message });
+            return StatusCode(500, new { detail = DescribeFailure(ex).Message });
         }
     }
 
@@ -612,7 +612,7 @@ public class TentacleDiscoverController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogWarning("[Tentacle Discover] Failed to delete library item: {Error}", ex.Message);
-            return StatusCode(500, new { detail = ex.Message });
+            return StatusCode(500, new { detail = DescribeFailure(ex).Message });
         }
     }
 
@@ -859,7 +859,7 @@ public class TentacleDiscoverController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogWarning("[Tentacle Discover] Failed to add to Radarr: {Error}", ex.Message);
-            return StatusCode(500, new { detail = ex.Message });
+            return StatusCode(500, new { detail = DescribeFailure(ex).Message });
         }
     }
 
@@ -886,7 +886,7 @@ public class TentacleDiscoverController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogWarning("[Tentacle Discover] Failed to add to Sonarr: {Error}", ex.Message);
-            return StatusCode(500, new { detail = ex.Message });
+            return StatusCode(500, new { detail = DescribeFailure(ex).Message });
         }
     }
 
@@ -1131,7 +1131,7 @@ public class TentacleDiscoverController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogWarning("[Tentacle Discover] Failed to manage episodes: {Error}", ex.Message);
-            return StatusCode(500, new { detail = ex.Message });
+            return StatusCode(500, new { detail = DescribeFailure(ex).Message });
         }
     }
 

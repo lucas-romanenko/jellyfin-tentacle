@@ -131,7 +131,7 @@ public class TentacleMdbListController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogWarning("[Tentacle MdbList] Failed for {Type}:{TmdbId}: {Error}", type, tmdbId, ex.Message);
-            return Ok(new { success = false, error = ex.Message, ratings = Array.Empty<object>() });
+            return Ok(new { success = false, error = "MDBList ratings are not available right now.", ratings = Array.Empty<object>() });
         }
     }
 
