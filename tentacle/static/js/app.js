@@ -826,7 +826,11 @@ async function loadScheduleInfo() {
     const info = await api('/api/settings/schedule-info');
     const hint = document.getElementById('sync_schedule_hint');
     if (!hint) return;
-    let txt = 'Runs every day at this time';
+    // A cron that isn't "M H * * *" (set before this page showed a time, or
+    // through the API) is kept by Save until the time is changed (#385).
+    const daily = /^\d{1,2}\s+\d{1,2}\s+\*\s+\*\s+\*$/.test((info.cron || '').trim());
+    let txt = daily || !info.cron ? 'Runs every day at this time'
+      : `Custom schedule "${info.cron}", kept as it is; a time set here replaces it with a daily sync`;
     if (info.timezone) {
       txt += ` · timezone ${info.timezone}`;
       if (info.timezone_abbr) txt += ` (${info.timezone_abbr})`;
@@ -1238,8 +1242,10 @@ async function loadSettings() {
     loadServicePickers('sonarr');
     applyMusicVisibility();
     // Sync schedule is stored as cron but shown as a friendly daily time.
+    // What was shown is remembered: Save sends a schedule only when the time
+    // was changed, so it never rewrites a custom cron (#385).
     const _st = document.getElementById('sync_schedule_time');
-    if (_st) _st.value = cronToTime(settings.sync_schedule);
+    if (_st) { _st.value = cronToTime(settings.sync_schedule); _st.dataset.shown = _st.value; }
     loadScheduleInfo();
     // Show current auth user in Jellyfin integration section
     const jfLabel = document.getElementById('jellyfin-logged-in-label');
@@ -1561,11 +1567,14 @@ async function saveSettings() {
     // an unreachable service clear a choice.
     if (el) settings[key] = el.dataset.loaded === '1' ? el.value : (el.dataset.saved || '');
   });
-  // Sync schedule: convert the friendly daily time back to cron for storage.
+  // Sync schedule: a changed time is stored as a daily cron. An unchanged one
+  // is not sent, so the stored schedule stays exactly as it is (#385: a
+  // "0 */6 * * *" or weekdays-only cron became "daily at H:M" on any Save).
   const _st = document.getElementById('sync_schedule_time');
-  if (_st) settings.sync_schedule = timeToCron(_st.value);
+  if (_st && _st.value !== (_st.dataset.shown ?? _st.defaultValue)) settings.sync_schedule = timeToCron(_st.value);
   try {
     await api('/api/settings', { method: 'POST', body: { settings } });
+    if (_st) _st.dataset.shown = _st.value;
     SETTINGS_PICKER_FIELDS.forEach(key => {
       const el = document.getElementById(key);
       if (el) el.dataset.saved = settings[key];
