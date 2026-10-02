@@ -1,8 +1,7 @@
 # Pipelines: what happens when
 
 How content and changes flow from Tentacle into Jellyfin and the clients.
-Merged from Lucas's notes on 2026-09-28 and checked against the code then
-(corrections noted); the code wins. Internals: [server.md](server.md).
+The code wins where they differ. Internals: [server.md](server.md).
 
 ## Content → tags → playlists → home screen
 
