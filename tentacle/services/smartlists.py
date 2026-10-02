@@ -727,6 +727,15 @@ def _enabled_toggle_names(db: Session, user_id: int) -> set:
     return names
 
 
+def playlist_names_still_made(db: Session, user_id: int) -> set:
+    """Names of the playlists something of this user's still makes: what
+    get_desired_smartlists() builds, plus the switched-on ones the orphan
+    sweep in sync_smartlists() protects. One name can have two producers (a
+    list and a rule on one tag, a rule named like a built-in), so a fast path
+    that removes a playlist by name must leave these alone (#382)."""
+    return {s["name"] for s in get_desired_smartlists(db, user_id=user_id)} | _enabled_toggle_names(db, user_id)
+
+
 def sync_smartlists(db: Session, user_id: int = None) -> dict:
     """Sync per-user SmartList config files to disk. Returns {created, updated, total}.
 
@@ -2475,11 +2484,22 @@ def sync_single_custom_playlist(db: Session, user_id: int, rule_name: str, condi
     existing = _scan_existing(smartlists_path)
     is_new = rule_name not in existing
 
+    # A name this user's list, built-in, source or YouTube playlist already
+    # makes is that one's playlist (get_desired_smartlists skips the rule):
+    # refill it as it is, never rewrite it with the rule's filters (#382).
+    owner = next((s for s in get_desired_smartlists(db, user_id=user_id) if s["name"] == rule_name), None)
+    served_by_other = owner is not None and owner.get("source") != "custom"
+    if served_by_other and is_new:
+        return {"success": True, "name": rule_name, "item_count": 0, "is_new": False}
+
     # Never adopt a playlist another user's SmartList already owns (see
     # _playlist_ids_of_other_users).
     other_playlist_ids = _playlist_ids_of_other_users(db, user_id)
 
-    if is_new:
+    if served_by_other:
+        folder, config = existing[rule_name]
+        logger.info(f"[SmartLists] '{rule_name}' is made by a {owner.get('source')} playlist of the same name — left as it is")
+    elif is_new:
         folder_id = str(uuid.uuid4())
         folder = smartlists_path / folder_id
         folder.mkdir(parents=True, exist_ok=True)
@@ -2512,8 +2532,9 @@ def sync_single_custom_playlist(db: Session, user_id: int, rule_name: str, condi
                 config["UserPlaylists"] = [{"UserId": jf_user_id, "JellyfinPlaylistId": playlist_id}]
 
     # Write config to disk
-    config_file = folder / "config.json"
-    config_file.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    if not served_by_other:
+        config_file = folder / "config.json"
+        config_file.write_text(json.dumps(config, indent=2), encoding="utf-8")
 
     # Populate the Jellyfin playlist with matching items
     jf = JellyfinService(jellyfin_url, jellyfin_key, user_id=jf_user_id)
@@ -2681,9 +2702,14 @@ def toggle_auto_playlist_fast(db: Session, user_id: int, key: str, enabled: bool
 
         logger.info(f"[SmartLists] Fast toggle ON '{name}': {item_count} items")
     else:
-        # Disable: delete Jellyfin playlist + remove config folder
+        # Disable: delete Jellyfin playlist + remove config folder, unless
+        # another producer of this user's still makes a playlist of that name
+        # (a rule on the list's tag, #382): that one keeps it, and the next
+        # full sync gives it that producer's definition.
         item_count = 0
-        if name in existing:
+        if name in existing and name in playlist_names_still_made(db, user_id):
+            logger.info(f"[SmartLists] Fast toggle OFF '{name}': kept, another playlist source of this user makes it")
+        elif name in existing:
             folder, old_data = existing[name]
             # Delete Jellyfin playlist
             for entry in (old_data.get("UserPlaylists") or []):
