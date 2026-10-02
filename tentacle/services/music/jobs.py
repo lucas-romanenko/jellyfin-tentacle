@@ -14,7 +14,7 @@ import json
 import logging
 import time
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from models.database import MusicAlbum, MusicArtist, get_setting, set_setting
 from services.lidarr import LidarrError
@@ -94,23 +94,28 @@ def finish_request(album_id: int, rgid: str, choice: dict = None, sleep=time.sle
     return job
 
 
-def finish_pending_requests(db, errors: list = None) -> int:
+def finish_pending_requests(db, errors: list = None, unconfirmed_only: bool = False) -> int:
     """Finish requests whose pin-and-search job never ran (Tentacle restarted, or the
-    job failed). Runs at startup and at the start of every daily check."""
+    job failed). Runs at startup and at the start of every daily check.
+    `unconfirmed_only`: just the adds Lidarr hadn't listed yet (look_again_later)."""
     worker.run_urgent_jobs()   # a request's own job, if still queued, goes first
-    rows = db.query(MusicAlbum).filter(MusicAlbum.request_pending.is_(True)).all()
-    done = 0
+    query = db.query(MusicAlbum).filter(MusicAlbum.request_pending.is_(True))
+    if unconfirmed_only:
+        query = query.filter(MusicAlbum.lidarr_album_id.is_(None))
+    rows = query.all()
+    done, unconfirmed = 0, False
     for row in rows:
         title = f"{row.artist_name} - {row.title}"
-        if not row.lidarr_album_id:
-            _request_done(row)
-            db.commit()
-            continue
         try:
+            if not row.lidarr_album_id and not _added_since(db, row):
+                unconfirmed = unconfirmed or row.request_pending
+                continue
             finish_request(row.lidarr_album_id, row.mbid, row.request_choice, resumed=True)(db)
             done += 1
             logger.info(f"[Request] '{title}': finished a request that was left unfinished")
         except LidarrError as e:
+            # Lidarr unreachable: look again, but only while the add may still land
+            unconfirmed = unconfirmed or (not row.lidarr_album_id and _still_owed(row))
             if e.status == 404:   # removed from Lidarr since: nothing is owed
                 _request_done(row)
                 db.commit()
@@ -119,7 +124,44 @@ def finish_pending_requests(db, errors: list = None) -> int:
         except (MusicBrainzError, library.MusicUnavailable) as e:
             if errors is not None:
                 errors.append(f"{title}: {e.message}")
+    if unconfirmed:
+        look_again_later()   # an add still unconfirmed: look again (until UNCONFIRMED_ADD_WAIT)
     return done
+
+
+# An add with no answer that Lidarr still doesn't list after this long never landed.
+UNCONFIRMED_ADD_WAIT = timedelta(hours=6)
+
+
+def _still_owed(row: MusicAlbum) -> bool:
+    return bool(row.requested_at) and datetime.utcnow() - row.requested_at <= UNCONFIRMED_ADD_WAIT
+
+
+def _added_since(db, row: MusicAlbum) -> bool:
+    """A request whose add got no answer (no album id): has the album landed in Lidarr since?"""
+    album = library.lidarr_client(db).album_by_mbid(row.mbid)
+    if album and album.get("id"):
+        row.lidarr_album_id = album["id"]
+        db.commit()
+        return True
+    if not _still_owed(row):
+        _request_done(row)   # it never landed: nothing is owed
+        row.verdict = None   # not "waiting for Lidarr" next to "Not requested" any more
+        db.commit()
+    return False
+
+
+def look_again_later(delay: int = 300) -> None:
+    """Look for unconfirmed adds again in a few minutes (an add that lands late), not only
+    at the daily check. One pending run at a time (same job id); re-armed while one is owed."""
+    def run():
+        worker.submit(lambda job_db: finish_pending_requests(job_db, unconfirmed_only=True), worker.URGENT,
+                      "unconfirmed album adds")
+    try:
+        from main import schedule_once
+        schedule_once(run, delay, "music_unconfirmed_adds")
+    except Exception as e:  # no scheduler (tests, CLI): the daily check catches up
+        logger.debug(f"[Music] couldn't schedule a look for late adds: {e}")
 
 
 def resume_requests() -> None:

@@ -390,6 +390,20 @@ def _added_after_all(client, rgid: str) -> Optional[dict]:
         return None
 
 
+def _owe_unconfirmed_add(db: Session, found: dict, user_id: Optional[int], choice: Optional[dict]) -> None:
+    """An add whose answer failed and that Lidarr doesn't list (yet): a request owed
+    without an album id. jobs.finish_pending_requests looks for the album again, a
+    few minutes from now and at each daily check."""
+    from services.music import jobs, library
+    row = library.upsert_album(db, dict(found, id=None, monitored=False))
+    row.lidarr_album_id = row.lidarr_artist_id = None   # until Lidarr lists it
+    row.requested_by, row.requested_at, row.category = user_id, datetime.utcnow(), ""
+    row.verdict = {"state": "Requested: waiting for Lidarr to confirm the add…"}
+    row.request_pending, row.request_choice = True, choice
+    db.commit()
+    jobs.look_again_later()
+
+
 def request_album(db: Session, rgid: str, *, user_id: Optional[int], via: str,
                   choice: Optional[dict] = None) -> dict:
     """Ask Lidarr for one album (a MusicBrainz release group), pinned to its original.
@@ -439,6 +453,12 @@ def request_album(db: Session, rgid: str, *, user_id: Optional[int], via: str,
                 # takes Lidarr longer than the timeout, or Lidarr restarts mid-add.
                 album = _added_after_all(client, rgid)
                 if not album:
+                    if e.status is None or e.status >= 500:
+                        # It may still land after this look: owe the request (no album id
+                        # yet), so a later look finds it and finishes it.
+                        _owe_unconfirmed_add(db, found, user_id, choice)
+                        raise RequestRefused(f"{e.message}. If Lidarr adds the album anyway, Tentacle "
+                                             "finishes the request within a few minutes.", 502)
                     raise
                 logger.info(f"[Request] album {rgid} via {via}: Lidarr's answer failed ({e.message}), "
                             "but the album is in Lidarr: carrying on")
