@@ -451,7 +451,7 @@ def get_jellyfin_users(db: Session = Depends(get_db)):
             # whose routes stay open until the first sign-in anyway.
             logger.warning(f"Failed to fetch Jellyfin users before the first sign-in: {e}")
             raise HTTPException(400, "Could not reach Jellyfin at the saved address. "
-                                     "Check the address and API key, then continue.")
+                                     "Check the address, then continue.")
         logger.error(f"Failed to fetch Jellyfin users: {e}")
         raise HTTPException(502, f"Could not reach Jellyfin: {e}")
 

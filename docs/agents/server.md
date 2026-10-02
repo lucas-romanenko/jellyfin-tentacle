@@ -40,7 +40,7 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   wizard through. Until then `GET /api/auth/users` also answers 400 when the
   saved Jellyfin address doesn't answer, so the dashboard reopens the wizard
   instead of a login screen nobody can get past. `setup_complete` is set only
-  by the wizard's last step or "Skip everything", never by a settings save.
+  by the wizard's "Get Started" or "Skip everything", never by a settings save.
 - Roles: admin status is copied from Jellyfin's `Policy.IsAdministrator` on
   every login; the first user (lowest id) is the owner and can't lose admin;
   Settings → Users toggles admin through Jellyfin's policy API. Non-admins
