@@ -872,7 +872,8 @@ def diagnose(request: Request, db: Session = Depends(get_db)):
             if jf_url and jf_key:
                 try:
                     from services.jellyfin import JellyfinService
-                    jfc = JellyfinService(jf_url, jf_key, get_setting(db, "jellyfin_user_id", ""))
+                    # As the playlists' owner: Jellyfin answers 404 to anyone else.
+                    jfc = JellyfinService(jf_url, jf_key, user.jellyfin_user_id)
                     ids = {p["name"]: p["playlist_id"]
                            for p in _get_smartlists_with_playlist_ids(db, user_id=user.id)}
                     for c in channels:
