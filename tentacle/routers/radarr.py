@@ -3,8 +3,10 @@ Tentacle - Radarr Router
 Radarr library scanning, quality profiles, and provider migration
 """
 
+import re
 import threading
 import logging
+import requests
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
@@ -378,72 +380,89 @@ def radarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
             jf_url = get_setting(db, "jellyfin_url")
             jf_key = get_setting(db, "jellyfin_api_key")
             jf_uid = get_setting(db, "jellyfin_user_id", "")
-            if jf_url and jf_key and db_movie.tags:
-                jf = JellyfinService(jf_url, jf_key, jf_uid)
-                movie_title = db_movie.title or title
-                movie_year = str(db_movie.year or "")
+            try:
+                if jf_url and jf_key and db_movie.tags:
+                    jf = JellyfinService(jf_url, jf_key, jf_uid)
+                    movie_title = db_movie.title or title
+                    movie_year = str(db_movie.year or "")
 
-                # Retry loop: wait for Jellyfin to index the new movie
-                jf_item = None
-                max_attempts = 5
-                for attempt in range(max_attempts):
-                    jf_item = jf.search_by_tmdb_id(
-                        tmdb_id, "Movie", title=movie_title, year=movie_year
-                    )
-                    if jf_item:
-                        break
-                    if attempt < max_attempts - 1:
-                        wait = 15 * (attempt + 1)  # 15s, 30s, 45s, 60s
-                        logger.info(
-                            f"[Radarr webhook] '{title}' not in Jellyfin yet, "
-                            f"retrying in {wait}s (attempt {attempt + 1}/{max_attempts})"
+                    # Retry loop: wait for Jellyfin to index the new movie: the item
+                    # of the file Radarr has now. After a quality upgrade the listing
+                    # can still hold the replaced file's item, about to be removed.
+                    file_name = re.split(r"[\\/]", db_movie.radarr_path or "")[-1] or None
+                    jf_item = None
+                    max_attempts = 5
+                    for attempt in range(max_attempts):
+                        jf_item = jf.search_by_tmdb_id(
+                            tmdb_id, "Movie", title=movie_title, year=movie_year, file_name=file_name
                         )
-                        time.sleep(wait)
-                        # Re-trigger scan in case it finished before file was ready
-                        if attempt == 1:
-                            try:
-                                jf.trigger_library_scan()
-                            except Exception:
-                                pass
+                        if jf_item:
+                            break
+                        if file_name and attempt == max_attempts - 1:
+                            # Never listed under that file name (another layout):
+                            # the TMDB match, as before.
+                            jf_item = jf.search_by_tmdb_id(
+                                tmdb_id, "Movie", title=movie_title, year=movie_year
+                            )
+                            break
+                        if attempt < max_attempts - 1:
+                            wait = 15 * (attempt + 1)  # 15s, 30s, 45s, 60s
+                            logger.info(
+                                f"[Radarr webhook] '{title}' not in Jellyfin yet, "
+                                f"retrying in {wait}s (attempt {attempt + 1}/{max_attempts})"
+                            )
+                            time.sleep(wait)
+                            # Re-trigger scan in case it finished before file was ready
+                            if attempt == 1:
+                                try:
+                                    jf.trigger_library_scan()
+                                except Exception:
+                                    pass
 
-                if jf_item:
-                    # Cache Jellyfin item ID for click-to-play
-                    if jf_item.get("Id") and db_movie.jellyfin_item_id != jf_item["Id"]:
-                        db_movie.jellyfin_item_id = jf_item["Id"]
-                        db.commit()
+                    if jf_item:
+                        # Cache Jellyfin item ID for click-to-play
+                        if jf_item.get("Id") and db_movie.jellyfin_item_id != jf_item["Id"]:
+                            db_movie.jellyfin_item_id = jf_item["Id"]
+                            db.commit()
 
-                    # Fetch full item DTO (includes Genres, CommunityRating, ProductionYear)
-                    # for native playlist expression matching
-                    full_item = jf.get_item_by_id(jf_item["Id"])
-                    if full_item:
-                        jf_item = full_item
+                        # Fetch full item DTO (includes Genres, CommunityRating, ProductionYear)
+                        # for native playlist expression matching
+                        full_item = jf.get_item_by_id(jf_item["Id"])
+                        if full_item:
+                            jf_item = full_item
 
-                    # Merge with existing Jellyfin tags rather than replacing
-                    existing_jf_tags = set(jf_item.get("Tags", []))
-                    desired_tags = set(db_movie.tags)
-                    merged = list(existing_jf_tags | desired_tags)
-                    if jf.set_item_tags(jf_item["Id"], merged):
-                        logger.info(f"[Radarr webhook] Pushed tags to Jellyfin for '{title}': {merged}")
-                    else:
-                        logger.warning(f"[Radarr webhook] Failed to set tags on '{title}' in Jellyfin")
-
-                    # Refresh metadata so Jellyfin fetches posters/info from TMDB,
-                    # then wait for images before notifying clients (avoids empty posters).
-                    if jf.refresh_item_metadata(jf_item["Id"]):
-                        logger.info(f"[Radarr webhook] Triggered metadata refresh for '{title}'")
-                        if jf.wait_for_images(jf_item["Id"], max_wait=30, poll_interval=3):
-                            logger.info(f"[Radarr webhook] Images ready for '{title}'")
-                            # Re-fetch full DTO now that images are available
-                            refreshed = jf.get_item_by_id(jf_item["Id"])
-                            if refreshed:
-                                jf_item = refreshed
+                        # Merge with existing Jellyfin tags rather than replacing
+                        existing_jf_tags = set(jf_item.get("Tags", []))
+                        desired_tags = set(db_movie.tags)
+                        merged = list(existing_jf_tags | desired_tags)
+                        if jf.set_item_tags(jf_item["Id"], merged):
+                            logger.info(f"[Radarr webhook] Pushed tags to Jellyfin for '{title}': {merged}")
                         else:
-                            logger.info(f"[Radarr webhook] Images not ready for '{title}' after 30s, continuing anyway")
-                else:
-                    logger.warning(
-                        f"[Radarr webhook] '{title}' (tmdb:{tmdb_id}) not found in Jellyfin "
-                        f"after {max_attempts} attempts — tags will be pushed on next scheduled scan"
-                    )
+                            logger.warning(f"[Radarr webhook] Failed to set tags on '{title}' in Jellyfin")
+
+                        # Refresh metadata so Jellyfin fetches posters/info from TMDB,
+                        # then wait for images before notifying clients (avoids empty posters).
+                        if jf.refresh_item_metadata(jf_item["Id"]):
+                            logger.info(f"[Radarr webhook] Triggered metadata refresh for '{title}'")
+                            if jf.wait_for_images(jf_item["Id"], max_wait=30, poll_interval=3):
+                                logger.info(f"[Radarr webhook] Images ready for '{title}'")
+                                # Re-fetch full DTO now that images are available
+                                refreshed = jf.get_item_by_id(jf_item["Id"])
+                                if refreshed:
+                                    jf_item = refreshed
+                            else:
+                                logger.info(f"[Radarr webhook] Images not ready for '{title}' after 30s, continuing anyway")
+                    else:
+                        logger.warning(
+                            f"[Radarr webhook] '{title}' (tmdb:{tmdb_id}) not found in Jellyfin "
+                            f"after {max_attempts} attempts — tags will be pushed on next scheduled scan"
+                        )
+            except requests.HTTPError as e:
+                # Jellyfin refused a read or write of the item (e.g. it was just
+                # removed). The tags and playlists catch up on the next scan;
+                # the notice and the rest of this pass must still happen.
+                logger.warning(f"[Radarr webhook] Jellyfin update for '{title}' stopped: {e}")
+                jf_item = None
 
             # Add item directly to matching playlists — no need to wait for
             # Jellyfin tag indexing since we match by known tags from the DB.
