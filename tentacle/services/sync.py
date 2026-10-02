@@ -982,6 +982,7 @@ class _MovieIndex:
         self.strm_owner = {}  # strm_path -> tmdb_id, every row
         self.own_strm = {}    # tmdb_id -> strm_path, this provider's rows
         self.own_meta = {}    # tmdb_id -> {"title", "year"}, this provider's rows
+        self.own_by_title = {}  # _plain_title -> this provider's tmdb_ids with that title, any year
         self.title_count = {}  # (normalised title, year) -> rows with it, any source
         # Accounts of the OTHER configured providers, as (host, username), and
         # their ids: positive evidence that a .strm plays another provider's
@@ -1014,11 +1015,13 @@ class _MovieIndex:
             if pid == provider.id:
                 self.own_strm[tid] = strm
                 self.own_meta[tid] = {"title": title, "year": year}
+                self.own_by_title.setdefault(_plain_title(title), set()).add(tid)
 
     def add(self, tmdb_id: int, strm_path: str, title=None, year=None):
         self.strm_owner[strm_path] = tmdb_id
         self.own_strm[tmdb_id] = strm_path
         self.own_meta[tmdb_id] = {"title": title, "year": year}
+        self.own_by_title.setdefault(_plain_title(title), set()).add(tmdb_id)
         key = _title_key(title, year)
         self.title_count[key] = self.title_count.get(key, 0) + 1
 
@@ -1040,6 +1043,15 @@ _NS_CARRIED_RE = re.compile(r"(?i)https?://[^\s?#&]+/(?:movie|series)/[^/?#&]+/[
 
 def _title_key(title, year):
     return (re.sub(r"\W+", "", str(title or "").casefold()), str(year or ""))
+
+
+def _plain_title(title) -> str:
+    """A title for comparing a provider label with a film's TMDB title
+    whatever the year: case, punctuation and accents ignored ("Amelie" is
+    "Amélie"), since providers often drop accents TMDB keeps."""
+    import unicodedata
+    text = unicodedata.normalize("NFKD", str(title or ""))
+    return re.sub(r"\W+", "", "".join(c for c in text if not unicodedata.combining(c)).casefold())
 
 
 def _account_of(provider: Provider):
@@ -1983,6 +1995,26 @@ def _place_relisted_movies(db: Session, client, provider: Provider, index: "_Mov
     for stream, tag in unmatched:
         tid = plays.get(ref_of(stream))
         if tid is None:
+            # The provider's TMDB id names a film of ours with this title (a
+            # relabel together with a re-upload under a new id, the year too
+            # far off for the lookup): it is that film, and the #263 repoint
+            # below points its file at this stream. Only for a stream the
+            # lookup could not place: before the lookup, a copied hint on a
+            # namesake would keep the real namesake out.
+            hint = _provider_tmdb_hint(stream)
+            meta = index.own_meta.get(hint) if hint is not None else None
+            if not meta or index.own_strm.get(hint) in index.shared \
+                    or _plain_title(clean_title(stream.get("name", ""))[0]) != _plain_title(meta.get("title")):
+                continue
+            logger.info(f"[Sync] '{stream.get('name')}' (stream {stream.get('stream_id')}) is "
+                        f"'{meta.get('title')}' (TMDB {hint}) by the provider's TMDB id")
+            _merge_source_tag(hint, "movie", tag, provider.id, db)
+            seen_ids_all.add(hint)
+            met_streams.setdefault(hint, []).append(stream)
+            _repair_movie_strm(client, stream, hint, provider, db, restore=may_restore(stream, hint))
+            stats["skipped"] -= 1
+            stats["existing"] += 1
+            kept += 1
             continue
         logger.info(f"[Sync] '{stream.get('name')}' (stream {stream.get('stream_id')}) is still "
                     f"'{(index.own_meta.get(tid) or {}).get('title')}' (TMDB {tid}): relabelled by the provider")
@@ -2255,6 +2287,37 @@ def _sync_movies(
     def _in_library(i):
         return i in existing_provider_tmdb_ids or i in seen_tmdb_ids
 
+    def _relabelled_id(stream, clean_name):
+        """The film of ours a stream with an unknown label already plays: the
+        only row of this provider with the same title (any year), when its
+        .strm plays this very stream. A relabel onto a year where TMDB has a
+        namesake would otherwise be matched to that namesake, imported next to
+        ours, and ours pruned (#262). Not when the provider's TMDB id names
+        another film (a corrected label goes through the lookup, as before),
+        nor when we have two films of that title: the lookup tells them apart
+        by year, as before."""
+        rows = [t for t in index.own_by_title.get(_plain_title(clean_name), ()) if _in_library(t)]
+        if len(rows) != 1 or index.own_strm.get(rows[0]) in index.shared:
+            return None
+        if _movie_row_plays_stream(client, stream, index.own_strm.get(rows[0]), index) is not True:
+            return None
+        hint = _provider_tmdb_hint(stream)
+        return rows[0] if hint is None or hint == rows[0] else None
+
+    def _owning_row(stream, clean_name):
+        """After the lookup matched a film we don't have: the one film of ours
+        with the same title (any year) whose .strm plays this very stream,
+        unless the provider's TMDB id names another film. With remakes of one
+        title in the library, the label's year can name a TMDB namesake none
+        of them is; the stream still stays with the film that plays it (#185)."""
+        rows = [t for t in index.own_by_title.get(_plain_title(clean_name), ())
+                if _in_library(t) and index.own_strm.get(t) not in index.shared
+                and _movie_row_plays_stream(client, stream, index.own_strm.get(t), index) is True]
+        if len(rows) != 1:
+            return None
+        hint = _provider_tmdb_hint(stream)
+        return rows[0] if hint is None or hint == rows[0] else None
+
     # Streams an admin reported as mislabelled ("Wrong movie"): never imported
     # again, whatever the provider calls them and whichever category they're in.
     from services.wrong_match import blocked_keys, is_blocked, override_keys, override_for
@@ -2340,6 +2403,13 @@ def _sync_movies(
             if tmdb_id is not None and _in_library(tmdb_id):
                 known_by_idx[idx] = tmdb_id
                 continue  # Will be counted as existing in phase 3
+            if not known_titles.get(lookup_key):
+                tmdb_id = _relabelled_id(stream, clean_name)
+                if tmdb_id is not None:
+                    logger.info(f"[Sync] '{stream.get('name')}' (stream {stream.get('stream_id')}) is still "
+                                f"'{index.own_meta[tmdb_id].get('title')}' (TMDB {tmdb_id}): its .strm plays it")
+                    known_by_idx[idx] = tmdb_id
+                    continue
             needs_tmdb.append((idx, clean_name, year))
 
         # Parallel TMDB lookups for items that actually need it
@@ -2405,6 +2475,14 @@ def _sync_movies(
             known_id = None
             override_hit = overrides and override_for(overrides, stream.get("stream_id"), client.movie_stream_url(
                 stream.get("stream_id"), stream.get("container_extension", "mp4"))) is not None
+            if metadata and not override_hit and not _in_library(metadata["tmdb_id"]):
+                owner = _owning_row(stream, clean_name)
+                if owner is not None:
+                    logger.info(f"[Sync] '{stream.get('name')}' (stream {stream.get('stream_id')}) is still "
+                                f"'{index.own_meta[owner].get('title')}' (TMDB {owner}), not TMDB "
+                                f"{metadata['tmdb_id']}: its .strm plays it")
+                    metadata = None
+                    known_by_idx[idx] = owner
             if metadata and not override_hit:
                 # Same name and year as another film: a claim, decided at the end (#185 D2)
                 other = _namesake_claim(_details, client, stream, metadata, index)
