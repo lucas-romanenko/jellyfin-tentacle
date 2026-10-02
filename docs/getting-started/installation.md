@@ -53,6 +53,7 @@ Inside your data volume (`./tentacle-data`), Tentacle creates:
 | `tmdb_cache/` | Cached TMDB metadata (30-day movies, 7-day series) |
 | `smartlists/` | Per-user playlist configuration files |
 | `home-configs/` | Per-user home screen layout files |
+| `xmltv_cache/` | Downloaded Live TV guide data (after the first Live TV channel sync) |
 
 ## Accessing the Dashboard
 
@@ -62,15 +63,12 @@ On first launch, you'll see the [setup wizard](setup-wizard.md) which guides you
 
 ## Updating
 
-Tentacle publishes Docker images to GitHub Container Registry automatically on every push to `main`.
+Tentacle publishes a Docker image to GitHub Container Registry for every release (`latest` and the version tags).
 
 ```bash
 docker compose pull tentacle
 docker compose up -d tentacle
 ```
-
-!!! warning "Wait for the build"
-    After pushing code changes to GitHub, the container image takes ~2 minutes to build. If you pull immediately, you'll get the old image. Wait for the GitHub Action to complete first.
 
 ## Fresh Install / Reset
 

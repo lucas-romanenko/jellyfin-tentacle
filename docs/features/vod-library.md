@@ -15,7 +15,7 @@ The result: your provider's content appears in Jellyfin as if it were a native l
 
 ## Adding a Provider
 
-Go to the **VOD** page in Tentacle and click **Add Provider**.
+Go to **Settings → Providers** in Tentacle and click **+ Add Provider**. The same provider also serves [Live TV](live-tv.md).
 
 ### Xtream API (Recommended)
 
