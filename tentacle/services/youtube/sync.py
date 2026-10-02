@@ -639,6 +639,8 @@ def publish_to_jellyfin(db: Session, channels: list, on_stage=None) -> None:
         # Say so if a playlist is still short. Silence here is what made an
         # empty row a mystery.
         for user in users:
+            # Read as its owner: Jellyfin answers 404 to anyone else.
+            owner = JellyfinService(url, key, user.jellyfin_user_id)
             ids = {p["name"]: p["playlist_id"]
                    for p in _get_smartlists_with_playlist_ids(db, user_id=user.id)}
             for ch in channels:
@@ -646,13 +648,13 @@ def publish_to_jellyfin(db: Session, channels: list, on_stage=None) -> None:
                 if not pid or not expected[ch.id]:
                     continue
                 try:
-                    items = jf.get_playlist_items(pid)
+                    items = owner.get_playlist_items(pid)
                 except Exception:
                     continue
                 if items is None:
                     continue  # could not read it — not the same as empty
                 have = len(items)
-                if have < expected[ch.id]:
+                if have < _playlist_target(owner, ch.slug, expected[ch.id], user.jellyfin_user_id):
                     short = True
                     logger.warning(f"[YouTube] Playlist '{ch.title}' for user {user.id} holds {have} of "
                                    f"{expected[ch.id]} videos after publishing")
@@ -666,6 +668,24 @@ def publish_to_jellyfin(db: Session, channels: list, on_stage=None) -> None:
             on_stage("Jellyfin is picking the videos up — the row fills in as they land")
         start_background_refill()
     return {"short": short}
+
+
+def _playlist_target(owner, slug: str, expected: int, jellyfin_user_id: str) -> int:
+    """How many of a channel's `expected` videos one user's playlist should hold.
+
+    All of them, less those Jellyfin hides from this user: a parental limit
+    keeps a rated channel's videos from a restricted profile, whose playlist is
+    then full without them. Videos Jellyfin has not imported yet still count,
+    so a playlist filled too early is still reported short. On a failed count
+    the library's number stands.
+    """
+    try:
+        in_library = len(owner.query_items(include_types=["Movie"], tags=[f"yt:{slug}"]) or [])
+        for_user = len(owner.query_items(include_types=["Movie"], tags=[f"yt:{slug}"],
+                                         user_id=jellyfin_user_id) or [])
+    except Exception:
+        return expected
+    return expected - max(0, in_library - for_user)
 
 
 _refill_lock = threading.Lock()
@@ -770,12 +790,16 @@ def reconcile_playlists(db: Session, report: bool = False):
                     f"The reason is logged just above as 'Could not create Jellyfin playlist'. "
                     f"Usually: Settings → Jellyfin URL or API key is wrong, or this user's "
                     f"Jellyfin account is not what Tentacle thinks it is.")
+        # Each user's playlist is read as that user: Jellyfin answers 404 to
+        # anyone else, which read as "unknown" and left every other user's
+        # short playlist as it was.
+        owner = JellyfinService(url, key, user.jellyfin_user_id)
         short = []
         for p in have_playlists:
             if not p.get("is_youtube") or not want.get(p["name"]):
                 continue
             try:
-                items = jf.get_playlist_items(p["playlist_id"])
+                items = owner.get_playlist_items(p["playlist_id"])
             except Exception:
                 continue
             if items is None:
@@ -788,14 +812,18 @@ def reconcile_playlists(db: Session, report: bool = False):
         names = [n for n, _, _, _ in short]
         # Only worth a refresh if Jellyfin has more than the playlist does;
         # otherwise the videos have not landed yet and there is nothing to add.
+        # What this user may see is what their playlist can hold; whether
+        # Jellyfin has imported them all is the library's own count.
         can_grow = []
         for name, pid, have, want_n in short:
             try:
                 slug = next(ch.slug for ch in db.query(YouTubeChannel).all() if ch.title == name)
                 in_jf = len(jf.query_items(include_types=["Movie"], tags=[f"yt:{slug}"]) or [])
+                for_user = len(owner.query_items(include_types=["Movie"], tags=[f"yt:{slug}"],
+                                                 user_id=user.jellyfin_user_id) or [])
             except Exception:
-                in_jf = 0
-            if in_jf > have:
+                in_jf = for_user = 0
+            if for_user > have:
                 can_grow.append(name)
             if max(in_jf, have) < want_n:
                 still_behind = True
