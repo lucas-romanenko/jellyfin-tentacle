@@ -364,19 +364,30 @@
             var current = this.container.querySelector('.moonfin-mediabar-backdrop-current');
             var next = this.container.querySelector('.moonfin-mediabar-backdrop-next');
 
-            if (!url) {
-                current.style.backgroundImage = '';
-                return;
-            }
+            // Only the newest call may change the backdrop. On a slow server the
+            // image of an item the user already moved past can finish loading
+            // after the current item's, and it painted over it (the text below
+            // belonged to one item, the picture to another).
+            var token = this._backdropToken = (this._backdropToken || 0) + 1;
 
             if (this._crossfadeTimer) {
                 clearTimeout(this._crossfadeTimer);
                 this._crossfadeTimer = null;
             }
 
+            if (!url) {
+                current.style.backgroundImage = '';
+                next.classList.remove('active');
+                return;
+            }
+
             var img = new Image();
             var self = this;
+            var swapped = false;
             var doSwap = function () {
+                // once per call: the 300 ms fallback and the load event both call it
+                if (swapped || token !== self._backdropToken) return;
+                swapped = true;
                 next.style.transition = 'none';
                 next.classList.remove('active');
                 next.style.backgroundImage = "url('" + url + "')";
