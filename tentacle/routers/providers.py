@@ -138,6 +138,21 @@ def is_likely_english(name: str) -> bool:
     return any(s in upper for s in english_signals)
 
 
+def _category_list(data) -> list:
+    """A category answer as a list. A panel that refuses the login (wrong or
+    expired account) answers every action with {"user_info": {"auth": 0}};
+    walked as a list it failed on its keys with a 500, after which the
+    dashboard showed "Internal server error" or no categories at all."""
+    if isinstance(data, list):
+        return data
+    if not data:
+        return []
+    user_info = data.get("user_info") if isinstance(data, dict) else None
+    if isinstance(user_info, dict) and not user_info.get("auth", 1):
+        raise ValueError("the provider refused the login: check the account and its expiry")
+    raise ValueError("the provider did not answer with a category list")
+
+
 def fetch_provider_categories(provider: Provider):
     """Fetch VOD/series categories + counts. Xtream via the player API; M3U by
     parsing the playlist and using group-titles as categories."""
@@ -150,8 +165,8 @@ def fetch_provider_categories(provider: Provider):
     session = requests.Session()
     session.headers.update(HEADERS)
 
-    vod_cats = session.get(f"{base}&action=get_vod_categories", timeout=15).json()
-    series_cats = session.get(f"{base}&action=get_series_categories", timeout=15).json()
+    vod_cats = _category_list(session.get(f"{base}&action=get_vod_categories", timeout=15).json())
+    series_cats = _category_list(session.get(f"{base}&action=get_series_categories", timeout=15).json())
 
     # Fetch all streams to count per category
     vod_counts = {}
