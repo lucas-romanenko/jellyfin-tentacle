@@ -1184,8 +1184,8 @@ def resume_unfinished_channels() -> list:
     finally:
         db.close()
     if ids:
-        logger.info(f"[YouTube] {len(ids)} channel(s) were never indexed in full (a restart cut "
-                    f"their first index short); indexing them now")
+        logger.info(f"[YouTube] {len(ids)} channel(s) were not finished (a restart cut their "
+                    f"first index or the writing of their files short); indexing them now")
         _start_refresh(channel_ids=ids)
     return ids
 
