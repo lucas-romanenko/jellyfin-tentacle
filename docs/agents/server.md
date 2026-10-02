@@ -1,9 +1,7 @@
 # Tentacle server (`tentacle/`): internals
 
 Reference for coding agents; the overview is in [CLAUDE.md](../../CLAUDE.md).
-Merged from Lucas's long-standing working notes on 2026-09-28 and checked
-against the code then (corrections noted); where this and the code
-disagree, the code wins, and fix this file.
+Where this and the code disagree, the code wins, and fix this file.
 
 ## Stack
 
@@ -22,6 +20,19 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
                         jellyfin, radarr, sonarr, artwork, logstream, migration, xmltv,
                         xtream_client, m3u_parser, media_requests, lidarr, musicbrainz, music/
 ```
+
+- `/api/health`: the container healthcheck. `/api/version`
+  (unauthenticated): commit, build date, `code.matches` (the running files
+  match the image's fingerprint).
+- Paths inside the container are fixed (users map host folders with
+  volumes; Settings → Library Paths checks them): `/data` (DB, caches,
+  per-user `smartlists/` and `home-configs/`), `/media/movies` (Radarr),
+  `/media/shows` (Sonarr), `/media/vod/movies`, `/media/vod/shows` (VOD
+  `.strm`), `/media/youtube`.
+- Logs: `services/log_redaction.py` strips credentials from every log record
+  (uvicorn's access log included): Xtream paths and any query parameter
+  named like a secret (`*secret*`, `*token*`, `*password*`, `*api_key*`,
+  `key`, ...). A new credential in a URL needs such a name, or a rule there.
 
 ## Auth and users (`routers/auth.py`)
 
