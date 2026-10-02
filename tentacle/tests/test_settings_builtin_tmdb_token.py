@@ -97,6 +97,12 @@ class BuiltinTmdbToken(unittest.TestCase):
         self.assertEqual(self.stored(), "")
         self.assertEqual(get_tmdb_token(self.db), TMDB_DEFAULT_TOKEN)
 
+    def test_a_stored_builtin_next_to_a_v3_key_is_kept_for_the_plugin(self):
+        set_setting(self.db, "tmdb_bearer_token", TMDB_DEFAULT_TOKEN)
+        set_setting(self.db, "tmdb_api_key", "v3key")
+        mdb.seed_defaults(self.db)                                     # start-up
+        self.assertEqual(self.plugin_token(), TMDB_DEFAULT_TOKEN, "the plugin lost the bearer it used")
+
     # ── the user's own token: unchanged ──────────────────────────────────
     def test_own_token_is_shown_and_kept_by_a_save(self):
         set_setting(self.db, "tmdb_bearer_token", OWN)

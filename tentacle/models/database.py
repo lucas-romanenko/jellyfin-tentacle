@@ -1255,7 +1255,9 @@ def _forget_stored_builtin_tmdb_token(db):
     from services.tmdb import TMDB_DEFAULT_TOKEN
     row = db.query(Setting).filter(Setting.key == "tmdb_bearer_token",
                                    Setting.value == TMDB_DEFAULT_TOKEN).first()
-    if row is not None:
+    # With a v3 tmdb_api_key stored, /plugin-keys stops adding the built-in
+    # bearer once none is stored: the plugin would switch to that key. Keep it.
+    if row is not None and not get_setting(db, "tmdb_api_key"):
         row.value = ""
         db.commit()
         logger.info("[migrate] Cleared a stored copy of the built-in TMDB token (Settings shows the built-in key again)")
