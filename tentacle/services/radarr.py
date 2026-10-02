@@ -156,6 +156,45 @@ def file_loss_looks_like_an_outage(lost: int, total: int) -> bool:
     """
     return lost >= 3 and lost * 2 > total
 
+def release_download_claim(db: Session, movie, owned: Optional[set] = None) -> bool:
+    """A VOD title whose download is gone goes back to a plain VOD title (#378).
+
+    A film that was VOD first and was then downloaded is ONE row: the provider
+    owns it (source, strm_path) and the scan adds radarr_path, the download's
+    Jellyfin item id and "Downloaded Movies". When the download is deleted,
+    only that claim goes: radarr_path, downloaded_at and the item id (the
+    pipeline finds the VOD item again), "Downloaded Movies" and the
+    "<name>'s Downloads" of anyone with no request left for it, from the row
+    and its VOD NFO. The .strm and its folder are not touched, so the VOD item
+    keeps its id and every user's watched state. Returns the tags taken off
+    (a set; empty when the row is not such a row).
+    """
+    if not (movie.source or "").startswith("provider_") or not movie.radarr_path:
+        return set()
+    movie.radarr_path = None
+    movie.downloaded_at = None
+    movie.jellyfin_item_id = None
+    if movie.strm_path:
+        # The scan points nfo_path at the download's NFO when the copies have
+        # separate folders; the VOD copy's NFO sits next to its .strm.
+        vod_nfo = Path(movie.strm_path).with_suffix(".nfo")
+        if not movie.nfo_path or Path(movie.nfo_path).parent != vod_nfo.parent:
+            movie.nfo_path = str(vod_nfo) if vod_nfo.exists() else None
+    requested_by = {u for (u,) in db.query(TentacleUser.display_name).join(
+        DownloadRequest, DownloadRequest.user_id == TentacleUser.id).filter(
+        DownloadRequest.tmdb_id == movie.tmdb_id, DownloadRequest.media_type == "movie")}
+    drop = {DOWNLOADED_MOVIES_TAG} | {f"{name}'s Downloads" for (name,) in db.query(TentacleUser.display_name)
+                                     if name and name not in requested_by}
+    removed = {t for t in movie.tags or [] if t in drop}
+    if removed:
+        from services.tagger import set_row_tags, tentacle_owned_tags
+        set_row_tags(movie, [t for t in movie.tags if t not in drop],
+                     owned if owned is not None else tentacle_owned_tags(db))
+    logger.info(f"tmdb:{movie.tmdb_id}: its download is gone; back to the VOD copy only"
+                + (f" (untagged {sorted(removed)})" if removed else ""))
+    return removed
+
+
 # One Radarr scan at a time (#268). A scan loads every row, asks TMDB about
 # each new title and commits once, so two overlapping scans (two webhooks for
 # different movies, a webhook during the nightly scan, "Scan now") both added
@@ -339,10 +378,14 @@ def _scan_radarr_library(db: Session) -> dict:
     radarr_tmdb_ids = {m["tmdbId"] for m in downloaded}
     listed_tmdb_ids = {m.get("tmdbId") for m in movies if m.get("tmdbId")}
     rows = db.query(Movie).filter(Movie.source == "radarr").all()
+    # VOD titles that were downloaded too (#378): their claim to a download
+    # goes when Radarr no longer has the file, like a radarr row does.
+    hybrid = db.query(Movie).filter(Movie.source.like("provider_%"), Movie.radarr_path.isnot(None),
+                                    Movie.radarr_path != "").all()
     # Still in Radarr, but Radarr says the file is gone.
-    lost_file = [m for m in rows if m.tmdb_id not in radarr_tmdb_ids and m.tmdb_id in listed_tmdb_ids]
+    lost_file = [m for m in rows + hybrid if m.tmdb_id not in radarr_tmdb_ids and m.tmdb_id in listed_tmdb_ids]
     refused = 0
-    if file_loss_looks_like_an_outage(len(lost_file), len(rows)):
+    if file_loss_looks_like_an_outage(len(lost_file), len(rows) + len(hybrid)):
         refused = len(lost_file)
         keep = {m.tmdb_id for m in lost_file}
         logger.error(
@@ -377,7 +420,26 @@ def _scan_radarr_library(db: Session) -> dict:
             removed += 1
     if removed:
         logger.info(f"Radarr scan: removed {removed} movies no longer in Radarr")
+    released = 0
+    released_owned = None
+    from services.bad_copy import is_replacing
+    for movie in hybrid:
+        if movie.tmdb_id in radarr_tmdb_ids or movie.tmdb_id in keep:
+            continue
+        if not is_replacing(db, "movie", movie.tmdb_id):  # "Bad copy": the request stands
+            db.query(DownloadRequest).filter(DownloadRequest.tmdb_id == movie.tmdb_id,
+                                             DownloadRequest.media_type == "movie").delete()
+        db.query(Duplicate).filter(Duplicate.tmdb_id == movie.tmdb_id, Duplicate.media_type == "movie",
+                                   Duplicate.resolution == "pending").delete()
+        if released_owned is None:
+            from services.tagger import tentacle_owned_tags
+            released_owned = tentacle_owned_tags(db)
+        release_download_claim(db, movie, released_owned)
+        released += 1
+    if released:
+        logger.info(f"Radarr scan: {released} VOD movie(s) no longer have a download in Radarr")
     stats["removed"] = removed
+    stats["released"] = released
     stats["removals_refused"] = refused
 
     # Single commit for all DB changes

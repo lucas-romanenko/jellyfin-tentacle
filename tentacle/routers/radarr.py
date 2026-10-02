@@ -213,6 +213,71 @@ def write_nfos(db: Session = Depends(get_db)):
         _nfo_running = False
 
 
+def _release_vod_row(db: Session, tmdb_id: int):
+    """The download of a VOD title was deleted: the provider row stops claiming
+    it (#378). Returns the tags taken off (maybe none), or None when there is
+    no such row (a radarr row is deleted instead)."""
+    from services.radarr import release_download_claim
+    row = db.query(Movie).filter(Movie.tmdb_id == tmdb_id, Movie.source.like("provider_%"),
+                                 Movie.radarr_path.isnot(None), Movie.radarr_path != "").first()
+    if row is None:
+        return None
+    return release_download_claim(db, row)
+
+
+def _after_vod_row_released(db: Session, tmdb_id: int, title: str, removed_tags: set, arr_folder):
+    log_activity(db, "radarr_remove", f"Download of '{title}' deleted; its VOD copy stays")
+    threading.Thread(target=_vod_row_released_background, args=(tmdb_id, sorted(removed_tags), arr_folder),
+                     daemon=True).start()
+
+
+def _vod_row_released_background(tmdb_id: int, removed_tags: list, arr_folder):
+    """Background: the playlists see the change now, not at the nightly run.
+    The deleted download's entry leaves every playlist (only the item in its
+    folder, #296). The VOD item, found by its .strm, loses the tags the row
+    lost (Jellyfin may still list the download item for a while, and the
+    nightly tag push only takes a tag off where one item has the TMDB id),
+    then every user's playlists of those tags are refreshed. Whatever fails
+    here, the nightly pipeline does again."""
+    from routers.library import _cleanup_playlists_all_users
+    _cleanup_playlists_all_users(tmdb_id, "movie", arr_folder=arr_folder)
+    if not removed_tags:
+        return
+    from models.database import SessionLocal
+    from services.jellyfin import JellyfinService
+    db = SessionLocal()
+    try:
+        row = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
+        jf_url, jf_key = get_setting(db, "jellyfin_url"), get_setting(db, "jellyfin_api_key")
+        if row is None or not row.strm_path or not (jf_url and jf_key):
+            return
+        jf = JellyfinService(jf_url, jf_key)
+        tail = "/".join(row.strm_path.replace("\\", "/").split("/")[-2:]).lower()
+        vod_ids = []
+        for item in jf._fetch_all_items("Movie"):
+            if (item.get("ProviderIds") or {}).get("Tmdb") != str(tmdb_id):
+                continue
+            path = ((jf.get_item_by_id(item["Id"]) or {}).get("Path") or "").replace("\\", "/").lower()
+            if path.endswith("/" + tail):
+                vod_ids.append(item["Id"])
+        if not vod_ids:
+            logger.info(f"[Radarr webhook] tmdb:{tmdb_id}: VOD item not in Jellyfin yet; the nightly run updates it")
+            return
+        owned = tentacle_owned_tags(db)
+        for item_id in vod_ids:
+            jf.set_item_owned_tags(item_id, list(row.tags or []), owned)
+        from services.smartlists import refresh_smartlist_playlists, _notify_jellyfin_plugin
+        result = refresh_smartlist_playlists(db, only_names=removed_tags)
+        if result.get("changed") or result.get("created"):
+            _notify_jellyfin_plugin(db)
+        logger.info(f"[Radarr webhook] tmdb:{tmdb_id}: VOD copy untagged {removed_tags}; playlists refreshed")
+    except Exception as e:
+        logger.warning(f"[Radarr webhook] tmdb:{tmdb_id}: could not update Jellyfin after its download was "
+                       f"deleted ({e}); the nightly run does it")
+    finally:
+        db.close()
+
+
 webhook_router = APIRouter(prefix="/api/radarr", tags=["radarr"])
 
 
@@ -233,10 +298,13 @@ def _remove_downloaded_movie(db: Session, tmdb_id: int, title: str, arr_folder: 
         # Clear duplicate tombstones — deleting the downloaded copy is a
         # clean slate; the title may legitimately re-import from VOD later
         db.query(Duplicate).filter(Duplicate.tmdb_id == tmdb_id, Duplicate.media_type == "movie").delete()
+        released = _release_vod_row(db, tmdb_id)
         db.commit()
     except Exception:
         db.rollback()
         raise
+    if released is not None:
+        _after_vod_row_released(db, tmdb_id, title, released, arr_folder)
     if deleted:
         emit_library_event("movie_removed", {"tmdb_id": tmdb_id, "title": title, "media_type": "movie"})
         log_activity(db, "radarr_remove", f"Removed '{title}' from Radarr library")
@@ -400,11 +468,14 @@ def radarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
             # Clear duplicate tombstones — deleting the downloaded copy is a
             # clean slate; the title may legitimately re-import from VOD later
             db.query(Duplicate).filter(Duplicate.tmdb_id == tmdb_id, Duplicate.media_type == "movie").delete()
+            released = _release_vod_row(db, tmdb_id)
             db.commit()
         except Exception as e:
             db.rollback()
             logger.error(f"[Radarr webhook] MovieDelete DB cleanup failed for tmdb:{tmdb_id}: {e}")
             raise HTTPException(500, "Failed to process delete event")
+        if released is not None:
+            _after_vod_row_released(db, tmdb_id, title, released, arr_folder)
         if deleted:
             emit_library_event("movie_removed", {"tmdb_id": tmdb_id, "title": title, "media_type": "movie"})
             log_activity(db, "radarr_remove", f"Removed '{title}' from Radarr library")
