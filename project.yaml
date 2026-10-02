@@ -9,3 +9,4 @@ merge: auto              # a reviewed pull request merges once its CI is green
 deploy: auto             # the merged change deploys when nothing is playing
 release: me              # releases are the maintainer's, always
 needs_lucas_labels: [needs-lucas, security]
+caps: [reviewer=60, tester=60]  # time caps in minutes: reviews and failing tests here wait on CI
