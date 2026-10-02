@@ -2979,8 +2979,8 @@ function _applyCoverageFilter() {
   }
 
   if (showAdd) {
-    const missingMovies = data.missing_movies || data.missing.filter(m => m.media_type !== 'series').length;
-    const missingSeries = data.missing_series || data.missing.filter(m => m.media_type === 'series').length;
+    const missingMovies = data.missing_movies ?? data.missing.filter(m => m.media_type !== 'series').length;
+    const missingSeries = data.missing_series ?? data.missing.filter(m => m.media_type === 'series').length;
     let btnsHtml = '';
     if (missingMovies > 0) {
       btnsHtml += `<button class="btn btn-primary btn-sm coverage-add-all-action" data-target="radarr" onclick="addAllMissingToArr('radarr')">Add ${missingMovies} to Radarr</button>`;

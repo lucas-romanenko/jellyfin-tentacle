@@ -1177,8 +1177,11 @@ def get_list_coverage(list_id: int, db: Session = Depends(get_db), user: Tentacl
 
     for item in items:
         tid = item.tmdb_id
-        movie = movie_map.get(tid) if tid else None
-        serie = series_map.get(tid) if tid else None
+        # TMDB numbers movies and shows separately: a list's film is looked up only
+        # among movies, its show only among series, as Add Missing sends them (#264).
+        is_series = item.media_type == "series"
+        movie = movie_map.get(tid) if tid and not is_series else None
+        serie = series_map.get(tid) if tid and is_series else None
 
         if movie:
             entry = {"tmdb_id": tid, "title": movie.title, "year": movie.year, "poster_path": movie.poster_path, "media_type": "movie"}
@@ -1211,9 +1214,10 @@ def get_list_coverage(list_id: int, db: Session = Depends(get_db), user: Tentacl
     sonarr.sort(key=lambda x: (x.get("title") or "").lower())
     missing.sort(key=lambda x: (x.get("title") or "").lower())
 
-    # Count missing by type
-    missing_movies = sum(1 for m in missing if m.get("media_type") != "series")
-    missing_series = sum(1 for m in missing if m.get("media_type") == "series")
+    # Count missing by type: what Add Missing sends (an item without a TMDB id
+    # can't be sent, so it is listed as missing but not counted).
+    missing_movies = sum(1 for m in missing if m.get("tmdb_id") and m.get("media_type") != "series")
+    missing_series = sum(1 for m in missing if m.get("tmdb_id") and m.get("media_type") == "series")
 
     return {
         "list_id": list_id,
