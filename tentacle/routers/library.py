@@ -191,8 +191,10 @@ def _get_list_items(list_id: int, search: Optional[str], sort: Optional[str],
 
     items = []
     for li in list_items:
-        movie = movie_map.get(li.tmdb_id) if li.tmdb_id else None
-        serie = series_map.get(li.tmdb_id) if li.tmdb_id else None
+        # Looked up in its own type: a film and a show can share a TMDB number (#365)
+        is_series = li.media_type == "series"
+        movie = movie_map.get(li.tmdb_id) if li.tmdb_id and not is_series else None
+        serie = series_map.get(li.tmdb_id) if li.tmdb_id and is_series else None
 
         if movie:
             items.append({

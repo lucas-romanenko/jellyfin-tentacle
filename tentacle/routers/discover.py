@@ -428,7 +428,8 @@ def _get_missing_from_lists(db: Session, known_ids: dict, type_filter: str, user
     for item in all_items:
         mt = item.media_type or "movie"
         type_ids = known_ids.get("series" if mt == "series" else "movie", set())
-        if item.tmdb_id in type_ids or item.tmdb_id in seen:
+        # A film and a show can share a TMDB number (#365): seen per type
+        if item.tmdb_id in type_ids or (item.tmdb_id, mt) in seen:
             continue
         if not item.poster_path:
             continue
@@ -436,7 +437,7 @@ def _get_missing_from_lists(db: Session, known_ids: dict, type_filter: str, user
         # Tentacle's tables never recorded is not "missing".
         if _is_in_library({"tmdb_id": item.tmdb_id, "media_type": mt}, known_ids):
             continue
-        seen.add(item.tmdb_id)
+        seen.add((item.tmdb_id, mt))
         # Clean pre-fix rows (HTML entities + baked-in year) at serving time
         clean_name, clean_year = clean_list_title(item.title, item.year)
         result.append((item.list_id, {
