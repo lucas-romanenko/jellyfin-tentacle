@@ -156,7 +156,7 @@ def file_loss_looks_like_an_outage(lost: int, total: int) -> bool:
     """
     return lost >= 3 and lost * 2 > total
 
-def release_download_claim(db: Session, movie, owned: Optional[set] = None) -> bool:
+def release_download_claim(db: Session, movie, owned: Optional[set] = None) -> set:
     """A VOD title whose download is gone goes back to a plain VOD title (#378).
 
     A film that was VOD first and was then downloaded is ONE row: the provider
@@ -175,10 +175,11 @@ def release_download_claim(db: Session, movie, owned: Optional[set] = None) -> b
     movie.downloaded_at = None
     movie.jellyfin_item_id = None
     if movie.strm_path:
-        # The scan points nfo_path at the download's NFO when the copies have
-        # separate folders; the VOD copy's NFO sits next to its .strm.
+        # The scan points nfo_path at the download's NFO (in a merged folder
+        # "<film> WEBDL-1080p.nfo" next to the .strm); the VOD copy's NFO is
+        # the .strm's own.
         vod_nfo = Path(movie.strm_path).with_suffix(".nfo")
-        if not movie.nfo_path or Path(movie.nfo_path).parent != vod_nfo.parent:
+        if movie.nfo_path != str(vod_nfo):
             movie.nfo_path = str(vod_nfo) if vod_nfo.exists() else None
     requested_by = {u for (u,) in db.query(TentacleUser.display_name).join(
         DownloadRequest, DownloadRequest.user_id == TentacleUser.id).filter(
@@ -383,13 +384,17 @@ def _scan_radarr_library(db: Session) -> dict:
     hybrid = db.query(Movie).filter(Movie.source.like("provider_%"), Movie.radarr_path.isnot(None),
                                     Movie.radarr_path != "").all()
     # Still in Radarr, but Radarr says the file is gone.
-    lost_file = [m for m in rows + hybrid if m.tmdb_id not in radarr_tmdb_ids and m.tmdb_id in listed_tmdb_ids]
+    lost_file = [m for m in rows if m.tmdb_id not in radarr_tmdb_ids and m.tmdb_id in listed_tmdb_ids]
+    lost_hybrid = [m for m in hybrid if m.tmdb_id not in radarr_tmdb_ids and m.tmdb_id in listed_tmdb_ids]
     refused = 0
-    if file_loss_looks_like_an_outage(len(lost_file), len(rows) + len(hybrid)):
-        refused = len(lost_file)
-        keep = {m.tmdb_id for m in lost_file}
+    # Judged on the radarr rows as before, and on all downloads together: the
+    # VOD rows' downloads must never make a loss among the radarr rows look small.
+    if file_loss_looks_like_an_outage(len(lost_file), len(rows)) or \
+            file_loss_looks_like_an_outage(len(lost_file) + len(lost_hybrid), len(rows) + len(hybrid)):
+        refused = len(lost_file) + len(lost_hybrid)
+        keep = {m.tmdb_id for m in lost_file + lost_hybrid}
         logger.error(
-            f"Radarr scan: REFUSING to remove {refused} of {len(rows)} downloaded movies that "
+            f"Radarr scan: REFUSING to remove {refused} of {len(rows) + len(hybrid)} downloaded movies that "
             f"Radarr still lists but reports as having no file. That many at once looks like "
             f"Radarr's media storage being unavailable, not a clean-up. Rows kept; if the files "
             f"really are gone, remove the movies from Radarr.")

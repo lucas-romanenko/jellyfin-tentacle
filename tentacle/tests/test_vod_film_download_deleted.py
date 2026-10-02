@@ -205,6 +205,59 @@ class TestScanAfterDownloadGone(_Base):
         self.assertIn("Downloaded Movies", self.row().tags)
 
 
+class TestMergedFolder(_Base):
+    """Radarr imported into the VOD folder: the scan's nfo_path is the download's NFO there."""
+
+    def setUp(self):
+        super().setUp()
+        self.dl_nfo = self.strm.parent / "Film (2001) WEBDL-1080p.nfo"
+        self.dl_nfo.write_text("<movie>\n" + "".join(f"  <tag>{t}</tag>\n" for t in TAGS) + "</movie>\n")
+        r = self.row()
+        r.nfo_path = str(self.dl_nfo)
+        r.radarr_path = "/data/vod/movies/Film (2001)/Film (2001) WEBDL-1080p.mkv"
+        self.db.commit()
+
+    def test_nfo_path_back_on_the_vod_nfo(self):
+        radarr.radarr_webhook({"eventType": "MovieFileDelete", "deleteReason": "manual",
+                               "movie": {"tmdbId": TMDB, "title": "Film"},
+                               "movieFile": {"path": "/data/vod/movies/Film (2001)/Film (2001) WEBDL-1080p.mkv"}},
+                              None, self.db)
+        self.assert_back_to_vod()
+
+
+class TestOutageGuardNotWeaker(_Base):
+    """#106: VOD rows whose downloads are fine must not dilute a loss among the radarr rows."""
+
+    def test_radarr_rows_lost_on_one_root_still_refused(self):
+        import services.radarr as sr
+        self.db.query(Movie).delete()
+        self.db.query(DownloadRequest).delete()
+        movies = []
+        for i in range(4):   # downloaded-only, 3 of 4 report no file (one root unmounted)
+            t = 1000 + i
+            self.db.add(Movie(tmdb_id=t, title=f"R{i}", source="radarr", radarr_path=f"/movies-b/R{i}/r.mkv"))
+            self.db.add(DownloadRequest(tmdb_id=t, media_type="movie", user_id=1))
+            movies.append({"tmdbId": t, "title": f"R{i}", "year": 2000, "hasFile": i == 0, "path": f"/movies-b/R{i}",
+                           "movieFile": {"path": f"/movies-b/R{i}/r.mkv"} if i == 0 else None})
+        for i in range(10):  # VOD films downloaded too, on the healthy root
+            t = 2000 + i
+            self.db.add(Movie(tmdb_id=t, title=f"H{i}", source="provider_1", strm_path=f"/vod/H{i}/H{i}.strm",
+                              radarr_path=f"/movies-a/H{i}/h.mkv"))
+            movies.append({"tmdbId": t, "title": f"H{i}", "year": 2000, "hasFile": True, "path": f"/movies-a/H{i}",
+                           "movieFile": {"path": f"/movies-a/H{i}/h.mkv"}})
+        self.db.commit()
+        svc = mock.MagicMock()
+        svc.get_all_movies.return_value = movies
+        mdb.set_setting(self.db, "radarr_url", "http://radarr")
+        mdb.set_setting(self.db, "radarr_api_key", "k")
+        with mock.patch.object(sr, "RadarrService", return_value=svc), \
+                mock.patch("services.tmdb.get_tmdb_token", return_value=None):
+            out = sr.scan_radarr_library(self.db)
+        self.assertEqual(3, out["removals_refused"])
+        self.assertEqual(4, self.db.query(Movie).filter(Movie.source == "radarr").count())
+        self.assertEqual(4, self.db.query(DownloadRequest).count())
+
+
 class FakeJellyfin:
     """Jellyfin still lists the download item next to the VOD item."""
     items = {}
