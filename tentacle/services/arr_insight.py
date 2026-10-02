@@ -325,7 +325,8 @@ def grab(db: Session, media_type: str, tmdb_id: int, tvdb_id: int, guid: str, in
     try:
         r = requests.post(f"{url}/api/v3/release", headers={"X-Api-Key": key}, json=body, timeout=60)
     except Exception as e:
-        raise InsightError(502, f"Couldn't reach {app.capitalize()}: {e}")
+        logger.warning(f"[Insight] Grab: couldn't reach {app}: {e}")
+        raise InsightError(502, f"Couldn't reach {app.capitalize()} ({type(e).__name__})")
     detail = ""
     if r.status_code >= 400:
         try:

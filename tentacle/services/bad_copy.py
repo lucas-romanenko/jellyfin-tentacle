@@ -68,7 +68,8 @@ class _Arr:
             r = requests.request(method, f"{self.url}/api/v3/{path}", headers={"X-Api-Key": self.key},
                                  timeout=30, **kw)
         except Exception as e:
-            raise BadCopyError(502, f"Couldn't reach {self.name}: {e}")
+            logger.warning(f"[Bad copy] Couldn't reach {self.name}: {e}")
+            raise BadCopyError(502, f"Couldn't reach {self.name} ({type(e).__name__})")
         if r.status_code >= 400:
             raise BadCopyError(502, f"{self.name} refused ({r.status_code}) on {path.split('?')[0]}")
         return r.json() if r.text else None

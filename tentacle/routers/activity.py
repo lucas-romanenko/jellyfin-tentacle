@@ -1007,6 +1007,9 @@ def get_activity(request: Request, db: Session = Depends(get_db),
         x["check"] = arr_insight.cached_line(x.get("media_type"), x.get("tmdb_id") or 0, x.get("tvdb_id") or 0)
     try:
         problems = arr_insight.searching_problems(db)
+        if not is_admin:
+            # The raw error text names Radarr/Sonarr's address; the message says what is wrong.
+            problems = [{k: v for k, v in p.items() if k != "detail"} for p in problems]
     except Exception as e:
         logger.debug(f"Activity: problems check failed: {e}")
         problems = []
