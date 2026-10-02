@@ -654,7 +654,8 @@ def publish_to_jellyfin(db: Session, channels: list, on_stage=None) -> None:
                 if items is None:
                     continue  # could not read it — not the same as empty
                 have = len(items)
-                if have < _playlist_target(owner, ch.slug, expected[ch.id], user.jellyfin_user_id):
+                if have < expected[ch.id] and have < _playlist_target(
+                        owner, ch.slug, expected[ch.id], user.jellyfin_user_id):
                     short = True
                     logger.warning(f"[YouTube] Playlist '{ch.title}' for user {user.id} holds {have} of "
                                    f"{expected[ch.id]} videos after publishing")

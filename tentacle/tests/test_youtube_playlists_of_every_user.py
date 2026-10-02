@@ -43,7 +43,10 @@ class FakeJellyfin:
             return None
         return [{"Id": f"i{k}"} for k in range(n)]
 
+    queries = []
+
     def query_items(self, include_types=None, tags=None, user_id=None, **kw):
+        FakeJellyfin.queries.append(user_id)
         return [{"Id": f"i{k}"} for k in range(self.visible.get(user_id, 0))]
 
     def get_libraries(self):
@@ -67,6 +70,7 @@ class ChannelPlaylistsOfEveryUser(_Db):
             self.db.add(YouTubeVideo(channel_fk=self.ch.id, video_id=f"vid{k:08d}", title=f"V{k}"))
         self.db.commit()
         FakeJellyfin.playlists = {"p-admin": (ADMIN, 5), "p-other": (OTHER, 0), "p-kid": (KID, 0)}
+        FakeJellyfin.queries = []
         # Jellyfin has imported all five; the kid may see none of them (a rated channel).
         FakeJellyfin.visible = {None: 5, ADMIN: 5, OTHER: 5, KID: 0}
         owners = {self.users[ADMIN]: "p-admin", self.users[OTHER]: "p-other", self.users[KID]: "p-kid"}
@@ -140,6 +144,30 @@ class ChannelPlaylistsOfEveryUser(_Db):
             result = ysync.publish_to_jellyfin(self.db, [self.ch])
         self.assertFalse(result["short"])
         refill.assert_not_called()
+
+    def test_a_full_playlist_costs_no_count_query_after_a_publish(self):
+        FakeJellyfin.playlists = {"p-admin": (ADMIN, 5), "p-other": (OTHER, 5), "p-kid": (KID, 5)}
+        FakeJellyfin.visible = {None: 5, ADMIN: 5, OTHER: 5, KID: 5}
+        with mock.patch.object(ysync, "youtube_library", return_value=(None, None)), \
+             mock.patch.object(ysync, "_warm_streams", return_value=0), \
+             mock.patch.object(ysync, "_wait_for_channel_items", return_value=5), \
+             mock.patch.object(ysync, "start_background_refill"), \
+             mock.patch.object(FakeJellyfin, "trigger_library_scan", create=True, return_value=True):
+            result = ysync.publish_to_jellyfin(self.db, [self.ch])
+        self.assertFalse(result["short"])
+        self.assertEqual([], FakeJellyfin.queries)
+
+    def test_only_a_short_playlist_is_counted_after_a_publish(self):
+        # Admin and other full; the restricted user's playlist is short of the
+        # library, so only it is counted (library, then as that user).
+        FakeJellyfin.playlists["p-other"] = (OTHER, 5)
+        with mock.patch.object(ysync, "youtube_library", return_value=(None, None)), \
+             mock.patch.object(ysync, "_warm_streams", return_value=0), \
+             mock.patch.object(ysync, "_wait_for_channel_items", return_value=5), \
+             mock.patch.object(ysync, "start_background_refill"), \
+             mock.patch.object(FakeJellyfin, "trigger_library_scan", create=True, return_value=True):
+            ysync.publish_to_jellyfin(self.db, [self.ch])
+        self.assertEqual([None, KID], FakeJellyfin.queries)
 
 
 if __name__ == "__main__":
