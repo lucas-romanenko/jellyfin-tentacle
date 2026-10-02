@@ -13,6 +13,7 @@ silently undoing the user's resolution.
 """
 
 import logging
+import re
 import unicodedata
 from pathlib import Path
 from typing import Optional
@@ -139,13 +140,66 @@ def _jf_paged(jf, params: dict) -> list:
 
 
 def _items_for_tmdb(jf, kind: str, tmdb_id: int) -> list:
-    """Every Jellyfin item of this kind with this TMDB id, with Path. Unscoped,
-    so the hidden half of a merged multi-version film is listed too."""
+    """Every Jellyfin item of this kind with this TMDB id, with Path. A film's
+    other versions are not in this listing: see _with_versions."""
     tmdb = str(tmdb_id)
     return [i for i in _jf_paged(jf, {"IncludeItemTypes": kind, "Recursive": "true",
                                       "Fields": "ProviderIds,Path", "EnableImages": "false",
                                       "EnableUserData": "false"})
             if (i.get("ProviderIds") or {}).get("Tmdb") == tmdb]
+
+
+def _with_versions(jf, films: list) -> list:
+    """The films plus their other versions, each with "Film" = the id of the
+    film it belongs to. Jellyfin 10.11 shows the files of one folder that it
+    takes for versions of one film ("Heat (1995).strm" + "Heat (1995) -
+    Bluray-1080p.mkv") as ONE film: the listing has one item, the other file
+    is its own item (type Video), found only through the film's MediaSources
+    and an Ids= query (#333)."""
+    out = [dict(f, Film=f["Id"]) for f in films]
+    if not films:
+        return out
+    owner = {}
+    for film in _jf_paged(jf, {"Ids": ",".join(f["Id"] for f in films), "Fields": "MediaSources",
+                               "EnableImages": "false", "EnableUserData": "false"}):
+        for source in film.get("MediaSources") or []:
+            if source.get("Id") and source["Id"] != film["Id"]:
+                owner.setdefault(source["Id"], film["Id"])
+    listed = {f["Id"] for f in films}
+    versions = [v for v in owner if v not in listed]
+    if versions:
+        out += [dict(v, Film=owner[v["Id"]]) for v in _jf_paged(jf, {
+            "Ids": ",".join(versions), "Fields": "ProviderIds,Path",
+            "EnableImages": "false", "EnableUserData": "false"})]
+    return out
+
+
+# How Jellyfin 10.11 reads a film's TMDB id from disk: "[tmdbid-N]" (or "=")
+# in the folder name, else in the file name (MovieResolver), then the first
+# NFO of movie.nfo, <name>.nfo (MovieNfoSaver.GetMovieSavePaths).
+_TMDB_IN_NAME = re.compile(r"\[tmdbid[-=]([^\]]+)\]", re.I)
+_TMDB_IN_NFO = re.compile(r"<tmdbid>\s*([^<\s]+)\s*</tmdbid>|<uniqueid[^>]*type=[\"']tmdb[\"'][^>]*>\s*([^<\s]+)\s*<",
+                          re.I)
+
+
+def _names_tmdb(path: Path, tmdb_id, nfo: bool = True) -> bool:
+    """Will Jellyfin take this film file for this TMDB id from disk alone, once
+    it is the only film in its folder? Any other id found on the way: no.
+    `nfo=False`: the NFOs don't count (they may not outlive the resolution)."""
+    found = []
+    name = _TMDB_IN_NAME.search(path.parent.name) or _TMDB_IN_NAME.search(path.name)
+    if name:
+        found.append(name.group(1).strip())
+    for candidate in (path.parent / "movie.nfo", path.with_suffix(".nfo")) if nfo else ():
+        try:
+            if not candidate.is_file():
+                continue
+            ids = [a or b for a, b in _TMDB_IN_NFO.findall(candidate.read_text(encoding="utf-8", errors="replace"))]
+        except OSError:
+            return False
+        found += ids[:1]
+        break   # Jellyfin reads the first one there
+    return bool(found) and all(i == str(tmdb_id) for i in found)
 
 
 def _episodes(jf, series_id: str) -> list:
@@ -167,22 +221,49 @@ def _vod_path(dup, record) -> Optional[str]:
 
 
 def _copy_pairs(jf, dup, record, keep: str) -> tuple:
-    """([(removed_item_id, [kept_item_id, ...])], orphans): whose user data goes
-    where. `orphans` are removed-copy films with no item on the kept side (a
-    download Jellyfin hasn't scanned yet)."""
+    """([(removed_item_id, [kept_item_id, ...])], orphans, unsure): whose user
+    data goes where. `orphans` are removed-copy films with no item on the kept
+    side (a download Jellyfin hasn't scanned yet). `unsure` are the items of a
+    film whose state can't be kept (see below): any user data on them refuses
+    the resolution."""
     vod_path = _vod_path(dup, record)
     if not vod_path:
-        return [], []
+        return [], [], []
     if dup.media_type == "movie":
         parts = Path(vod_path).parts
         tail = "/".join(parts[-2:]) if len(parts) >= 2 else None
-        items = _items_for_tmdb(jf, "Movie", dup.tmdb_id)
+        items = _with_versions(jf, _items_for_tmdb(jf, "Movie", dup.tmdb_id))
+        film = {i["Id"]: i["Film"] for i in items}
         vod = [i["Id"] for i in items if tail and _path(i).endswith("/" + tail)]
         dl = [i["Id"] for i in items if i["Id"] not in vod and is_downloaded_file(_path(i))]
         removed, kept = (vod, dl) if keep == "download" else (dl, vod)
-        if not kept:
-            return [], removed
-        return [(i, kept) for i in removed], []
+        # One film holding both copies (#333). Users' state is on the film item,
+        # or on a version's own item when a client played that id; the version
+        # items are left behind, unseen, once a copy is gone. So every version's
+        # state goes onto the film item first. When the film item is the copy
+        # being removed, Jellyfin re-creates the film from the kept file under a
+        # new id and moves the old film's state onto it by TMDB id (10.11, on
+        # its first refresh); that needs the kept file to say its TMDB id on
+        # disk, without it the state is dropped.
+        merged = {film[i] for i in removed} & {film[i] for i in kept}
+        folder, paths = Path(vod_path).parent, {i["Id"]: _path(i) for i in items}
+        pairs, unsure = [], []
+        for f in merged:
+            members = [i for i in film if film[i] == f]
+            pairs += [(i, [f]) for i in members if i != f and (f in removed or i in removed)]
+            # The kept file is checked in Tentacle's view of the folder. On Keep
+            # VOD, Radarr deletes the NFOs it adopted with the download, the
+            # .strm's own NFO included: only a [tmdbid-N] name counts then.
+            if f in removed and not all(
+                    _folder_name(paths[i].rsplit("/", 1)[0]) == _folder_name(str(folder))
+                    and _names_tmdb(folder / paths[i].rsplit("/", 1)[-1], dup.tmdb_id, nfo=keep == "download")
+                    for i in kept if film[i] == f):
+                unsure += members
+        removed = [i for i in removed if film[i] not in merged]
+        kept = [i for i in kept if film[i] not in merged]
+        if removed and not kept:
+            return pairs, removed, unsure
+        return pairs + [(i, kept) for i in removed], [], unsure
 
     # A show: its show items (separate folders make two), then every episode,
     # matched by season and episode number. An episode's side is its file's:
@@ -211,7 +292,7 @@ def _copy_pairs(jf, dup, record, keep: str) -> tuple:
     for key, ids in removed_eps.items():
         if kept_eps.get(key):
             pairs.extend((i, kept_eps[key]) for i in ids)
-    return pairs, []
+    return pairs, [], []
 
 
 def _user_data(jf, user_id: str, item_id: str) -> dict:
@@ -259,12 +340,24 @@ def carry_user_data(db, dup, record, keep: str) -> int:
     jf = JellyfinService(url, key)
     writes = 0
     try:
-        pairs, orphans = _copy_pairs(jf, dup, record, keep)
-        if not pairs and not orphans:
+        pairs, orphans, unsure = _copy_pairs(jf, dup, record, keep)
+        if not pairs and not orphans and not unsure:
             return 0
         users = jf.get_user_ids()
         if users is None:
             raise RuntimeError("could not list Jellyfin's users")
+        if any(_has_user_data(_user_data(jf, u, i)) for u in users for i in unsure):
+            how = ("an NFO beside it with this film's TMDB id, or [tmdbid-N] in its folder name"
+                   if keep == "download" else
+                   "[tmdbid-N] in its folder name (an NFO there goes with the download when Radarr deletes it)")
+            raise UserDataCarryError(
+                409, "Jellyfin shows both copies as one film, and users have watched state (played, resume "
+                     "point, favourite) on it. The copy you are removing is the one Jellyfin treats as the "
+                     "film, so Jellyfin makes a new item from the copy you keep and moves the state onto it "
+                     f"by TMDB id. Tentacle can only be sure of that when the copy you keep names that id on "
+                     f"disk: {how}. It doesn't. "
+                     f"{'Keep VOD' if keep == 'download' else 'Keep Downloaded'} keeps everyone's state, or "
+                     "use Keep Both. Nothing was deleted.")
         for user_id in users:
             if any(_has_user_data(_user_data(jf, user_id, i)) for i in orphans):
                 raise UserDataCarryError(

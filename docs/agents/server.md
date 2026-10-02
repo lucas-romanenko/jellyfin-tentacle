@@ -86,7 +86,10 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   item onto the kept one (films by path, shows per season/episode):
   Jellyfin 10.11 does not share it between two items of one TMDB id.
   Jellyfin down, or a film's kept copy not scanned yet while the other has
-  user data: nothing is deleted (502 / 409).
+  user data: nothing is deleted (502 / 409). Both copies in one folder =
+  one Jellyfin film with versions (jellyfin-notes.md): the versions' data
+  goes onto the film item; when the film item is the copy removed, the kept
+  file must name the TMDB id on disk (NFO or `[tmdbid-N]`), else 409 (#333).
 - **Following** = Sonarr `monitorNewItems="all"` (stricter than
   `monitored`), mirrored in `Series.sonarr_monitored`, synced both ways on
   every Sonarr scan; unfollowing keeps `monitored=true`. Hidden for ended
