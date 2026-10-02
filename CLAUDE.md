@@ -109,6 +109,11 @@ make check       # = scripts/check: the full unit suite, as CI runs it (a venv c
 
 The workbench's pre-push hook runs the check before main moves (about
 4 min). CI (`tests.yml`) runs the same script on every push and pull request.
+The suite runs without the network (`tests/hermetic.py`: no DNS, loopback
+connections only, no proxy), so it passes or fails the same in CI, on a
+laptop and in a sandbox: mock the service in the test (TMDB: `no_tmdb(self)`);
+a test that truly needs the network is `@live` and runs only with
+`TENTACLE_LIVE_TESTS=1`, never in `make check`.
 The suite runs with its own TMPDIR and the check fails if anything is left in
 it: a test's scratch dirs come from `temp_dir(self)` (`tests/tmp_dirs.py`),
 never a bare `tempfile.mkdtemp()`, and no test writes into the source tree.
@@ -121,11 +126,15 @@ make deploy      # run the current origin/main on Lucas's server (app; the plugi
 make verify      # healthy, /api/version = the deployed commit; a deployed plugin is Active in Jellyfin
 ```
 
-Both must pass; report their output. To confirm a fix on Lucas's server
-before merging it (triage below), push the branch and run
-`make deploy REF=<branch>` and `make verify REF=<branch>` (verify then also
-fails unless the branch's head is what runs); after the merge, `make deploy`
-and `make verify` put main back. This is private: the image is built
+Both must pass; report their output. In a Claude session make runs in a
+sandbox that can't reach the server: `make deploy` builds the plugin, then
+stops with one exact `ops ...` line, and `make verify` / `make
+deploy-release` do the same. Run that line as a command of its own (a
+600000 ms timeout for a deploy). Lucas's server runs main or a release
+tag (`make deploy REF=vX.Y.Z`), never a branch or a pull request: those
+are tried on his staging instance first (a contained copy with no media
+and no keys; how: his private manual), and contributed code never runs on
+the workbench (its tests come from CI). This is private: the image is built
 on the server itself, nothing goes to a registry or a release, and other
 installs are untouched. `make deploy-release` switches Lucas's server back
 to the latest public release (image `latest`, and the released plugin if a
@@ -159,9 +168,14 @@ build features without his `approved` label). Tentacle specifics:
   version, the client (web, Android TV app and its version, other) and any
   local patches or modifications. The bug report template asks the same.
 - Reproduced: failing test first, fix on `fix/<n>-<slug>`, push the
-  branch, `make deploy REF=fix/<n>-<slug>` + `make verify REF=...`, confirm
-  on Lucas's install, merge to main (pull requests: squash only), `make
-  deploy` + `make verify`, comment Cause and Change, close.
+  branch, open a pull request and confirm it on staging where staging can
+  show it, merge to main (pull requests: squash only), `make deploy` +
+  `make verify`, confirm on Lucas's install, comment Cause and Change,
+  close.
+- Pull requests from others: read the diff and CI's result; never check
+  them out to run or build here. A PR that changes `tentacle/Dockerfile`,
+  `requirements.txt` or `.dockerignore` can't be staged (its build steps
+  would run on the server): Lucas reviews it.
 - A plugin change restarts Jellyfin on deploy: first check that nobody is
   watching (how: the private manual).
 - Labels: `needs-info`, `needs-lucas` (a feature or idea waiting for
@@ -174,10 +188,14 @@ build features without his `approved` label). Tentacle specifics:
 ## Releasing is Lucas's decision
 
 Releasing publishes to other people's servers and Jellyfin installs, so
-only Lucas tags or creates releases. Agents never tag or release (the
-workbench's guard asks before any tag push, `gh release` change or `gh
-workflow run`, and before a push that changes
-`tentacle-plugin/manifest.json`). A session ends with
+only Lucas tags or creates releases. Agents never tag or release: GitHub
+refuses it (ruleset "release tags": `v*` and `plugin-v*` only from a deploy
+key, and agents have none), and the workbench's guard refuses tag pushes,
+`gh release` changes and `gh workflow run` (it asks before a push that
+changes `tentacle-plugin/manifest.json`). main moves only through a pull
+request whose `unit` check passed (ruleset "main"): push a branch, `gh pr
+create`, `gh pr checks <n> --watch`, `gh pr merge <n> --squash
+--delete-branch`. A session ends with
 draft release notes (user-visible changes by area, issue numbers in
 brackets, upgrade notes; `git log vA.B.C..main`) and "ready to release
 vX.Y.Z", plus "and plugin-vX.Y.Z" when `tentacle-plugin/` changed since the
@@ -199,21 +217,26 @@ Plugin Release workflow edits it; never edit it by hand.
 
 ### Server release (Lucas)
 
+The one way to make a release tag is `tentacle-tag` on Lucas's server, run
+by him (it pushes with a release deploy key only he has; details and install
+are in his homelab manual, docs/tentacle.md "Rulesets and releases"). It
+checks the tag is new and well formed, the commit is on main and its Tests
+(`unit`) passed, then pushes an annotated tag. The GitHub UI can't create a
+release tag any more (the ruleset has no admin bypass).
+
 1. Main is green: the Tests run for the commit passed
    (`gh run list -R lucas-romanenko/jellyfin-tentacle --branch main -L 3`).
-2. Tag that commit and push the tag (or create the release in the GitHub UI
-   on a new tag `vX.Y.Z` targeting main, which does the same):
+2. On the server's host shell:
    ```
-   git -C /code/jellyfin-tentacle pull --ff-only
-   git -C /code/jellyfin-tentacle tag -a v1.9.0 -m "v1.9.0"
-   git -C /code/jellyfin-tentacle push origin v1.9.0
+   tentacle-tag jellyfin-tentacle v1.10.0            # main's tip
+   tentacle-tag jellyfin-tentacle v1.10.0 <sha>      # or a given commit on main
    ```
    The last release is v1.9.0 (2026-09-29, with plugin-v2.271.0), so the
    next is 1.9.1 or 1.10.0. Semver: `vX.Y.Z`, pre-releases `vX.Y.Z-rc.N`.
    The docs deploy on a tag needs the `github-pages` environment to allow
    it: its deployment rules allow the branch `main` and tags `v*` (added
    2026-09-29, after the v1.9.0 docs deploy was refused).
-3. Optional: `gh release create v1.9.0 --verify-tag --notes-file notes.md`
+3. Optional: `gh release create v1.10.0 --verify-tag --notes-file notes.md`
    for release notes on GitHub (it fires Docker Publish again for the same
    tag; the concurrency group runs them in turn and the result is the same).
 
@@ -241,11 +264,16 @@ deploys and checks his own is in his homelab manual.
 
 ### Plugin release (Lucas)
 
-Tag `plugin-vX.Y.Z` on main and push it (with a server release on the same
-commit, tag the plugin first). Check: the GitHub release has
-`tentacle-plugin-vX.Y.Z.zip`, and main has the bot's "Update plugin manifest
-for vX.Y.Z" commit. Notes: `gh release edit plugin-vX.Y.Z --notes-file
-notes.md --latest=false`, so the server release stays "latest".
+`tentacle-tag jellyfin-tentacle plugin-vX.Y.Z <sha>` (with a server release
+on the same commit, tag the plugin first, then `tentacle-tag
+jellyfin-tentacle vX.Y.Z <sha>` on the same sha: the manifest commit moves
+main's tip). Plugin Release pushes the manifest commit to main with its own
+deploy key (secret `MANIFEST_DEPLOY_KEY` of environment `plugin-manifest`,
+which only `plugin-v*` tags may use; main's ruleset has no other bypass).
+Check: the GitHub release has `tentacle-plugin-vX.Y.Z.zip`, and main has the
+bot's "Update plugin manifest for vX.Y.Z" commit (with a Tests run). Notes:
+`gh release edit plugin-vX.Y.Z --notes-file notes.md --latest=false`, so the
+server release stays "latest".
 
 ## Open items
 

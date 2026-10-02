@@ -1,0 +1,11 @@
+# How agents may work on this repo: read by the maintainer's work tracker.
+lane: server-public      # public repo; main also runs on the maintainer's own server
+verify: make check       # read-only: the full unit suite, as CI runs it
+# builds main's plugin and prints the ops line that deploys it; the server refuses it while Jellyfin plays anything
+deploy_command: make -C /code/jellyfin-tentacle deploy
+bugs: auto               # a confirmed bug gets a failing test, a fix and a review without asking
+features: ask            # each feature waits for the maintainer's Build it / Not now
+merge: auto              # a reviewed pull request merges once its CI is green
+deploy: auto             # the merged change deploys when nothing is playing
+release: me              # releases are the maintainer's, always
+needs_lucas_labels: [needs-lucas, security]
