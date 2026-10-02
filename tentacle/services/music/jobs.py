@@ -114,7 +114,8 @@ def finish_pending_requests(db, errors: list = None, unconfirmed_only: bool = Fa
             done += 1
             logger.info(f"[Request] '{title}': finished a request that was left unfinished")
         except LidarrError as e:
-            unconfirmed = unconfirmed or not row.lidarr_album_id   # Lidarr unreachable: look again
+            # Lidarr unreachable: look again, but only while the add may still land
+            unconfirmed = unconfirmed or (not row.lidarr_album_id and _still_owed(row))
             if e.status == 404:   # removed from Lidarr since: nothing is owed
                 _request_done(row)
                 db.commit()
@@ -132,6 +133,10 @@ def finish_pending_requests(db, errors: list = None, unconfirmed_only: bool = Fa
 UNCONFIRMED_ADD_WAIT = timedelta(hours=6)
 
 
+def _still_owed(row: MusicAlbum) -> bool:
+    return bool(row.requested_at) and datetime.utcnow() - row.requested_at <= UNCONFIRMED_ADD_WAIT
+
+
 def _added_since(db, row: MusicAlbum) -> bool:
     """A request whose add got no answer (no album id): has the album landed in Lidarr since?"""
     album = library.lidarr_client(db).album_by_mbid(row.mbid)
@@ -139,8 +144,9 @@ def _added_since(db, row: MusicAlbum) -> bool:
         row.lidarr_album_id = album["id"]
         db.commit()
         return True
-    if not row.requested_at or datetime.utcnow() - row.requested_at > UNCONFIRMED_ADD_WAIT:
+    if not _still_owed(row):
         _request_done(row)   # it never landed: nothing is owed
+        row.verdict = None   # not "waiting for Lidarr" next to "Not requested" any more
         db.commit()
     return False
 

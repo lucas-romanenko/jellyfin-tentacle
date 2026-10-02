@@ -163,6 +163,37 @@ class TestAddLandsLate(_Base):
         self.assertEqual(len(errors), 1)
         self.assertTrue(self.row().request_pending)
 
+    def test_lidarr_down_after_the_wait_stops_looking(self):
+        from services.music import jobs
+        self.request(land=False)
+        row = self.row()
+        row.requested_at = datetime.utcnow() - timedelta(days=7)
+        self.db.commit()
+        looks = []
+
+        def down(handler):
+            return handler._send(503, {"message": "down"})
+        with mock.patch.object(FakeLidarr, "do_GET", down), mock.patch("services.lidarr.RETRY_DELAYS", (0, 0)), \
+                mock.patch.object(jobs, "look_again_later", side_effect=lambda *a: looks.append(1)):
+            for _ in range(3):
+                jobs.finish_pending_requests(self.db, unconfirmed_only=True)
+        self.assertEqual(looks, [])          # no 5-minute looks past the wait
+        self.assertTrue(self.row().request_pending)   # the next successful look (startup, daily check) settles it
+        jobs.finish_pending_requests(self.db)
+        self.assertFalse(self.row().request_pending)
+
+    def test_an_add_that_never_landed_leaves_no_waiting_note(self):
+        from services.music import jobs
+        self.request(land=False)
+        self.assertIn("waiting for Lidarr", self.row().verdict["state"])
+        row = self.row()
+        row.requested_at = datetime.utcnow() - timedelta(days=1)
+        self.db.commit()
+        jobs.finish_pending_requests(self.db)
+        row = self.row()
+        self.assertFalse(row.request_pending)
+        self.assertFalse((row.verdict or {}).get("state"))
+
     def test_the_look_only_touches_unconfirmed_adds(self):
         from models.database import MusicAlbum
         from services.music import jobs
