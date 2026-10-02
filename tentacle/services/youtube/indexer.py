@@ -57,7 +57,13 @@ DETAIL_RETRY_MAX_HOURS = 48
 # Skip reasons of videos whose details could not be read, retried at next_check_at.
 UNAVAILABLE_REASON = "unavailable (private, members-only or removed)"
 UNREADABLE_REASON = "could not read details"
-_RETRYABLE = (UNAVAILABLE_REASON, UNREADABLE_REASON)
+# A library video taken out because it could not be played (sync.
+# _retire_unplayable). It comes back only when the player can open it again:
+# its details can read fine (the Data API calls a members-only video public)
+# while playback still fails, and restoring it on those put the dead tile back
+# in every user's row until it failed twice more.
+PLAYBACK_REASON = "could not be played (private, members-only or removed)"
+_RETRYABLE = (UNAVAILABLE_REASON, UNREADABLE_REASON, PLAYBACK_REASON)
 
 # Listing live statuses that mean the broadcast is over.
 _ENDED = ("was_live", "post_live", "not_live")
@@ -776,6 +782,21 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
                     beyond += 1
                     continue
                 row = retry_due[vid]
+                if row.skip_reason == PLAYBACK_REASON:
+                    # Asked the way playback asks (same clients, an HLS master),
+                    # which also leaves the stream ready for the first play.
+                    from services.youtube import resolver
+                    try:
+                        resolver.resolve(vid, backoff=False)
+                    except YouTubeBlocked as e:
+                        _mark_blocked(db, channel, e)
+                        raise
+                    except YouTubeError:
+                        _retry_later(row, PLAYBACK_REASON)
+                        db.commit()
+                        _note_skip(PLAYBACK_REASON)
+                        _detail_pause()
+                        continue
                 try:
                     details = _details(vid)
                 except VideoUnavailable:
