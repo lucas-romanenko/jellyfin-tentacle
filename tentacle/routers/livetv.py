@@ -203,6 +203,9 @@ _STREAM_ANSWER_LIMIT = 120.0
 class _NotAPlaylist(httpx.TransportError):
     """The channel URL answered with a stream where a playlist was expected."""
 _OPEN_RETRY_BUDGET = 20.0   # seconds
+# How long the open waits for the first playlist's body once its headers are in
+# (the variant read after it has the same bound).
+_OPEN_PLAYLIST_READ = 10.0
 
 # Backoff while a RUNNING stream re-dials. A transport error is retried on a
 # short cap (the tuner reader is waiting). A refusal -- 429/509, the account
@@ -3742,6 +3745,17 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
             try:
                 resp = await _send_checked(client, open_url, {"User-Agent": user_agent}, guard)
                 resp.raise_for_status()
+                if "mpegurl" in resp.headers.get("content-type", "").lower():
+                    # The first playlist, bounded like the variant read below:
+                    # headers followed by no body (or a byte now and then) is
+                    # waited out as a failed open, not for the client's 120 s
+                    # read timeout while the tuner gives up and the slot and a
+                    # provider connection stay held.
+                    try:
+                        playlist_bytes = await asyncio.wait_for(resp.aread(), _OPEN_PLAYLIST_READ)
+                    except asyncio.TimeoutError:
+                        raise httpx.ReadTimeout(f"the playlist did not arrive within "
+                                                f"{_OPEN_PLAYLIST_READ:.0f}s", request=resp.request)
                 break
             except httpx.HTTPError as e:
                 if resp is not None:
@@ -3801,7 +3815,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
 
         if is_hls:
             # HLS playlist — read the playlist text, then we're done with this client
-            playlist_text = (await resp.aread()).decode("utf-8", errors="replace")
+            playlist_text = playlist_bytes.decode("utf-8", errors="replace")
             playlist_base = tokenized_url
             # Look at the media playlist before answering: a provider with
             # nothing for the channel serves one that holds only a placeholder
