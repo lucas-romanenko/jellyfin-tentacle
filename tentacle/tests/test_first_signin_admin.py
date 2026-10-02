@@ -133,6 +133,20 @@ class FirstSignIn(unittest.TestCase):
         self.assertEqual(403, cm.exception.status_code)
         self.assertIsNone(self.owner())
 
+    def test_only_a_real_true_counts_as_admin(self):
+        for odd in ("true", "True", 1, None, {}):
+            def answer(*args, odd=odd, **kwargs):
+                r = mock.Mock()
+                r.raise_for_status.return_value = None
+                r.json.return_value = {"User": {"Id": KID, "Name": "kid", "Policy": {"IsAdministrator": odd}}}
+                return r
+            with self.subTest(odd=odd), mock.patch.object(auth_router.requests, "post", answer):
+                with self.assertRaises(HTTPException) as cm:
+                    login(self.db, "kid")
+                self.assertEqual(403, cm.exception.status_code)
+                self.assertIsNone(self.owner())
+                self.assertEqual("", get_setting(self.db, "jellyfin_user_id"))
+
     def test_a_wrong_password_is_still_a_401(self):
         def refused(*args, **kwargs):
             r = mock.Mock()
