@@ -43,6 +43,8 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   by the wizard's "Get Started" or "Skip everything", never by a settings save.
 - Roles: admin status is copied from Jellyfin's `Policy.IsAdministrator` on
   every login; the first user (lowest id) is the owner and can't lose admin;
+  the login refuses a non-admin while no user exists (the owner becomes
+  `jellyfin_user_id`, the account Tentacle reads Jellyfin as);
   Settings → Users toggles admin through Jellyfin's policy API. Non-admins
   see only Library and Jellyfin pages (`data-admin-only` in the nav,
   `applyUserRole()`).

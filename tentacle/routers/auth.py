@@ -497,6 +497,12 @@ def login(body: LoginRequest, response: Response, request: Request, db: Session 
     with _user_create_lock:
         user = _user_row(db, jf_user_id)
         is_first_user = db.query(TentacleUser).count() == 0
+        if is_first_user and not jf_is_admin:
+            # The first user is the owner: it inherits the existing data and
+            # becomes the account Tentacle reads Jellyfin as (jellyfin_user_id).
+            # That has to be a Jellyfin administrator, so a non-admin who signs
+            # in first is turned away and the install waits for one.
+            raise HTTPException(403, "The first sign-in must be a Jellyfin administrator")
 
         try:
             if not user:
