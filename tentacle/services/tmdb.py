@@ -56,6 +56,11 @@ class TMDBService:
         # Per-thread flag: did a request in the current lookup fail transiently
         # (429/5xx/timeout/unreachable)? The sync runs lookups on a thread pool.
         self._tl = threading.local()
+        # Discover sets fail_fast: once TMDB can't be reached (or doesn't
+        # answer), the rest of that page load reads the cache only, instead of
+        # waiting out a timeout per section (#273). Nothing else sets it.
+        self.fail_fast = False
+        self._offline = False
 
     def _lookup_failed(self) -> bool:
         return getattr(self._tl, "failed", False)
@@ -147,6 +152,8 @@ class TMDBService:
     def _request(self, endpoint: str, params: dict = None) -> Optional[dict]:
         if not self.enabled:
             return None
+        if self._offline:
+            raise TMDBConnectionError("TMDB could not be reached earlier in this request")
         try:
             r = self.session.get(
                 f"{TMDB_BASE}/{endpoint}",
@@ -159,7 +166,16 @@ class TMDBService:
         except requests.ConnectionError as e:
             self._tl.status = None
             self._tl.failed = True
+            self._offline = self.fail_fast
             raise TMDBConnectionError(f"Cannot reach TMDB API: {e}")
+        except requests.Timeout as e:
+            self._tl.status = None
+            self._tl.failed = True
+            if self.fail_fast:
+                self._offline = True
+                raise TMDBConnectionError(f"TMDB did not answer: {e}")
+            logger.debug(f"TMDB request failed {endpoint}: {e}")
+            return None
         except requests.HTTPError as e:
             status = getattr(getattr(e, "response", None), "status_code", None)
             self._tl.status = status
