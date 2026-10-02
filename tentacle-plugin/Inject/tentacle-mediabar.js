@@ -341,11 +341,11 @@
                 }).catch(function () {});
             }
 
-            // Overview
+            // Overview: shown as plain text. Markup in it is parsed in an inert
+            // document (DOMParser), never in the page's own, so it loads nothing.
             if (item.Overview) {
-                var tmp = document.createElement('div');
-                tmp.innerHTML = item.Overview;
-                overviewEl.textContent = tmp.textContent || tmp.innerText || '';
+                var parsed = new DOMParser().parseFromString(item.Overview, 'text/html');
+                overviewEl.textContent = (parsed && parsed.body && parsed.body.textContent) || '';
             } else {
                 overviewEl.textContent = '';
             }
