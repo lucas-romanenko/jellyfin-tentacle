@@ -71,6 +71,14 @@ def get_library_items(
 ):
     # List mode: return all items from the list with in_library status
     if list_id is not None:
+        # Lists are per user; every /api/lists route checks the owner, and so
+        # does this view of a list's contents (404 for another user's list).
+        from models.database import ListSubscription
+        owned = db.query(ListSubscription.id).filter(ListSubscription.id == list_id)
+        if not user.is_admin:
+            owned = owned.filter(ListSubscription.user_id == user.id)
+        if owned.first() is None:
+            raise HTTPException(404, "List not found")
         return _get_list_items(list_id, search, sort, list_status, limit, offset, db)
 
     movies_q = db.query(Movie)
