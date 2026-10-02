@@ -36,6 +36,9 @@ class ResolveAllKeepsEarlierSuccesses(unittest.TestCase):
         for k, v in (("radarr_url", "http://radarr"), ("radarr_api_key", "r")):
             self.db.add(Setting(key=k, value=v))
         for tmdb, name in ((603, "Film"), (949, "Heat")):
+            strm = Path(tmp) / "vod" / name / f"{name}.strm"   # the VOD copy Keep VOD keeps
+            strm.parent.mkdir(parents=True)
+            strm.write_text("http://p/movie/1.mp4")
             self.db.add(Movie(tmdb_id=tmdb, title=name, source="provider_1",
                               strm_path=f"{tmp}/vod/{name}/{name}.strm", radarr_path=f"/movies/{name} [1080p]"))
             self.db.add(Duplicate(tmdb_id=tmdb, media_type="movie", resolution="pending",
