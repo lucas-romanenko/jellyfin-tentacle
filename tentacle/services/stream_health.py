@@ -186,6 +186,10 @@ def _mark_bad(db, media_type: str, tmdb_id: int, title: str, episode: str,
     if entry:
         entry.fail_count = (entry.fail_count or 1) + 1
         entry.last_checked_at = now
+        # Dead at the address the file holds now: that is what Remove checks
+        # against (a file the sync repointed since is not this entry's).
+        if stream_url:
+            entry.stream_url = stream_url
     else:
         db.add(StreamHealth(
             media_type=media_type, tmdb_id=tmdb_id, title=title, episode=episode,
@@ -240,6 +244,13 @@ def _check_item(db, item, media_type: str, providers: dict) -> bool | None:
     alive = check_stream(db, media_type, kind, stream_id, url, provider)
     if alive is False:
         _mark_bad(db, media_type, item.tmdb_id, item.title, episode, strm_path, url)
+    elif alive is True:
+        # Alive now: an entry from an earlier dead verdict (the file was
+        # repaired or repointed since) must not keep offering Remove.
+        stale = db.query(StreamHealth).filter(StreamHealth.strm_path == strm_path).first()
+        if stale:
+            db.delete(stale)
+            db.commit()
     return alive
 
 
@@ -278,7 +289,12 @@ def recheck_known_bad(db, limit: int = 0) -> dict:
             cleared.append(entry.title)
             db.delete(entry)
             continue
-        url = entry.stream_url or _read_strm(entry.strm_path)
+        # The file's address first: a sync that repointed or repaired the
+        # .strm since (a re-listed stream id, new credentials, VOD through
+        # Tentacle) left the recorded address behind, and probing that kept
+        # a playing title "dead" for good. A blank file falls back to it.
+        current = _read_strm(entry.strm_path)
+        url = current or entry.stream_url
         if not url:
             continue
         # Each re-test is a real stream open on the account. The same manners
@@ -306,6 +322,7 @@ def recheck_known_bad(db, limit: int = 0) -> dict:
             db.delete(entry)
         elif alive is False:
             entry.fail_count = (entry.fail_count or 1) + 1
+            entry.stream_url = url   # dead at this address (Remove checks against it)
     db.commit()
     return {"rechecked": rechecked, "cleared": cleared,
             "deferred": deferred, "provider_busy": provider_busy, "remaining": remaining}
@@ -412,6 +429,13 @@ def remove_dead_stream(db, entry_id: int, user_name: str = None) -> dict:
     entry = db.query(StreamHealth).filter(StreamHealth.id == entry_id).first()
     if not entry:
         return {"ok": False, "error": "Entry not found"}
+
+    # The entry says the address it found dead. A file that plays another one
+    # now (the sync repointed or repaired it) was never tested: deleting it
+    # would remove a title that may well play. Recheck tests it first.
+    current = _read_strm(entry.strm_path)
+    if current and entry.stream_url and current != entry.stream_url:
+        return {"ok": False, "error": "The file has changed since it was found dead; press Recheck first"}
 
     strm = Path(entry.strm_path)
     try:
