@@ -231,9 +231,12 @@ User docs: `docs/features/live-tv.md`.
   errors, `_raw_retryable()` statuses (the open set plus 407 and any 5xx:
   providers answer 407 for an ended session, 513/520-524 for minutes), and a
   200 whose first bytes are an error page (`_looks_like_error_page()`: not
-  the TS sync byte 0x47 and a text type or a `{`/`<` start; never proxied).
-  401/403/404 stop at once. A re-dial counts as a reconnect only once it
-  delivers.
+  MPEG-TS -- the sync byte 0x47 first, or 0x47 every 188 bytes from within
+  the first packet for a start mid-packet, judged on the first 564 bytes
+  held by `_decidable_start()` -- and a text type or a `{`/`<` start; never
+  proxied). A mid-packet start's partial packet is dropped. 401/403/404 stop
+  at once. A re-dial counts as a reconnect only once it delivers, and as a
+  recovery (backoff and budget reset) only once it delivered past 10 s.
 - Channel ids are the provider's `stream_id` (stable across changes), used
   as `GuideNumber`; Jellyfin keys the channel, its timers and favourites on
   `hdhr_<GuideNumber>`, so it must never change. M3U channels have no
