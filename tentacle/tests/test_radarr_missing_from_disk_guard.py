@@ -9,7 +9,8 @@ MovieFileDelete webhook per film. The scan refuses such a loss (#106,
 services/radarr.file_loss_looks_like_an_outage); the webhook deleted every
 row, its download request and its duplicate tombstones at once. Now these
 deletes are collected until the burst is over and judged together, like the
-scan's lost files. Other delete reasons act at once, as before.
+scan's lost files, with the reports of the last hours (a burst that a pause
+splits is judged as a whole). Other delete reasons act at once, as before.
 """
 import logging
 import random
@@ -44,8 +45,10 @@ class _Timer:
     armed = []
 
     def __init__(self, delay, fn, args=()):
+        import time
         self.delay, self.fn, self.args, self.cancelled = delay, fn, args, False
         self.daemon = False
+        self.due = time.monotonic() + delay
 
     def start(self):
         _Timer.armed.append(self)
@@ -79,6 +82,13 @@ class MissingFromDiskGuard(unittest.TestCase):
         if hasattr(radarr, "_missing_pending"):     # (absent before #381)
             radarr._missing_pending.clear()
             self.addCleanup(radarr._missing_pending.clear)
+        if hasattr(radarr, "_missing_recent"):
+            radarr._missing_recent.clear()
+            self.addCleanup(radarr._missing_recent.clear)
+        self.now = [1000.0]
+        p = mock.patch("time.monotonic", lambda: self.now[0])
+        p.start()
+        self.addCleanup(p.stop)
 
     def films(self, ids, duplicate=False):
         for i in ids:
@@ -103,6 +113,19 @@ class MissingFromDiskGuard(unittest.TestCase):
         live = [t for t in _Timer.armed if not t.cancelled]
         self.assertTrue(live, "no timer armed")
         return radarr._flush_missing_from_disk(*live[-1].args, db=self.db)
+
+    def advance(self, seconds):
+        """Let time pass: a timer that comes due fires (as threading.Timer would)."""
+        end = self.now[0] + seconds
+        while True:
+            due = [t for t in _Timer.armed if not t.cancelled and not getattr(t, "fired", False) and t.due <= end]
+            if not due:
+                break
+            t = min(due, key=lambda t: t.due)
+            self.now[0] = max(self.now[0], t.due)
+            t.fired = True
+            radarr._flush_missing_from_disk(*t.args, db=self.db)
+        self.now[0] = end
 
     def counts(self):
         return (self.db.query(mdb.Movie).count(), self.db.query(mdb.DownloadRequest).count(),
@@ -157,23 +180,94 @@ class MissingFromDiskGuard(unittest.TestCase):
         self.assertIsNotNone(self.db.query(mdb.Movie).filter_by(tmdb_id=5001).first())
         self.assertIsNone(self.db.query(mdb.Movie).filter_by(tmdb_id=5002).first())
 
-    def test_the_timer_waits_for_quiet_and_never_longer_than_the_cap(self):
+    def test_the_timer_waits_for_ten_quiet_minutes_however_long_the_burst(self):
         self.films(range(6001, 6020))
-        now = [1000.0]
-        with mock.patch("time.monotonic", lambda: now[0]):
-            self.event(6001)
-            self.assertEqual(_Timer.armed[-1].delay, radarr.MISSING_QUIET_SECONDS)
-            for k in range(2, 7):
-                now[0] += 59          # events keep coming: each re-arms
-                self.event(6000 + k)
-                self.assertTrue(_Timer.armed[-2].cancelled)
-            self.assertEqual(_Timer.armed[-1].delay, radarr.MISSING_QUIET_SECONDS)
-            now[0] = 1000.0 + radarr.MISSING_MAX_WAIT_SECONDS - 5
-            self.event(6015)
-            self.assertEqual(_Timer.armed[-1].delay, 5)
-            now[0] += 30
-            self.event(6016)
-            self.assertEqual(_Timer.armed[-1].delay, 0)
+        self.event(6001)
+        self.assertEqual(_Timer.armed[-1].delay, radarr.MISSING_SETTLE_SECONDS)
+        for k in range(2, 19):
+            self.now[0] += 59          # events keep coming: each re-arms, no forced judgement
+            self.event(6000 + k)
+            self.assertTrue(_Timer.armed[-2].cancelled)
+            self.assertEqual(_Timer.armed[-1].delay, radarr.MISSING_SETTLE_SECONDS)
+
+    def test_probe_a_a_pause_inside_the_burst_loses_nothing(self):
+        """Review F381-1 probe A: 20 of 20 films missing, a 70 s pause after the 8th."""
+        self.films(range(1, 21))
+        for i in range(1, 9):
+            self.event(i)
+            self.advance(1)
+        self.advance(70)
+        for i in range(9, 21):
+            self.event(i)
+            self.advance(1)
+        self.advance(3600)
+        self.assertEqual(self.counts()[:2], (20, 20), "a pause split the outage and a slice was removed")
+
+    def test_probe_a_slices_judged_as_one_outage(self):
+        """A pause longer than the settle time: the first slice cannot be told
+        from a clean-up, but the rest of the outage is refused."""
+        self.films(range(1, 21))
+        for i in range(1, 9):
+            self.event(i)
+        self.assertEqual(self.flush(), {"status": "removed", "removed": 8})
+        self.now[0] += radarr.MISSING_SETTLE_SECONDS + 300
+        for i in range(9, 21):
+            self.event(i)
+        self.assertEqual(self.flush()["status"], "refused")
+        self.assertEqual(self.counts()[:2], (12, 12))
+
+    def test_probe_b_a_burst_longer_than_ten_minutes_loses_nothing(self):
+        """Review F381-1 probe B: a large library reported at one film a second
+        (1,500 s, longer than any fixed cap): judged once, at the end."""
+        self.films(range(1, 1501))
+        for i in range(1, 1501):
+            self.event(i)
+            self.advance(1)
+        self.advance(3600)
+        self.assertEqual(self.db.query(mdb.Movie).count(), 1500, "a long burst was removed slice by slice")
+
+    def test_probe_c_a_scan_removed_the_row_first_the_playlists_are_still_cleaned(self):
+        """Review F381-2 probe C: a scan inside the wait removes the row (it does
+        no playlist clean-up); the judged report still starts it, by folder."""
+        self.films(range(2001, 2011))
+        self.event(2003)
+        self.db.query(mdb.Movie).filter_by(tmdb_id=2003).delete()    # what the scan does
+        self.db.commit()
+        self.assertEqual(self.flush(), {"status": "removed", "removed": 0})
+        self.assertEqual(_Thread.started, [("_cleanup_playlists_all_users", (2003, "movie"),
+                                            {"arr_folder": "/data/movies/Film 2003 (2001)"})])
+        self.assertEqual(self.db.query(mdb.DownloadRequest).filter_by(tmdb_id=2003).count(), 0)
+
+    def test_a_report_older_than_the_window_no_longer_counts(self):
+        self.films(range(1, 11))
+        for i in (1, 2):
+            self.event(i)
+        self.assertEqual(self.flush()["removed"], 2)
+        self.now[0] += radarr.MISSING_WINDOW_SECONDS + 1
+        for i in (3, 4, 5):
+            self.event(i)
+        self.assertEqual(self.flush()["removed"], 3, "3 of 8: removed when the earlier 2 are hours old")
+
+    def test_reports_inside_the_window_add_up(self):
+        self.films(range(1, 11))
+        for i in (1, 2):
+            self.event(i)
+        self.assertEqual(self.flush()["removed"], 2)
+        self.now[0] += 3600
+        for i in (3, 4, 5, 6):
+            self.event(i)
+        self.assertEqual(self.flush()["status"], "refused", "6 of 10 in an hour, 4 of them now: refused")
+
+    def test_a_reimport_takes_a_film_out_of_the_window(self):
+        self.films(range(1, 11))
+        self.event(1), self.event(2), self.event(3)
+        self.assertEqual(self.flush()["removed"], 3)
+        with mock.patch.object(radarr, "scan_radarr_library", lambda db: {}):
+            for i in (1, 2, 3):
+                self.event(i, event="Download", reason=None)
+        self.films([1, 2, 3])
+        self.event(4), self.event(5)
+        self.assertEqual(self.flush()["removed"], 2)
 
     def test_a_superseded_timer_does_nothing(self):
         self.films(range(7001, 7011))
@@ -189,36 +283,41 @@ class MissingFromDiskGuard(unittest.TestCase):
         self.event(8001), self.event(8002)
         real = radarr._remove_downloaded_movie
 
-        def flaky(db, tmdb_id, title, folder):
+        def flaky(db, tmdb_id, title, folder, **kw):
             if tmdb_id == 8001:
                 raise RuntimeError("database is locked")
-            return real(db, tmdb_id, title, folder)
+            return real(db, tmdb_id, title, folder, **kw)
         with mock.patch.object(radarr, "_remove_downloaded_movie", flaky):
             self.assertEqual(self.flush()["removed"], 1)
         self.assertIsNotNone(self.db.query(mdb.Movie).filter_by(tmdb_id=8001).first())
 
     def test_property_a_batch_is_removed_only_when_the_scan_would_remove_it(self):
         """1,000 seeds: random libraries and random event streams (missing,
-        manual deletes, upgrades, re-imports, Radarr deletes), checked at every
-        flush. Invariants: nothing reported missing is removed before its
-        burst is judged; a burst is kept whole exactly when the scan's guard
-        would refuse that loss, else exactly its still-present films go; other
-        reasons act at once."""
+        manual deletes, upgrades, re-imports, Radarr deletes, scans removing
+        a row, time passing), checked at every flush. Invariants: nothing
+        reported missing is removed before its burst is judged; a burst is
+        kept whole exactly when the scan's guard refuses the loss counted with
+        the window's earlier reports, else exactly its still-present films go
+        (with the playlist clean-up, also for a film a scan removed first);
+        other reasons act at once."""
         for seed in range(1000):
             rng = random.Random(seed)
             self.db.query(mdb.Movie).delete()
             self.db.query(mdb.DownloadRequest).delete()
             self.db.commit()
             radarr._missing_pending.clear()
+            radarr._missing_recent.clear()
             _Timer.armed = []
             ids = list(range(10000, 10000 + rng.randint(1, 15)))
             self.films(ids)
             pending = set()
+            window = {}          # model: tmdb_id -> (time judged, was a downloaded row)
             with mock.patch.object(radarr, "scan_radarr_library", lambda db: {}):
-                for step in range(rng.randint(1, 25)):
+                for step in range(rng.randint(1, 30)):
                     i = rng.choice(ids)
                     present = {m.tmdb_id for m in self.db.query(mdb.Movie)}
-                    a = rng.choice(["missing"] * 5 + ["manual", "upgrade", "download", "moviedelete", "flush"])
+                    a = rng.choice(["missing"] * 5 + ["manual", "upgrade", "download", "moviedelete", "flush",
+                                                      "flush", "scanremoves", "time"])
                     msg = f"seed {seed} step {step} {a} {i}"
                     if a == "missing":
                         self.event(i)
@@ -227,6 +326,7 @@ class MissingFromDiskGuard(unittest.TestCase):
                     elif a == "manual":
                         self.event(i, reason="manual")
                         pending.discard(i)
+                        window.pop(i, None)
                         self.assertNotIn(i, {m.tmdb_id for m in self.db.query(mdb.Movie)}, msg)
                     elif a == "upgrade":
                         self.event(i, reason="upgrade")
@@ -234,21 +334,38 @@ class MissingFromDiskGuard(unittest.TestCase):
                     elif a == "download":
                         self.event(i, event="Download", reason=None)
                         pending.discard(i)
+                        window.pop(i, None)
                     elif a == "moviedelete":
                         self.event(i, event="MovieDelete", reason=None)
                         pending.discard(i)
+                        window.pop(i, None)
+                    elif a == "scanremoves":
+                        self.db.query(mdb.Movie).filter_by(tmdb_id=i).delete()
+                        self.db.commit()
+                    elif a == "time":
+                        self.now[0] += rng.choice((30, 600, 3600, 4 * 3600, 7 * 3600))
                     elif pending:
-                        lost = pending & present
+                        window = {k: v for k, v in window.items()
+                                  if self.now[0] - v[0] <= radarr.MISSING_WINDOW_SECONDS}
+                        recent = {k: v for k, v in window.items() if k not in pending}
+                        gone = sum(1 for k, (_, was) in recent.items() if was and k not in present)
+                        lost_now = pending & present
+                        lost = len(lost_now) + len(present & set(recent)) + gone
+                        _Thread.started = []
                         out = self.flush()
                         after = {m.tmdb_id for m in self.db.query(mdb.Movie)}
-                        if file_loss_looks_like_an_outage(len(lost), len(present)):
+                        if file_loss_looks_like_an_outage(lost, len(present) + gone):
                             self.assertEqual(out["status"], "refused", msg)
                             self.assertEqual(after, present, msg)
+                            self.assertEqual(_Thread.started, [], msg)
                         else:
-                            self.assertEqual(after, present - lost, msg)
+                            self.assertEqual(out["status"], "removed", msg)
+                            self.assertEqual(after, present - pending, msg)
+                            self.assertEqual(sorted(c[1][0] for c in _Thread.started), sorted(pending), msg)
+                        for k in pending:
+                            window[k] = (self.now[0], k in present)
                         pending = set()
                     self.assertEqual(set(radarr._missing_pending), pending, msg)
-
 
 if __name__ == "__main__":
     unittest.main()
