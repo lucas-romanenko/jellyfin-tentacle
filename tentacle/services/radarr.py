@@ -175,6 +175,34 @@ def scan_radarr_library(db: Session) -> dict:
         return _scan_radarr_library(db)
 
 
+def clear_duplicates_without_a_copy(db: Session, model, media_type: str) -> int:
+    """Drop the duplicate records of titles that no longer have a row (#334).
+
+    A "Keep Downloaded" resolution (keep_radarr) is a tombstone: the VOD sync
+    never re-imports the provider copy while it exists. It holds only while the
+    download does. The delete webhooks clear it, but a scan that removes the
+    row (the webhook was missed, or Radarr only reports "no file" at its next
+    refresh) left it, and the film stayed in neither copy for good. A pending
+    duplicate with no copy left is stale the same way. Resolutions kept as
+    history (keep_vod, keep_both) and one being applied are left alone.
+    Not committed here: the scan commits once, with its deletes."""
+    dups = db.query(Duplicate).filter(Duplicate.media_type == media_type,
+                                      Duplicate.resolution.in_(("pending", "keep_radarr"))).all()
+    if not dups:
+        return 0
+    ids = {d.tmdb_id for d in dups}
+    db.flush()   # the scan's own deletes (the app's sessions don't autoflush)
+    have = {t for (t,) in db.query(model.tmdb_id).filter(model.tmdb_id.in_(ids))}
+    cleared = 0
+    for dup in dups:
+        if dup.tmdb_id not in have:
+            db.delete(dup)
+            cleared += 1
+    if cleared:
+        logger.info(f"{media_type.capitalize()} scan: cleared {cleared} duplicate record(s) of titles with no copy left")
+    return cleared
+
+
 def _scan_radarr_library(db: Session) -> dict:
     radarr_url = get_setting(db, "radarr_url")
     radarr_key = get_setting(db, "radarr_api_key")
@@ -379,6 +407,7 @@ def _scan_radarr_library(db: Session) -> dict:
         logger.info(f"Radarr scan: removed {removed} movies no longer in Radarr")
     stats["removed"] = removed
     stats["removals_refused"] = refused
+    stats["duplicates_cleared"] = clear_duplicates_without_a_copy(db, Movie, "movie")
 
     # Single commit for all DB changes
     db.commit()

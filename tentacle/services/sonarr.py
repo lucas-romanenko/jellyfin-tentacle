@@ -13,7 +13,7 @@ import requests
 from sqlalchemy.orm import Session
 
 from models.database import Series, Duplicate, DownloadRequest, TentacleUser, get_setting, DeletionLog
-from services.radarr import file_loss_looks_like_an_outage
+from services.radarr import file_loss_looks_like_an_outage, clear_duplicates_without_a_copy
 from services.duplicates import series_has_real_download
 
 DOWNLOADED_TV_TAG = "Downloaded TV"
@@ -851,6 +851,7 @@ def _scan_sonarr_library(db: Session) -> dict:
         logger.info(f"Sonarr scan: removed {removed} series no longer in Sonarr")
     stats["removed"] = removed
     stats["removals_refused"] = refused
+    stats["duplicates_cleared"] = clear_duplicates_without_a_copy(db, Series, "series")
 
     # Sync monitoring state for ALL series in DB (not just those processed above)
     # Covers: VOD series added to Sonarr, series with no downloads yet, etc.
