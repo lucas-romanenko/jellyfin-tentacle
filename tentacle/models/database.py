@@ -840,7 +840,16 @@ class EPGProgram(Base):
 
 
 def log_activity(db, event: str, message: str, detail: dict = None):
-    """Write an activity log entry"""
+    """Write an activity log entry.
+
+    Messages often carry an exception's text, and httpx/requests put the whole
+    URL in it -- /live/<user>/<pass>/ or ?username=&password= for an Xtream
+    provider. The Activity feed is stored and served, so redact like the log."""
+    from services.log_redaction import redact
+    if isinstance(message, str):
+        message = redact(message)
+    if isinstance(detail, dict):
+        detail = {k: (redact(v) if isinstance(v, str) else v) for k, v in detail.items()}
     db.add(ActivityLog(event=event, message=message, detail=detail))
     db.commit()
 
