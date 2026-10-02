@@ -3896,7 +3896,12 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 if not retryable or waited + open_backoff > _OPEN_RETRY_BUDGET:
                     logger.error(f"[LiveTV] Tokenized URL failed for channel {channel_id}"
                                  f"{f' after {waited:.0f}s of retries' if waited >= 1 else ''}: {e}")
-                    raise HTTPException(502, f"Failed to connect to stream: {e}")
+                    # The status or the error type, not the text: httpx puts the
+                    # request URL in it, and for Xtream that path holds the
+                    # account (/live/<user>/<pass>/). The log line above is redacted.
+                    why = (f"the provider answered {e.response.status_code}"
+                           if isinstance(e, httpx.HTTPStatusError) else type(e).__name__)
+                    raise HTTPException(502, f"Failed to connect to stream: {why}")
                 if (not open_reresolved and open_url != stream_url and rival_delivering is not None
                         and isinstance(e, httpx.HTTPStatusError)
                         and e.response.status_code in _REFUSAL_STATUS
