@@ -2284,6 +2284,13 @@ def run_full_jellyfin_pipeline(db, log_prefix: str = "Pipeline", refresh_playlis
             log_activity(db, "jellyfin_push", f"Pushed tags to Jellyfin — {tagged} items updated")
     except Exception as e:
         logger.error(f"[{log_prefix}] Tag push failed: {e}")
+        # A failed flush leaves the session refusing every statement until it
+        # is rolled back, and the playlist refresh below then failed too. Every
+        # write above commits itself, so this drops only the failed statement.
+        try:
+            db.rollback()
+        except Exception as e2:
+            logger.warning(f"[{log_prefix}] Could not roll back the session: {e2}")
 
     # Step 4: Refresh playlist contents only (don't rebuild configs or home layout)
     if not refresh_playlists:
