@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from typing import Optional
 
 from models.database import get_db, Provider, Movie, ListItem, ListSubscription, DownloadRequest, Duplicate, get_setting, log_activity
-from services.radarr import scan_radarr_library, RadarrService
+from services.radarr import scan_radarr_library, RadarrService, file_loss_looks_like_an_outage
 from services.nfo import update_nfo_tags, write_movie_nfo, make_folder_name, refresh_arr_nfo
 from services.tagger import tentacle_owned_tags
 from services.migration import migrate_provider, preview_migration
@@ -216,6 +216,130 @@ def write_nfos(db: Session = Depends(get_db)):
 webhook_router = APIRouter(prefix="/api/radarr", tags=["radarr"])
 
 
+def _remove_downloaded_movie(db: Session, tmdb_id: int, title: str, arr_folder: Optional[str],
+                             clean_up_if_gone: bool = False) -> int:
+    """A download's file is gone: drop its row, its request (unless a "Bad
+    copy" replacement is coming) and its duplicate tombstones, and take it out
+    of every user's playlists. Returns the rows deleted; raises on a DB error
+    (rolled back). clean_up_if_gone: the playlist clean-up runs even when the
+    row was already gone (a scan removed it while the report waited; the scan
+    does no playlist clean-up), by the download's folder only."""
+    from services.bad_copy import is_replacing
+    replacing = is_replacing(db, "movie", tmdb_id)
+    try:
+        deleted = db.query(Movie).filter(Movie.tmdb_id == tmdb_id, Movie.source == "radarr").delete()
+        if not replacing:  # "Bad copy": the request stands while another copy comes
+            db.query(DownloadRequest).filter(DownloadRequest.tmdb_id == tmdb_id, DownloadRequest.media_type == "movie").delete()
+        # Clear duplicate tombstones — deleting the downloaded copy is a
+        # clean slate; the title may legitimately re-import from VOD later
+        db.query(Duplicate).filter(Duplicate.tmdb_id == tmdb_id, Duplicate.media_type == "movie").delete()
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    if deleted:
+        emit_library_event("movie_removed", {"tmdb_id": tmdb_id, "title": title, "media_type": "movie"})
+        log_activity(db, "radarr_remove", f"Removed '{title}' from Radarr library")
+    if deleted or (clean_up_if_gone and arr_folder):
+        from routers.library import _cleanup_playlists_all_users
+        threading.Thread(target=_cleanup_playlists_all_users, args=(tmdb_id, "movie"),
+                         kwargs={"arr_folder": arr_folder}, daemon=True).start()
+    return deleted
+
+
+# File deletes Radarr makes because it can't see the file any more
+# (deleteReason "missingFromDisk", #381) go through the scan's storage-outage
+# guard (#106). Radarr sends one per film as its refresh walks the library, so
+# when its storage goes away (a share mounted below the root folder, a pool
+# with a disk gone) a burst arrives -- sometimes with pauses (a slow metadata
+# call) and for longer than any fixed wait on a large library. So reports are
+# collected until none has come for MISSING_SETTLE_SECONDS, and then judged
+# like a scan's lost files together with every report of the last
+# MISSING_WINDOW_SECONDS (films removed or kept for it before): a loss that
+# looks like an outage is refused (rows, requests and tombstones kept), any
+# other is removed as before. A burst that a pause split is so judged as a
+# whole once its total looks like an outage, instead of slice by slice. In
+# memory only: after a restart the next scan judges them.
+MISSING_SETTLE_SECONDS = 600
+MISSING_WINDOW_SECONDS = 6 * 3600
+_missing_lock = threading.Lock()
+_missing_pending: dict = {}          # tmdb_id -> (title, arr_folder)
+_missing_recent: dict = {}           # tmdb_id -> (monotonic time judged, was a downloaded row)
+_missing_gen = 0
+_missing_timer = None
+
+
+def _queue_missing_from_disk(tmdb_id: int, title: str, arr_folder: Optional[str]) -> None:
+    global _missing_gen, _missing_timer
+    with _missing_lock:
+        _missing_pending[tmdb_id] = (title, arr_folder)
+        if _missing_timer is not None:
+            _missing_timer.cancel()
+        _missing_gen += 1
+        _missing_timer = threading.Timer(MISSING_SETTLE_SECONDS, _flush_missing_from_disk, args=(_missing_gen,))
+        _missing_timer.daemon = True
+        _missing_timer.start()
+
+
+def _forget_missing_from_disk(tmdb_id) -> None:
+    """The film was imported again (or removed from Radarr): its queued
+    missingFromDisk delete no longer applies, nor does its earlier report."""
+    with _missing_lock:
+        _missing_pending.pop(tmdb_id, None)
+        _missing_recent.pop(tmdb_id, None)
+
+
+def _flush_missing_from_disk(gen: Optional[int] = None, db: Optional[Session] = None) -> dict:
+    """Judge the collected missingFromDisk deletes, with the recent ones (see above)."""
+    import time
+    with _missing_lock:
+        if gen is not None and gen != _missing_gen:
+            return {"status": "superseded"}   # a newer event re-armed the timer
+        batch = dict(_missing_pending)
+        _missing_pending.clear()
+        now = time.monotonic()
+        for k in [k for k, (t, _) in _missing_recent.items() if now - t > MISSING_WINDOW_SECONDS]:
+            del _missing_recent[k]
+        recent = {k: v for k, v in _missing_recent.items() if k not in batch}
+    if not batch:
+        return {"status": "empty"}
+    own_db = db is None
+    if own_db:
+        from models.database import SessionLocal
+        db = SessionLocal()
+    try:
+        rows = {t for (t,) in db.query(Movie.tmdb_id).filter(Movie.source == "radarr")}
+        # Downloads already removed for an earlier report still count, in the
+        # loss and in the library it is measured against.
+        gone = sum(1 for t, (_, was_row) in recent.items() if was_row and t not in rows)
+        lost_now = rows & set(batch)
+        lost = len(lost_now) + len(rows & set(recent)) + gone
+        total = len(rows) + gone
+        if file_loss_looks_like_an_outage(lost, total):
+            with _missing_lock:
+                for t in batch:
+                    _missing_recent[t] = (now, t in rows)
+            logger.error(
+                f"[Radarr webhook] REFUSING to remove {len(lost_now)} downloaded movies Radarr reported missing "
+                f"from disk: with the reports of the last {MISSING_WINDOW_SECONDS // 3600} h that is {lost} of "
+                f"{total}. That many looks like Radarr's media storage being unavailable, not a clean-up. Rows "
+                f"kept; if the files really are gone, remove the movies from Radarr.")
+            return {"status": "refused", "kept": len(lost_now)}
+        removed = 0
+        for tmdb_id, (title, arr_folder) in batch.items():
+            try:
+                removed += _remove_downloaded_movie(db, tmdb_id, title, arr_folder, clean_up_if_gone=True)
+                logger.info(f"[Radarr webhook] MovieFileDelete (missing from disk) for '{title}' (tmdb:{tmdb_id}) — removed from DB")
+            except Exception as e:
+                logger.error(f"[Radarr webhook] MovieFileDelete DB cleanup failed for tmdb:{tmdb_id}: {e}")
+            with _missing_lock:
+                _missing_recent[tmdb_id] = (now, tmdb_id in rows)
+        return {"status": "removed", "removed": removed}
+    finally:
+        if own_db:
+            db.close()
+
+
 @webhook_router.post("/webhook")
 def radarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db)):
     """Radarr webhook — triggered on Download, MovieAdded, MovieDelete, MovieFileDelete events."""
@@ -252,32 +376,24 @@ def radarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
         if delete_reason == "upgrade":
             logger.info(f"[Radarr webhook] MovieFileDelete upgrade for '{title}' — ignoring")
             return {"status": "ignored", "reason": "upgrade"}
+        if str(delete_reason).lower() == "missingfromdisk":
+            # Radarr can't see the file: judged with the others of its burst (#381).
+            _queue_missing_from_disk(tmdb_id, title, arr_folder)
+            logger.info(f"[Radarr webhook] MovieFileDelete missing from disk for '{title}' — queued for the storage-outage check")
+            return {"status": "queued", "tmdb_id": tmdb_id}
         # Non-upgrade file deletion — remove from DB
-        from services.bad_copy import is_replacing
-        replacing = is_replacing(db, "movie", tmdb_id)
+        _forget_missing_from_disk(tmdb_id)
         try:
-            deleted = db.query(Movie).filter(Movie.tmdb_id == tmdb_id, Movie.source == "radarr").delete()
-            if not replacing:  # "Bad copy": the request stands while another copy comes
-                db.query(DownloadRequest).filter(DownloadRequest.tmdb_id == tmdb_id, DownloadRequest.media_type == "movie").delete()
-            # Clear duplicate tombstones — deleting the downloaded copy is a
-            # clean slate; the title may legitimately re-import from VOD later
-            db.query(Duplicate).filter(Duplicate.tmdb_id == tmdb_id, Duplicate.media_type == "movie").delete()
-            db.commit()
+            deleted = _remove_downloaded_movie(db, tmdb_id, title, arr_folder)
         except Exception as e:
-            db.rollback()
             logger.error(f"[Radarr webhook] MovieFileDelete DB cleanup failed for tmdb:{tmdb_id}: {e}")
             raise HTTPException(500, "Failed to process delete event")
-        if deleted:
-            emit_library_event("movie_removed", {"tmdb_id": tmdb_id, "title": title, "media_type": "movie"})
-            log_activity(db, "radarr_remove", f"Removed '{title}' from Radarr library")
-            from routers.library import _cleanup_playlists_all_users
-            threading.Thread(target=_cleanup_playlists_all_users, args=(tmdb_id, "movie"),
-                             kwargs={"arr_folder": arr_folder}, daemon=True).start()
         logger.info(f"[Radarr webhook] MovieFileDelete for '{title}' (tmdb:{tmdb_id}) — removed {deleted} from DB")
         return {"status": "deleted", "tmdb_id": tmdb_id}
 
     # MovieDelete — remove from DB
     if event_type == "MovieDelete":
+        _forget_missing_from_disk(tmdb_id)
         try:
             deleted = db.query(Movie).filter(Movie.tmdb_id == tmdb_id, Movie.source == "radarr").delete()
             db.query(DownloadRequest).filter(DownloadRequest.tmdb_id == tmdb_id, DownloadRequest.media_type == "movie").delete()
@@ -299,6 +415,8 @@ def radarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
         return {"status": "deleted", "tmdb_id": tmdb_id}
 
     # Download / MovieAdded — scan and tag
+    _forget_missing_from_disk(tmdb_id)
+
     def _webhook_background(tmdb_id, title, event_type):
         import time
         from datetime import datetime

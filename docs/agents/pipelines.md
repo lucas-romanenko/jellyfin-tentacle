@@ -38,7 +38,14 @@ webhook can't know which) → home config → plugin notified → version bumped
 
 **Radarr deletes a movie** (MovieDelete): DB record and `DownloadRequest`s
 removed, then `remove_item_from_playlists()` for every user in the
-background; the Library shows it as missing again.
+background; the Library shows it as missing again. A file delete
+(MovieFileDelete) does the same at once, except reason `upgrade` (ignored)
+and `missingFromDisk` (Radarr can't see the file): those are collected until
+none has come for 10 minutes and judged with the scan's storage-outage guard
+(`file_loss_looks_like_an_outage`, #106/#381), counted together with every
+`missingFromDisk` report of the last 6 hours: a loss of 3 or more and over
+half of the downloads (a share that dropped out) removes nothing, however the
+burst was spread out.
 
 **Sonarr deletes a series** (SeriesDelete): a hybrid keeps its VOD record
 (`sonarr_path`, `sonarr_monitored` cleared); a Sonarr-only series is
