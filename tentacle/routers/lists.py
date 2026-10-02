@@ -754,7 +754,7 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
         tags = [t for t in movie.tags if t != tag]
         movie.tags = tags
         if movie.nfo_path:
-            update_nfo_tags(Path(movie.nfo_path), tags)
+            update_nfo_tags(Path(movie.nfo_path), tags, owned)
         cleaned += 1
 
     for series in db.query(Series).all():
@@ -767,7 +767,7 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
         tags = [t for t in series.tags if t != tag]
         series.tags = tags
         if series.nfo_path:
-            update_nfo_tags(Path(series.nfo_path), tags)
+            update_nfo_tags(Path(series.nfo_path), tags, owned)
         cleaned += 1
 
     if cleaned:
