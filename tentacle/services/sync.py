@@ -64,10 +64,16 @@ def chown_path(path) -> None:
     user Sonarr/Radarr run as, and a root-owned season folder made Sonarr's
     imports into it fail with "permission denied" weeks later. Nothing
     changes under a root-owned folder, or when Tentacle doesn't run as root.
+    The chown never follows a symlink (a link is skipped; one swapped in
+    between the check and the chown changes only the link itself), so what a
+    link points at is never re-owned. A real folder reached through a
+    symlinked show folder is library content and is handed over as usual.
     """
     try:
+        if os.path.islink(path):
+            return
         if VOD_PUID is not None:
-            os.chown(path, int(VOD_PUID), int(VOD_PGID or VOD_PUID))
+            os.chown(path, int(VOD_PUID), int(VOD_PGID or VOD_PUID), follow_symlinks=False)
             return
         if not hasattr(os, "geteuid") or os.geteuid() != 0:
             return
@@ -75,7 +81,7 @@ def chown_path(path) -> None:
         if (parent.st_uid, parent.st_gid) == (0, 0):
             return
         if (os.lstat(path).st_uid, os.lstat(path).st_gid) == (0, 0):
-            os.chown(path, parent.st_uid, parent.st_gid)
+            os.chown(path, parent.st_uid, parent.st_gid, follow_symlinks=False)
     except (OSError, ValueError) as e:
         logger.debug(f"chown_path failed for {path}: {e}")
 
@@ -88,7 +94,10 @@ def repair_hybrid_ownership(db) -> list:
     rows with sonarr_path set): chown the show dir, its season dirs, and any
     real video files not owned by PUID. Narrow on purpose — only hybrid shows
     are ever written to by Sonarr, so the huge pure-VOD catalog is never
-    walked. No-op when PUID is unset."""
+    walked. It skips a symlinked show folder and symlinked season folders (the
+    video files behind them are not re-owned; season folders reached through
+    a symlinked show folder are still handed over when the sync writes into
+    them). No-op when PUID is unset."""
     if VOD_PUID is None:
         return []
     from models.database import Series as _Series
@@ -98,9 +107,9 @@ def repair_hybrid_ownership(db) -> list:
                                        _Series.strm_path.isnot(None)).all()
     for s in hybrids:
         show_dir = Path(s.strm_path)
-        if not show_dir.is_dir():
+        if not show_dir.is_dir() or show_dir.is_symlink():
             continue
-        targets = [show_dir] + [d for d in show_dir.iterdir() if d.is_dir()]
+        targets = [show_dir] + [d for d in show_dir.iterdir() if d.is_dir() and not d.is_symlink()]
         for d in targets:
             try:
                 changed = False
@@ -326,7 +335,7 @@ def _write_strm(strm_file: Path, url: str) -> None:
         if st is not None:
             try:
                 os.chmod(tmp, st.st_mode & 0o7777)
-                os.chown(tmp, st.st_uid, st.st_gid)
+                os.chown(tmp, st.st_uid, st.st_gid, follow_symlinks=False)
             except OSError:
                 pass  # not ours to give away (no root): the file is still written
         os.replace(tmp, strm_file)
