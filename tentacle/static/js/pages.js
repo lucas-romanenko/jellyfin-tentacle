@@ -3435,7 +3435,7 @@ function ytStartPolling() {
     }
     clearInterval(_ytPoll); _ytPoll = null; t.remove();
     if (st.errors) {
-      toast(`Indexed with ${st.errors} error(s): ${escapeAttr(st.error_detail || '')}`, 'error', 10000);
+      toast(`Indexed with ${st.errors} error(s): ${st.error_detail || ''}`, 'error', 10000);
     } else {
       // "filling" means Jellyfin is still importing: the playlist is topped
       // up in the background as videos land, and the row appears on its own.
