@@ -36,6 +36,16 @@ Merged from Lucas's notes on 2026-09-28; the code wins.
   colons/hyphens normalized (new downloads can show "Alien (1979)" with no
   year until identified, so also try without a year).
 - **The `Tags` filter** (`/Items?Tags=`) does work server-side.
+- **Two files of one film in one folder** (`Heat (1995).strm` +
+  `Heat (1995) - Bluray-1080p.mkv`) are ONE film with versions (10.11.8): the
+  listing has one Movie (the file named like the folder, else the first by
+  resolution/name) with both as `MediaSources`; the other file is its own item
+  (type `Video`), only in `/Items?Ids=`. Users' state is on the film (also when
+  a version is played from it). When the film's file goes, the rescan makes a
+  NEW Movie item, and Jellyfin moves the old film's user data onto it by TMDB/
+  IMDb id on its first refresh: only if the remaining file says its id (NFO,
+  `[tmdbid-N]`) or Jellyfin matches it online. The old `Video` item stays
+  behind with whatever user data was on it (#333).
 - **Playlist items**: `POST /Playlists/{id}/Items?EntryIds=…` hits 414 on
   big lists: send `{"Ids": [...]}` as the body with `?UserId=`, in chunks of
   50; removals as EntryIds in chunks of 50.
