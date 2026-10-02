@@ -120,7 +120,7 @@ Open `http://localhost:8888` — the setup wizard will guide you through connect
 
 1. **Jellyfin** — URL + API key (Dashboard → API Keys → Create), then sign in with your Jellyfin administrator account (the first account to sign in becomes the Tentacle owner) — *required*
 2. **TMDB** — works automatically with built-in key, or override with your own from [themoviedb.org](https://www.themoviedb.org/settings/api)
-3. **Streaming Provider** — add it in Settings → Providers (optional). One provider serves both: pick its categories on the VOD page and its channel groups on the Live TV page
+3. **Streaming Provider** — add it in Settings → Providers (optional). An Xtream provider serves both: pick its categories on the VOD page and its channel groups on the Live TV page
 4. **Radarr / Sonarr** — URL + API key in Settings → Connections (optional). Set up webhooks in Radarr/Sonarr pointing to `http://<tentacle-ip>:8888/api/radarr/webhook` and `/api/sonarr/webhook` for real-time updates.
 5. **Check paths** — Settings → Library Paths to verify your volume mounts are correct
 6. **Playlists** — go to Jellyfin → Playlists tab to enable auto playlists from your synced content

@@ -140,7 +140,7 @@ Yes. Tentacle includes a built-in HDHomeRun emulator that serves the same purpos
 
 ### Can I use the same provider for VOD and Live TV?
 
-Yes. Add the provider once, in **Settings → Providers**: it serves both. Pick its movie and series categories on the VOD page and its channel groups on the Live TV page.
+Yes (Xtream providers). Add the provider once, in **Settings → Providers**: it serves both. Pick its movie and series categories on the VOD page and its channel groups on the Live TV page.
 
 ### Why are some channels missing EPG?
 

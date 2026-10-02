@@ -42,11 +42,11 @@ Live TV is turned on by the connection test of an **Xtream** provider. An M3U pr
 
 ### User-Agent
 
-Some providers only allow certain apps. Tentacle identifies itself as TiviMate (`TiviMate/4.7.0 (Linux; Android 12)`), which most providers accept. The dashboard has no setting to change it.
+Some providers only allow certain apps. By default Tentacle identifies itself as TiviMate (`TiviMate/4.7.0 (Linux; Android 12)`), which most providers accept. The dashboard has no setting to change it.
 
 ## Channel Groups
 
-Tentacle fetches the channel groups by itself after the provider's connection test. To fetch them again, click **Refresh** on the Live TV page's **Groups** tab (**Sync Groups** while the list is still empty). Groups are organized by your provider (Sports, Entertainment, News, etc.) and show the channel count for each.
+Tentacle fetches the channel groups by itself after the connection test that runs when you save the provider. To fetch them again, click **Refresh** on the Live TV page's **Groups** tab (**Sync Groups** while the list is still empty). Groups are organized by your provider (Sports, Entertainment, News, etc.) and show the channel count for each.
 
 ### Enabling Groups
 

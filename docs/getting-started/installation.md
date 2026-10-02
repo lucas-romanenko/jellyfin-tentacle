@@ -63,7 +63,7 @@ On first launch, you'll see the [setup wizard](setup-wizard.md) which guides you
 
 ## Updating
 
-Tentacle publishes a Docker image to GitHub Container Registry for every release (`latest` and the version tag).
+Tentacle publishes a Docker image to GitHub Container Registry for every release (`latest` and the version tags).
 
 ```bash
 docker compose pull tentacle
