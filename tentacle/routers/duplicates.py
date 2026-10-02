@@ -3,6 +3,7 @@ Tentacle - Duplicates Router
 """
 
 import logging
+from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -72,6 +73,7 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
                      detail="Kept downloaded copy — VOD .strm/.nfo files deleted")
 
     elif resolution == "keep_vod":
+        _require_vod_copy(dup, record)
         # Delete the downloaded copy from the *arr that owns it: its files
         # through the file API, then the title. Never Radarr for a series:
         # TMDB movie and TV ids are separate number spaces, so a series' id
@@ -108,6 +110,35 @@ def _carry_user_data(dup: Duplicate, record, keep: str, db: Session) -> None:
     except UserDataCarryError as e:
         db.rollback()
         raise HTTPException(e.status, e.message)
+
+
+def _require_vod_copy(dup: Duplicate, record) -> None:
+    """Refuse Keep VOD when the VOD copy it would keep is not on disk.
+
+    Keep VOD deletes the download; without a VOD copy that deletes the title.
+    It happens after a Keep Downloaded that a restart interrupted once it had
+    deleted the .strm (the duplicate is pending again), and for a title that
+    was downloaded first, whose provider .strm the VOD sync never wrote. The
+    VOD copy is a provider source's path, or the row's own strm_path while a
+    provider owns the row: a film's .strm file, a show folder holding at least
+    one .strm. These are Tentacle's own paths, so the check is reliable."""
+    paths = [s.get("path") for s in dup.sources or []
+             if (s.get("source") or "").startswith("provider_") and s.get("path")]
+    if record is not None and (record.source or "").startswith("provider_") and record.strm_path:
+        paths.append(record.strm_path)
+    for p in paths:
+        path = Path(p)
+        try:
+            if dup.media_type == "movie":
+                if path.suffix.lower() == ".strm" and path.is_file():
+                    return
+            elif path.is_dir() and any(f.suffix.lower() == ".strm" and f.is_file() for f in path.rglob("*")):
+                return
+        except OSError as e:  # can't look: not proof that the copy is there
+            logger.warning(f"Keep VOD: could not check {p}: {e}")
+    raise HTTPException(409, "The VOD copy of this title isn't on disk (it was never written, or it was "
+                             "deleted), so Keep VOD would leave nothing to play. Nothing was deleted; use "
+                             "Keep Downloaded or Keep Both.")
 
 
 def _require_series_download(dup: Duplicate, db: Session) -> None:
