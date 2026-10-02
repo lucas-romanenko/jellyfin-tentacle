@@ -294,6 +294,10 @@ def resolve_all(body: ResolveAllRequest, db: Session = Depends(get_db)):
             continue
         dup.resolution = body.resolution
         dup.resolved_at = datetime.now(timezone.utc)
+        # Commit each one: a later failure rolls the session back, which would
+        # turn this one (one copy already deleted) back into "pending", and
+        # resolving it the other way would then delete the copy that is left.
+        db.commit()
         resolved += 1
     db.commit()
 
