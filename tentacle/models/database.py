@@ -353,7 +353,7 @@ class Duplicate(Base):
     tmdb_id = Column(Integer, nullable=False, index=True)
     media_type = Column(String, nullable=False)  # movie | series
     sources = Column(JSON, default=list)  # [{"source": "radarr", "path": "..."}, ...]
-    resolution = Column(String, default="pending")  # pending | keep_radarr | keep_provider_1 | keep_both
+    resolution = Column(String, default="pending")  # pending | resolving (claimed by a request) | keep_radarr | keep_vod | keep_both
     detected_at = Column(DateTime, default=datetime.utcnow)
     resolved_at = Column(DateTime, nullable=True)
 

@@ -4580,7 +4580,7 @@ function renderDupList() {
 
     const title = dup.title || `TMDB #${dup.tmdb_id}`;
     const poster = dup.poster_path ? `https://image.tmdb.org/t/p/w92${dup.poster_path}` : '';
-    const resLabel = { keep_radarr: 'Kept Downloaded', keep_vod: 'Kept VOD', keep_both: 'Kept Both' };
+    const resLabel = { keep_radarr: 'Kept Downloaded', keep_vod: 'Kept VOD', keep_both: 'Kept Both', resolving: 'Resolving…' };
 
     return `
       <div class="dup-row" style="display:flex;gap:16px;align-items:flex-start">

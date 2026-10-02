@@ -31,8 +31,13 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
     keep_both   = do nothing
     Before either deletes a copy, every Jellyfin user's played state, resume
     point and favourite on it are merged onto the copy that stays.
+    The duplicate is marked resolved in the first commit that saves these
+    changes (log_deletion commits), and again at the end in case that commit
+    failed and rolled back.
     """
     if resolution == "keep_both":
+        _mark_resolved(dup, resolution)
+        db.commit()
         return
 
     sources = dup.sources or []
@@ -67,6 +72,7 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
         # and the Radarr/Sonarr scan sees an existing record — not a new movie.
         if record and record.source != downloaded_source:
             convert_record_to_downloaded(record, dup.media_type)
+        _mark_resolved(dup, resolution)   # log_deletion commits: the mark goes with the changes
         log_deletion(db, kind="duplicate-resolve", name=title or f"tmdb:{dup.tmdb_id}",
                      media_type=dup.media_type, reason="manual",
                      detail="Kept downloaded copy — VOD .strm/.nfo files deleted")
@@ -93,11 +99,57 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
         if radarr_movie:
             db.delete(radarr_movie)
             logger.info(f"Removed Radarr DB record for tmdb:{dup.tmdb_id}")
+        _mark_resolved(dup, resolution)   # log_deletion commits: the mark goes with the changes
         log_deletion(db, kind="duplicate-resolve", name=title or f"tmdb:{dup.tmdb_id}",
                      media_type=dup.media_type, reason="manual",
                      detail=f"Kept VOD copy — downloaded files deleted from {arr}")
 
+    _mark_resolved(dup, resolution)
     db.commit()
+
+
+def _mark_resolved(dup: Duplicate, resolution: str) -> None:
+    # Kept in the DB for stats/history; the sync enforces keep_radarr.
+    dup.resolution = resolution
+    dup.resolved_at = datetime.now(timezone.utc)
+
+
+RESOLUTIONS = ("keep_radarr", "keep_vod", "keep_both")
+
+
+def _claim(dup_id: int, db: Session) -> bool:
+    """Take a pending duplicate for this request (pending -> resolving),
+    committed before anything is deleted. False when another request already
+    resolved it or is resolving it: a second resolution the other way (a tab
+    loaded earlier, the API, Resolve All at the same time) would delete the
+    copy the first one kept."""
+    n = db.query(Duplicate).filter(Duplicate.id == dup_id, Duplicate.resolution == "pending") \
+        .update({Duplicate.resolution: "resolving"}, synchronize_session=False)
+    db.commit()
+    return n == 1
+
+
+def _release(dup_id: int, db: Session) -> None:
+    """A resolution that failed stays pending (a retry checks again). If even
+    that can't be saved, the next start puts it back to pending."""
+    try:
+        db.rollback()
+        db.query(Duplicate).filter(Duplicate.id == dup_id, Duplicate.resolution == "resolving") \
+            .update({Duplicate.resolution: "pending"}, synchronize_session=False)
+        db.commit()
+    except Exception as e:
+        logger.error(f"Could not put duplicate {dup_id} back to pending: {e}")
+        db.rollback()
+
+
+def release_interrupted_resolutions(db: Session) -> None:
+    """At startup: a resolution a restart interrupted goes back to pending,
+    as it was before resolutions were claimed (one worker, nothing in flight)."""
+    n = db.query(Duplicate).filter(Duplicate.resolution == "resolving") \
+        .update({Duplicate.resolution: "pending"}, synchronize_session=False)
+    if n:
+        db.commit()
+        logger.warning(f"{n} duplicate resolution(s) were interrupted by a restart; they are pending again")
 
 
 def _carry_user_data(dup: Duplicate, record, keep: str, db: Session) -> None:
@@ -259,25 +311,33 @@ def get_duplicates(db: Session = Depends(get_db)):
     }
 
 
+def _check_resolution(resolution: str) -> None:
+    if resolution not in RESOLUTIONS:
+        raise HTTPException(400, f"Unknown resolution: use one of {', '.join(RESOLUTIONS)}")
+
+
 @router.post("/{dup_id}/resolve")
 def resolve_duplicate(dup_id: int, body: ResolveRequest, db: Session = Depends(get_db)):
+    _check_resolution(body.resolution)
     dup = db.query(Duplicate).filter(Duplicate.id == dup_id).first()
     if not dup:
         raise HTTPException(404, "Duplicate not found")
-
-    _apply_resolution(dup, body.resolution, db)
-
-    # Mark as resolved (keep in DB for stats/history)
-    dup.resolution = body.resolution
-    dup.resolved_at = datetime.now(timezone.utc)
-    db.commit()
+    if not _claim(dup_id, db):
+        raise HTTPException(409, "This duplicate was already resolved, or is being resolved right now. "
+                                 "Nothing was changed; reload the page.")
+    try:
+        _apply_resolution(dup, body.resolution, db)
+    except Exception:
+        _release(dup_id, db)
+        raise
 
     return {"success": True}
 
 
 @router.post("/resolve-all")
 def resolve_all(body: ResolveAllRequest, db: Session = Depends(get_db)):
-    pending = db.query(Duplicate).filter(Duplicate.resolution == "pending").all()
+    _check_resolution(body.resolution)
+    pending = [(d.id, d.tmdb_id) for d in db.query(Duplicate).filter(Duplicate.resolution == "pending")]
     total = len(pending)
 
     # Apply resolution to each duplicate (delete files, clean up DB). Only mark a
@@ -285,20 +345,18 @@ def resolve_all(body: ResolveAllRequest, db: Session = Depends(get_db)):
     # pending so they can be retried instead of being silently dropped.
     resolved = 0
     failed = 0
-    for dup in pending:
+    for dup_id, tmdb_id in pending:
+        if not _claim(dup_id, db):
+            logger.info(f"Resolve All: tmdb:{tmdb_id} was resolved by another request meanwhile; skipped")
+            continue
         try:
-            _apply_resolution(dup, body.resolution, db)
+            dup = db.query(Duplicate).filter(Duplicate.id == dup_id).one()
+            _apply_resolution(dup, body.resolution, db)   # marks it resolved and commits
         except Exception as e:
-            logger.error(f"Failed to apply resolution for tmdb:{dup.tmdb_id}: {e}")
+            _release(dup_id, db)
+            logger.error(f"Failed to apply resolution for tmdb:{tmdb_id}: {e}")
             failed += 1
             continue
-        dup.resolution = body.resolution
-        dup.resolved_at = datetime.now(timezone.utc)
-        # Commit each one: a later failure rolls the session back, which would
-        # turn this one (one copy already deleted) back into "pending", and
-        # resolving it the other way would then delete the copy that is left.
-        db.commit()
         resolved += 1
-    db.commit()
 
     return {"success": failed == 0, "count": resolved, "total": total, "failed": failed}

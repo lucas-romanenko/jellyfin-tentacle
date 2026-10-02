@@ -698,6 +698,9 @@ async def lifespan(app: FastAPI):
             db.commit()
             logger.info(f"Cleaned up {len(stuck_runs)} stuck sync run(s) from previous restart")
 
+        from routers.duplicates import release_interrupted_resolutions
+        release_interrupted_resolutions(db)
+
         setup_scheduler(db)
 
         # One-time migration: move global smartlists to per-user directories
