@@ -2105,14 +2105,17 @@ def _process_single_playlist_locked(jf, folder: Path, config: dict, user_id: str
 
     # Deduplicate items — Jellyfin can return the same content twice if it exists
     # in multiple libraries (e.g. "TV Shows" + "4K TV"). Keep first occurrence only.
+    # Keyed on the type too: TMDB numbers films and shows separately, so a film
+    # and a show with the same TMDB id are two titles (#384).
     seen_tmdb = set()
     deduped = []
     for item in items:
         tmdb_id = (item.get("ProviderIds") or {}).get("Tmdb")
-        if tmdb_id and tmdb_id in seen_tmdb:
+        key = (item.get("Type"), tmdb_id)
+        if tmdb_id and key in seen_tmdb:
             continue
         if tmdb_id:
-            seen_tmdb.add(tmdb_id)
+            seen_tmdb.add(key)
         deduped.append(item)
     if len(deduped) < len(items):
         logger.info(f"[SmartLists] '{name}': deduplicated {len(items)} → {len(deduped)} items")
