@@ -211,12 +211,14 @@ class FakeJellyfin:
     tag_writes = []
 
     def __init__(self, url, key, user_id=None):
-        pass
+        FakeJellyfin.user_id = user_id   # unscoped /Items/{id} answers 400 on Jellyfin 10.11
 
     def _fetch_all_items(self, media_type="Movie"):
         return [{"Id": i, "ProviderIds": {"Tmdb": str(TMDB)}} for i in self.items]
 
     def get_item_by_id(self, item_id):
+        if item_id == "dl-item":  # Jellyfin 10.11 fails to load an item whose file was just deleted
+            raise RuntimeError("400 Client Error")
         return {"Id": item_id, "Path": self.items[item_id]}
 
     def set_item_owned_tags(self, item_id, desired, owned, add_only=False):
@@ -230,7 +232,8 @@ class TestBackground(_Base):
                                "movie": {"tmdbId": TMDB, "title": "Film"}, "movieFile": {"path": DL}}, None, self.db)
         mdb.set_setting(self.db, "jellyfin_url", "http://jf")
         mdb.set_setting(self.db, "jellyfin_api_key", "k")
-        FakeJellyfin.items = {"vod-item": "/vod-movies/Film (2001)/Film (2001).strm", "dl-item": "/movies/" + DL[13:]}
+        mdb.set_setting(self.db, "jellyfin_user_id", "u" * 32)
+        FakeJellyfin.items = {"dl-item": "/movies/" + DL[13:], "vod-item": "/vod-movies/Film (2001)/Film (2001).strm"}
         FakeJellyfin.tag_writes = []
         _, args, _ = next(t for t in self.threads if t[0] == "_vod_row_released_background")
         import services.smartlists as sl
@@ -248,6 +251,7 @@ class TestBackground(_Base):
         self.assertEqual(["Al's Downloads", "Bea's Downloads", "Downloaded Movies"],
                          refresh.call_args.kwargs["only_names"])
         notify.assert_called_once()
+        self.assertEqual("u" * 32, FakeJellyfin.user_id)
 
 
 if __name__ == "__main__":

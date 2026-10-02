@@ -251,13 +251,16 @@ def _vod_row_released_background(tmdb_id: int, removed_tags: list, arr_folder):
         jf_url, jf_key = get_setting(db, "jellyfin_url"), get_setting(db, "jellyfin_api_key")
         if row is None or not row.strm_path or not (jf_url and jf_key):
             return
-        jf = JellyfinService(jf_url, jf_key)
+        jf = JellyfinService(jf_url, jf_key, get_setting(db, "jellyfin_user_id", ""))
         tail = "/".join(row.strm_path.replace("\\", "/").split("/")[-2:]).lower()
         vod_ids = []
         for item in jf._fetch_all_items("Movie"):
             if (item.get("ProviderIds") or {}).get("Tmdb") != str(tmdb_id):
                 continue
-            path = ((jf.get_item_by_id(item["Id"]) or {}).get("Path") or "").replace("\\", "/").lower()
+            try:  # the deleted download's item can fail to load until Jellyfin drops it
+                path = ((jf.get_item_by_id(item["Id"]) or {}).get("Path") or "").replace("\\", "/").lower()
+            except Exception:
+                continue
             if path.endswith("/" + tail):
                 vod_ids.append(item["Id"])
         if not vod_ids:
