@@ -83,7 +83,9 @@ def normalize_proxy(value: str) -> str:
     try:
         parsed.port
     except ValueError:
-        raise ValueError(f"'{value}' has an invalid port.")
+        # Not the value itself: it can hold the proxy's password, and this
+        # text is shown on the YouTube page and written to the log.
+        raise ValueError("The proxy address has an invalid port.")
     return value.rstrip("/")
 
 
