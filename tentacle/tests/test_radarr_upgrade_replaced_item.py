@@ -191,7 +191,7 @@ class UpgradeUsesTheNewFile(_Pass):
         self.assertEqual(["new"], self.playlist_adds)
         self.assertEqual("new", self.row())
         self.assertEqual(["Radarr downloaded 'Film'"], self.activity, "the pass ended early")
-        self.assertEqual(1, len(self.notices()))
+        self.assertEqual([], self.notices(), "an upgrade sends no second notice (#380)")
         self.assertNotIn(("tags", "old"), FakeJellyfin.writes)
 
     def test_replaced_item_still_listed_and_alive_is_not_used(self):
@@ -202,7 +202,7 @@ class UpgradeUsesTheNewFile(_Pass):
         self.assertEqual([], [w for w in FakeJellyfin.writes if w[1] == "old"])
         self.assertEqual(["new"], self.playlist_adds)
         self.assertEqual("new", self.row())
-        self.assertEqual([("Film has completed and is ready to watch", "new")], self.notices())
+        self.assertEqual([], self.notices(), "an upgrade sends no second notice (#380)")
 
     def test_both_listed_picks_the_new_file(self):
         FakeJellyfin.listings = [[OLD, NEW]]
