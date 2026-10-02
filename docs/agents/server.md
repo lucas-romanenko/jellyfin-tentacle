@@ -282,7 +282,12 @@ docs: `docs/features/music.md`; plugin side: `Api/MusicController.cs`
   (pin the original, search). The worker's queue is in memory only, so a
   pending row is finished at startup (`resume_requests`) and at the start of
   each daily check (`finish_pending_requests`), unless the album has files by
-  then (#242).
+  then (#242). That later run reads the album once (no waiting), leaves an
+  album unmonitored in Lidarr since alone, removes the row of an album Lidarr
+  no longer has (404), and otherwise tries again at the next check. The same
+  album requested twice at once reuses the row the other request wrote, and is
+  searched once (`finish_request` skips a row that was already there and is no
+  longer pending; a row it has to write again is still owed).
 - `services/music/`: `worker.py` (one thread; urgent > normal > background),
   `jobs.py`, `original.py` (the original-release rules, pure), `apply.py`
   (pins and trims; deletions only when exactly the expected leftovers
