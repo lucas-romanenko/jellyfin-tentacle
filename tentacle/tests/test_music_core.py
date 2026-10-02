@@ -313,7 +313,9 @@ class TestReconcile(_Base):
         from services.music import jobs
         jobs.reconcile("manual")(self.db)
         FakeLidarr.state["artists"] = []
-        jobs.reconcile("manual")(self.db)
+        jobs.reconcile("manual")(self.db)   # one empty list could be a glitch: kept
+        self.assertEqual(self.db.query(MusicArtist).count(), 1)
+        jobs.reconcile("manual")(self.db)   # empty again: Lidarr really has none
         self.assertEqual((self.db.query(MusicArtist).count(), self.db.query(MusicAlbum).count()), (0, 0))
 
     def test_a_failed_musicbrainz_lookup_is_counted_and_keeps_going(self):

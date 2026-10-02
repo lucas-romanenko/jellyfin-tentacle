@@ -16,6 +16,8 @@ import time
 from collections import Counter
 from datetime import datetime, timezone
 
+from sqlalchemy import or_
+
 from models.database import MusicAlbum, MusicArtist, get_setting, set_setting
 from services.lidarr import LidarrError
 from services.music import library, original as rule, settings as music_settings, worker
@@ -179,6 +181,9 @@ def _reconcile(db, trigger: str):
     prefs = rule.Prefs.from_settings(db)
     counts, errors, checked = Counter(), [], 0
     finish_pending_requests(db, errors)
+    # Rows written from here on (a request finished in between, below) are newer
+    # than the artist list read now: the sweep at the end leaves them alone.
+    listed_at = datetime.utcnow()
     artists = client.artists()
     progress.update(running=True, done=0, total=len(artists), started=_now(), trigger=trigger)
     for i, artist in enumerate(artists):
@@ -201,11 +206,7 @@ def _reconcile(db, trigger: str):
             checked += 1
     applied = _auto_apply(db, client, mb, prefs, errors)
     pictures = picture_pass(db)
-    # Artists no longer in Lidarr's list (not ones whose read failed above).
-    in_lidarr = {a.get("id") for a in artists} or {-1}
-    for gone in db.query(MusicArtist).filter(MusicArtist.lidarr_artist_id.notin_(in_lidarr)).all():
-        db.query(MusicAlbum).filter(MusicAlbum.lidarr_artist_id == gone.lidarr_artist_id).delete()
-        db.delete(gone)
+    _forget_gone_artists(db, artists, listed_at)
     db.commit()
     mb.cleanup_cache()
     summary = {"started": progress["started"], "finished": _now(), "trigger": trigger,
@@ -218,6 +219,40 @@ def _reconcile(db, trigger: str):
                 + (f"; {len(errors)} errors" if errors else ""))
     if errors:
         worker.record_error(f"Reconcile: {len(errors)} albums couldn't be checked (first: {errors[0]})")
+
+
+def _forget_gone_artists(db, artists: list, listed_at: datetime) -> None:
+    """Drop artists no longer in Lidarr's list (not ones whose read failed above).
+
+    Not on the first empty list while the snapshot has artists: one empty answer
+    (a proxy's empty 200, Lidarr starting up) would erase every album row, with
+    who requested it and its review state. The next check's list decides: empty
+    again, and Lidarr really has no artists. Not an artist written after the list was
+    read: a request finished during this check added it. Not an artist with an
+    album still owed its pin and search (request_pending): finish_pending_requests
+    settles it first (a 404 clears it), then a later check removes the artist;
+    Lidarr's ArtistDelete and AlbumDelete webhooks remove them at once."""
+    if not artists and db.query(MusicArtist).count():
+        try:
+            previous = json.loads(get_setting(db, "music_last_reconcile") or "{}").get("artists")
+        except ValueError:
+            previous = None
+        if previous != 0:
+            logger.warning("[Music] Lidarr listed no artists; kept the library snapshot as it was "
+                           "(the next check removes them if the list is still empty)")
+            worker.record_error("Reconcile: Lidarr listed no artists, so nothing was removed from "
+                                "Tentacle's music library (the next check will, if it's still empty)")
+            return
+    in_lidarr = {a.get("id") for a in artists} or {-1}
+    gone = db.query(MusicArtist).filter(MusicArtist.lidarr_artist_id.notin_(in_lidarr),
+                                        or_(MusicArtist.updated_at.is_(None),
+                                            MusicArtist.updated_at < listed_at)).all()
+    for artist in gone:
+        albums = db.query(MusicAlbum).filter(MusicAlbum.lidarr_artist_id == artist.lidarr_artist_id)
+        if albums.filter(MusicAlbum.request_pending.is_(True)).count():
+            continue
+        albums.delete()
+        db.delete(artist)
 
 
 def start_reconcile(trigger: str = "daily") -> bool:
