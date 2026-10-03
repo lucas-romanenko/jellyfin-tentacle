@@ -25,6 +25,7 @@ import json
 import time
 import logging
 import re
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -328,12 +329,37 @@ def recheck_known_bad(db, limit: int = 0) -> dict:
             "deferred": deferred, "provider_busy": provider_busy, "remaining": remaining}
 
 
+# One sweep at a time. The "Run sweep" button and the 04:30 job both start
+# one, and the job's max_instances=1 only sees the scheduler's own runs. A
+# second run would probe the same batch as the first (the cursor moves when a
+# run's batch is done) while the first one's probe is still open -- two
+# connections on the account -- and its reset of provider_busy would un-stop
+# a first run the provider had just answered 509.
+_sweep_lock = threading.Lock()
+
+
+def sweep_running() -> bool:
+    return _sweep_lock.locked()
+
+
 def run_stream_health_sweep():
     """Daily job: recheck stale known-bad entries, then probe the next rotating
-    batch of healthy VOD titles."""
+    batch of healthy VOD titles. Does nothing while a sweep is running."""
+    if not _sweep_lock.acquire(blocking=False):
+        logger.info("[Stream health] a sweep is already running — not starting another")
+        return
+    try:
+        _sweep()
+    finally:
+        _sweep_lock.release()
+
+
+def _sweep():
     db = SessionLocal()
     try:
         stats = {"rechecked": 0, "cleared": 0, "probed": 0, "new_bad": 0, "inconclusive": 0}
+        # No other sweep is running (_sweep_lock) and a recheck goes by
+        # busy_seq: clearing the flag un-stops nobody.
         _probe_state["provider_busy"] = False
         if _live_streams_active():
             stats["deferred"] = True
