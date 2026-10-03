@@ -443,8 +443,9 @@ _CRON_DAYS = ("sun", "mon", "tue", "wed", "thu", "fri", "sat")
 
 def _cron_day_of_week(field: str) -> str:
     """A cron day-of-week field as CronTrigger's day_of_week: "1-5" ->
-    "mon,tue,wed,thu,fri", "0" or "7" -> "sun", "*" stays "*". Raises
-    ValueError for a field cron refuses too."""
+    "mon,tue,wed,thu,fri", "0" or "7" -> "sun", "*" stays "*", and "sat-sun"
+    runs through Sunday as CronTrigger read it. Raises ValueError for a field
+    such as "8", "5-1" or "funday"."""
     def day(token):
         if token.lower() in _CRON_DAYS:
             return _CRON_DAYS.index(token.lower())
@@ -458,7 +459,10 @@ def _cron_day_of_week(field: str) -> str:
         if span == "*":
             first, last = 0, 7
         elif "-" in span:
-            first, last = (day(t) for t in span.split("-", 1))
+            a, b = span.split("-", 1)
+            first, last = day(a), day(b)
+            if first and b.lower() == "sun":
+                last = 7  # "sat-sun", "mon-sun": APScheduler's week ends on Sunday
         else:
             first = day(span)
             last = 7 if slash else first

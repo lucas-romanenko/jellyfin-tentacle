@@ -68,7 +68,10 @@ def cron_fires(dom, dow, at="03:00"):
             if span == "*":
                 first, last = low, high
             elif "-" in span:
-                first, last = (num(x) for x in span.split("-"))
+                a, b = span.split("-")
+                first, last = num(a), num(b)
+                if first and b.lower() == "sun":
+                    last = 7  # "SAT-SUN" runs through Sunday, as APScheduler read it
             else:
                 first = num(span)
                 last = high if slash else first
@@ -126,10 +129,15 @@ class StoredCronSchedule(unittest.TestCase):
                            ("0 3 * * 1", ["mon"]),
                            ("0 3 * * 5-7", ["sun", "fri", "sat"]),
                            ("0 3 * * */2", ["sun", "tue", "thu", "sat"]),
-                           # A step after one day runs to the end of the week,
-                           # as CronTrigger reads "5/15" in the other fields.
+                           # A step after one day runs from that day through
+                           # Sunday (7), as CronTrigger reads "5/15" in the
+                           # other fields.
                            ("0 3 * * 1/2", ["sun", "mon", "wed", "fri"]),
-                           ("0 3 * * MON-FRI", ["mon", "tue", "wed", "thu", "fri"])):
+                           ("0 3 * * MON-FRI", ["mon", "tue", "wed", "thu", "fri"]),
+                           # APScheduler read these right all along (its week
+                           # ends on Sunday); they must not fall back to 03:00.
+                           ("30 1 * * sat-sun", ["sun", "sat"]),
+                           ("30 1 * * Mon-Sun", CRON_DAYS)):
             with self.subTest(cron=cron):
                 ok = self._stored(cron)
                 self.assertTrue(ok and self.jobs, f"{cron!r}: no main_sync job scheduled")
@@ -166,6 +174,23 @@ class StoredCronSchedule(unittest.TestCase):
                 self.assertEqual("cron[month='*', day='*', day_of_week='*', hour='3', minute='0']",
                                  str(self.jobs[0][1]), f"{cron!r}: not the default time")
 
+    def test_every_day_of_week_the_scheduler_took_before_is_still_taken(self):
+        # Upgrade: a stored weekday field CronTrigger accepted before keeps
+        # its own time instead of falling back to the default.
+        from apscheduler.triggers.cron import CronTrigger
+        names = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+        fields = names + [f"{a}-{b}" for a in names for b in names]
+        fields += [str(a) for a in range(7)] + [f"{a}-{b}" for a in range(7) for b in range(7)]
+        for field in fields:
+            try:
+                CronTrigger(day_of_week=field)
+            except ValueError:
+                continue
+            with self.subTest(field=field):
+                self.jobs.clear()
+                self.assertTrue(main.reschedule_main_sync(f"30 1 * * {field}"), f"{field!r} is now refused")
+                self.assertEqual({"01:30"}, {t for _, t in fire_times(self.jobs[0][1])})
+
     def test_a_refused_value_from_the_settings_form_leaves_the_live_job_alone(self):
         for cron in ("0 24 * * *", "0 3 * * 8"):
             with self.subTest(cron=cron):
@@ -177,7 +202,9 @@ class StoredCronSchedule(unittest.TestCase):
 @unittest.skipIf(main is None, "fastapi/apscheduler not installed")
 class AnyCronDayFieldsRunWhereCronRunsThem(unittest.TestCase):
     """1,000 random day-of-month / day-of-week fields (numbers 0-7, names,
-    ranges, steps, lists, "*"), each checked day by day against cron."""
+    ranges, steps, lists, "*"), each checked day by day against cron. A name
+    range that ends in sun ("SAT-SUN") runs through Sunday, as APScheduler
+    read it before; classic cron refuses it."""
 
     def setUp(self):
         logging.disable(logging.CRITICAL)
@@ -191,7 +218,8 @@ class AnyCronDayFieldsRunWhereCronRunsThem(unittest.TestCase):
     @staticmethod
     def _dow(rnd):
         def day(n):
-            return CRON_DAYS[n].upper() if n < 7 and rnd.random() < 0.2 else str(n)
+            # 7 written as a name gives "SAT-SUN" ranges too.
+            return CRON_DAYS[n % 7].upper() if rnd.random() < 0.2 else str(n)
         items = []
         for _ in range(rnd.randint(1, 3)):
             kind = rnd.random()
