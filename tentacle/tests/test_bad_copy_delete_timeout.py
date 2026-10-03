@@ -318,6 +318,27 @@ class TestMovie(_Base):
         self.assertEqual(502, e.status)
         self.assertEqual(1, self.log_rows(), "the deleted file is in the Deletion log")
 
+    def test_a_search_that_times_out_after_the_delete_quotes_the_error_as_given(self):
+        # The text quotes _Arr.call's error word for word, so it shows what that
+        # error shows about Radarr (an address or not), and nothing more.
+        self.arr.fail["command"] = ["timeout"]
+        raised, call = [], bad_copy._Arr.call
+
+        def spy(arr, method, path, **kw):
+            try:
+                return call(arr, method, path, **kw)
+            except bad_copy.BadCopyError as err:
+                raised.append((path, str(err)))
+                raise
+        with mock.patch.object(bad_copy._Arr, "call", spy):
+            r, e = self.press()
+        cause = [err for path, err in raised if path == "command"]
+        self.assertEqual(1, len(cause), raised)
+        self.assertEqual(f"The file of Dud Film is deleted, but the search for another copy didn't start "
+                         f"({cause[0]}). Use Search again.", str(e))
+        self.assertEqual(502, e.status)
+        self.assertEqual(1, self.log_rows())
+
     def test_the_delete_is_sent_once(self):
         self.arr.delete_takes = 1000
         self.press()
