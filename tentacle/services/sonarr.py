@@ -6,6 +6,7 @@ and writes NFO files with tags for Jellyfin.
 
 import logging
 import threading
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -36,9 +37,22 @@ DOWNLOADED_TV_TAG = "Downloaded TV"
 # applies addOptions (monitor "none" unmonitors every episode) and clears it.
 # That command waits for one of Sonarr's three command threads, so on a busy
 # Sonarr it can take minutes. Picked episodes wait for it this long, counted
-# from the send like the add itself, and still inside the Jellyfin plugin's
-# 240s add client (DiscoverController.AddClient).
+# from the send like the add itself.
 SETUP_WAIT_SECONDS = 180
+# The calls that follow Sonarr's setup (the episode list, monitor, search,
+# unmonitor) get only what is left of this much more, so a slow Sonarr cannot
+# stretch the add: it answers about 200s after the send at the latest, while
+# the Jellyfin plugin's add client (DiscoverController.AddClient) allows 240s.
+FOLLOW_UP_SECONDS = 20
+
+
+def _time_left(answer_by: Optional[float]) -> float:
+    """Timeout for one Sonarr call: the usual 10s, or what is left until
+    `answer_by` (a time.monotonic() value) when that is less. The 1s floor
+    lets a call made at the deadline still answer, as in _poll_until_present."""
+    if answer_by is None:
+        return 10.0
+    return max(1.0, min(10.0, answer_by - time.monotonic()))
 
 
 class SonarrService:
@@ -349,8 +363,11 @@ class SonarrService:
         series_id = series_data.get("id")
         if not series_id or not selected_episodes:
             return
-        if self._monitor_selected_episodes(series_id, selected_episodes, sent_at) and not monitor_new:
-            self._unmonitor_series(series_id)
+        # Every call after the setup wait is cut to fit this (FOLLOW_UP_SECONDS).
+        answer_by = sent_at + SETUP_WAIT_SECONDS + FOLLOW_UP_SECONDS
+        if (self._monitor_selected_episodes(series_id, selected_episodes, sent_at, answer_by)
+                and not monitor_new):
+            self._unmonitor_series(series_id, answer_by)
 
     def _await_added_series(self, tvdb_id, sent_at: Optional[float] = None) -> Optional[dict]:
         """Poll for a series after an add timed out.
@@ -382,13 +399,16 @@ class SonarrService:
         return None
 
     def _monitor_selected_episodes(self, series_id: int, selected_episodes: list,
-                                   sent_at: Optional[float] = None) -> bool:
+                                   sent_at: Optional[float] = None,
+                                   answer_by: Optional[float] = None) -> bool:
         """Monitor and search specific episodes after adding a series.
 
         Waits until Sonarr has set the new series up (see SETUP_WAIT_SECONDS):
         before that there are no episodes yet, or Sonarr's own monitor "none"
-        unmonitors the picked ones again afterwards. Returns False, with
-        last_error saying why, when the picked episodes were not applied.
+        unmonitors the picked ones again afterwards. The calls after the
+        series check get no more than what is left until `answer_by`. Returns
+        False, with last_error saying why, when the picked episodes were not
+        applied.
         """
         found = {}
 
@@ -398,7 +418,7 @@ class SonarrService:
             series = r.json()
             if not isinstance(series, dict) or series.get("addOptions") is not None:
                 return False
-            found["episodes"] = self.get_episodes(series_id)
+            found["episodes"] = self.get_episodes(series_id, timeout=_time_left(answer_by))
             return bool(found["episodes"])
 
         _poll_until_present(_set_up, f"sonarr series {series_id} set up",
@@ -432,12 +452,12 @@ class SonarrService:
             self.last_error = ("Sonarr added the show but has none of the episodes you picked (its "
                                "episode numbering may differ). Pick them in Sonarr.")
             return False
-        if not self.set_episode_monitoring(matched_ids, True):
+        if not self.set_episode_monitoring(matched_ids, True, timeout=_time_left(answer_by)):
             logger.warning(f"Sonarr: did not accept monitoring {len(matched_ids)} episodes for series {series_id}")
             self.last_error = ("Sonarr added the show but did not accept monitoring the episodes you "
                                "picked. Monitor and search them in Sonarr.")
             return False
-        if not self.search_episodes(matched_ids):
+        if not self.search_episodes(matched_ids, timeout=_time_left(answer_by)):
             logger.warning(f"Sonarr: did not accept the search for {len(matched_ids)} episodes of series {series_id}")
             self.last_error = ("Sonarr added the show and monitored the episodes you picked, but did not "
                                "accept the search. Search them in Sonarr.")
@@ -445,13 +465,13 @@ class SonarrService:
         logger.info(f"Sonarr: monitored and searching {len(matched_ids)} episodes for series {series_id}")
         return True
 
-    def get_episodes(self, series_id: int, raise_errors: bool = False) -> list:
+    def get_episodes(self, series_id: int, raise_errors: bool = False, timeout: float = 10) -> list:
         """Fetch all episodes for a series from Sonarr."""
         try:
             r = self.session.get(
                 f"{self.url}/api/v3/episode",
                 params={"seriesId": series_id},
-                timeout=10,
+                timeout=timeout,
             )
             if raise_errors:
                 r.raise_for_status()
@@ -475,26 +495,26 @@ class SonarrService:
                 raise
             return []
 
-    def set_episode_monitoring(self, episode_ids: list, monitored: bool) -> bool:
+    def set_episode_monitoring(self, episode_ids: list, monitored: bool, timeout: float = 10) -> bool:
         """Bulk-set monitored state for specific episodes."""
         try:
             r = self.session.put(
                 f"{self.url}/api/v3/episode/monitor",
                 json={"episodeIds": episode_ids, "monitored": monitored},
-                timeout=10,
+                timeout=timeout,
             )
             return r.status_code < 400
         except Exception as e:
             logger.warning(f"Sonarr: failed to set episode monitoring: {e}")
             return False
 
-    def search_episodes(self, episode_ids: list) -> bool:
+    def search_episodes(self, episode_ids: list, timeout: float = 10) -> bool:
         """Trigger search for specific episodes."""
         try:
             r = self.session.post(
                 f"{self.url}/api/v3/command",
                 json={"name": "EpisodeSearch", "episodeIds": episode_ids},
-                timeout=10,
+                timeout=timeout,
             )
             return r.status_code < 400
         except Exception as e:
@@ -529,10 +549,12 @@ class SonarrService:
             logger.error(f"Failed to delete series sonarr id:{series_id} from Sonarr: {e}")
             return False
 
-    def _unmonitor_series(self, series_id: int):
-        """Set series monitored=false so Sonarr stops watching for new episodes."""
+    def _unmonitor_series(self, series_id: int, answer_by: Optional[float] = None):
+        """Set series monitored=false so Sonarr stops watching for new episodes.
+
+        Each call gets no more than what is left until `answer_by` (see _time_left)."""
         try:
-            r = self.session.get(f"{self.url}/api/v3/series/{series_id}", timeout=10)
+            r = self.session.get(f"{self.url}/api/v3/series/{series_id}", timeout=_time_left(answer_by))
             if r.status_code >= 400:
                 logger.warning(f"Sonarr: failed to fetch series {series_id} for unmonitor")
                 return
@@ -541,7 +563,7 @@ class SonarrService:
             r = self.session.put(
                 f"{self.url}/api/v3/series/{series_id}",
                 json=series,
-                timeout=10,
+                timeout=_time_left(answer_by),
             )
             if r.status_code < 400:
                 logger.info(f"Sonarr: unmonitored series {series_id} ({series.get('title', '?')})")

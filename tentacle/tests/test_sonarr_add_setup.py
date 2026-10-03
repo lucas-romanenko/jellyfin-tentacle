@@ -41,7 +41,7 @@ import requests
 
 from services import sonarr as sonarr_module
 from services.arr_add import ADD_TIMEOUT, VERIFY_TOTAL_SECONDS
-from services.sonarr import SETUP_WAIT_SECONDS, SonarrService
+from services.sonarr import FOLLOW_UP_SECONDS, SETUP_WAIT_SECONDS, SonarrService
 from tmp_dirs import temp_dir
 
 TVDB = 424242
@@ -81,15 +81,19 @@ class FakeSonarr:
     fault:      fault(kind) -> None, "error" (HTTP 500) or "raise" (connection
                 error) for each of Tentacle's calls after the POST; kind is
                 "get", "put" or "command".
+    latency:    latency(kind, path, timeout) -> seconds each of those calls
+                takes (CALL by default). A call slower than its timeout raises
+                ReadTimeout once the timeout has passed.
     """
 
     def __init__(self, queue_wait=0.0, skyhook=0.5, scan=0.5, sets_up=True,
-                 post_times_out=False, fault=None):
+                 post_times_out=False, fault=None, latency=None):
         self.now = 0.0
         self.queue_wait, self.skyhook, self.scan = queue_wait, skyhook, scan
         self.sets_up = sets_up
         self.post_times_out = post_times_out
         self.fault = fault or (lambda kind: None)
+        self.latency = latency or (lambda kind, path, timeout: CALL)
         self.posted_at = None
         self._events = []
         self._seq = itertools.count()
@@ -180,14 +184,18 @@ class FakeSonarr:
         self.grabbed.update(e["id"] for e in self.episodes if e["id"] in ids)
 
     # -- HTTP ---------------------------------------------------------------
-    def _call(self, kind):
-        self._advance(self.now + CALL)
+    def _call(self, kind, path, timeout):
+        took = self.latency(kind, path, timeout)
+        if timeout is not None and took > timeout:
+            self._advance(self.now + timeout)
+            raise requests.exceptions.ReadTimeout("injected")
+        self._advance(self.now + took)
         outcome = self.fault(kind)
         if outcome == "raise":
             raise requests.ConnectionError("injected")
         return outcome
 
-    def post(self, url, json=None, **_):
+    def post(self, url, json=None, timeout=None, **_):
         if url.endswith("/api/v3/series"):
             sent = self.now
             self._advance(self.now + CALL)
@@ -203,7 +211,7 @@ class FakeSonarr:
                 self._advance(sent + ADD_TIMEOUT)
                 raise requests.exceptions.Timeout("injected")
             return _Resp(201, self.series)
-        if self._call("command") == "error":
+        if self._call("command", url.split("/api/v3/", 1)[1], timeout) == "error":
             return _Resp(500)
         if url.endswith("/api/v3/command") and json.get("name") == "EpisodeSearch":
             ids = set(json["episodeIds"])
@@ -212,10 +220,10 @@ class FakeSonarr:
             return _Resp(201, {"id": 1})
         return _Resp(404)
 
-    def get(self, url, params=None, **_):
-        if self._call("get") == "error":
-            return _Resp(500)
+    def get(self, url, params=None, timeout=None, **_):
         path = url.split("/api/v3/", 1)[1]
+        if self._call("get", path, timeout) == "error":
+            return _Resp(500)
         if path == f"series/{SERIES_ID}" and self.series:
             return _Resp(200, self.series)
         if path == "series":
@@ -224,10 +232,10 @@ class FakeSonarr:
             return _Resp(200, self.episodes)
         return _Resp(404)
 
-    def put(self, url, json=None, **_):
-        if self._call("put") == "error":
-            return _Resp(500)
+    def put(self, url, json=None, timeout=None, **_):
         path = url.split("/api/v3/", 1)[1]
+        if self._call("put", path, timeout) == "error":
+            return _Resp(500)
         if path == "episode/monitor":
             for ep in self.episodes:
                 if ep["id"] in json["episodeIds"]:
@@ -354,6 +362,28 @@ class TestPickedEpisodes(unittest.TestCase):
                 self.assertIsNone(sonarr.last_error)
                 self.assertEqual(fake.series_writes, 0 if monitor_new else 1)
                 self.assertEqual(fake.series["monitorNewItems"], "all" if monitor_new else "none")
+
+    def test_slow_calls_after_the_wait_do_not_stretch_the_add(self):
+        # Sonarr finishes setting the show up just before the wait ends, then
+        # takes `lat` seconds for every call after it. That is under the usual
+        # 10 s timeout, so each call used to get it all: the add answered up to
+        # about 230 s after the send, next to the plugin's 240 s add client.
+        for setup_at, lat, applied in ((179.5, 9.9, False), (170.5, 9.0, False), (179.5, 3.0, True)):
+            with self.subTest(setup_at=setup_at, lat=lat):
+                def latency(kind, path, timeout, lat=lat):
+                    return CALL if (kind, path) == ("get", f"series/{SERIES_ID}") else lat
+                fake = FakeSonarr(queue_wait=setup_at - 1, skyhook=0.5, scan=0.5, latency=latency)
+                sonarr, result, took = add(fake, "none", self.PICKED)
+                self.assertLessEqual(took, SETUP_WAIT_SECONDS + FOLLOW_UP_SECONDS + 1,
+                                     f"answered {took:.1f}s after the send")
+                self.assertEqual(result["id"], SERIES_ID)
+                if applied:
+                    self.assertIsNone(sonarr.last_error)
+                    self.assertTrue(fake.episode(1, 3)["monitored"])
+                    self.assertIn(103, fake.grabbed)
+                else:
+                    self.assertIn("in Sonarr", sonarr.last_error or "",
+                                  "a call cut short by the deadline read as Added")
 
 
 class TestStaleLookupError(unittest.TestCase):
@@ -509,6 +539,75 @@ class TestRandomSchedules(unittest.TestCase):
         if (fault_rate == 0 and fake.sets_up and not fake.post_times_out and ids
                 and setup_done_at < SETUP_WAIT_SECONDS - 20):
             self.assertTrue(done, f"Sonarr was set up in time, yet the pick failed ({sonarr.last_error}): {ctx}")
+
+
+class TestSlowCalls(unittest.TestCase):
+    """A slow Sonarr cannot stretch a Pick Episodes add.
+
+    The wait for the setup ends SETUP_WAIT_SECONDS after the send; each call
+    after it gets only what is left of FOLLOW_UP_SECONDS more, at least 1 s.
+    The episode list and the monitoring end by then at the latest; only the
+    search and the unmonitor's GET and PUT can still use their 1 s floor after
+    it, so the add answers by ANSWERED_BY.
+
+    Invariants: the add answers by then; reported as done, every picked episode
+    Sonarr has is monitored and searched; otherwise the series Sonarr holds is
+    returned with a reason.
+    """
+
+    SEEDS = 1000
+    ANSWERED_BY = SETUP_WAIT_SECONDS + FOLLOW_UP_SECONDS + 3
+
+    def test_random_call_times_1000_seeds(self):
+        # Every call takes a random time, some longer than their timeout, and
+        # Sonarr finishes the setup anywhere around the end of the wait.
+        with mock.patch.object(sonarr_module, "logger"):
+            for seed in range(self.SEEDS):
+                rng = random.Random(seed)
+                picked = [{"season": s, "episode": e}
+                          for s, e in rng.sample([(1, 1), (1, 2), (1, 3), (2, 1), (2, 2), (2, 3), (3, 1)],
+                                                 rng.randint(1, 3))]
+                fake = FakeSonarr(
+                    queue_wait=rng.choice((0, 30, 120, 150, 165, 172, 177, 178.5, 179.5, 190)),
+                    skyhook=rng.choice((0.2, 1)),
+                    scan=rng.choice((0.1, 1)),
+                    post_times_out=rng.random() < 0.15,
+                    latency=lambda _k, _p, t: rng.choice((CALL, CALL, 0.5, 3, 6, 9.9, 12, 45,
+                                                          (t or 10) - 0.001)),
+                )
+                self._check(fake, picked, rng.random() < 0.5, f"seed={seed}")
+
+    def test_every_call_taking_almost_its_timeout(self):
+        # The worst case: each call answers just inside its timeout, so every
+        # one of them uses all it is given.
+        def almost(kind, path, timeout):
+            return CALL if timeout is None else timeout - 0.001
+
+        with mock.patch.object(sonarr_module, "logger"):
+            for i in range(161):
+                for monitor_new in (False, True):
+                    fake = FakeSonarr(queue_wait=160 + i * 0.25, skyhook=0.5, scan=0.5, latency=almost)
+                    self._check(fake, [{"season": 1, "episode": 3}], monitor_new, "almost its timeout")
+
+    def _check(self, fake, picked, monitor_new, label):
+        ctx = (f"{label} picked={picked} queue_wait={fake.queue_wait} "
+               f"timeout={fake.post_times_out} monitor_new={monitor_new}")
+        try:
+            sonarr, result, took = add(fake, "none", picked, monitor_new)
+        except Exception as e:  # pragma: no cover - the message is the point
+            self.fail(f"add_series raised {e!r}: {ctx}")
+        self.assertLessEqual(took, self.ANSWERED_BY, f"answered {took:.1f}s after the send: {ctx}")
+
+        if bool(result) and sonarr.last_error is None:
+            exists = {(p["season"], p["episode"]) for p in picked} - {(3, 1)}
+            ids = {s * 100 + e for s, e in exists}
+            monitored = {e["id"] for e in fake.episodes if e["monitored"]}
+            self.assertTrue(ids, f"reported done with none of the picked episodes in Sonarr: {ctx}")
+            self.assertEqual(ids - monitored, set(), f"picked episodes not monitored: {ctx}")
+            self.assertEqual(ids - fake.searched, set(), f"picked episodes never searched: {ctx}")
+        elif not (fake.post_times_out and result is None):
+            self.assertEqual((result or {}).get("id"), SERIES_ID, f"the series is in Sonarr but was not returned: {ctx}")
+            self.assertTrue(sonarr.last_error, ctx)
 
 
 if __name__ == "__main__":
