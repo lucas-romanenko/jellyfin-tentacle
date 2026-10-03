@@ -4848,7 +4848,7 @@ async function runMigration(dryRun) {
   if (!dryRun && !confirm('This will rewrite .strm files. Continue?')) return;
   try {
     const r = await api('/api/radarr/migration/run', { method: 'POST', body: { from_provider_id: fromId, to_provider_id: toId, dry_run: dryRun } });
-    toast(`Migration complete: ${r.movies_rewritten} movies rewritten, ${r.movies_not_found} not found`);
+    toast(`Migration complete: ${r.movies_rewritten} movies moved, ${r.movies_not_found + r.errors} left on the old provider`);
     closeModal('modal-migrate');
     loadProviders();
   } catch (e) {
