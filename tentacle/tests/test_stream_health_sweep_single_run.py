@@ -36,7 +36,10 @@ Invariants:
 
 AnyMixOfStartsAndFaults checks all five over STREAM_SWEEP_PROPERTY_SEEDS
 (default 1000) random runs: 0-3 extra starts (button or 04:30 job) at random
-probes, plus a 509, live TV starting, or a probe raising at a random probe.
+probes and, in three runs out of four, a 509, live TV starting, or a probe
+raising at a random probe. A probe that raises ends in _sweep()'s own except;
+TheNextSweepStillRuns also raises before it (SessionLocal), where only the
+wrapper's finally gives the lock back.
 """
 import os
 import random
@@ -250,23 +253,36 @@ class ASecondRunDoesNotUnstopTheFirst(_Sweeps):
 class TheNextSweepStillRuns(_Sweeps):
     def setUp(self):
         super().setUp()
-        self.fail = False
+        self.probe_raises = False   # not self.fail: that is TestCase.fail()
 
     def _probe(self, item):
-        if self.fail:
+        if self.probe_raises:
             raise RuntimeError("the connection broke")
         return True
 
     def test_after_a_sweep_that_failed(self):
-        self.fail = True
+        # A probe that raises is caught by _sweep()'s own except ("sweep failed").
+        self.probe_raises = True
         with mock.patch.object(self.sh, "logger"):   # "sweep failed" is expected here
             self.real_sweep()
-        self.fail = False
+        self.probe_raises = False
         self.probes.clear()
         self.assertEqual({"started": True}, self._press_run_sweep())
         self.assertTrue(self._wait(lambda: self.runs_finished >= 1, 15), "the sweep did not finish")
         self.assertEqual(self.BATCH // 2, len(self.probes),
                          f"a sweep that failed kept the next one out: {self._titles()}")
+
+    def test_after_a_sweep_that_raised_outside_its_own_except(self):
+        # db = SessionLocal() runs before _sweep()'s try: only the wrapper's
+        # finally gives the lock back when that raises.
+        with mock.patch.object(self.sh, "SessionLocal", side_effect=RuntimeError("database is locked")):
+            with self.assertRaises(RuntimeError):
+                self.real_sweep()
+        self.assertEqual({"started": True}, self._press_run_sweep(),
+                         "a sweep that raised kept the lock: the button says one is still running")
+        self.assertTrue(self._wait(lambda: self.runs_finished >= 1, 15), "the sweep did not finish")
+        self.assertEqual(self.BATCH // 2, len(self.probes),
+                         f"a sweep that raised kept the next one out: {self._titles()}")
 
 
 class AnyMixOfStartsAndFaults(_Sweeps):
