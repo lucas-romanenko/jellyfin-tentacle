@@ -73,6 +73,13 @@ The code wins where they differ.
   TMDB `/find/{imdb_id}` (`TMDBService.find_by_imdb_id()`) before enriching.
 - **Settings for Radarr/Sonarr** in Tentacle: use the Docker network address
   when both run in Docker (`http://radarr:7878`), never `localhost`.
+- **Removing a queue item with `blocklist=true` starts a search**: Radarr and
+  Sonarr then search for the title again by themselves ("Redownload Failed",
+  on by default) unless the DELETE also has `skipRedownload=true`. Code that
+  grabs the replacement itself must pass it, or both grab
+  (`services/download_health.py`). Sonarr v4 lists a season pack as one queue
+  record per episode, all with the same `downloadId`; deleting any of them
+  removes the whole pack.
 
 ## IPTV providers
 

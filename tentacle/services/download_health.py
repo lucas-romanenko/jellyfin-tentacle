@@ -206,9 +206,32 @@ def _grab_release(url: str, key: str, guid: str, indexer_id: int):
     _arr_post(url, key, "release", {"guid": guid, "indexerId": indexer_id})
 
 
+def _arr_search(url: str, key: str, app: str, movie_id, episode_id) -> bool:
+    """The arr's own search for the title: the one its "Redownload Failed"
+    would have started."""
+    command = ({"name": "MoviesSearch", "movieIds": [movie_id]} if app == "radarr"
+               else {"name": "EpisodeSearch", "episodeIds": [episode_id]})
+    try:
+        _arr_post(url, key, "command", command)
+        return True
+    except Exception as e:
+        logger.warning(f"[Download health] {app} search command failed: {e}")
+        return False
+
+
 def resolve_stuck_download(db, app: str, queue_id: int, reason: str = "manual") -> dict:
     """Cancel + blocklist a stuck queue item, then grab the best alternative
-    release, preferring the opposite protocol from the one that failed."""
+    release, preferring the opposite protocol from the one that failed.
+
+    Exactly one search replaces it. A removal with blocklist=true makes
+    Radarr/Sonarr search again by themselves ("Redownload Failed", on by
+    default): next to Tentacle's grab, both grabbed, or the arr's grab came
+    first and Tentacle's search found nothing. So the removal says
+    skipRedownload=true when Tentacle grabs; when Tentacle grabs nothing
+    (nothing grabbable, its search failed, the arr refused the grab) it asks
+    the arr to search. A download of several episodes (a season pack) is
+    left to Sonarr's own re-search: Tentacle searches for one episode, and
+    that search passes over season packs."""
     url, key = _arr_conn(db, app)
     if not url or not key:
         return {"ok": False, "error": f"{app} not configured"}
@@ -228,20 +251,26 @@ def resolve_stuck_download(db, app: str, queue_id: int, reason: str = "manual") 
         movie_id = r.get("movieId")
         episode_id = r.get("episodeId")
         download_id = r.get("downloadId") or str(queue_id)
+        # Sonarr (v4) lists a season pack as one record per episode, all with
+        # the pack's downloadId; the DELETE removes the whole download.
+        episodes = {x.get("episodeId") for x in records
+                    if r.get("downloadId") and x.get("downloadId") == r.get("downloadId")}
+        own_grab = bool(movie_id) if app == "radarr" else (bool(episode_id) and len(episodes) <= 1)
 
         try:
-            _arr_delete(url, key, f"queue/{queue_id}", removeFromClient="true", blocklist="true")
+            _arr_delete(url, key, f"queue/{queue_id}", removeFromClient="true", blocklist="true",
+                        skipRedownload="true" if own_grab else "false")
         except Exception as e:
             return {"ok": False, "title": title, "error": f"cancel failed: {e}"}
 
         picked = None
         try:
-            if app == "radarr" and movie_id:
-                releases = _arr_get(url, key, "release", movieId=movie_id)
-            elif app == "sonarr" and episode_id:
-                releases = _arr_get(url, key, "release", episodeId=episode_id)
-            else:
+            if not own_grab:
                 releases = []
+            elif app == "radarr":
+                releases = _arr_get(url, key, "release", movieId=movie_id)
+            else:
+                releases = _arr_get(url, key, "release", episodeId=episode_id)
             candidates = [x for x in releases if not x.get("rejected")]
             prefer = "usenet" if protocol == "torrent" else "torrent"
             picked = next((x for x in candidates if x.get("protocol") == prefer), None) \
@@ -250,17 +279,31 @@ def resolve_stuck_download(db, app: str, queue_id: int, reason: str = "manual") 
                 _grab_release(url, key, picked["guid"], picked["indexerId"])
         except Exception as e:
             logger.warning(f"[Download health] replacement search failed for '{title}': {e}")
+            # The arr refusing the grab (4xx: release no longer cached, the
+            # indexer failed) grabbed nothing. A grab with no answer, or a 5xx
+            # from a proxy, may have gone through: it still counts as grabbed.
+            if isinstance(e, requests.HTTPError) and e.response is not None and e.response.status_code < 500:
+                picked = None
 
-        detail = (f"Cancelled stuck {protocol} download; replaced with {picked.get('protocol')} release: {picked.get('title')}"
-                  if picked else f"Cancelled stuck {protocol} download; no alternative release found")
+        # Nothing grabbed by Tentacle: the arr searches instead, once.
+        arr_search = not picked and (not own_grab or _arr_search(url, key, app, movie_id, episode_id))
+        arr_name = "Radarr" if app == "radarr" else "Sonarr"
+        if picked:
+            outcome = f"replaced with {picked.get('protocol')} release: {picked.get('title')}"
+        elif arr_search:
+            outcome = f"{arr_name} searches for a replacement"
+        else:
+            outcome = "no alternative release found"
         log_deletion(db, kind="download-fix", name=title, size_bytes=r.get("size") or 0,
-                     reason=reason, detail=detail)
+                     reason=reason, detail=f"Cancelled stuck {protocol} download; {outcome}")
         log_activity(db, "download_fix", f"Stuck download fixed: {title}" if picked
+                     else f"Stuck download cancelled, {arr_name} searches for a replacement: {title}" if arr_search
                      else f"Stuck download cancelled (no replacement found): {title}")
         _clear_stall_entry(db, download_id)
         return {"ok": True, "title": title, "replaced": bool(picked),
                 "picked_title": picked.get("title") if picked else None,
-                "picked_protocol": picked.get("protocol") if picked else None}
+                "picked_protocol": picked.get("protocol") if picked else None,
+                "arr_search": arr_search}
 
 
 def remove_download(db, app: str, queue_id: int, delete_file: bool = True, reason: str = "manual") -> dict:
