@@ -325,6 +325,30 @@ def delete_provider(provider_id: int, db: Session = Depends(get_db)):
     if not p:
         raise HTTPException(404, "Provider not found")
 
+    # Never at the same time as a sync of this provider. A sync writes a
+    # category's .strm/.nfo files first and commits their rows at the end of
+    # the category: a delete in between could not see those rows, so the files
+    # stayed on disk with no row and no provider, and nothing removed them.
+    # The delete holds the provider's sync slot while it runs (the one "Sync
+    # now" and the nightly check and set), so no sync starts meanwhile either.
+    from routers.sync import _running_syncs, _after_sync, _sync_lock
+    with _sync_lock:
+        if _running_syncs.get(provider_id) == "deleting":
+            raise HTTPException(409, "This provider is already being deleted")
+        if provider_id in _running_syncs:
+            if provider_id in _after_sync:
+                raise HTTPException(409, "The last sync of this provider is still updating Jellyfin "
+                                         "(library scan, tags, playlists) — try again when it has finished")
+            raise HTTPException(409, "A sync of this provider is running — cancel it (or let it finish), "
+                                     "then delete the provider")
+        _running_syncs[provider_id] = "deleting"
+    try:
+        return _delete_provider_and_content(provider_id, p, db)
+    finally:
+        _running_syncs.pop(provider_id, None)
+
+
+def _delete_provider_and_content(provider_id: int, p: Provider, db: Session) -> dict:
     # ── Delete VOD files from disk ──────────────────────────────────────────
     deleted_files = 0
 

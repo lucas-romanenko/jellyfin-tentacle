@@ -177,7 +177,12 @@ user_id)` computes them every time from source tags, list subscriptions
 ## Deleting things
 
 - Deleting a provider removes its VOD files and DB records, then rebuilds
-  playlists and checks the hero.
+  playlists and checks the hero. Never alongside a sync of that provider: a
+  sync writes a category's `.strm`/`.nfo` before it commits their rows, so a
+  delete in between missed them and they stayed on disk with no row. The
+  delete answers 409 while the provider's sync slot (`_running_syncs`,
+  `routers/sync.py`) is held, and holds it (value `"deleting"`) while it
+  runs, so "Sync now" and the nightly don't start one meanwhile.
 - Downloaded content only (never VOD, which is admin-only from the
   dashboard): the TV app or the web plugin calls
   `DELETE /TentacleDiscover/LibraryItem/{type}/{id}?jellyfinItemId=`, the
