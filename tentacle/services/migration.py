@@ -4,11 +4,12 @@ Handles switching providers: rewrites .strm URLs for matching content.
 """
 
 import logging
+from collections import Counter
 from pathlib import Path
 from typing import Optional
 from sqlalchemy.orm import Session
 
-from models.database import Movie, Series, Provider
+from models.database import Movie, Series, Provider, ProviderCategory
 
 logger = logging.getLogger(__name__)
 
@@ -72,14 +73,36 @@ def migrate_provider(
 ) -> dict:
     """
     Migrate content from one provider to another.
-    For each movie/series in old provider that exists in new provider (matched by TMDB ID),
-    rewrites the .strm file with the new provider's stream URL.
+    Each film of the old provider that the new provider lists under the same
+    title and year, in a movie category the new provider syncs, gets its .strm
+    rewritten to the new provider's stream URL and moves to it.
+
+    Everything else stays with the old provider, files untouched: films the new
+    provider does not list there or only on a stream an admin blocked or
+    re-matched ("Wrong movie"), films sharing their name with another film in
+    the library (one name can't tell which of them it lists) and all series.
+    The new provider's sync prunes the films it owns but does not list (two
+    syncs, then the row, .strm and .nfo are deleted), so it must never be
+    handed one.
     """
     from_provider = db.query(Provider).filter(Provider.id == from_provider_id).first()
     to_provider = db.query(Provider).filter(Provider.id == to_provider_id).first()
 
     if not from_provider or not to_provider:
         return {"error": "Provider not found"}
+
+    # The movie categories the new provider's sync reads. A film it lists only
+    # elsewhere is pruned by that sync, the same as one it doesn't list at all.
+    synced_categories = {
+        str(c.category_id) for c in db.query(ProviderCategory).filter(
+            ProviderCategory.provider_id == to_provider_id,
+            ProviderCategory.type == "movie",
+            ProviderCategory.whitelisted == True,  # noqa: E712
+        ).all()
+    }
+    if not synced_categories:
+        return {"error": f"Choose {to_provider.name}'s movie categories first: "
+                         f"Migrate only moves films in the categories {to_provider.name} syncs"}
 
     logger.info(f"Migration: {from_provider.name} → {to_provider.name} (dry_run={dry_run})")
 
@@ -116,19 +139,39 @@ def migrate_provider(
     # We need to match by title since we can't match by TMDB ID directly
     # Build a title→stream map from new provider
     from services.cleaner import clean_title
+    from services.sync import _write_strm
+    from services.wrong_match import blocked_keys, is_blocked, override_keys, override_for
+
+    def title_key(title, year):
+        return f"{title.lower()}_{year or ''}"
+
+    # Streams an admin fixed with "Wrong movie": the new provider's sync skips a
+    # blocked one and files a re-matched one under the film it really is, so a
+    # film moved onto either is pruned the same way.
+    blocked = blocked_keys(db, to_provider_id, "movie")
+    overrides = override_keys(db, to_provider_id, "movie")
 
     new_title_map = {}
     for sid, stream in new_vod_streams.items():
+        if str(stream.get("category_id")) not in synced_categories:
+            continue
+        url = f"{new_base}/movie/{to_provider.username}/{to_provider.password}/{stream.get('stream_id')}.{stream.get('container_extension', 'mp4')}"
+        if is_blocked(blocked, stream.get("stream_id"), url) or \
+                override_for(overrides, stream.get("stream_id"), url) is not None:
+            continue
         clean, year = clean_title(stream.get("name", ""))
         if clean:
-            key = f"{clean.lower()}_{year or ''}"
-            new_title_map[key] = stream
+            new_title_map[title_key(clean, year)] = stream
+
+    # Films of the same name (namesakes, any owner): the new provider's sync
+    # gives a listed name to one film, so a name shared by two moves neither.
+    namesakes = Counter(title_key(t, y) for t, y in db.query(Movie.title, Movie.year).all())
 
     for movie in old_movies:
         try:
             # Try to find this movie in new provider streams
-            key = f"{movie.title.lower()}_{movie.year or ''}"
-            new_stream = new_title_map.get(key)
+            key = title_key(movie.title, movie.year)
+            new_stream = new_title_map.get(key) if namesakes[key] == 1 else None
 
             if not new_stream:
                 stats["movies_not_found"] += 1
@@ -141,7 +184,9 @@ def migrate_provider(
             if not dry_run and movie.strm_path:
                 strm = Path(movie.strm_path)
                 if strm.exists():
-                    strm.write_text(new_url, encoding="utf-8")
+                    # Through a temp file and a rename (#283): a write cut
+                    # short leaves the old file whole, and the film stays.
+                    _write_strm(strm, new_url)
 
             # Update DB
             if not dry_run:
@@ -155,12 +200,8 @@ def migrate_provider(
             stats["errors"] += 1
 
     if not dry_run:
-        # Update provider assignments
-        db.query(Movie).filter(Movie.provider_id == from_provider_id).filter(
-            Movie.source == f"provider_{from_provider_id}"
-        ).update({"source": f"provider_{to_provider_id}", "provider_id": to_provider_id})
-
-        # Deactivate old provider
+        # Only the films moved above change provider: the rest stay with the
+        # old provider, files untouched. Deactivate old provider
         from_provider.active = False
         to_provider.active = True
         db.commit()

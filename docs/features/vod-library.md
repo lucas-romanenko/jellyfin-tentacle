@@ -199,4 +199,8 @@ If you're migrating from another tool (like xtream-sync) and Tentacle detects ex
 
 ## Provider Migration
 
-If your provider changes their server URL, Tentacle can rewrite all existing `.strm` files with the new URL without re-syncing everything. This is available in Settings.
+If you switch providers (or yours moves to a new server), **Settings → Providers → Migrate** moves your films to the new provider without re-syncing everything. Add the new provider and choose its categories first.
+
+- A film moves when the new provider lists it under the same title and year, in one of the new provider's active movie categories. Its `.strm` file is rewritten to stream from the new provider.
+- Everything else stays with the old provider, which is switched off, and keeps its files: films the new provider doesn't list there, films it lists only on a stream you fixed with **Wrong movie? Fix it** (blocked, or re-matched to another film), films that share their title and year with another film, and all series. Nothing is deleted.
+- To move the rest later, give the old provider a higher priority number than the new one (lower number = higher priority). The new provider's next sync then takes over every title it lists, series included, and rewrites their `.strm` files.

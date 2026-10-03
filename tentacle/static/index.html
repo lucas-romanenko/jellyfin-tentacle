@@ -3400,9 +3400,10 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
     </div>
 
     <p style="font-size:13px;color:var(--text2);margin-bottom:20px;line-height:1.6">
-      Rewrites all <code style="font-family:'DM Mono',monospace;background:var(--bg3);padding:1px 5px;border-radius:3px">.strm</code>
-      files from the old provider to stream from the new provider, matched by title.
-      Content that doesn't exist on the new provider will be flagged.
+      Moves the old provider's films to the new provider, matched by title and year, and rewrites their
+      <code style="font-family:'DM Mono',monospace;background:var(--bg3);padding:1px 5px;border-radius:3px">.strm</code>
+      files to stream from it. Only films in the new provider's active movie categories move.
+      The rest, and all series, stay with the old provider, which is switched off; nothing is deleted.
     </p>
 
     <div class="form-group">
