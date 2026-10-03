@@ -1704,6 +1704,50 @@ def live_tv_providers(db: Session) -> list:
     return db.query(Provider).filter(Provider.live_tv_enabled == True).all()  # noqa: E712
 
 
+def _live_url_basis(provider) -> tuple:
+    """What a provider's Xtream channel URLs are built from. Taken before an
+    edit, for _repoint_live_channels()."""
+    return (provider.provider_type or "xtream", provider.server_url, provider.username, provider.password)
+
+
+def _xtream_live_prefix(server_url, username, password) -> str:
+    """The part of XtreamClient.live_stream_url() before "{stream_id}.{ext}"."""
+    return f"{(server_url or '').rstrip('/')}/live/{username}/{password}/"
+
+
+def _repoint_live_channels(db: Session, provider, before: tuple) -> int:
+    """Point an Xtream provider's channels at its server and login as saved now.
+
+    A channel sync writes each channel's URL with the server, username and
+    password in it ({server}/live/{user}/{pass}/{id}.{ext}), and the tuner
+    opens that URL. Saving a new address or password changed only the
+    provider, so every tune and recording kept going to the old server or
+    login (a re-streamer on a new LAN host was even refused by the guard,
+    which follows the new address) until someone ran "Sync channels".
+
+    `before` is _live_url_basis() from before the edit. A URL the old values
+    built is rewritten to what a sync with the new ones writes: same stream id
+    and extension, so the channel row, its number and Jellyfin's channel are
+    unchanged. Nothing is fetched from the provider. Other URLs are left
+    alone. The caller commits; returns how many channels changed.
+    """
+    old_type, old_server, old_user, old_pass = before
+    if old_type != "xtream" or (provider.provider_type or "xtream") != "xtream":
+        return 0
+    old = _xtream_live_prefix(old_server, old_user, old_pass)
+    new = _xtream_live_prefix(provider.server_url, provider.username, provider.password)
+    if old == new:
+        return 0
+    moved = 0
+    for ch in db.query(LiveChannel).filter(LiveChannel.provider_id == provider.id).all():
+        if ch.stream_url and ch.stream_url.startswith(old):
+            ch.stream_url = new + ch.stream_url[len(old):]
+            moved += 1
+    if moved:
+        logger.info(f"[LiveTV] {provider.name}: {moved} channels now use the provider's new address or login")
+    return moved
+
+
 @router.post("/api/live/provider", dependencies=_admin)
 def save_live_provider(body: LiveProviderConfig, db: Session = Depends(get_db)):
     """Create or update the live TV provider."""
@@ -1737,6 +1781,7 @@ def save_live_provider(body: LiveProviderConfig, db: Session = Depends(get_db)):
         )
         db.add(provider)
     else:
+        before = _live_url_basis(provider)
         if body.name is not None:
             provider.name = body.name
         if body.provider_type is not None:
@@ -1755,6 +1800,7 @@ def save_live_provider(body: LiveProviderConfig, db: Session = Depends(get_db)):
             provider.user_agent = body.user_agent
         if body.live_tv_enabled is not None:
             provider.live_tv_enabled = body.live_tv_enabled
+        _repoint_live_channels(db, provider, before)
 
     db.commit()
     db.refresh(provider)
