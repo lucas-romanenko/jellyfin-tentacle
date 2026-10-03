@@ -493,6 +493,9 @@ def _scan_radarr_library(db: Session) -> dict:
             jf_lookup, jf_title_lookup = jf.get_tmdb_lookup_with_fallback("Movie")
             tags_pushed = 0
             tags_failed = 0
+            # Not in Jellyfin's listing (not scanned yet, or the listing came
+            # back empty): nothing was written, so it is not a failed write.
+            tags_not_found = 0
             for tmdb_id, db_movie in all_movies_by_tmdb.items():
                 if not db_movie.tags:
                     continue
@@ -518,11 +521,18 @@ def _scan_radarr_library(db: Session) -> dict:
                         if jf.refresh_item_metadata(jf_item["Id"]):
                             logger.info(f"Triggered metadata refresh for '{db_movie.title}' (missing poster)")
                 else:
-                    tags_failed += 1
+                    tags_not_found += 1
+            if tags_not_found and not jf_lookup and not jf_title_lookup:
+                logger.warning(
+                    f"Jellyfin tag sync: Jellyfin listed no movies, so {tags_not_found} tagged "
+                    "movies could not be matched (tried again on the next scan)"
+                )
             stats["jf_tags_pushed"] = tags_pushed
             stats["jf_tags_failed"] = tags_failed
+            stats["jf_tags_not_found"] = tags_not_found
             logger.info(
                 f"Jellyfin tag sync: {tags_pushed} pushed, {tags_failed} failed, "
+                f"{tags_not_found} not in Jellyfin yet, "
                 f"{len(all_movies_by_tmdb)} total movies checked"
             )
         except Exception as e:
