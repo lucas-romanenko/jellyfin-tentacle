@@ -62,6 +62,16 @@ The code wins where they differ.
   client category in Radarr/Sonarr doesn't exist in the client (SABnzbd,
   qBittorrent): the client downloads but the *arr can't track it, so its
   queue (and Tentacle's Activity) is empty. Check the *arr's own queue first.
+- **Deleting a file** (`DELETE moviefile/{id}`, `episodefile/{id}`) answers
+  only when it is done. With a recycle bin on another drive they copy the
+  file there first, which can take minutes, and the title keeps `hasFile`
+  until then: a timed-out delete usually still happens, so read `hasFile`
+  before calling it failed (`services/bad_copy.py`). A manual delete also
+  unmonitors the title when "Unmonitor Deleted Movies/Episodes" is on, so
+  a monitor call has to come after the delete, not before. Bad copy always
+  monitors the episode again, but monitors a movie only when it was
+  unmonitored before the press: with "Unmonitor Deleted Movies" on, a
+  monitored movie ends unmonitored.
 - **Webhooks** must use an address the *arr can reach inside the network
   (`http://<tentacle-host>:8888/api/radarr/webhook`, `.../sonarr/webhook`),
   not a public tunnel URL. Triggers: On File Import, On Movie/Series Added,
