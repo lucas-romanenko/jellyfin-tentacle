@@ -279,10 +279,12 @@ def resolve_stuck_download(db, app: str, queue_id: int, reason: str = "manual") 
                 _grab_release(url, key, picked["guid"], picked["indexerId"])
         except Exception as e:
             logger.warning(f"[Download health] replacement search failed for '{title}': {e}")
-            # The arr refusing the grab (4xx: release no longer cached, the
-            # indexer failed) grabbed nothing. A grab with no answer, or a 5xx
-            # from a proxy, may have gone through: it still counts as grabbed.
-            if isinstance(e, requests.HTTPError) and e.response is not None and e.response.status_code < 500:
+            # The arr answering the grab with an error grabbed nothing: a 4xx
+            # (release no longer cached, the indexer failed) or its own 500
+            # (download client down or missing). No answer, or a gateway's
+            # 502/503/504, may have gone through: it still counts as grabbed.
+            if (isinstance(e, requests.HTTPError) and e.response is not None
+                    and e.response.status_code not in (502, 503, 504)):
                 picked = None
 
         # Nothing grabbed by Tentacle: the arr searches instead, once.

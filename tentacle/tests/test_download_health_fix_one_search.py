@@ -74,7 +74,8 @@ class _Arr:
     real one does after a removal with blocklist=true: search again by itself
     ("Redownload Failed"), unless the removal says skipRedownload=true.
 
-    took:         Tentacle's grabs the arr may have taken (all but a 4xx answer)
+    took:         Tentacle's grabs the arr may have taken (no answer, or a
+                  gateway's 502/503/504; a 4xx or the arr's own 500 took nothing)
     own_searches: searches the arr runs itself, each grabbing its best release
     """
 
@@ -108,7 +109,7 @@ class _Arr:
         if path == "release":
             self.grabs.append(body)
             e = self.grab_error
-            if not (isinstance(e, requests.HTTPError) and e.response.status_code < 500):
+            if not (isinstance(e, requests.HTTPError) and e.response.status_code not in (502, 503, 504)):
                 self.took.append(body)
             if e:
                 raise e
@@ -206,10 +207,10 @@ class StuckDownloadFixSearchesOnce(_Base):
         self.assertEqual(self._activity(), [f"Stuck download fixed: {TITLE}"])
 
     def test_unanswered_grab_is_not_searched_again(self):
-        """No answer (or a proxy's 5xx) may still be a grab: a second search
-        could download the title twice."""
+        """No answer, or a gateway's 502/503/504, may still be a grab: a
+        second search could download the title twice."""
         for error in (requests.Timeout("read timed out"), requests.ConnectionError("reset"),
-                      _http_error(502), _http_error(500)):
+                      _http_error(502), _http_error(503), _http_error(504)):
             with self.subTest(error=repr(error)):
                 arr = _Arr([_stuck("radarr")], grab_error=error)
                 result = self._fix("radarr", arr)
@@ -269,9 +270,11 @@ class StuckDownloadFixSearchesOnce(_Base):
                         self.assertEqual(c, {"name": "MoviesSearch", "movieIds": [42]})
 
     def test_refused_grab_still_gets_one_search(self):
-        """404 (release no longer cached) and 409 (indexer failed): nothing
-        was grabbed."""
-        for status in (404, 409):
+        """404 (release no longer cached), 409 (indexer failed) and the arr's
+        own 500 (the download client for that protocol is down, missing or
+        does not match the title's tags): nothing was grabbed. On main the
+        arr's own re-search covered these; the arr must still search once."""
+        for status in (404, 409, 500):
             with self.subTest(status=status):
                 arr = _Arr([_stuck("radarr")], grab_error=_http_error(status))
                 result = self._fix("radarr", arr)
