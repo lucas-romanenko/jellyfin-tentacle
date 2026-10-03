@@ -286,8 +286,9 @@ def get_sync_status(db: Session = Depends(get_db)):
     # nightly run that waited its full budget would be called stuck while
     # still running.
     # Time a run spent waiting for a recording under recording protection
-    # does not count either (it has no budget), and a run waiting right now
-    # is not stuck -- per run: another job waiting says nothing about this one.
+    # (or for another provider's sync) does not count either (it has no
+    # budget), and a run waiting right now is not stuck -- per run: another
+    # job waiting says nothing about this one.
     from services.provider_activity import defer_seconds, protected_wait_state, forget_protected_waits
     forget_protected_waits(keep=[r.id for r in running_runs])
     actually_running = []
