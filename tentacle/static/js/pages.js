@@ -6846,6 +6846,7 @@ function loadHealthPage() {
   loadHealthDownloads();
   loadHealthMissing();
   loadHealthStreams();
+  loadHealthLiveTvNotices();
   loadHealthDeletions();
   startHealthPolling();
 }
@@ -6952,6 +6953,65 @@ async function healthRemoveStream(id, btn) {
   } catch (e) {
     toast(e.message || 'Remove failed', 'error');
     if (btn) btn.disabled = false;
+  }
+}
+
+// ── Live TV notices ─────────────────────────────────────────────────────────
+// The activity lines Live TV writes when something went wrong (#372). Channel
+// names and messages come from the provider, so every value is set as text.
+
+const _LIVETV_NOTICE_KINDS = {
+  livetv_recording_damaged: { label: 'Recording', cls: 'badge-red' },
+  livetv_placeholder:       { label: 'Placeholder', cls: 'badge-amber' },
+  epg_sync_failed:          { label: 'Guide', cls: 'badge-amber' },
+};
+
+function _healthEl(tag, text, style) {
+  const el = document.createElement(tag);
+  if (text) el.textContent = text;
+  if (style) el.style.cssText = style;
+  return el;
+}
+
+async function loadHealthLiveTvNotices() {
+  const el = document.getElementById('health-livetv-notices');
+  if (!el) return;
+  const show = (node) => { el.textContent = ''; el.appendChild(node); };
+  const empty = (text) => {
+    const box = _healthEl('div');
+    box.className = 'empty-state';
+    box.appendChild(_healthEl('p', text));
+    show(box);
+  };
+  try {
+    const events = Object.keys(_LIVETV_NOTICE_KINDS).join(',');
+    const entries = await api(`/api/sync/activity?limit=50&events=${events}`);
+    if (!entries.length) { empty('No Live TV problems recorded'); return; }
+    const head = _healthEl('tr');
+    for (const h of ['When', 'What', 'Detail']) head.appendChild(_healthEl('th', h));
+    const thead = _healthEl('thead');
+    thead.appendChild(head);
+    const tbody = _healthEl('tbody');
+    for (const e of entries) {
+      const meta = _LIVETV_NOTICE_KINDS[e.event] || { label: e.event, cls: 'badge-accent' };
+      const d = _healthDate(e.created_at);
+      const when = _healthEl('td', d ? timeAgo(d) : '—', 'white-space:nowrap');
+      if (d) when.title = d.toLocaleString();
+      const badge = _healthEl('span', meta.label, 'font-size:10px');
+      badge.className = `badge ${meta.cls}`;
+      const what = _healthEl('td');
+      what.appendChild(badge);
+      const row = _healthEl('tr');
+      row.append(when, what, _healthEl('td', e.message, 'color:var(--text3);font-size:12px'));
+      tbody.appendChild(row);
+    }
+    const table = _healthEl('table');
+    table.append(thead, tbody);
+    const wrap = _healthEl('div', '', 'overflow-x:auto');
+    wrap.appendChild(table);
+    show(wrap);
+  } catch (e) {
+    empty('Failed to load Live TV notices');
   }
 }
 
@@ -7325,6 +7385,7 @@ async function loadHealthDeletions() {
     saveHealthDownloadSettings, healthFixDownload, healthRemoveDownload, healthImportDownload,
     showHealthMissingTab, loadHealthMissing, healthDiagnose, healthGrabRelease, healthSearchMissing,
     loadHealthStreams, healthRecheckStreams, healthRunStreamSweep, healthClearStream, healthRemoveStream,
+    loadHealthLiveTvNotices,
     // Discover
     loadDiscoverPage, loadDiscover, setDiscoverType, switchDiscoverSection, selectStreamingProvider, selectGenre, setGenreMode, selectList, showDiscoverDetail,
     onDiscoverSearchInput, clearDiscoverSearch,
