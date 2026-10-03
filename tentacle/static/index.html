@@ -1952,6 +1952,16 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 
         <div class="card" style="margin-bottom:16px">
           <div class="card-header">
+            <div class="card-title">Live TV Notices</div>
+            <button class="btn btn-secondary btn-sm" onclick="loadHealthLiveTvNotices()">Refresh</button>
+          </div>
+          <div id="health-livetv-notices">
+            <div class="empty-state"><p>Loading…</p></div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-header">
             <div class="card-title">Deletion Log</div>
             <button class="btn btn-secondary btn-sm" onclick="loadHealthDeletions()">Refresh</button>
           </div>

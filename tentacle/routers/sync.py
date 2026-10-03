@@ -617,9 +617,15 @@ def get_dashboard(db: Session = Depends(get_db)):
 
 
 @router.get("/activity")
-def get_activity(limit: int = 15, db: Session = Depends(get_db)):
-    """Recent activity feed for dashboard"""
-    entries = db.query(ActivityLog).order_by(
+def get_activity(limit: int = 15, events: str = "", db: Session = Depends(get_db)):
+    """Recent activity feed. `events` (comma-separated) keeps only those
+    event types: Health's Live TV card asks for Live TV's notices, which the
+    nightly sync's own lines would otherwise push out of the window."""
+    query = db.query(ActivityLog)
+    wanted = [e.strip() for e in events.split(",") if e.strip()]
+    if wanted:
+        query = query.filter(ActivityLog.event.in_(wanted))
+    entries = query.order_by(
         ActivityLog.created_at.desc()
     ).limit(limit).all()
     return [{
