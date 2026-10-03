@@ -920,6 +920,25 @@ def get_setting(db, key: str, default: str = "") -> str:
     return s.value if s else default
 
 
+def get_recently_added_days(db) -> int:
+    """The "Recently added" window in whole days: every reader takes it from here.
+
+    The Settings field is a number input, which posts "14.5", "7.0" or "1e2"
+    as typed, and int() refuses those: every provider sync, the tag refresh
+    and the playlist build failed until a whole number was typed back in (a
+    blank was #157). A fraction of a day is dropped, a value that is no
+    number is the default, and the window stays between 0 days and 100 years:
+    a negative window holds no title either, 100 years already holds every
+    title, and past those the date arithmetic overflowed the same way.
+    """
+    default = NON_EMPTY_DEFAULTS["recently_added_days"]
+    try:
+        days = int(float(get_setting(db, "recently_added_days", default)))
+    except (TypeError, ValueError, OverflowError):
+        days = int(default)
+    return min(max(days, 0), 36500)
+
+
 def set_setting(db, key: str, value: str):
     """Set a single setting value"""
     s = db.query(Setting).filter(Setting.key == key).first()
