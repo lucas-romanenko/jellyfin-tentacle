@@ -177,7 +177,10 @@ a storage hiccup must never be able to wipe a library:
   or `/media/vod/shows` is missing or empty, the sweep is skipped entirely
   rather than concluding that every title was deleted. This matters on
   mergerfs, unionfs, NFS, SMB and rclone, where a branch dropping out makes
-  every file report as missing while the mount itself stays up.
+  every file report as missing while the mount itself stays up. The sync does
+  not write lost `.strm` files back onto a missing or empty root either: they
+  would land on the bare mount point and make it look mounted. They are
+  restored once the mount is back.
 
 Blocked removals are recorded in the deletion log (Settings → Deletion Log).
 
