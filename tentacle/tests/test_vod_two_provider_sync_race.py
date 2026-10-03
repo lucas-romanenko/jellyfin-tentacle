@@ -279,12 +279,14 @@ class TwoProvidersAtOnce(_World):
 
     def test_a_waiting_sync_can_be_cancelled(self):
         listed = self._two("movie")
+        one_holding = threading.Event()    # provider 1 is mid-category, so it holds the sync lock
         release_one = threading.Event()
         two_waiting = threading.Event()
         results = {}
 
         def hold_one(phase, category, stats, item_title=None, **kw):
             if item_title == "Only One":
+                one_holding.set()
                 release_one.wait(10)
 
         def watch_two(phase, category, stats, item_title=None, **kw):
@@ -292,6 +294,11 @@ class TwoProvidersAtOnce(_World):
                 two_waiting.set()
 
         t1 = self.sync_in_thread(self.one, results, hold_one)
+        self.addCleanup(t1.join, 30)
+        self.addCleanup(release_one.set)   # cleanups run last first: release provider 1, then wait for it
+        # Provider 2 starts only once provider 1 holds the lock: started together,
+        # provider 2 could take the lock first and then has nothing to wait for
+        self.assertTrue(one_holding.wait(20), "provider 1 never reached its second title")
         t2 = self.sync_in_thread(self.two, results, watch_two, cancel_check=two_waiting.is_set)
         t2.join(10)
         self.assertFalse(t2.is_alive(), "the cancelled sync is still waiting")
