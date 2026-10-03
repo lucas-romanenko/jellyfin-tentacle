@@ -348,7 +348,12 @@ def dynamic_tags(db: Session) -> set:
     A title keeps one only while an active list or rule still gives it."""
     tags = {t for (t,) in db.query(ListSubscription.tag).distinct() if t}
     tags |= {t for (t,) in db.query(TagRule.output_tag).distinct() if t}
-    tags |= retired_tags(db)
+    # A retired "<name>'s Downloads" (a user renamed in Jellyfin) that a user
+    # has again is that user's: the Radarr/Sonarr scans put it on their
+    # requests, and taking it off here would undo that every run.
+    from models.database import TentacleUser
+    requesters = {f"{n}'s Downloads" for (n,) in db.query(TentacleUser.display_name).distinct() if n}
+    tags |= retired_tags(db) - requesters
     return tags - builtin_tags(db)
 
 

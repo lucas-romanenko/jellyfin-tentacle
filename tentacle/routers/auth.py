@@ -77,6 +77,23 @@ def _build_playlists_for_new_user(user_id: int) -> None:
     threading.Thread(target=_run, daemon=True, name=f"new-user-playlists-{user_id}").start()
 
 
+def _carry_over_downloads_playlist(db: Session, user_id: int, old_name: str) -> None:
+    """A user renamed in Jellyfin keeps their "<name>'s Downloads" (see
+    rename_downloads_playlist). Never fails the sign-in."""
+    try:
+        from services.smartlists import (
+            _notify_jellyfin_plugin, bump_playlist_version, rename_downloads_playlist,
+            write_home_config,
+        )
+        if rename_downloads_playlist(db, user_id, old_name):
+            write_home_config(db, user_id=user_id)
+            bump_playlist_version()
+            _notify_jellyfin_plugin(db)
+    except Exception as e:
+        db.rollback()
+        logger.warning(f"Could not rename the downloads playlist of renamed user {user_id}: {e}")
+
+
 def _get_session_secret(db: Session) -> str:
     return get_setting(db, "session_secret", "fallback-secret-change-me")
 
@@ -486,7 +503,17 @@ def login(body: LoginRequest, response: Response, request: Request, db: Session 
     jf_image_tag = data["User"].get("PrimaryImageTag")
     jf_is_admin = (data["User"].get("Policy") or {}).get("IsAdministrator") is True
 
+    renamed_from = None
+
     def _update(existing: TentacleUser) -> None:
+        nonlocal renamed_from
+        if existing.display_name and existing.display_name != jf_user_name:
+            # Renamed in Jellyfin. "<old name>'s Downloads" stays on every title
+            # they requested, and with the name gone nothing counts it as
+            # Tentacle's any more: retire it, so the scans take it off.
+            from services.tagger import retire_tag
+            retire_tag(db, f"{existing.display_name}'s Downloads")
+            renamed_from = existing.display_name
         existing.display_name = jf_user_name
         existing.profile_image_tag = jf_image_tag
         existing.is_admin = jf_is_admin  # Sync admin status on every login
@@ -547,6 +574,10 @@ def login(body: LoginRequest, response: Response, request: Request, db: Session 
         # with an empty "add row" list on a fresh install, where the channel
         # was typically added before anyone had logged in at all.
         _build_playlists_for_new_user(user.id)
+    elif renamed_from:
+        # Their downloads playlist is named after them: rename it now, or the
+        # next sync deletes it and makes an empty one under the new name.
+        _carry_over_downloads_playlist(db, user.id, renamed_from)
 
     # Set session cookie. Mark Secure when the request reached us over HTTPS
     # (Cloudflare tunnel sets X-Forwarded-Proto) so the session token is not sent
