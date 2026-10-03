@@ -46,6 +46,8 @@ Some providers require a specific User-Agent header to allow streaming. If your 
 
 After adding a provider, click **Sync** to fetch channel groups. Groups are organized by your provider (Sports, Entertainment, News, etc.) and show the channel count for each.
 
+If your provider lists two groups with the same name, one keeps the name and the other gets the provider's group number in brackets, for example **Sports (1234)**, so you can enable each one on its own.
+
 ### Enabling Groups
 
 Toggle on the groups you want. Only channels from enabled groups are served to Jellyfin. This lets you keep your channel list manageable.

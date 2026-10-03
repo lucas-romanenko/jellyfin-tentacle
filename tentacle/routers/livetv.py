@@ -2361,6 +2361,52 @@ def _log_m3u_sync(db: Session, prefix: str, stats: dict):
     log_activity(db, "livetv_sync", msg)
 
 
+def _xtream_group_names(categories: list[dict], existing: dict) -> dict:
+    """The group each Xtream category goes into: {(category name, category
+    id): group name}.
+
+    A group is one per name (uq_live_group) and fetches one category, but a
+    panel may list two categories with the same name ("SPORTS" twice, with
+    different ids). Both were added under that name and the flush failed, so
+    the group sync saved no group at all; or the existing group was moved to
+    the namesake listed last, and the category the user had enabled was never
+    fetched again.
+    """
+    cats = [(c.get("category_name", ""), str(c.get("category_id", ""))) for c in categories]
+    names, used = {}, set()
+
+    def give(cat, group_name):
+        names[cat] = group_name
+        used.add(group_name)
+
+    # 1. A category keeps the group already on it: its name, or the
+    #    "NAME (id)" an earlier sync gave it.
+    for cat in cats:
+        name, cat_id = cat
+        candidate = name
+        while cat not in names and candidate in existing:
+            if existing[candidate].category_id == cat_id and candidate not in used:
+                give(cat, candidate)
+            candidate = f"{candidate} ({cat_id})"
+    # 2. Else its name, unless another category has it (a group of that name
+    #    follows the category to a new id, as before).
+    for cat in cats:
+        if cat not in names and cat[0] not in used:
+            give(cat, cat[0])
+    # 3. Else a group named after its id, "SPORTS (1234)": never the name of
+    #    another group or category.
+    taken = set(existing) | {name for name, _ in cats} | used
+    for cat in cats:
+        if cat not in names:
+            name, cat_id = cat
+            alias = f"{name} ({cat_id})"
+            while alias in taken:
+                alias += f" ({cat_id})"
+            taken.add(alias)
+            give(cat, alias)
+    return names
+
+
 def _sync_groups(provider_id: int, categories: list[dict], db: Session, channel_counts: dict = None):
     """Upsert LiveChannelGroup records from Xtream categories.
 
@@ -2375,23 +2421,26 @@ def _sync_groups(provider_id: int, categories: list[dict], db: Session, channel_
         g.name: g
         for g in db.query(LiveChannelGroup).filter(LiveChannelGroup.provider_id == provider_id).all()
     }
+    group_names = _xtream_group_names(categories, existing)
 
     for cat in categories:
-        name = cat.get("category_name", "")
         cat_id = str(cat.get("category_id", ""))
+        name = group_names[(cat.get("category_name", ""), cat_id)]
         count = channel_counts.get(cat_id, 0)
         if name in existing:
             existing[name].category_id = cat_id
             if update_counts:
                 existing[name].channel_count = count
         else:
-            db.add(LiveChannelGroup(
+            # Kept, so a category listed twice is one group, not a second insert.
+            existing[name] = LiveChannelGroup(
                 provider_id=provider_id,
                 name=name,
                 category_id=cat_id,
                 enabled=False,
                 channel_count=count,
-            ))
+            )
+            db.add(existing[name])
     db.flush()
 
 
