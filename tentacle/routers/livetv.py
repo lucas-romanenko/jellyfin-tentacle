@@ -288,6 +288,262 @@ _GONE_GRACE = 180.0
 # An HLS recording whose channel URL keeps answering with a continuous stream
 # instead of a playlist ends after this long, so Jellyfin re-opens on it.
 _STREAM_ANSWER_LIMIT = 120.0
+# A re-dialled raw MPEG-TS connection does not start at live: the provider
+# sends its buffer first (measured on a live account: ~22 s behind live, the
+# packets byte-identical to the ones already forwarded). Forwarded as it came,
+# every reconnect wrote those seconds into the recording a second time -- on an
+# account that closes the older of two connections every ~13 s, recordings grew
+# 2.5x and jumped back ~22 s each time. _ReplaySplicer joins the fresh
+# connection where the old one stopped. Rule: it only ever drops bytes that
+# end in the exact bytes it sent since the last PES header before the drop (a
+# packet carrying a timestamp, so it occurs once in the stream); any doubt
+# sends everything, as before (duplicates at worst, never loss).
+_SPLICE_RUN = 8                     # packets per run: the unit of evidence
+_SPLICE_RUN_CONTENT = 4             # content packets a run needs to identify a position
+_SPLICE_PROBE_PACKETS = 64          # fresh packets looked at to tell replay from gap
+_SPLICE_PROBE_MATCHES = 2           # runs sent before, found among them => a replay
+_SPLICE_SAMPLE_EVERY = 16           # a run starting every 16 sent packets is remembered
+_SPLICE_SAMPLES = 65536             # ... this many (~1M packets: a minute at 25 Mbit/s, minutes at HD rates)
+# Media seconds held at most, at the stream's average rate since its first byte:
+# what a join drops reaches back about this far, well inside _SPLICE_AFTER_GAP.
+_SPLICE_HOLD_SECONDS = 45.0
+# A hold that has to be let go goes out in one turn of the event loop, before
+# any client can read a piece of it, and a client loses its oldest pieces once
+# it holds more than _SUBSCRIBER_QUEUE_MAX pieces AND _SUBSCRIBER_QUEUE_BYTES.
+# So a hold never grows past half that byte slack: the other half is left for
+# a client that is already behind.
+_SPLICE_MAX_BYTES = 32 * 1024 * 1024
+_SPLICE_MAX_SECONDS = 30.0          # wall clock held at most
+_SPLICE_AFTER_GAP = 120.0           # no splice this long after a gap: a replay could span it
+_SPLICE_SLICE = 5577 * 188          # ~1 MB, whole packets
+_SPLICE_ANCHOR_MAX = 2048           # packets looked back from the drop for a PES header
+_SPLICE_NO_PTS_IDS = (0xBC, 0xBE, 0xBF, 0xF0, 0xF1, 0xF2, 0xF8, 0xFF)
+_PSI_PIDS = (0x0000, 0x0001, 0x0002, 0x0010, 0x0011, 0x0012, 0x0014, 0x1FFF)
+
+
+class _ReplaySplicer:
+    """Joins a re-dialled MPEG-TS connection to what was already sent.
+
+    Evidence is a *run* of _SPLICE_RUN consecutive packets holding at least
+    _SPLICE_RUN_CONTENT elementary-stream packets (PES PIDs; PAT/PMT/SI and
+    null packets repeat byte for byte). A run seen twice while sending is
+    ambiguous and never evidence. Evidence only decides whether to hold.
+
+    The join point (the anchor) is everything sent from the last PES header
+    before the drop (at least _SPLICE_RUN packets): a PES header carries a
+    timestamp, so these bytes occur once in the stream, whereas a run of
+    content packets can repeat byte for byte (digital silence on a radio
+    channel, a looping slate). Only bytes that end in the anchor, and whose
+    bytes before the anchor equal what was sent before it, are dropped.
+
+    After a re-dial, within the first _SPLICE_PROBE_PACKETS fresh packets:
+    - the anchor is there: join right after it (drop what precedes it: the
+      replay);
+    - >= _SPLICE_PROBE_MATCHES remembered runs are there: the provider is
+      replaying; hold until the anchor shows up and join after it;
+    - otherwise (a real gap, a channel restart, a remuxed replay): send all.
+    Holding past the bounds, or a connection breaking while holding, sends
+    everything held (a repeat of part of the replay, never a loss). No join
+    within _SPLICE_AFTER_GAP s of a gap: a replay reaching back over the gap
+    would hold seconds the stream never had. Every re-dial that is not joined
+    is counted as a miss and logged: nothing lost is ever reported as joined."""
+
+    def __init__(self, clock, on_gap=None):
+        self._clock = clock
+        self._on_gap = on_gap
+        self.tail = b""            # the last _SPLICE_ANCHOR_MAX packets sent
+        self._anchor = b""
+        self._ctx = b""            # what was sent just before the anchor
+        self._pes = set()
+        self._runs = {}            # run hash -> count seen (2 = ambiguous)
+        self._order = []
+        self._order_start = 0
+        self._sent_packets = 0
+        self._window = b""         # the last _SPLICE_RUN - 1 packets sent (for runs across pieces)
+        self._bytes = 0
+        self._first = None
+        self._last_gap = None
+        self._held = None
+        self._mode = None
+        self._since = 0.0
+        self._scanned = 0
+        self.skipped_bytes = 0
+        self.splices = 0
+        self.misses = 0
+
+    def _is_content(self, p) -> bool:
+        pid = ((p[1] & 0x1F) << 8) | p[2]
+        if pid in _PSI_PIDS:
+            return False
+        if pid in self._pes:
+            return True
+        if p[1] & 0x40:
+            afc = (p[3] >> 4) & 3
+            off = 4 + (1 + p[4] if afc in (2, 3) else 0)
+            if afc in (1, 3) and off + 3 <= 188 and p[off:off + 3] == b"\x00\x00\x01":
+                self._pes.add(pid)
+                return True
+        return False
+
+    def _run_ok(self, run) -> bool:
+        if len(run) != _SPLICE_RUN * 188:
+            return False
+        content = 0
+        for i in range(0, len(run), 188):
+            if run[i] != 0x47:
+                return False
+            content += self._is_content(run[i:i + 188])
+        return content >= _SPLICE_RUN_CONTENT
+
+    def _bound(self) -> int:
+        cap = min(_SPLICE_MAX_BYTES, _SUBSCRIBER_QUEUE_BYTES // 2)
+        took = self._clock() - self._first if self._first is not None else 0.0
+        if took <= 1.0:
+            # no rate yet: in its first second a stream has no older gap for a
+            # join to reach over, so the byte cap alone bounds the hold
+            return cap
+        return int(min(cap, self._bytes / took * _SPLICE_HOLD_SECONDS))
+
+    def sent(self, out: bytes) -> None:
+        """Record whole packets that went downstream."""
+        if not out:
+            return
+        if self._first is None:
+            self._first = self._clock()
+        self._bytes += len(out)
+        self.tail = (self.tail + out)[-_SPLICE_ANCHOR_MAX * 188:]
+        buf = self._window + out
+        base = self._sent_packets - len(self._window) // 188
+        n = len(buf) // 188
+        for k in range(n - _SPLICE_RUN + 1):
+            if (base + k) % _SPLICE_SAMPLE_EVERY:
+                continue
+            run = buf[k * 188:(k + _SPLICE_RUN) * 188]
+            if not self._run_ok(run):
+                continue
+            h = hash(run)
+            seen = self._runs.get(h, 0)
+            self._runs[h] = seen + 1
+            if not seen:
+                self._order.append(h)
+        self._sent_packets += len(out) // 188
+        self._window = buf[-(_SPLICE_RUN - 1) * 188:]
+        excess = len(self._order) - self._order_start - _SPLICE_SAMPLES
+        if excess > 0:
+            for h in self._order[self._order_start:self._order_start + excess]:
+                self._runs.pop(h, None)
+            self._order_start += excess
+            if self._order_start > _SPLICE_SAMPLES:
+                del self._order[:self._order_start]
+                self._order_start = 0
+
+    def _gap(self, why: str) -> None:
+        self.misses += 1
+        self._last_gap = self._clock()
+        if self._on_gap is not None:
+            self._on_gap(why)
+
+    @staticmethod
+    def _pes_header(p) -> bool:
+        if not p[1] & 0x40 or (((p[1] & 0x1F) << 8) | p[2]) in _PSI_PIDS:
+            return False
+        afc = (p[3] >> 4) & 3
+        off = 4 + (1 + p[4] if afc in (2, 3) else 0)
+        # a PES header, but not of a stream whose headers repeat byte for byte
+        # (padding, private_stream_2, ECM/EMM, DSM-CC, directory: no timestamp)
+        return (afc in (1, 3) and off + 4 <= 188 and p[off:off + 3] == b"\x00\x00\x01"
+                and p[off + 3] not in _SPLICE_NO_PTS_IDS)
+
+    def _find_anchor(self) -> bytes:
+        t = self.tail
+        end = len(t) - len(t) % 188
+        for i in range(end - 188, -1, -188):
+            p = t[i:i + 188]
+            if p[0] == 0x47 and self._pes_header(p):
+                if t.count(p) > 1:       # the same header twice: a loop, not a position
+                    return b""
+                a = min(i, end - _SPLICE_RUN * 188)
+                self._ctx = t[:a] if end >= _SPLICE_RUN * 188 else b""
+                return t[a:end] if end >= _SPLICE_RUN * 188 else b""
+        return b""
+
+    def redialled(self) -> None:
+        self._anchor = self._find_anchor()
+        if not self._anchor:
+            self._gap("the stream before the drop cannot be recognised")
+        elif self._last_gap is not None and self._clock() - self._last_gap < _SPLICE_AFTER_GAP:
+            self._gap("too soon after an earlier gap to join safely")
+        else:
+            self._held, self._mode, self._since, self._scanned = bytearray(), "probe", self._clock(), 0
+
+    def _runs_found(self, held, upto) -> int:
+        found = 0
+        for i in range(0, upto - _SPLICE_RUN * 188 + 1, 188):
+            if held[i] == 0x47 and self._runs.get(hash(bytes(held[i:i + _SPLICE_RUN * 188]))) == 1:
+                found += 1
+                if found >= _SPLICE_PROBE_MATCHES:
+                    break
+        return found
+
+    def _ctx_ok(self, held, at) -> bool:
+        # the fresh bytes just before the anchor must be what was sent just
+        # before it: a header without a timestamp, or a loop longer than the
+        # tail, can recur after a real gap -- then this differs (review S9b)
+        k = min(at, len(self._ctx))
+        return bytes(held[at - k:at]) == self._ctx[len(self._ctx) - k:]
+
+    def _joined(self, held, cut) -> bytes:
+        self._held = None
+        self.skipped_bytes += cut
+        self.splices += 1
+        return bytes(held[cut:])
+
+    def _release(self, why: str) -> bytes:
+        held, self._held = self._held, None
+        self._gap(why)
+        return bytes(held)
+
+    def feed(self, piece: bytes) -> bytes:
+        """Fresh bytes in, bytes to send out (b"" while holding)."""
+        if self._held is None:
+            return piece
+        held = self._held
+        held += piece
+        if self._mode == "probe":
+            need = (_SPLICE_PROBE_PACKETS + _SPLICE_RUN) * 188
+            if len(held) < need:
+                return b""
+            if held[0] != 0x47:
+                return self._release("the re-dialled stream is not packet-aligned")
+            at = held.find(self._anchor)
+            if at >= 0 and at % 188 == 0 and self._ctx_ok(held, at):
+                return self._joined(held, at + len(self._anchor))
+            if self._runs_found(held, need) < _SPLICE_PROBE_MATCHES:
+                return self._release("the provider did not replay what was sent before the drop")
+            self._mode = "replay"
+            self._scanned = need
+        at = held.find(self._anchor, max(0, self._scanned - len(self._anchor)))
+        while at >= 0 and (at % 188 or not self._ctx_ok(held, at)):
+            at = held.find(self._anchor, at + 1)
+        if at >= 0:
+            return self._joined(held, at + len(self._anchor))
+        self._scanned = len(held)
+        if len(held) > self._bound() or self._clock() - self._since > _SPLICE_MAX_SECONDS:
+            return self._release("the join point did not come within the replay")
+        return b""
+
+    def broke(self) -> bytes:
+        """The connection ended while joining: join if the point is there,
+        else send everything held (a repeat at worst)."""
+        held = self._held
+        if held is None:
+            return b""
+        at = held.find(self._anchor)
+        while at >= 0 and (at % 188 or not self._ctx_ok(held, at)):
+            at = held.find(self._anchor, at + 1)
+        if at >= 0:
+            return self._joined(held, at + len(self._anchor))
+        return self._release("the connection broke before the join point")
 
 
 class _NotAPlaylist(httpx.TransportError):
@@ -1251,7 +1507,10 @@ def _new_health() -> dict:
                                           # requests that ended in a success
             "reconnecting_seconds": 0.0,  # time spent with the provider failing
             "segments_skipped": 0,        # HLS: segments that never arrived
-            "errors": 0}                  # failed requests that were retried
+            "errors": 0,                  # failed requests that were retried
+            "replay_bytes_skipped": 0,    # raw TS: provider buffer already sent before a drop
+            "splices": 0,                 # raw TS: re-dials joined exactly where the data stopped
+            "splice_misses": 0}           # raw TS: re-dials that could not be joined (a gap)
 
 
 def _stream_ended(channel_id: int, entry: dict, recording: bool, hls: bool = False) -> None:
@@ -1282,14 +1541,22 @@ def _stream_ended(channel_id: int, entry: dict, recording: bool, hls: bool = Fal
                "reconnecting_seconds": round(h["reconnecting_seconds"], 1),
                "segments_skipped": h["segments_skipped"], "errors": h["errors"],
                "ended_on_error": bool(h.get("ended_on_error")),
-               "revives": h.get("revives", 0)}
+               "revives": h.get("revives", 0),
+               "splices": h.get("splices", 0), "splice_misses": h.get("splice_misses", 0),
+               "replay_bytes_skipped": h.get("replay_bytes_skipped", 0)}
     _recent_streams.append(summary)
     del _recent_streams[:-_RECENT_STREAMS_MAX]
     # A raw TS reconnect is always a gap. An HLS "interruption" can be one
     # segment retried in place within the playlist window -- nothing lost --
     # so for HLS only a skipped segment or a second or more of waiting counts.
-    damaged = ((h["reconnects"] and not hls) or h["segments_skipped"]
-               or h["reconnecting_seconds"] >= 1.0 or h.get("ended_on_error"))
+    # A raw TS reconnect was a gap unless it was joined to the provider's
+    # replay of what had been sent (_ReplaySplicer): then nothing is missing,
+    # however long the re-dial took.
+    raw_gap = (h["reconnects"] and not hls and
+               (h.get("splice_misses", 0) or h["reconnects"] > h.get("splices", 0)))
+    damaged = (raw_gap or h["segments_skipped"]
+               or (h["reconnecting_seconds"] >= 1.0 and (hls or not h.get("splices")))
+               or h.get("ended_on_error"))
     what = "recording" if recording else "stream"
     text = (f"{h['reconnects']} interruption(s) recovered, {h['reconnecting_seconds']:.0f}s waiting "
             f"on the provider, {h['segments_skipped']} segment(s) skipped, "
@@ -4024,6 +4291,16 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
             health = status_entry["health"]
             dropped_at = None   # while re-dialling: when the data stopped
             redialled = False   # this connection came from a re-dial, not yet delivering
+            splicer = _ReplaySplicer(loop.time, lambda why: logger.warning(
+                f"[LiveTV] Raw stream for channel {channel_id}: a reconnect could not be joined to "
+                f"what was sent before ({why}) at {datetime.now().astimezone().isoformat(timespec='seconds')} "
+                f"-- sent as it came: the recording may repeat a few seconds, or miss any the "
+                f"provider did not deliver"))
+
+            def splice_health():
+                health["replay_bytes_skipped"] = splicer.skipped_bytes
+                health["splices"] = splicer.splices
+                health["splice_misses"] = splicer.misses
             try:
                 while True:
                     opened_at = loop.time()
@@ -4065,6 +4342,9 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                                     health["reconnects"] += 1
                                     health["reconnecting_seconds"] += loop.time() - dropped_at
                                     dropped_at = None
+                                    if align:
+                                        # each reconnect is joined or counted as a miss
+                                        splicer.redialled()
                             last_piece = loop.time()
                             if loop.time() - last_mark >= _RAW_MARK_EVERY:
                                 # Still delivering: an HLS stream on the same
@@ -4076,11 +4356,20 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                                 align = align and piece[:1] == b"G"
                             if failing_since is not None and loop.time() - opened_at >= HEALTHY_AFTER:
                                 failing_since, slept, backoff, backoff_cap = None, 0.0, 1.0, _BACKOFF_CAP
+                            if align:
+                                piece = splicer.feed(piece)
+                                splice_health()
                             pending += piece
                             if len(pending) >= 131072:
                                 cut = len(pending) - (len(pending) % 188) if align else len(pending)
-                                out, pending = pending[:cut], pending[cut:]
-                                yield out
+                                # at most 1 MB per piece: a released hold must not
+                                # reach every subscriber as one huge chunk
+                                for i in range(0, cut, _SPLICE_SLICE):
+                                    out = pending[i:min(cut, i + _SPLICE_SLICE)]
+                                    if align:
+                                        splicer.sent(out)
+                                    yield out
+                                pending = pending[cut:]
                     except httpx.HTTPError as e:
                         reason = str(e) or type(e).__name__
                     # When it last delivered is when the last bytes came, not the
@@ -4091,9 +4380,17 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         st_now["last_ok"] = max(st_now.get("last_ok") or last_piece, last_piece)
                     # What arrived before the stream stopped still goes out -- whole
                     # packets only; the tail of a cut packet is unusable.
+                    if align:
+                        pending += splicer.broke()
                     cut = len(pending) - (len(pending) % 188) if align else len(pending)
-                    if cut:
-                        yield pending[:cut]
+                    for i in range(0, cut, _SPLICE_SLICE):
+                        out = pending[i:min(cut, i + _SPLICE_SLICE)]
+                        if align:
+                            splicer.sent(out)
+                        yield out
+                    pending = b""
+                    if align:
+                        splice_health()
                     # A recovery only if it delivered past HEALTHY_AFTER: an error
                     # page, nothing, or a packet and then silence until the close
                     # is still a failure, or a viewer's budget would never run out.
@@ -4162,6 +4459,8 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 if dropped_at is not None:     # ended while still re-dialling
                     health["reconnecting_seconds"] += loop.time() - dropped_at
                     health["ended_on_error"] = True
+                if align:
+                    splice_health()
                 _stream_ended(channel_id, status_entry,
                               bool(is_recording is not None and is_recording()))
                 _status_clear(channel_id, status_entry)

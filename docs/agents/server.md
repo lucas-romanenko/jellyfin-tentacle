@@ -248,6 +248,16 @@ User docs: `docs/features/live-tv.md`.
   proxied). A mid-packet start's partial packet is dropped. 401/403/404 stop
   at once. A re-dial counts as a reconnect only once it delivers, and as a
   recovery (backoff and budget reset) only once it delivered past 10 s.
+- A re-dialled raw connection starts with the provider's buffer (~20 s the
+  previous connection already sent, byte for byte). `_ReplaySplicer` joins it
+  right after the last byte sent: it drops fresh bytes only up to an exact
+  match of everything sent since the last PES header before the drop (a
+  timestamped packet), with the bytes before that matching too. No match, a
+  loop, a hold past its bounds (45 s of media, half a client's byte slack,
+  30 s) or a break while holding sends everything, as before: repeats at
+  worst, never loss. Each reconnect counts as joined (`splices`,
+  `replay_bytes_skipped`) or as a miss (`splice_misses`, logged with the
+  time); a joined reconnect no longer marks a recording as damaged.
 - The HLS worker (`hls_to_mpegts()`) classifies statuses with the same
   `_raw_retryable()`: a 5xx on a playlist, a re-resolve or a segment is
   waited out (a 5xx segment is fetched again, not skipped). An expired token
