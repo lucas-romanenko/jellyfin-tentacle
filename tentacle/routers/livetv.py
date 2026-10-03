@@ -3027,6 +3027,11 @@ def _run_epg_sync_background(provider_data: dict):
                 db.add_all(batch)
                 db.flush()
 
+            # For refresh-guide (_epg_rerun_finds_nothing); read before
+            # set_setting below commits and expires the rows.
+            empty = frozenset({r.guide_epg_id for r in rows} - {p["channel_id"] for p in programs} - {None})
+            feed = _feed_in_cache(_get_cache_path(epg_url))
+
             # How many channels actually have a guide, and why the rest do not:
             # "success" alone hid that most channels had nothing (#141).
             coverage_note = ""
@@ -3038,10 +3043,6 @@ def _run_epg_sync_background(provider_data: dict):
                 set_setting(db, f"livetv_epg_coverage_{pid}", json.dumps(report))
                 coverage_note = f" — {coverage_summary(report)}"
 
-            # For refresh-guide (_epg_rerun_finds_nothing); read before the
-            # commit expires the rows.
-            empty = frozenset({r.guide_epg_id for r in rows} - {p["channel_id"] for p in programs} - {None})
-            feed = _feed_in_cache(_get_cache_path(epg_url))
             db.commit()
             if feed:
                 _epg_last_sync[pid] = {"inputs": inputs, "feed": feed, "empty": empty}

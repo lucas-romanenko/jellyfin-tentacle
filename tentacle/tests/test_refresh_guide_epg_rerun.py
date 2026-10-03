@@ -297,6 +297,23 @@ class RefreshGuideRerun(_World):
         self._refresh()
         self.assertEqual([self.pid], self.resyncs)
 
+    def test_a_channel_removed_while_the_sync_runs_does_not_fail_it(self):
+        """An M3U playlist sync can remove a channel while the guide sync parses
+        the feed: the guide sync still completes, as before."""
+        real = xmltv.stream_parse_xmltv
+
+        def parse(*a, **k):
+            out = real(*a, **k)
+            s = self.Session()
+            s.query(mdb.LiveChannel).filter_by(stream_id="2").delete()
+            s.commit()
+            s.close()
+            return out
+
+        with mock.patch.object(xmltv, "stream_parse_xmltv", parse):
+            self.assertTrue(self._sync(self.pid), livetv_router._get_sync_status(self.pid))
+        self.assertEqual(1, self._programmes("AMC.ca"))
+
 
 # ── Fuzz: skipping never leaves a guide a re-run would change ───────────────
 
