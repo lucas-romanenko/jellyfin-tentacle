@@ -2753,6 +2753,43 @@ def _update_group_counts(provider_id: int, db: Session):
 
 # ─── EPG sync ───────────────────────────────────────────────────────────────
 
+# provider id -> its last successful guide sync: what it read (inputs, feed)
+# and the guide ids it left without programmes (empty). In memory: after a
+# restart, or a sync that did not finish, refresh-guide re-runs it as before.
+_epg_last_sync: "dict[int, dict]" = {}
+
+
+def _guide_sync_inputs(provider_data: dict, channels) -> str:
+    """A digest of what a guide sync reads besides the feed itself: where the
+    feed comes from, and each channel's override, tvg-id and name (#141)."""
+    src = [provider_data.get(k) for k in ("provider_type", "server_url", "username", "password",
+                                          "user_agent", "epg_url")]
+    chans = sorted((c.id, c.epg_id_override, c.epg_channel_id, c.name) for c in channels)
+    return hashlib.sha256(repr((src, chans)).encode()).hexdigest()
+
+
+def _feed_in_cache(path: str):
+    """(path, mtime) while the cached feed at `path` is fresh, else None: a
+    sync run now would read that very file again instead of downloading."""
+    import os
+    from services.xmltv import _is_cache_fresh
+    try:
+        return (path, os.path.getmtime(path)) if _is_cache_fresh(path) else None
+    except OSError:
+        return None
+
+
+def _epg_rerun_finds_nothing(pid: int, missing: set, provider_data: dict, channels) -> bool:
+    """Whether running provider `pid`'s guide sync again with `provider_data`
+    cannot give any of the `missing` guide ids programmes: its last sync found
+    none for them (a tvg-id the feed lacks), and the re-run would read the same
+    feed file and the same provider and channel settings, so it would only
+    rewrite the same guide."""
+    last = _epg_last_sync.get(pid)
+    return bool(last and missing <= last["empty"]
+                and _feed_in_cache(last["feed"][0]) == last["feed"]
+                and last["inputs"] == _guide_sync_inputs(provider_data, channels))
+
 
 @router.post("/api/live/sync-epg/{provider_id}", dependencies=_admin)
 def sync_epg(provider_id: int, db: Session = Depends(get_db)):
@@ -2814,6 +2851,7 @@ def _run_epg_sync_background(provider_data: dict):
     channels = provider_data["channels"]
     total = len(channels)
     enabled_count = provider_data.get("enabled_count", total)
+    _epg_last_sync.pop(pid, None)   # until this sync succeeds
 
     try:
         db = SessionLocal()
@@ -2825,6 +2863,7 @@ def _run_epg_sync_background(provider_data: dict):
             # the feed's own channel list is in hand (#141).
             from services.epg_match import resolve_guide_ids
             rows = db.query(LiveChannel).filter(LiveChannel.provider_id == pid).all()
+            inputs = _guide_sync_inputs(provider_data, rows)
             chan_info = [{"id": r.id, "name": r.name, "tvg_id": r.epg_channel_id,
                           "override": r.epg_id_override, "enabled": bool(r.enabled)} for r in rows]
             epg_ids = ({(c["override"] or "").strip() for c in chan_info}
@@ -2999,7 +3038,13 @@ def _run_epg_sync_background(provider_data: dict):
                 set_setting(db, f"livetv_epg_coverage_{pid}", json.dumps(report))
                 coverage_note = f" — {coverage_summary(report)}"
 
+            # For refresh-guide (_epg_rerun_finds_nothing); read before the
+            # commit expires the rows.
+            empty = frozenset({r.guide_epg_id for r in rows} - {p["channel_id"] for p in programs} - {None})
+            feed = _feed_in_cache(_get_cache_path(epg_url))
             db.commit()
+            if feed:
+                _epg_last_sync[pid] = {"inputs": inputs, "feed": feed, "empty": empty}
             log_activity(db, "epg_sync", f"EPG sync: {inserted} programs for {total} channels "
                                          f"({enabled_count} enabled){coverage_note}")
 
@@ -3355,7 +3400,6 @@ def refresh_jellyfin_guide(db: Session = Depends(get_db)):
                 logger.warning(f"[LiveTV] {len(missing)} enabled channels have no EPG data, but a recording is "
                                f"running and recording protection is on — not downloading the guide now")
                 continue
-            logger.info(f"[LiveTV] {len(missing)} enabled channels missing EPG data for provider {pid} — triggering EPG sync")
             # Trigger EPG sync synchronously (inline, not background thread)
             # so Jellyfin gets fresh data when we refresh
             provider = db.query(Provider).filter(Provider.id == pid).first()
@@ -3376,6 +3420,13 @@ def refresh_jellyfin_guide(db: Session = Depends(get_db)):
                     ],
                     "enabled_count": enabled_count,
                 }
+                if _epg_rerun_finds_nothing(pid, missing, provider_data, all_channels):
+                    # Usually a tvg-id the provider's feed does not carry: the
+                    # re-run gave it nothing, on every refresh.
+                    logger.info(f"[LiveTV] {len(missing)} enabled channels have no EPG data, and the last EPG sync "
+                                f"found none for them in the same feed — not running it again")
+                    continue
+                logger.info(f"[LiveTV] {len(missing)} enabled channels missing EPG data for provider {pid} — triggering EPG sync")
                 # Close current DB session before background sync uses its own
                 db.close()
                 _run_epg_sync_background(provider_data)

@@ -101,7 +101,8 @@ One-click operation that handles everything needed for new channels to appear in
    - Queries all enabled channels with EPG IDs
    - Checks which ones have zero programs in the `EPGProgram` table
    - If any are missing, runs EPG sync **inline** (synchronously) before proceeding
-   - This is a safety net for channels enabled after the last EPG sync
+   - Except when re-running it cannot help: the last EPG sync already found no programmes for every missing id (usually a tvg-id the feed lacks), the feed it read is still the one in the 8h cache, and nothing else it reads has changed since (the provider's settings, any channel's override, tvg-id or name). Kept in memory: after a restart, or a sync that did not finish, the first refresh runs it as before
+   - This is a safety net for channels added or changed after the last EPG sync
 2. **Delete + Recreate XMLTV listing provider:**
    - GET `/System/Configuration/livetv` to find existing XMLTV provider
    - DELETE it by ID
