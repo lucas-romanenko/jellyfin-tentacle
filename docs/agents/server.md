@@ -194,7 +194,9 @@ user_id)` computes them every time from source tags, list subscriptions
   Jellyfin twice (VOD + download) keeps the row and drops only a pending
   duplicate record (#296). Playlist entries are removed by the deleted
   item's id; an older plugin sends none, and the next playlist refresh
-  prunes the dead entry.
+  prunes the dead entry. Removals Jellyfin makes while it re-reads a
+  folder (the Scan Media Library task, the library monitor, a one-library
+  scan) are not forwarded: a dropped mount removes items the same way.
 - The nightly `sweep_orphaned_downloads()` removes downloaded records
   Jellyfin no longer has.
 - "Fix it" (`services/wrong_match.py:rematch_movie`) keeps the `.strm`'s

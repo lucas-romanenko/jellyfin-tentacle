@@ -3,6 +3,7 @@ using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.Providers;
 using MediaBrowser.Model.Tasks;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -17,6 +18,7 @@ public class LibraryDeleteHandler : IHostedService, IDisposable
 {
     private readonly ILibraryManager _libraryManager;
     private readonly ITaskManager _taskManager;
+    private readonly IProviderManager _providerManager;
     private readonly ILogger<LibraryDeleteHandler> _logger;
     private readonly HttpClient _httpClient;
     private Timer? _debounceTimer;
@@ -41,10 +43,12 @@ public class LibraryDeleteHandler : IHostedService, IDisposable
     public LibraryDeleteHandler(
         ILibraryManager libraryManager,
         ITaskManager taskManager,
+        IProviderManager providerManager,
         ILogger<LibraryDeleteHandler> logger)
     {
         _libraryManager = libraryManager;
         _taskManager = taskManager;
+        _providerManager = providerManager;
         _logger = logger;
         _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
     }
@@ -133,6 +137,19 @@ public class LibraryDeleteHandler : IHostedService, IDisposable
             return;
         }
 
+        // The task is not the only scan. The library monitor (real-time monitoring,
+        // and the /Library/Media/Updated call Radarr and Sonarr make after an
+        // import) and a scan or metadata refresh of one library re-read a folder
+        // through Jellyfin's refresh queue while the task is idle, and remove what
+        // they cannot see in the same way. Checked after the TMDB id, so titles
+        // the backend never hears about (YouTube, recordings) log nothing new.
+        if (IsFolderBeingRefreshed(e.Parent))
+        {
+            _logger.LogInformation("[Tentacle] {Type} '{Name}' removed while Jellyfin was re-reading {Folder} — not forwarding to the backend",
+                mediaType, item.Name, e.Parent.Path ?? e.Parent.Name);
+            return;
+        }
+
         // Debug, not Info: a bulk removal produced one Info line per item.
         _logger.LogDebug("[Tentacle] Detected deletion: {Type} '{Name}' (TMDB:{TmdbId})", mediaType, item.Name, tmdbId);
 
@@ -177,6 +194,35 @@ public class LibraryDeleteHandler : IHostedService, IDisposable
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// True while Jellyfin is re-reading the folder an item was removed from.
+    /// </summary>
+    /// <remarks>
+    /// Jellyfin removes an item whose files it can no longer see while it validates
+    /// the folder that holds it, and reports that folder as the removal's parent.
+    /// Every validation is registered with the provider manager while it runs
+    /// (Folder.ValidateChildren: OnRefreshStart / OnRefreshComplete), however it
+    /// was started. A delete from the UI reports the item's own folder too, and
+    /// is held back only if that folder is being re-read at that moment.
+    /// </remarks>
+    private bool IsFolderBeingRefreshed(BaseItem? folder)
+    {
+        if (folder == null)
+        {
+            return false;
+        }
+
+        try
+        {
+            return _providerManager.GetRefreshProgress(folder.Id).HasValue;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "[Tentacle] Could not read the refresh state of {Folder}", folder.Name);
+            return false;
+        }
     }
 
     private void ProcessPendingDeletes()
