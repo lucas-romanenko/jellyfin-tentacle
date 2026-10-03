@@ -20,6 +20,7 @@ from services.exceptions import TMDBConnectionError
 from routers import settings, providers, sync as sync_router, library, duplicates, lists as lists_router, widget, radarr as radarr_router, sonarr as sonarr_router, tags as tags_router, collections as collections_router, smartlists as smartlists_router, discover as discover_router, livetv as livetv_router, auth as auth_router, activity as activity_router, notifications as notifications_router, health as health_router, youtube as youtube_router, music as music_router
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.combining import OrTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 # APScheduler 3 drops a run that starts more than misfire_grace_time after its
@@ -434,6 +435,61 @@ def run_native_playlist_refresh():
         db.close()
 
 
+# Cron counts the days of the week from Sunday (0 and 7 = Sunday, 1 = Monday);
+# APScheduler 3's CronTrigger counts 0-6 from Monday and refuses 7, so "1-5"
+# ran Tuesday to Saturday. The days are handed over by name, read the same by both.
+_CRON_DAYS = ("sun", "mon", "tue", "wed", "thu", "fri", "sat")
+
+
+def _cron_day_of_week(field: str) -> str:
+    """A cron day-of-week field as CronTrigger's day_of_week: "1-5" ->
+    "mon,tue,wed,thu,fri", "0" or "7" -> "sun", "*" stays "*", and "sat-sun"
+    runs through Sunday as CronTrigger read it. Raises ValueError for a field
+    such as "8", "5-1" or "funday"."""
+    def day(token):
+        if token.lower() in _CRON_DAYS:
+            return _CRON_DAYS.index(token.lower())
+        if not token.isdigit() or int(token) > 7:
+            raise ValueError(f"day of week '{token}' is not 0-7 or sun-sat")
+        return int(token)
+
+    days = set()
+    for item in field.split(","):
+        span, slash, step = item.partition("/")
+        if span == "*":
+            first, last = 0, 7
+        elif "-" in span:
+            a, b = span.split("-", 1)
+            first, last = day(a), day(b)
+            if first and b.lower() == "sun":
+                last = 7  # "sat-sun", "mon-sun": APScheduler's week ends on Sunday
+        else:
+            first = day(span)
+            last = 7 if slash else first
+        every = int(step) if slash else 1
+        if every < 1 or first > last:
+            raise ValueError(f"day of week '{item}' is no cron range")
+        days.update(d % 7 for d in range(first, last + 1, every))
+    return "*" if len(days) == 7 else ",".join(_CRON_DAYS[d] for d in sorted(days))
+
+
+def _sync_trigger(cron: str):
+    """The trigger for a 5-field cron, read the way cron reads it. Raises
+    ValueError when it is no schedule."""
+    parts = (cron or "").strip().split()
+    if len(parts) != 5:
+        raise ValueError("expected 5 cron fields")
+    minute, hour, day, month, dow = parts
+    if day.startswith("*") or dow.startswith("*"):
+        return CronTrigger(minute=minute, hour=hour, day=day, month=month,
+                           day_of_week=_cron_day_of_week(dow))
+    # Both day fields set: cron runs on either ("0 3 1 * 1" = the 1st and every
+    # Monday); one CronTrigger would want both on the same day.
+    return OrTrigger([CronTrigger(minute=minute, hour=hour, day=day, month=month),
+                      CronTrigger(minute=minute, hour=hour, month=month,
+                                  day_of_week=_cron_day_of_week(dow))])
+
+
 def reschedule_main_sync(cron: str = None) -> bool:
     """(Re)schedule the daily sync from a 5-field cron string. Reads the
     sync_schedule setting when cron is None. Safe to call at runtime — the job is
@@ -450,20 +506,18 @@ def reschedule_main_sync(cron: str = None) -> bool:
             cron = get_setting(db, "sync_schedule", default)
         finally:
             db.close()
-    parts = (cron or "").strip().split()
-    if len(parts) != 5 and from_settings and cron != default:
-        # A stored value that is no schedule must not leave the install with
-        # no nightly job: run at the default time and say so.
-        logger.warning(f"Invalid sync schedule '{cron}' in settings — using the default '{default}'")
-        cron, parts = default, default.split()
-    if len(parts) != 5:
-        logger.warning(f"Invalid sync schedule '{cron}' — expected 5 cron fields")
-        return False
     try:
-        trigger = CronTrigger(
-            minute=parts[0], hour=parts[1],
-            day=parts[2], month=parts[3], day_of_week=parts[4]
-        )
+        trigger = _sync_trigger(cron)
+    except Exception as e:
+        if not from_settings or cron == default:
+            logger.warning(f"Invalid sync schedule '{cron}': {e}")
+            return False
+        # A stored value that is no schedule (not 5 fields, or one the
+        # scheduler refuses such as "0 24 * * *") must not leave the install
+        # with no nightly job: run at the default time and say so.
+        logger.warning(f"Invalid sync schedule '{cron}' in settings ({e}) — using the default '{default}'")
+        cron, trigger = default, _sync_trigger(default)
+    try:
         scheduler.add_job(run_scheduled_sync, trigger, id="main_sync", replace_existing=True,
                           misfire_grace_time=6 * 3600)
         logger.info(f"Sync scheduled: {cron}")

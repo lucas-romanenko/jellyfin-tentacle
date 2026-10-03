@@ -86,6 +86,10 @@ clock step) still runs once within 6 h (`misfire_grace_time`; the other
 daily jobs 1 h, everything else 5 min); APScheduler's default of 1 s dropped
 it. A container that is down at the trigger still skips that night.
 
+The value is read as standard cron by `_sync_trigger()` (0 and 7 = Sunday;
+both day fields set = either one), not as APScheduler's own fields (0 =
+Monday); a stored value it cannot read runs at the default time.
+
 1. refresh list subscriptions; 2. VOD sync from active providers; 3. Radarr
 scan; 4. Sonarr scan (and Following state for every series); 5. recently
 added tags; 6. Jellyfin pipeline (scan, push tags, refresh playlists);
