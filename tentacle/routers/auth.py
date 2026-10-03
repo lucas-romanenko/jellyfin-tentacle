@@ -475,8 +475,22 @@ def login(body: LoginRequest, response: Response, request: Request, db: Session 
             timeout=10,
         )
         r.raise_for_status()
-    except requests.HTTPError:
-        raise HTTPException(401, "Invalid username or password")
+    except requests.HTTPError as e:
+        # Jellyfin refused the sign-in: 401 wrong name or password, 400 blank
+        # name, 403 an account that is disabled or not allowed now (whatever
+        # the password). Its 500 can depend on the account too (failed
+        # sign-ins at once for an enabled account clash saving the attempt
+        # count), so all of these get the same answer and don't tell which
+        # names are which. Anything else isn't about the account: Jellyfin
+        # answers 503 for the first seconds of its startup (#392).
+        status = e.response.status_code if e.response is not None else None
+        if status in (400, 401, 403, 500):
+            raise HTTPException(401, "Invalid username or password")
+        logger.warning(f"Login: Jellyfin answered HTTP {status}")
+        if status is not None and status >= 500:
+            raise HTTPException(503, f"Jellyfin answered HTTP {status}: it may still be starting up. "
+                                     "Try again in a moment.")
+        raise HTTPException(502, f"Jellyfin answered HTTP {status}. Check the Jellyfin address.")
     except Exception as e:
         raise HTTPException(502, f"Could not reach Jellyfin: {e}")
 
