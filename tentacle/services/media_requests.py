@@ -333,7 +333,13 @@ def request_series(db: Session, *, tmdb_ids: Iterable[int] = (), tvdb_ids: Itera
             # Sonarr already has it — the outcome the user wanted, not a failure.
             out.report.record(EXISTS)
         elif result:
-            out.report.record(ADDED)
+            # A reason alongside the series: it is in Sonarr, but the episodes
+            # the user picked are not monitored or searched. Say so rather than
+            # "Added"; the bookkeeping below still applies.
+            if sonarr.last_error:
+                out.report.record(FAILED, sonarr.last_error)
+            else:
+                out.report.record(ADDED)
             out.added.append(tmdb_id)
             if user_id is not None:
                 record_download_request(db, tmdb_id, "series", user_id)
@@ -354,7 +360,10 @@ def request_series(db: Session, *, tmdb_ids: Iterable[int] = (), tvdb_ids: Itera
         if result and result.get("alreadyExists"):
             out.report.record(EXISTS)
         elif result:
-            out.report.record(ADDED)
+            if sonarr.last_error:  # in Sonarr, the picked episodes not applied (above)
+                out.report.record(FAILED, sonarr.last_error)
+            else:
+                out.report.record(ADDED)
             out.added.append(-tvdb_id)
             if user_id is not None:
                 # Sonarr's tmdbId when it has one, else the negative tvdb id

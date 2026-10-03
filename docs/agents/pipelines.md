@@ -69,10 +69,13 @@ VOD episodes and Sonarr episodes in parallel; the picker shows VOD
 episodes ("VOD") and downloaded ones ("DL") as checked and disabled, and
 season coverage ("5/8"). The chosen episodes go to
 `POST /api/lists/add-to-sonarr` with `selected_episodes`; Tentacle adds the
-series with an explicit `path` in the existing VOD folder, `monitor: none`,
-then monitors only the chosen episodes, sets `monitorNewItems="all"` when
-"Auto-download new episodes" (default on) is ticked, starts a search, and
-records `sonarr_path`/`sonarr_monitored` at once.
+series with an explicit `path` in the existing VOD folder, `monitor: none`
+and `monitorNewItems="all"` when "Auto-download new episodes" (default on) is
+ticked, waits until Sonarr has set the new series up (up to 180 s from the
+add, see jellyfin-notes.md), then monitors only the chosen episodes, starts a
+search, and records `sonarr_path`. If the chosen episodes could not be
+applied, the add answers as failed with the reason (the series is in Sonarr
+and still recorded).
 
 **"Manage episodes"** on a Sonarr series: `GET /api/discover/sonarr-episodes/{tmdb_id}`,
 then `POST /api/discover/manage-episodes`: everything unmonitored, the

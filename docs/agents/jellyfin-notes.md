@@ -63,6 +63,15 @@ The code wins where they differ.
   Sonarr's. When calling their APIs, use *their* root folders (Radarr's is
   `/data/movies` in the common setup); Tentacle's own media paths are fixed
   (see [server.md](server.md#stack)) and mapped by the compose volumes.
+- **A new Sonarr series is set up after `POST /series` answers**: the add
+  only queues a RefreshSeriesCommand, which creates the episodes, scans the
+  folder, then applies `addOptions` (`monitor`, the post-add search) and
+  clears it; `GET /series/{id}` shows `addOptions` until then. The command
+  waits for one of Sonarr's three command threads (minutes on a busy Sonarr)
+  and writes the whole series row back, so a change Tentacle makes to the
+  series or its episodes before `addOptions` is gone is lost or undone. The
+  post-add search reads the series again when it runs and finds nothing for a
+  season while the series is unmonitored ("Series is not monitored").
 - **Hybrid series** need a Sonarr root folder on the VOD shows directory
   (the same host folder as Tentacle's `/media/vod/shows`); Tentacle finds
   it by "vod" in the path.
