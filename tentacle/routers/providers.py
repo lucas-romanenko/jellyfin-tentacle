@@ -288,9 +288,11 @@ def create_provider(body: ProviderCreate, db: Session = Depends(get_db)):
 
 @router.put("/{provider_id}")
 def update_provider(provider_id: int, body: ProviderUpdate, db: Session = Depends(get_db)):
+    from routers.livetv import _live_url_basis, _repoint_live_channels
     p = db.query(Provider).filter(Provider.id == provider_id).first()
     if not p:
         raise HTTPException(404, "Provider not found")
+    before = _live_url_basis(p)
     if body.name is not None:
         p.name = body.name
     if body.provider_type is not None:
@@ -315,6 +317,7 @@ def update_provider(provider_id: int, body: ProviderUpdate, db: Session = Depend
         p.active = body.active
     if body.require_tmdb_match is not None:
         p.require_tmdb_match = body.require_tmdb_match
+    _repoint_live_channels(db, p, before)
     db.commit()
     return {"success": True}
 

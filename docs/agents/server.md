@@ -272,6 +272,13 @@ User docs: `docs/features/live-tv.md`.
   channel sync chains into an EPG sync. The EPG (XMLTV, cached on disk) is
   stored for *all* provider channels, so newly enabled ones have a guide.
   Channels may share one `epg_channel_id` (one-to-many in the XMLTV output).
+- An Xtream channel's URL holds the server, username and password it was
+  synced with, and the tuner opens it. Saving the provider with new ones
+  (PUT `/api/providers/{id}`, POST `/api/live/provider`) rewrites those URLs
+  in the same commit (`_repoint_live_channels()`: only URLs the old values
+  built, same stream id and extension, nothing fetched); before, every tune
+  kept the old server or login until "Sync channels". M3U channel URLs come
+  from the playlist: a sync picks up a new one.
 - After an EPG sync Tentacle deletes and re-adds its XMLTV listing provider
   in Jellyfin, then runs RefreshGuide: re-POSTing a listing provider with
   the same id does *not* remap new channels. `services/jellyfin_guide.py`
