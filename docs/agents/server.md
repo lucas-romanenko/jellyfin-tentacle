@@ -65,7 +65,11 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   rules (custom playlists), home layout. Per-user files:
   `/data/smartlists/{jellyfin_user_id}/`, `/data/home-configs/{jellyfin_user_id}.json`.
 - `DownloadRequest` (tmdb_id, media_type, user_id) records who asked for a
-  download; non-admins may delete only what they requested.
+  download; non-admins may delete only what they requested. Their titles
+  carry "<display name>'s Downloads", the tag of their My Downloads playlist.
+  The display name is copied from Jellyfin on every login: after a rename the
+  login renames that playlist in place (same Jellyfin playlist, home row and
+  hero) and retires the old tag (`rename_downloads_playlist()`).
 
 ## Key concepts
 

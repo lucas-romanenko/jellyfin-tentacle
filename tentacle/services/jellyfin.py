@@ -1771,6 +1771,22 @@ class JellyfinService:
         return self._post_item_update(item, _item_update_payload(item, ProviderIds=ids),
                                       "mark as Tentacle's")
 
+    def rename_tentacle_playlist(self, playlist_id: str, name: str, user_id: str = None) -> bool:
+        """Rename a playlist in place (same id, entries and mark), only if it
+        carries Tentacle's mark: a user's own playlist is never changed (#152).
+        True when it has that name afterwards."""
+        item = self._owned_playlist(playlist_id, user_id)
+        if not item:
+            logger.warning(f"[Jellyfin] Cannot read playlist {playlist_id} to rename it")
+            return False
+        if item.get("Name") == name:
+            return True
+        if not is_tentacle_playlist(item):
+            logger.info(f"[Jellyfin] Not renaming playlist '{item.get('Name')}' ({playlist_id}): "
+                        f"Tentacle didn't make it")
+            return False
+        return self._post_item_update(item, _item_update_payload(item, Name=name), "rename")
+
     def delete_tentacle_playlist(self, playlist_id: str, user_id: str = None) -> bool:
         """Delete a playlist only if it carries Tentacle's mark (#152).
 
