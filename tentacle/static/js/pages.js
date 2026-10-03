@@ -7183,7 +7183,9 @@ async function healthFixDownload(source, queueId, btn) {
   if (btn) btn.disabled = true;
   try {
     const r = await api('/api/health/downloads/fix', { method: 'POST', body: { source, queue_id: queueId } });
-    toast(r.replaced ? `Replaced with ${r.picked_protocol} release` : 'Cancelled — no alternative release found',
+    toast(r.replaced ? `Replaced with ${r.picked_protocol} release`
+          : r.arr_search ? `Cancelled — ${source === 'sonarr' ? 'Sonarr' : 'Radarr'} searches for a replacement`
+          : 'Cancelled — no alternative release found',
           r.replaced ? 'success' : 'info');
     loadHealthDownloads();
     loadHealthDeletions();
