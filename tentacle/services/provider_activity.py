@@ -74,7 +74,8 @@ def refuse_while_recording(db, what: str) -> None:
 # (routers.sync). WALL time: while any waiter of a run is active the clock
 # runs once, however many wait at the same moment. key -> {"active": waiters
 # in progress, "since": monotonic start of the current stretch, "seconds":
-# finished stretches}.
+# finished stretches}. A sync waiting for another provider's sync to finish
+# is booked here too (services.sync._wait_for_other_vod_sync).
 _protected_wait: "dict" = {}
 _protected_wait_lock = threading.Lock()
 

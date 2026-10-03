@@ -9,6 +9,7 @@ import re
 import zlib
 import shutil
 import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -268,6 +269,42 @@ def vod_links_for(db: Session, provider: Provider):
 
 
 WAITING_FOR_LIVE_TV = "Waiting for live TV / a recording to finish before continuing"
+
+# One provider's VOD sync at a time. A category's new rows are committed only
+# at its end, so two providers' syncs at once (the VOD page's "Sync" for one
+# provider while another's manual or nightly sync runs) could not see each
+# other's new films: both wrote the same 'Title (Year)' .strm (the last write
+# won) and both added the row; the second commit failed on UNIQUE(tmdb_id),
+# that run ended "failed" with the rest of it skipped, and the row left could
+# play the other provider's stream. A waiting sync starts after the other has
+# committed, so it finds its rows, as one after the other. The routers still
+# refuse a second sync of the same provider.
+_vod_sync_lock = threading.Lock()
+_vod_sync_holder: dict = {}     # {"name": the provider whose sync holds the lock}
+VOD_SYNC_LOCK_POLL_SECONDS = 2.0
+
+
+def _wait_for_other_vod_sync(provider: Provider, run_id, progress_callback=None, cancel_check=None,
+                             phase: str = "movies") -> None:
+    """Take _vod_sync_lock. While another provider's sync holds it, say so on
+    screen, stay cancellable, and book the wait to this run like a wait for a
+    recording, so the status route does not take the run for a stuck one."""
+    name = provider.name    # read before taking the lock: nothing after it may fail
+    if not _vod_sync_lock.acquire(blocking=False):
+        other = _vod_sync_holder.get("name") or "another provider"
+        logger.info(f"Sync of {name} is waiting for {other}'s sync to finish")
+        from services.provider_activity import _wait_enter, _wait_leave
+        _wait_enter(run_id)
+        try:
+            if progress_callback:
+                progress_callback(phase, "", {}, item_title=f"Waiting for {other}'s sync to finish",
+                                  item_pos=0, item_total=0)
+            while not _vod_sync_lock.acquire(timeout=VOD_SYNC_LOCK_POLL_SECONDS):
+                if cancel_check and cancel_check():
+                    raise SyncCancelledError("Sync cancelled while waiting for another provider's sync to finish")
+        finally:
+            _wait_leave(run_id)
+    _vod_sync_holder["name"] = name
 
 
 def _pause_between_categories(client, db: Session, progress_callback=None, phase: str = "",
@@ -1819,7 +1856,11 @@ def sync_provider(
 
     logger.info(f"Starting {sync_type} sync for provider: {provider.name} (run #{run.id})")
 
+    locked = False
     try:
+        _wait_for_other_vod_sync(provider, run.id, progress_callback, cancel_check,
+                                 "series" if sync_type == "series" else "movies")
+        locked = True
         try:
             unhide_vod_paths(db)
         except Exception as e:
@@ -1936,6 +1977,10 @@ def sync_provider(
     except Exception as e:
         logger.error(f"Sync failed: {e}", exc_info=True)
         run = _finish_run(db, run, "failed", str(e))
+    finally:
+        if locked:
+            _vod_sync_holder.pop("name", None)
+            _vod_sync_lock.release()
 
     return run
 
