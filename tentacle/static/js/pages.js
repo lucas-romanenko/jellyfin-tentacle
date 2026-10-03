@@ -6920,8 +6920,9 @@ async function healthRecheckStreams(btn) {
 async function healthRunStreamSweep(btn) {
   if (btn) btn.disabled = true;
   try {
-    await api('/api/health/streams/sweep', { method: 'POST' });
-    toast('Sweep started — results appear here as it progresses', 'info');
+    const r = await api('/api/health/streams/sweep', { method: 'POST' });
+    toast(r.started === false ? 'A sweep is already running — results appear here as it progresses'
+                              : 'Sweep started — results appear here as it progresses', 'info');
     setTimeout(loadHealthStreams, 15000);
   } catch (e) {
     toast(e.message || 'Sweep failed to start', 'error');

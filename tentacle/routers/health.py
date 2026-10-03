@@ -353,9 +353,12 @@ def recheck_streams(limit: int = 10, db: Session = Depends(get_db)):
 
 @router.post("/streams/sweep")
 def trigger_stream_sweep():
-    """Run the rotating-batch sweep now (background)."""
+    """Run the rotating-batch sweep now (background). One at a time: while a
+    sweep runs (an earlier press, or the 04:30 job) this starts nothing."""
     import threading
-    from services.stream_health import run_stream_health_sweep
+    from services.stream_health import run_stream_health_sweep, sweep_running
+    if sweep_running():
+        return {"started": False}
     threading.Thread(target=run_stream_health_sweep, daemon=True).start()
     return {"started": True}
 
