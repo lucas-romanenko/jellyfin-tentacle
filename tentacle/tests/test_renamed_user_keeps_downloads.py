@@ -14,8 +14,10 @@ took it off.
 
 Now the sign-in that brings the new name retires the old tag, and the playlist
 is renamed in place: same folder, same Jellyfin playlist (renamed there too),
-so the row, the hero and the sort stay. Someone who signs in under the old name
-later keeps their own tag; the retired one doesn't take it off.
+so the row, the hero and the sort stay. A sync whose session loaded the users
+before the sign-in (the nightly) reads the new name too. Someone who signs in
+under the old name later keeps their own tag; the retired one doesn't take it
+off.
 """
 import html
 import json
@@ -165,6 +167,36 @@ class RenamedUser(unittest.TestCase):
         self.assertNotIn("unresolved_since", row[0], f"home row left on a deleted playlist: {row[0]}")
         self.assertEqual((self.pid, "Robert's Downloads"), (row[0]["playlist_id"], row[0]["display_name"]))
         self.assertTrue(self.notified, "the clients were not told")
+
+    def nightly(self):
+        # The nightly loads every user, then syncs them one by one with no
+        # commit in between: Bob signs in under his new name while it works
+        # on the owner.
+        nightly = sessionmaker(bind=self.db.get_bind())()
+        self.addCleanup(nightly.close)
+        for user in nightly.query(TentacleUser).order_by(TentacleUser.id).all():
+            if user.id == self.bob_id:
+                self.login(BOB, "Robert")
+            sl.sync_smartlists(nightly, user_id=user.id)
+            sl.write_home_config(nightly, user_id=user.id)
+
+    def test_a_nightly_that_loaded_the_users_earlier_keeps_it(self):
+        self.nightly()
+        self.assertEqual([], _FakeJellyfin.deleted, "the nightly still wanted the old name")
+        self.assertEqual(["Robert's Downloads"], list(self.configs()))
+        hero = json.loads(self.home_path.read_text())["hero"]
+        self.assertEqual((True, self.pid), (hero["enabled"], hero["playlist_id"]))
+
+    def test_a_nightly_keeps_it_while_the_user_has_no_requests(self):
+        # With no request left only the switched-on toggle keeps the playlist
+        # (another playlist is wanted, so the all-orphans guard doesn't).
+        self.db.query(DownloadRequest).delete()
+        self.db.add(AutoPlaylistToggle(user_id=self.bob_id, key="builtin:recently_added_movies",
+                                       enabled=True))
+        self.db.commit()
+        self.nightly()
+        self.assertEqual([], _FakeJellyfin.deleted, "the nightly still protected the old name")
+        self.assertIn("Robert's Downloads", self.configs())
 
     def test_the_old_tag_comes_off_the_titles(self):
         self.login(BOB, "Robert")

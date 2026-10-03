@@ -469,13 +469,15 @@ def get_desired_smartlists(db: Session, user_id: int = None) -> list:
 
     # Per-user downloads playlist — dynamic tag based on user display name
     if user_id is not None and toggles.get("builtin:my_downloads"):
-        req_user = db.query(TentacleUser).filter(TentacleUser.id == user_id).first()
-        if req_user:
+        # The name in the database now, not a TentacleUser this session loaded
+        # earlier (the nightly loads every user, then syncs them one by one).
+        req_name = db.query(TentacleUser.display_name).filter(TentacleUser.id == user_id).scalar()
+        if req_name is not None:
             has_requests = db.query(DownloadRequest.id).filter(
                 DownloadRequest.user_id == user_id,
             ).first()
             if has_requests:
-                user_tag = f"{req_user.display_name}'s Downloads"
+                user_tag = f"{req_name}'s Downloads"
                 if user_tag not in existing_tags:
                     smartlists.append({
                         "name": user_tag, "tag": user_tag,
@@ -719,10 +721,10 @@ def _enabled_toggle_names(db: Session, user_id: int) -> set:
         elif key == "builtin:my_downloads":
             # Only "desired" while the user has a DownloadRequest (see
             # get_desired_smartlists) — deleting their last request must not
-            # delete the enabled playlist.
-            user = db.query(TentacleUser).filter(TentacleUser.id == user_id).first()
-            if user:
-                names.add(f"{user.display_name}'s Downloads")
+            # delete the enabled playlist. The name now, as above.
+            name = db.query(TentacleUser.display_name).filter(TentacleUser.id == user_id).scalar()
+            if name is not None:
+                names.add(f"{name}'s Downloads")
         elif key.startswith("source:"):
             parts = key.split(":")
             # source:<tag>:movies — rejoin the middle so a tag containing
