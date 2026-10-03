@@ -6,6 +6,7 @@ Ported and improved from xtream_to_jellyfin.py
 
 import html
 import re
+import unicodedata
 from typing import Tuple, Optional
 
 # All known provider prefixes
@@ -99,11 +100,11 @@ def clean_title(raw_name: str) -> Tuple[Optional[str], Optional[str]]:
 
     name = raw_name.strip()
 
-    # Step 1: Remove bracketed prefixes [NF] or (AMZ)
-    name = re.sub(
-        r'^\s*[\[\(]([A-Z0-9+]{1,6})[\]\)]\s*[-:]?\s*',
-        '', name, flags=re.IGNORECASE
-    )
+    # Step 1: Remove bracketed prefixes [NF] or (AMZ). Kept aside: an unknown
+    # bracketed word is the title itself when nothing usable follows it (step 8).
+    bracket = re.match(r'^\s*[\[\(]([A-Z0-9+]{1,6})[\]\)]\s*[-:]?\s*', name, flags=re.IGNORECASE)
+    if bracket:
+        name = name[bracket.end():]
 
     # Step 2: Remove standard "PREFIX - " patterns
     # Handles: "NF - ", "AMZ - ", "D+ - ", "A+ - ", "EN - ", "EN-TOP - ", "NF-DO - "
@@ -123,6 +124,7 @@ def clean_title(raw_name: str) -> Tuple[Optional[str], Optional[str]]:
         # Scene dot-notation with a prefix ("NF.The.Matrix.1999.1080p").
         # Case-sensitive on purpose: "Top.Gun.1986.1080p" is a title, not a prefix.
         name = re.sub(prefix_re + r'\.', '', name)
+    labelled = name  # the title as the provider wrote it, tags and prefix gone
 
     # Step 3: Remove numbered rankings "250. " or "86. "
     name = re.sub(r'^\d{1,3}\.\s*', '', name)
@@ -155,7 +157,8 @@ def clean_title(raw_name: str) -> Tuple[Optional[str], Optional[str]]:
         year = year_match.group(1)
         name = name[:year_match.start()].strip()
     else:
-        year_match = re.search(r'\s(\d{4})\s*$', name)
+        # Not after "Word:": "Space: 1999", "Breakdown: 1975" are titles.
+        year_match = re.search(r'(?<!\w:)(?<!\s)\s+(\d{4})\s*$', name)
         if year_match:
             potential_year = year_match.group(1)
             if 1920 <= int(potential_year) <= 2035:
@@ -167,17 +170,27 @@ def clean_title(raw_name: str) -> Tuple[Optional[str], Optional[str]]:
     name = re.sub(r'[._-]+$', '', name).strip(' -:.')
 
     # Step 8: Validate
+    # A bracketed word step 1 took for a tag, with no title (or only a sequel
+    # mark like "³") after it, was the title: "[REC] (2007)", "[REC] 2",
+    # "[REC]³ Genesis". A known tag ("[NF] X") stays a tag, a number a number.
+    word = bracket.group(1).upper() if bracket else ''
+    if re.search(r'[A-Z]', word) and word not in STRIP_PREFIXES and (
+            len(name) < 2 or unicodedata.category(name[0]) == 'No'):
+        name = re.sub(r'\s+', ' ', bracket.group(0).lstrip() + name).strip(' -:')
+
     if not name or len(name) < 2:
         return None, None
 
-    # Reject if starts with lowercase (truncated title like "aptain America")
-    if name[0].islower():
+    # Reject a lower-case name whose start the steps above cut off, a truncated
+    # title ("12.to.Midnight.2024" -> "to Midnight"). A title that really starts
+    # lower-case, as the provider wrote it, is kept: "iCarly", "mother!", "mid90s".
+    if name[0].islower() and not labelled.startswith(name.split()[0]):
         return None, None
 
-    # Reject gibberish (long word with no vowels)
+    # Reject gibberish (long word with no vowels; "y" is one: "Psych", "Flynn")
     first_word = re.split(r'[\s:,\-]', name)[0]
     first_alpha = re.sub(r'[^a-zA-Z]', '', first_word)
-    if len(first_alpha) > 4 and not re.search(r'[aeiouAEIOU]', first_alpha):
+    if len(first_alpha) > 4 and not re.search(r'[aeiouyAEIOUY]', first_alpha):
         return None, None
 
     # Validate year range
