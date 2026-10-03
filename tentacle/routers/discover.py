@@ -3,6 +3,7 @@ Tentacle - Discover Router
 Trending, popular, upcoming content from TMDB + missing from user lists
 """
 
+import asyncio
 import hashlib
 import logging
 import threading
@@ -18,7 +19,7 @@ import httpx
 from models.database import get_db, get_setting, Movie, Series, ListSubscription, ListItem, DownloadRequest, LiveChannel, TentacleUser
 from routers.auth import get_user_from_request
 from services.cleaner import clean_list_title
-from services.ssrf import is_safe_url
+from services.ssrf import _url_host, is_safe_url
 from services.exceptions import TMDBConnectionError
 from services.tmdb import TMDBService
 
@@ -1377,9 +1378,10 @@ def _normalize_proxy_url(url: str) -> str:
 async def image_proxy(cache_key: str, url: str = ""):
     """Proxy TVDB images through the server to bypass CDN TLS fingerprinting."""
     url = _normalize_proxy_url(url)
-    # Strict host allowlist + public-IP check (substring matching like
-    # "thetvdb.com" in url is trivially bypassed, e.g. ?url=http://169.254.169.254/?x=thetvdb.com).
-    if not is_safe_url(url, allowed_hosts={"thetvdb.com"}):
+    # TVDB hosts only, before the disk cache is touched (this half of the check
+    # needs no DNS). Older versions cached any URL that merely contained
+    # "thetvdb.com", and nothing prunes the cache.
+    if _url_host(url, {"thetvdb.com"})[0] is None:
         raise HTTPException(status_code=400, detail="Invalid URL")
     # The cache file is named by cache_key, so it must be the key this URL was
     # minted with (_rewrite_tvdb_url). Otherwise anyone who can reach the
@@ -1390,7 +1392,9 @@ async def image_proxy(cache_key: str, url: str = ""):
         raise HTTPException(status_code=400, detail="cache key does not match url")
     cache_key = cache_key.lower()
 
-    # Check disk cache
+    # Check disk cache. A file is only written below, after the URL it is named
+    # for passed the full check, so a hit is served without a DNS lookup (and
+    # artwork keeps showing while the resolver is down).
     TVDB_PROXY_CACHE.mkdir(parents=True, exist_ok=True)
     # Extract extension from URL path (strip query params first)
     url_path = url.split("?")[0]
@@ -1403,6 +1407,13 @@ async def image_proxy(cache_key: str, url: str = ""):
         elif ext == ".webp":
             media_type = "image/webp"
         return Response(content=cached.read_bytes(), media_type=media_type)
+
+    # Strict host allowlist + public-IP check (substring matching like
+    # "thetvdb.com" in url is trivially bypassed, e.g. ?url=http://169.254.169.254/?x=thetvdb.com).
+    # It resolves the host with a blocking getaddrinfo: off the event loop, so
+    # a hanging resolver does not freeze every stream and request with it.
+    if not await asyncio.to_thread(is_safe_url, url, allowed_hosts={"thetvdb.com"}):
+        raise HTTPException(status_code=400, detail="Invalid URL")
 
     # Fetch from TVDB using httpx with HTTP/2 (better TLS fingerprint).
     # follow_redirects=False: a redirect could send us to an internal host that

@@ -301,7 +301,9 @@ async def _open(client: httpx.AsyncClient, method: str, url: str, headers: dict,
             raise HTTPException(502, "Redirect without Location header")
         from urllib.parse import urljoin
         current = urljoin(current, location)
-        if not guard(current):
+        # guard() resolves the host with a blocking getaddrinfo: off the event
+        # loop, so a hanging resolver does not stall every stream with it.
+        if not await asyncio.to_thread(guard, current):
             logger.warning(f"[VOD] Blocked redirect to non-public host: {current}")
             raise HTTPException(502, "Stream redirect points to a non-public host")
     raise HTTPException(502, "Too many redirects")
@@ -362,6 +364,10 @@ def _resolve(db, kind: str, token_file: str):
         raise HTTPException(404, "Unknown stream")
     path = "movie" if kind == "movie" else "series"
     url = f"{provider.server_url.rstrip('/')}/{path}/{provider.username}/{provider.password}/{parsed['stream_id']}.{parsed['container']}"
+    # Both resolve DNS with a blocking getaddrinfo, so the routes run this in
+    # a worker thread: a resolver that hangs (seconds per lookup in an outage)
+    # must not freeze every stream and recording with it. Every seek is a new
+    # request.
     guard = lan_origin_guard(provider.server_url)
     if not guard(url):
         raise HTTPException(502, "Stream URL points to a non-public host")
@@ -374,7 +380,7 @@ async def vod_head(kind: str, token_file: str, request: Request, db: Session = D
     """Headers only; no lease -- a probe, not a play. Still a provider
     connection, so with recording protection on it is refused while a
     recording runs, like a play would be."""
-    url, guard, ua, owner = _resolve(db, kind, token_file)
+    url, guard, ua, owner = await asyncio.to_thread(_resolve, db, kind, token_file)
     slots = livetv._stream_slots
     slots.set_protect(livetv._protect_recordings(db))
     if slots.protect and slots.recording_active():
@@ -405,7 +411,7 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
     """Stream one provider file through Tentacle: byte ranges passed through
     (so seeking works), resumed from where it stopped if the upstream drops,
     counted and ranked against live TV and recordings."""
-    url, guard, ua, owner = _resolve(db, kind, token_file)
+    url, guard, ua, owner = await asyncio.to_thread(_resolve, db, kind, token_file)
     # One playback per title PER CLIENT: two TVs on the same film are two
     # playbacks (two provider connections, two slots), not one that they
     # keep taking from each other.
