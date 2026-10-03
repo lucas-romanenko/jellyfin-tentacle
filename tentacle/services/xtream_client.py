@@ -28,6 +28,7 @@ and frequently times out. Always prefer per-category fetching.
 import logging
 import time
 from typing import Optional
+from urllib.parse import quote
 
 import requests
 
@@ -36,11 +37,25 @@ logger = logging.getLogger(__name__)
 DEFAULT_USER_AGENT = "TiviMate/4.7.0 (Linux; Android 12)"
 DEFAULT_TIMEOUT = 60
 
+# What an Xtream username or password keeps as typed in a URL (the
+# player_api.php query and the /live|movie|series/<user>/<pass>/ path):
+# letters, digits, "-._~" and these. Anything else is percent-encoded. Raw,
+# a '#' started a fragment (the panel got the password cut short and no
+# action), '&' and '+' split or changed a query value ('+' is a space to
+# PHP), '?' and '/' cut the stream path. A login made only of these
+# characters gives the same URLs, and .strm files, as before.
+_CRED_SAFE = "!$()*,;=:@"
+
+
+def quote_cred(value) -> str:
+    """An Xtream username or password as it goes into a URL, path or query."""
+    return quote(str(value), safe=_CRED_SAFE)
+
 
 def live_stream_url(server: str, username: str, password: str, stream_id, extension: str = "m3u8") -> str:
     """A live channel's URL. Built from the provider's settings alone, so a
     saved provider edit can rewrite its channels without asking the provider."""
-    return f"{server.rstrip('/')}/live/{username}/{password}/{stream_id}.{extension}"
+    return f"{server.rstrip('/')}/live/{quote_cred(username)}/{quote_cred(password)}/{stream_id}.{extension}"
 
 
 class XtreamClient:
@@ -72,7 +87,7 @@ class XtreamClient:
     def _api_url(self, action: Optional[str] = None, **extra) -> str:
         url = (
             f"{self.server}/player_api.php"
-            f"?username={self.username}&password={self.password}"
+            f"?username={quote_cred(self.username)}&password={quote_cred(self.password)}"
         )
         if action:
             url += f"&action={action}"
@@ -182,7 +197,7 @@ class XtreamClient:
         )
 
     def get_xmltv_url(self) -> str:
-        return f"{self.server}/xmltv.php?username={self.username}&password={self.password}"
+        return f"{self.server}/xmltv.php?username={quote_cred(self.username)}&password={quote_cred(self.password)}"
 
     # ── stream URLs ──────────────────────────────────────────────────────
 
@@ -190,10 +205,10 @@ class XtreamClient:
         return live_stream_url(self.server, self.username, self.password, stream_id, extension)
 
     def movie_stream_url(self, stream_id: int, extension: str = "mp4") -> str:
-        return f"{self.server}/movie/{self.username}/{self.password}/{stream_id}.{extension}"
+        return f"{self.server}/movie/{quote_cred(self.username)}/{quote_cred(self.password)}/{stream_id}.{extension}"
 
     def series_stream_url(self, stream_id: int, extension: str = "mp4") -> str:
-        return f"{self.server}/series/{self.username}/{self.password}/{stream_id}.{extension}"
+        return f"{self.server}/series/{quote_cred(self.username)}/{quote_cred(self.password)}/{stream_id}.{extension}"
 
     # ── cleanup ─────────────────────────────────────────────────────────��
 

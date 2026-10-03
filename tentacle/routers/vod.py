@@ -36,6 +36,7 @@ from sqlalchemy.orm import Session
 from models.database import Provider, get_db, get_setting
 from services import vod_tokens
 from services.ssrf import is_safe_url, lan_origin_guard
+from services.xtream_client import quote_cred
 from routers import livetv
 
 logger = logging.getLogger(__name__)
@@ -365,7 +366,8 @@ def _resolve(db, kind: str, token_file: str):
     if not provider or (provider.provider_type or "xtream") != "xtream" or not provider.server_url:
         raise HTTPException(404, "Unknown stream")
     path = "movie" if kind == "movie" else "series"
-    url = f"{provider.server_url.rstrip('/')}/{path}/{provider.username}/{provider.password}/{parsed['stream_id']}.{parsed['container']}"
+    url = (f"{provider.server_url.rstrip('/')}/{path}/{quote_cred(provider.username)}/{quote_cred(provider.password)}/"
+           f"{parsed['stream_id']}.{parsed['container']}")
     guard = lan_origin_guard(provider.server_url)
     if not guard(url):
         raise HTTPException(502, "Stream URL points to a non-public host")

@@ -362,6 +362,12 @@ User docs: `docs/features/live-tv.md`.
   when an Xtream account has live categories (an M3U one never gets it).
   `/api/live/provider` (GET, POST, test) has no form in the dashboard, and
   `user_agent` / `epg_url` no field: API only.
+- An Xtream username and password go into a URL (the player_api.php query,
+  the `/live|movie|series/<user>/<pass>/` path) only through `quote_cred()`
+  (`services/xtream_client.py`). Raw, a `#`, `&` or `+` broke the login
+  (the query), and a `#`, `?` or `/` broke the stream path. Letters, digits
+  and `-._~!$()*,;=:@` stay as typed, so those URLs and `.strm` files are
+  the same as before the encoding.
 
 ## Music (Lidarr + MusicBrainz; off by default)
 
