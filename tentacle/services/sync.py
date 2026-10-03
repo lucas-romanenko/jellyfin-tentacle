@@ -808,6 +808,14 @@ def _repair_movie_strm(client, stream: dict, tmdb_id: int, provider: Provider, d
             # #185 (E25): with two films of one title, only the row's own stream
             # may restore its file -- another listing could be its namesake.
             return False
+        # As for a series (_backfill_series_episodes): a missing or empty library
+        # root means storage is unavailable (a share that was not mounted), not
+        # that the files were lost. Writing there puts them on the wrong disk and
+        # makes the root look mounted to the VOD sweep, which then deletes the
+        # rows nothing restored that night.
+        root = strm.parent.parent
+        if not root.is_dir() or not any(root.iterdir()):
+            return False
         strm.parent.mkdir(parents=True, exist_ok=True)
         chown_path(strm.parent)
         _write_strm(strm, expected)
