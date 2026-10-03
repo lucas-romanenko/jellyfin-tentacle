@@ -677,7 +677,7 @@ function _buildSyncDetailHtml(d) {
 
   // 6. EPG
   if (d.epg_synced) {
-    html += _syncStepHtml('📡', 'Live TV EPG', 'ok', d.epg_details || 'EPG data refreshed');
+    html += _syncStepHtml('📡', 'Live TV EPG', 'ok', escapeAttr(d.epg_details || 'EPG data refreshed'));
   }
 
   // 7. Cleanup
@@ -4384,12 +4384,12 @@ function _renderCondValueInput(row, field, value) {
   const wrap = row.querySelector('[data-cond-val-wrap]');
   if (field === 'source') {
     const opts = (_conditionOptions?.sources || []).map(s =>
-      `<option value="${escapeAttr(s)}" ${s === value ? 'selected' : ''}>${s}</option>`
+      `<option value="${escapeAttr(s)}" ${s === value ? 'selected' : ''}>${escapeAttr(s)}</option>`
     ).join('');
     wrap.innerHTML = `<select class="form-input" data-cond-val><option value="">Select source...</option>${opts}</select>`;
   } else if (field === 'list') {
     const opts = (_conditionOptions?.lists || []).map(l =>
-      `<option value="${escapeAttr(l.tag)}" ${l.tag === value ? 'selected' : ''}>${l.name}</option>`
+      `<option value="${escapeAttr(l.tag)}" ${l.tag === value ? 'selected' : ''}>${escapeAttr(l.name)}</option>`
     ).join('');
     wrap.innerHTML = `<select class="form-input" data-cond-val><option value="">Select list...</option>${opts}</select>`;
   } else if (field === 'downloaded') {
