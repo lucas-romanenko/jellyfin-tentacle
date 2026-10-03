@@ -158,6 +158,9 @@ folder and your Radarr/Sonarr downloads folder pointing at the same place —
 downloaded episodes, subtitles and artwork in those folders are left untouched,
 and empty folders are tidied up afterwards.
 
+A provider can't be deleted while it is syncing: cancel the sync (or let it
+finish), then delete it.
+
 ## Safety Guards on Removal
 
 Content disappearing from a provider's catalog, or files disappearing from
