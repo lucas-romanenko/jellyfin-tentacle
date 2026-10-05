@@ -78,6 +78,14 @@ The UI flips the switch before the answer (optimistic).
 under `/api/smartlists/`: each writes the home JSON, notifies the plugin
 and bumps the version.
 
+**A provider is saved** (Providers page `PUT /api/providers/{id}`, or
+`POST /api/live/provider`): a new server, username or password on an Xtream
+provider rewrites its Live TV channels' `stream_url`
+(`{server}/live/{user}/{pass}/{id}.{ext}`, keeping each channel's format) in
+the same commit, `rewrite_xtream_channel_urls()` in `routers/livetv.py`; no
+request to the provider, no channel sync (#469). M3U channel URLs come from
+the playlist and only a channel sync changes them.
+
 ## Nightly sync
 
 `sync_schedule` (cron, default `0 3 * * *`), `run_scheduled_sync()` in

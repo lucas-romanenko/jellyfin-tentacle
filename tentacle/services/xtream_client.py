@@ -37,6 +37,12 @@ DEFAULT_USER_AGENT = "TiviMate/4.7.0 (Linux; Android 12)"
 DEFAULT_TIMEOUT = 60
 
 
+def live_stream_url(server: str, username: str, password: str, stream_id, extension: str = "m3u8") -> str:
+    """A live channel's URL. Built from the provider's settings alone, so a
+    saved provider edit can rewrite its channels without asking the provider."""
+    return f"{server.rstrip('/')}/live/{username}/{password}/{stream_id}.{extension}"
+
+
 class XtreamClient:
     """Synchronous Xtream Codes API client using requests.Session."""
 
@@ -181,7 +187,7 @@ class XtreamClient:
     # ── stream URLs ──────────────────────────────────────────────────────
 
     def live_stream_url(self, stream_id: int, extension: str = "m3u8") -> str:
-        return f"{self.server}/live/{self.username}/{self.password}/{stream_id}.{extension}"
+        return live_stream_url(self.server, self.username, self.password, stream_id, extension)
 
     def movie_stream_url(self, stream_id: int, extension: str = "mp4") -> str:
         return f"{self.server}/movie/{self.username}/{self.password}/{stream_id}.{extension}"

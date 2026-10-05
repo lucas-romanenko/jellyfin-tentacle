@@ -1737,6 +1737,7 @@ def save_live_provider(body: LiveProviderConfig, db: Session = Depends(get_db)):
         )
         db.add(provider)
     else:
+        before = _xtream_login(provider)
         if body.name is not None:
             provider.name = body.name
         if body.provider_type is not None:
@@ -1755,6 +1756,7 @@ def save_live_provider(body: LiveProviderConfig, db: Session = Depends(get_db)):
             provider.user_agent = body.user_agent
         if body.live_tv_enabled is not None:
             provider.live_tv_enabled = body.live_tv_enabled
+        rewrite_xtream_channel_urls(provider, before, db)
 
     db.commit()
     db.refresh(provider)
@@ -2493,6 +2495,41 @@ def _upsert_channels(
 
     db.flush()
     return {"new": new_count, "updated": updated_count, "total": len(seen_ids)}
+
+
+def _xtream_login(provider) -> tuple:
+    return (provider.server_url or "", provider.username or "", provider.password or "")
+
+
+def rewrite_xtream_channel_urls(provider, before: tuple, db: Session) -> int:
+    """After a provider save, point its Xtream channels at the saved server
+    and login (#469). An Xtream channel's URL carries both
+    ({server}/live/{user}/{pass}/{id}.{ext}), and a save changes only the
+    provider row: without this, every tune and recording kept the old login
+    or host until a channel sync. Writes what a sync with the new values
+    would, keeping each channel's stream format; no request to the provider.
+    `before` is _xtream_login(provider) from before the save. Doesn't commit.
+    Returns the number of channels rewritten."""
+    from services.xtream_client import live_stream_url
+
+    server, username, password = after = _xtream_login(provider)
+    if after == before or not server or (provider.provider_type or "xtream") != "xtream":
+        return 0
+    count = 0
+    for ch in db.query(LiveChannel).filter(LiveChannel.provider_id == provider.id).all():
+        # Only URLs a sync built: an M3U row left from an earlier provider
+        # type has no /live/<user>/<pass>/<stream_id>.<ext> to rebuild.
+        m = re.search(rf"/live/.+/{re.escape(ch.stream_id or '')}\.(\w+)$", ch.stream_url or "")
+        if not ch.stream_id or not m:
+            continue
+        url = live_stream_url(server, username, password, ch.stream_id, m.group(1))
+        if url != ch.stream_url:
+            ch.stream_url = url
+            ch.updated_at = datetime.utcnow()
+            count += 1
+    if count:
+        logger.info(f"[LiveTV] {provider.name}: {count} channel URLs now use the saved server and login")
+    return count
 
 
 # A provider that answers an M3U request with a truncated body, a maintenance
