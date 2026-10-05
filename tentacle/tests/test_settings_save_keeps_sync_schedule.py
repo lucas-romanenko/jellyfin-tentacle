@@ -55,6 +55,7 @@ function fresh() {
 }
 const document = { getElementById: id => els[id] || null };
 let stored = {}, rawFails = false, posts = [];
+const UNUSABLE = %(unusable)s;  // what get_schedule_info reports usable: false for
 async function api(path, opts) {
   if (opts && opts.method === 'POST') {
     posts.push(opts.body.settings);
@@ -62,7 +63,10 @@ async function api(path, opts) {
     return {};
   }
   if (path === '/api/settings/raw') { if (rawFails) throw new Error('down'); return Object.assign({}, stored); }
-  if (path === '/api/settings/schedule-info') return { cron: stored.sync_schedule || '0 3 * * *', timezone: '' };
+  if (path === '/api/settings/schedule-info') {
+    const cron = stored.sync_schedule || '0 3 * * *';
+    return { cron, usable: !UNUSABLE.includes(cron), timezone: '' };
+  }
   throw new Error('unexpected ' + path);
 }
 const tick = () => new Promise(r => setTimeout(r, 0));
@@ -95,6 +99,7 @@ function loadConnectionStatus() {}
 
 CUSTOM = ["0 */6 * * *", "0 3,15 * * *", "0 4 * * 1-5", "15 1 * * 0", "*/30 * * * *", "0 2 1 * *"]
 DAILY = ["0 3 * * *", "30 2 * * *", "5 23 * * *"]
+UNUSABLE = ["0 24 * * *", "0 3 * * 8"]  # #458
 
 
 @unittest.skipUnless(shutil.which("node"), "node is not installed")
@@ -102,7 +107,8 @@ class SettingsSaveKeepsSyncSchedule(unittest.TestCase):
     def pages(self, scenarios):
         fns = "\n".join(_fn(n) for n in ("cronToTime", "timeToCron", "loadScheduleInfo",
                                          "loadSettings", "saveSettings"))
-        run = subprocess.run(["node", "-"], input=SCRIPT % {"scenarios": json.dumps(scenarios), "fns": fns},
+        run = subprocess.run(["node", "-"], input=SCRIPT % {"scenarios": json.dumps(scenarios), "fns": fns,
+                                                              "unusable": json.dumps(UNUSABLE)},
                              capture_output=True, text=True, timeout=120)
         if run.returncode:
             raise AssertionError(run.stderr)
@@ -161,6 +167,16 @@ class SettingsSaveKeepsSyncSchedule(unittest.TestCase):
         self.assertTrue(out["hints"][-1].startswith("Runs every day at this time"), out["hints"][-1])
         for cron in DAILY:
             self.assertTrue(self.page({"sync_schedule": cron}, [])["hints"][0].startswith("Runs every day"))
+
+    def test_the_hint_says_an_unusable_schedule_runs_at_03_00(self):
+        """#458: "0 24 * * *" read "Runs every day at this time" next to 03:00
+        while nothing was scheduled; startup now runs it at 03:00."""
+        for cron in UNUSABLE:
+            with self.subTest(cron=cron):
+                out = self.page({"sync_schedule": cron}, [["time", "02:00"], ["save"]])
+                self.assertIn(f'Stored schedule "{cron}" is not a valid cron, so the sync runs every day at 03:00',
+                              out["hints"][0])
+                self.assertTrue(out["hints"][-1].startswith("Runs every day at this time"), out["hints"][-1])
 
     def test_property_schedule_changes_only_when_the_time_does(self):
         """1,000 seeds of random sessions (unrelated edits, time changes,

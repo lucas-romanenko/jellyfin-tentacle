@@ -450,20 +450,19 @@ def reschedule_main_sync(cron: str = None) -> bool:
             cron = get_setting(db, "sync_schedule", default)
         finally:
             db.close()
-    parts = (cron or "").strip().split()
-    if len(parts) != 5 and from_settings and cron != default:
-        # A stored value that is no schedule must not leave the install with
-        # no nightly job: run at the default time and say so.
-        logger.warning(f"Invalid sync schedule '{cron}' in settings — using the default '{default}'")
-        cron, parts = default, default.split()
-    if len(parts) != 5:
-        logger.warning(f"Invalid sync schedule '{cron}' — expected 5 cron fields")
-        return False
+    from services.sync_schedule import sync_trigger
     try:
-        trigger = CronTrigger(
-            minute=parts[0], hour=parts[1],
-            day=parts[2], month=parts[3], day_of_week=parts[4]
-        )
+        trigger = sync_trigger(cron)
+    except ValueError as e:
+        if not from_settings or cron == default:
+            logger.warning(f"Invalid sync schedule '{cron}': {e}")
+            return False
+        # A stored value that is no schedule ("0 24 * * *", or "0 3 * * 7"
+        # before #458) must not leave the install with no nightly job: run at
+        # the default time and say so.
+        logger.warning(f"Invalid sync schedule '{cron}' in settings ({e}) — using the default '{default}'")
+        cron, trigger = default, sync_trigger(default)
+    try:
         scheduler.add_job(run_scheduled_sync, trigger, id="main_sync", replace_existing=True,
                           misfire_grace_time=6 * 3600)
         logger.info(f"Sync scheduled: {cron}")
@@ -514,9 +513,16 @@ def get_schedule_info() -> dict:
         cron = get_setting(db, "sync_schedule", NON_EMPTY_DEFAULTS["sync_schedule"])
     finally:
         db.close()
+    from services.sync_schedule import sync_trigger
+    try:
+        sync_trigger(cron)
+        usable = True
+    except ValueError:
+        # Startup runs the default instead (reschedule_main_sync)
+        usable = False
     parts = cron.strip().split()
     time_str = "03:00"
-    if len(parts) >= 2:
+    if usable and len(parts) >= 2:
         try:
             time_str = f"{int(parts[1]):02d}:{int(parts[0]):02d}"
         except Exception:
@@ -535,6 +541,7 @@ def get_schedule_info() -> dict:
         pass
     return {
         "cron": cron,
+        "usable": usable,
         "time": time_str,
         "timezone": str(tz),
         "timezone_abbr": tz_abbr,
