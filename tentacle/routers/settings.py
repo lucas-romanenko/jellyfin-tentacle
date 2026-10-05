@@ -135,6 +135,15 @@ def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
             body.settings["youtube_proxy"] = traffic.normalize_proxy(body.settings["youtube_proxy"] or "")
         except ValueError as e:
             raise HTTPException(400, str(e))
+    if (body.settings.get("sync_schedule") or "").strip():
+        # Refused before anything is stored: a value the scheduler can't use
+        # answered success and left the old job running only until the next
+        # restart (#458). A blank one stores the default, as before.
+        from services.sync_schedule import sync_trigger
+        try:
+            sync_trigger(body.settings["sync_schedule"])
+        except ValueError as e:
+            raise HTTPException(400, f"Sync schedule '{body.settings['sync_schedule']}' is not a valid cron: {e}")
     for key, value in body.settings.items():
         # A secret sent back exactly as the masked listing showed it is unchanged
         if key in sensitive_keys and is_shown_form(value, get_setting(db, key, "") or ""):

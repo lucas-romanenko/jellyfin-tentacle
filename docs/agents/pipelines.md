@@ -93,6 +93,10 @@ the playlist and only a channel sync changes them.
 clock step) still runs once within 6 h (`misfire_grace_time`; the other
 daily jobs 1 h, everything else 5 min); APScheduler's default of 1 s dropped
 it. A container that is down at the trigger still skips that night.
+`services/sync_schedule.py` builds the trigger with cron's meaning
+(APScheduler counts 0 = Monday and refuses 7; day of week becomes day names,
+both day fields set becomes an `OrTrigger`). A stored value it refuses runs
+at the default with a warning; the settings form answers 400 for one.
 
 1. refresh list subscriptions; 2. VOD sync from active providers; 3. Radarr
 scan; 4. Sonarr scan (and Following state for every series); 5. recently

@@ -829,7 +829,10 @@ async function loadScheduleInfo() {
     // A cron that isn't "M H * * *" (set before this page showed a time, or
     // through the API) is kept by Save until the time is changed (#385).
     const daily = /^\d{1,2}\s+\d{1,2}\s+\*\s+\*\s+\*$/.test((info.cron || '').trim());
-    let txt = daily || !info.cron ? 'Runs every day at this time'
+    // One the scheduler can't use runs at the default 03:00 instead (#458).
+    let txt = info.usable === false
+      ? `Stored schedule "${info.cron}" is not a valid cron, so the sync runs every day at 03:00; a time set here replaces it`
+      : daily || !info.cron ? 'Runs every day at this time'
       : `Custom schedule "${info.cron}", kept as it is; a time set here replaces it with a daily sync`;
     if (info.timezone) {
       txt += ` · timezone ${info.timezone}`;
