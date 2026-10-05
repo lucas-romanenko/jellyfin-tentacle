@@ -2375,28 +2375,65 @@ def _sync_groups(provider_id: int, categories: list[dict], db: Session, channel_
     update_counts = channel_counts is not None
     if channel_counts is None:
         channel_counts = {}
-    existing = {
+    by_name = {
         g.name: g
         for g in db.query(LiveChannelGroup).filter(LiveChannelGroup.provider_id == provider_id).all()
     }
 
+    # Xtream category names aren't unique, but a group is (provider, name)
+    # with one category id (#462). Every category gets a group of its own:
+    # the one it already has, else its name if no other category has that
+    # name (the first listed wins; a group still follows its category to a
+    # new id), else "NAME (id)", stable when the provider reorders its list.
+    cats = {}
     for cat in categories:
-        name = cat.get("category_name", "")
-        cat_id = str(cat.get("category_id", ""))
-        count = channel_counts.get(cat_id, 0)
-        if name in existing:
-            existing[name].category_id = cat_id
-            if update_counts:
-                existing[name].channel_count = count
-        else:
-            db.add(LiveChannelGroup(
-                provider_id=provider_id,
-                name=name,
-                category_id=cat_id,
-                enabled=False,
-                channel_count=count,
-            ))
+        cats.setdefault(str(cat.get("category_id", "")), cat.get("category_name", ""))
+
+    claimed = set()
+    assigned = {}
+    for cat_id, name in cats.items():
+        for candidate in _group_names(name, cat_id):
+            g = by_name.get(candidate)
+            if g is None:
+                if candidate == name:
+                    continue
+                break
+            if g.category_id == cat_id and g.name not in claimed:
+                assigned[cat_id] = g
+                claimed.add(g.name)
+                break
+
+    for cat_id, name in cats.items():
+        if cat_id in assigned:
+            continue
+        for candidate in _group_names(name, cat_id):
+            g = by_name.get(candidate)
+            if g is None:
+                g = LiveChannelGroup(provider_id=provider_id, name=candidate,
+                                     category_id=cat_id, enabled=False)
+                db.add(g)
+                by_name[candidate] = g
+            elif candidate in claimed or (candidate != name and g.category_id != cat_id):
+                continue
+            g.category_id = cat_id
+            assigned[cat_id] = g
+            claimed.add(candidate)
+            break
+
+    for cat_id, g in assigned.items():
+        if update_counts or g.channel_count is None:
+            g.channel_count = channel_counts.get(cat_id, 0)
     db.flush()
+
+
+def _group_names(name: str, cat_id: str):
+    """The names a category's group may have, in order of preference."""
+    yield name
+    yield f"{name} ({cat_id})"
+    n = 2
+    while True:
+        yield f"{name} ({cat_id}) {n}"
+        n += 1
 
 
 # A provider's separator rows: "##### EVENTS #####", "=== SPORTS ===", "-----".
