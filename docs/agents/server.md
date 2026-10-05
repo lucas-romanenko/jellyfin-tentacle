@@ -278,6 +278,11 @@ User docs: `docs/features/live-tv.md`.
   channel sync chains into an EPG sync. The EPG (XMLTV, cached on disk) is
   stored for *all* provider channels, so newly enabled ones have a guide.
   Channels may share one `epg_channel_id` (one-to-many in the XMLTV output).
+- A group is unique on (provider, name) with one Xtream `category_id`, but
+  Xtream category names aren't unique: `_sync_groups` gives each category
+  its own group (the one already on it, else its name, first listed wins,
+  else `NAME (id)`). Matching by name alone crashed the sync or moved an
+  enabled group to the other category.
 - After an EPG sync Tentacle deletes and re-adds its XMLTV listing provider
   in Jellyfin, then runs RefreshGuide: re-POSTing a listing provider with
   the same id does *not* remap new channels. `services/jellyfin_guide.py`
