@@ -4835,10 +4835,21 @@ async function previewMigration() {
     const r = await api(`/api/radarr/migration/preview?from_id=${fromId}&to_id=${toId}`);
     const el = document.getElementById('migrate-preview');
     el.style.display = 'block';
-    el.innerHTML = `From: ${r.from_provider} (${r.current_movies} movies)<br>To: ${r.to_provider}<br>${r.note ? `<span style="color:var(--amber)">${r.note}</span>` : ''}${r.error ? `<span style="color:var(--red)">Error: ${r.error}</span>` : ''}`;
+    el.innerHTML = `From: ${escapeHtml(r.from_provider)} (${r.current_movies} movies, ${r.current_series} series)<br>To: ${escapeHtml(r.to_provider)}<br>`
+      + (r.error ? `<span style="color:var(--red)">Error: ${escapeHtml(r.error)}</span>`
+        : `${r.movies_rewritten} movies move${migrationKept(r)}`);
   } catch (e) {
     toast(e.message, 'error');
   }
+}
+
+// What stays with the old provider (#460): films the new one doesn't list,
+// films it can't safely take (namesakes, no .strm), and every series.
+function migrationKept(r) {
+  const films = (r.movies_not_found || 0) + (r.movies_skipped || 0);
+  const series = r.series_kept || 0;
+  if (!films && !series) return '';
+  return `; ${films} movies and ${series} series stay with ${escapeHtml(r.from_provider || 'the old provider')}`;
 }
 
 async function runMigration(dryRun) {
@@ -4848,7 +4859,7 @@ async function runMigration(dryRun) {
   if (!dryRun && !confirm('This will rewrite .strm files. Continue?')) return;
   try {
     const r = await api('/api/radarr/migration/run', { method: 'POST', body: { from_provider_id: fromId, to_provider_id: toId, dry_run: dryRun } });
-    toast(`Migration complete: ${r.movies_rewritten} movies rewritten, ${r.movies_not_found} not found`);
+    toast(`Migration complete: ${r.movies_rewritten} movies moved${migrationKept(r)}`);
     closeModal('modal-migrate');
     loadProviders();
   } catch (e) {
