@@ -2984,6 +2984,85 @@ def _update_group_counts(provider_id: int, db: Session):
 # ─── EPG sync ───────────────────────────────────────────────────────────────
 
 
+def _epg_provider_data(provider, all_channels) -> dict:
+    """What _run_epg_sync_background is given for one provider."""
+    return {
+        "id": provider.id,
+        "provider_type": provider.provider_type or "xtream",
+        "server_url": provider.server_url,
+        "username": provider.username,
+        "password": provider.password,
+        "user_agent": provider.user_agent or "TiviMate/4.7.0 (Linux; Android 12)",
+        "epg_url": provider.epg_url,
+        "channels": [
+            {"stream_id": ch.stream_id, "epg_channel_id": ch.epg_channel_id, "name": ch.name}
+            for ch in all_channels
+        ],
+        "enabled_count": sum(1 for ch in all_channels if ch.enabled),
+    }
+
+
+def _epg_feed_url(provider_data: dict) -> str | None:
+    """The XMLTV feed a guide sync reads: the provider's EPG URL, else Xtream's own."""
+    if provider_data.get("epg_url"):
+        return provider_data["epg_url"]
+    if provider_data["provider_type"] != "xtream":
+        return None
+    from services.xtream_client import XtreamClient
+    client = XtreamClient(
+        server=provider_data["server_url"],
+        username=provider_data["username"],
+        password=provider_data["password"],
+        user_agent=provider_data["user_agent"],
+    )
+    try:
+        return client.get_xmltv_url()
+    finally:
+        client.close()
+
+
+def _epg_channel_info(rows) -> list:
+    return [{"id": r.id, "name": r.name, "tvg_id": r.epg_channel_id,
+             "override": r.epg_id_override, "enabled": bool(r.enabled)} for r in rows]
+
+
+def _epg_sync_inputs(epg_url: str, chan_info: list) -> str | None:
+    """Everything a guide sync reads, as one hash: the feed URL, the cached
+    feed file, and each channel's override, tvg-id and name. None when the
+    feed is not in the fresh disk cache: a sync would download it again."""
+    import hashlib
+    import json
+    import os
+    from services.xmltv import _get_cache_path, _is_cache_fresh
+    path = _get_cache_path(epg_url)
+    try:
+        if not _is_cache_fresh(path):
+            return None
+        st = os.stat(path)
+    except OSError:
+        return None
+    channels = sorted((c["id"], c["name"], c["tvg_id"], c["override"]) for c in chan_info)
+    blob = json.dumps([epg_url, st.st_mtime_ns, st.st_size, channels])
+    return hashlib.sha256(blob.encode()).hexdigest()
+
+
+def _epg_resync_useless(db: Session, provider, missing: set) -> bool:
+    """True when a guide sync now would read exactly what the last successful
+    one read, and that one already left every id in `missing` without
+    programmes: running it again can't give those channels a guide (#466)."""
+    import json
+    try:
+        last = json.loads(get_setting(db, f"livetv_epg_synced_{provider.id}", "") or "null")
+    except ValueError:
+        return False
+    if not isinstance(last, dict) or not missing <= set(last.get("empty") or ()):
+        return False
+    rows = db.query(LiveChannel).filter(LiveChannel.provider_id == provider.id).all()
+    epg_url = _epg_feed_url(_epg_provider_data(provider, rows))
+    inputs = _epg_sync_inputs(epg_url, _epg_channel_info(rows)) if epg_url else None
+    return inputs is not None and inputs == last.get("inputs")
+
+
 @router.post("/api/live/sync-epg/{provider_id}", dependencies=_admin)
 def sync_epg(provider_id: int, db: Session = Depends(get_db)):
     """Sync EPG data for enabled channels only (runs in background)."""
@@ -3009,22 +3088,7 @@ def sync_epg(provider_id: int, db: Session = Depends(get_db)):
     if not all_channels:
         return {"success": False, "message": "No channels synced yet — run channel sync first"}
 
-    provider_type = provider.provider_type or "xtream"
-
-    provider_data = {
-        "id": provider.id,
-        "provider_type": provider_type,
-        "server_url": provider.server_url,
-        "username": provider.username,
-        "password": provider.password,
-        "user_agent": provider.user_agent or "TiviMate/4.7.0 (Linux; Android 12)",
-        "epg_url": provider.epg_url,
-        "channels": [
-            {"stream_id": ch.stream_id, "epg_channel_id": ch.epg_channel_id, "name": ch.name}
-            for ch in all_channels
-        ],
-        "enabled_count": enabled_count,
-    }
+    provider_data = _epg_provider_data(provider, all_channels)
 
     _set_sync_status(provider_id, {
         "phase": "epg",
@@ -3055,8 +3119,7 @@ def _run_epg_sync_background(provider_data: dict):
             # the feed's own channel list is in hand (#141).
             from services.epg_match import resolve_guide_ids
             rows = db.query(LiveChannel).filter(LiveChannel.provider_id == pid).all()
-            chan_info = [{"id": r.id, "name": r.name, "tvg_id": r.epg_channel_id,
-                          "override": r.epg_id_override, "enabled": bool(r.enabled)} for r in rows]
+            chan_info = _epg_channel_info(rows)
             epg_ids = ({(c["override"] or "").strip() for c in chan_info}
                        | {(c["tvg_id"] or "").strip() for c in chan_info}) - {""}
             if not chan_info:
@@ -3072,19 +3135,7 @@ def _run_epg_sync_background(provider_data: dict):
                 resolved.update(resolve_guide_ids(chan_info, feed_channels))
                 return {r["guide_id"] for r in resolved.values() if r["guide_id"]}
 
-            # Determine XMLTV URL
-            epg_url = provider_data.get("epg_url")
-            if not epg_url and provider_data["provider_type"] == "xtream":
-                from services.xtream_client import XtreamClient
-                client = XtreamClient(
-                    server=provider_data["server_url"],
-                    username=provider_data["username"],
-                    password=provider_data["password"],
-                    user_agent=provider_data["user_agent"],
-                )
-                epg_url = client.get_xmltv_url()
-                client.close()
-
+            epg_url = _epg_feed_url(provider_data)
             if not epg_url:
                 _set_sync_status(pid, {
                     "phase": "epg", "status": "error", "progress": 0,
@@ -3112,6 +3163,7 @@ def _run_epg_sync_background(provider_data: dict):
                     pass
 
             programs = None
+            inputs = None
             last_err = None
             for attempt in range(1, 4):
                 try:
@@ -3126,6 +3178,8 @@ def _run_epg_sync_background(provider_data: dict):
                         resolve_channels=_resolve,
                     )
                     if programs:
+                        # The feed file just read, before anything can replace it.
+                        inputs = _epg_sync_inputs(epg_url, chan_info)
                         break
                     last_err = "provider returned no programs for our channels"
                     logger.warning(f"[LiveTV] EPG attempt {attempt}/3: {last_err}")
@@ -3228,6 +3282,15 @@ def _run_epg_sync_background(provider_data: dict):
                 report["at"] = datetime.utcnow().isoformat() + "Z"
                 set_setting(db, f"livetv_epg_coverage_{pid}", json.dumps(report))
                 coverage_note = f" — {coverage_summary(report)}"
+
+            # What this sync read, and the guide ids it left empty: refresh-guide
+            # re-runs a sync only when that could fill one of them (#466).
+            import json
+            kept = {p["channel_id"] for p in programs}
+            set_setting(db, f"livetv_epg_synced_{pid}", json.dumps({
+                "inputs": inputs,
+                "empty": sorted({r.guide_epg_id for r in rows} - {None} - kept),
+            }))
 
             db.commit()
             log_activity(db, "epg_sync", f"EPG sync: {inserted} programs for {total} channels "
@@ -3580,6 +3643,11 @@ def refresh_jellyfin_guide(db: Session = Depends(get_db)):
         }
         missing = enabled_epg_ids - epg_with_data
         if missing:
+            provider = db.query(Provider).filter(Provider.id == pid).first()
+            if provider and _epg_resync_useless(db, provider, missing):
+                logger.info(f"[LiveTV] {len(missing)} enabled channels of provider {pid} have no guide in its feed; "
+                            f"nothing changed since the last EPG sync, not syncing again")
+                continue
             from services.provider_activity import recording_protected
             if recording_protected(db):
                 logger.warning(f"[LiveTV] {len(missing)} enabled channels have no EPG data, but a recording is "
@@ -3588,24 +3656,9 @@ def refresh_jellyfin_guide(db: Session = Depends(get_db)):
             logger.info(f"[LiveTV] {len(missing)} enabled channels missing EPG data for provider {pid} — triggering EPG sync")
             # Trigger EPG sync synchronously (inline, not background thread)
             # so Jellyfin gets fresh data when we refresh
-            provider = db.query(Provider).filter(Provider.id == pid).first()
             if provider:
                 all_channels = db.query(LiveChannel).filter(LiveChannel.provider_id == pid).all()
-                enabled_count = sum(1 for ch in all_channels if ch.enabled)
-                provider_data = {
-                    "id": provider.id,
-                    "provider_type": provider.provider_type or "xtream",
-                    "server_url": provider.server_url,
-                    "username": provider.username,
-                    "password": provider.password,
-                    "user_agent": provider.user_agent or "TiviMate/4.7.0 (Linux; Android 12)",
-                    "epg_url": provider.epg_url,
-                    "channels": [
-                        {"stream_id": ch.stream_id, "epg_channel_id": ch.epg_channel_id, "name": ch.name}
-                        for ch in all_channels
-                    ],
-                    "enabled_count": enabled_count,
-                }
+                provider_data = _epg_provider_data(provider, all_channels)
                 # Close current DB session before background sync uses its own
                 db.close()
                 _run_epg_sync_background(provider_data)
