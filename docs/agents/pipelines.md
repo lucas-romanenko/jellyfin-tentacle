@@ -78,6 +78,20 @@ The UI flips the switch before the answer (optimistic).
 under `/api/smartlists/`: each writes the home JSON, notifies the plugin
 and bumps the version.
 
+**A user is renamed in Jellyfin**: Tentacle learns it at their next
+dashboard sign-in (`login()` copies the Jellyfin name to `display_name`).
+That commit retires "<old name>'s Downloads" (so it comes off titles and a
+later user given the old name keeps theirs: `dynamic_tags` leaves out every
+current user's Downloads tag). Then `follow_user_rename()` in the background
+moves the tag on the titles they requested (rows, NFOs, Jellyfin, only those
+titles), and `sync_smartlists()` renames the playlist in place
+(`_follow_downloads_rename`: same folder, same Jellyfin id and entries, only
+Tentacle's own playlist renamed), so the home row and hero stay on it. If the
+background job fails the nightly catches up (the scans retag, the sync
+renames), but its playlist refresh runs first and can leave the playlist
+empty until the next refresh. The sync reads the name from the DB (`_user_display_name`), not a
+`TentacleUser` loaded earlier (#454).
+
 **A provider is saved** (Providers page `PUT /api/providers/{id}`, or
 `POST /api/live/provider`): a new server, username or password on an Xtream
 provider rewrites its Live TV channels' `stream_url`
