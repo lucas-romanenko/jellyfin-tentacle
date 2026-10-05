@@ -349,7 +349,9 @@ def dynamic_tags(db: Session) -> set:
     tags = {t for (t,) in db.query(ListSubscription.tag).distinct() if t}
     tags |= {t for (t,) in db.query(TagRule.output_tag).distinct() if t}
     tags |= retired_tags(db)
-    return tags - builtin_tags(db)
+    # A renamed user's old "<name>'s Downloads" is retired, but a user who
+    # has that name now still gets it from the Radarr/Sonarr scans (#454).
+    return tags - builtin_tags(db) - current_downloads_tags(db)
 
 
 def paused_tags(db: Session) -> set:
@@ -487,11 +489,56 @@ def tentacle_owned_tags(db: Session) -> set:
     owned |= retired_tags(db)
     # Each requester's "<name>'s Downloads": the Radarr/Sonarr scans keep it
     # on the rows they attribute, so one on an item no row carries is stale.
-    from models.database import TentacleUser
-    for (name,) in db.query(TentacleUser.display_name).distinct():
-        if name:
-            owned.add(f"{name}'s Downloads")
+    # A renamed user's old one is among the retired tags above (#454).
+    owned |= current_downloads_tags(db)
     return owned
+
+
+def downloads_tag(name: str) -> str:
+    """The tag, and the playlist, of one user's downloads ("My Downloads")."""
+    return f"{name}'s Downloads"
+
+
+def current_downloads_tags(db: Session) -> set:
+    """Every user's "<name>'s Downloads" under the name they have now."""
+    from models.database import TentacleUser
+    return {downloads_tag(name) for (name,) in db.query(TentacleUser.display_name).distinct() if name}
+
+
+def move_downloads_tag(db: Session, user_id: int, old_name: str, new_name: str) -> dict:
+    """Give a renamed user's requested titles their new "<name>'s Downloads"
+    in place of the old one, on the rows and in the NFOs (#454).
+
+    The Radarr/Sonarr scans would do the same, but until then the renamed
+    playlist (which queries the new tag) had nothing to match, and a user
+    given the old name next saw these titles in their own "My Downloads".
+    Returns {"Movie": {tmdb_id}, "Series": {tmdb_id}} of the titles changed,
+    for the Jellyfin push. Does not commit."""
+    from models.database import DownloadRequest
+    old, new = downloads_tag(old_name), downloads_tag(new_name)
+    owned = tentacle_owned_tags(db) | {old}
+    changed = {"Movie": set(), "Series": set()}
+    for request_type, media_type, model in (("movie", "Movie", Movie), ("series", "Series", Series)):
+        requested = {tid for (tid,) in db.query(DownloadRequest.tmdb_id).filter(
+            DownloadRequest.user_id == user_id, DownloadRequest.media_type == request_type)}
+        if not requested:
+            continue
+        for row in db.query(model).filter(model.tmdb_id.in_(requested)).all():
+            tags = list(row.tags or [])
+            if old not in tags:
+                continue
+            moved = []
+            for t in tags:
+                t = new if t == old else t
+                if t not in moved:
+                    moved.append(t)
+            try:
+                set_row_tags(row, moved, owned)
+            except Exception as e:
+                # The row is right; the next scan rewrites the NFO.
+                logger.warning(f"Could not rewrite the NFO of '{row.title}': {e}")
+            changed[media_type].add(row.tmdb_id)
+    return changed
 
 
 RETIRED_TAGS_SETTING = "tentacle_retired_tags"

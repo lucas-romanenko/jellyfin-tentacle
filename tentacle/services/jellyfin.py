@@ -1789,6 +1789,22 @@ class JellyfinService:
             return False
         return self.delete_item(playlist_id)
 
+    def rename_tentacle_playlist(self, playlist_id: str, name: str, user_id: str = None) -> bool:
+        """Rename a playlist in place (same id, same entries) only if it carries
+        Tentacle's mark, as for deletes (#152). True when it has that name
+        afterwards."""
+        item = self._owned_playlist(playlist_id, user_id)
+        if not item:
+            logger.warning(f"[Jellyfin] Cannot read playlist {playlist_id} to rename it")
+            return False
+        if item.get("Name") == name:
+            return True
+        if not is_tentacle_playlist(item):
+            logger.info(f"[Jellyfin] Not renaming playlist '{item.get('Name')}' ({playlist_id}): "
+                        f"Tentacle didn't make it")
+            return False
+        return self._post_item_update(item, _item_update_payload(item, Name=name), "rename")
+
     def delete_item(self, item_id: str) -> bool:
         """Delete an item (playlist, collection, etc.) from Jellyfin."""
         try:
@@ -2161,7 +2177,7 @@ TAG_PUSH_BATCH = 200
 TAG_PUSH_PAUSE_SECONDS = 1.0
 
 
-def sync_owned_tags(db, jf, log_prefix: str = "Pipeline") -> dict:
+def sync_owned_tags(db, jf, log_prefix: str = "Pipeline", only: dict = None) -> dict:
     """Bring every row's Tentacle tags on its Jellyfin item in line with the DB.
 
     Rules (#180):
@@ -2175,6 +2191,8 @@ def sync_owned_tags(db, jf, log_prefix: str = "Pipeline") -> dict:
       GET of the item, and nothing is written when that GET fails;
     - an item that needs nothing is not written, so a second run writes 0.
 
+    `only` ({"Movie": {tmdb_id}, "Series": {tmdb_id}}) limits it to those rows.
+
     Returns counts: written, unchanged, not_found, errors."""
     import time
     from models.database import Movie, Series
@@ -2182,8 +2200,13 @@ def sync_owned_tags(db, jf, log_prefix: str = "Pipeline") -> dict:
     owned = tentacle_owned_tags(db)
     counts = {"written": 0, "unchanged": 0, "not_found": 0, "errors": 0}
     for media_type, model in (("Movie", Movie), ("Series", Series)):
+        rows = db.query(model)
+        if only is not None:
+            if not only.get(media_type):
+                continue
+            rows = rows.filter(model.tmdb_id.in_(only[media_type]))
         lookup, title_lookup, per_id = jf.get_tmdb_lookup_with_fallback(media_type, with_counts=True)
-        for row in db.query(model).all():
+        for row in rows.all():
             try:
                 jf_item = lookup.get(row.tmdb_id)
                 by_title = False
