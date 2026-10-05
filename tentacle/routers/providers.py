@@ -291,6 +291,8 @@ def update_provider(provider_id: int, body: ProviderUpdate, db: Session = Depend
     p = db.query(Provider).filter(Provider.id == provider_id).first()
     if not p:
         raise HTTPException(404, "Provider not found")
+    from routers.livetv import _xtream_login, rewrite_xtream_channel_urls
+    before = _xtream_login(p)
     if body.name is not None:
         p.name = body.name
     if body.provider_type is not None:
@@ -315,6 +317,9 @@ def update_provider(provider_id: int, body: ProviderUpdate, db: Session = Depend
         p.active = body.active
     if body.require_tmdb_match is not None:
         p.require_tmdb_match = body.require_tmdb_match
+    # A new server or login reaches the Live TV channels now, not at the
+    # next channel sync (#469)
+    rewrite_xtream_channel_urls(p, before, db)
     db.commit()
     return {"success": True}
 
