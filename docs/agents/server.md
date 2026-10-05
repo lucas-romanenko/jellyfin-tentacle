@@ -33,6 +33,12 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   (uvicorn's access log included): Xtream paths and any query parameter
   named like a secret (`*secret*`, `*token*`, `*password*`, `*api_key*`,
   `key`, ...). A new credential in a URL needs such a name, or a rule there.
+- One worker, one event loop: anything blocking in an `async def` freezes
+  every stream, recording and request. The SSRF guards (`services/ssrf.py`:
+  `is_safe_url`, `lan_origin_guard` and the guards it returns) resolve DNS
+  with a blocking `getaddrinfo`, so async code calls them through
+  `asyncio.to_thread` (#371, #464); `url_host_allowed` is the allowlist
+  half, no lookup.
 
 ## Auth and users (`routers/auth.py`)
 

@@ -112,7 +112,9 @@ async def _send_checked(client, url: str, headers: dict, guard=None):
         if not location:
             raise HTTPException(502, "Redirect without Location header")
         current = urljoin(current, location)
-        if not guard(current):
+        # The guard resolves DNS with a blocking getaddrinfo: off the event
+        # loop, so a resolver that hangs doesn't freeze every stream (#464).
+        if not await asyncio.to_thread(guard, current):
             logger.warning(f"[LiveTV] Blocked redirect to non-public host: {current}")
             raise HTTPException(502, "Stream redirect points to a non-public host")
     raise HTTPException(502, "Too many redirects")
@@ -3986,7 +3988,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
             # the worker reads it on its usual retry terms.
             for _hop in range(_MAX_VARIANT_HOPS):
                 variant = _select_hls_variant(playlist_text, playlist_base)
-                if not variant or not guard(variant):
+                if not variant or not await asyncio.to_thread(guard, variant):
                     break
                 placeholder = _placeholder_name(variant)
                 if placeholder:
@@ -4282,21 +4284,21 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
         failing_since = None
         backoff = BACKOFF_START
         # guard() resolves the host with a blocking getaddrinfo. Called for
-        # every playlist line on every reload it puts N synchronous lookups on
-        # the event loop every few seconds per stream; one resolver stall would
-        # freeze every stream. The answer depends only on the origin, so resolve
-        # each origin once for the life of this stream.
+        # every playlist line on every reload it would put N lookups on every
+        # stream every few seconds. The answer depends only on the origin, so
+        # resolve each origin once for the life of this stream, in a worker
+        # thread: a resolver that hangs must not freeze every stream (#464).
         from urllib.parse import urlparse as _urlparse
         _origin_verdicts: dict = {}
 
-        def line_guard(url: str) -> bool:
+        async def line_guard(url: str) -> bool:
             try:
                 p = _urlparse(url)
                 key = (p.scheme, (p.hostname or "").lower(), p.port)
             except ValueError:
-                return guard(url)
+                return await asyncio.to_thread(guard, url)
             if key not in _origin_verdicts:
-                _origin_verdicts[key] = guard(url)
+                _origin_verdicts[key] = await asyncio.to_thread(guard, url)
             return _origin_verdicts[key]
         # When the playlist now in hand was read; reloads are timed from here.
         playlist_loaded_at = asyncio.get_running_loop().time()
@@ -4612,7 +4614,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     if hop == _MAX_VARIANT_HOPS:
                         logger.error(f"[LiveTV] Too many HLS variant hops for channel {channel_id}")
                         return
-                    if not line_guard(variant):
+                    if not await line_guard(variant):
                         logger.warning(
                             f"[LiveTV] Blocked HLS variant on non-public host for "
                             f"channel {channel_id}: {variant}")
@@ -4683,7 +4685,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         if media_seq is not None:
                             chunk_seq[chunk_url] = media_seq + uri_index
                         uri_index += 1
-                        if not line_guard(chunk_url):
+                        if not await line_guard(chunk_url):
                             logger.warning(f"[LiveTV] Skipping HLS chunk on non-public host for channel {channel_id}: {chunk_url}")
                             continue
                         chunk_urls.append(chunk_url)
