@@ -727,49 +727,83 @@ def _merge_source_tag(tmdb_id: int, media_type: str, source_tag: str, provider_i
             pass  # NFO update is best-effort
 
 
-def _plays_delisted_episode(strm_file: Path, client, listed: set) -> bool:
-    """True when this episode .strm plays an episode of THIS Xtream provider
-    whose id the show no longer lists (#263): the provider replaced the upload
-    under a new id, and the old one plays nothing. The file is keyed by its
-    SxxEyy, so the episode listed there now is the one to play. Not for M3U
-    (its ids are made from the URL) or a link that is not ours."""
-    if not isinstance(client, XtreamClient) or not listed:
-        return False
+def _our_episode_id(strm_file: Path, client) -> Optional[int]:
+    """The episode id this .strm plays when it is an episode of THIS Xtream
+    provider, else None. Not for M3U (its ids are made from the URL) or a
+    link that is not ours."""
+    if not isinstance(client, XtreamClient):
+        return None
     try:
         current = strm_file.read_text(encoding="utf-8").strip()
     except (OSError, UnicodeDecodeError):
-        return False
+        return None
     from urllib.parse import urlparse
     from services import vod_tokens
     m = vod_tokens._TOKEN_URL.search(current)
     if m:
-        return (m.group(1) == "series" and int(m.group(2)) == getattr(client, "provider_id", None)
-                and int(m.group(3)) not in listed)
+        ours = m.group(1) == "series" and int(m.group(2)) == getattr(client, "provider_id", None)
+        return int(m.group(3)) if ours else None
     host = (urlparse(client.server).hostname or "").lower()
     ref = _direct_ref(current, embedded=True, prefix=urlparse(client.server).path or "")
-    return ref is not None and ref[0] == host and ref[1] == "series" and ref[2] not in listed
+    return ref[2] if ref is not None and ref[0] == host and ref[1] == "series" else None
 
 
-def _write_episode_strms(client: "XtreamClient", episodes: dict, show_dir: Path, folder_name: str) -> int:
+class _EpisodeSlots:
+    """The episodes each listing of a show offers at each SxxEyy file, so a
+    file playing an id listed there by none of them can be repointed (#263):
+    the provider replaced the upload under a new id, or renumbered it (the
+    old id now sits at another number). The file is keyed by its SxxEyy, so
+    the episode listed there now is the one to play.
+
+    A provider can list one show under several series ids (an EN and a DE
+    category) that match one show folder. Judged per listing, each one took
+    the other's ids for delisted and the files flipped twice a night (#376),
+    so the series sync collects every listing and settles once, after a
+    complete fetch. A file whose id is listed at its number by any listing
+    stays as it is."""
+
+    def __init__(self):
+        self.offers = {}      # strm path -> [(episode id, stream url), ...] in listing order
+        self.unsure = set()   # show folders with a listing we couldn't read
+
+    def offer(self, strm_file: Path, ep_id: int, url: str) -> None:
+        self.offers.setdefault(strm_file, []).append((ep_id, url))
+
+    def unknown(self, show_dir: Path) -> None:
+        self.unsure.add(show_dir)
+
+    def settle(self, client) -> int:
+        """Repoint the files that play an id no listing offers at their number."""
+        rewritten = 0
+        for strm_file, offered in self.offers.items():
+            if strm_file.parent.parent in self.unsure or not strm_file.exists() or _strm_is_blank(strm_file):
+                continue
+            current = _our_episode_id(strm_file, client)
+            if current is None or current in {ep_id for ep_id, _ in offered}:
+                continue
+            _write_strm(strm_file, offered[0][1])
+            chown_path(strm_file)
+            rewritten += 1
+            logger.info(f"[Sync] Rewrote {strm_file.name}: its old episode id is no longer listed at this number")
+        return rewritten
+
+
+def _write_episode_strms(client: "XtreamClient", episodes: dict, show_dir: Path, folder_name: str,
+                         slots: Optional[_EpisodeSlots] = None) -> int:
     """Write .strm files for any episodes that don't already exist on disk.
 
     Returns the number of NEW episode files written. Safe to call on an
     existing series to back-fill newly-added seasons/episodes (idempotent).
-    An existing file is rewritten only when it plays the same stream in
-    another form, or plays another provider (a takeover, #154).
+    An existing file is rewritten when it plays the same stream in another
+    form, plays another provider (a takeover, #154), or plays an id no longer
+    listed at its number (#263, see _EpisodeSlots). That last one is left to
+    the caller's `slots` when given: the series sync settles it once all
+    listings of the show are read.
     """
     ep_count = 0
-    # Every episode id the show lists now (#263: a file playing another is stale)
-    listed = set()
-    try:
-        for eps in episodes.values():
-            if isinstance(eps, list) and eps and isinstance(eps[0], list):
-                eps = eps[0]
-            for ep in eps if isinstance(eps, list) else ():
-                if isinstance(ep, dict):
-                    listed.add(int(ep.get("id")))
-    except (TypeError, ValueError):
-        listed = set()   # an id we can't read: can't tell what is gone
+    own = slots is None
+    if own:
+        slots = _EpisodeSlots()
     for season_num, eps in episodes.items():
         if isinstance(eps, list) and eps and isinstance(eps[0], list):
             eps = eps[0]
@@ -812,10 +846,12 @@ def _write_episode_strms(client: "XtreamClient", episodes: dict, show_dir: Path,
                 _write_strm(strm_file, expected)
                 chown_path(strm_file)
                 logger.info(f"[Sync] Rewrote {strm_file.name}: stream address changed")
-            elif _plays_delisted_episode(strm_file, client, listed):
-                _write_strm(strm_file, expected)
-                chown_path(strm_file)
-                logger.info(f"[Sync] Rewrote {strm_file.name}: its old episode id is no longer listed")
+            try:
+                slots.offer(strm_file, int(ep_id), expected)
+            except (TypeError, ValueError):
+                slots.unknown(show_dir)   # an id we can't read: can't tell what is gone
+    if own:
+        slots.settle(client)
     return ep_count
 
 
@@ -885,13 +921,14 @@ def _backfill_series_episodes(
     tmdb_id: int,
     provider: Provider,
     db: Session,
+    slots: Optional[_EpisodeSlots] = None,
 ) -> int:
     """For an EXISTING VOD series owned by this provider, fetch series info and
     write any newly-added season/episode .strm files. Returns count of new files.
 
     No-ops for series not owned by this provider or without a known folder.
     Best-effort: any provider/IO error is swallowed so a single bad series
-    doesn't break the category batch.
+    doesn't break the category batch. `slots`: see _write_episode_strms.
     """
     record = db.query(Series).filter(Series.tmdb_id == tmdb_id).first()
     if not record or record.provider_id != provider.id:
@@ -921,6 +958,8 @@ def _backfill_series_episodes(
         if isinstance(episodes, list):
             episodes = {"1": episodes}
         if not episodes:
+            if slots is not None:
+                slots.unknown(show_dir)
             return 0
         if recreate:
             show_dir.mkdir(parents=True, exist_ok=True)
@@ -935,12 +974,14 @@ def _backfill_series_episodes(
             chown_path(nfo)
             logger.info(f"[Sync] Restored missing folder for existing series '{record.title}'")
         folder_name = show_dir.name
-        new_eps = _write_episode_strms(client, episodes, show_dir, folder_name)
+        new_eps = _write_episode_strms(client, episodes, show_dir, folder_name, slots)
         if new_eps:
             record.date_updated = datetime.utcnow()
             logger.info(f"[Sync] Back-filled {new_eps} new episode(s) for existing series '{record.title}'")
         return new_eps
     except Exception as e:
+        if slots is not None:
+            slots.unknown(show_dir)   # this listing's episodes are unknown: repoint nothing
         logger.debug(f"[Sync] Episode back-fill failed for tmdb_id={tmdb_id}: {e}")
         return 0
 
@@ -954,7 +995,7 @@ TAKEOVER = "takeover"
 
 
 def _take_over_files(db: Session, media_type: str, tmdb_id: int, client, item: dict,
-                     provider: Provider) -> None:
+                     provider: Provider, slots: Optional[_EpisodeSlots] = None) -> None:
     """Point a title a higher-priority provider just took over at that provider:
     the same repairs every later sync runs (see _strm_plays_other_provider),
     so paths and Jellyfin items stay. Tags are left alone: the old provider
@@ -963,7 +1004,7 @@ def _take_over_files(db: Session, media_type: str, tmdb_id: int, client, item: d
     if media_type == "movie":
         _repair_movie_strm(client, item, tmdb_id, provider, db)
     else:
-        _backfill_series_episodes(client, item, tmdb_id, provider, db)
+        _backfill_series_episodes(client, item, tmdb_id, provider, db, slots)
     logger.info(f"[Sync] tmdb:{tmdb_id} now plays from {provider.name} (higher priority)")
 
 
@@ -2796,6 +2837,8 @@ def _sync_series(
     }
     failed_lookups = _FailedLookups(db, provider.id, "series")
     lookup_now = datetime.utcnow()
+    # What every listing offers at each episode file; settled after the loop (#376)
+    slots = _EpisodeSlots()
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -2921,7 +2964,7 @@ def _sync_series(
                     _merge_source_tag(known_id, "series", cat.source_tag, provider.id, db)
                     seen_ids_all.add(known_id)
                     # Existing VOD series — back-fill any new seasons/episodes
-                    _backfill_series_episodes(client, series, known_id, provider, db)
+                    _backfill_series_episodes(client, series, known_id, provider, db, slots)
                     cat_existing += 1
                     stats["existing"] += 1
                     if item_idx % 10 == 0 or item_idx == total_in_cat:
@@ -2954,7 +2997,7 @@ def _sync_series(
             if tmdb_id in seen_tmdb_ids or tmdb_id in existing_provider_tmdb_ids:
                 _merge_source_tag(tmdb_id, "series", cat.source_tag, provider.id, db)
                 # Existing VOD series — back-fill any new seasons/episodes
-                _backfill_series_episodes(client, series, tmdb_id, provider, db)
+                _backfill_series_episodes(client, series, tmdb_id, provider, db, slots)
                 cat_existing += 1
                 stats["existing"] += 1
                 if item_idx % 10 == 0 or item_idx == total_in_cat:
@@ -2968,7 +3011,7 @@ def _sync_series(
                 existing_provider_tmdb_ids.add(tmdb_id)
                 _merge_source_tag(tmdb_id, "series", cat.source_tag, provider.id, db)
                 # Existing VOD series — back-fill any new seasons/episodes
-                _backfill_series_episodes(client, series, tmdb_id, provider, db)
+                _backfill_series_episodes(client, series, tmdb_id, provider, db, slots)
                 cat_existing += 1
                 stats["existing"] += 1
                 if item_idx % 10 == 0 or item_idx == total_in_cat:
@@ -2984,7 +3027,7 @@ def _sync_series(
             dup_answer = check_and_record_duplicate(tmdb_id, "series", f"provider_{provider.id}", str(show_dir),
                                                     provider, db)
             if dup_answer == TAKEOVER:
-                _take_over_files(db, "series", tmdb_id, client, series, provider)
+                _take_over_files(db, "series", tmdb_id, client, series, provider, slots)
             if dup_answer:
                 cat_existing += 1
                 stats["existing"] += 1
@@ -3025,7 +3068,7 @@ def _sync_series(
                 chown_path(nfo_file)
 
                 # Write episode strm files
-                ep_count = _write_episode_strms(client, episodes, show_dir, folder_name)
+                ep_count = _write_episode_strms(client, episodes, show_dir, folder_name, slots)
 
                 # Record in DB
                 series_record = Series(
@@ -3106,6 +3149,11 @@ def _sync_series(
             f"  {cat.category_name}: +{cat_new} new, "
             f"{cat_existing} existing, {cat_skipped} skipped"
         )
+
+    # A listing in an unread category may be the one an episode file plays:
+    # repoint episodes only when every listing was read, as for films (#263).
+    if fetch_ok:
+        slots.settle(client)
 
     logger.info(
         f"Series complete: {stats['new']} new, {stats['existing']} existing, "
