@@ -267,7 +267,7 @@ def run_scheduled_sync():
         logger.info("Syncing Live TV EPG data")
         try:
             from models.database import LiveChannel
-            from routers.livetv import _run_epg_sync_background, live_tv_providers
+            from routers.livetv import _epg_provider_data, _run_epg_sync_background, live_tv_providers
             from services.provider_activity import wait_for_recordings, EPG_WAIT_FOR_RECORDING_SECONDS
             epg_may_download = True
             live_providers = live_tv_providers(db)
@@ -278,22 +278,9 @@ def run_scheduled_sync():
                 all_channels = db.query(LiveChannel).filter(LiveChannel.provider_id == lp.id).all()
                 if not all_channels:
                     continue
-                enabled_count = sum(1 for ch in all_channels if ch.enabled)
-                provider_data = {
-                    "id": lp.id,
-                    "provider_type": lp.provider_type or "xtream",
-                    "server_url": lp.server_url,
-                    "username": lp.username,
-                    "password": lp.password,
-                    "user_agent": lp.user_agent or "TiviMate/4.7.0 (Linux; Android 12)",
-                    "epg_url": lp.epg_url,
-                    "channels": [
-                        {"stream_id": ch.stream_id, "epg_channel_id": ch.epg_channel_id, "name": ch.name}
-                        for ch in all_channels
-                    ],
-                    "enabled_count": enabled_count,
-                }
-                logger.info(f"EPG sync for '{lp.name}': {len(all_channels)} channels ({enabled_count} enabled)")
+                provider_data = _epg_provider_data(lp, all_channels)
+                logger.info(f"EPG sync for '{lp.name}': {len(all_channels)} channels "
+                            f"({provider_data['enabled_count']} enabled)")
                 # Only trigger the Jellyfin guide refresh if the sync actually
                 # produced data — refreshing after a failed sync makes Jellyfin
                 # re-ingest a draining/stale guide for nothing.

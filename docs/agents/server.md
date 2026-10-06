@@ -344,6 +344,12 @@ User docs: `docs/features/live-tv.md`.
   does it under one lock, decides from Jellyfin's config whether the copy
   was saved (Jellyfin 10.11 can save it and answer 500), and keeps one
   provider per Path, deleting leftover copies (#274).
+- `POST /api/live/refresh-guide` first runs the EPG sync inline when an
+  enabled channel's guide id has no programmes, unless that can't help: a
+  successful sync stores in `livetv_epg_synced_<pid>` a hash of what it read
+  (feed URL, cached feed file, each channel's override, tvg-id and name) and
+  the guide ids it left empty. Same hash and every missing id among those:
+  no re-run (a tvg-id the feed lacks would re-run it on every call, #466).
 - Provider fields: `provider_type` (xtream, m3u_url, m3u_file),
   `user_agent`, `epg_url`, `require_tmdb_match`, `live_tv_enabled`. The
   dashboard adds providers only in Settings → Providers, and one row serves
