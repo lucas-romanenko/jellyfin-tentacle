@@ -34,6 +34,12 @@ The code wins where they differ. Internals: [server.md](server.md).
 Jellyfin item refresh with `ReplaceAllMetadata=false` (true would wipe the
 tags; an older note said true) → playlist refresh (all playlists: the
 webhook can't know which) → home config → plugin notified → version bumped.
+One pass per film at a time: an event for a film whose pass still runs (it
+waits its turn for the scan) is queued and runs after it in the same thread,
+never dropped; queued events make one pass, Download outranking MovieAdded
+(#380). A quality upgrade (`isUpgrade`, Radarr and Sonarr) gets the pass
+but no second "ready to watch"; a bad copy being replaced still gets "A new
+copy of ... is ready to watch".
 
 **Radarr deletes a movie** (MovieDelete): DB record and `DownloadRequest`s
 removed, then `remove_item_from_playlists()` for every user in the
