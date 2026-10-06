@@ -100,7 +100,12 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   Radarr/Sonarr scans' removals, and after each scan any tombstone left
   without a row (`services/duplicates.drop_orphan_tombstones`), so the VOD
   copy can come back.
-  Keep VOD (`routers/duplicates.py:_delete_downloaded_copy`) deletes the
+  Keep VOD first needs the VOD copy on disk (`services/duplicates.vod_copy_on_disk`:
+  a provider source's `.strm`, or a show folder with one; 409 otherwise):
+  Keep Downloaded deletes the `.strm` before it saves the resolution, so a
+  restart in between leaves it pending without one, and a film downloaded
+  first never gets its provider `.strm`.
+  It (`routers/duplicates.py:_delete_downloaded_copy`) deletes the
   imported files through Radarr's `moviefile` / Sonarr's `episodefile/bulk`
   API (never a `.strm`: Sonarr 4 lists Tentacle's `.strm` files as episode
   files), then removes the title with `deleteFiles=false` when its folder is
