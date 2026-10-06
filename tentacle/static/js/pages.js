@@ -5983,66 +5983,6 @@ function copyLiveSetup(type, btn) {
   });
 }
 
-// ── Provider form ─────────────────────────────────────────────────────────
-
-function fillProviderForm(p) {
-  document.getElementById('live-provider-type').value = p.provider_type || 'xtream';
-  document.getElementById('live-server-url').value = p.server_url || '';
-  document.getElementById('live-username').value = p.username || '';
-  document.getElementById('live-password').value = p.password || '';
-  document.getElementById('live-m3u-url').value = p.m3u_url || '';
-  document.getElementById('live-epg-url').value = p.epg_url || '';
-  document.getElementById('live-user-agent').value = p.user_agent || '';
-  onLiveTypeChange();
-}
-
-function onLiveTypeChange() {
-  const type = document.getElementById('live-provider-type').value;
-  document.getElementById('live-xtream-fields').style.display = type === 'xtream' ? '' : 'none';
-  document.getElementById('live-m3u-fields').style.display = type !== 'xtream' ? '' : 'none';
-}
-
-async function saveLiveProvider() {
-  const type = document.getElementById('live-provider-type').value;
-  const body = {
-    provider_type: type,
-    server_url: document.getElementById('live-server-url').value,
-    username: document.getElementById('live-username').value,
-    password: document.getElementById('live-password').value,
-    m3u_url: document.getElementById('live-m3u-url').value,
-    epg_url: document.getElementById('live-epg-url').value,
-    user_agent: document.getElementById('live-user-agent').value,
-    live_tv_enabled: true,
-  };
-
-  try {
-    const res = await api('/api/live/provider', { method: 'POST', body });
-    liveState.providerId = res.provider_id;
-    toast('Provider saved', 'success');
-  } catch (e) {
-    toast(`Save failed: ${e.message}`, 'error');
-  }
-}
-
-async function testLiveProvider() {
-  const el = document.getElementById('live-test-result');
-  el.innerHTML = '<span style="color:var(--amber)">Testing...</span>';
-  try {
-    const res = await api('/api/live/provider/test', { method: 'POST' });
-    if (res.success) {
-      let info = '';
-      if (res.info) {
-        info = ` — ${res.info.status || ''}, max ${res.info.max_connections || '?'} connections`;
-      }
-      el.innerHTML = `<span style="color:var(--green)">Connected${info}</span>`;
-    } else {
-      el.innerHTML = `<span style="color:var(--red)">${res.message}</span>`;
-    }
-  } catch (e) {
-    el.innerHTML = `<span style="color:var(--red)">${e.message}</span>`;
-  }
-}
-
 function renderLiveStats(data) {
   const el = document.getElementById('live-stats');
   el.innerHTML = `
@@ -7347,7 +7287,7 @@ async function loadHealthDeletions() {
     loadDiscoverPage, loadDiscover, setDiscoverType, switchDiscoverSection, selectStreamingProvider, selectGenre, setGenreMode, selectList, showDiscoverDetail,
     onDiscoverSearchInput, clearDiscoverSearch,
     // Live TV
-    loadLiveTV, showLiveTab, onLiveTypeChange, saveLiveProvider, testLiveProvider,
+    loadLiveTV, showLiveTab,
     liveSyncGroups, liveSyncChannels, liveSyncEpg, fillSetupUrls, updateSetupUrls, copyLiveSetup, saveSetupAddress, editSetupAddress,
     toggleLiveGroup, toggleAllGroups, saveLiveGroups, filterLiveGroups,
     loadLiveChannels, toggleLiveChannel, renameLiveChannel, setLiveChannelGuideId, toggleAllChannels, saveLiveChannels, searchLiveChannels, filterLiveChannels, filterLiveChannelsByEpg, liveChPage,

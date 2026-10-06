@@ -297,8 +297,12 @@ User docs: `docs/features/live-tv.md`.
   was saved (Jellyfin 10.11 can save it and answer 500), and keeps one
   provider per Path, deleting leftover copies (#274).
 - Provider fields: `provider_type` (xtream, m3u_url, m3u_file),
-  `user_agent`, `epg_url`, `require_tmdb_match`, `live_tv_enabled` (VOD and
-  Live TV providers share the table; the flag keeps them apart).
+  `user_agent`, `epg_url`, `require_tmdb_match`, `live_tv_enabled`. The
+  dashboard adds providers only in Settings → Providers, and one row serves
+  VOD and Live TV: `POST /api/providers/{id}/test` sets `live_tv_enabled`
+  when an Xtream account has live categories (an M3U one never gets it).
+  `/api/live/provider` (GET, POST, test) has no form in the dashboard, and
+  `user_agent` / `epg_url` no field: API only.
 
 ## Music (Lidarr + MusicBrainz; off by default)
 
