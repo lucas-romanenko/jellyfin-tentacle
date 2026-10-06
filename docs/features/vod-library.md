@@ -15,7 +15,7 @@ The result: your provider's content appears in Jellyfin as if it were a native l
 
 ## Adding a Provider
 
-Go to the **VOD** page in Tentacle and click **Add Provider**.
+Go to **Settings → Providers** in Tentacle and click **+ Add Provider**. The same provider also serves [Live TV](live-tv.md) when it is an Xtream provider whose account has live channels.
 
 ### Xtream API (Recommended)
 
@@ -41,7 +41,7 @@ For locally hosted M3U files:
 - **M3U File** — Path to the M3U file
 
 !!! tip "Test first"
-    Click the **Test** button on a provider card to verify the connection before syncing. This only tests connectivity — it doesn't download any content.
+    Click the **Test** button on the provider's card in Settings → Providers to verify the connection before syncing. This only tests connectivity — it doesn't download any content.
 
 ## Selecting Categories
 
@@ -120,7 +120,7 @@ These tags are written into the NFO files and are what power the [auto playlists
 
 ### Manual Sync
 
-Click **Sync** on a provider card to trigger a sync immediately. A progress indicator shows the current status.
+Click **Sync All** on the VOD page to trigger a sync immediately. A progress indicator shows the current status.
 
 ### Scheduled Sync
 
