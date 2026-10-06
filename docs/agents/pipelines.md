@@ -126,6 +126,13 @@ clear the plugin's caches.
 and always ends it; the manual trigger, the nightly guard and Cancel all
 read that row.
 
+- One provider's VOD sync runs at a time (`_vod_sync_lock`, #446): a
+  category's rows commit only at its end, so two providers syncing at once
+  both wrote the shared title's `.strm` and row, and the second commit
+  failed on UNIQUE(tmdb_id). A sync of another provider waits with its run
+  already "running", shows "Waiting for <name>'s sync to finish", stays
+  cancellable, and its wait is booked to the run (`booked_wait`) so the
+  status route does not auto-fail it as stuck.
 - An error ends the run through `_finish_run()`: it commits the end as is,
   and after a failed flush ("database is locked", a constraint) rolls the
   session back first (only the category in progress is lost; each category
