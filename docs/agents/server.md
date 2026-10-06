@@ -44,7 +44,9 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
 
 - Login is a Jellyfin user picker: `GET /api/auth/users` (no auth), then
   `POST /api/auth/login` authenticates through Jellyfin
-  `/Users/AuthenticateByName`. Session: HMAC-signed cookie
+  `/Users/AuthenticateByName`. Only Jellyfin's 401 reads "Invalid username
+  or password"; its 503 (starting up) is a 503 "starting up", any other
+  status a 502 naming it. Session: HMAC-signed cookie
   `tentacle_session` (30 days, HttpOnly), secret in the `session_secret`
   setting. After login the page does a full reload (clears SPA state).
 - Dependencies: `get_current_user` (cookie, else 401),
