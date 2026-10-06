@@ -11,7 +11,7 @@ from models.database import get_db, get_setting, Duplicate, Movie, Series, log_d
 from routers.auth import require_admin
 from services.duplicates import (
     delete_vod_files, convert_record_to_downloaded, is_downloaded_file, arr_folder_is_vod_folder,
-    carry_user_data, UserDataCarryError,
+    carry_user_data, UserDataCarryError, watch_pending_user_data,
 )
 from services.media_files import delete_series_files
 
@@ -98,6 +98,9 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
                      detail=f"Kept VOD copy — downloaded files deleted from {arr}")
 
     db.commit()
+    # Both copies in one folder: the saved watched state goes to the item
+    # Jellyfin makes for the kept copy once it has seen the delete (#333).
+    watch_pending_user_data(db, dup)
 
 
 def _carry_user_data(dup: Duplicate, record, keep: str, db: Session) -> None:

@@ -117,7 +117,17 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   item onto the kept one (films by path, shows per season/episode):
   Jellyfin 10.11 does not share it between two items of one TMDB id.
   Jellyfin down, or a film's kept copy not scanned yet while the other has
-  user data: nothing is deleted (502 / 409).
+  user data: nothing is deleted (502 / 409). A film whose two copies share
+  one folder is one Jellyfin item with both as versions (the other version
+  is an owned item `/Items` leaves out; its path is in the item's
+  `MediaSources`, read by `?Ids=`), and users' data is on that item. When
+  the removed copy is its main version, the delete makes Jellyfin create a
+  new item for the kept file with no data: the data is saved on the
+  duplicate (`pending_user_data`) before the delete, Jellyfin gets
+  `/Library/Media/Updated` for the removed file, and
+  `apply_pending_user_data` merges it onto the item whose Path is the kept
+  file (a worker polls 30 s × 30, the nightly run catches up, dropped after
+  30 days) (#333).
 - **Following** = Sonarr `monitorNewItems="all"` (stricter than
   `monitored`), mirrored in `Series.sonarr_monitored`, synced both ways on
   every Sonarr scan; unfollowing keeps `monitored=true`. Hidden for ended

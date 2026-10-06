@@ -240,6 +240,16 @@ def run_scheduled_sync():
             _rollback(db)
             logger.error(f"Orphan sweep failed: {e}")
 
+        # Watched state saved when a duplicate's same-folder copy was deleted,
+        # for the kept copy's new item, if the worker gave up before Jellyfin
+        # made it (#333). After the Jellyfin pipeline's scan.
+        try:
+            from services.duplicates import apply_pending_user_data
+            apply_pending_user_data(db)
+        except Exception as e:
+            _rollback(db)
+            logger.error(f"Carrying saved watched state over failed: {e}")
+
         # Flag VOD movies that play a different film than their label (found
         # once Jellyfin has probed them on first play). Same slot as the sweep:
         # it reads the whole movie library.
