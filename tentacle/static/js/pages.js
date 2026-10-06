@@ -7198,8 +7198,11 @@ async function healthFixDownload(source, queueId, btn) {
   if (btn) btn.disabled = true;
   try {
     const r = await api('/api/health/downloads/fix', { method: 'POST', body: { source, queue_id: queueId } });
-    toast(r.replaced ? `Replaced with ${r.picked_protocol} release` : 'Cancelled — no alternative release found',
-          r.replaced ? 'success' : 'info');
+    const arr = source === 'radarr' ? 'Radarr' : 'Sonarr';
+    toast(r.replaced ? `Replaced with ${r.picked_protocol} release`
+          : r.searching ? `Cancelled — ${arr} is searching for a replacement`
+          : 'Cancelled — no alternative release found',
+          r.replaced || r.searching ? 'success' : 'info');
     loadHealthDownloads();
     loadHealthDeletions();
   } catch (e) {

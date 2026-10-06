@@ -100,6 +100,20 @@ the same commit, `rewrite_xtream_channel_urls()` in `routers/livetv.py`; no
 request to the provider, no channel sync (#469). M3U channel URLs come from
 the playlist and only a channel sync changes them.
 
+**A stuck download is fixed** (Health → Downloads → **Fix**, or the 5-minute
+auto-fix sweep; `resolve_stuck_download()` in `services/download_health.py`):
+the queue item is removed with `blocklist=true`, and exactly one side grabs
+the replacement (#444). Removing with blocklist makes Radarr/Sonarr search
+again by themselves ("Redownload Failed", on by default) unless
+`skipRedownload=true`, and their grab reaches their queue seconds later, so
+two grabbers download the title twice. Tentacle picks the replacement (other
+protocol first) and removes with `skipRedownload=true`; when it grabs nothing
+(search failed, nothing grabbable, grab refused: 4xx or the arr's 500) it
+sends a `MoviesSearch` / `EpisodeSearch` command instead. A grab with no
+answer (timeout, reset, 502/503/504) may have gone through, so no search. A
+Sonarr download of several episodes (several queue records, one
+`downloadId`) is left to Sonarr's own re-search (a season search for a pack).
+
 ## Nightly sync
 
 `sync_schedule` (cron, default `0 3 * * *`), `run_scheduled_sync()` in
