@@ -1952,6 +1952,16 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 
         <div class="card" style="margin-bottom:16px">
           <div class="card-header">
+            <div class="card-title">Recent Activity <span id="health-activity-count" style="color:var(--text3);font-weight:400"></span></div>
+            <button class="btn btn-secondary btn-sm" onclick="loadHealthActivity()">Refresh</button>
+          </div>
+          <div id="health-activity">
+            <div class="empty-state"><p>Loading…</p></div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-header">
             <div class="card-title">Deletion Log</div>
             <button class="btn btn-secondary btn-sm" onclick="loadHealthDeletions()">Refresh</button>
           </div>

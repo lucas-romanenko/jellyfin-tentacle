@@ -103,6 +103,8 @@ Tentacle proxies live streams between Jellyfin and your provider. This handles:
 - **HLS to MPEG-TS conversion** — Converts HLS streams to MPEG-TS format for Jellyfin compatibility
 - **User-Agent forwarding** — Uses the configured User-Agent when connecting to the provider
 
+When the provider interrupts a recording, or serves a placeholder (a black "channel unavailable" video) instead of the channel, Tentacle notes it under **Health → Recent Activity**: a recording that may be missing content shows as **Recording damaged**, a placeholder as **Channel placeholder**. The guide sync, stream checks and nightly sweeps report there too, and anything that failed is shown in red.
+
 ## HDHomeRun Endpoints
 
 These endpoints are served automatically — you don't need to configure them manually:
