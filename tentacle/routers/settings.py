@@ -106,12 +106,14 @@ def get_settings_raw(db: Session = Depends(get_db)):
     needs the addresses."""
     settings = db.query(Setting).all()
     result = {s.key: s.value for s in settings if s.key not in NEVER_SERVED}
+    # No built-in TMDB token: the page posts every field back on Save, so
+    # serving it stored it as the user's own (#383). A copy stored that way
+    # shows as unset, so the field shows "Using built-in key" again.
+    from services.tmdb import TMDB_DEFAULT_TOKEN
+    if result.get("tmdb_bearer_token") == TMDB_DEFAULT_TOKEN:
+        result["tmdb_bearer_token"] = ""
     if _bootstrap(db):
         _shown(result)
-    # Inject effective TMDB token (built-in fallback) if not explicitly set
-    if not result.get("tmdb_bearer_token") and not result.get("tmdb_api_key"):
-        from services.tmdb import TMDB_DEFAULT_TOKEN
-        result["tmdb_bearer_token"] = TMDB_DEFAULT_TOKEN
     return result
 
 
@@ -144,6 +146,11 @@ def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
             sync_trigger(body.settings["sync_schedule"])
         except ValueError as e:
             raise HTTPException(400, f"Sync schedule '{body.settings['sync_schedule']}' is not a valid cron: {e}")
+    from services.tmdb import TMDB_DEFAULT_TOKEN
+    if (body.settings.get("tmdb_bearer_token") or "").strip() == TMDB_DEFAULT_TOKEN:
+        # The built-in token stays a default: storing it would pin this install
+        # to it after a release changes it (#383). A stored copy is cleared.
+        body.settings["tmdb_bearer_token"] = ""
     for key, value in body.settings.items():
         # A secret sent back exactly as the masked listing showed it is unchanged
         if key in sensitive_keys and is_shown_form(value, get_setting(db, key, "") or ""):
