@@ -100,6 +100,12 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   Radarr/Sonarr scans' removals, and after each scan any tombstone left
   without a row (`services/duplicates.drop_orphan_tombstones`), so the VOD
   copy can come back.
+  A duplicate is resolved once (#328): `routers/duplicates.py` resolves
+  each one under `_resolve_lock` (Resolve All per duplicate), re-reading
+  its resolution from the DB first; one no longer pending gets 409 (Resolve
+  All counts it as `skipped`), so a stale tab can't delete the other copy.
+  The resolution is a Literal (keep_radarr, keep_vod, keep_both; "pending"
+  is a 422).
   Keep VOD first needs the VOD copy on disk (`services/duplicates.vod_copy_on_disk`:
   a provider source's `.strm`, or a show folder with one; 409 otherwise):
   Keep Downloaded deletes the `.strm` before it saves the resolution, so a

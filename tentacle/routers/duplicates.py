@@ -3,6 +3,8 @@ Tentacle - Duplicates Router
 """
 
 import logging
+import threading
+from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -17,6 +19,14 @@ from services.media_files import delete_series_files
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/duplicates", tags=["duplicates"], dependencies=[Depends(require_admin)])
+
+# A duplicate is resolved once (#328). Each resolution re-reads its duplicate
+# under this lock and goes ahead only while it is still pending, so Keep
+# Downloaded in one tab and Keep VOD in a stale one (or Resolve All racing a
+# single button) can't delete one copy each. One uvicorn worker, so a
+# process lock covers every request; Resolve All takes it per duplicate.
+_resolve_lock = threading.Lock()
+_LABELS = {"keep_radarr": "Kept Downloaded", "keep_vod": "Kept VOD", "keep_both": "Kept Both"}
 
 
 def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
@@ -221,12 +231,21 @@ def _delete_downloaded_copy(dup: Duplicate, record, db: Session) -> str:
     return arr
 
 
+Resolution = Literal["keep_radarr", "keep_vod", "keep_both"]
+
+
 class ResolveRequest(BaseModel):
-    resolution: str  # keep_radarr | keep_vod | keep_both
+    resolution: Resolution  # anything else (or "pending", which reopened it) is a 422
 
 
 class ResolveAllRequest(BaseModel):
-    resolution: str
+    resolution: Resolution
+
+
+def _current_resolution(db: Session, dup_id: int):
+    """The duplicate's resolution as committed now (None when it is gone),
+    not the session's copy, which may predate another request's commit."""
+    return db.query(Duplicate.resolution).filter(Duplicate.id == dup_id).scalar()
 
 
 @router.get("")
@@ -271,16 +290,21 @@ def get_duplicates(db: Session = Depends(get_db)):
 
 @router.post("/{dup_id}/resolve")
 def resolve_duplicate(dup_id: int, body: ResolveRequest, db: Session = Depends(get_db)):
-    dup = db.query(Duplicate).filter(Duplicate.id == dup_id).first()
-    if not dup:
-        raise HTTPException(404, "Duplicate not found")
+    with _resolve_lock:
+        current = _current_resolution(db, dup_id)
+        if current is None:
+            raise HTTPException(404, "Duplicate not found")
+        if current != "pending":
+            raise HTTPException(409, f"This duplicate was already resolved ({_LABELS.get(current, current)}), "
+                                     "in another tab or by Resolve All. Nothing was deleted.")
+        dup = db.query(Duplicate).filter(Duplicate.id == dup_id).first()
 
-    _apply_resolution(dup, body.resolution, db)
+        _apply_resolution(dup, body.resolution, db)
 
-    # Mark as resolved (keep in DB for stats/history)
-    dup.resolution = body.resolution
-    dup.resolved_at = datetime.now(timezone.utc)
-    db.commit()
+        # Mark as resolved (keep in DB for stats/history)
+        dup.resolution = body.resolution
+        dup.resolved_at = datetime.now(timezone.utc)
+        db.commit()
 
     return {"success": True}
 
@@ -293,22 +317,30 @@ def resolve_all(body: ResolveAllRequest, db: Session = Depends(get_db)):
     # Apply resolution to each duplicate (delete files, clean up DB). Only mark a
     # duplicate resolved if its resolution actually succeeded — failed ones stay
     # pending so they can be retried instead of being silently dropped.
+    # A duplicate resolved since the list was read (another tab, another
+    # Resolve All) is skipped, never resolved again.
     resolved = 0
     failed = 0
-    for dup in pending:
-        try:
-            _apply_resolution(dup, body.resolution, db)
-        except Exception as e:
-            logger.error(f"Failed to apply resolution for tmdb:{dup.tmdb_id}: {e}")
-            failed += 1
-            continue
-        dup.resolution = body.resolution
-        dup.resolved_at = datetime.now(timezone.utc)
-        # Commit each one: a later failure rolls the session back, which would
-        # turn this one (one copy already deleted) back into "pending", and
-        # resolving it the other way would then delete the copy that is left.
-        db.commit()
-        resolved += 1
+    skipped = 0
+    for dup_id in [d.id for d in pending]:
+        with _resolve_lock:
+            if _current_resolution(db, dup_id) != "pending":
+                skipped += 1
+                continue
+            dup = db.query(Duplicate).filter(Duplicate.id == dup_id).first()
+            try:
+                _apply_resolution(dup, body.resolution, db)
+            except Exception as e:
+                logger.error(f"Failed to apply resolution for tmdb:{dup.tmdb_id}: {e}")
+                failed += 1
+                continue
+            dup.resolution = body.resolution
+            dup.resolved_at = datetime.now(timezone.utc)
+            # Commit each one: a later failure rolls the session back, which would
+            # turn this one (one copy already deleted) back into "pending", and
+            # resolving it the other way would then delete the copy that is left.
+            db.commit()
+            resolved += 1
     db.commit()
 
-    return {"success": failed == 0, "count": resolved, "total": total, "failed": failed}
+    return {"success": failed == 0, "count": resolved, "total": total, "failed": failed, "skipped": skipped}

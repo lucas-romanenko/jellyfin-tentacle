@@ -4639,6 +4639,8 @@ async function _executeResolveDup(id, resolution) {
     _updateDupBadges();
   } catch (e) {
     toast(e.message, 'error');
+    loadDuplicates();  // a stale tab: show what was resolved meanwhile
+    _updateDupBadges();
   }
 }
 
