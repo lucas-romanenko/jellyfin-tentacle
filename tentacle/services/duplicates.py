@@ -81,6 +81,31 @@ def arr_folder_is_vod_folder(media_type: str, arr_path: Optional[str], record) -
     return _has_vod_folder(media_type, arr_path)
 
 
+def vod_copy_on_disk(dup, record) -> bool:
+    """Is the VOD copy of this duplicate on disk: a film's .strm, or a show
+    folder holding at least one .strm? Looked for at every provider source of
+    the duplicate and at the row's strm_path while a provider owns the row
+    (the folder may have been renamed since the duplicate was recorded).
+    These are Tentacle's own paths, so a missing file means the copy is gone
+    (or was never written: a title downloaded first, which a provider offers
+    later). A path that can't be read counts as missing."""
+    paths = [s.get("path") for s in dup.sources or []
+             if (s.get("source") or "").startswith("provider_") and s.get("path")]
+    if record is not None and (record.source or "").startswith("provider_") and record.strm_path:
+        paths.append(record.strm_path)
+    for p in paths:
+        path = Path(p)
+        try:
+            if dup.media_type == "movie":
+                if path.suffix.lower() == ".strm" and path.is_file():
+                    return True
+            elif path.is_dir() and any(f.is_file() for f in path.rglob("*.strm")):
+                return True
+        except OSError as e:
+            logger.warning(f"Could not check the VOD copy at {p}: {e}")
+    return False
+
+
 def delete_vod_files(strm_path: str):
     """Delete a VOD .strm file and its companion .nfo, plus empty parent folder.
 

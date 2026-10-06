@@ -11,7 +11,7 @@ from models.database import get_db, get_setting, Duplicate, Movie, Series, log_d
 from routers.auth import require_admin
 from services.duplicates import (
     delete_vod_files, convert_record_to_downloaded, is_downloaded_file, arr_folder_is_vod_folder,
-    carry_user_data, UserDataCarryError, watch_pending_user_data,
+    carry_user_data, UserDataCarryError, watch_pending_user_data, vod_copy_on_disk,
 )
 from services.media_files import delete_series_files
 
@@ -72,6 +72,13 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
                      detail="Kept downloaded copy — VOD .strm/.nfo files deleted")
 
     elif resolution == "keep_vod":
+        # Keep VOD deletes the download: without the VOD copy on disk that
+        # leaves nothing to play. A Keep Downloaded a restart cut short after
+        # it deleted the .strm leaves the duplicate pending that way (#332).
+        if not vod_copy_on_disk(dup, record):
+            raise HTTPException(409, "The VOD copy of this title isn't on disk (it was deleted, or never "
+                                     "written), so Keep VOD would leave nothing to play. Nothing was deleted; "
+                                     "use Keep Downloaded or Keep Both.")
         # Delete the downloaded copy from the *arr that owns it: its files
         # through the file API, then the title. Never Radarr for a series:
         # TMDB movie and TV ids are separate number spaces, so a series' id
