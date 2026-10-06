@@ -1641,9 +1641,9 @@ VOD_MOVIES_ROOT = Path("/media/vod/movies")
 VOD_SERIES_ROOT = Path("/media/vod/shows")
 
 
-def _sweep_one_type(db: Session, Model, media_type: str, root: Path, now: datetime):
-    """Sweep one media type. Returns (removed_count, removed_titles)."""
-    rows = db.query(Model).filter(
+def _strm_rows(db: Session, Model):
+    """Provider titles of one type that should have their .strm on disk."""
+    return db.query(Model).filter(
         Model.source.like("provider_%"),
         Model.strm_path.isnot(None),
         # Titles the user opted out of .strm management are expected to have no
@@ -1651,14 +1651,41 @@ def _sweep_one_type(db: Session, Model, media_type: str, root: Path, now: dateti
         # the row and the next sync would re-import the title and rewrite the
         # file, silently undoing the opt-out.
         Model.strm_disabled.isnot(True),
-    ).all()
+    )
+
+
+def _root_missing_or_empty(root: Path) -> bool:
+    """A missing or empty mount point (or one that can't be read): the storage
+    is unavailable, not every title deleted. A share that is not mounted shows
+    the bare, empty mount point; mergerfs/NFS/SMB/rclone report plain "not
+    found" for every path while a branch is out, which raises nothing."""
+    try:
+        return not root.is_dir() or not any(root.iterdir())
+    except OSError:
+        return True
+
+
+def _root_unavailable(db: Session, Model, root: Path) -> int:
+    """How many titles of this type have their .strm under `root` while it is
+    missing or empty (0 when it holds anything, or when there are none).
+
+    The sync writes nothing of that type then (#440): one title imported onto
+    the bare mount point made the root look mounted again, the restores wrote
+    every listed title back, and the sweep deleted the rows nothing wrote back
+    that night (a category the provider couldn't read). A fresh install has no
+    such rows, so its empty root is still filled."""
+    if not _root_missing_or_empty(root):
+        return 0
+    return _strm_rows(db, Model).count()
+
+
+def _sweep_one_type(db: Session, Model, media_type: str, root: Path, now: datetime):
+    """Sweep one media type. Returns (removed_count, removed_titles)."""
+    rows = _strm_rows(db, Model).all()
     if not rows:
         return 0, []
 
-    # A mount that is missing or empty means the storage is unavailable, not
-    # that every title was deleted. mergerfs/NFS/SMB/rclone all report plain
-    # "not found" for every path while a branch is out, which raises nothing.
-    if not root.is_dir() or not any(root.iterdir()):
+    if _root_missing_or_empty(root):
         logger.error(
             f"[VOD sweep] {root} is missing or empty — storage looks unavailable. "
             f"Skipping the {media_type} sweep rather than deleting "
@@ -1903,7 +1930,19 @@ def sync_provider(
         m_cleanup = None
         s_cleanup = None
 
-        if sync_type in ("full", "movies"):
+        # A type whose root looks unmounted is left for a later sync (#440):
+        # nothing is imported, restored or pruned for it tonight.
+        wanted = {"full": ("movies", "series")}.get(sync_type, (sync_type,))
+        held_back = {}   # kind -> why
+        for kind, Model, root, word in (("movies", Movie, vod_movies_path, "film"),
+                                        ("series", Series, vod_series_path, "show")):
+            held = kind in wanted and _root_unavailable(db, Model, root)
+            if held:
+                held_back[kind] = (f"{root} is missing or empty but {held} {word}(s) should be there: "
+                                   f"storage looks unavailable, no {word}s were synced")
+                logger.error(f"Sync of {provider.name}: {held_back[kind]}")
+
+        if "movies" in wanted and "movies" not in held_back:
             m_stats, m_feed, m_cat_stats, m_cleanup = _sync_movies(
                 provider, client, tmdb, db,
                 vod_movies_path, recently_added_days,
@@ -1916,7 +1955,7 @@ def sync_provider(
             new_movies_feed = m_feed
             category_stats.update(m_cat_stats)
 
-        if sync_type in ("full", "series"):
+        if "series" in wanted and "series" not in held_back:
             s_stats, s_feed, s_cat_stats, s_cleanup = _sync_series(
                 provider, client, tmdb, db,
                 vod_series_path, recently_added_days,
@@ -1963,6 +2002,10 @@ def sync_provider(
                                      f"categor{'y' if total_cats == 1 else 'ies'} ({unread[0][1]})")
             else:
                 run.error_message = summary
+        if held_back:
+            run.error_message = "; ".join([*held_back.values(), *filter(None, [run.error_message])])
+            if len(held_back) == len(wanted):
+                run.status = "failed"   # nothing at all was synced
         run.category_stats = category_stats
         run.new_movies = new_movies_feed[:50]  # Keep last 50 for feed
         run.new_series = new_series_feed[:50]

@@ -178,6 +178,14 @@ a storage hiccup must never be able to wipe a library:
   rather than concluding that every title was deleted. This matters on
   mergerfs, unionfs, NFS, SMB and rclone, where a branch dropping out makes
   every file report as missing while the mount itself stays up.
+- **The sync does not write onto an unmounted folder either.** If
+  `/media/vod/movies` or `/media/vod/shows` is missing or empty while the
+  library already has titles of that kind, the sync skips films (or shows)
+  that night: nothing is imported, restored or removed, and the sync shows
+  "storage looks unavailable". Anything written onto the bare mount point
+  would land on the wrong disk and make the folder look mounted to the sweep.
+  Everything syncs again once the folder has something in it. A new install
+  has no titles yet, so its empty folders are filled as usual.
 
 Blocked removals are recorded in the deletion log (Settings → Deletion Log).
 

@@ -160,6 +160,15 @@ read that row.
   `completed` with `error_message` "N of M categories could not be read
   (reason)". Both go to Activity, for "Sync now" and the nightly. Pruning
   is skipped either way (`fetch_ok`), as before (#267).
+- A type whose root (`/media/vod/movies`, `/media/vod/shows`) is missing or
+  empty while rows of it should have a `.strm` there (`_root_unavailable()`)
+  is not synced at all: no import, restore or prune (#440). One title
+  written onto a bare mount point made the root non-empty, and the orphan
+  sweep's own empty-root check then passed. The reason goes into
+  `error_message`; every requested type held back makes the run `failed`.
+  A fresh install has no rows, so its empty root is filled. Not covered: a
+  merged setup where Radarr/Sonarr import into the same unmounted root makes
+  it non-empty too.
 - TMDB matching (`search_movie` / `search_series`): with the provider's
   year, then, only if that found nothing good enough, once without it,
   keeping results within one year of the provider's (a local or streaming
