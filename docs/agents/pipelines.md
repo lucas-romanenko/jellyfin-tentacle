@@ -179,7 +179,20 @@ read that row.
   (counted as existing and seen, so never pruned, #262); a film met this
   sync whose `.strm` plays a stream of this provider no longer listed
   anywhere (a complete fetch, Xtream only) is pointed at its current
-  stream in place (#263). Episodes: a file whose episode id the show no
+  stream in place (#263). Before the lookup, a stream with an unknown label
+  goes to this provider's only film of the same title (any year; case,
+  punctuation and accents ignored, `_plain_title()`) when that film's
+  `.strm` plays the stream and the provider's TMDB id is absent or names it
+  (`_relabelled_id()`), so a relabel onto a namesake's year is not imported
+  as the namesake. After a lookup matched a film we don't have, the stream
+  stays with the one film of ours of that title whose `.strm` plays it
+  (`_owning_row()`; remakes of one title in the library). In
+  `_place_relisted_movies()`, a stream still unmatched whose provider TMDB
+  id names a film of ours with the same title is that film (a re-upload
+  under a new id), and the #263 repoint can follow; only for streams the
+  lookup could not place, so a copied TMDB id never keeps a real namesake
+  out. Known limit: a mislabel corrected to a same-title remake without a
+  TMDB id keeps the old film; fix it with Wrong movie. Episodes: a file whose episode id the show no
   longer lists gets the id listed at its SxxEyy (`_plays_delisted_episode`).
   While both ids are listed nothing flips.
 - `.strm` files are written with `_write_strm()`: a hidden temp file in the
