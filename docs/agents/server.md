@@ -332,8 +332,10 @@ docs: `docs/features/music.md`; plugin side: `Api/MusicController.cs`
   landed), marks the row `request_pending` and queues `jobs.finish_request`
   (pin the original, search). The worker's queue is in memory only, so a
   pending row is finished at startup (`resume_requests`) and at the start of
-  each daily check (`finish_pending_requests`), unless the album has files by
-  then (#242). An add whose answer failed (timeout, dropped connection, 5xx)
+  each daily check (`finish_pending_requests`). An album that has files (one
+  Lidarr had unmonitored, or one that downloaded since) is never pinned by a
+  request: it is checked, so Fix library offers the pin, and searched only if
+  its pin is already right and locked (#242, #422). An add whose answer failed (timeout, dropped connection, 5xx)
   and that Lidarr doesn't list yet may still commit: `jobs.owe_add` keeps a
   row with no Lidarr id, not monitored (still requestable), and
   `finish_pending_requests` looks it up by MBID 1, 5, 30 and 120 min later,

@@ -47,13 +47,16 @@ def _request_done(row: MusicAlbum) -> None:
     row.request_pending, row.request_choice = False, None
 
 
-def finish_request(album_id: int, rgid: str, choice: dict = None, sleep=time.sleep, resumed: bool = False):
+def finish_request(album_id: int, rgid: str, choice: dict = None, sleep=time.sleep):
     """The worker job that completes a request: pin the original, then search.
 
     The album's row stays `request_pending` until this has pinned and searched (or
     handed the album to review), so a request whose job was lost is finished later
-    (finish_pending_requests). `resumed`: such a later run, which leaves an album
-    that has files since to the daily check (a pin then could change files)."""
+    (finish_pending_requests). An album that has files (one Lidarr had
+    unmonitored, or one that downloaded since) is never pinned here, since a pin
+    could change its files: it is checked, so Fix library offers the pin for an
+    admin's Apply, and searched only if it is already pinned right and locked
+    (#242, #422)."""
     def job(db):
         client = library.lidarr_client(db)
         album = client.album(album_id)
@@ -63,10 +66,8 @@ def finish_request(album_id: int, rgid: str, choice: dict = None, sleep=time.sle
             sleep(delay)
             album = client.album(album_id)
         row = library.upsert_album(db, album)
-        if resumed and int((album.get("statistics") or {}).get("trackFileCount") or 0):
-            _request_done(row)
-            db.commit()
-            logger.info(f"[Request] album '{row.title}' has files already; left to the daily check")
+        if int((album.get("statistics") or {}).get("trackFileCount") or 0):
+            _check_album_with_files(db, client, album_id)
             return
         if not album.get("releases"):
             row.verdict = {"state": "Waiting for Lidarr to load this album's releases; the daily check "
@@ -100,6 +101,20 @@ def finish_request(album_id: int, rgid: str, choice: dict = None, sleep=time.sle
         row, album = library.sync_album(db, client, album_id)
         library.check_album(db, row, album, mb, prefs)
     return job
+
+
+def _check_album_with_files(db, client, album_id: int) -> None:
+    """finish_request for an album that has files: check it, search only a right, locked pin."""
+    row, album = library.sync_album(db, client, album_id)
+    verdict = library.check_album(db, row, album, MusicBrainz.from_settings(db), rule.Prefs.from_settings(db))
+    searched = (verdict.category == rule.RIGHT and verdict.locked
+                and verdict.have < (verdict.pinned or {}).get("tracks", 0))
+    if searched:
+        client.search_albums([album_id])
+    _request_done(row)
+    db.commit()
+    logger.info(f"[Request] album '{row.title}' has files already: not re-pinned ({verdict.category})"
+                + ("; search started" if searched else "; any pin waits for Fix library"))
 
 
 def owe_add(db, rgid: str, found: dict, user_id, choice: dict = None) -> None:
@@ -154,7 +169,7 @@ def finish_pending_requests(db, errors: list = None) -> int:
         try:
             if not row.lidarr_album_id and not _owed_add_landed(db, library.lidarr_client(db), row):
                 continue
-            finish_request(row.lidarr_album_id, row.mbid, row.request_choice, resumed=True)(db)
+            finish_request(row.lidarr_album_id, row.mbid, row.request_choice)(db)
             done += 1
             logger.info(f"[Request] '{title}': finished a request that was left unfinished")
         except LidarrError as e:
