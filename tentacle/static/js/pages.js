@@ -6797,6 +6797,7 @@ function loadHealthPage() {
   loadHealthDownloads();
   loadHealthMissing();
   loadHealthStreams();
+  loadHealthActivity();
   loadHealthDeletions();
   startHealthPolling();
 }
@@ -7231,6 +7232,80 @@ async function loadHealthDeletions() {
   }
 }
 
+// ── Recent activity (the Activity feed: /api/sync/activity) ────────────────
+
+const _ACTIVITY_EVENT_META = {
+  'livetv_recording_damaged': { label: 'Recording damaged', cls: 'badge-red', problem: true },
+  'livetv_placeholder':       { label: 'Channel placeholder', cls: 'badge-amber', problem: true },
+  'epg_sync_failed':          { label: 'Guide failed', cls: 'badge-red', problem: true },
+  'rating_restore_failed':    { label: 'Rating restore', cls: 'badge-red', problem: true },
+  'download_fix_skipped':     { label: 'Download fix', cls: 'badge-amber', problem: true },
+  'wrong_match':              { label: 'Wrong movie?', cls: 'badge-amber', problem: true },
+  'stream_health':            { label: 'Stream health', cls: 'badge-amber' },
+  'download_fix':             { label: 'Download fix', cls: 'badge-accent' },
+  'livetv_sync':              { label: 'Live TV', cls: 'badge-blue' },
+  'livetv_config':            { label: 'Live TV', cls: 'badge-blue' },
+  'epg_sync':                 { label: 'Guide', cls: 'badge-blue' },
+  'new_live_groups':          { label: 'Live TV', cls: 'badge-blue' },
+  'vod_sync':                 { label: 'VOD sync', cls: 'badge-accent' },
+  'sync':                     { label: 'VOD sync', cls: 'badge-accent' },
+  'new_categories':           { label: 'VOD', cls: 'badge-accent' },
+  'vod_sweep':                { label: 'VOD sweep', cls: 'badge-accent' },
+  'orphan_sweep':             { label: 'Orphan sweep', cls: 'badge-accent' },
+  'radarr_scan':              { label: 'Radarr', cls: 'badge-gray' },
+  'radarr_remove':            { label: 'Radarr', cls: 'badge-gray' },
+  'sonarr_scan':              { label: 'Sonarr', cls: 'badge-gray' },
+  'sonarr_remove':            { label: 'Sonarr', cls: 'badge-gray' },
+  'jellyfin_push':            { label: 'Jellyfin', cls: 'badge-gray' },
+  'list_fetch':               { label: 'List', cls: 'badge-gray' },
+  'lists_refresh':            { label: 'List', cls: 'badge-gray' },
+  'new_playlists':            { label: 'Playlist', cls: 'badge-gray' },
+};
+
+function _activityMeta(e) {
+  const meta = _ACTIVITY_EVENT_META[e.event];
+  if (meta) return meta;
+  // An event this map doesn't know yet still shows, named after itself
+  const label = String(e.event || 'event').replace(/_/g, ' ');
+  return { label: label.charAt(0).toUpperCase() + label.slice(1), cls: 'badge-gray' };
+}
+
+function _activityIsProblem(e) {
+  return !!_activityMeta(e).problem || /_failed$/.test(e.event || '') || /\bfailed\b/i.test(e.message || '');
+}
+
+async function loadHealthActivity() {
+  const el = document.getElementById('health-activity');
+  if (!el) return;
+  try {
+    const entries = await api('/api/sync/activity?limit=100');
+    const countEl = document.getElementById('health-activity-count');
+    const problems = entries.filter(_activityIsProblem).length;
+    if (countEl) countEl.textContent = problems ? `(${problems} to look at)` : '';
+    if (!entries.length) {
+      el.innerHTML = '<div class="empty-state"><p>No activity recorded yet</p></div>';
+      return;
+    }
+    const rows = entries.map(e => {
+      const meta = _activityMeta(e);
+      const cls = _activityIsProblem(e) && !meta.problem ? 'badge-red' : meta.cls;
+      const d = _healthDate(e.created_at);
+      const when = d ? `<span title="${d.toLocaleString()}">${timeAgo(d)}</span>` : '—';
+      return `<tr>
+        <td style="white-space:nowrap">${when}</td>
+        <td><span class="badge ${cls}" style="font-size:10px">${escapeHtml(meta.label)}</span></td>
+        <td style="font-size:12px">${escapeHtml(e.message || '')}</td>
+      </tr>`;
+    }).join('');
+    el.innerHTML = `<div style="overflow-x:auto;max-height:420px;overflow-y:auto"><table>
+      <thead><tr><th>When</th><th>What</th><th>Detail</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`;
+  } catch (e) {
+    el.innerHTML = '<div class="empty-state"><p>Failed to load activity</p></div>';
+  }
+}
+
 (function exposeGlobals() {
   const fns = [
     // Activity (inline handlers)
@@ -7279,7 +7354,7 @@ async function loadHealthDeletions() {
     // Activity
     loadActivity, startActivityPolling, stopActivityPolling,
     // Health
-    loadHealthPage, loadHealthDeletions, loadHealthDownloads, stopHealthPolling,
+    loadHealthPage, loadHealthActivity, loadHealthDeletions, loadHealthDownloads, stopHealthPolling,
     saveHealthDownloadSettings, healthFixDownload, healthRemoveDownload, healthImportDownload,
     showHealthMissingTab, loadHealthMissing, healthDiagnose, healthGrabRelease, healthSearchMissing,
     loadHealthStreams, healthRecheckStreams, healthRunStreamSweep, healthClearStream, healthRemoveStream,
