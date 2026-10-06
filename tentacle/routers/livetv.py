@@ -27,6 +27,7 @@ import hashlib
 import logging
 import re
 import threading
+from collections import deque
 
 import httpx
 from datetime import datetime, timedelta
@@ -234,6 +235,148 @@ async def _decidable_start(pieces, need: int = 564):
         raise
     if head:
         yield head
+
+
+# #368: many panels open every raw TS connection with their buffer, ~20 s
+# behind live: packets an earlier connection already delivered, byte for byte.
+# Forwarded again, they repeated in the recording at every re-dial (on a
+# "newest connection wins" account every ~13 s: files 1.7-2.6x their content,
+# time jumping back at each reconnect). _ReplaySplicer joins a re-dialled
+# connection right after the last byte sent, but only when that is proven;
+# anything else goes out as it comes (duplicates at worst, never a loss).
+_SPLICE_HOLD_BYTES = 32 * 1024 * 1024   # the most of a replay held: half a client's byte slack
+_SPLICE_HOLD_SECONDS = 30.0             # the longest the output pauses for one
+_SPLICE_DECIDE_PACKETS = 2048           # the first frame start must come within this
+_SPLICE_INDEX_MAX = 16384               # frame starts remembered (minutes of a channel)
+_SPLICE_TAIL_MAX = 4 * 1024 * 1024      # bytes since the last one, kept to compare
+
+
+def _ts_frame_start(pkt) -> bool:
+    """A TS packet that starts a video or audio PES carrying a timestamp: the
+    first packet of a frame. Its bytes occur once in a stream (the PTS moves
+    on), unlike tables, null packets or a silent frame's payload."""
+    if pkt[0] != 0x47 or not pkt[1] & 0x40 or not pkt[3] & 0x10:
+        return False
+    i = 4 + (1 + pkt[4] if pkt[3] & 0x20 else 0)
+    return (i + 13 <= 188 and pkt[i:i + 3] == b"\x00\x00\x01"
+            and (0xC0 <= pkt[i + 3] <= 0xEF or pkt[i + 3] == 0xBD)
+            and pkt[i + 6] & 0xC0 == 0x80 and bool(pkt[i + 7] & 0x80))
+
+
+class _ReplaySplicer:
+    """What a raw TS stream sent (its frame starts and where they went), and
+    the judging of a re-dialled connection against it.
+
+    After a re-dial the new connection is held until its first frame start.
+    If that packet was sent before, at output offset o, the connection is a
+    replay that should reach the end of what was sent at sent_total - o bytes
+    past it. It is held up to that point, every frame start on the way must
+    sit exactly where it was sent (a gap in between shifts them), and the
+    bytes sent since the last frame start must come right before it. Then the
+    held replay is dropped and the stream goes on from there. Anything else
+    (a first frame never sent: a real gap or no replay; a replay that differs,
+    is too large or too slow; a break before the join) releases what was held."""
+
+    def __init__(self, channel_id: int, health: dict):
+        self.channel_id, self.health = channel_id, health
+        self.sent_total = 0
+        self._index: dict = {}          # frame-start packet -> where it was sent (the newest)
+        self._order = deque()           # (offset, packet), oldest first
+        self._tail: list = []           # bytes sent since the last frame start
+        self._tail_len = 0
+        self._tail_ok = False           # none yet, or the tail outgrew _SPLICE_TAIL_MAX
+        self._breaks = deque([0])       # where a connection not joined began in the output
+        self._hold = None               # the re-dialled connection's bytes while it is judged
+
+    def sent(self, data: bytes) -> None:
+        """Whole packets that went out, in order."""
+        base, last = self.sent_total, None
+        for i in range(0, len(data) - 187, 188):
+            if data[i + 1] & 0x40 and _ts_frame_start(data[i:i + 188]):
+                key = data[i:i + 188]
+                self._index[key] = base + i
+                self._order.append((base + i, key))
+                last = i
+        self.sent_total += len(data)
+        if last is not None:
+            self._tail, self._tail_len, self._tail_ok = [data[last:]], len(data) - last, True
+        elif self._tail_ok and data:
+            self._tail.append(data)
+            self._tail_len += len(data)
+            if self._tail_len > _SPLICE_TAIL_MAX:
+                self._tail, self._tail_len, self._tail_ok = [], 0, False
+        # Older than a hold could reach back to: never a join point again.
+        floor = self.sent_total - _SPLICE_HOLD_BYTES
+        while self._order and (len(self._order) > _SPLICE_INDEX_MAX or self._order[0][0] < floor):
+            off, key = self._order.popleft()
+            if self._index.get(key) == off:
+                del self._index[key]
+        while len(self._breaks) > 1 and self._breaks[0] < floor - _SPLICE_DECIDE_PACKETS * 188:
+            self._breaks.popleft()
+
+    def begin(self, now: float, outage: float) -> None:
+        """A re-dialled connection starts delivering (its partial first packet trimmed)."""
+        self._hold, self._scan, self._first, self._join = bytearray(), 0, None, None
+        self._since, self._outage = now, outage
+
+    def feed(self, piece: bytes, now: float) -> bytes:
+        """The connection's next bytes; returns what goes out now."""
+        if self._hold is None:
+            return piece
+        self._hold += piece
+        hold = self._hold
+        if hold[:1] != b"G":
+            return self._release("not MPEG-TS")
+        while self._scan + 188 <= len(hold) and (self._join is None or self._scan < self._join):
+            n = self._scan
+            self._scan += 188
+            if not (hold[n + 1] & 0x40 and _ts_frame_start(hold[n:n + 188])):
+                if self._first is None and self._scan >= _SPLICE_DECIDE_PACKETS * 188:
+                    return self._release("no frame start to join on")
+                continue
+            sent_at = self._index.get(bytes(hold[n:n + 188]))
+            if self._first is None:
+                if sent_at is None:
+                    return self._release("it starts with a frame not sent before: a gap, or no replay")
+                if not self._tail_ok:
+                    return self._release("too long since the last frame start sent")
+                # What came before that frame (tables, the end of the previous
+                # frame) is dropped too: it must have gone out right before it,
+                # not be cut off by an earlier connection's start.
+                if any(sent_at - n < b <= sent_at for b in self._breaks):
+                    return self._release("what precedes its first frame was not sent")
+                self._first = (n, sent_at)
+                self._join = n + self.sent_total - sent_at
+                if self._join > _SPLICE_HOLD_BYTES:
+                    return self._release(f"a replay of {self._join / 1e6:.0f} MB is too large to hold")
+            elif sent_at != self._first[1] + n - self._first[0]:
+                return self._release("its frames are not where they were sent")
+        if self._join is not None and len(hold) >= self._join:
+            tail = b"".join(self._tail)
+            if hold[self._join - len(tail):self._join] != tail:
+                return self._release("the bytes before the join point differ")
+            out = bytes(hold[self._join:])
+            self.health["replays_joined"] += 1
+            self.health["replay_bytes_skipped"] += self._join
+            self.health["_covered_seconds"] = self.health.get("_covered_seconds", 0.0) + self._outage
+            logger.info(f"[LiveTV] Raw stream for channel {self.channel_id}: rejoined where it "
+                        f"stopped, {self._join / 1e6:.1f} MB the provider sent again skipped")
+            self._hold = None
+            return out
+        if now - self._since > _SPLICE_HOLD_SECONDS:
+            return self._release(f"no join point within {_SPLICE_HOLD_SECONDS:.0f}s")
+        return b""
+
+    def abort(self) -> bytes:
+        """The connection ended while it was being judged: what it held goes out."""
+        return self._release("the connection ended before the join point") if self._hold is not None else b""
+
+    def _release(self, why: str) -> bytes:
+        out, self._hold = bytes(self._hold), None
+        self._breaks.append(self.sent_total)
+        logger.info(f"[LiveTV] Raw stream for channel {self.channel_id}: re-dial not joined ({why}); "
+                    f"sent as it came")
+        return out
 
 
 def _raw_media_type(content_type: str) -> str:
@@ -1253,7 +1396,9 @@ def _new_health() -> dict:
                                           # requests that ended in a success
             "reconnecting_seconds": 0.0,  # time spent with the provider failing
             "segments_skipped": 0,        # HLS: segments that never arrived
-            "errors": 0}                  # failed requests that were retried
+            "errors": 0,                  # failed requests that were retried
+            "replays_joined": 0,          # raw TS: reconnects joined where the stream stopped (#368)
+            "replay_bytes_skipped": 0}    # what the provider sent again on those
 
 
 def _stream_ended(channel_id: int, entry: dict, recording: bool, hls: bool = False) -> None:
@@ -1284,18 +1429,27 @@ def _stream_ended(channel_id: int, entry: dict, recording: bool, hls: bool = Fal
                "reconnecting_seconds": round(h["reconnecting_seconds"], 1),
                "segments_skipped": h["segments_skipped"], "errors": h["errors"],
                "ended_on_error": bool(h.get("ended_on_error")),
-               "revives": h.get("revives", 0)}
+               "revives": h.get("revives", 0),
+               "replays_joined": h.get("replays_joined", 0),
+               "replay_bytes_skipped": h.get("replay_bytes_skipped", 0)}
     _recent_streams.append(summary)
     del _recent_streams[:-_RECENT_STREAMS_MAX]
-    # A raw TS reconnect is always a gap. An HLS "interruption" can be one
-    # segment retried in place within the playlist window -- nothing lost --
-    # so for HLS only a skipped segment or a second or more of waiting counts.
-    damaged = ((h["reconnects"] and not hls) or h["segments_skipped"]
-               or h["reconnecting_seconds"] >= 1.0 or h.get("ended_on_error"))
+    # A raw TS reconnect is a gap unless it was joined where the stream
+    # stopped (#368): then the provider's buffer covered the wait. An HLS
+    # "interruption" can be one segment retried in place within the playlist
+    # window -- nothing lost -- so for HLS only a skipped segment or a second
+    # or more of waiting counts.
+    joined = h.get("replays_joined", 0)
+    uncovered = h["reconnecting_seconds"] - h.get("_covered_seconds", 0.0)
+    damaged = ((h["reconnects"] > joined and not hls) or h["segments_skipped"]
+               or uncovered >= 1.0 or h.get("ended_on_error"))
     what = "recording" if recording else "stream"
     text = (f"{h['reconnects']} interruption(s) recovered, {h['reconnecting_seconds']:.0f}s waiting "
             f"on the provider, {h['segments_skipped']} segment(s) skipped, "
             f"{h['errors']} failed request(s)")
+    if joined:
+        text += (f", {joined} rejoined where it stopped "
+                 f"({h.get('replay_bytes_skipped', 0) / 1e6:.0f} MB sent again by the provider skipped)")
     if h.get("revives"):
         text += f", {h['revives']} fresh resolve(s) of a refused session"
     if h.get("ended_on_error"):
@@ -4100,6 +4254,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
             health = status_entry["health"]
             dropped_at = None   # while re-dialling: when the data stopped
             redialled = False   # this connection came from a re-dial, not yet delivering
+            splicer = _ReplaySplicer(channel_id, health)   # #368: a re-dial's replay goes out once
             try:
                 while True:
                     opened_at = loop.time()
@@ -4138,9 +4293,12 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                                     # An outage recovered from: counted once
                                     # the fresh connection really delivers.
                                     redialled = False
+                                    outage = loop.time() - dropped_at
                                     health["reconnects"] += 1
-                                    health["reconnecting_seconds"] += loop.time() - dropped_at
+                                    health["reconnecting_seconds"] += outage
                                     dropped_at = None
+                                    if align:
+                                        splicer.begin(loop.time(), outage)
                             last_piece = loop.time()
                             if loop.time() - last_mark >= _RAW_MARK_EVERY:
                                 # Still delivering: an HLS stream on the same
@@ -4152,13 +4310,16 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                                 align = align and piece[:1] == b"G"
                             if failing_since is not None and loop.time() - opened_at >= HEALTHY_AFTER:
                                 failing_since, slept, backoff, backoff_cap = None, 0.0, 1.0, _BACKOFF_CAP
-                            pending += piece
+                            pending += splicer.feed(piece, loop.time())
                             if len(pending) >= 131072:
                                 cut = len(pending) - (len(pending) % 188) if align else len(pending)
                                 out, pending = pending[:cut], pending[cut:]
+                                if align:
+                                    splicer.sent(out)
                                 yield out
                     except httpx.HTTPError as e:
                         reason = str(e) or type(e).__name__
+                    pending += splicer.abort()
                     # When it last delivered is when the last bytes came, not the
                     # last periodic mark (up to _RAW_MARK_EVERY earlier): a waiting
                     # HLS stream judges "delivering" by it (fuzz seed 7173).
@@ -4169,6 +4330,8 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     # packets only; the tail of a cut packet is unusable.
                     cut = len(pending) - (len(pending) % 188) if align else len(pending)
                     if cut:
+                        if align:
+                            splicer.sent(pending[:cut])
                         yield pending[:cut]
                     # A recovery only if it delivered past HEALTHY_AFTER: an error
                     # page, nothing, or a packet and then silence until the close

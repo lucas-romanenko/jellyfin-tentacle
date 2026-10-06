@@ -266,6 +266,19 @@ User docs: `docs/features/live-tv.md`.
   proxied). A mid-packet start's partial packet is dropped. 401/403/404 stop
   at once. A re-dial counts as a reconnect only once it delivers, and as a
   recovery (backoff and budget reset) only once it delivered past 10 s.
+- Many panels start every raw connection with their buffer (~20 s already
+  sent, byte for byte). `_ReplaySplicer` (#368) joins a re-dialled
+  connection right after the last byte sent: it holds the connection until
+  its first frame start (a video/audio PES with a PTS); if that packet was
+  sent, every later frame start up to the join point must sit where it was
+  sent, the bytes since the last frame start must match, and no unjoined
+  connection may have begun in front of it. Then the replay is dropped
+  (`replays_joined`, `replay_bytes_skipped` in the health); anything
+  unproven (a gap, a seamless re-dial, a remux, a replay over 32 MB or 30 s,
+  a break before the join) goes out as it came: duplicates, never a loss.
+  A joined reconnect is not damage in `_stream_ended`. A provider that
+  loops already-aired packets verbatim can be joined inside its loop (only
+  repeated bytes are dropped).
 - The HLS worker (`hls_to_mpegts()`) classifies statuses with the same
   `_raw_retryable()`: a 5xx on a playlist, a re-resolve or a segment is
   waited out (a 5xx segment is fetched again, not skipped). An expired token
