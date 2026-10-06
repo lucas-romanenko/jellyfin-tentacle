@@ -333,7 +333,13 @@ docs: `docs/features/music.md`; plugin side: `Api/MusicController.cs`
   (pin the original, search). The worker's queue is in memory only, so a
   pending row is finished at startup (`resume_requests`) and at the start of
   each daily check (`finish_pending_requests`), unless the album has files by
-  then (#242).
+  then (#242). An add whose answer failed (timeout, dropped connection, 5xx)
+  and that Lidarr doesn't list yet may still commit: `jobs.owe_add` keeps a
+  row with no Lidarr id, not monitored (still requestable), and
+  `finish_pending_requests` looks it up by MBID 1, 5, 30 and 120 min later,
+  at startup and each daily check; once listed it is pinned and searched,
+  after `OWED_ADD_HOURS` (6) unlisted the row is dropped (#431). A 4xx owes
+  nothing.
 - `services/music/`: `worker.py` (one thread; urgent > normal > background),
   `jobs.py`, `original.py` (the original-release rules, pure), `apply.py`
   (pins and trims; deletions only when exactly the expected leftovers

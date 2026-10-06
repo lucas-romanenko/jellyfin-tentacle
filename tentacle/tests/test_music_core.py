@@ -117,6 +117,14 @@ class FakeLidarr(BaseHTTPRequestHandler):
         FakeLidarr.log.append(("POST", u.path, body))
         st = FakeLidarr.state
         if u.path == "/api/v1/album":
+            if st.get("add_refused"):
+                return self._send(400, [{"errorMessage": "This artist has already been added"}])
+            if st.get("add_fails_5xx"):   # the add commits only later (the test lands it)
+                return self._send(503, {"message": "busy"})
+            if st.get("add_lands_late"):   # the add commits only later (the test lands it)
+                import time
+                time.sleep(st["add_lands_late"])
+                return   # Tentacle gave up waiting: no answer at all
             added = copy.deepcopy(st["after_add"])
             st.setdefault("albums", {})[added["id"]] = added
             if st.get("add_answer_delay"):   # Lidarr keeps the album, the answer comes late
