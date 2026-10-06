@@ -98,9 +98,11 @@ def get_list_tags_for_tmdb_id(
 ) -> List[str]:
     """
     Look up which active list subscriptions contain this TMDB ID
-    via the ListItem table. Returns the corresponding tags.
+    via the ListItem table. Returns the corresponding tags. A film and a
+    show with the same TMDB number are different titles (#365).
     """
-    list_items = db.query(ListItem).filter(ListItem.tmdb_id == tmdb_id).all()
+    list_items = db.query(ListItem).filter(
+        ListItem.tmdb_id == tmdb_id, ListItem.of_type(media_type)).all()
     if not list_items:
         return []
 

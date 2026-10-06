@@ -589,14 +589,18 @@ def fetch_trakt_list(url: str, client_id: str = "") -> list:
 
 def store_list_items(lst: ListSubscription, items: list, db: Session) -> dict:
     """Store fetched items in ListItem table (replace old entries).
-    Returns stats: {stored, new, removed, skipped_no_tmdb, skipped_duplicate}."""
-    # Snapshot existing TMDB IDs before replacing
-    old_tmdb_ids = {
-        row.tmdb_id for row in
-        db.query(ListItem.tmdb_id).filter(ListItem.list_id == lst.id).all()
+    Returns stats: {stored, new, removed, skipped_no_tmdb, skipped_duplicate}.
+
+    Items are keyed on (tmdb_id, media_type): TMDB numbers films and shows
+    separately, so a film and a show with the same number are two items (#365).
+    An item without a type is a film."""
+    # Snapshot existing items before replacing
+    old_keys = {
+        (row.tmdb_id, row.media_type or "movie") for row in
+        db.query(ListItem.tmdb_id, ListItem.media_type).filter(ListItem.list_id == lst.id).all()
     }
     db.query(ListItem).filter(ListItem.list_id == lst.id).delete()
-    seen_tmdb = set()
+    seen = set()
     stored = 0
     skipped_no_tmdb = 0
     skipped_duplicate = 0
@@ -608,26 +612,27 @@ def store_list_items(lst: ListSubscription, items: list, db: Session) -> dict:
             title = item.get("title", "unknown")
             logger.debug(f"Skipping '{title}' — no TMDB match")
             continue
-        # Skip duplicate TMDB IDs (same movie with different IMDb entries)
-        if tmdb_id in seen_tmdb:
+        media_type = item.get("media_type") or "movie"
+        # Skip duplicates (same title with different IMDb entries)
+        if (tmdb_id, media_type) in seen:
             skipped_duplicate += 1
             continue
-        seen_tmdb.add(tmdb_id)
+        seen.add((tmdb_id, media_type))
         # Clean HTML entities + trailing " (YYYY)" from list-sourced titles
         clean_name, clean_year = clean_list_title(item.get("title"), item.get("year"))
         db.add(ListItem(
             list_id=lst.id,
             tmdb_id=tmdb_id,
             imdb_id=imdb_id,
-            media_type=item.get("media_type", "movie"),
+            media_type=media_type,
             title=clean_name,
             year=clean_year,
             poster_path=item.get("poster_path"),
         ))
         stored += 1
     db.flush()
-    new_count = len(seen_tmdb - old_tmdb_ids)
-    removed_count = len(old_tmdb_ids - seen_tmdb)
+    new_count = len(seen - old_keys)
+    removed_count = len(old_keys - seen)
     if skipped_no_tmdb or skipped_duplicate:
         logger.info(f"List '{lst.name}': stored {stored}, skipped {skipped_no_tmdb} (no TMDB match), {skipped_duplicate} (duplicate)")
     return {"stored": stored, "new": new_count, "removed": removed_count, "skipped_no_tmdb": skipped_no_tmdb, "skipped_duplicate": skipped_duplicate}
@@ -640,7 +645,7 @@ def keep_unread_items(lst: ListSubscription, items: list, db: Session) -> list:
     it, which is only right when the fetch read the whole list. After a page
     failure nothing not re-read can be judged gone, so every stored item stays;
     after a movies-only fallback, the stored TV shows do. Items are matched on
-    tmdb_id, the key store_list_items de-duplicates on.
+    (tmdb_id, media_type), the key store_list_items de-duplicates on.
     """
     missing = getattr(items, "missing_types", set())
     complete = getattr(items, "complete", True)
@@ -649,19 +654,20 @@ def keep_unread_items(lst: ListSubscription, items: list, db: Session) -> list:
     merged = ListFetch(items, source=getattr(items, "source", ""),
                        complete=complete, missing_types=missing,
                        note=getattr(items, "note", ""))
-    have = {i.get("tmdb_id") for i in items if i.get("tmdb_id")}
+    have = {(i.get("tmdb_id"), i.get("media_type") or "movie") for i in items if i.get("tmdb_id")}
     kept = 0
     for row in db.query(ListItem).filter(ListItem.list_id == lst.id).all():
-        if not row.tmdb_id or row.tmdb_id in have:
+        key = (row.tmdb_id, row.media_type or "movie")
+        if not row.tmdb_id or key in have:
             continue
-        if complete and (row.media_type or "movie") not in missing:
+        if complete and key[1] not in missing:
             continue
         merged.append({
             "tmdb_id": row.tmdb_id, "imdb_id": row.imdb_id,
             "media_type": row.media_type, "title": row.title,
             "year": row.year, "poster_path": row.poster_path,
         })
-        have.add(row.tmdb_id)
+        have.add(key)
         kept += 1
     if kept:
         logger.info(f"List '{lst.name}': kept {kept} stored item(s) the partial fetch could not see")

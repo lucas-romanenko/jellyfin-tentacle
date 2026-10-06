@@ -322,7 +322,8 @@ def _after_scan(db, tmdb_id, title, event_type, first_episode=None, episode_coun
                 db_series.last_downloaded_episode = label
             db.commit()
 
-        list_items = db.query(ListItem).filter(ListItem.tmdb_id == tmdb_id).all()
+        list_items = db.query(ListItem).filter(
+            ListItem.tmdb_id == tmdb_id, ListItem.of_type("series")).all()
         if not list_items:
             logger.info(f"[Sonarr webhook] '{title}' not in any lists")
         else:
