@@ -330,52 +330,67 @@ def delete_provider(provider_id: int, db: Session = Depends(get_db)):
     if not p:
         raise HTTPException(404, "Provider not found")
 
-    # ── Delete VOD files from disk ──────────────────────────────────────────
-    deleted_files = 0
+    # A sync writes each new title's files before its rows, and commits the rows
+    # once per category: a delete under it misses them, the sync's commit then
+    # fails on the deleted category, and the files stay with no row for good
+    # (#450). Take the provider's sync slot like "Sync now" and the nightly do,
+    # and hold it until the rows are gone so neither starts a sync meanwhile.
+    from routers.sync import _running_syncs, _sync_lock
+    with _sync_lock:
+        if provider_id in _running_syncs or db.query(SyncRun).filter(
+                SyncRun.provider_id == provider_id, SyncRun.status == "running").first():
+            raise HTTPException(409, "A sync of this provider is running — cancel it (or let it "
+                                     "finish), then delete the provider")
+        _running_syncs[provider_id] = True
+    try:
+        # ── Delete VOD files from disk ──────────────────────────────────────────
+        deleted_files = 0
 
-    # Movies: strm_path points to .strm file, delete file + .nfo + parent folder
-    movies = db.query(Movie).filter(Movie.provider_id == provider_id).all()
-    for m in movies:
-        deleted_files += delete_movie_files(m.strm_path)
+        # Movies: strm_path points to .strm file, delete file + .nfo + parent folder
+        movies = db.query(Movie).filter(Movie.provider_id == provider_id).all()
+        for m in movies:
+            deleted_files += delete_movie_files(m.strm_path)
 
-    # Series: strm_path points to the show directory. Only the .strm/.nfo files
-    # Tentacle wrote are removed — merged setups share this folder with Sonarr's
-    # downloads, and a recursive delete would destroy those too.
-    series = db.query(Series).filter(Series.provider_id == provider_id).all()
-    for s in series:
-        deleted_files += delete_series_files(s.strm_path)
+        # Series: strm_path points to the show directory. Only the .strm/.nfo files
+        # Tentacle wrote are removed — merged setups share this folder with Sonarr's
+        # downloads, and a recursive delete would destroy those too.
+        series = db.query(Series).filter(Series.provider_id == provider_id).all()
+        for s in series:
+            deleted_files += delete_series_files(s.strm_path)
 
-    logger.info(f"Deleted {deleted_files} VOD files from disk for provider {p.name}")
+        logger.info(f"Deleted {deleted_files} VOD files from disk for provider {p.name}")
 
-    # ── Cascade-delete all DB records ────────────────────────────────────────
-    # Remove duplicates that reference movies from this provider
-    provider_tmdb_ids = [m.tmdb_id for m in movies]
-    if provider_tmdb_ids:
-        db.query(Duplicate).filter(Duplicate.tmdb_id.in_(provider_tmdb_ids)).delete(synchronize_session=False)
+        # ── Cascade-delete all DB records ────────────────────────────────────────
+        # Remove duplicates that reference movies from this provider
+        provider_tmdb_ids = [m.tmdb_id for m in movies]
+        if provider_tmdb_ids:
+            db.query(Duplicate).filter(Duplicate.tmdb_id.in_(provider_tmdb_ids)).delete(synchronize_session=False)
 
-    deleted_movies = len(movies)
-    deleted_series = len(series)
-    db.query(Movie).filter(Movie.provider_id == provider_id).delete()
-    db.query(Series).filter(Series.provider_id == provider_id).delete()
-    # Delete category snapshots via category IDs, then categories
-    cat_ids = [c.id for c in db.query(ProviderCategory.id).filter(ProviderCategory.provider_id == provider_id).all()]
-    if cat_ids:
-        db.query(CategorySnapshot).filter(CategorySnapshot.category_id.in_(cat_ids)).delete(synchronize_session=False)
-    db.query(ProviderCategory).filter(ProviderCategory.provider_id == provider_id).delete()
-    db.query(SyncRun).filter(SyncRun.provider_id == provider_id).delete()
-    # Delete EPG programs for channels belonging to this provider, then channels/groups
-    channel_epg_ids = list({
-        gid for ch in db.query(LiveChannel).filter(LiveChannel.provider_id == provider_id)
-        for gid in (ch.guide_epg_id, ch.epg_channel_id) if gid
-    })
-    if channel_epg_ids:
-        db.query(EPGProgram).filter(EPGProgram.channel_id.in_(channel_epg_ids)).delete(synchronize_session=False)
-    db.query(LiveChannel).filter(LiveChannel.provider_id == provider_id).delete()
-    db.query(LiveChannelGroup).filter(LiveChannelGroup.provider_id == provider_id).delete()
+        deleted_movies = len(movies)
+        deleted_series = len(series)
+        db.query(Movie).filter(Movie.provider_id == provider_id).delete()
+        db.query(Series).filter(Series.provider_id == provider_id).delete()
+        # Delete category snapshots via category IDs, then categories
+        cat_ids = [c.id for c in db.query(ProviderCategory.id).filter(ProviderCategory.provider_id == provider_id).all()]
+        if cat_ids:
+            db.query(CategorySnapshot).filter(CategorySnapshot.category_id.in_(cat_ids)).delete(synchronize_session=False)
+        db.query(ProviderCategory).filter(ProviderCategory.provider_id == provider_id).delete()
+        db.query(SyncRun).filter(SyncRun.provider_id == provider_id).delete()
+        # Delete EPG programs for channels belonging to this provider, then channels/groups
+        channel_epg_ids = list({
+            gid for ch in db.query(LiveChannel).filter(LiveChannel.provider_id == provider_id)
+            for gid in (ch.guide_epg_id, ch.epg_channel_id) if gid
+        })
+        if channel_epg_ids:
+            db.query(EPGProgram).filter(EPGProgram.channel_id.in_(channel_epg_ids)).delete(synchronize_session=False)
+        db.query(LiveChannel).filter(LiveChannel.provider_id == provider_id).delete()
+        db.query(LiveChannelGroup).filter(LiveChannelGroup.provider_id == provider_id).delete()
 
-    provider_name = p.name
-    db.delete(p)
-    db.commit()
+        provider_name = p.name
+        db.delete(p)
+        db.commit()
+    finally:
+        _running_syncs.pop(provider_id, None)
 
     from models.database import log_deletion
     log_deletion(db, kind="provider-cascade", name=provider_name, reason="manual",
