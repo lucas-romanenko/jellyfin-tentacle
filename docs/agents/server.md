@@ -246,6 +246,11 @@ auto_playlist_toggles, tentacle_users, notifications, download_requests,
 music_artists, music_albums, and the Live TV tables. Credentials live in
 `settings` (key/value) and `providers`; never log or print them.
 
+A list item is keyed on (list_id, tmdb_id, media_type): TMDB numbers films
+and shows separately, so a list may hold movie/N and tv/N. Anything that
+looks up list items by TMDB number filters on the type too
+(`ListItem.of_type()`; a row without a type is a film).
+
 ## Live TV
 
 Tentacle is the HDHomeRun tuner Jellyfin sees (it replaced Threadfin):

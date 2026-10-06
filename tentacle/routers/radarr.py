@@ -492,7 +492,8 @@ def radarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
                     db_movie.date_added = datetime.utcnow()
                 db.commit()
 
-            list_items = db.query(ListItem).filter(ListItem.tmdb_id == tmdb_id).all()
+            list_items = db.query(ListItem).filter(
+                ListItem.tmdb_id == tmdb_id, ListItem.of_type("movie")).all()
             if not list_items:
                 logger.info(f"[Radarr webhook] '{title}' not in any lists")
             else:

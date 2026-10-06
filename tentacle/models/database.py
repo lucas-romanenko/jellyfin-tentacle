@@ -5,7 +5,7 @@ SQLAlchemy models for all entities
 
 from sqlalchemy import (
     create_engine, Column, Integer, String, Boolean, Float,
-    DateTime, Text, JSON, ForeignKey, UniqueConstraint
+    DateTime, Text, JSON, ForeignKey, UniqueConstraint, or_
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
@@ -435,9 +435,18 @@ class ListItem(Base):
 
     list_subscription = relationship("ListSubscription", back_populates="items")
 
+    # TMDB numbers films and shows separately: movie/N and tv/N are two titles,
+    # and a mixed list may hold both (#365). Rows without a type are films.
     __table_args__ = (
-        UniqueConstraint("list_id", "tmdb_id", name="uq_list_item"),
+        UniqueConstraint("list_id", "tmdb_id", "media_type", name="uq_list_item"),
     )
+
+    @classmethod
+    def of_type(cls, media_type: str):
+        """Filter for the rows of one TMDB namespace ("series", else films)."""
+        if media_type == "series":
+            return cls.media_type == "series"
+        return or_(cls.media_type.is_(None), cls.media_type != "series")
 
 
 # ─── Tag Rules ────────────────────────────────────────────────────────────────
@@ -1065,6 +1074,7 @@ def _migrate_columns():
                 continue
             _backfill_default(cursor, conn, table_name, col)
 
+    _migrate_list_items_key(conn)
     _drop_retired_tables(cursor, conn)
     _reset_guessed_made_for_kids(cursor, conn)
     conn.close()
@@ -1155,6 +1165,47 @@ def _recreate_per_user_table(conn, table, old_name, columns):
     except (sqlite3.Error, RuntimeError) as e:
         conn.rollback()
         logger.error(f"[migrate] Could not recreate {table} with an id column: {e}")
+
+
+def _migrate_list_items_key(conn):
+    """Rebuild list_items with the unique key (list_id, tmdb_id, media_type) (#365).
+
+    The old key (list_id, tmdb_id) let a list hold only one of a film and a
+    show with the same TMDB number. SQLite can't change a constraint in place,
+    so the table is recreated in one transaction. Rows without a type are
+    copied as films: SQLite treats NULLs as distinct in a UNIQUE key, so an
+    untyped row would escape it. Existing rows already satisfy the new key.
+    """
+    import sqlite3
+    from sqlalchemy.schema import CreateIndex, CreateTable
+
+    cursor = conn.cursor()
+    old_key = False
+    for index in cursor.execute("PRAGMA index_list(list_items)").fetchall():
+        if index[2]:  # unique
+            cols = [r[2] for r in conn.execute(f'PRAGMA index_info("{index[1]}")')]
+            old_key = old_key or cols == ["list_id", "tmdb_id"]
+    if not old_key:
+        return  # current schema, a fresh install, or no table yet
+    model = Base.metadata.tables["list_items"]
+    old_cols = _existing_columns(cursor, "list_items")
+    cols = [c.name for c in model.columns if c.name in old_cols]
+    select = ", ".join("COALESCE(media_type, 'movie')" if c == "media_type" else f'"{c}"' for c in cols)
+    conn.commit()
+    try:
+        cursor.execute("BEGIN IMMEDIATE")
+        cursor.execute("ALTER TABLE list_items RENAME TO _list_items_old")
+        cursor.execute(str(CreateTable(model).compile(dialect=engine.dialect)))
+        cursor.execute(f"INSERT INTO list_items ({', '.join(cols)}) SELECT {select} FROM _list_items_old")
+        copied = cursor.rowcount
+        cursor.execute("DROP TABLE _list_items_old")
+        for index in model.indexes:
+            cursor.execute(str(CreateIndex(index).compile(dialect=engine.dialect)))
+        conn.commit()
+        logger.info(f"[migrate] Rebuilt list_items with a key per film/show ({copied} row(s) kept)")
+    except sqlite3.Error as e:
+        conn.rollback()
+        logger.error(f"[migrate] Could not rebuild list_items with a key per film/show: {e}")
 
 
 def _migrate_home_row_order(cursor, conn):
