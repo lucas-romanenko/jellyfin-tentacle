@@ -48,10 +48,27 @@ def _check_webhook_auth(request: Request, db: Session) -> None:
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/radarr", tags=["radarr"], dependencies=[Depends(require_admin)])
 
-# Per-movie lock to prevent duplicate webhook processing (e.g. Download + MovieAdded
-# firing close together for the same movie). Only one background thread per tmdb_id.
+# One webhook pass per movie at a time (e.g. Download + MovieAdded close
+# together). An event for a movie whose pass is still running is queued and
+# run by that thread once it ends, never dropped (#380): the pass waits its
+# turn for the library-wide scan (#268), and a Download skipped meanwhile lost
+# its notice and downloaded_at. Locks are taken and released under the guard.
 _webhook_locks: dict[int, threading.Lock] = {}
+_webhook_followups: dict[int, dict] = {}   # tmdb_id -> {"title", "event_type", "is_upgrade"}
 _webhook_locks_guard = threading.Lock()
+
+
+def _queue_webhook_followup(tmdb_id, title, event_type, is_upgrade) -> None:
+    """Under _webhook_locks_guard. Events queued for one movie make one pass;
+    a Download outranks MovieAdded, and a new download outranks an upgrade."""
+    entry = _webhook_followups.get(tmdb_id)
+    if entry is None:
+        _webhook_followups[tmdb_id] = {"title": title, "event_type": event_type, "is_upgrade": is_upgrade}
+        return
+    entry["title"] = title
+    if event_type == "Download":
+        entry["is_upgrade"] = is_upgrade and (entry["event_type"] != "Download" or entry["is_upgrade"])
+        entry["event_type"] = "Download"
 
 _scan_running = False
 
@@ -417,30 +434,47 @@ def radarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
     # Download / MovieAdded — scan and tag
     _forget_missing_from_disk(tmdb_id)
 
-    def _webhook_background(tmdb_id, title, event_type):
-        import time
-        from datetime import datetime
-        from models.database import SessionLocal, get_setting
-        from pathlib import Path
-        from services.jellyfin import JellyfinService
-
-        # Per-movie lock: if another webhook event for the same movie is already
-        # being processed (e.g. Download + MovieAdded close together), skip.
+    def _webhook_background(tmdb_id, title, event_type, is_upgrade):
+        # Per-movie lock: if another webhook event for the same movie is
+        # still being processed, this one runs after it, in that thread (#380).
         with _webhook_locks_guard:
-            if tmdb_id in _webhook_locks and _webhook_locks[tmdb_id].locked():
-                logger.info(f"[Radarr webhook] Skipping duplicate processing for tmdb:{tmdb_id}")
+            lock = _webhook_locks.get(tmdb_id)
+            if lock is not None and lock.locked():
+                _queue_webhook_followup(tmdb_id, title, event_type, is_upgrade)
+                logger.info(f"[Radarr webhook] tmdb:{tmdb_id} is still being processed: "
+                            f"{event_type} queued to run after it")
                 return
             # Bound the dict: prune unlocked (idle) locks if it grows large.
             if len(_webhook_locks) > 512:
                 for k in [k for k, l in _webhook_locks.items() if not l.locked()]:
                     _webhook_locks.pop(k, None)
-            if tmdb_id not in _webhook_locks:
-                _webhook_locks[tmdb_id] = threading.Lock()
-            lock = _webhook_locks[tmdb_id]
+            lock = _webhook_locks.setdefault(tmdb_id, threading.Lock())
+            lock.acquire()
 
-        if not lock.acquire(blocking=False):
-            logger.info(f"[Radarr webhook] Skipping duplicate processing for tmdb:{tmdb_id}")
-            return
+        released = False
+        try:
+            while True:
+                _webhook_pass(tmdb_id, title, event_type, is_upgrade)
+                with _webhook_locks_guard:
+                    followup = _webhook_followups.pop(tmdb_id, None)
+                    if followup is None:
+                        lock.release()
+                        released = True
+                        return
+                title, event_type, is_upgrade = followup["title"], followup["event_type"], followup["is_upgrade"]
+                logger.info(f"[Radarr webhook] Running the queued {event_type} for '{title}' (tmdb:{tmdb_id})")
+        finally:
+            if not released:
+                with _webhook_locks_guard:
+                    _webhook_followups.pop(tmdb_id, None)
+                    lock.release()
+
+    def _webhook_pass(tmdb_id, title, event_type, is_upgrade):
+        import time
+        from datetime import datetime
+        from models.database import SessionLocal, get_setting
+        from pathlib import Path
+        from services.jellyfin import JellyfinService
 
         db = SessionLocal()
         try:
@@ -617,7 +651,11 @@ def radarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
                     replaced = is_replacing(db, "movie", tmdb_id)
                     if replaced:
                         clear_replacing(db, "movie", tmdb_id)
-                    if dr:
+                    if dr and is_upgrade and not replaced:
+                        # A better file for a film the requester already has:
+                        # not a new download, no second "ready to watch".
+                        logger.info(f"[Radarr webhook] '{db_movie.title}' quality upgrade: requester not notified again")
+                    elif dr:
                         create_notification(
                             db, user_id=dr.user_id, tmdb_id=tmdb_id, media_type="movie",
                             title=db_movie.title,
@@ -648,10 +686,10 @@ def radarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
         except Exception as e:
             logger.error(f"[Radarr webhook] Background processing failed: {e}", exc_info=True)
         finally:
-            lock.release()
             db.close()
 
-    thread = threading.Thread(target=_webhook_background, args=(tmdb_id, title, event_type), daemon=True)
+    is_upgrade = event_type == "Download" and payload.get("isUpgrade") is True
+    thread = threading.Thread(target=_webhook_background, args=(tmdb_id, title, event_type, is_upgrade), daemon=True)
     thread.start()
 
     return {"status": "processing", "event": event_type, "tmdb_id": tmdb_id}
