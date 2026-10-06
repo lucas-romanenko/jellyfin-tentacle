@@ -160,6 +160,14 @@ read that row.
   `completed` with `error_message` "N of M categories could not be read
   (reason)". Both go to Activity, for "Sync now" and the nightly. Pruning
   is skipped either way (`fetch_ok`), as before (#267).
+- A library root (`/media/vod/movies`, `/media/vod/shows`) that is missing
+  or empty while the sweep's rows are recorded (`_swept_rows()`) means the
+  share is not mounted: the run fails before writing anything
+  (`_check_vod_root_before_sync()`, #439). Writing there put the files on
+  the container's disk, made the root non-empty for the VOD sweep's own
+  check, and the sweep deleted every title not written back. A new install
+  (no rows) syncs; a deliberately empty folder needs any file in it.
+  `_repair_movie_strm()` and the show-folder rebuild check the root too.
 - TMDB matching (`search_movie` / `search_series`): with the provider's
   year, then, only if that found nothing good enough, once without it,
   keeping results within one year of the provider's (a local or streaming

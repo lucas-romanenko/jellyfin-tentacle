@@ -853,6 +853,9 @@ def _repair_movie_strm(client, stream: dict, tmdb_id: int, provider: Provider, d
             # #185 (E25): with two films of one title, only the row's own stream
             # may restore its file -- another listing could be its namesake.
             return False
+        if _vod_root_unavailable(strm.parent.parent):
+            # Storage unavailable, as for a show folder (#439).
+            return False
         strm.parent.mkdir(parents=True, exist_ok=True)
         chown_path(strm.parent)
         _write_strm(strm, expected)
@@ -909,8 +912,7 @@ def _backfill_series_episodes(
         # VOD sweep, which deleted it, and the next sync re-imported the title as
         # new. Rebuild it instead — but only when the library root is there: a
         # missing or empty mount point means storage is unavailable.
-        root = show_dir.parent
-        if not root.is_dir() or not any(root.iterdir()):
+        if _vod_root_unavailable(show_dir.parent):
             return 0
 
     try:
@@ -1641,9 +1643,19 @@ VOD_MOVIES_ROOT = Path("/media/vod/movies")
 VOD_SERIES_ROOT = Path("/media/vod/shows")
 
 
-def _sweep_one_type(db: Session, Model, media_type: str, root: Path, now: datetime):
-    """Sweep one media type. Returns (removed_count, removed_titles)."""
-    rows = db.query(Model).filter(
+def _vod_root_unavailable(root: Path) -> bool:
+    """A library root that is missing or empty: the storage is not mounted.
+
+    mergerfs/NFS/SMB/rclone all report plain "not found" for every path while
+    a branch is out, and Docker shows a share that isn't mounted as the bare,
+    empty mount point."""
+    return not root.is_dir() or not any(root.iterdir())
+
+
+def _swept_rows(db: Session, Model):
+    """The VOD rows the sweep checks against the disk (and the sync must not
+    lose by writing onto an unmounted root)."""
+    return db.query(Model).filter(
         Model.source.like("provider_%"),
         Model.strm_path.isnot(None),
         # Titles the user opted out of .strm management are expected to have no
@@ -1651,14 +1663,35 @@ def _sweep_one_type(db: Session, Model, media_type: str, root: Path, now: dateti
         # the row and the next sync would re-import the title and rewrite the
         # file, silently undoing the opt-out.
         Model.strm_disabled.isnot(True),
-    ).all()
+    )
+
+
+def _check_vod_root_before_sync(db: Session, Model, root: Path, what: str):
+    """Raise SyncError when the library root is missing or empty while titles
+    are recorded in it (#439). Writing there put the provider's titles on the
+    container's own disk, hidden again once the share was mounted, and the
+    root was no longer empty, so the VOD sweep deleted every title the sync
+    had not written back. A new install has no rows, so it syncs."""
+    if not _vod_root_unavailable(root):
+        return
+    count = _swept_rows(db, Model).count()
+    if count:
+        raise SyncError(
+            f"{root} is missing or empty, but {count} {what} are recorded there: the storage "
+            f"looks unmounted, so nothing was synced. Mount it and sync again. If the folder "
+            f"really is empty now (a new disk), put any file in it and sync again."
+        )
+
+
+def _sweep_one_type(db: Session, Model, media_type: str, root: Path, now: datetime):
+    """Sweep one media type. Returns (removed_count, removed_titles)."""
+    rows = _swept_rows(db, Model).all()
     if not rows:
         return 0, []
 
     # A mount that is missing or empty means the storage is unavailable, not
-    # that every title was deleted. mergerfs/NFS/SMB/rclone all report plain
-    # "not found" for every path while a branch is out, which raises nothing.
-    if not root.is_dir() or not any(root.iterdir()):
+    # that every title was deleted.
+    if _vod_root_unavailable(root):
         logger.error(
             f"[VOD sweep] {root} is missing or empty — storage looks unavailable. "
             f"Skipping the {media_type} sweep rather than deleting "
@@ -1876,8 +1909,10 @@ def sync_provider(
 
         # Pre-sync disk space check
         if sync_type in ("full", "movies"):
+            _check_vod_root_before_sync(db, Movie, vod_movies_path, "films")
             _check_disk_before_sync(vod_movies_path)
         if sync_type in ("full", "series"):
+            _check_vod_root_before_sync(db, Series, vod_series_path, "shows")
             _check_disk_before_sync(vod_series_path)
 
         tmdb = TMDBService(bearer_token, data_dir, match_threshold)
