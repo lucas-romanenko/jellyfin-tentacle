@@ -132,6 +132,17 @@ answer (timeout, reset, 502/503/504) may have gone through, so no search. A
 Sonarr download of several episodes (several queue records, one
 `downloadId`) is left to Sonarr's own re-search (a season search for a pack).
 
+**"Bad copy? Get another one"** (`POST /api/library/replace/...`,
+`services/bad_copy.py`): marks the grab that made the file failed
+(blocklist), marks the title "replacing", deletes the file, then writes the
+Deletion log row and monitors + searches. Radarr/Sonarr answer the file
+DELETE only once the file is gone (a recycle bin on another drive is a full
+copy), so a DELETE that fails or times out is followed by a check of the
+movie/episode: gone means carry on; after a timeout the button checks for
+`SLOW_DELETE_WAIT` (120 s, under the plugin's 240 s and the TV app's 250 s),
+then answers "still deleting" (`pending: true`) and a background thread
+finishes when the file goes (up to an hour) (#442).
+
 ## Nightly sync
 
 `sync_schedule` (cron, default `0 3 * * *`), `run_scheduled_sync()` in

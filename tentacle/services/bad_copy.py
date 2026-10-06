@@ -10,8 +10,18 @@ file-delete webhook and Jellyfin's delete hook both drop it). The request
 history must survive that, or the requester loses the right to manage it and
 never hears the replacement arrived — so the title is marked "replacing" and
 those paths keep its DownloadRequest.
+
+Radarr/Sonarr answer the file DELETE only once the file is gone; with a
+recycle bin on another drive, or a slow share, that is a full copy and can
+outlast the 30 s request timeout while they carry on and delete it (#442).
+So a failed DELETE is not the end: Tentacle checks whether the file is gone,
+waits a while for a delete that timed out, and finishes (Deletion log,
+monitor, search) as soon as it is; a delete still running when the button
+must answer is finished in the background.
 """
 import logging
+import threading
+import time
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -23,12 +33,18 @@ from models.database import Setting, get_setting, log_deletion
 logger = logging.getLogger(__name__)
 
 REPLACING_FOR = timedelta(days=14)
+# A delete that timed out: how long the button keeps checking for the file to
+# be gone (the plugin gives up after 240 s, the TV app after 250 s), then how
+# long the background keeps checking.
+SLOW_DELETE_WAIT = 120
+BACKGROUND_WAIT = 3600
 
 
 class BadCopyError(Exception):
-    def __init__(self, status: int, message: str):
+    def __init__(self, status: int, message: str, timed_out: bool = False):
         super().__init__(message)
         self.status = status
+        self.timed_out = timed_out
 
 
 def _key(media_type: str, tmdb_id: int) -> str:
@@ -67,6 +83,8 @@ class _Arr:
         try:
             r = requests.request(method, f"{self.url}/api/v3/{path}", headers={"X-Api-Key": self.key},
                                  timeout=30, **kw)
+        except requests.Timeout as e:
+            raise BadCopyError(502, f"Couldn't reach {self.name}: {e}", timed_out=True)
         except Exception as e:
             raise BadCopyError(502, f"Couldn't reach {self.name}: {e}")
         if r.status_code >= 400:
@@ -139,6 +157,76 @@ def _outcome(title: str, grab: Optional[dict], blocked: bool) -> str:
     return f"Getting another copy of {title}, but the bad release couldn't be blocklisted."
 
 
+def _gone_within(is_gone, seconds: float, every: float) -> bool:
+    """Whether is_gone() turns true within `seconds` (checked at once, then
+    every `every` s). A check that fails counts as not gone yet."""
+    deadline = time.monotonic() + seconds
+    while True:
+        try:
+            if is_gone():
+                return True
+        except BadCopyError:
+            pass
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(every)
+
+
+def _delete_and_search(db: Session, arr: _Arr, *, delete: str, is_gone, search, title: str,
+                       media_type: str, user_name: str, grab: Optional[dict], blocked: bool) -> dict:
+    """Delete the file, then (once it is gone) log it and start the search."""
+    release = (grab or {}).get("sourceTitle")
+
+    def finish(session: Session) -> None:
+        log_deletion(session, kind="bad-copy", name=title, media_type=media_type, reason="manual",
+                     user_name=user_name,
+                     detail=f"Replaced file; release {'blocklisted' if blocked else 'not blocklisted'}: "
+                            f"{release or 'unknown'}")
+        try:
+            search()
+        except BadCopyError as e:
+            raise BadCopyError(502, f"Deleted the bad file of {title}, but couldn't start the search for "
+                                    f"another copy ({e}). Search for it in {arr.name}.")
+        logger.info(f"[BadCopy] {user_name or '?'} replaced '{title}' (blocklisted={blocked})")
+
+    try:
+        arr.call("DELETE", delete)
+    except BadCopyError as e:
+        # The delete may have gone through anyway: after a timeout it is still
+        # running (Radarr/Sonarr carry on without us).
+        if not _gone_within(is_gone, SLOW_DELETE_WAIT if e.timed_out else 0, 5):
+            if not e.timed_out:
+                raise
+            logger.warning(f"[BadCopy] {arr.name} is still deleting the file of '{title}'; "
+                           "the search starts once it's gone")
+            _finish_in_background(is_gone, finish, title)
+            return {"ok": True, "blocklisted": blocked, "release": release, "pending": True,
+                    "message": f"{arr.name} is still deleting the bad file of {title}. "
+                               "The search for another copy starts as soon as it's gone."}
+        logger.warning(f"[BadCopy] {arr.name} deleted the file of '{title}' although the delete failed: {e}")
+    finish(db)
+    return {"ok": True, "blocklisted": blocked, "release": release, "message": _outcome(title, grab, blocked)}
+
+
+def _finish_in_background(is_gone, finish, title: str) -> None:
+    def run():
+        if not _gone_within(is_gone, BACKGROUND_WAIT, 15):
+            logger.warning(f"[BadCopy] The file of '{title}' is still there after {BACKGROUND_WAIT // 60} min: "
+                           "no search started")
+            return
+        from models.database import SessionLocal
+        db = SessionLocal()
+        try:
+            finish(db)
+        except BadCopyError as e:
+            logger.warning(f"[BadCopy] {e}")
+        except Exception:
+            logger.exception(f"[BadCopy] Finishing the replacement of '{title}' failed")
+        finally:
+            db.close()
+    threading.Thread(target=run, daemon=True, name="bad-copy-finish").start()
+
+
 def replace_movie(db: Session, tmdb_id: int, user_name: str = None) -> dict:
     from models.database import Movie
     row = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
@@ -164,16 +252,20 @@ def replace_movie(db: Session, tmdb_id: int, user_name: str = None) -> dict:
             logger.warning(f"[BadCopy] Couldn't mark the grab of '{title}' failed: {e}")
 
     mark_replacing(db, "movie", tmdb_id)
-    arr.call("DELETE", f"moviefile/{file_id}")
-    if not movie.get("monitored"):
-        arr.call("PUT", "movie/editor", json={"movieIds": [movie["id"]], "monitored": True})
-    arr.call("POST", "command", json={"name": "MoviesSearch", "movieIds": [movie["id"]]})
-    log_deletion(db, kind="bad-copy", name=title, media_type="movie", reason="manual", user_name=user_name,
-                 detail=f"Replaced file; release {'blocklisted' if blocked else 'not blocklisted'}: "
-                        f"{(grab or {}).get('sourceTitle') or 'unknown'}")
-    logger.info(f"[BadCopy] {user_name or '?'} replaced '{title}' (blocklisted={blocked})")
-    return {"ok": True, "blocklisted": blocked, "release": (grab or {}).get("sourceTitle"),
-            "message": _outcome(title, grab, blocked)}
+
+    def is_gone():
+        now = arr.call("GET", f"movie/{movie['id']}") or {}
+        return not now.get("hasFile") or (now.get("movieFile") or {}).get("id") != file_id
+
+    def search():
+        # After the delete: deleting a file unmonitors the movie when Radarr's
+        # "Unmonitor Deleted Movies" is on.
+        if not movie.get("monitored"):
+            arr.call("PUT", "movie/editor", json={"movieIds": [movie["id"]], "monitored": True})
+        arr.call("POST", "command", json={"name": "MoviesSearch", "movieIds": [movie["id"]]})
+
+    return _delete_and_search(db, arr, delete=f"moviefile/{file_id}", is_gone=is_gone, search=search,
+                              title=title, media_type="movie", user_name=user_name, grab=grab, blocked=blocked)
 
 
 def replace_episode(db: Session, tmdb_id: int, season: int, episode: int, user_name: str = None) -> dict:
@@ -203,12 +295,15 @@ def replace_episode(db: Session, tmdb_id: int, season: int, episode: int, user_n
             logger.warning(f"[BadCopy] Couldn't mark the grab of '{title}' failed: {e}")
 
     mark_replacing(db, "series", tmdb_id)
-    arr.call("DELETE", f"episodefile/{ep['episodeFileId']}")
-    arr.call("PUT", "episode/monitor", json={"episodeIds": [ep["id"]], "monitored": True})
-    arr.call("POST", "command", json={"name": "EpisodeSearch", "episodeIds": [ep["id"]]})
-    log_deletion(db, kind="bad-copy", name=title, media_type="series", reason="manual", user_name=user_name,
-                 detail=f"Replaced file; release {'blocklisted' if blocked else 'not blocklisted'}: "
-                        f"{(grab or {}).get('sourceTitle') or 'unknown'}")
-    logger.info(f"[BadCopy] {user_name or '?'} replaced '{title}' (blocklisted={blocked})")
-    return {"ok": True, "blocklisted": blocked, "release": (grab or {}).get("sourceTitle"),
-            "message": _outcome(title, grab, blocked)}
+
+    def is_gone():
+        now = arr.call("GET", f"episode/{ep['id']}") or {}
+        return not now.get("hasFile") or now.get("episodeFileId") != ep["episodeFileId"]
+
+    def search():
+        arr.call("PUT", "episode/monitor", json={"episodeIds": [ep["id"]], "monitored": True})
+        arr.call("POST", "command", json={"name": "EpisodeSearch", "episodeIds": [ep["id"]]})
+
+    return _delete_and_search(db, arr, delete=f"episodefile/{ep['episodeFileId']}", is_gone=is_gone,
+                              search=search, title=title, media_type="series", user_name=user_name,
+                              grab=grab, blocked=blocked)
