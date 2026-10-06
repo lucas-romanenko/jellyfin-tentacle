@@ -80,7 +80,10 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
 - **TMDB is the gatekeeper**: no TMDB match = the item is skipped, unless
   the provider has `require_tmdb_match=False` (then the provider's title and
   a negative tmdb_id). A built-in project TMDB key ships with Tentacle
-  (`services/tmdb.py`); a user key/token in settings overrides it.
+  (`services/tmdb.py`); a user key/token in settings overrides it. It is
+  never stored: `/api/settings/raw` doesn't serve it (the Settings page posts
+  every field back) and a Save that sends it clears `tmdb_bearer_token`;
+  only `/api/settings/plugin-keys` hands it out.
 - **Two ways to tag**: VOD `.strm` items get `<tag>` elements in their NFO
   (Jellyfin reads NFO tags for `.strm` only); downloaded `.mkv` items must be
   tagged through the Jellyfin API (`services/jellyfin.py` `set_item_tags`),
