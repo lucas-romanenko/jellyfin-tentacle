@@ -7,6 +7,7 @@ import unittest
 from datetime import datetime, timedelta
 from unittest import mock
 
+import requests
 from fastapi import HTTPException
 
 import models.database as mdb
@@ -330,6 +331,144 @@ class TestEndpoint(_Base):
         with self.assertRaises(HTTPException) as e:
             self.call(self.admin, "movie", 999)
         self.assertEqual(404, e.exception.status_code)
+
+
+class SlowDeleteArr(FakeArr):
+    """#442: Radarr/Sonarr answer the file DELETE only once the file is gone
+    (moved to a recycle bin on another drive: a full copy). The client gives up
+    after its timeout; they carry on and delete it `delete_takes` s later.
+    Time is faked: every call takes 0.05 s, sleeps add up."""
+
+    def __init__(self, delete_takes=70):
+        super().__init__()
+        self.now, self.delete_takes, self.gone_at = 0.0, delete_takes, {}
+        self.movie_history = [_grab(2, "2026-02-01T00:00:00Z", "Dud.Film.GERMAN.1080p", "A1"),
+                              _imported(3, "2026-02-01T01:00:00Z", 501, "A1")]
+        self.delete_error = None        # an answer instead of the timeout
+
+    def has(self, path):
+        return path not in self.gone_at or self.now < self.gone_at[path]
+
+    def sleep(self, s):
+        self.now += s
+
+    def __call__(self, method, url, headers=None, timeout=None, params=None, json=None):
+        path = url.split("/api/v3/")[1]
+        if method == "DELETE" and path in ("moviefile/501", "episodefile/901"):
+            self.calls.append((method, path, params, json))
+            self.gone_at[path] = self.now + (self.delete_takes or 0)
+            if self.delete_error:
+                return _Resp({"message": "nope"}, self.delete_error)
+            self.now += timeout
+            raise requests.ReadTimeout(f"Read timed out. (read timeout={timeout})")
+        self.now += 0.05
+        if method == "GET" and path == "movie/11":
+            self.calls.append((method, path, params, json))
+            there = self.has("moviefile/501")
+            return _Resp({**self.movie, "hasFile": there, "movieFile": {"id": 501} if there else None})
+        if method == "GET" and path == "episode/71":
+            self.calls.append((method, path, params, json))
+            there = self.has("episodefile/901")
+            return _Resp({**self.episodes[0], "hasFile": there, "episodeFileId": 901 if there else 0})
+        return super().__call__(method, url, headers, timeout, params, json)
+
+    def searches(self):
+        return [j for m, p, j in self.writes() if p == "command"]
+
+
+class TestSlowDelete(_Base):
+    """#442: a delete that outlasts the timeout still deletes the file, so the
+    search for another copy and the Deletion log row must still follow."""
+
+    def setUp(self):
+        super().setUp()
+        self.arr = SlowDeleteArr()
+        for p in (mock.patch.object(bad_copy.requests, "request", side_effect=self.arr),
+                  mock.patch("time.sleep", self.arr.sleep), mock.patch("time.monotonic", lambda: self.arr.now)):
+            p.start()
+            self.addCleanup(p.stop)
+        self.background = []
+        p = mock.patch.object(bad_copy.threading, "Thread",
+                              lambda target, **kw: mock.Mock(start=lambda: self.background.append(target)))
+        p.start()
+        self.addCleanup(p.stop)
+
+    def logged(self):
+        return self.db.query(mdb.DeletionLog).count()
+
+    def test_movie_search_follows_a_delete_that_timed_out(self):
+        r = bad_copy.replace_movie(self.db, 100, user_name="Admin")
+        self.assertEqual([("POST", "history/failed/2", None),
+                          ("DELETE", "moviefile/501", None),
+                          ("POST", "command", {"name": "MoviesSearch", "movieIds": [11]})], self.arr.writes())
+        self.assertFalse(self.arr.has("moviefile/501"))
+        self.assertTrue(r["blocklisted"])
+        self.assertIn("won't come back", r["message"])
+        self.assertEqual(1, self.logged())
+        self.assertEqual([], self.background)
+        self.assertLess(self.arr.now, 200, "the answer must reach the plugin (240 s) and the TV app (250 s)")
+
+    def test_episode_search_follows_a_delete_that_timed_out(self):
+        bad_copy.replace_episode(self.db, 200, 1, 2, user_name="Admin")
+        self.assertEqual([{"name": "EpisodeSearch", "episodeIds": [71]}], self.arr.searches())
+        self.assertIn(("PUT", "episode/monitor", {"episodeIds": [71], "monitored": True}), self.arr.writes())
+        self.assertEqual(1, self.logged())
+
+    def test_an_unmonitored_movie_is_monitored_after_the_delete(self):
+        self.arr.movie["monitored"] = False
+        bad_copy.replace_movie(self.db, 100)
+        writes = self.arr.writes()
+        self.assertLess(writes.index(("DELETE", "moviefile/501", None)),
+                        writes.index(("PUT", "movie/editor", {"movieIds": [11], "monitored": True})))
+
+    def test_still_deleting_answers_so_and_finishes_in_the_background(self):
+        self.arr.delete_takes = 600
+        sessions = []
+
+        def session():
+            sessions.append(mock.Mock(wraps=self.db, close=lambda: None))
+            return sessions[-1]
+        r = bad_copy.replace_movie(self.db, 100, user_name="Admin")
+        self.assertTrue(r["ok"] and r["pending"])
+        self.assertIn("still deleting", r["message"])
+        self.assertLess(self.arr.now, 200)
+        self.assertEqual(([], 0), (self.arr.searches(), self.logged()), "nothing to search while the file is there")
+        self.assertEqual(1, len(self.background))
+        with mock.patch("models.database.SessionLocal", session):
+            self.background[0]()
+        self.assertEqual([{"name": "MoviesSearch", "movieIds": [11]}], self.arr.searches())
+        self.assertEqual(1, self.logged())
+        self.assertEqual(1, len(sessions))
+
+    def test_a_file_that_never_goes_is_never_searched(self):
+        self.arr.delete_takes = 10 ** 6
+        bad_copy.replace_movie(self.db, 100)
+        with mock.patch("models.database.SessionLocal") as session:
+            self.background[0]()
+        session.assert_not_called()
+        self.assertEqual(([], 0), (self.arr.searches(), self.logged()))
+
+    def test_a_failed_search_after_the_delete_says_the_file_is_gone(self):
+        self.arr.fail.add("command")
+        with self.assertRaises(bad_copy.BadCopyError) as e:
+            bad_copy.replace_movie(self.db, 100)
+        self.assertEqual(502, e.exception.status)
+        self.assertIn("Deleted the bad file of Dud Film, but couldn't start the search", str(e.exception))
+        self.assertEqual(1, self.logged(), "the file is gone: it is in the Deletion log")
+
+    def test_a_refused_delete_that_removed_the_file_carries_on(self):
+        self.arr.delete_error, self.arr.delete_takes = 500, 0
+        bad_copy.replace_movie(self.db, 100)
+        self.assertEqual([{"name": "MoviesSearch", "movieIds": [11]}], self.arr.searches())
+        self.assertEqual(1, self.logged())
+
+    def test_a_refused_delete_that_left_the_file_fails_at_once(self):
+        self.arr.delete_error, self.arr.delete_takes = 500, 10 ** 6
+        with self.assertRaises(bad_copy.BadCopyError) as e:
+            bad_copy.replace_movie(self.db, 100)
+        self.assertIn("refused (500) on moviefile/501", str(e.exception))
+        self.assertEqual(([], 0, []), (self.arr.searches(), self.logged(), self.background))
+        self.assertLess(self.arr.now, 1, "no waiting on a delete that answered")
 
 
 if __name__ == "__main__":
