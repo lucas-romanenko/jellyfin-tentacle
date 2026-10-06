@@ -972,8 +972,12 @@ def _scan_sonarr_library(db: Session) -> dict:
         # NFO tags are ignored by Jellyfin for real video files — API is the only way.
         try:
             jf_lookup, jf_title_lookup = jf.get_tmdb_lookup_with_fallback("Series")
+            if not jf_lookup and not jf_title_lookup:
+                logger.warning("Jellyfin tag sync (series): Jellyfin's series listing came back empty, "
+                               "no tags pushed")
             tags_pushed = 0
-            tags_failed = 0
+            tags_failed = 0       # writes Jellyfin refused
+            tags_not_found = 0    # tagged titles Jellyfin hasn't listed (not scanned yet)
             for tmdb_id, db_series in all_series_by_tmdb.items():
                 if not db_series.tags:
                     continue
@@ -998,11 +1002,13 @@ def _scan_sonarr_library(db: Session) -> dict:
                         if jf.refresh_item_metadata(jf_item["Id"]):
                             logger.info(f"Triggered metadata refresh for '{db_series.title}' (missing poster)")
                 else:
-                    tags_failed += 1
+                    tags_not_found += 1
             stats["jf_tags_pushed"] = tags_pushed
             stats["jf_tags_failed"] = tags_failed
+            stats["jf_tags_not_found"] = tags_not_found
             logger.info(
                 f"Jellyfin tag sync (series): {tags_pushed} pushed, {tags_failed} failed, "
+                f"{tags_not_found} not in Jellyfin yet, "
                 f"{len(all_series_by_tmdb)} total series checked"
             )
         except Exception as e:
