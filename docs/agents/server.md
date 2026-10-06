@@ -203,7 +203,11 @@ user_id)` computes them every time from source tags, list subscriptions
   Jellyfin twice (VOD + download) keeps the row and drops only a pending
   duplicate record (#296). Playlist entries are removed by the deleted
   item's id; an older plugin sends none, and the next playlist refresh
-  prunes the dead entry.
+  prunes the dead entry. It forwards nothing while Jellyfin re-reads the
+  folder the item left (`IProviderManager.GetRefreshProgress(e.Parent.Id)`:
+  the library monitor, `/Library/Media/Updated`, a one-library scan) or the
+  Scan Media Library task runs: those removals are files Jellyfin can't see
+  (a dropped mount), not user deletions (#448).
 - The nightly `sweep_orphaned_downloads()` removes downloaded records
   Jellyfin no longer has.
 - "Fix it" (`services/wrong_match.py:rematch_movie`) keeps the `.strm`'s
