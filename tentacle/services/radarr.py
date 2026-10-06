@@ -156,6 +156,42 @@ def file_loss_looks_like_an_outage(lost: int, total: int) -> bool:
     """
     return lost >= 3 and lost * 2 > total
 
+
+def downloaded_movie_rows(db: Session):
+    """Rows that hold a Radarr download: the downloaded-only ones, and VOD
+    titles Radarr downloaded too (one row per title: source provider_N with
+    radarr_path, #378). Both lose the download the same way."""
+    from sqlalchemy import or_, and_
+    return db.query(Movie).filter(or_(
+        Movie.source == "radarr",
+        and_(Movie.radarr_path.isnot(None), Movie.radarr_path != ""),
+    ))
+
+
+def release_vod_download(db: Session, row: Movie, drop_request_tags: bool = True,
+                         owned: Optional[set] = None) -> None:
+    """A VOD title's Radarr download is gone: the row goes back to a plain VOD
+    title (#378). Its download path, download date and the download's
+    Jellyfin item id go, and "Downloaded Movies" (with the requester's
+    "<name>'s Downloads" when the request goes too) comes off the row and the
+    .strm's NFO, so the next tag push takes it off the VOD item in Jellyfin
+    and the playlists drop it. A pending duplicate for the pair is dismissed.
+    The VOD copy stays. Does not commit."""
+    from services.tagger import set_row_tags, tentacle_owned_tags, current_downloads_tags
+    drop = {DOWNLOADED_MOVIES_TAG}
+    if drop_request_tags:
+        drop |= current_downloads_tags(db)
+    row.radarr_path = None
+    row.downloaded_at = None
+    row.jellyfin_item_id = None   # the deleted download's item; re-matched on use
+    if row.strm_path:             # the scan pointed it at the download's NFO
+        row.nfo_path = str(Path(row.strm_path).with_suffix(".nfo"))
+    row.date_updated = datetime.utcnow()
+    set_row_tags(row, [t for t in (row.tags or []) if t not in drop],
+                 owned if owned is not None else tentacle_owned_tags(db))
+    db.query(Duplicate).filter(Duplicate.tmdb_id == row.tmdb_id, Duplicate.media_type == "movie",
+                               Duplicate.resolution == "pending").delete()
+
 # One Radarr scan at a time (#268). A scan loads every row, asks TMDB about
 # each new title and commits once, so two overlapping scans (two webhooks for
 # different movies, a webhook during the nightly scan, "Scan now") both added
@@ -338,7 +374,8 @@ def _scan_radarr_library(db: Session) -> dict:
     # Remove movies no longer in Radarr
     radarr_tmdb_ids = {m["tmdbId"] for m in downloaded}
     listed_tmdb_ids = {m.get("tmdbId") for m in movies if m.get("tmdbId")}
-    rows = db.query(Movie).filter(Movie.source == "radarr").all()
+    # VOD titles with a download count too: they lose it the same way (#378).
+    rows = downloaded_movie_rows(db).all()
     # Still in Radarr, but Radarr says the file is gone.
     lost_file = [m for m in rows if m.tmdb_id not in radarr_tmdb_ids and m.tmdb_id in listed_tmdb_ids]
     refused = 0
@@ -353,8 +390,21 @@ def _scan_radarr_library(db: Session) -> dict:
     else:
         keep = set()
     removed = 0
+    released = 0
     for movie in rows:
         if movie.tmdb_id not in radarr_tmdb_ids and movie.tmdb_id not in keep:
+            # The request that asked for this title goes with the download, as
+            # the orphan sweep already does — otherwise "My Downloads" keeps a
+            # stale entry and the requester keeps delete rights over the id (#107).
+            db.query(DownloadRequest).filter(
+                DownloadRequest.tmdb_id == movie.tmdb_id,
+                DownloadRequest.media_type == "movie",
+            ).delete()
+            if movie.source != "radarr":
+                # A VOD title: only its download goes, the row stays.
+                release_vod_download(db, movie)
+                released += 1
+                continue
             emit_library_event("movie_removed", {
                 "tmdb_id": movie.tmdb_id,
                 "title": movie.title,
@@ -366,18 +416,14 @@ def _scan_radarr_library(db: Session) -> dict:
                 name=f"{movie.title} ({movie.year})" if movie.year else movie.title,
                 detail="no longer in Radarr" if movie.tmdb_id not in listed_tmdb_ids
                 else "Radarr reports no file"))
-            # The request that asked for this title goes with it, as the orphan
-            # sweep already does — otherwise "My Downloads" keeps a stale entry
-            # and the requester keeps delete rights over the id (#107).
-            db.query(DownloadRequest).filter(
-                DownloadRequest.tmdb_id == movie.tmdb_id,
-                DownloadRequest.media_type == "movie",
-            ).delete()
             db.delete(movie)
             removed += 1
     if removed:
         logger.info(f"Radarr scan: removed {removed} movies no longer in Radarr")
+    if released:
+        logger.info(f"Radarr scan: {released} VOD titles lost their download and are VOD only again")
     stats["removed"] = removed
+    stats["released"] = released
     stats["removals_refused"] = refused
 
     # Single commit for all DB changes

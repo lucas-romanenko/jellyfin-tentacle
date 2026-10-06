@@ -50,7 +50,15 @@ none has come for 10 minutes and judged with the scan's storage-outage guard
 (`file_loss_looks_like_an_outage`, #106/#381), counted together with every
 `missingFromDisk` report of the last 6 hours: a loss of 3 or more and over
 half of the downloads (a share that dropped out) removes nothing, however the
-burst was spread out.
+burst was spread out. A VOD title Radarr downloaded too (one row: source
+`provider_N` with `radarr_path`) keeps its row and goes back to VOD only
+(`release_vod_download`, #378): `radarr_path`, `downloaded_at`, the
+download's `jellyfin_item_id` and "Downloaded Movies" (plus the requester's
+"<name>'s Downloads" when the request goes) cleared, `nfo_path` back to the
+`.strm`'s NFO, the pending duplicate dismissed; the next tag push takes the
+tag off the VOD item. The Radarr scan does the same for a download Radarr
+no longer has, and counts these rows in its outage guard
+(`downloaded_movie_rows`).
 
 **Sonarr deletes a series** (SeriesDelete): a hybrid keeps its VOD record
 (`sonarr_path`, `sonarr_monitored` cleared); a Sonarr-only series is

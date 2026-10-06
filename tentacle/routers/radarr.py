@@ -14,7 +14,8 @@ from pydantic import BaseModel
 from typing import Optional
 
 from models.database import get_db, Provider, Movie, ListItem, ListSubscription, DownloadRequest, Duplicate, get_setting, log_activity
-from services.radarr import scan_radarr_library, RadarrService, file_loss_looks_like_an_outage
+from services.radarr import (scan_radarr_library, RadarrService, file_loss_looks_like_an_outage,
+                             downloaded_movie_rows, release_vod_download)
 from services.nfo import update_nfo_tags, write_movie_nfo, make_folder_name, refresh_arr_nfo
 from services.tagger import tentacle_owned_tags
 from services.migration import migrate_provider, preview_migration
@@ -234,17 +235,22 @@ webhook_router = APIRouter(prefix="/api/radarr", tags=["radarr"])
 
 
 def _remove_downloaded_movie(db: Session, tmdb_id: int, title: str, arr_folder: Optional[str],
-                             clean_up_if_gone: bool = False) -> int:
-    """A download's file is gone: drop its row, its request (unless a "Bad
-    copy" replacement is coming) and its duplicate tombstones, and take it out
-    of every user's playlists. Returns the rows deleted; raises on a DB error
-    (rolled back). clean_up_if_gone: the playlist clean-up runs even when the
-    row was already gone (a scan removed it while the report waited; the scan
-    does no playlist clean-up), by the download's folder only."""
+                             clean_up_if_gone: bool = False, movie_removed: bool = False) -> int:
+    """A download's file is gone: drop its row (a VOD title's row stays and
+    goes back to VOD only, #378), its request (unless a "Bad copy"
+    replacement is coming; movie_removed: the film left Radarr, so none is)
+    and its duplicate tombstones, and take it out of every user's playlists.
+    Returns the rows that lost the download; raises on a DB error (rolled
+    back). clean_up_if_gone: the playlist clean-up runs even when the row was
+    already gone (a scan removed it while the report waited; the scan does no
+    playlist clean-up), by the download's folder only."""
     from services.bad_copy import is_replacing
-    replacing = is_replacing(db, "movie", tmdb_id)
+    replacing = not movie_removed and is_replacing(db, "movie", tmdb_id)
     try:
         deleted = db.query(Movie).filter(Movie.tmdb_id == tmdb_id, Movie.source == "radarr").delete()
+        vod_rows = downloaded_movie_rows(db).filter(Movie.tmdb_id == tmdb_id, Movie.source != "radarr").all()
+        for row in vod_rows:
+            release_vod_download(db, row, drop_request_tags=not replacing)
         if not replacing:  # "Bad copy": the request stands while another copy comes
             db.query(DownloadRequest).filter(DownloadRequest.tmdb_id == tmdb_id, DownloadRequest.media_type == "movie").delete()
         # Clear duplicate tombstones — deleting the downloaded copy is a
@@ -257,11 +263,13 @@ def _remove_downloaded_movie(db: Session, tmdb_id: int, title: str, arr_folder: 
     if deleted:
         emit_library_event("movie_removed", {"tmdb_id": tmdb_id, "title": title, "media_type": "movie"})
         log_activity(db, "radarr_remove", f"Removed '{title}' from Radarr library")
-    if deleted or (clean_up_if_gone and arr_folder):
+    elif vod_rows:
+        log_activity(db, "radarr_remove", f"Removed the download of '{title}'; the VOD copy stays")
+    if deleted or vod_rows or (clean_up_if_gone and arr_folder):
         from routers.library import _cleanup_playlists_all_users
         threading.Thread(target=_cleanup_playlists_all_users, args=(tmdb_id, "movie"),
                          kwargs={"arr_folder": arr_folder}, daemon=True).start()
-    return deleted
+    return deleted + len(vod_rows)
 
 
 # File deletes Radarr makes because it can't see the file any more
@@ -325,7 +333,7 @@ def _flush_missing_from_disk(gen: Optional[int] = None, db: Optional[Session] = 
         from models.database import SessionLocal
         db = SessionLocal()
     try:
-        rows = {t for (t,) in db.query(Movie.tmdb_id).filter(Movie.source == "radarr")}
+        rows = {m.tmdb_id for m in downloaded_movie_rows(db)}
         # Downloads already removed for an earlier report still count, in the
         # loss and in the library it is measured against.
         gone = sum(1 for t, (_, was_row) in recent.items() if was_row and t not in rows)
@@ -405,30 +413,18 @@ def radarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
         except Exception as e:
             logger.error(f"[Radarr webhook] MovieFileDelete DB cleanup failed for tmdb:{tmdb_id}: {e}")
             raise HTTPException(500, "Failed to process delete event")
-        logger.info(f"[Radarr webhook] MovieFileDelete for '{title}' (tmdb:{tmdb_id}) — removed {deleted} from DB")
+        logger.info(f"[Radarr webhook] MovieFileDelete for '{title}' (tmdb:{tmdb_id}) — download gone from {deleted} row(s)")
         return {"status": "deleted", "tmdb_id": tmdb_id}
 
     # MovieDelete — remove from DB
     if event_type == "MovieDelete":
         _forget_missing_from_disk(tmdb_id)
         try:
-            deleted = db.query(Movie).filter(Movie.tmdb_id == tmdb_id, Movie.source == "radarr").delete()
-            db.query(DownloadRequest).filter(DownloadRequest.tmdb_id == tmdb_id, DownloadRequest.media_type == "movie").delete()
-            # Clear duplicate tombstones — deleting the downloaded copy is a
-            # clean slate; the title may legitimately re-import from VOD later
-            db.query(Duplicate).filter(Duplicate.tmdb_id == tmdb_id, Duplicate.media_type == "movie").delete()
-            db.commit()
+            deleted = _remove_downloaded_movie(db, tmdb_id, title, arr_folder, movie_removed=True)
         except Exception as e:
-            db.rollback()
             logger.error(f"[Radarr webhook] MovieDelete DB cleanup failed for tmdb:{tmdb_id}: {e}")
             raise HTTPException(500, "Failed to process delete event")
-        if deleted:
-            emit_library_event("movie_removed", {"tmdb_id": tmdb_id, "title": title, "media_type": "movie"})
-            log_activity(db, "radarr_remove", f"Removed '{title}' from Radarr library")
-            from routers.library import _cleanup_playlists_all_users
-            threading.Thread(target=_cleanup_playlists_all_users, args=(tmdb_id, "movie"),
-                             kwargs={"arr_folder": arr_folder}, daemon=True).start()
-        logger.info(f"[Radarr webhook] MovieDelete for '{title}' (tmdb:{tmdb_id}) — removed {deleted} from DB")
+        logger.info(f"[Radarr webhook] MovieDelete for '{title}' (tmdb:{tmdb_id}) — download gone from {deleted} row(s)")
         return {"status": "deleted", "tmdb_id": tmdb_id}
 
     # Download / MovieAdded — scan and tag
