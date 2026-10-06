@@ -1832,7 +1832,7 @@ function pollSyncProgress() {
             if (s.item_title) line += `: ${s.item_title}`;
             line += ` (${(s.movies_new||0)+(s.series_new||0)} new)`;
           } else if (s.item_title) {
-            line += ` — ${s.item_title}`;
+            line += line ? ` — ${s.item_title}` : s.item_title;
           }
           detail.textContent = line;
         }
