@@ -400,6 +400,11 @@ def _scan_radarr_library(db: Session) -> dict:
                 DownloadRequest.tmdb_id == movie.tmdb_id,
                 DownloadRequest.media_type == "movie",
             ).delete()
+            # And its duplicate tombstones, as the delete webhook does: with
+            # the download gone, a "keep downloaded" one would stop the VOD
+            # copy from ever coming back (#334).
+            db.query(Duplicate).filter(Duplicate.tmdb_id == movie.tmdb_id,
+                                       Duplicate.media_type == "movie").delete()
             if movie.source != "radarr":
                 # A VOD title: only its download goes, the row stays.
                 release_vod_download(db, movie)
@@ -425,6 +430,11 @@ def _scan_radarr_library(db: Session) -> dict:
     stats["removed"] = removed
     stats["released"] = released
     stats["removals_refused"] = refused
+    from services.duplicates import drop_orphan_tombstones
+    stats["tombstones_dropped"] = drop_orphan_tombstones(db, "movie")
+    if stats["tombstones_dropped"]:
+        logger.info(f"Radarr scan: dropped {stats['tombstones_dropped']} keep-downloaded resolutions "
+                    f"whose download is gone; the VOD copy can come back")
 
     # Single commit for all DB changes
     db.commit()

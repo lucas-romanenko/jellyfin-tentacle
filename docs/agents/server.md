@@ -96,6 +96,10 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   every scheduled sync.
 - **Duplicates**: found when a download also exists as VOD; resolved ones
   stay in the DB with their resolution (the sync enforces keep_radarr).
+  A keep_radarr tombstone goes with its download: the delete webhooks, the
+  Radarr/Sonarr scans' removals, and after each scan any tombstone left
+  without a row (`services/duplicates.drop_orphan_tombstones`), so the VOD
+  copy can come back.
   Keep VOD (`routers/duplicates.py:_delete_downloaded_copy`) deletes the
   imported files through Radarr's `moviefile` / Sonarr's `episodefile/bulk`
   API (never a `.strm`: Sonarr 4 lists Tentacle's `.strm` files as episode

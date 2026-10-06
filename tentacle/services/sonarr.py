@@ -845,12 +845,21 @@ def _scan_sonarr_library(db: Session) -> dict:
                 DownloadRequest.tmdb_id == series.tmdb_id,
                 DownloadRequest.media_type == "series",
             ).delete()
+            # Its duplicate tombstones too, as SeriesDelete does: a "keep
+            # downloaded" one would keep the VOD episodes away for good (#334).
+            db.query(Duplicate).filter(Duplicate.tmdb_id == series.tmdb_id,
+                                       Duplicate.media_type == "series").delete()
             db.delete(series)
             removed += 1
     if removed:
         logger.info(f"Sonarr scan: removed {removed} series no longer in Sonarr")
     stats["removed"] = removed
     stats["removals_refused"] = refused
+    from services.duplicates import drop_orphan_tombstones
+    stats["tombstones_dropped"] = drop_orphan_tombstones(db, "series")
+    if stats["tombstones_dropped"]:
+        logger.info(f"Sonarr scan: dropped {stats['tombstones_dropped']} keep-downloaded resolutions "
+                    f"whose download is gone; the VOD episodes can come back")
 
     # Sync monitoring state for ALL series in DB (not just those processed above)
     # Covers: VOD series added to Sonarr, series with no downloads yet, etc.

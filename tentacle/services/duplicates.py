@@ -27,6 +27,25 @@ def is_downloaded_file(path: Optional[str]) -> bool:
     return bool(path) and not path.lower().endswith(".strm")
 
 
+def drop_orphan_tombstones(db, media_type: str) -> int:
+    """Delete the "keep downloaded" tombstones whose title has no row left.
+
+    Keep Downloaded converts the row, so a tombstone without one means the
+    download it kept is gone too: deleted while Tentacle missed the delete
+    webhook, then dropped by a scan that left the tombstone (before #334).
+    Kept, it stops the VOD sync from bringing the provider copy back for
+    good. Run by the Radarr/Sonarr scans after they add and remove rows (a
+    download still in the *arr has its row by then). Does not commit."""
+    from models.database import Duplicate, Movie, Series
+    model = Movie if media_type == "movie" else Series
+    db.flush()   # the scan's added and deleted rows (sessions don't autoflush)
+    return db.query(Duplicate).filter(
+        Duplicate.media_type == media_type,
+        Duplicate.resolution == "keep_radarr",
+        ~Duplicate.tmdb_id.in_(db.query(model.tmdb_id)),
+    ).delete(synchronize_session=False)
+
+
 def series_has_real_download(sonarr, series_id) -> Optional[bool]:
     """True when Sonarr holds at least one episode file that is not a .strm,
     False when it holds none, None when Sonarr could not be asked."""
