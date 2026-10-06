@@ -25,6 +25,14 @@ The code wins where they differ.
   (3) failed listings in a row is it updated anyway, with a warning and a
   `rating_cascade_unprotected` Activity entry (#161). The count lives in
   `deferred_series_updates.json` in the data dir.
+- **Two files of one film in one folder** are one item with two versions.
+  The item's Path is its main version; the other is an owned item (`OwnerId`
+  set, its id made from its path as a Video) that recursive `/Items` listings
+  leave out: only `?Ids=` or the item's `MediaSources` name it. Users'
+  data is on the main item whichever version they played. Delete the main
+  version's file and the next scan makes a new item (new id) for the other
+  file with nobody's data on it (Jellyfin's own re-attach by provider-id key
+  doesn't catch it), #333.
 - **Refreshing metadata** with `ReplaceAllMetadata=true` wipes the tags
   (TMDB has none): always `ReplaceAllMetadata=false`.
 - **NFO for downloads**: named exactly like the video

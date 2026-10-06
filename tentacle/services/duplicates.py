@@ -13,7 +13,10 @@ silently undoing the user's resolution.
 """
 
 import logging
+import threading
+import time
 import unicodedata
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -132,6 +135,14 @@ def convert_record_to_downloaded(record, media_type: str):
 # the removed copy's when the kept one has none and isn't played. The merge is
 # monotonic, so a retry (or Resolve All after a partial run) changes nothing
 # twice.
+#
+# A film whose two copies share one folder is ONE Jellyfin item with both as
+# versions, and users' data is on that item (#333). When the removed copy is
+# its main version, deleting it makes Jellyfin create a new item for the kept
+# copy, with nobody's data on it. Then the data is saved on the duplicate
+# (pending_user_data) before anything is deleted, Jellyfin is told the file
+# went, and it is merged onto the new item once that appears: a worker polls
+# for a while, the nightly run catches up.
 
 class UserDataCarryError(Exception):
     def __init__(self, status: int, message: str):
@@ -158,13 +169,27 @@ def _jf_paged(jf, params: dict) -> list:
 
 
 def _items_for_tmdb(jf, kind: str, tmdb_id: int) -> list:
-    """Every Jellyfin item of this kind with this TMDB id, with Path. Unscoped,
-    so the hidden half of a merged multi-version film is listed too."""
+    """Every Jellyfin item of this kind with this TMDB id, with Path. Not the
+    second version of a film whose two copies share a folder: Jellyfin lists
+    those as one item (an owned item holds the other version), see
+    _source_paths."""
     tmdb = str(tmdb_id)
     return [i for i in _jf_paged(jf, {"IncludeItemTypes": kind, "Recursive": "true",
                                       "Fields": "ProviderIds,Path", "EnableImages": "false",
                                       "EnableUserData": "false"})
             if (i.get("ProviderIds") or {}).get("Tmdb") == tmdb]
+
+
+def _source_paths(jf, item_ids: list) -> dict:
+    """{item id: the paths of its versions (MediaSources)}."""
+    if not item_ids:
+        return {}
+    r = jf.session.get(f"{jf.url}/Items", params={"Ids": ",".join(item_ids), "Fields": "MediaSources,Path",
+                                                  "EnableImages": "false", "EnableUserData": "false"},
+                       timeout=_JF_TIMEOUT)
+    r.raise_for_status()
+    return {i["Id"]: [(s.get("Path") or "").replace("\\", "/") for s in i.get("MediaSources") or []]
+            for i in (r.json() or {}).get("Items") or []}
 
 
 def _episodes(jf, series_id: str) -> list:
@@ -186,22 +211,39 @@ def _vod_path(dup, record) -> Optional[str]:
 
 
 def _copy_pairs(jf, dup, record, keep: str) -> tuple:
-    """([(removed_item_id, [kept_item_id, ...])], orphans): whose user data goes
-    where. `orphans` are removed-copy films with no item on the kept side (a
-    download Jellyfin hasn't scanned yet)."""
+    """([(removed_item_id, [kept_item_id, ...])], orphans, merged): whose user
+    data goes where. `orphans` are removed-copy films with no item on the kept
+    side (a download Jellyfin hasn't scanned yet). `merged` are
+    [(item_id, removed_path, kept_path)]: a film whose two copies share a
+    folder, one Jellyfin item with both as versions, its Path the removed one."""
     vod_path = _vod_path(dup, record)
     if not vod_path:
-        return [], []
+        return [], [], []
     if dup.media_type == "movie":
         parts = Path(vod_path).parts
         tail = "/".join(parts[-2:]) if len(parts) >= 2 else None
+
+        def is_vod(path):
+            return bool(tail) and path.endswith("/" + tail)
+
         items = _items_for_tmdb(jf, "Movie", dup.tmdb_id)
-        vod = [i["Id"] for i in items if tail and _path(i).endswith("/" + tail)]
+        vod = [i["Id"] for i in items if is_vod(_path(i))]
         dl = [i["Id"] for i in items if i["Id"] not in vod and is_downloaded_file(_path(i))]
         removed, kept = (vod, dl) if keep == "download" else (dl, vod)
-        if not kept:
-            return [], removed
-        return [(i, kept) for i in removed], []
+        if kept:
+            return [(i, kept) for i in removed], [], []
+        # Nothing listed on the kept side: either Jellyfin hasn't scanned it,
+        # or both copies share a folder and Jellyfin shows them as one film
+        # whose other version only its MediaSources name (#333).
+        keeps = is_vod if keep == "vod" else (lambda p: is_downloaded_file(p) and not is_vod(p))
+        paths = {i["Id"]: _path(i) for i in items}
+        merged = []
+        for item_id, sources in _source_paths(jf, removed).items():
+            kept_path = next((p for p in sources if keeps(p)), None)
+            if kept_path and item_id in paths:
+                merged.append((item_id, paths[item_id], kept_path))
+        merged_ids = {m[0] for m in merged}
+        return [], [i for i in removed if i not in merged_ids], merged
 
     # A show: its show items (separate folders make two), then every episode,
     # matched by season and episode number. An episode's side is its file's:
@@ -230,7 +272,7 @@ def _copy_pairs(jf, dup, record, keep: str) -> tuple:
     for key, ids in removed_eps.items():
         if kept_eps.get(key):
             pairs.extend((i, kept_eps[key]) for i in ids)
-    return pairs, []
+    return pairs, [], []
 
 
 def _user_data(jf, user_id: str, item_id: str) -> dict:
@@ -277,9 +319,10 @@ def carry_user_data(db, dup, record, keep: str) -> int:
     from services.jellyfin import JellyfinService
     jf = JellyfinService(url, key)
     writes = 0
+    saved = {}  # item id -> {user id: data}
     try:
-        pairs, orphans = _copy_pairs(jf, dup, record, keep)
-        if not pairs and not orphans:
+        pairs, orphans, merged = _copy_pairs(jf, dup, record, keep)
+        if not pairs and not orphans and not merged:
             return 0
         users = jf.get_user_ids()
         if users is None:
@@ -290,6 +333,10 @@ def carry_user_data(db, dup, record, keep: str) -> int:
                     409, "The copy you are keeping isn't in Jellyfin yet, and users have watched state "
                          "(played, resume point, favourite) on the one you are removing. Scan the library "
                          "in Jellyfin, then try again. Nothing was deleted.")
+            for item_id, _, _ in merged:
+                d = _user_data(jf, user_id, item_id)
+                if _has_user_data(d):
+                    saved.setdefault(item_id, {})[user_id] = {k: d[k] for k in _USER_DATA_FIELDS if d.get(k)}
             for src_id, dst_ids in pairs:
                 src = _user_data(jf, user_id, src_id)
                 if not _has_user_data(src):
@@ -311,4 +358,130 @@ def carry_user_data(db, dup, record, keep: str) -> int:
                  "you are keeping: Jellyfin didn't answer. Nothing was deleted; try again.")
     if writes:
         logger.info(f"Duplicate tmdb:{dup.tmdb_id}: carried {writes} user-data record(s) over to the kept copy")
+    now = datetime.now(timezone.utc).isoformat()
+    pending = [{"removed_path": removed_path, "kept_path": kept_path, "users": saved[item_id], "saved_at": now}
+               for item_id, removed_path, kept_path in merged if saved.get(item_id)]
+    if pending:
+        # Committed with the resolution; a rollback (nothing deleted) drops it too.
+        dup.pending_user_data = (dup.pending_user_data or []) + pending
+        logger.info(f"Duplicate tmdb:{dup.tmdb_id}: both copies share a folder; saved "
+                    f"{sum(len(p['users']) for p in pending)} user(s)' watched state for the kept copy's "
+                    f"new Jellyfin item")
     return writes
+
+
+_USER_DATA_FIELDS = ("Played", "PlayCount", "IsFavorite", "PlaybackPositionTicks", "LastPlayedDate")
+_PENDING_DAYS = 30
+
+
+def watch_pending_user_data(db, dup) -> None:
+    """After the removed copy of a same-folder film is deleted: tell Jellyfin
+    the file went, so it makes the kept copy's item now rather than at its
+    next scan, and start the worker that carries the saved data over."""
+    if not dup.pending_user_data:
+        return
+    from models.database import get_setting
+    from services.jellyfin import JellyfinService
+    try:
+        jf = JellyfinService(get_setting(db, "jellyfin_url", ""), get_setting(db, "jellyfin_api_key", ""))
+        jf.notify_media_updated([p["removed_path"] for p in dup.pending_user_data], "Deleted")
+    except Exception as e:  # its own scan finds it later
+        logger.warning(f"Duplicate tmdb:{dup.tmdb_id}: could not tell Jellyfin the copy was deleted: {e}")
+    start_pending_user_data_worker()
+
+
+def apply_pending_user_data(db) -> int:
+    """Merge saved watched state onto the kept copy's new Jellyfin item (the
+    one whose Path is the kept file) wherever that item exists now. Returns
+    how many saved entries are still waiting."""
+    from models.database import Duplicate, get_setting
+    dups = db.query(Duplicate).filter(Duplicate.pending_user_data.isnot(None)).all()
+    if not dups:
+        return 0
+    url, key = get_setting(db, "jellyfin_url", ""), get_setting(db, "jellyfin_api_key", "")
+    if not (url and key):
+        return sum(len(d.pending_user_data) for d in dups)
+    from services.jellyfin import JellyfinService
+    jf = JellyfinService(url, key)
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=_PENDING_DAYS)).isoformat()
+    waiting = 0
+    for dup in dups:
+        left = []
+        try:
+            items = _items_for_tmdb(jf, "Movie", dup.tmdb_id)
+        except Exception as e:
+            logger.warning(f"Duplicate tmdb:{dup.tmdb_id}: could not read Jellyfin for the saved watched state: {e}")
+            waiting += len(dup.pending_user_data)
+            continue
+        for entry in dup.pending_user_data:
+            target = next((i["Id"] for i in items if _path(i) == entry["kept_path"]), None)
+            if target is None:
+                if entry.get("saved_at", "") < cutoff:
+                    logger.warning(f"Duplicate tmdb:{dup.tmdb_id}: {entry['kept_path']} never appeared in "
+                                   f"Jellyfin in {_PENDING_DAYS} days; its saved watched state is dropped")
+                else:
+                    left.append(entry)
+                continue
+            try:
+                writes = 0
+                for user_id, data in entry["users"].items():
+                    change = merged_user_data(data, _user_data(jf, user_id, target))
+                    if change:
+                        r = jf.session.post(f"{jf.url}/UserItems/{target}/UserData", params={"userId": user_id},
+                                            json=change, timeout=_JF_TIMEOUT)
+                        r.raise_for_status()
+                        writes += 1
+                logger.info(f"Duplicate tmdb:{dup.tmdb_id}: carried {writes} saved user-data record(s) over "
+                            f"to the kept copy's new item")
+            except Exception as e:  # the merge is monotonic: retrying it is safe
+                logger.warning(f"Duplicate tmdb:{dup.tmdb_id}: could not write the saved watched state: {e}")
+                left.append(entry)
+        dup.pending_user_data = left or None
+        db.commit()
+        waiting += len(left)
+    return waiting
+
+
+_PENDING_POLL_SECONDS = 30
+_PENDING_POLLS = 30
+_worker_lock = threading.Lock()
+_worker = {"running": False, "kicked": False}
+
+
+def start_pending_user_data_worker() -> None:
+    """Poll for the kept copies' new items for a while (one worker at a time)."""
+    with _worker_lock:
+        _worker["kicked"] = True
+        if _worker["running"]:
+            return
+        _worker["running"] = True
+    threading.Thread(target=_pending_worker, daemon=True, name="duplicate-user-data").start()
+
+
+def _pending_worker() -> None:
+    """Stops when nothing waits or after _PENDING_POLLS polls (the nightly run
+    catches up); a new resolution meanwhile starts the count again. It decides
+    to stop under the lock, so a start can't slip in between."""
+    from models.database import SessionLocal
+    polls = 0
+    while True:
+        with _worker_lock:
+            if _worker["kicked"]:
+                _worker["kicked"], polls = False, 0
+            if polls >= _PENDING_POLLS:
+                _worker["running"] = False
+                return
+        time.sleep(_PENDING_POLL_SECONDS)
+        polls += 1
+        db = SessionLocal()
+        try:
+            waiting = apply_pending_user_data(db)
+        except Exception as e:
+            logger.error(f"Carrying saved watched state over failed: {e}")
+            waiting = 1
+        finally:
+            db.close()
+        with _worker_lock:
+            if not waiting and not _worker["kicked"]:
+                _worker["running"] = False
+                return

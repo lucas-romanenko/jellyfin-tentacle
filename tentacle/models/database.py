@@ -356,6 +356,9 @@ class Duplicate(Base):
     resolution = Column(String, default="pending")  # pending | keep_radarr | keep_provider_1 | keep_both
     detected_at = Column(DateTime, default=datetime.utcnow)
     resolved_at = Column(DateTime, nullable=True)
+    # Users' watched state saved before a same-folder copy was deleted, waiting
+    # for the item Jellyfin creates for the kept copy (services/duplicates.py, #333)
+    pending_user_data = Column(JSON(none_as_null=True), nullable=True)
 
 
 # ─── Sync Runs ────────────────────────────────────────────────────────────────
