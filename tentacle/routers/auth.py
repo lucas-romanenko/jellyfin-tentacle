@@ -519,8 +519,16 @@ def login(body: LoginRequest, response: Response, request: Request, db: Session 
             timeout=10,
         )
         r.raise_for_status()
-    except requests.HTTPError:
-        raise HTTPException(401, "Invalid username or password")
+    except requests.HTTPError as e:
+        # Only Jellyfin's 401 is a refused password. It answers 503 for the
+        # first seconds of its startup (the wizard has it restart for the
+        # plugin), and an address that isn't Jellyfin answers 404 or 5xx (#392).
+        status = e.response.status_code if e.response is not None else None
+        if status == 401:
+            raise HTTPException(401, "Invalid username or password")
+        if status == 503:
+            raise HTTPException(503, "Jellyfin is starting up, try again in a moment")
+        raise HTTPException(502, f"Jellyfin answered HTTP {status}, check the Jellyfin address")
     except Exception as e:
         raise HTTPException(502, f"Could not reach Jellyfin: {e}")
 
