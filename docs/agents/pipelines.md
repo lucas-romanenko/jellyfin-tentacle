@@ -193,9 +193,13 @@ read that row.
   (counted as existing and seen, so never pruned, #262); a film met this
   sync whose `.strm` plays a stream of this provider no longer listed
   anywhere (a complete fetch, Xtream only) is pointed at its current
-  stream in place (#263). Episodes: a file whose episode id the show no
-  longer lists gets the id listed at its SxxEyy (`_plays_delisted_episode`).
-  While both ids are listed nothing flips.
+  stream in place (#263). Episodes: a file whose episode id no listing of
+  the show offers at its SxxEyy (replaced, or renumbered to another SxxEyy)
+  gets the id listed there now. `_EpisodeSlots` collects every listing of
+  the show (one show can sit under several series ids, e.g. an EN and a DE
+  category) and the series sync settles it once, after a complete fetch
+  (#376). While a file's id is listed at its number by any listing nothing
+  flips.
 - `.strm` files are written with `_write_strm()`: a hidden temp file in the
   same folder, then a rename, so a write cut short leaves the old file
   whole. An existing `.strm` that is empty or blank is rewritten like a
