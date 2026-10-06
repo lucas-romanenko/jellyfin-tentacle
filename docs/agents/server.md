@@ -183,7 +183,10 @@ user_id)` computes them every time from source tags, list subscriptions
 ## Deleting things
 
 - Deleting a provider removes its VOD files and DB records, then rebuilds
-  playlists and checks the hero.
+  playlists and checks the hero. It takes the provider's sync slot
+  (`_running_syncs`): refused (409) while a sync of it runs, and holds the
+  slot until its commit so no sync starts meanwhile. A sync writes files
+  before it commits their rows, so a delete under it left orphan files.
 - Downloaded content only (never VOD, which is admin-only from the
   dashboard): the TV app or the web plugin calls
   `DELETE /TentacleDiscover/LibraryItem/{type}/{id}?jellyfinItemId=`, the
