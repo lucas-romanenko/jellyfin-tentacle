@@ -4,13 +4,14 @@ Run from the tentacle/ directory:  python -m unittest discover -s tests
 
 The Library downloads card (title, episode, quality, ETA, requester,
 status), the Health downloads status label, the sync summary (list names,
-provider names, new titles and categories), the sync history (category
-names, provider, type, error) and the provider migration preview put
-Radarr/Sonarr and provider values into the page as they came. A title
-containing an "&...;" sequence showed different text, and angle brackets
-could hide part of a line. They are now escaped where inserted; the Health
-table's own escaping is left as it was (the test checks the exact text, so
-an escape applied twice would show).
+provider names, new titles and categories) and the sync history (category
+names, provider, type, error) put Radarr/Sonarr and provider values into
+the page as they came. A title containing an "&...;" sequence showed
+different text, and angle brackets could hide part of a line. They are now
+escaped where inserted. The Health deletions table escaped the user name
+twice (once into `who`, again where the row inserts `who`); it is now
+escaped once, in the row. The tests check the exact text, so a missing
+escape or one applied twice would show.
 """
 import json
 import unittest
