@@ -607,13 +607,15 @@ JELLYFIN_DOWN = ("Jellyfin didn't answer, so nothing was changed: the fix has to
 _DATEADDED = re.compile(rb"^[ \t]*<dateadded>(.*?)</dateadded>[ \t]*\r?\n?", re.MULTILINE)
 
 
-def _nfo_snapshot(folder: Path) -> dict:
+def _nfo_snapshot(folder: Path) -> Optional[dict]:
     """Every NFO in the copy's folder, byte for byte: with the NFO saver on,
-    Jellyfin writes movie.nfo there itself when the item is updated."""
+    Jellyfin writes movie.nfo there itself when the item is updated. None when
+    one can't be read: an empty snapshot would make a restore delete them all."""
     try:
         return {f: f.read_bytes() for f in folder.iterdir() if f.suffix.lower() == ".nfo" and f.is_file()}
-    except OSError:
-        return {}
+    except OSError as e:
+        logger.error(f"[WrongMatch] Could not read the NFOs in {folder}: {e}")
+        return None
 
 
 def _restore_nfos(folder: Path, snapshot: dict) -> None:
@@ -771,6 +773,9 @@ def _rematch_in_place(db: Session, row: Movie, key: str, new: dict, tags: list, 
                                        "another film. Unlock it in Jellyfin (Edit metadata), then try again. "
                                        "Nothing was changed.")
     snapshot = _nfo_snapshot(strm.parent)
+    if snapshot is None:
+        raise WrongMatchError(500, "Couldn't read the film's NFO files, so nothing was changed. "
+                                   "Check that Tentacle can read the VOD folder.")
     if not _write_nfo_in_place(nfo, new, tags, snapshot.get(nfo)):
         _restore_nfos(strm.parent, snapshot)
         raise WrongMatchError(500, "Couldn't write the film's NFO file, so nothing was changed. "

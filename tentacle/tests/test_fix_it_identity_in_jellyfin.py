@@ -262,6 +262,29 @@ class TestNothingChangesWhenJellyfinCantBeTold(_Base):
         self.unchanged()
         self.assertFalse((self.folder / "movie.nfo").exists())
 
+    def test_an_unreadable_nfo_changes_nothing(self):
+        """A movie.nfo Tentacle can't read (Jellyfin's NFO saver wrote it as
+        another user): no snapshot means no fix, or a later failure's restore
+        would delete every NFO in the folder."""
+        self.jf.saver = True
+        movie_nfo = self.folder / "movie.nfo"
+        movie_nfo.write_text("<movie><tmdbid>900001</tmdbid></movie>")
+        before = {f: f.read_bytes() for f in self.folder.glob("*.nfo")}
+        read_bytes = Path.read_bytes
+
+        def unreadable(p):
+            if p == movie_nfo:
+                raise PermissionError(13, "Permission denied", str(p))
+            return read_bytes(p)
+        with mock.patch.object(Path, "read_bytes", unreadable), \
+                mock.patch.object(wrong_match, "_apply_rematch", side_effect=RuntimeError("database is locked")):
+            with self.assertRaises(wrong_match.WrongMatchError) as e:
+                self.fix()
+        self.assertEqual(500, e.exception.status)
+        self.assertEqual([], self.jf.updates)
+        self.assertEqual(before, {f: f.read_bytes() for f in self.folder.glob("*.nfo")})
+        self.unchanged()
+
     def test_a_failed_save_sends_no_refresh(self):
         """The refresh is queued only once the fix is saved: an earlier one
         downloads the new film's poster, and putting the identity back can't
