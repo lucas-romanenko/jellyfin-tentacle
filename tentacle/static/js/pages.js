@@ -2588,8 +2588,8 @@ async function loadAutoPlaylists() {
           <div class="auto-pl-row">
             ${control}
             <div class="auto-pl-info">
-              <div style="font-size:13px;font-weight:500">${p.name}</div>
-              <div style="font-size:11px;color:var(--text3)">${p.origin}</div>
+              <div style="font-size:13px;font-weight:500">${escapeAttr(p.name)}</div>
+              <div style="font-size:11px;color:var(--text3)">${escapeAttr(p.origin)}</div>
             </div>
             <div class="auto-pl-actions">
               ${sortDrop}
@@ -3476,8 +3476,8 @@ async function loadSmartLists() {
     const lists = data.smartlists || [];
 
     statusEl.innerHTML = data.path_accessible
-      ? `<span style="color:var(--green)">${data.path}</span>`
-      : `<span style="color:var(--red)">${data.path} (not accessible)</span>`;
+      ? `<span style="color:var(--green)">${escapeAttr(data.path)}</span>`
+      : `<span style="color:var(--red)">${escapeAttr(data.path)} (not accessible)</span>`;
 
     if (!lists.length) {
       el.innerHTML = '<div class="empty-state" style="padding:24px"><p>No SmartLists to manage yet. Run a sync first.</p></div>';
@@ -3499,9 +3499,9 @@ async function loadSmartLists() {
         : '<span class="badge" style="background:var(--amber-dim);color:var(--amber)">Missing</span>';
 
       html += `<tr style="border-bottom:1px solid var(--border)">
-        <td style="padding:8px 12px;color:var(--text)">${sl.name}</td>
-        <td style="padding:8px 12px"><span class="badge badge-accent">${sl.tag}</span></td>
-        <td style="padding:8px 12px;color:var(--text2)">${mediaLabel}</td>
+        <td style="padding:8px 12px;color:var(--text)">${escapeAttr(sl.name)}</td>
+        <td style="padding:8px 12px"><span class="badge badge-accent">${escapeAttr(sl.tag)}</span></td>
+        <td style="padding:8px 12px;color:var(--text2)">${escapeAttr(mediaLabel)}</td>
         <td style="padding:8px 12px;text-align:center">${statusBadge}</td>
       </tr>`;
     }
@@ -3553,14 +3553,14 @@ async function loadHomeScreen() {
       heroSelect.innerHTML = '<option value="">-- disabled --</option>';
       for (const p of playlists) {
         const selected = config.hero && config.hero.playlist_id === p.playlist_id ? ' selected' : '';
-        heroSelect.innerHTML += `<option value="${p.playlist_id}"${selected}>${p.name}</option>`;
+        heroSelect.innerHTML += `<option value="${escapeAttr(p.playlist_id)}"${selected}>${escapeAttr(p.name)}</option>`;
       }
     } catch (_) {
       // Fallback to home rows if endpoint fails
       heroSelect.innerHTML = '<option value="">-- disabled --</option>';
       for (const r of homeRows) {
         const selected = config.hero && config.hero.playlist_id === r.playlist_id ? ' selected' : '';
-        heroSelect.innerHTML += `<option value="${r.playlist_id}"${selected}>${r.display_name}</option>`;
+        heroSelect.innerHTML += `<option value="${escapeAttr(r.playlist_id)}"${selected}>${escapeAttr(r.display_name)}</option>`;
       }
     }
 
@@ -3786,7 +3786,7 @@ function renderHomeRows() {
     <div class="home-row-item" data-idx="${i}">
       <span style="color:var(--text3);font-size:11px;width:20px;text-align:center;flex-shrink:0">${i + 1}</span>
       <span class="row-grip" aria-label="Drag to reorder" title="Drag to reorder">&#x2630;</span>
-      <span class="row-name">${row.display_name}</span>
+      <span class="row-name">${escapeAttr(row.display_name)}</span>
       <div class="row-controls">
         ${shapeSelect}
         ${maxItemsInput}
@@ -3940,7 +3940,7 @@ async function showAddHomeRow() {
     if (builtins.length) {
       select.innerHTML += '<optgroup label="Jellyfin Sections">';
       for (const s of builtins) {
-        select.innerHTML += `<option value="builtin:${s.section_id}">${s.display_name}</option>`;
+        select.innerHTML += `<option value="builtin:${s.section_id}">${escapeAttr(s.display_name)}</option>`;
       }
       select.innerHTML += '</optgroup>';
     }
@@ -3949,14 +3949,14 @@ async function showAddHomeRow() {
     if (youtube.length) {
       select.innerHTML += '<optgroup label="YouTube Channels">';
       for (const p of youtube) {
-        select.innerHTML += `<option value="playlist:${p.playlist_id}">${p.name}</option>`;
+        select.innerHTML += `<option value="playlist:${escapeAttr(p.playlist_id)}">${escapeAttr(p.name)}</option>`;
       }
       select.innerHTML += '</optgroup>';
     }
     if (others.length) {
       select.innerHTML += '<optgroup label="Tentacle Playlists">';
       for (const p of others) {
-        select.innerHTML += `<option value="playlist:${p.playlist_id}">${p.name}</option>`;
+        select.innerHTML += `<option value="playlist:${escapeAttr(p.playlist_id)}">${escapeAttr(p.name)}</option>`;
       }
       select.innerHTML += '</optgroup>';
     }
@@ -4103,13 +4103,13 @@ async function loadTagRules() {
         if (c.field === 'downloaded') display = c.value === 'yes' ? 'Downloaded (Radarr)' : 'VOD only';
         else if (c.field === 'list') display = `List: ${c.value}`;
         else if (c.field === 'source') display = `Provider: ${c.value}`;
-        return `<span class="badge badge-gray">${display}</span>`;
+        return `<span class="badge badge-gray">${escapeAttr(display)}</span>`;
       }).join(' ');
 
       return `
         <div class="list-item">
           <div class="list-info" style="flex:1">
-            <div class="list-name">${rule.name}</div>
+            <div class="list-name">${escapeAttr(rule.name)}</div>
             <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px">
               <span class="badge badge-accent">${typeLabels[rule.apply_to] || rule.apply_to}</span>
               ${condStr}
@@ -4248,10 +4248,10 @@ async function showAddTagRule() {
   await _ensureConditionOptions();
   const srcPick = document.getElementById('tr-source-pick');
   srcPick.innerHTML = '<option value="">Select...</option>' +
-    (_conditionOptions?.sources || []).map(s => `<option value="${escapeAttr(s)}">${s}</option>`).join('');
+    (_conditionOptions?.sources || []).map(s => `<option value="${escapeAttr(s)}">${escapeAttr(s)}</option>`).join('');
   const listPick = document.getElementById('tr-list-pick');
   listPick.innerHTML = '<option value="">Select...</option>' +
-    (_conditionOptions?.lists || []).map(l => `<option value="${escapeAttr(l.tag)}">${l.name}</option>`).join('');
+    (_conditionOptions?.lists || []).map(l => `<option value="${escapeAttr(l.tag)}">${escapeAttr(l.name)}</option>`).join('');
   _renderGenreChips([]);
 
   showModal('modal-tag-rule');
@@ -4328,12 +4328,12 @@ async function editTagRule(id) {
     }
     const srcPick = document.getElementById('tr-source-pick');
     srcPick.innerHTML = '<option value="">Select...</option>' +
-      (_conditionOptions?.sources || []).map(s => `<option value="${escapeAttr(s)}">${s}</option>`).join('');
+      (_conditionOptions?.sources || []).map(s => `<option value="${escapeAttr(s)}">${escapeAttr(s)}</option>`).join('');
     if (srcCond) { srcPick.value = srcCond.value; srcPick.style.display = ''; }
     else srcPick.style.display = 'none';
     const listPick = document.getElementById('tr-list-pick');
     listPick.innerHTML = '<option value="">Select...</option>' +
-      (_conditionOptions?.lists || []).map(l => `<option value="${escapeAttr(l.tag)}">${l.name}</option>`).join('');
+      (_conditionOptions?.lists || []).map(l => `<option value="${escapeAttr(l.tag)}">${escapeAttr(l.name)}</option>`).join('');
     if (listCond) { listPick.value = listCond.value; listPick.style.display = ''; }
     else listPick.style.display = 'none';
 
