@@ -122,12 +122,23 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
 
 def _carry_user_data(dup: Duplicate, record, keep: str, db: Session) -> None:
     """Users' watched state on the removed copy goes to the kept one first;
-    when that can't be done, nothing is deleted."""
+    when that can't be done, nothing is deleted.
+
+    Watched state saved for a same-folder film (#333) is committed here,
+    BEFORE anything is deleted: it lives nowhere else once the copy is gone,
+    and a crash or a failed commit after the delete (log_deletion rolls the
+    session back when its own commit fails) would otherwise lose every
+    user's state. Kept when the resolution then fails: it is only ever
+    merged onto the item Jellyfin makes for the kept file, which exists only
+    once the removed copy really is gone, the merge only adds, and it
+    expires after 30 days."""
     try:
         carry_user_data(db, dup, record, keep)
     except UserDataCarryError as e:
         db.rollback()
         raise HTTPException(e.status, e.message)
+    if dup.pending_user_data:
+        db.commit()
 
 
 def _require_series_download(dup: Duplicate, db: Session) -> None:

@@ -155,15 +155,20 @@ class MergedFilm(_Base):
         self.assertEqual(409, cm.exception.status_code)
         self.assertTrue(self.strm.exists())
 
-    def test_a_failed_resolution_keeps_nothing_saved(self):
+    def test_a_failed_resolution_merges_nothing(self):
+        # The saved state is committed before anything is deleted, so it stays
+        # when the delete then fails (Radarr may have deleted some files before
+        # it failed). It never lands anywhere while the removed copy is there:
+        # it is only merged onto an item whose Path is the kept file.
         self.jellyfin_film(JF_MKV, JF_STRM)
         FakeJellyfin.data = {("A", "film"): {"Played": True}}
         _FakeArr.fail_file_delete = True
         with self.assertRaises(duplicates.HTTPException):
             duplicates._apply_resolution(self.dup, "keep_vod", self.db)
-        self.db.refresh(self.dup)
-        self.assertIsNone(self.dup.pending_user_data)
         self.worker.assert_not_called()
+        self.assertTrue(self.mkv.exists())
+        self.assertEqual(1, dup_service.apply_pending_user_data(self.db), "waits for an item that never comes")
+        self.assertEqual([], FakeJellyfin.posts)
 
     def test_saved_state_waits_a_month_then_goes(self):
         self.jellyfin_film(JF_STRM, JF_MKV)
