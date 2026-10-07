@@ -27,6 +27,7 @@ and frequently times out. Always prefer per-category fetching.
 
 import logging
 import time
+import urllib.parse
 from typing import Optional
 
 import requests
@@ -35,6 +36,25 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_USER_AGENT = "TiviMate/4.7.0 (Linux; Android 12)"
 DEFAULT_TIMEOUT = 60
+
+
+# Letters, digits, -._~ and these stay as they are, so a login of plain
+# characters keeps byte-identical URLs (no .strm or channel rewrite on upgrade).
+_CRED_SAFE = "!$()*,;=:@"
+
+
+def quote_cred(value) -> str:
+    """An Xtream username or password for a URL query value or path segment (#529).
+
+    '#&+?/%' and spaces are percent-encoded: raw, they cut or split the URL.
+    Every URL with a provider login builds it with this."""
+    return urllib.parse.quote(str(value or ""), safe=_CRED_SAFE)
+
+
+def live_stream_url(server: str, username: str, password: str, stream_id, extension: str = "m3u8") -> str:
+    """A live channel's URL. Built from the provider's settings alone, so a
+    saved provider edit can rewrite its channels without asking the provider."""
+    return f"{server.rstrip('/')}/live/{quote_cred(username)}/{quote_cred(password)}/{stream_id}.{extension}"
 
 
 class XtreamClient:
@@ -66,7 +86,7 @@ class XtreamClient:
     def _api_url(self, action: Optional[str] = None, **extra) -> str:
         url = (
             f"{self.server}/player_api.php"
-            f"?username={self.username}&password={self.password}"
+            f"?username={quote_cred(self.username)}&password={quote_cred(self.password)}"
         )
         if action:
             url += f"&action={action}"
@@ -176,18 +196,18 @@ class XtreamClient:
         )
 
     def get_xmltv_url(self) -> str:
-        return f"{self.server}/xmltv.php?username={self.username}&password={self.password}"
+        return f"{self.server}/xmltv.php?username={quote_cred(self.username)}&password={quote_cred(self.password)}"
 
     # ── stream URLs ──────────────────────────────────────────────────────
 
     def live_stream_url(self, stream_id: int, extension: str = "m3u8") -> str:
-        return f"{self.server}/live/{self.username}/{self.password}/{stream_id}.{extension}"
+        return live_stream_url(self.server, self.username, self.password, stream_id, extension)
 
     def movie_stream_url(self, stream_id: int, extension: str = "mp4") -> str:
-        return f"{self.server}/movie/{self.username}/{self.password}/{stream_id}.{extension}"
+        return f"{self.server}/movie/{quote_cred(self.username)}/{quote_cred(self.password)}/{stream_id}.{extension}"
 
     def series_stream_url(self, stream_id: int, extension: str = "mp4") -> str:
-        return f"{self.server}/series/{self.username}/{self.password}/{stream_id}.{extension}"
+        return f"{self.server}/series/{quote_cred(self.username)}/{quote_cred(self.password)}/{stream_id}.{extension}"
 
     # ── cleanup ─────────────────────────────────────────────────────────��
 

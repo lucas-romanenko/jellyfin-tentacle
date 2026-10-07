@@ -1,9 +1,7 @@
 # Tentacle server (`tentacle/`): internals
 
 Reference for coding agents; the overview is in [CLAUDE.md](../../CLAUDE.md).
-Merged from Lucas's long-standing working notes on 2026-09-28 and checked
-against the code then (corrections noted); where this and the code
-disagree, the code wins, and fix this file.
+Where this and the code disagree, the code wins, and fix this file.
 
 ## Stack
 
@@ -23,11 +21,36 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
                         xtream_client, m3u_parser, media_requests, lidarr, musicbrainz, music/
 ```
 
+- `/api/health`: the container healthcheck. `/api/version`
+  (unauthenticated): commit, build date, `code.matches` (the running files
+  match the image's fingerprint).
+- Paths inside the container are fixed (users map host folders with
+  volumes; Settings → Library Paths checks them): `/data` (DB, caches,
+  per-user `smartlists/` and `home-configs/`), `/media/movies` (Radarr),
+  `/media/shows` (Sonarr), `/media/vod/movies`, `/media/vod/shows` (VOD
+  `.strm`), `/media/youtube`.
+- Logs: `services/log_redaction.py` strips credentials from every log record
+  (uvicorn's access log included): Xtream paths and any query parameter
+  named like a secret (`*secret*`, `*token*`, `*password*`, `*api_key*`,
+  `key`, ...). A new credential in a URL needs such a name, or a rule there.
+- Every Xtream URL (player_api.php, xmltv.php, the `/movie|series|live/`
+  stream paths) puts the login in through `quote_cred()`
+  (`services/xtream_client.py`); never `provider.username`/`password` raw: a
+  `#&+?/%` in it cuts or splits the URL (#529). Plain logins stay byte-identical.
+- One worker, one event loop: anything blocking in an `async def` freezes
+  every stream, recording and request. The SSRF guards (`services/ssrf.py`:
+  `is_safe_url`, `lan_origin_guard` and the guards it returns) resolve DNS
+  with a blocking `getaddrinfo`, so async code calls them through
+  `asyncio.to_thread` (#371, #464); `url_host_allowed` is the allowlist
+  half, no lookup.
+
 ## Auth and users (`routers/auth.py`)
 
 - Login is a Jellyfin user picker: `GET /api/auth/users` (no auth), then
   `POST /api/auth/login` authenticates through Jellyfin
-  `/Users/AuthenticateByName`. Session: HMAC-signed cookie
+  `/Users/AuthenticateByName`. Only Jellyfin's 401 reads "Invalid username
+  or password"; its 503 (starting up) is a 503 "starting up", any other
+  status a 502 naming it. Session: HMAC-signed cookie
   `tentacle_session` (30 days, HttpOnly), secret in the `session_secret`
   setting. After login the page does a full reload (clears SPA state).
 - Dependencies: `get_current_user` (cookie, else 401),
@@ -37,9 +60,14 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   `require_internal_or_admin` (the plugin's server-to-server calls).
   Admin-only routers declare `dependencies=[Depends(require_admin)]`.
 - Bootstrap: with no `TentacleUser` yet, `require_admin` lets the setup
-  wizard through.
+  wizard through. Until then `GET /api/auth/users` also answers 400 when the
+  saved Jellyfin address doesn't answer, so the dashboard reopens the wizard
+  instead of a login screen nobody can get past. `setup_complete` is set only
+  by the wizard's "Get Started" or "Skip everything", never by a settings save.
 - Roles: admin status is copied from Jellyfin's `Policy.IsAdministrator` on
   every login; the first user (lowest id) is the owner and can't lose admin;
+  the login refuses a non-admin while no user exists (the owner becomes
+  `jellyfin_user_id`, the account Tentacle reads Jellyfin as);
   Settings → Users toggles admin through Jellyfin's policy API. Non-admins
   see only Library and Jellyfin pages (`data-admin-only` in the nav,
   `applyUserRole()`).
@@ -56,7 +84,10 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
 - **TMDB is the gatekeeper**: no TMDB match = the item is skipped, unless
   the provider has `require_tmdb_match=False` (then the provider's title and
   a negative tmdb_id). A built-in project TMDB key ships with Tentacle
-  (`services/tmdb.py`); a user key/token in settings overrides it.
+  (`services/tmdb.py`); a user key/token in settings overrides it. It is
+  never stored: `/api/settings/raw` doesn't serve it (the Settings page posts
+  every field back) and a Save that sends it clears `tmdb_bearer_token`;
+  only `/api/settings/plugin-keys` hands it out.
 - **Two ways to tag**: VOD `.strm` items get `<tag>` elements in their NFO
   (Jellyfin reads NFO tags for `.strm` only); downloaded `.mkv` items must be
   tagged through the Jellyfin API (`services/jellyfin.py` `set_item_tags`),
@@ -69,7 +100,28 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   every scheduled sync.
 - **Duplicates**: found when a download also exists as VOD; resolved ones
   stay in the DB with their resolution (the sync enforces keep_radarr).
-  Keep VOD (`routers/duplicates.py:_delete_downloaded_copy`) deletes the
+  A keep_radarr tombstone goes with its download: the delete webhooks, the
+  Radarr/Sonarr scans' removals, and after each scan any tombstone left
+  without a row (`services/duplicates.drop_orphan_tombstones`), so the VOD
+  copy can come back.
+  A duplicate is resolved once (#328): `routers/duplicates.py` resolves
+  each one under `_resolve_lock` (Resolve All per duplicate), re-reading
+  its resolution from the DB first; one no longer pending gets 409 (Resolve
+  All counts it as `skipped`), so a stale tab can't delete the other copy.
+  The resolution is a Literal (keep_radarr, keep_vod, keep_both; "pending"
+  is a 422). Nothing makes `(tmdb_id, media_type)` unique (two scans at
+  once can each write a row): `_resolve` merges a title's pending twin rows'
+  sources into the one resolved and marks the twins with it (#504), so a
+  twin can't later be resolved the other way and delete the kept copy.
+  Keep Downloaded on a film checks Radarr first (`_require_movie_download`):
+  409 when no `radarr` source, Radarr not configured, the film not listed or
+  no non-`.strm` file; 502 when its files can't be read.
+  Keep VOD first needs the VOD copy on disk (`services/duplicates.vod_copy_on_disk`:
+  a provider source's `.strm`, or a show folder with one; 409 otherwise):
+  Keep Downloaded deletes the `.strm` before it saves the resolution, so a
+  restart in between leaves it pending without one, and a film downloaded
+  first never gets its provider `.strm`.
+  It (`routers/duplicates.py:_delete_downloaded_copy`) deletes the
   imported files through Radarr's `moviefile` / Sonarr's `episodefile/bulk`
   API (never a `.strm`: Sonarr 4 lists Tentacle's `.strm` files as episode
   files), then removes the title with `deleteFiles=false` when its folder is
@@ -86,7 +138,27 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   item onto the kept one (films by path, shows per season/episode):
   Jellyfin 10.11 does not share it between two items of one TMDB id.
   Jellyfin down, or a film's kept copy not scanned yet while the other has
-  user data: nothing is deleted (502 / 409).
+  user data: nothing is deleted (502 / 409). A film whose two copies share
+  one folder is one Jellyfin item with both as versions (the other version
+  is an owned item `/Items` leaves out; its path is in the item's
+  `MediaSources`, read by `?Ids=`), and users' data is on that item. When
+  the removed copy is its main version, the delete makes Jellyfin create a
+  new item for the kept file with no data: the data is saved on the
+  duplicate (`pending_user_data`) and committed before the delete, so a
+  resolution that fails after it keeps it (#506; a retry replaces its
+  entry), Jellyfin gets
+  `/Library/Media/Updated` for the removed file, and
+  `apply_pending_user_data` merges it onto the item whose Path is the kept
+  file (a worker polls 30 s × 30, the nightly run catches up, dropped after
+  30 days) (#333).
+  Radarr/Sonarr post their delete webhooks inside Keep VOD's delete calls,
+  while the resolve request holds the title. The handlers and scans drop a
+  title's duplicates only through `services/duplicates.droppable_duplicates`:
+  none while `_resolve` runs inside `resolving(media_type, tmdb_id)` (a
+  process set; the webhook can't wait on `_resolve_lock`, the resolve waits
+  for the arr, which waits for its webhook), and never a keep_vod one with
+  `pending_user_data`. After the arr call Keep VOD re-reads the row
+  (`populate_existing`): the webhook may have released or deleted it (#515).
 - **Following** = Sonarr `monitorNewItems="all"` (stricter than
   `monitored`), mirrored in `Series.sonarr_monitored`, synced both ways on
   every Sonarr scan; unfollowing keeps `monitored=true`. Hidden for ended
@@ -161,7 +233,10 @@ user_id)` computes them every time from source tags, list subscriptions
 ## Deleting things
 
 - Deleting a provider removes its VOD files and DB records, then rebuilds
-  playlists and checks the hero.
+  playlists and checks the hero. It takes the provider's sync slot
+  (`_running_syncs`): refused (409) while a sync of it runs, and holds the
+  slot until its commit so no sync starts meanwhile. A sync writes files
+  before it commits their rows, so a delete under it left orphan files.
 - Downloaded content only (never VOD, which is admin-only from the
   dashboard): the TV app or the web plugin calls
   `DELETE /TentacleDiscover/LibraryItem/{type}/{id}?jellyfinItemId=`, the
@@ -178,7 +253,11 @@ user_id)` computes them every time from source tags, list subscriptions
   Jellyfin twice (VOD + download) keeps the row and drops only a pending
   duplicate record (#296). Playlist entries are removed by the deleted
   item's id; an older plugin sends none, and the next playlist refresh
-  prunes the dead entry.
+  prunes the dead entry. It forwards nothing while Jellyfin re-reads the
+  folder the item left (`IProviderManager.GetRefreshProgress(e.Parent.Id)`:
+  the library monitor, `/Library/Media/Updated`, a one-library scan) or the
+  Scan Media Library task runs: those removals are files Jellyfin can't see
+  (a dropped mount), not user deletions (#448).
 - The nightly `sweep_orphaned_downloads()` removes downloaded records
   Jellyfin no longer has.
 - "Fix it" (`services/wrong_match.py:rematch_movie`) keeps the `.strm`'s
@@ -212,6 +291,11 @@ auto_playlist_toggles, tentacle_users, notifications, download_requests,
 music_artists, music_albums, and the Live TV tables. Credentials live in
 `settings` (key/value) and `providers`; never log or print them.
 
+A list item is keyed on (list_id, tmdb_id, media_type): TMDB numbers films
+and shows separately, so a list may hold movie/N and tv/N. Anything that
+looks up list items by TMDB number filters on the type too
+(`ListItem.of_type()`; a row without a type is a film).
+
 ## Live TV
 
 Tentacle is the HDHomeRun tuner Jellyfin sees (it replaced Threadfin):
@@ -226,28 +310,93 @@ User docs: `docs/features/live-tv.md`.
   errors, `_raw_retryable()` statuses (the open set plus 407 and any 5xx:
   providers answer 407 for an ended session, 513/520-524 for minutes), and a
   200 whose first bytes are an error page (`_looks_like_error_page()`: not
-  the TS sync byte 0x47 and a text type or a `{`/`<` start; never proxied).
-  401/403/404 stop at once. A re-dial counts as a reconnect only once it
-  delivers.
+  MPEG-TS -- the sync byte 0x47 first, or 0x47 every 188 bytes from within
+  the first packet for a start mid-packet, judged on the first 564 bytes
+  held by `_decidable_start()` -- and a text type or a `{`/`<` start; never
+  proxied). A mid-packet start's partial packet is dropped. 401/403/404 stop
+  at once. A re-dial counts as a reconnect only once it delivers, and as a
+  recovery (backoff and budget reset) only once it delivered past 10 s.
+- Many panels start every raw connection with their buffer (~20 s already
+  sent, byte for byte). `_ReplaySplicer` (#368) joins a re-dialled
+  connection right after the last byte sent: it holds the connection until
+  its first frame start (a video/audio PES with a PTS); if that packet was
+  sent, every later frame start up to the join point must sit where it was
+  sent, every packet dropped must equal the packet sent at that place (a
+  ring of one `hash()` per packet sent, as far back as a hold reaches), and
+  no unjoined connection may have begun in front of it. Then the replay is
+  dropped (`replays_joined`, `replay_bytes_skipped` in the health); anything
+  unproven (a gap, a seamless re-dial, a remux, a replay over 32 MB or 30 s,
+  a break before the join) goes out as it came: duplicates, never a loss.
+  A joined reconnect is not damage in `_stream_ended`. A join drops only
+  packets byte-identical to the ones sent at the same place (#520: checking
+  only the frame starts let a provider's verbatim loop hide the unique
+  packets in front of it). A verbatim loop can at worst be joined one loop
+  period off, which repeats or skips only bytes already sent.
+- The HLS worker (`hls_to_mpegts()`) classifies statuses with the same
+  `_raw_retryable()`: a 5xx on a playlist, a re-resolve or a segment is
+  waited out (a 5xx segment is fetched again, not skipped). An expired token
+  (401/403/404/407/410 from a token URL) re-resolves the channel URL, at most
+  `_MAX_RERESOLVE` times in a row; a 407 from the channel URL itself (an
+  ended session while the token is renewed) does not count for a recording
+  and is waited out on the refusal cap. Viewers keep the three tries.
 - Channel ids are the provider's `stream_id` (stable across changes), used
   as `GuideNumber`; Jellyfin keys the channel, its timers and favourites on
   `hdhr_<GuideNumber>`, so it must never change. M3U channels have no
   provider id: `stream_id` is the hash of the first name + URL seen, and
   `m3u_key` the hash of the current ones, which a sync matches by. A URL
-  change (rotated token, new host) moves `m3u_key` only (#259).
+  change (rotated token, new host) moves `m3u_key` only (#259). The name
+  is everything after the first comma outside the quoted attributes; a row
+  an older build stored under the text after the name's last comma moves
+  its `m3u_key` to the whole name the same way (#525).
+- A running HLS stream reads every playlist and segment body within a total
+  bound (`_aread_within()`): 10 s for a playlist, max(20 s, 3 x the target
+  duration) for a segment. httpx's read timeout is per read, so a body that
+  trickles never reaches it. Past the bound it is a ReadTimeout, retried
+  like a stall; the next read of that kind gets twice the time (up to 4x)
+  and a body that arrives within the plain bound resets it, so a provider
+  that turned slow but still delivers is waited for.
 - Two-phase sync: groups with counts, then channels for enabled groups; a
   channel sync chains into an EPG sync. The EPG (XMLTV, cached on disk) is
   stored for *all* provider channels, so newly enabled ones have a guide.
   Channels may share one `epg_channel_id` (one-to-many in the XMLTV output).
+  An EPG sync first deletes every id it could store programmes under (each
+  channel's guide id, name match and tvg-id, and every name match of this
+  run, kept or dropped), or the insert hits `uq_epg_program` (#467),
+  except an id another provider's channel uses as its guide that this sync
+  doesn't store again: programmes are shared by guide id across providers
+  (#516).
+- A tvg-id matches a feed id exactly first, else ignoring case when that
+  names one feed id (never a guess between ids that differ only in case);
+  the feed's spelling goes in `epg_name_match` and `epg_match` still says
+  "tvg-id" (#523).
+- A programme's categories are stored in `epg_programs.category` joined by
+  U+001F (`xmltv.CATEGORY_SEP`, which XML can't carry) and served one
+  `<category>` each, in feed order: Jellyfin flags sports/news/kids/movie
+  when any of them is in its lists (#521).
+- A group is unique on (provider, name) with one Xtream `category_id`, but
+  Xtream category names aren't unique: `_sync_groups` gives each category
+  its own group (the one already on it, else its name, first listed wins,
+  else `NAME (id)`). Matching by name alone crashed the sync or moved an
+  enabled group to the other category.
 - After an EPG sync Tentacle deletes and re-adds its XMLTV listing provider
   in Jellyfin, then runs RefreshGuide: re-POSTing a listing provider with
   the same id does *not* remap new channels. `services/jellyfin_guide.py`
   does it under one lock, decides from Jellyfin's config whether the copy
   was saved (Jellyfin 10.11 can save it and answer 500), and keeps one
   provider per Path, deleting leftover copies (#274).
+- `POST /api/live/refresh-guide` first runs the EPG sync inline when an
+  enabled channel's guide id has no programmes, unless that can't help: a
+  successful sync stores in `livetv_epg_synced_<pid>` a hash of what it read
+  (feed URL, cached feed file, each channel's override, tvg-id and name) and
+  the guide ids it left empty. Same hash and every missing id among those:
+  no re-run (a tvg-id the feed lacks would re-run it on every call, #466).
 - Provider fields: `provider_type` (xtream, m3u_url, m3u_file),
-  `user_agent`, `epg_url`, `require_tmdb_match`, `live_tv_enabled` (VOD and
-  Live TV providers share the table; the flag keeps them apart).
+  `user_agent`, `epg_url`, `require_tmdb_match`, `live_tv_enabled`. The
+  dashboard adds providers only in Settings → Providers, and one row serves
+  VOD and Live TV: `POST /api/providers/{id}/test` sets `live_tv_enabled`
+  when an Xtream account has live categories (an M3U one never gets it).
+  `/api/live/provider` (GET, POST, test) has no form in the dashboard, and
+  `user_agent` / `epg_url` no field: API only.
 
 ## Music (Lidarr + MusicBrainz; off by default)
 
@@ -281,12 +430,31 @@ docs: `docs/features/music.md`; plugin side: `Api/MusicController.cs`
   landed), marks the row `request_pending` and queues `jobs.finish_request`
   (pin the original, search). The worker's queue is in memory only, so a
   pending row is finished at startup (`resume_requests`) and at the start of
-  each daily check (`finish_pending_requests`), unless the album has files by
-  then (#242).
+  each daily check (`finish_pending_requests`). An album that has files (one
+  Lidarr had unmonitored, or one that downloaded since) is never pinned by a
+  request: it is checked, so Fix library offers the pin, and searched only if
+  its pin is already right and locked (#242, #422). An add whose answer failed (timeout, dropped connection, 5xx)
+  and that Lidarr doesn't list yet may still commit: `jobs.owe_add` keeps a
+  row with no Lidarr id, not monitored (still requestable), and
+  `finish_pending_requests` looks it up by MBID 1, 5, 30 and 120 min later,
+  at startup and each daily check; once listed it is pinned and searched,
+  after `OWED_ADD_HOURS` (6) unlisted the row is dropped (#431). A 4xx owes
+  nothing. That later run reads the album once (no waiting; an owed add that
+  has just landed gets a first try that waits), leaves an album unmonitored in
+  Lidarr since alone, removes the row of an album Lidarr no longer has (404),
+  and otherwise tries again at the next check. The same album requested twice
+  at once reuses the row the other request wrote, and is searched once
+  (`finish_request` skips a row that was already there and is no longer
+  pending; a row it has to write again is still owed).
 - `services/music/`: `worker.py` (one thread; urgent > normal > background),
   `jobs.py`, `original.py` (the original-release rules, pure), `apply.py`
   (pins and trims; deletions only when exactly the expected leftovers
   remain, each logged), `pictures.py`, `players.py` (Navidrome, Jellyfin),
   `discover.py`, `spotify.py`.
+- The daily check's clean-up (`jobs._forget_gone_artists`, and
+  `library.sync_artist` for albums) removes only what Lidarr really dropped:
+  nothing on an empty artist list, no artist written after the list was read
+  (a request finished during the check), and no album still
+  `request_pending` (nor its artist).
 - Webhook `POST /api/music/webhook?secret=` (secret always required);
   status `GET /api/music/status`.

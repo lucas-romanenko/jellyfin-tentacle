@@ -41,6 +41,53 @@ def _year_within_one(a, b) -> bool:
         return False
 
 
+# A film from the label's year beats a far-year film exactly titled as the
+# label only with at least this share of its TMDB votes (#310). On real
+# answers remakes and sequels have 9.5 % or more (Psycho 1998: 9.5 %, Joker:
+# Folie à Deux: 10.9 %), the namesakes a re-release label finds 1.6 % or less.
+_CREDIBLE_VOTE_SHARE = 0.03
+
+
+def _similarity(a: str, b: str) -> float:
+    a = re.sub(r'[^a-z0-9]', '', (a or '').lower())
+    b = re.sub(r'[^a-z0-9]', '', (b or '').lower())
+    return SequenceMatcher(None, a, b).ratio()
+
+
+def _match_score(title: str, year: Optional[str], tmdb_title: str, tmdb_year: Optional[str],
+                 popularity: float = 0) -> float:
+    score = _similarity(title, tmdb_title)
+    if year and tmdb_year:
+        if str(year) == str(tmdb_year):
+            # Strongly prefer an exact-year match so two same-titled
+            # candidates (remake / re-release) resolve to the right one.
+            score += 0.20
+        else:
+            # Year known but mismatched — small penalty so a matching-year
+            # candidate with comparable title similarity wins.
+            score -= 0.10
+    if (popularity or 0) > 50:
+        score += 0.05
+    return max(0.0, min(score, 1.0))
+
+
+def label_names_film(title: str, year: Optional[str], film_title: str, film_year: Optional[str],
+                     threshold: float = 0.7) -> bool:
+    """Would the scorer accept this film (its title and year) for a provider
+    label? (Without the popularity bonus: a row doesn't keep it.)"""
+    return bool(film_title) and _match_score(title, year, film_title, film_year) >= threshold
+
+
+def _far_exact(title: str, year: Optional[str], tmdb_title: str, tmdb_year: Optional[str]) -> bool:
+    """Exactly the label's title, from two or more years away."""
+    try:
+        apart = abs(int(str(year)[:4]) - int(str(tmdb_year)[:4])) >= 2
+    except (TypeError, ValueError):
+        return False
+    return apart and bool(re.sub(r'[^a-z0-9]', '', (title or '').lower())) \
+        and _similarity(title, tmdb_title) == 1.0
+
+
 class TMDBService:
     def __init__(self, bearer_token: str, cache_dir: str, match_threshold: float = 0.7):
         self.bearer_token = bearer_token
@@ -56,6 +103,11 @@ class TMDBService:
         # Per-thread flag: did a request in the current lookup fail transiently
         # (429/5xx/timeout/unreachable)? The sync runs lookups on a thread pool.
         self._tl = threading.local()
+        # Discover sets fail_fast: once TMDB can't be reached (or doesn't
+        # answer), the rest of that page load reads the cache only, instead of
+        # waiting out a timeout per section (#273). Nothing else sets it.
+        self.fail_fast = False
+        self._offline = False
 
     def _lookup_failed(self) -> bool:
         return getattr(self._tl, "failed", False)
@@ -147,6 +199,8 @@ class TMDBService:
     def _request(self, endpoint: str, params: dict = None) -> Optional[dict]:
         if not self.enabled:
             return None
+        if self._offline:
+            raise TMDBConnectionError("TMDB could not be reached earlier in this request")
         try:
             r = self.session.get(
                 f"{TMDB_BASE}/{endpoint}",
@@ -159,7 +213,16 @@ class TMDBService:
         except requests.ConnectionError as e:
             self._tl.status = None
             self._tl.failed = True
+            self._offline = self.fail_fast
             raise TMDBConnectionError(f"Cannot reach TMDB API: {e}")
+        except requests.Timeout as e:
+            self._tl.status = None
+            self._tl.failed = True
+            if self.fail_fast:
+                self._offline = True
+                raise TMDBConnectionError(f"TMDB did not answer: {e}")
+            logger.debug(f"TMDB request failed {endpoint}: {e}")
+            return None
         except requests.HTTPError as e:
             status = getattr(getattr(e, "response", None), "status_code", None)
             self._tl.status = status
@@ -179,34 +242,39 @@ class TMDBService:
     # ── Matching ───────────────────────────────────────────────────────────
 
     def _similarity(self, a: str, b: str) -> float:
-        a = re.sub(r'[^a-z0-9]', '', a.lower())
-        b = re.sub(r'[^a-z0-9]', '', b.lower())
-        return SequenceMatcher(None, a, b).ratio()
+        return _similarity(a, b)
 
     def _find_best_match(self, results: list, title: str, year: Optional[str],
                           title_key: str, year_key: str) -> Optional[Tuple]:
-        best = None
-        best_score = 0
-
+        scored = []  # (score, result, tmdb_title, tmdb_year), TMDB's order
         for result in results[:10]:
             tmdb_title = result.get(title_key, '')
             tmdb_year_raw = result.get(year_key, '')
             tmdb_year = tmdb_year_raw[:4] if tmdb_year_raw else None
+            score = _match_score(title, year, tmdb_title, tmdb_year, result.get('popularity', 0))
+            scored.append((score, result, tmdb_title, tmdb_year))
 
-            score = self._similarity(title, tmdb_title)
-            if year and tmdb_year:
-                if year == tmdb_year:
-                    # Strongly prefer an exact-year match so two same-titled
-                    # candidates (remake / re-release) resolve to the right one.
-                    score += 0.20
-                else:
-                    # Year known but mismatched — small penalty so a matching-year
-                    # candidate with comparable title similarity wins.
-                    score -= 0.10
-            if result.get('popularity', 0) > 50:
-                score += 0.05
-            score = max(0.0, min(score, 1.0))
+        # TMDB's year filter matches ANY release date, re-releases included, so
+        # "Dune (2024)" also brings back Dune (2021), and "Alien (2019)" Alien
+        # (1979) (#310). Between a film exactly titled as the label from 2+
+        # years away and one from the label's year (±1), the near one wins only
+        # if it is credible next to it (_CREDIBLE_VOTE_SHARE of its votes).
+        # A sequel listed under its base title (Dune: Part Two, Top Gun:
+        # Maverick) is; a namesake nobody watched (a 2-vote "Alien" of 2019)
+        # isn't, and the re-release label keeps the film it names.
+        far = [s for s in scored if _far_exact(title, year, s[2], s[3])]
+        if far:
+            votes = max(s[1].get('vote_count') or 0 for s in far)
+            near = [s for s in scored if _year_within_one(year, s[3])
+                    and (s[1].get('vote_count') or 0) >= votes * _CREDIBLE_VOTE_SHARE]
+            pick = [s for s in near if s[0] >= self.match_threshold]
+            if not pick:
+                pick = [s for s in scored if not _year_within_one(year, s[3])]
+            scored = pick
 
+        best = None
+        best_score = 0
+        for score, result, tmdb_title, tmdb_year in scored:
             if score > best_score:
                 best_score = score
                 best = (result.get('id'), tmdb_title, tmdb_year, score)

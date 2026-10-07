@@ -183,7 +183,7 @@ If playlists were recreated during a sync (new Jellyfin playlist IDs), Tentacle 
 
 Click the Categories tab — Tentacle auto-fetches categories on first visit. If nothing loads:
 
-1. Test the provider connection (click Test on the provider card)
+1. Test the provider connection (click Test on the provider's card in Settings → Providers)
 2. Verify credentials are correct
 3. Some providers may be temporarily unavailable
 
@@ -203,8 +203,8 @@ If titles appear without posters or proper names:
 
 1. Verify the HDHomeRun tuner is added in Jellyfin (Dashboard → Live TV → Tuner Devices)
 2. Make sure channels are enabled in Tentacle (not just the groups)
-3. Click **Refresh Guide** in Tentacle — this recreates the XMLTV listing provider in Jellyfin, forcing a full channel remap
-4. Simply refreshing guide data alone won't pick up new channels
+3. Save Tentacle's address on the Live TV page's **Jellyfin Setup** tab, then click **Sync EPG** on the Channels tab — when it finishes, Tentacle recreates the XMLTV listing provider in Jellyfin, forcing a full channel remap
+4. Simply refreshing guide data in Jellyfin alone won't pick up new channels
 
 ### No EPG data for channels
 

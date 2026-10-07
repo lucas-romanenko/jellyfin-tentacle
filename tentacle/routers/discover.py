@@ -3,6 +3,7 @@ Tentacle - Discover Router
 Trending, popular, upcoming content from TMDB + missing from user lists
 """
 
+import asyncio
 import hashlib
 import logging
 import threading
@@ -18,7 +19,7 @@ import httpx
 from models.database import get_db, get_setting, Movie, Series, ListSubscription, ListItem, DownloadRequest, LiveChannel, TentacleUser
 from routers.auth import get_user_from_request
 from services.cleaner import clean_list_title
-from services.ssrf import is_safe_url
+from services.ssrf import is_safe_url, url_host_allowed
 from services.exceptions import TMDBConnectionError
 from services.tmdb import TMDBService
 
@@ -185,6 +186,68 @@ def _bust_jellyfin_ids_cache():
     _jf_ids_cache["ts"] = {"movie": 0, "series": 0}
 
 
+# (caller's Jellyfin user id, item id) -> (checked at, visible). Visibility
+# follows the caller's Jellyfin policy, which changes rarely.
+_visible_cache: dict = {}
+_visible_lock = threading.Lock()
+VISIBLE_TTL = 600
+VISIBLE_CACHE_MAX = 5000
+VISIBLE_TIMEOUT = 5
+# After Jellyfin failed to answer, other callers don't wait on it again for
+# this long (the id is left out meanwhile, as for a failure).
+VISIBLE_FAILURE_TTL = 30
+_visible_down_until = [0.0]
+
+
+def _caller_can_open(db: Session, request: Request, item_id: str) -> bool:
+    """Whether Jellyfin shows this item to the caller.
+
+    The in-library map is built as the configured Jellyfin user, so an item it
+    finds may be hidden from the caller. Asks Jellyfin as the caller
+    (GET /Items/{id}?userId=, which applies parental rating, blocked tags and
+    library access). 404 = hidden; a failure or another status counts as not
+    visible this time and is not cached. Skipped when the caller is that
+    configured user."""
+    import time as _time
+    try:
+        user = get_user_from_request(request, db)
+    except Exception:
+        return False
+    caller = (user.jellyfin_user_id or "").replace("-", "")
+    configured = (get_setting(db, "jellyfin_user_id", "") or "").replace("-", "")
+    if configured and caller == configured:
+        return True
+    key = (caller, str(item_id).replace("-", ""))
+    now = _time.time()
+    with _visible_lock:
+        hit = _visible_cache.get(key)
+        if hit and now - hit[0] < VISIBLE_TTL:
+            return hit[1]
+    if now < _visible_down_until[0]:
+        return False
+    url = (get_setting(db, "jellyfin_url", "") or "").rstrip("/")
+    api_key = get_setting(db, "jellyfin_api_key", "")
+    visible = False
+    if url and api_key and caller:
+        try:
+            import requests
+            r = requests.get(f"{url}/Items/{item_id}", params={"userId": caller},
+                             headers={"X-Emby-Token": api_key}, timeout=VISIBLE_TIMEOUT)
+            if r.status_code not in (200, 404):
+                logger.info(f"Discover detail: Jellyfin answered {r.status_code} checking item {key[1]}")
+                return False  # not cached: ask again next time
+            visible = r.status_code == 200
+        except Exception as e:
+            logger.info(f"Discover detail: could not check item {key[1]} for the caller: {e}")
+            _visible_down_until[0] = now + VISIBLE_FAILURE_TTL
+            return False  # not cached per item: asked again after the pause
+    with _visible_lock:
+        if len(_visible_cache) >= VISIBLE_CACHE_MAX:
+            _visible_cache.clear()
+        _visible_cache[key] = (now, visible)
+    return visible
+
+
 def _is_in_library(item: dict, known_ids: dict) -> bool:
     """Check if item is in library using the correct media-type-specific ID set.
 
@@ -305,13 +368,16 @@ def get_discover(
     tmdb = _get_tmdb(db)
     if not tmdb:
         return {"sections": []}
+    # One timeout per page load, not one per section: at 10 s each they added
+    # up past the plugin's 15 s. Cached sections still show.
+    tmdb.fail_fast = True
 
     known_ids = _known_tmdb_ids(db)
     sections = []
     tmdb_down = []
 
     def _tmdb_rows(fn, *args):
-        # A TMDB list that can't be reached (DNS, refused, reset) drops only its
+        # A TMDB list that can't be reached (DNS, refused, reset, no answer) drops only its
         # own section: the rest, and "From My Lists", still show (#273).
         try:
             return fn(*args)
@@ -414,18 +480,19 @@ def _get_missing_from_lists(db: Session, known_ids: dict, type_filter: str, user
         ListItem.tmdb_id.isnot(None),
     )
     if type_filter == "movies":
-        query = query.filter(ListItem.media_type == "movie")
+        query = query.filter(ListItem.of_type("movie"))
     elif type_filter == "series":
-        query = query.filter(ListItem.media_type == "series")
+        query = query.filter(ListItem.of_type("series"))
 
     all_items = query.all()
 
+    # A film and a show may share a TMDB number: they are two titles (#365).
     seen = set()
     result = []
     for item in all_items:
         mt = item.media_type or "movie"
         type_ids = known_ids.get("series" if mt == "series" else "movie", set())
-        if item.tmdb_id in type_ids or item.tmdb_id in seen:
+        if item.tmdb_id in type_ids or (item.tmdb_id, mt) in seen:
             continue
         if not item.poster_path:
             continue
@@ -433,7 +500,7 @@ def _get_missing_from_lists(db: Session, known_ids: dict, type_filter: str, user
         # Tentacle's tables never recorded is not "missing".
         if _is_in_library({"tmdb_id": item.tmdb_id, "media_type": mt}, known_ids):
             continue
-        seen.add(item.tmdb_id)
+        seen.add((item.tmdb_id, mt))
         # Clean pre-fix rows (HTML entities + baked-in year) at serving time
         clean_name, clean_year = clean_list_title(item.title, item.year)
         result.append((item.list_id, {
@@ -526,8 +593,12 @@ def get_discover_detail(
         stored_id = None
     resolved_id = live_id or stored_id
     if resolved_id:
-        details["jellyfin_item_id"] = resolved_id
-        details["jellyfin_url"] = _jellyfin_web_url(db, resolved_id)
+        # Only a caller Jellyfin shows the item to gets an id to open it by
+        # (parental rating, blocked tags, library access); in_library and the
+        # stored id follow Jellyfin as before.
+        if _caller_can_open(db, request, resolved_id):
+            details["jellyfin_item_id"] = resolved_id
+            details["jellyfin_url"] = _jellyfin_web_url(db, resolved_id)
         if db_item is not None and getattr(db_item, "jellyfin_item_id", None) != resolved_id:
             try:
                 db_item.jellyfin_item_id = resolved_id
@@ -1304,13 +1375,18 @@ def _normalize_proxy_url(url: str) -> str:
     return url
 
 
+_TVDB_HOSTS = {"thetvdb.com"}
+
+
 @router.get("/image-proxy/{cache_key}")
 async def image_proxy(cache_key: str, url: str = ""):
     """Proxy TVDB images through the server to bypass CDN TLS fingerprinting."""
     url = _normalize_proxy_url(url)
-    # Strict host allowlist + public-IP check (substring matching like
-    # "thetvdb.com" in url is trivially bypassed, e.g. ?url=http://169.254.169.254/?x=thetvdb.com).
-    if not is_safe_url(url, allowed_hosts={"thetvdb.com"}):
+    # Strict host allowlist (substring matching like "thetvdb.com" in url is
+    # trivially bypassed, e.g. ?url=http://169.254.169.254/?x=thetvdb.com).
+    # Ahead of the cache: older versions cached any URL that merely contained
+    # "thetvdb.com", and nothing prunes the cache.
+    if not url_host_allowed(url, allowed_hosts=_TVDB_HOSTS):
         raise HTTPException(status_code=400, detail="Invalid URL")
     # The cache file is named by cache_key, so it must be the key this URL was
     # minted with (_rewrite_tvdb_url). Otherwise anyone who can reach the
@@ -1334,6 +1410,13 @@ async def image_proxy(cache_key: str, url: str = ""):
         elif ext == ".webp":
             media_type = "image/webp"
         return Response(content=cached.read_bytes(), media_type=media_type)
+
+    # The public-IP check. Only here: a file is written only after its URL
+    # passed it, so a cache hit needs no lookup. It resolves DNS with a
+    # blocking getaddrinfo: off the event loop, so a resolver that hangs
+    # doesn't freeze every stream and request (#464).
+    if not await asyncio.to_thread(is_safe_url, url, allowed_hosts=_TVDB_HOSTS):
+        raise HTTPException(status_code=400, detail="Invalid URL")
 
     # Fetch from TVDB using httpx with HTTP/2 (better TLS fingerprint).
     # follow_redirects=False: a redirect could send us to an internal host that

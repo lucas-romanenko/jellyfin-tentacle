@@ -349,6 +349,11 @@ class TestDiscoverDetail(DiscoverTestBase):
         p2 = mock.patch.object(jellyfin.JellyfinService, "get_server_id", lambda svc: "srv1")
         p2.start()
         self.addCleanup(p2.stop)
+        # The caller is the configured Jellyfin user (whose view the map is).
+        p3 = mock.patch.object(discover, "get_user_from_request",
+                               lambda request, db: mock.Mock(jellyfin_user_id=self.user_id, is_admin=True, id=1))
+        p3.start()
+        self.addCleanup(p3.stop)
 
     def detail(self, media_type, tmdb_id):
         db = self.Session()

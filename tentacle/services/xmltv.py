@@ -11,7 +11,8 @@ import logging
 import re
 import xml.etree.ElementTree as ET
 from datetime import datetime
-from typing import Optional
+from typing import Iterable, Iterator, Optional
+from xml.sax.saxutils import escape as xml_escape
 
 import requests
 
@@ -66,48 +67,95 @@ def _clean(text):
     return _INVALID_XML_CHARS.sub("", text) if isinstance(text, str) else text
 
 
-def generate_xmltv(channels: list[dict], programs: list[dict]) -> str:
+# A programme's categories, all kept in the one epg_programs.category column,
+# joined by U+001F: a character XML 1.0 can't carry (not even as &#31;), so
+# the parser never returns it inside a category text. A comma or newline is
+# not safe: category text can contain both. Jellyfin flags a programme as
+# sports/news/kids/movie when ANY category is in its lists, so serving only
+# the first lost "Hockey" + "Sports" (#521).
+CATEGORY_SEP = "\x1f"
+
+
+# What ElementTree escapes in an attribute value, beyond & < >.
+_ATTR_ENTITIES = {'"': "&quot;", "\r": "&#13;", "\n": "&#10;", "\t": "&#09;"}
+
+
+def _xml_text(tag: str, text) -> str:
+    """One element with text, written as ElementTree writes it (empty = <tag />)."""
+    text = _clean(text) if text else ""
+    if not text:
+        return f"<{tag} />"
+    return f"<{tag}>{xml_escape(text)}</{tag}>"
+
+
+def _xml_attr(value) -> str:
+    return xml_escape(_clean(value), _ATTR_ENTITIES)
+
+
+def iter_xmltv(channels: Iterable[dict], programs: Iterable[dict], chunk_chars: int = 64 * 1024) -> Iterator[bytes]:
     """
-    Generate XMLTV XML string from channel and program data.
+    The XMLTV guide as UTF-8 chunks of about `chunk_chars`, written as it is read.
 
     channels: [{"id": "TSN1.ca", "name": "TSN 1 HD", "logo_url": "http://..."}]
     programs: [{"channel_id": "TSN1.ca", "title": "...", "sub_title": "...", "description": "...",
                 "start": datetime, "stop": datetime, "category": "...", "icon_url": "..."}]
-    """
-    root = ET.Element("tv", attrib={"generator-name": "Tentacle"})
+    category: one or more, joined by CATEGORY_SEP; each is one <category>.
 
+    Both may be generators. The whole guide used to be built as one element
+    tree and one string, about 2 KB per programme, so a large lineup with a
+    long guide took gigabytes on every guide download. The output is the same
+    bytes ElementTree wrote (same elements, attributes, order and escaping,
+    XML-illegal characters stripped as before).
+    """
+    parts: list[str] = []
+    size = 0
+    empty = True
+    for item in _xmltv_elements(channels, programs):
+        if empty:
+            parts.append('<?xml version="1.0" encoding="UTF-8"?>\n<tv generator-name="Tentacle">')
+            empty = False
+        parts.append(item)
+        size += len(item)
+        if size >= chunk_chars:
+            yield "".join(parts).encode("utf-8")
+            parts, size = [], 0
+    if empty:
+        parts.append('<?xml version="1.0" encoding="UTF-8"?>\n<tv generator-name="Tentacle" />')
+    else:
+        parts.append("</tv>")
+    yield "".join(parts).encode("utf-8")
+
+
+def _xmltv_elements(channels: Iterable[dict], programs: Iterable[dict]) -> Iterator[str]:
     for ch in channels:
-        channel_el = ET.SubElement(root, "channel", attrib={"id": _clean(ch["id"])})
-        name_el = ET.SubElement(channel_el, "display-name")
-        name_el.text = _clean(ch["name"])
-        if ch.get("logo_url"):
-            ET.SubElement(channel_el, "icon", attrib={"src": _clean(ch["logo_url"])})
+        icon = f'<icon src="{_xml_attr(ch["logo_url"])}" />' if ch.get("logo_url") else ""
+        yield (f'<channel id="{_xml_attr(ch["id"])}">'
+               f'{_xml_text("display-name", ch["name"])}{icon}</channel>')
 
     for prog in programs:
-        start_str = prog["start"].strftime("%Y%m%d%H%M%S +0000")
-        stop_str = prog["stop"].strftime("%Y%m%d%H%M%S +0000")
-        prog_el = ET.SubElement(
-            root, "programme",
-            attrib={
-                "start": start_str,
-                "stop": stop_str,
-                "channel": _clean(prog["channel_id"]),
-            },
-        )
-        title_el = ET.SubElement(prog_el, "title")
-        title_el.text = _clean(prog.get("title") or "")
+        out = [
+            f'<programme start="{prog["start"].strftime("%Y%m%d%H%M%S +0000")}" '
+            f'stop="{prog["stop"].strftime("%Y%m%d%H%M%S +0000")}" '
+            f'channel="{_xml_attr(prog["channel_id"])}">',
+            _xml_text("title", prog.get("title")),
+        ]
         if prog.get("sub_title"):
-            ET.SubElement(prog_el, "sub-title").text = _clean(prog["sub_title"])
+            out.append(_xml_text("sub-title", prog["sub_title"]))
         if prog.get("description"):
-            desc_el = ET.SubElement(prog_el, "desc")
-            desc_el.text = _clean(prog["description"])
+            out.append(_xml_text("desc", prog["description"]))
         if prog.get("category"):
-            cat_el = ET.SubElement(prog_el, "category")
-            cat_el.text = _clean(prog["category"])
+            # Split before _xml_text: _clean strips the separator. A row an
+            # older build stored holds one category and serves as one.
+            out.extend(_xml_text("category", c) for c in prog["category"].split(CATEGORY_SEP) if c)
         if prog.get("icon_url"):
-            ET.SubElement(prog_el, "icon", attrib={"src": _clean(prog["icon_url"])})
+            out.append(f'<icon src="{_xml_attr(prog["icon_url"])}" />')
+        out.append("</programme>")
+        yield "".join(out)
 
-    return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(root, encoding="unicode")
+
+def generate_xmltv(channels: list[dict], programs: list[dict]) -> str:
+    """The whole XMLTV guide as one string (see iter_xmltv, which the route streams)."""
+    return b"".join(iter_xmltv(channels, programs)).decode("utf-8")
 
 
 def _programme_dict(prog_el, channel_id: str) -> Optional[dict]:
@@ -126,7 +174,8 @@ def _programme_dict(prog_el, channel_id: str) -> Optional[dict]:
     title_el = prog_el.find("title")
     sub_el = prog_el.find("sub-title")
     desc_el = prog_el.find("desc")
-    cat_el = prog_el.find("category")
+    # Every non-empty category in feed order, an exact repeat once (#521).
+    categories = dict.fromkeys(t for t in ((c.text or "").strip() for c in prog_el.findall("category")) if t)
     # The first web (http/https) icon: a feed can list others first
     # (file:, data:), which are never art Jellyfin can fetch.
     icon_url = next((src for src in ((i.get("src") or "").strip() for i in prog_el.findall("icon"))
@@ -138,7 +187,7 @@ def _programme_dict(prog_el, channel_id: str) -> Optional[dict]:
         "description": desc_el.text if desc_el is not None else None,
         "start": start,
         "stop": stop,
-        "category": cat_el.text if cat_el is not None else None,
+        "category": CATEGORY_SEP.join(categories) or None,
         "icon_url": icon_url,
     }
 
@@ -152,6 +201,7 @@ def parse_xmltv(content: str) -> tuple[list[dict], list[dict]]:
         programs: [{"channel_id": str, "title": str, "sub_title": str|None,
                      "description": str|None, "start": datetime, "stop": datetime,
                      "category": str|None, "icon_url": str|None}]
+        category: one or more, joined by CATEGORY_SEP.
     """
     # Harden against XXE / entity-expansion: reject DOCTYPE/ENTITY in prologue.
     _reject_doctype_bytes(content[:4096].encode("utf-8", errors="ignore"))
