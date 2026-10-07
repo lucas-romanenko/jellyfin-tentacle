@@ -24,6 +24,7 @@ from datetime import datetime
 from typing import Callable, Iterable, Optional
 
 import requests
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from models.database import DownloadRequest, Series, get_setting
@@ -381,6 +382,9 @@ def _lidarr_defaults(db: Session) -> dict:
     return {"root": root, "quality": int(quality), "metadata": int(metadata)}
 
 
+_LANDS_LATER = "If Lidarr adds the album after all, Tentacle pins the original and searches for it."
+
+
 def _added_after_all(client, rgid: str) -> Optional[dict]:
     """The album, if an add whose answer failed landed in Lidarr anyway."""
     from services.lidarr import LidarrError
@@ -388,6 +392,20 @@ def _added_after_all(client, rgid: str) -> Optional[dict]:
         return client.album_by_mbid(rgid)
     except LidarrError:
         return None
+
+
+def _mark_requested(db: Session, library, album: dict, user_id: Optional[int], choice: Optional[dict]):
+    row = library.upsert_album(db, album)
+    row.monitored = True
+    row.requested_by = user_id
+    row.requested_at = datetime.utcnow()
+    row.category = ""
+    row.verdict = {"state": "Requested: pinning the original release…"}
+    # Owed until finish_request has pinned and searched; picked up again after a
+    # restart and by the daily check (jobs.finish_pending_requests).
+    row.request_pending, row.request_choice = True, choice
+    db.commit()
+    return row
 
 
 def request_album(db: Session, rgid: str, *, user_id: Optional[int], via: str,
@@ -439,27 +457,32 @@ def request_album(db: Session, rgid: str, *, user_id: Optional[int], via: str,
                 # takes Lidarr longer than the timeout, or Lidarr restarts mid-add.
                 album = _added_after_all(client, rgid)
                 if not album:
-                    raise
+                    if e.status and 400 <= e.status < 500:
+                        raise   # Lidarr refused it: nothing was added
+                    # Not listed yet, but the add may still commit (#431): owed for a while.
+                    jobs.owe_add(db, rgid, found, user_id, choice)
+                    logger.info(f"[Request] album {rgid} via {via}: Lidarr's answer failed ({e.message}) "
+                                "and it doesn't list the album yet; will look for it again")
+                    why = e.message if e.message.endswith((".", "?")) else e.message + "."
+                    raise RequestRefused(f"{why} {_LANDS_LATER}", 502)
                 logger.info(f"[Request] album {rgid} via {via}: Lidarr's answer failed ({e.message}), "
                             "but the album is in Lidarr: carrying on")
             if not album or not album.get("id"):
-                raise RequestRefused("Lidarr accepted the album but doesn't list it yet. Try again in a minute.")
+                jobs.owe_add(db, rgid, found, user_id, choice)
+                raise RequestRefused(f"Lidarr accepted the album but doesn't list it yet. {_LANDS_LATER}")
         elif not album.get("monitored"):
             client.set_monitored([album["id"]], True)
             logger.info(f"[Request] album {rgid} via {via}: already in Lidarr, now monitored")
     except LidarrError as e:
         raise RequestRefused(e.message, 502)
 
-    row = library.upsert_album(db, album)
-    row.monitored = True
-    row.requested_by = user_id
-    row.requested_at = datetime.utcnow()
-    row.category = ""
-    row.verdict = {"state": "Requested: pinning the original release…"}
-    # Owed until finish_request has pinned and searched; picked up again after a
-    # restart and by the daily check (jobs.finish_pending_requests).
-    row.request_pending, row.request_choice = True, choice
-    db.commit()
+    try:
+        row = _mark_requested(db, library, album, user_id, choice)
+    except IntegrityError:
+        # The same album requested twice at once (a double click, the dashboard and
+        # Jellyfin, two users): the other request wrote its row first. Use that row.
+        db.rollback()
+        row = _mark_requested(db, library, album, user_id, choice)
     worker.submit(jobs.finish_request(album["id"], rgid, choice), worker.URGENT, f"request {album.get('title')}")
     return {"status": "requested", "added_to_lidarr": added, "title": album.get("title"),
             "artist": (album.get("artist") or {}).get("artistName") or row.artist_name}

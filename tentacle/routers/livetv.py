@@ -27,6 +27,8 @@ import hashlib
 import logging
 import re
 import threading
+from array import array
+from collections import deque
 
 import httpx
 from datetime import datetime, timedelta
@@ -112,7 +114,9 @@ async def _send_checked(client, url: str, headers: dict, guard=None):
         if not location:
             raise HTTPException(502, "Redirect without Location header")
         current = urljoin(current, location)
-        if not guard(current):
+        # The guard resolves DNS with a blocking getaddrinfo: off the event
+        # loop, so a resolver that hangs doesn't freeze every stream (#464).
+        if not await asyncio.to_thread(guard, current):
             logger.warning(f"[LiveTV] Blocked redirect to non-public host: {current}")
             raise HTTPException(502, "Stream redirect points to a non-public host")
     raise HTTPException(502, "Too many redirects")
@@ -234,6 +238,153 @@ async def _decidable_start(pieces, need: int = 564):
         yield head
 
 
+# #368: many panels open every raw TS connection with their buffer, ~20 s
+# behind live: packets an earlier connection already delivered, byte for byte.
+# Forwarded again, they repeated in the recording at every re-dial (on a
+# "newest connection wins" account every ~13 s: files 1.7-2.6x their content,
+# time jumping back at each reconnect). _ReplaySplicer joins a re-dialled
+# connection right after the last byte sent, but only when that is proven:
+# every packet it drops equals the packet sent at that place (#520: a provider
+# that loops aired packets verbatim can repeat a frame start that was sent
+# right after packets that never were). Anything else goes out as it comes
+# (duplicates at worst, never a loss).
+_SPLICE_HOLD_BYTES = 32 * 1024 * 1024   # the most of a replay held: half a client's byte slack
+_SPLICE_HOLD_SECONDS = 30.0             # the longest the output pauses for one
+_SPLICE_DECIDE_PACKETS = 2048           # the first frame start must come within this
+_SPLICE_INDEX_MAX = 16384               # frame starts remembered (minutes of a channel)
+
+
+def _ts_frame_start(pkt) -> bool:
+    """A TS packet that starts a video or audio PES carrying a timestamp: the
+    first packet of a frame. Its bytes occur once in a stream (the PTS moves
+    on), unlike tables, null packets or a silent frame's payload."""
+    if pkt[0] != 0x47 or not pkt[1] & 0x40 or not pkt[3] & 0x10:
+        return False
+    i = 4 + (1 + pkt[4] if pkt[3] & 0x20 else 0)
+    return (i + 13 <= 188 and pkt[i:i + 3] == b"\x00\x00\x01"
+            and (0xC0 <= pkt[i + 3] <= 0xEF or pkt[i + 3] == 0xBD)
+            and pkt[i + 6] & 0xC0 == 0x80 and bool(pkt[i + 7] & 0x80))
+
+
+class _ReplaySplicer:
+    """What a raw TS stream sent (its frame starts and where they went), and
+    the judging of a re-dialled connection against it.
+
+    After a re-dial the new connection is held until its first frame start.
+    If that packet was sent before, at output offset o, the connection is a
+    replay that should reach the end of what was sent at sent_total - o bytes
+    past it. It is held up to that point, every frame start on the way must
+    sit exactly where it was sent (a gap in between shifts them), and every
+    packet before the join point must equal the one sent at that place (a
+    hash per packet sent, kept as far back as a hold reaches). Then the held
+    replay is dropped and the stream goes on from there. Anything else (a
+    first frame never sent: a real gap or no replay; a replay that differs,
+    is too large or too slow; a break before the join) releases what was held."""
+
+    def __init__(self, channel_id: int, health: dict):
+        self.channel_id, self.health = channel_id, health
+        self.sent_total = 0
+        self._index: dict = {}          # frame-start packet -> where it was sent (the newest)
+        self._order = deque()           # (offset, packet), oldest first
+        # hash(packet) of every packet sent, by packet number modulo its size
+        self._ring = array("q", bytes(8 * (_SPLICE_HOLD_BYTES // 188 + 1)))
+        self._breaks = deque([0])       # where a connection not joined began in the output
+        self._hold = None               # the re-dialled connection's bytes while it is judged
+
+    def sent(self, data: bytes) -> None:
+        """Whole packets that went out, in order."""
+        base, ring, size = self.sent_total, self._ring, len(self._ring)
+        p = base // 188
+        for i in range(0, len(data) - 187, 188):
+            key = data[i:i + 188]
+            ring[p % size] = hash(key)
+            p += 1
+            if data[i + 1] & 0x40 and _ts_frame_start(key):
+                self._index[key] = base + i
+                self._order.append((base + i, key))
+        self.sent_total += len(data)
+        # Older than a hold could reach back to: never a join point again.
+        floor = self.sent_total - _SPLICE_HOLD_BYTES
+        while self._order and (len(self._order) > _SPLICE_INDEX_MAX or self._order[0][0] < floor):
+            off, key = self._order.popleft()
+            if self._index.get(key) == off:
+                del self._index[key]
+        while len(self._breaks) > 1 and self._breaks[0] < floor - _SPLICE_DECIDE_PACKETS * 188:
+            self._breaks.popleft()
+
+    def begin(self, now: float, outage: float) -> None:
+        """A re-dialled connection starts delivering (its partial first packet trimmed)."""
+        self._hold, self._scan, self._first, self._join = bytearray(), 0, None, None
+        self._checked = 0               # held packets found equal to the ones sent there
+        self._since, self._outage = now, outage
+
+    def feed(self, piece: bytes, now: float) -> bytes:
+        """The connection's next bytes; returns what goes out now."""
+        if self._hold is None:
+            return piece
+        self._hold += piece
+        hold = self._hold
+        if hold[:1] != b"G":
+            return self._release("not MPEG-TS")
+        while self._scan + 188 <= len(hold) and (self._join is None or self._scan < self._join):
+            n = self._scan
+            self._scan += 188
+            if not (hold[n + 1] & 0x40 and _ts_frame_start(hold[n:n + 188])):
+                if self._first is None and self._scan >= _SPLICE_DECIDE_PACKETS * 188:
+                    return self._release("no frame start to join on")
+                continue
+            sent_at = self._index.get(bytes(hold[n:n + 188]))
+            if self._first is None:
+                if sent_at is None:
+                    return self._release("it starts with a frame not sent before: a gap, or no replay")
+                # What came before that frame (tables, the end of the previous
+                # frame) is dropped too: it must have gone out right before it,
+                # not be cut off by an earlier connection's start (and below,
+                # be the very packets sent there).
+                if any(sent_at - n < b <= sent_at for b in self._breaks):
+                    return self._release("what precedes its first frame was not sent")
+                self._first = (n, sent_at)
+                self._join = n + self.sent_total - sent_at
+                if self._join > _SPLICE_HOLD_BYTES:
+                    return self._release(f"a replay of {self._join / 1e6:.0f} MB is too large to hold")
+            elif sent_at != self._first[1] + n - self._first[0]:
+                return self._release("its frames are not where they were sent")
+        if self._join is not None:
+            # Every packet dropped must be the one sent at that place (#520):
+            # held packet k was output packet sent_total/188 - join/188 + k.
+            # Checked as it arrives, so a large replay isn't hashed at once.
+            ring, size = self._ring, len(self._ring)
+            at = self.sent_total // 188 - self._join // 188
+            upto = min(len(hold), self._join) // 188
+            for k in range(self._checked, upto):
+                if hash(bytes(hold[k * 188:k * 188 + 188])) != ring[(at + k) % size]:
+                    return self._release("the bytes before the join point differ")
+            self._checked = upto
+        if self._join is not None and len(hold) >= self._join:
+            out = bytes(hold[self._join:])
+            self.health["replays_joined"] += 1
+            self.health["replay_bytes_skipped"] += self._join
+            self.health["_covered_seconds"] = self.health.get("_covered_seconds", 0.0) + self._outage
+            logger.info(f"[LiveTV] Raw stream for channel {self.channel_id}: rejoined where it "
+                        f"stopped, {self._join / 1e6:.1f} MB the provider sent again skipped")
+            self._hold = None
+            return out
+        if now - self._since > _SPLICE_HOLD_SECONDS:
+            return self._release(f"no join point within {_SPLICE_HOLD_SECONDS:.0f}s")
+        return b""
+
+    def abort(self) -> bytes:
+        """The connection ended while it was being judged: what it held goes out."""
+        return self._release("the connection ended before the join point") if self._hold is not None else b""
+
+    def _release(self, why: str) -> bytes:
+        out, self._hold = bytes(self._hold), None
+        self._breaks.append(self.sent_total)
+        logger.info(f"[LiveTV] Raw stream for channel {self.channel_id}: re-dial not joined ({why}); "
+                    f"sent as it came")
+        return out
+
+
 def _raw_media_type(content_type: str) -> str:
     """What the tuner is told a raw stream is: the provider's type, unless it
     is missing or names text (an error page's label on a stream that turned
@@ -247,6 +398,10 @@ def _raw_media_type(content_type: str) -> str:
 # the CHANNEL url again, which hands out a fresh token -- at most
 # _MAX_RERESOLVE times in a row without a segment arriving in between;
 # after that the account really is refusing and the stream ends as before.
+# Except a 407 from the channel URL itself on a RECORDING: this provider
+# family answers 407 for an ended session for a few seconds while the token
+# is renewed, so it is waited out like a refusal, as the raw path does
+# (_raw_retryable). 401/403 there still end it: the login is refused.
 _TOKEN_EXPIRED_STATUS = {401, 403, 404, 407, 410}
 _MAX_RERESOLVE = 3
 # #184: a running HLS stream refused (429/509) for _REVIVE_AFTER s in a row
@@ -1247,7 +1402,9 @@ def _new_health() -> dict:
                                           # requests that ended in a success
             "reconnecting_seconds": 0.0,  # time spent with the provider failing
             "segments_skipped": 0,        # HLS: segments that never arrived
-            "errors": 0}                  # failed requests that were retried
+            "errors": 0,                  # failed requests that were retried
+            "replays_joined": 0,          # raw TS: reconnects joined where the stream stopped (#368)
+            "replay_bytes_skipped": 0}    # what the provider sent again on those
 
 
 def _stream_ended(channel_id: int, entry: dict, recording: bool, hls: bool = False) -> None:
@@ -1278,18 +1435,27 @@ def _stream_ended(channel_id: int, entry: dict, recording: bool, hls: bool = Fal
                "reconnecting_seconds": round(h["reconnecting_seconds"], 1),
                "segments_skipped": h["segments_skipped"], "errors": h["errors"],
                "ended_on_error": bool(h.get("ended_on_error")),
-               "revives": h.get("revives", 0)}
+               "revives": h.get("revives", 0),
+               "replays_joined": h.get("replays_joined", 0),
+               "replay_bytes_skipped": h.get("replay_bytes_skipped", 0)}
     _recent_streams.append(summary)
     del _recent_streams[:-_RECENT_STREAMS_MAX]
-    # A raw TS reconnect is always a gap. An HLS "interruption" can be one
-    # segment retried in place within the playlist window -- nothing lost --
-    # so for HLS only a skipped segment or a second or more of waiting counts.
-    damaged = ((h["reconnects"] and not hls) or h["segments_skipped"]
-               or h["reconnecting_seconds"] >= 1.0 or h.get("ended_on_error"))
+    # A raw TS reconnect is a gap unless it was joined where the stream
+    # stopped (#368): then the provider's buffer covered the wait. An HLS
+    # "interruption" can be one segment retried in place within the playlist
+    # window -- nothing lost -- so for HLS only a skipped segment or a second
+    # or more of waiting counts.
+    joined = h.get("replays_joined", 0)
+    uncovered = h["reconnecting_seconds"] - h.get("_covered_seconds", 0.0)
+    damaged = ((h["reconnects"] > joined and not hls) or h["segments_skipped"]
+               or uncovered >= 1.0 or h.get("ended_on_error"))
     what = "recording" if recording else "stream"
     text = (f"{h['reconnects']} interruption(s) recovered, {h['reconnecting_seconds']:.0f}s waiting "
             f"on the provider, {h['segments_skipped']} segment(s) skipped, "
             f"{h['errors']} failed request(s)")
+    if joined:
+        text += (f", {joined} rejoined where it stopped "
+                 f"({h.get('replay_bytes_skipped', 0) / 1e6:.0f} MB sent again by the provider skipped)")
     if h.get("revives"):
         text += f", {h['revives']} fresh resolve(s) of a refused session"
     if h.get("ended_on_error"):
@@ -1733,6 +1899,7 @@ def save_live_provider(body: LiveProviderConfig, db: Session = Depends(get_db)):
         )
         db.add(provider)
     else:
+        before = _xtream_login(provider)
         if body.name is not None:
             provider.name = body.name
         if body.provider_type is not None:
@@ -1751,6 +1918,7 @@ def save_live_provider(body: LiveProviderConfig, db: Session = Depends(get_db)):
             provider.user_agent = body.user_agent
         if body.live_tv_enabled is not None:
             provider.live_tv_enabled = body.live_tv_enabled
+        rewrite_xtream_channel_urls(provider, before, db)
 
     db.commit()
     db.refresh(provider)
@@ -2367,28 +2535,65 @@ def _sync_groups(provider_id: int, categories: list[dict], db: Session, channel_
     update_counts = channel_counts is not None
     if channel_counts is None:
         channel_counts = {}
-    existing = {
+    by_name = {
         g.name: g
         for g in db.query(LiveChannelGroup).filter(LiveChannelGroup.provider_id == provider_id).all()
     }
 
+    # Xtream category names aren't unique, but a group is (provider, name)
+    # with one category id (#462). Every category gets a group of its own:
+    # the one it already has, else its name if no other category has that
+    # name (the first listed wins; a group still follows its category to a
+    # new id), else "NAME (id)", stable when the provider reorders its list.
+    cats = {}
     for cat in categories:
-        name = cat.get("category_name", "")
-        cat_id = str(cat.get("category_id", ""))
-        count = channel_counts.get(cat_id, 0)
-        if name in existing:
-            existing[name].category_id = cat_id
-            if update_counts:
-                existing[name].channel_count = count
-        else:
-            db.add(LiveChannelGroup(
-                provider_id=provider_id,
-                name=name,
-                category_id=cat_id,
-                enabled=False,
-                channel_count=count,
-            ))
+        cats.setdefault(str(cat.get("category_id", "")), cat.get("category_name", ""))
+
+    claimed = set()
+    assigned = {}
+    for cat_id, name in cats.items():
+        for candidate in _group_names(name, cat_id):
+            g = by_name.get(candidate)
+            if g is None:
+                if candidate == name:
+                    continue
+                break
+            if g.category_id == cat_id and g.name not in claimed:
+                assigned[cat_id] = g
+                claimed.add(g.name)
+                break
+
+    for cat_id, name in cats.items():
+        if cat_id in assigned:
+            continue
+        for candidate in _group_names(name, cat_id):
+            g = by_name.get(candidate)
+            if g is None:
+                g = LiveChannelGroup(provider_id=provider_id, name=candidate,
+                                     category_id=cat_id, enabled=False)
+                db.add(g)
+                by_name[candidate] = g
+            elif candidate in claimed or (candidate != name and g.category_id != cat_id):
+                continue
+            g.category_id = cat_id
+            assigned[cat_id] = g
+            claimed.add(candidate)
+            break
+
+    for cat_id, g in assigned.items():
+        if update_counts or g.channel_count is None:
+            g.channel_count = channel_counts.get(cat_id, 0)
     db.flush()
+
+
+def _group_names(name: str, cat_id: str):
+    """The names a category's group may have, in order of preference."""
+    yield name
+    yield f"{name} ({cat_id})"
+    n = 2
+    while True:
+        yield f"{name} ({cat_id}) {n}"
+        n += 1
 
 
 # A provider's separator rows: "##### EVENTS #####", "=== SPORTS ===", "-----".
@@ -2489,6 +2694,41 @@ def _upsert_channels(
 
     db.flush()
     return {"new": new_count, "updated": updated_count, "total": len(seen_ids)}
+
+
+def _xtream_login(provider) -> tuple:
+    return (provider.server_url or "", provider.username or "", provider.password or "")
+
+
+def rewrite_xtream_channel_urls(provider, before: tuple, db: Session) -> int:
+    """After a provider save, point its Xtream channels at the saved server
+    and login (#469). An Xtream channel's URL carries both
+    ({server}/live/{user}/{pass}/{id}.{ext}), and a save changes only the
+    provider row: without this, every tune and recording kept the old login
+    or host until a channel sync. Writes what a sync with the new values
+    would, keeping each channel's stream format; no request to the provider.
+    `before` is _xtream_login(provider) from before the save. Doesn't commit.
+    Returns the number of channels rewritten."""
+    from services.xtream_client import live_stream_url
+
+    server, username, password = after = _xtream_login(provider)
+    if after == before or not server or (provider.provider_type or "xtream") != "xtream":
+        return 0
+    count = 0
+    for ch in db.query(LiveChannel).filter(LiveChannel.provider_id == provider.id).all():
+        # Only URLs a sync built: an M3U row left from an earlier provider
+        # type has no /live/<user>/<pass>/<stream_id>.<ext> to rebuild.
+        m = re.search(rf"/live/.+/{re.escape(ch.stream_id or '')}\.(\w+)$", ch.stream_url or "")
+        if not ch.stream_id or not m:
+            continue
+        url = live_stream_url(server, username, password, ch.stream_id, m.group(1))
+        if url != ch.stream_url:
+            ch.stream_url = url
+            ch.updated_at = datetime.utcnow()
+            count += 1
+    if count:
+        logger.info(f"[LiveTV] {provider.name}: {count} channel URLs now use the saved server and login")
+    return count
 
 
 # A provider that answers an M3U request with a truncated body, a maintenance
@@ -2618,6 +2858,21 @@ def _upsert_channels_from_m3u(
             del existing[row.m3u_key or row.stream_id]
             row.m3u_key = sids[0]
             existing[sids[0]] = row
+
+    # A name with a comma was read by older builds as the text after its last
+    # comma ("UFC 300, Pereira vs Hill" stored as "Pereira vs Hill", #525), so
+    # its row's key hashes that cut name. Same URL, cut name: it is that row;
+    # move it to the whole name's key and keep its stream_id, as above. Two
+    # rows cut to the same name are told apart by their URLs.
+    for ch in parsed_channels:
+        sid = _m3u_stable_id(ch["name"], ch["stream_url"])
+        if sid in existing or "," not in ch["name"]:
+            continue
+        old = _m3u_stable_id(ch["name"].rsplit(",", 1)[-1].strip(), ch["stream_url"])
+        if old in existing and old not in incoming:
+            row = existing.pop(old)
+            row.m3u_key = sid
+            existing[sid] = row
 
     for ch in parsed_channels:
         name = ch["name"]
@@ -2750,6 +3005,85 @@ def _update_group_counts(provider_id: int, db: Session):
 # ─── EPG sync ───────────────────────────────────────────────────────────────
 
 
+def _epg_provider_data(provider, all_channels) -> dict:
+    """What _run_epg_sync_background is given for one provider."""
+    return {
+        "id": provider.id,
+        "provider_type": provider.provider_type or "xtream",
+        "server_url": provider.server_url,
+        "username": provider.username,
+        "password": provider.password,
+        "user_agent": provider.user_agent or "TiviMate/4.7.0 (Linux; Android 12)",
+        "epg_url": provider.epg_url,
+        "channels": [
+            {"stream_id": ch.stream_id, "epg_channel_id": ch.epg_channel_id, "name": ch.name}
+            for ch in all_channels
+        ],
+        "enabled_count": sum(1 for ch in all_channels if ch.enabled),
+    }
+
+
+def _epg_feed_url(provider_data: dict) -> str | None:
+    """The XMLTV feed a guide sync reads: the provider's EPG URL, else Xtream's own."""
+    if provider_data.get("epg_url"):
+        return provider_data["epg_url"]
+    if provider_data["provider_type"] != "xtream":
+        return None
+    from services.xtream_client import XtreamClient
+    client = XtreamClient(
+        server=provider_data["server_url"],
+        username=provider_data["username"],
+        password=provider_data["password"],
+        user_agent=provider_data["user_agent"],
+    )
+    try:
+        return client.get_xmltv_url()
+    finally:
+        client.close()
+
+
+def _epg_channel_info(rows) -> list:
+    return [{"id": r.id, "name": r.name, "tvg_id": r.epg_channel_id,
+             "override": r.epg_id_override, "enabled": bool(r.enabled)} for r in rows]
+
+
+def _epg_sync_inputs(epg_url: str, chan_info: list) -> str | None:
+    """Everything a guide sync reads, as one hash: the feed URL, the cached
+    feed file, and each channel's override, tvg-id and name. None when the
+    feed is not in the fresh disk cache: a sync would download it again."""
+    import hashlib
+    import json
+    import os
+    from services.xmltv import _get_cache_path, _is_cache_fresh
+    path = _get_cache_path(epg_url)
+    try:
+        if not _is_cache_fresh(path):
+            return None
+        st = os.stat(path)
+    except OSError:
+        return None
+    channels = sorted((c["id"], c["name"], c["tvg_id"], c["override"]) for c in chan_info)
+    blob = json.dumps([epg_url, st.st_mtime_ns, st.st_size, channels])
+    return hashlib.sha256(blob.encode()).hexdigest()
+
+
+def _epg_resync_useless(db: Session, provider, missing: set) -> bool:
+    """True when a guide sync now would read exactly what the last successful
+    one read, and that one already left every id in `missing` without
+    programmes: running it again can't give those channels a guide (#466)."""
+    import json
+    try:
+        last = json.loads(get_setting(db, f"livetv_epg_synced_{provider.id}", "") or "null")
+    except ValueError:
+        return False
+    if not isinstance(last, dict) or not missing <= set(last.get("empty") or ()):
+        return False
+    rows = db.query(LiveChannel).filter(LiveChannel.provider_id == provider.id).all()
+    epg_url = _epg_feed_url(_epg_provider_data(provider, rows))
+    inputs = _epg_sync_inputs(epg_url, _epg_channel_info(rows)) if epg_url else None
+    return inputs is not None and inputs == last.get("inputs")
+
+
 @router.post("/api/live/sync-epg/{provider_id}", dependencies=_admin)
 def sync_epg(provider_id: int, db: Session = Depends(get_db)):
     """Sync EPG data for enabled channels only (runs in background)."""
@@ -2775,22 +3109,7 @@ def sync_epg(provider_id: int, db: Session = Depends(get_db)):
     if not all_channels:
         return {"success": False, "message": "No channels synced yet — run channel sync first"}
 
-    provider_type = provider.provider_type or "xtream"
-
-    provider_data = {
-        "id": provider.id,
-        "provider_type": provider_type,
-        "server_url": provider.server_url,
-        "username": provider.username,
-        "password": provider.password,
-        "user_agent": provider.user_agent or "TiviMate/4.7.0 (Linux; Android 12)",
-        "epg_url": provider.epg_url,
-        "channels": [
-            {"stream_id": ch.stream_id, "epg_channel_id": ch.epg_channel_id, "name": ch.name}
-            for ch in all_channels
-        ],
-        "enabled_count": enabled_count,
-    }
+    provider_data = _epg_provider_data(provider, all_channels)
 
     _set_sync_status(provider_id, {
         "phase": "epg",
@@ -2821,8 +3140,7 @@ def _run_epg_sync_background(provider_data: dict):
             # the feed's own channel list is in hand (#141).
             from services.epg_match import resolve_guide_ids
             rows = db.query(LiveChannel).filter(LiveChannel.provider_id == pid).all()
-            chan_info = [{"id": r.id, "name": r.name, "tvg_id": r.epg_channel_id,
-                          "override": r.epg_id_override, "enabled": bool(r.enabled)} for r in rows]
+            chan_info = _epg_channel_info(rows)
             epg_ids = ({(c["override"] or "").strip() for c in chan_info}
                        | {(c["tvg_id"] or "").strip() for c in chan_info}) - {""}
             if not chan_info:
@@ -2838,19 +3156,7 @@ def _run_epg_sync_background(provider_data: dict):
                 resolved.update(resolve_guide_ids(chan_info, feed_channels))
                 return {r["guide_id"] for r in resolved.values() if r["guide_id"]}
 
-            # Determine XMLTV URL
-            epg_url = provider_data.get("epg_url")
-            if not epg_url and provider_data["provider_type"] == "xtream":
-                from services.xtream_client import XtreamClient
-                client = XtreamClient(
-                    server=provider_data["server_url"],
-                    username=provider_data["username"],
-                    password=provider_data["password"],
-                    user_agent=provider_data["user_agent"],
-                )
-                epg_url = client.get_xmltv_url()
-                client.close()
-
+            epg_url = _epg_feed_url(provider_data)
             if not epg_url:
                 _set_sync_status(pid, {
                     "phase": "epg", "status": "error", "progress": 0,
@@ -2878,6 +3184,7 @@ def _run_epg_sync_background(provider_data: dict):
                     pass
 
             programs = None
+            inputs = None
             last_err = None
             for attempt in range(1, 4):
                 try:
@@ -2892,6 +3199,8 @@ def _run_epg_sync_background(provider_data: dict):
                         resolve_channels=_resolve,
                     )
                     if programs:
+                        # The feed file just read, before anything can replace it.
+                        inputs = _epg_sync_inputs(epg_url, chan_info)
                         break
                     last_err = "provider returned no programs for our channels"
                     logger.warning(f"[LiveTV] EPG attempt {attempt}/3: {last_err}")
@@ -2937,6 +3246,10 @@ def _run_epg_sync_background(provider_data: dict):
             # Replace guide data — quick transaction, no network inside it
             if resolved:
                 with_programmes = {p["channel_id"] for p in programs}
+                # The parser kept programmes for every name match, including
+                # the ones dropped below: their ids go into the delete set too,
+                # so rows an earlier sync stored under them can't collide (#467).
+                matched_ids = {v["guide_id"] for v in resolved.values() if v["guide_id"]}
                 for r in rows:
                     match = (resolved.get(r.id) or {}).get("name_match")
                     tvg = (r.epg_channel_id or "").strip()
@@ -2948,7 +3261,20 @@ def _run_epg_sync_background(provider_data: dict):
                         resolved[r.id] = {**resolved[r.id], "method": "tvg-id", "guide_id": tvg,
                                           "name_match": None}
                     r.epg_name_match = match
-                provider_channel_epg_ids |= {v["guide_id"] for v in resolved.values() if v["guide_id"]}
+                guide_ids = {v["guide_id"] for v in resolved.values() if v["guide_id"]}
+                provider_channel_epg_ids |= matched_ids | guide_ids
+                # A dropped match is no channel's guide: its programmes aren't kept.
+                unused = matched_ids - guide_ids - epg_ids
+                if unused:
+                    programs = [p for p in programs if p["channel_id"] not in unused]
+            if provider_channel_epg_ids:
+                # Programmes are keyed by guide id across providers: an id
+                # another provider's channel uses as its guide is deleted only
+                # when this sync stores it again (#516).
+                gid = _guide_id_expr()
+                others = {row[0] for row in db.query(gid).filter(
+                    LiveChannel.provider_id != pid, gid.isnot(None)).distinct()}
+                provider_channel_epg_ids -= others - {p["channel_id"] for p in programs}
             if provider_channel_epg_ids:
                 db.query(EPGProgram).filter(
                     EPGProgram.channel_id.in_(provider_channel_epg_ids)
@@ -2984,16 +3310,29 @@ def _run_epg_sync_background(provider_data: dict):
                 db.add_all(batch)
                 db.flush()
 
+            # What this sync read, and the guide ids it left empty: refresh-guide
+            # re-runs a sync only when that could fill one of them (#466). Read
+            # from the rows before the coverage setting below commits: a commit
+            # expires them, and a channel removed meanwhile (an M3U playlist sync
+            # can do that) would then fail the whole sync on reload (#518).
+            import json
+            kept = {p["channel_id"] for p in programs}
+            synced_record = json.dumps({
+                "inputs": inputs,
+                "empty": sorted({r.guide_epg_id for r in rows} - {None} - kept),
+            })
+
             # How many channels actually have a guide, and why the rest do not:
             # "success" alone hid that most channels had nothing (#141).
             coverage_note = ""
             if resolved:
-                import json
                 from services.epg_match import coverage_report, coverage_summary
-                report = coverage_report(chan_info, resolved, {p["channel_id"] for p in programs})
+                report = coverage_report(chan_info, resolved, kept)
                 report["at"] = datetime.utcnow().isoformat() + "Z"
                 set_setting(db, f"livetv_epg_coverage_{pid}", json.dumps(report))
                 coverage_note = f" — {coverage_summary(report)}"
+
+            set_setting(db, f"livetv_epg_synced_{pid}", synced_record)
 
             db.commit()
             log_activity(db, "epg_sync", f"EPG sync: {inserted} programs for {total} channels "
@@ -3346,6 +3685,11 @@ def refresh_jellyfin_guide(db: Session = Depends(get_db)):
         }
         missing = enabled_epg_ids - epg_with_data
         if missing:
+            provider = db.query(Provider).filter(Provider.id == pid).first()
+            if provider and _epg_resync_useless(db, provider, missing):
+                logger.info(f"[LiveTV] {len(missing)} enabled channels of provider {pid} have no guide in its feed; "
+                            f"nothing changed since the last EPG sync, not syncing again")
+                continue
             from services.provider_activity import recording_protected
             if recording_protected(db):
                 logger.warning(f"[LiveTV] {len(missing)} enabled channels have no EPG data, but a recording is "
@@ -3354,24 +3698,9 @@ def refresh_jellyfin_guide(db: Session = Depends(get_db)):
             logger.info(f"[LiveTV] {len(missing)} enabled channels missing EPG data for provider {pid} — triggering EPG sync")
             # Trigger EPG sync synchronously (inline, not background thread)
             # so Jellyfin gets fresh data when we refresh
-            provider = db.query(Provider).filter(Provider.id == pid).first()
             if provider:
                 all_channels = db.query(LiveChannel).filter(LiveChannel.provider_id == pid).all()
-                enabled_count = sum(1 for ch in all_channels if ch.enabled)
-                provider_data = {
-                    "id": provider.id,
-                    "provider_type": provider.provider_type or "xtream",
-                    "server_url": provider.server_url,
-                    "username": provider.username,
-                    "password": provider.password,
-                    "user_agent": provider.user_agent or "TiviMate/4.7.0 (Linux; Android 12)",
-                    "epg_url": provider.epg_url,
-                    "channels": [
-                        {"stream_id": ch.stream_id, "epg_channel_id": ch.epg_channel_id, "name": ch.name}
-                        for ch in all_channels
-                    ],
-                    "enabled_count": enabled_count,
-                }
+                provider_data = _epg_provider_data(provider, all_channels)
                 # Close current DB session before background sync uses its own
                 db.close()
                 _run_epg_sync_background(provider_data)
@@ -3945,7 +4274,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
             # the worker reads it on its usual retry terms.
             for _hop in range(_MAX_VARIANT_HOPS):
                 variant = _select_hls_variant(playlist_text, playlist_base)
-                if not variant or not guard(variant):
+                if not variant or not await asyncio.to_thread(guard, variant):
                     break
                 placeholder = _placeholder_name(variant)
                 if placeholder:
@@ -4020,6 +4349,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
             health = status_entry["health"]
             dropped_at = None   # while re-dialling: when the data stopped
             redialled = False   # this connection came from a re-dial, not yet delivering
+            splicer = _ReplaySplicer(channel_id, health)   # #368: a re-dial's replay goes out once
             try:
                 while True:
                     opened_at = loop.time()
@@ -4058,9 +4388,12 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                                     # An outage recovered from: counted once
                                     # the fresh connection really delivers.
                                     redialled = False
+                                    outage = loop.time() - dropped_at
                                     health["reconnects"] += 1
-                                    health["reconnecting_seconds"] += loop.time() - dropped_at
+                                    health["reconnecting_seconds"] += outage
                                     dropped_at = None
+                                    if align:
+                                        splicer.begin(loop.time(), outage)
                             last_piece = loop.time()
                             if loop.time() - last_mark >= _RAW_MARK_EVERY:
                                 # Still delivering: an HLS stream on the same
@@ -4072,13 +4405,16 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                                 align = align and piece[:1] == b"G"
                             if failing_since is not None and loop.time() - opened_at >= HEALTHY_AFTER:
                                 failing_since, slept, backoff, backoff_cap = None, 0.0, 1.0, _BACKOFF_CAP
-                            pending += piece
+                            pending += splicer.feed(piece, loop.time())
                             if len(pending) >= 131072:
                                 cut = len(pending) - (len(pending) % 188) if align else len(pending)
                                 out, pending = pending[:cut], pending[cut:]
+                                if align:
+                                    splicer.sent(out)
                                 yield out
                     except httpx.HTTPError as e:
                         reason = str(e) or type(e).__name__
+                    pending += splicer.abort()
                     # When it last delivered is when the last bytes came, not the
                     # last periodic mark (up to _RAW_MARK_EVERY earlier): a waiting
                     # HLS stream judges "delivering" by it (fuzz seed 7173).
@@ -4089,6 +4425,8 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     # packets only; the tail of a cut packet is unusable.
                     cut = len(pending) - (len(pending) % 188) if align else len(pending)
                     if cut:
+                        if align:
+                            splicer.sent(pending[:cut])
                         yield pending[:cut]
                     # A recovery only if it delivered past HEALTHY_AFTER: an error
                     # page, nothing, or a packet and then silence until the close
@@ -4225,7 +4563,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
         # recording plus a new file. So wait transient failures out on a
         # growing delay and give up only after an unbroken run of them; a
         # status that will never fix itself still stops the stream at once.
-        RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504, 509}
+        # Which statuses are transient: _raw_retryable (see _is_retryable).
         FAILURE_BUDGET = failure_budget   # seconds of unbroken failure; 0 = until the client leaves
         BACKOFF_START = 1.0
         backoff_cap = _BACKOFF_CAP   # short while the tuner reader waits; longer after a 429/509
@@ -4241,21 +4579,21 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
         failing_since = None
         backoff = BACKOFF_START
         # guard() resolves the host with a blocking getaddrinfo. Called for
-        # every playlist line on every reload it puts N synchronous lookups on
-        # the event loop every few seconds per stream; one resolver stall would
-        # freeze every stream. The answer depends only on the origin, so resolve
-        # each origin once for the life of this stream.
+        # every playlist line on every reload it would put N lookups on every
+        # stream every few seconds. The answer depends only on the origin, so
+        # resolve each origin once for the life of this stream, in a worker
+        # thread: a resolver that hangs must not freeze every stream (#464).
         from urllib.parse import urlparse as _urlparse
         _origin_verdicts: dict = {}
 
-        def line_guard(url: str) -> bool:
+        async def line_guard(url: str) -> bool:
             try:
                 p = _urlparse(url)
                 key = (p.scheme, (p.hostname or "").lower(), p.port)
             except ValueError:
-                return guard(url)
+                return await asyncio.to_thread(guard, url)
             if key not in _origin_verdicts:
-                _origin_verdicts[key] = guard(url)
+                _origin_verdicts[key] = await asyncio.to_thread(guard, url)
             return _origin_verdicts[key]
         # When the playlist now in hand was read; reloads are timed from here.
         playlist_loaded_at = asyncio.get_running_loop().time()
@@ -4268,7 +4606,10 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
             if isinstance(exc, _ProviderPlaceholder):
                 return True
             if isinstance(exc, httpx.HTTPStatusError):
-                return exc.response.status_code in RETRYABLE_STATUS
+                # The same rule as the open and the raw re-dial: any 5xx,
+                # including 513 and Cloudflare's 520-524, is waited out. Ending
+                # on one cut running recordings for good (#298 on the raw path).
+                return _raw_retryable(exc.response.status_code)
             # Timeouts, resets and refused connections are all worth another go.
             return isinstance(exc, httpx.TransportError)
 
@@ -4492,6 +4833,14 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         st = e.response.status_code
                         if st in (401, 403, 407):
                             backoff_cap = _REFUSAL_BACKOFF_CAP
+                        if st == 407 and is_recording is not None and is_recording():
+                            # The channel URL itself answered 407: an ended
+                            # session while the token is renewed, not a refused
+                            # login. Not counted for a recording; waited out on
+                            # the refusal cap, as the raw path does (#298).
+                            reresolve_run -= 1
+                            await _backoff_sleep()
+                            return False
                         if counted and _gone_grace(st):
                             reresolve_run -= 1
                             backoff_cap = _REFUSAL_BACKOFF_CAP
@@ -4535,7 +4884,10 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 and three quick 1-2 s re-resolves ended a recording over a
                 7.5 s blip. It counts only after _GONE_GRACE of unbroken
                 404/410 (a channel really removed). Viewers keep the 3-try
-                rule; 401/403/407 are never graced."""
+                rule; 401/403/407 are never graced here -- a 407 from the
+                channel URL on a recording is waited out in _reresolve
+                instead (keyed on the channel URL's answer: the token URL's
+                407 that triggers every re-resolve must not be)."""
                 nonlocal gone_since
                 if status not in (404, 410) or not (is_recording is not None and is_recording()):
                     return False
@@ -4557,7 +4909,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     if hop == _MAX_VARIANT_HOPS:
                         logger.error(f"[LiveTV] Too many HLS variant hops for channel {channel_id}")
                         return
-                    if not line_guard(variant):
+                    if not await line_guard(variant):
                         logger.warning(
                             f"[LiveTV] Blocked HLS variant on non-public host for "
                             f"channel {channel_id}: {variant}")
@@ -4628,7 +4980,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         if media_seq is not None:
                             chunk_seq[chunk_url] = media_seq + uri_index
                         uri_index += 1
-                        if not line_guard(chunk_url):
+                        if not await line_guard(chunk_url):
                             logger.warning(f"[LiveTV] Skipping HLS chunk on non-public host for channel {channel_id}: {chunk_url}")
                             continue
                         chunk_urls.append(chunk_url)
@@ -4755,7 +5107,8 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                                     in_placeholder = True
                                     await _note_placeholder(channel_id, e.segment)
                                 break   # it will not turn into the channel in a second
-                            if attempt == CHUNK_RETRIES_IN_PLACE or not _is_retryable(e):
+                            if (attempt == CHUNK_RETRIES_IN_PLACE or _token_expired(e)
+                                    or not _is_retryable(e)):
                                 break
                             if _note_failure(e, "Chunk fetch"):
                                 return

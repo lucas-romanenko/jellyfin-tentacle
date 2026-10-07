@@ -16,6 +16,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from models.database import get_setting, TagRule, TentacleUser, DownloadRequest, Movie, Series
+from services.tagger import downloads_tag
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +129,13 @@ def _user_smartlists_path(db: Session, user_id: int) -> Path:
         raise ValueError(f"TentacleUser id={user_id} not found")
     base = Path(get_setting(db, "smartlists_path", "/data/smartlists"))
     return base / user.jellyfin_user_id
+
+
+def _user_display_name(db: Session, user_id: int) -> str:
+    """The user's name as the database has it now. A TentacleUser the session
+    loaded earlier (the nightly loads every user, then works through them for
+    minutes) still has the name from before a sign-in renamed them (#454)."""
+    return db.query(TentacleUser.display_name).filter(TentacleUser.id == user_id).scalar() or ""
 
 
 def _get_jellyfin_user_id(db: Session, user_id: int) -> str:
@@ -469,13 +477,13 @@ def get_desired_smartlists(db: Session, user_id: int = None) -> list:
 
     # Per-user downloads playlist — dynamic tag based on user display name
     if user_id is not None and toggles.get("builtin:my_downloads"):
-        req_user = db.query(TentacleUser).filter(TentacleUser.id == user_id).first()
-        if req_user:
+        user_name = _user_display_name(db, user_id)
+        if user_name:
             has_requests = db.query(DownloadRequest.id).filter(
                 DownloadRequest.user_id == user_id,
             ).first()
             if has_requests:
-                user_tag = f"{req_user.display_name}'s Downloads"
+                user_tag = downloads_tag(user_name)
                 if user_tag not in existing_tags:
                     smartlists.append({
                         "name": user_tag, "tag": user_tag,
@@ -720,9 +728,9 @@ def _enabled_toggle_names(db: Session, user_id: int) -> set:
             # Only "desired" while the user has a DownloadRequest (see
             # get_desired_smartlists) — deleting their last request must not
             # delete the enabled playlist.
-            user = db.query(TentacleUser).filter(TentacleUser.id == user_id).first()
-            if user:
-                names.add(f"{user.display_name}'s Downloads")
+            user_name = _user_display_name(db, user_id)
+            if user_name:
+                names.add(downloads_tag(user_name))
         elif key.startswith("source:"):
             parts = key.split(":")
             # source:<tag>:movies — rejoin the middle so a tag containing
@@ -735,6 +743,63 @@ def _enabled_toggle_names(db: Session, user_id: int) -> set:
                 elif kind == "series":
                     names.add(f"{tag} TV")
     return names
+
+
+def _is_downloads_config(name: str, config: dict) -> bool:
+    """Whether a SmartList config is a "<name>'s Downloads" as
+    get_desired_smartlists() builds it: one Tags expression on its own name."""
+    sets = config.get("ExpressionSets") or []
+    return (name.endswith("'s Downloads") and len(sets) == 1
+            and (sets[0] or {}).get("Expressions") == [
+                {"MemberName": "Tags", "Operator": "Contains", "TargetValue": name}])
+
+
+def _follow_downloads_rename(db: Session, user_id: int, wanted: set, existing: dict,
+                             jf_user_id: str, jellyfin_url: str, jellyfin_key: str) -> str:
+    """Rename a renamed user's "<old name>'s Downloads" to their current name
+    in place: same folder, same Jellyfin playlist id and entries, so the home
+    row and the hero stay on it (#454). Updates `existing`. Returns the old
+    name, or "" when there was nothing to rename.
+
+    The old name is one the sign-in that renamed them retired: the orphan
+    sweep used to delete that playlist and create an empty one under the new
+    name. Only Tentacle's own Jellyfin playlist is renamed (#152); a user's
+    own one keeps its name and stays linked."""
+    from services.tagger import retired_tags
+    user_name = _user_display_name(db, user_id)
+    if not user_name:
+        return ""
+    new = downloads_tag(user_name)
+    if new not in wanted or new in existing:
+        return ""
+    retired = retired_tags(db)
+    old_names = [n for n, (_, data) in existing.items()
+                 if n in retired and n not in wanted and _is_downloads_config(n, data)]
+    if len(old_names) != 1:
+        return ""
+    old = old_names[0]
+    folder, config = existing.pop(old)
+    config["Name"] = new
+    config["ExpressionSets"][0]["Expressions"] = [
+        {"MemberName": "Tags", "Operator": "Contains", "TargetValue": new}]
+    _atomic_write_json(folder / "config.json", config)
+    existing[new] = (folder, config)
+    logger.info(f"[SmartLists] User {user_id} was renamed: '{old}' is now '{new}'")
+    if jellyfin_url and jellyfin_key:
+        from services.jellyfin import JellyfinService
+        for entry in (config.get("UserPlaylists") or []):
+            pid = entry.get("JellyfinPlaylistId")
+            if not pid:
+                continue
+            # The config links it by id, so a playlist that keeps its old name
+            # in Jellyfin is still this user's Downloads and still filled.
+            try:
+                if not JellyfinService(jellyfin_url, jellyfin_key, jf_user_id).rename_tentacle_playlist(
+                        pid, new, jf_user_id):
+                    logger.warning(f"[SmartLists] Jellyfin playlist {pid} keeps the name '{old}'")
+            except Exception as e:
+                logger.warning(f"[SmartLists] Could not rename Jellyfin playlist {pid} to '{new}': {e}")
+    return old
 
 
 def playlist_names_still_made(db: Session, user_id: int) -> set:
@@ -802,6 +867,12 @@ def sync_smartlists(db: Session, user_id: int = None) -> dict:
     # One-time migration: fix built-in playlists stuck with ReleaseDate sort
     # that should default to DateCreated (created before default_sort was added)
     _migrate_builtin_sort_defaults(existing, smartlists_path)
+
+    # Playlists the user has explicitly enabled are protected even when they
+    # aren't in `desired` right now (see the orphan cleanup below).
+    protected_names = _enabled_toggle_names(db, user_id)
+    _follow_downloads_rename(db, user_id, {sl["name"] for sl in desired} | protected_names, existing,
+                             jf_user_id, jellyfin_url, jellyfin_key)
 
     # Playlists other users' configs own — never adopt one by name (see
     # _playlist_ids_of_other_users). Read once per sync, not once per playlist.
@@ -887,12 +958,11 @@ def sync_smartlists(db: Session, user_id: int = None) -> dict:
     # Clean up orphaned SmartList folders (deleted tag rules, disabled toggles, removed providers)
     desired_names = {sl["name"] for sl in desired}
 
-    # Playlists the user has explicitly enabled are protected even when they
-    # aren't in `desired` right now. `desired` is derived from current content,
-    # so a source with no rows this run (provider blip, partial sync, orphan
-    # sweep) drops out of it — and deleting the Jellyfin playlist + folder on
-    # that basis is irreversible and takes the user's home row with it.
-    protected_names = _enabled_toggle_names(db, user_id)
+    # Playlists the user has explicitly enabled (protected_names) are kept even
+    # when they aren't in `desired` right now. `desired` is derived from current
+    # content, so a source with no rows this run (provider blip, partial sync,
+    # orphan sweep) drops out of it — and deleting the Jellyfin playlist + folder
+    # on that basis is irreversible and takes the user's home row with it.
     orphaned = {
         name: (folder, data) for name, (folder, data) in existing.items()
         if name not in desired_names and name not in protected_names
@@ -1356,6 +1426,8 @@ def write_home_config(db: Session, user_id: int = None) -> dict:
         # Hero: preserve existing pick, remap if playlist was recreated, disable if gone
         if existing_hero and existing_hero.get("playlist_id") in current_ids:
             hero = existing_hero
+            # A playlist renamed in place (a renamed user's Downloads, #454)
+            hero["display_name"] = name_by_id.get(hero["playlist_id"], hero.get("display_name", ""))
         elif existing_hero and existing_hero.get("display_name") and existing_hero["display_name"] in id_by_name:
             # Hero playlist was recreated with a new ID — remap (unambiguous name only)
             new_id = id_by_name[existing_hero["display_name"]]

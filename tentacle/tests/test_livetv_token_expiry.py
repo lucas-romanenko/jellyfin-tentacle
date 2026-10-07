@@ -198,13 +198,17 @@ class TokenExpiry(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(list(range(len(got))), got)
 
     async def test_a_channel_that_keeps_refusing_still_ends(self):
+        # 401 (was 407): a 407 from the channel url is what this provider family
+        # answers for an ended session while a token is renewed, and a recording
+        # now waits it out as the raw path does (9a1175e, #298). A refused login
+        # still ends the stream. The 407 pair: test_livetv_hls_transient_refusals.
         panel = Panel(ttl=2)
         real_route = panel.route
 
         def route(url):
             if url == CHANNEL and panel.issued >= 1:
                 panel.log.append(url)
-                return _r(407, url)      # the account itself is refused now
+                return _r(401, url)      # the account itself is refused now
             return real_route(url)
         panel.route = route
         got, ended = await _stream(panel, segments=50, recording=True)
