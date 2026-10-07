@@ -295,18 +295,19 @@ public class TentacleHomeController : ControllerBase
         List<BaseItem> finalItems;
         if (_sectionCache.TryGetValue(sectionCacheKey, out var cachedSection) && DateTime.UtcNow < cachedSection.Expiry)
         {
+            // Re-checked per request against the user's current access (library and
+            // parental), so a library taken away while the row is cached is hidden at once.
             finalItems = cachedSection.Ids
                 .Select(id => _libraryManager.GetItemById(id))
                 .OfType<BaseItem>()
-                .Where(i => i.IsVisible(user))
+                .Where(i => i.IsVisibleStandalone(user))
                 .ToList();
         }
         else
         {
             // Group episodes by series
-            var grouped = playlist.GetManageableItems()
-                .Where(i => i.Item2.IsVisible(user))
-                .GroupBy(x => x.Item2 is Episode ep ? (BaseItem)ep.Series : x.Item2)
+            var grouped = VisibleEntries(playlist, user)
+                .GroupBy(x => x is Episode ep ? (BaseItem)ep.Series : x)
                 .Select(g => g.Key)
                 .Where(i => i != null)
                 .ToList();
@@ -363,6 +364,17 @@ public class TentacleHomeController : ControllerBase
 
         return Ok(new QueryResult<BaseItemDto>(dtos));
     }
+
+    /// <summary>
+    /// A playlist's entries this user may see, in playlist order: the same filter as
+    /// Jellyfin's <c>/Items?ParentId={playlist}</c>. <c>GetLinkedChildren(user)</c> keeps
+    /// only items from libraries the user has access to; <c>IsVisible</c> adds parental
+    /// rating and tags. <c>IsVisible</c> alone does not check library access, so a
+    /// shared or public playlist, or a list holding titles from a library the user
+    /// can't open, showed those titles in the row.
+    /// </summary>
+    private static IEnumerable<BaseItem> VisibleEntries(Playlist playlist, Jellyfin.Database.Implementations.Entities.User user)
+        => playlist.GetLinkedChildren(user).Where(i => i.IsVisible(user));
 
     /// <summary>
     /// Returns a version counter that increments whenever playlists are modified.
@@ -439,6 +451,15 @@ public class TentacleHomeController : ControllerBase
             return Ok(new QueryResult<BaseItemDto>());
         }
 
+        // The hero's playlist id comes from the caller's own home config, which
+        // they can set to any GUID (POST /TentacleHome/Hero stores it as given).
+        // Same rule as a row: only a playlist this user may read. Empty rather
+        // than 403, like every other reason there is no hero to show.
+        if (!CallerIdentity.CanReadPlaylist(playlist, user))
+        {
+            return Ok(new QueryResult<BaseItemDto>());
+        }
+
         var dtoOptions = new DtoOptions
         {
             Fields = new[]
@@ -460,13 +481,11 @@ public class TentacleHomeController : ControllerBase
             ImageTypeLimit = 3,
         };
 
-        var rawItems = playlist.GetManageableItems()
-            .Where(i => i.Item2.IsVisible(user))
-            .ToArray();
+        var rawItems = VisibleEntries(playlist, user).ToArray();
 
         // Group episodes by series, then optionally filter for polished hero look
         var grouped = rawItems
-            .GroupBy(x => x.Item2 is Episode ep ? (BaseItem)ep.Series : x.Item2)
+            .GroupBy(x => x is Episode ep ? (BaseItem)ep.Series : x)
             .Select(g => g.Key)
             .Where(i => i != null);
 
@@ -607,7 +626,7 @@ public class TentacleHomeController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogWarning("[Tentacle Home] Failed to fetch playlists: {Error}", ex.Message);
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = TentacleDiscoverController.DescribeFailure(ex).Message });
         }
     }
 
@@ -737,7 +756,7 @@ public class TentacleHomeController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogWarning("[Tentacle Home] Failed to set hero: {Error}", ex.Message);
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = TentacleDiscoverController.DescribeFailure(ex).Message });
         }
     }
 
@@ -772,7 +791,7 @@ public class TentacleHomeController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogWarning("[Tentacle Home] Failed to reorder: {Error}", ex.Message);
-            return StatusCode(500, new { success = false, message = ex.Message });
+            return StatusCode(500, new { success = false, message = TentacleDiscoverController.DescribeFailure(ex).Message });
         }
     }
 

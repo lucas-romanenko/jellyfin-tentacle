@@ -1454,13 +1454,16 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 }
 
 /* ── Library downloads section ── */
+/* The row wraps whenever the title would get less than 220 px, whatever the
+   screen: what squeezes the title is the row's own width, and above 768 px the
+   sidebar makes a tablet's row narrower than a phone's (#280). */
 .dl-item {
-  display: flex; align-items: center; gap: 12px;
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap; row-gap: 6px;
   padding: 8px 16px; border-bottom: 1px solid var(--border);
 }
 .dl-item:last-child { border-bottom: none; }
 .dl-item-title {
-  font-size: 13px; font-weight: 500; flex: 1; min-width: 0;
+  font-size: 13px; font-weight: 500; flex: 1 1 220px; min-width: 0;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .dl-item-status {
@@ -1943,6 +1946,16 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
           </div>
           <div id="health-streams-summary" style="font-size:12px;color:var(--text3);margin-bottom:8px"></div>
           <div id="health-streams">
+            <div class="empty-state"><p>Loading…</p></div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-header">
+            <div class="card-title">Recent Activity <span id="health-activity-count" style="color:var(--text3);font-weight:400"></span></div>
+            <button class="btn btn-secondary btn-sm" onclick="loadHealthActivity()">Refresh</button>
+          </div>
+          <div id="health-activity">
             <div class="empty-state"><p>Loading…</p></div>
           </div>
         </div>
@@ -3397,9 +3410,12 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
     </div>
 
     <p style="font-size:13px;color:var(--text2);margin-bottom:20px;line-height:1.6">
-      Rewrites all <code style="font-family:'DM Mono',monospace;background:var(--bg3);padding:1px 5px;border-radius:3px">.strm</code>
-      files from the old provider to stream from the new provider, matched by title.
-      Content that doesn't exist on the new provider will be flagged.
+      Moves the old provider's films to the new provider: each film the new provider lists
+      in its chosen movie categories, under the same title and year, gets its
+      <code style="font-family:'DM Mono',monospace;background:var(--bg3);padding:1px 5px;border-radius:3px">.strm</code>
+      rewritten to play from the new provider. Everything else (films it doesn't list,
+      and all series) stays with the old provider, which is switched off, with its files untouched.
+      Choose the new provider's categories first; Preview shows the counts.
     </p>
 
     <div class="form-group">

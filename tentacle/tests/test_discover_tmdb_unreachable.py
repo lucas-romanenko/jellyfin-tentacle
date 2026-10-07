@@ -58,6 +58,73 @@ class TestDiscoverPage(unittest.TestCase):
         self.assertNotIn("warning", out)
 
 
+class TestDiscoverDoesNotWaitOnEachSection(unittest.TestCase):
+    """A TMDB that can't be connected to, or doesn't answer, costs Discover one
+    timeout, not one per section: at 10 s each, three sections took 30 s, past
+    the plugin's 15 s, so Jellyfin's Discover tab still showed "unavailable".
+    Sections already cached still show. The sync is not changed (#26)."""
+
+    def _svc(self):
+        from services.tmdb import TMDBService
+        from tmp_dirs import temp_dir
+        return TMDBService("token", temp_dir(self))
+
+    def _discover(self, svc, type_="movies"):
+        import routers.discover as disc
+        with mock.patch.object(disc, "_get_tmdb", return_value=svc), \
+             mock.patch.object(disc, "_known_tmdb_ids", return_value={"movie": set(), "series": set()}), \
+             mock.patch.object(disc, "_get_missing_from_lists", return_value=[dict(LISTED)]), \
+             mock.patch.object(disc, "_mark_requested", side_effect=lambda i: i), \
+             mock.patch.object(disc, "_is_in_library", return_value=False):
+            return disc.get_discover(type=type_, db=None, user=None)
+
+    def _check(self, exc, type_, cached_key, cached_id):
+        import requests
+        svc = self._svc()
+        svc._cache_set(cached_key, [dict(ITEM, tmdb_id=9)])
+        with mock.patch.object(svc.session, "get", side_effect=exc("timed out")) as get:
+            out = self._discover(svc, type_)
+        self.assertEqual(1, get.call_count, "one timeout per page load, not one per section")
+        self.assertEqual([cached_id, "missing"], [s["id"] for s in out["sections"]])
+        self.assertIn("TMDB", out.get("warning", ""))
+
+    def test_connect_timeout_movies(self):
+        import requests
+        self._check(requests.ConnectTimeout, "movies", "upcoming_v4:5", "upcoming")
+
+    def test_read_timeout_movies(self):
+        import requests
+        self._check(requests.ReadTimeout, "movies", "upcoming_v4:5", "upcoming")
+
+    def test_connect_timeout_series(self):
+        import requests
+        self._check(requests.ConnectTimeout, "series", "popular:series:5", "popular")
+
+    def test_the_next_page_load_tries_tmdb_again(self):
+        import requests
+        svc1, svc2 = self._svc(), self._svc()
+        with mock.patch.object(svc1.session, "get", side_effect=requests.ConnectTimeout("x")):
+            self._discover(svc1)
+        with mock.patch.object(svc2.session, "get", side_effect=requests.ConnectTimeout("x")) as get:
+            self._discover(svc2)
+        self.assertEqual(1, get.call_count)
+
+    def test_other_callers_are_unchanged(self):
+        # The sync and every other caller: a read timeout is still "no answer"
+        # (None), and every connection failure is still raised, each time.
+        import requests
+        svc = self._svc()
+        with mock.patch.object(svc.session, "get", side_effect=requests.ReadTimeout("x")) as get:
+            self.assertIsNone(svc._request("movie/popular"))
+            self.assertIsNone(svc._request("movie/popular"))
+        self.assertEqual(2, get.call_count)
+        with mock.patch.object(svc.session, "get", side_effect=requests.ConnectTimeout("x")) as get:
+            for _ in range(2):
+                with self.assertRaises(TMDBConnectionError):
+                    svc._request("movie/popular")
+        self.assertEqual(2, get.call_count)
+
+
 class TestSingleItemRoutes(unittest.TestCase):
     def test_detail_answers_503_when_tmdb_is_unreachable(self):
         import main
