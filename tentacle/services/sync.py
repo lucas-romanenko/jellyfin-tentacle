@@ -20,7 +20,8 @@ from sqlalchemy.orm import Session
 
 from models.database import (
     Provider, ProviderCategory, Movie, Series,
-    SyncRun, CategorySnapshot, Duplicate, get_setting, set_setting, log_deletion
+    SyncRun, CategorySnapshot, Duplicate, get_setting, set_setting, log_deletion,
+    get_recently_added_days,
 )
 from services.tmdb import TMDBService
 from services.nfo import write_movie_nfo, write_series_nfo, make_folder_name, vod_folder_name, fit_file_stem
@@ -31,6 +32,7 @@ from services.media_files import delete_movie_files, delete_series_files, MEDIA_
 from services.tagger import compute_tags, get_list_tags_for_tmdb_id, apply_tag_rules
 from services.exceptions import (ProviderConnectionError, ProviderDataError, SyncCancelledError, SyncError,
                                  TMDBConnectionError)
+from services.xtream_client import quote_cred
 
 logger = logging.getLogger(__name__)
 
@@ -171,7 +173,8 @@ XTREAM_HEADERS = {"User-Agent": "TiviMate/4.7.0 (Linux; Android 12)"}
 
 class XtreamClient:
     def __init__(self, provider: Provider):
-        self.base = f"{provider.server_url.rstrip('/')}/player_api.php?username={provider.username}&password={provider.password}"
+        self.base = (f"{provider.server_url.rstrip('/')}/player_api.php"
+                     f"?username={quote_cred(provider.username)}&password={quote_cred(provider.password)}")
         self.server = provider.server_url.rstrip('/')
         self.username = provider.username
         self.password = provider.password
@@ -236,12 +239,12 @@ class XtreamClient:
     def movie_stream_url(self, stream_id, container="mp4") -> str:
         if self.vod_links is not None:
             return self.vod_links.movie(stream_id, container)
-        return f"{self.server}/movie/{self.username}/{self.password}/{stream_id}.{container}"
+        return f"{self.server}/movie/{quote_cred(self.username)}/{quote_cred(self.password)}/{stream_id}.{container}"
 
     def episode_stream_url(self, episode_id, container="mp4") -> str:
         if self.vod_links is not None:
             return self.vod_links.episode(episode_id, container)
-        return f"{self.server}/series/{self.username}/{self.password}/{episode_id}.{container}"
+        return f"{self.server}/series/{quote_cred(self.username)}/{quote_cred(self.password)}/{episode_id}.{container}"
 
 
 def vod_links_for(db: Session, provider: Provider):
@@ -414,6 +417,13 @@ def _strm_needs_rewrite(strm_file: Path, expected: str, client) -> bool:
         return True   # 0 bytes / blank: a write cut short, never a link of anyone's (#283)
     if current == expected:
         return False
+    # A file written before the login was percent-encoded (#529): a '#', '?' or
+    # '/' in it broke the URL. Read it in today's form, so the checks below
+    # repair it when it plays this stream and leave it alone when not.
+    raw_user, raw_pass = getattr(client, "username", "") or "", getattr(client, "password", "") or ""
+    old_login, new_login = f"/{raw_user}/{raw_pass}/", f"/{quote_cred(raw_user)}/{quote_cred(raw_pass)}/"
+    if (raw_user or raw_pass) and old_login != new_login and old_login in current:
+        current = current.replace(old_login, new_login, 1)
     from urllib.parse import urlparse
     from services import vod_tokens
     provider_host = (urlparse(client.server).hostname or "").lower()
@@ -481,12 +491,14 @@ def _strm_plays_other_provider(strm_file: Path, client) -> bool:
         current = strm_file.read_text(encoding="utf-8").strip()
     except (OSError, UnicodeDecodeError):
         return False
+    from urllib.parse import unquote
     from services import vod_tokens
     m = vod_tokens._TOKEN_URL.search(current)
     if m:
         return int(m.group(2)) in others["ids"]
     m = _XTREAM_ACCOUNT_RE.match(current)
-    return bool(m) and (m.group(1).lower(), m.group(2)) in others["accounts"]
+    # The URL carries the username percent-encoded (#529), the accounts as typed
+    return bool(m) and (m.group(1).lower(), unquote(m.group(2))) in others["accounts"]
 
 
 # ── M3U provider support ─────────────────────────────────────────────────
@@ -1162,7 +1174,7 @@ def _stream_origin(url_text: str, unwrap: bool = False):
     if m is None and unwrap:
         carried = _NS_CARRIED_RE.search(unquote(url_text or ""))
         m = _XTREAM_ACCOUNT_RE.match(carried.group(0)) if carried else None
-    return ("host", m.group(1).lower(), m.group(2)) if m else None
+    return ("host", m.group(1).lower(), unquote(m.group(2))) if m else None
 
 
 def _movie_row_plays_stream(client, stream: dict, strm_path, index: "_MovieIndex" = None):
@@ -1687,8 +1699,12 @@ def _vod_root_unavailable(root: Path) -> bool:
 
     mergerfs/NFS/SMB/rclone all report plain "not found" for every path while
     a branch is out, and Docker shows a share that isn't mounted as the bare,
-    empty mount point."""
-    return not root.is_dir() or not any(root.iterdir())
+    empty mount point. A stale mount (NFS/SMB/FUSE) raises OSError when read:
+    unavailable too (#440)."""
+    try:
+        return not root.is_dir() or not any(root.iterdir())
+    except OSError:
+        return True
 
 
 def _swept_rows(db: Session, Model):
@@ -1920,7 +1936,7 @@ def sync_provider(
     vod_movies_path = Path("/media/vod/movies")
     vod_series_path = Path("/media/vod/shows")
     match_threshold = float(get_setting(db, "tmdb_match_threshold", "0.7"))
-    recently_added_days = int(get_setting(db, "recently_added_days", "30"))
+    recently_added_days = get_recently_added_days(db)
     require_tmdb = provider.require_tmdb_match if provider.require_tmdb_match is not None else True
 
     # Create sync run record

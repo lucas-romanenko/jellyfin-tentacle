@@ -13,7 +13,7 @@ from models.database import get_db, get_setting, Duplicate, Movie, Series, log_d
 from routers.auth import require_admin
 from services.duplicates import (
     delete_vod_files, convert_record_to_downloaded, is_downloaded_file, arr_folder_is_vod_folder,
-    carry_user_data, UserDataCarryError, watch_pending_user_data, vod_copy_on_disk,
+    carry_user_data, UserDataCarryError, watch_pending_user_data, vod_copy_on_disk, resolving,
 )
 from services.media_files import delete_series_files
 
@@ -97,6 +97,10 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
         # names an unrelated film in Radarr.
         _carry_user_data(dup, record, "vod", db)
         arr = _delete_downloaded_copy(dup, record, db)
+        # The arr's delete webhooks ran inside that call (#515): they may have
+        # released the row to VOD only or deleted it. Read it as it is now;
+        # not expire_all(), which would drop _resolve's merged dup.sources.
+        record = db.query(model).filter(model.tmdb_id == dup.tmdb_id).populate_existing().first()
 
         # The (single) row is the VOD one — just clear the downloaded-copy path
         path_attr = "sonarr_path" if is_series else "radarr_path"
@@ -105,10 +109,7 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
 
         # Legacy state: a radarr-only row (shouldn't exist alongside VOD due to
         # the unique constraint, but clean up if the row itself is radarr-owned)
-        radarr_movie = None if is_series else db.query(Movie).filter(
-            Movie.tmdb_id == dup.tmdb_id,
-            Movie.source == "radarr"
-        ).first()
+        radarr_movie = record if not is_series and record is not None and record.source == "radarr" else None
         if radarr_movie:
             db.delete(radarr_movie)
             logger.info(f"Removed Radarr DB record for tmdb:{dup.tmdb_id}")
@@ -309,14 +310,19 @@ def _resolve(dup: Duplicate, resolution: str, db: Session) -> None:
                     merged.append(s)
         dup.sources = merged  # a new list, so the JSON column is saved
 
-    _apply_resolution(dup, resolution, db)
+    # The arr's delete webhooks, sent inside Keep VOD's delete calls, leave
+    # the title's duplicates to this resolution meanwhile (#515). Should it
+    # fail after the arr deleted the download (#506), the duplicate stays
+    # pending: a retry of Keep VOD finishes it, or Keep Both dismisses it.
+    with resolving(dup.media_type, dup.tmdb_id):
+        _apply_resolution(dup, resolution, db)
 
-    # Mark as resolved (keep in DB for stats/history)
-    now = datetime.now(timezone.utc)
-    for d in (dup, *twins):
-        d.resolution = resolution
-        d.resolved_at = now
-    db.commit()
+        # Mark as resolved (keep in DB for stats/history)
+        now = datetime.now(timezone.utc)
+        for d in (dup, *twins):
+            d.resolution = resolution
+            d.resolved_at = now
+        db.commit()
 
 
 @router.get("")
@@ -393,6 +399,7 @@ def resolve_all(body: ResolveAllRequest, db: Session = Depends(get_db)):
                 skipped += 1
                 continue
             dup = db.query(Duplicate).filter(Duplicate.id == dup_id).first()
+            tmdb_id = dup.tmdb_id   # read now: the log line must not fail on a stale dup (#515)
             try:
                 # Commits each one: a later failure rolls the session back, which
                 # would turn this one (one copy already deleted) back into
@@ -400,7 +407,7 @@ def resolve_all(body: ResolveAllRequest, db: Session = Depends(get_db)):
                 # copy that is left. Its twins are marked with it, then skipped.
                 _resolve(dup, body.resolution, db)
             except Exception as e:
-                logger.error(f"Failed to apply resolution for tmdb:{dup.tmdb_id}: {e}")
+                logger.error(f"Failed to apply resolution for tmdb:{tmdb_id}: {e}")
                 failed += 1
                 continue
             resolved += 1

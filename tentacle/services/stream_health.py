@@ -119,10 +119,12 @@ def _direct_url(url: str, kind, stream_id, provider) -> str:
     Tentacle's /api/vod route must not be probed through Tentacle itself:
     that would take a playback slot for a health check."""
     from services import vod_tokens
+    from services.xtream_client import quote_cred
     if provider and kind and stream_id and vod_tokens.is_vod_url(url):
         container = url.rsplit(".", 1)[-1].split("?")[0] if "." in url else "mp4"
         path = "movie" if kind == "movie" else "series"
-        return f"{provider.server_url.rstrip('/')}/{path}/{provider.username}/{provider.password}/{stream_id}.{container}"
+        login = f"{quote_cred(provider.username)}/{quote_cred(provider.password)}"
+        return f"{provider.server_url.rstrip('/')}/{path}/{login}/{stream_id}.{container}"
     return url
 
 

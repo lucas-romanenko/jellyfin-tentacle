@@ -20,10 +20,17 @@ from models.database import (
 )
 from routers.auth import require_admin
 from services.media_files import delete_movie_files, delete_series_files
+from services.xtream_client import quote_cred
 
 router = APIRouter(prefix="/api/providers", tags=["providers"], dependencies=[Depends(require_admin)])
 
 HEADERS = {"User-Agent": "TiviMate/4.7.0 (Linux; Android 12)"}
+
+
+def _api_base(provider) -> str:
+    """The provider's player_api.php URL with its login, percent-encoded (#529)."""
+    return (f"{provider.server_url.rstrip('/')}/player_api.php"
+            f"?username={quote_cred(provider.username)}&password={quote_cred(provider.password)}")
 
 FOREIGN_PREFIXES = {
     'AF', 'AL', 'AR', 'BE', 'BG', 'BN', 'BR', 'CN', 'CZ', 'DE', 'DK',
@@ -161,7 +168,7 @@ def fetch_provider_categories(provider: Provider):
         c = M3UClient(provider)
         return c.get_vod_categories(), c.get_series_categories(), c.vod_counts(), c.series_counts()
 
-    base = f"{provider.server_url.rstrip('/')}/player_api.php?username={provider.username}&password={provider.password}"
+    base = _api_base(provider)
     session = requests.Session()
     session.headers.update(HEADERS)
 
@@ -204,7 +211,7 @@ def test_provider_connection(provider: Provider):
             raise Exception("Playlist reachable but no VOD movies or series found")
         return {"user_info": {"auth": 1}, "_m3u": {"has_vod": n_movies > 0, "has_series": n_series > 0}}
 
-    url = f"{provider.server_url.rstrip('/')}/player_api.php?username={provider.username}&password={provider.password}"
+    url = _api_base(provider)
     r = requests.get(url, headers=HEADERS, timeout=15)
     r.raise_for_status()
     data = r.json()
@@ -452,7 +459,7 @@ def test_provider(provider_id: int, db: Session = Depends(get_db)):
         p.max_connections = int(info.get("max_connections", 1))
 
         # Probe capabilities
-        base = f"{p.server_url.rstrip('/')}/player_api.php?username={p.username}&password={p.password}"
+        base = _api_base(p)
         session = requests.Session()
         session.headers.update(HEADERS)
         for attr, action in [("has_vod", "get_vod_categories"), ("has_series", "get_series_categories"), ("has_live", "get_live_categories")]:
@@ -644,7 +651,7 @@ def preview_sync(provider_id: int, db: Session = Depends(get_db)):
     # Get stream counts per category
     from services.provider_activity import refuse_while_recording
     refuse_while_recording(db, "A sync preview")
-    base = f"{p.server_url.rstrip('/')}/player_api.php?username={p.username}&password={p.password}"
+    base = _api_base(p)
     session = requests.Session()
     session.headers.update(HEADERS)
 

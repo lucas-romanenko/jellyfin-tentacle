@@ -42,7 +42,8 @@ but no second "ready to watch"; a bad copy being replaced still gets "A new
 copy of ... is ready to watch".
 
 **Radarr deletes a movie** (MovieDelete): DB record and `DownloadRequest`s
-removed, then `remove_item_from_playlists()` for every user in the
+removed (its duplicates too, unless Keep VOD is resolving the title or one
+holds saved watched state: server.md "Duplicates", #515), then `remove_item_from_playlists()` for every user in the
 background; the Library shows it as missing again. A file delete
 (MovieFileDelete) does the same at once, except reason `upgrade` (ignored)
 and `missingFromDisk` (Radarr can't see the file): those are collected until
@@ -143,7 +144,9 @@ it. A container that is down at the trigger still skips that night.
 both day fields set becomes an `OrTrigger`). A stored value it refuses runs
 at the default with a warning; the settings form answers 400 for one.
 
-1. refresh list subscriptions; 2. VOD sync from active providers; 3. Radarr
+1. refresh list subscriptions; 2. VOD sync from active providers (each read
+when its turn comes, under `_sync_lock`: one deleted or switched off since
+the job started is skipped, #517); 3. Radarr
 scan; 4. Sonarr scan (and Following state for every series); 5. recently
 added tags; 6. Jellyfin pipeline (scan, push tags, refresh playlists);
 7. clean the TMDB cache; 8. `sweep_orphaned_downloads()`; 9. per user:
@@ -185,6 +188,8 @@ read that row.
   check, and the sweep deleted every title not written back. A new install
   (no rows) syncs; a deliberately empty folder needs any file in it.
   `_repair_movie_strm()` and the show-folder rebuild check the root too.
+  A root that raises `OSError` when read (a stale NFS/SMB/FUSE mount) counts
+  as unmounted (#440).
 - TMDB matching (`search_movie` / `search_series`): with the provider's
   year, then, only if that found nothing good enough, once without it,
   keeping results within one year of the provider's (a local or streaming

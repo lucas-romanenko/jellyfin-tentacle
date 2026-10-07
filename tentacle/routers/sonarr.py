@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from models.database import get_db, Series, ListItem, ListSubscription, DownloadRequest, Duplicate, get_setting, log_activity
 from services.sonarr import scan_sonarr_library, SonarrService
+from services.duplicates import droppable_duplicates
 from services.nfo import update_nfo_tags, write_series_nfo, refresh_arr_nfo
 from services.tagger import tentacle_owned_tags
 from services.logstream import emit_library_event
@@ -230,9 +231,11 @@ def sonarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
                 deleted = db.query(Series).filter(Series.tmdb_id == tmdb_id, Series.source == "sonarr").delete()
                 db.query(DownloadRequest).filter(DownloadRequest.tmdb_id == tmdb_id, DownloadRequest.media_type == "series").delete()
                 # Clear duplicate tombstones — deleting the downloaded copy is a
-                # clean slate; the title may legitimately re-import from VOD later
+                # clean slate; the title may legitimately re-import from VOD later.
+                # Not while Keep VOD (whose delete sent this) holds them, nor
+                # one holding users' saved watched state (#515).
                 if deleted:
-                    db.query(Duplicate).filter(Duplicate.tmdb_id == tmdb_id, Duplicate.media_type == "series").delete()
+                    droppable_duplicates(db, "series", tmdb_id).delete(synchronize_session=False)
                 db.commit()
             except Exception as e:
                 db.rollback()
