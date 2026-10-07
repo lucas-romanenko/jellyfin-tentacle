@@ -110,15 +110,15 @@ function renderHistoryRuns(runs) {
       .slice(0, 8)
       .map(([name, stats]) => `
         <span class="run-cat-pill ${stats.new > 0 ? 'has-new' : ''}">
-          ${name.split(' - ').pop()} ${stats.new > 0 ? `+${stats.new}` : stats.total || ''}
+          ${escapeAttr(name.split(' - ').pop())} ${stats.new > 0 ? `+${Number(stats.new) || 0}` : escapeAttr(String(stats.total || ''))}
         </span>`).join('');
 
     return `
       <div class="run-row">
         <div class="run-header">
           <div class="dot dot-${statusColor}"></div>
-          <span style="font-size:13px;font-weight:500">${run.provider_name}</span>
-          <span class="badge badge-gray">${run.sync_type}</span>
+          <span style="font-size:13px;font-weight:500">${escapeAttr(run.provider_name)}</span>
+          <span class="badge badge-gray">${escapeAttr(run.sync_type)}</span>
           ${run.status === 'finishing' ? '<span class="badge badge-amber" title="The VOD part is done; Jellyfin is still being updated (library scan, tags, playlists)">updating Jellyfin</span>' : ''}
           <span style="font-size:12px;color:var(--text3);font-family:'DM Mono',monospace">${dateStr}</span>
           <span style="font-size:11px;color:var(--text3);margin-left:auto">⏱ ${duration}</span>
@@ -131,7 +131,7 @@ function renderHistoryRuns(runs) {
           ${run.movies_failed > 0 ? `<div class="run-number" style="color:var(--red)"><span>${run.movies_failed}</span>failed</div>` : ''}
         </div>
         ${catPills ? `<div class="run-cats">${catPills}</div>` : ''}
-        ${run.error_message ? `<div style="margin-top:8px;font-size:12px;color:var(--red);font-family:'DM Mono',monospace">${run.error_message}</div>` : ''}
+        ${run.error_message ? `<div style="margin-top:8px;font-size:12px;color:var(--red);font-family:'DM Mono',monospace">${escapeAttr(run.error_message)}</div>` : ''}
       </div>`;
   }).join('');
 }
@@ -507,13 +507,13 @@ function renderLibDownloads(data) {
     const statusClass = rawStatus === 'stuck' ? 'stuck' :
       rawStatus === 'import_blocked' ? 'blocked' :
       rawStatus.includes('import') ? 'importing' : rawStatus.includes('queue') ? 'queued' : 'downloading';
-    const eta = d.eta ? ` · ${d.eta}` : '';
-    const qual = d.quality ? ` · ${d.quality}` : '';
-    const reqBy = d.requested_by ? `<span class="dl-requested-by">${d.requested_by}</span>` : '';
+    const eta = d.eta ? ` · ${escapeAttr(d.eta)}` : '';
+    const qual = d.quality ? ` · ${escapeAttr(d.quality)}` : '';
+    const reqBy = d.requested_by ? `<span class="dl-requested-by">${escapeAttr(d.requested_by)}</span>` : '';
     return `<div class="dl-item">
-      <div class="dl-item-title">${d.title || 'Unknown'}${d.episode ? ' — ' + d.episode : ''}</div>
+      <div class="dl-item-title">${escapeAttr(d.title || 'Unknown')}${d.episode ? ' — ' + escapeAttr(d.episode) : ''}</div>
       ${reqBy}
-      <div class="dl-item-status ${statusClass}">${status}${qual}${eta}</div>
+      <div class="dl-item-status ${statusClass}">${escapeAttr(status)}${qual}${eta}</div>
       <div class="dl-item-bar"><div class="dl-item-bar-fill" style="width:${pct}%"></div></div>
       <div class="dl-item-pct">${pct}%</div>
     </div>`;
@@ -597,7 +597,7 @@ function _buildSyncDetailHtml(d) {
       let ch = [];
       if (l.added > 0) ch.push(`<span style="color:var(--green)">+${l.added}</span>`);
       if (l.removed > 0) ch.push(`<span style="color:var(--red)">-${l.removed}</span>`);
-      return `${l.name} (${ch.join(', ')})`;
+      return `${escapeAttr(l.name)} (${ch.join(', ')})`;
     });
     html += _syncStepHtml('↻', 'List Refresh', 'ok', parts.join(' · '));
   } else {
@@ -609,7 +609,7 @@ function _buildSyncDetailHtml(d) {
   if (providers.length > 0) {
     providers.forEach(p => {
       if (p.status === 'failed') {
-        html += _syncStepHtml('⟳', `VOD: ${p.name}`, 'failed', p.error || 'Sync failed');
+        html += _syncStepHtml('⟳', `VOD: ${escapeAttr(p.name)}`, 'failed', escapeAttr(p.error || 'Sync failed'));
         return;
       }
       let lines = [];
@@ -637,17 +637,17 @@ function _buildSyncDetailHtml(d) {
       }
       // New titles
       if (p.movie_titles && p.movie_titles.length > 0) {
-        lines.push(`<span style="color:var(--text3)">New movies: ${p.movie_titles.join(', ')}</span>`);
+        lines.push(`<span style="color:var(--text3)">New movies: ${escapeAttr(p.movie_titles.join(', '))}</span>`);
       }
       if (p.series_titles && p.series_titles.length > 0) {
-        lines.push(`<span style="color:var(--text3)">New series: ${p.series_titles.join(', ')}</span>`);
+        lines.push(`<span style="color:var(--text3)">New series: ${escapeAttr(p.series_titles.join(', '))}</span>`);
       }
       // New categories
       if (p.new_categories && p.new_categories.length > 0) {
-        lines.push(`<span style="color:var(--amber)">${p.new_categories.length} new categories: ${p.new_categories.join(', ')}</span>`);
+        lines.push(`<span style="color:var(--amber)">${p.new_categories.length} new categories: ${escapeAttr(p.new_categories.join(', '))}</span>`);
       }
       const dur = p.duration_seconds ? ` (${_fmtDuration(p.duration_seconds)})` : '';
-      html += _syncStepHtml('⟳', `VOD: ${p.name}${dur}`, 'ok', lines.join('<br>') || 'No changes');
+      html += _syncStepHtml('⟳', `VOD: ${escapeAttr(p.name)}${dur}`, 'ok', lines.join('<br>') || 'No changes');
     });
   }
 
@@ -4746,8 +4746,8 @@ function appendLogLine(entry) {
   const line = document.createElement('div');
   line.className = 'log-line';
   line.innerHTML = `
-    <span class="log-ts">${ts}</span>
-    <span class="log-level ${entry.color}">${entry.level.substring(0,4)}</span>
+    <span class="log-ts">${escapeAttr(ts)}</span>
+    <span class="log-level ${entry.color}">${escapeAttr(entry.level.substring(0,4))}</span>
     <span class="log-msg ${isHighlight ? 'highlight' : isError ? 'error' : ''}">${escapeHtml(entry.msg)}</span>`;
 
   body.appendChild(line);
@@ -7120,7 +7120,7 @@ async function loadHealthDownloads() {
                    <button class="btn btn-secondary btn-sm" onclick="healthRemoveDownload('${d.source}', ${d.queue_id}, false, this)">Remove</button>`;
       }
       return `<tr>
-        <td><span class="badge ${meta.cls}" style="font-size:10px">${meta.label}</span></td>
+        <td><span class="badge ${meta.cls}" style="font-size:10px">${escapeAttr(meta.label)}</span></td>
         <td>${name}${reason}${stallNote}</td>
         <td style="white-space:nowrap;color:var(--text3);font-size:12px">${sub || '—'}</td>
         <td style="white-space:nowrap">${prog}${d.eta ? ` <span style="color:var(--text3)">· ${escapeHtml(d.eta)}</span>` : ''}</td>
@@ -7216,7 +7216,7 @@ async function loadHealthDeletions() {
       const meta = _DELETION_KIND_META[e.kind] || { label: e.kind, cls: 'badge-accent' };
       const d = _healthDate(e.created_at);
       const when = d ? `<span title="${d.toLocaleString()}">${timeAgo(d)}</span>` : '—';
-      const who = e.reason === 'manual' && e.user_name ? escapeHtml(e.user_name) : e.reason;
+      const who = e.reason === 'manual' && e.user_name ? e.user_name : e.reason;
       return `<tr>
         <td style="white-space:nowrap">${when}</td>
         <td><span class="badge ${meta.cls}" style="font-size:10px">${meta.label}</span></td>
