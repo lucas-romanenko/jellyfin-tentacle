@@ -27,7 +27,7 @@ import hashlib
 import logging
 import re
 import threading
-from collections import deque
+from collections import Counter, deque
 
 import httpx
 from datetime import datetime, timedelta
@@ -2852,6 +2852,22 @@ def _upsert_channels_from_m3u(
             del existing[row.m3u_key or row.stream_id]
             row.m3u_key = sids[0]
             existing[sids[0]] = row
+    # A name with a comma was stored as the text after its last comma (the
+    # parser read the name from there). The row with that cut name and the
+    # same URL is this channel: it keeps its number, as above.
+    url_count = Counter(ch["stream_url"] for ch in parsed_channels)
+    for ch in parsed_channels:
+        sid = _m3u_stable_id(ch["name"], ch["stream_url"])
+        if sid in existing or "," not in ch["name"] or url_count[ch["stream_url"]] != 1:
+            continue
+        cut = ch["name"].rsplit(",", 1)[1].strip()
+        rows = [r for r in orphans.get(cut, []) if r.stream_url == ch["stream_url"]
+                and existing.get(r.m3u_key or r.stream_id) is r]
+        if len(rows) == 1:
+            row = rows[0]
+            del existing[row.m3u_key or row.stream_id]
+            row.m3u_key = sid
+            existing[sid] = row
 
     for ch in parsed_channels:
         name = ch["name"]
