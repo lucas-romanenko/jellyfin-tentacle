@@ -16,6 +16,8 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
+from sqlalchemy.orm import sessionmaker
+
 from models.database import Duplicate, Movie
 from routers import duplicates
 from services import duplicates as dup_service
@@ -155,15 +157,84 @@ class MergedFilm(_Base):
         self.assertEqual(409, cm.exception.status_code)
         self.assertTrue(self.strm.exists())
 
-    def test_a_failed_resolution_keeps_nothing_saved(self):
+    def test_a_failed_resolution_merges_nothing(self):
+        # Nothing deleted: the saved entry stays, but Jellyfin's film still has
+        # the removed copy's path, so nothing matches the kept file.
         self.jellyfin_film(JF_MKV, JF_STRM)
         FakeJellyfin.data = {("A", "film"): {"Played": True}}
         _FakeArr.fail_file_delete = True
         with self.assertRaises(duplicates.HTTPException):
             duplicates._apply_resolution(self.dup, "keep_vod", self.db)
-        self.db.refresh(self.dup)
-        self.assertIsNone(self.dup.pending_user_data)
+        self.assertTrue(self.mkv.exists())
         self.worker.assert_not_called()
+        self.assertEqual(1, dup_service.apply_pending_user_data(self.db), "still waiting")
+        self.assertEqual([], FakeJellyfin.posts)
+
+    # The saved state lives nowhere else once the copy is deleted, so it is
+    # committed before anything is deleted: a failure after the delete must
+    # not take every user's watched state with it (#506).
+    STATE = {("A", "film"): {"Played": True, "PlayCount": 2, "IsFavorite": True},
+             ("B", "film"): {"PlaybackPositionTicks": 7_000_000_000}}
+
+    def restart(self):
+        """A new session on the same database: only what was committed is there."""
+        bind = self.db.get_bind()
+        self.db.close()
+        self.db = sessionmaker(bind=bind)()
+        self.addCleanup(self.db.close)
+        self.dup = self.db.query(Duplicate).one()
+
+    def assert_state_reaches(self, kept_path):
+        self.rescan(kept_path)
+        dup_service.apply_pending_user_data(self.db)
+        self.assertEqual({"Played": True, "PlayCount": 2, "IsFavorite": True}, FakeJellyfin.data.get(("A", "new")))
+        self.assertEqual({"PlaybackPositionTicks": 7_000_000_000}, FakeJellyfin.data.get(("B", "new")))
+
+    def test_saved_state_survives_a_failed_deletion_log_commit(self):
+        # log_deletion never raises: when its own commit fails (database
+        # locked, disk full) it rolls the whole session back.
+        self.jellyfin_film(JF_STRM, JF_MKV)
+        FakeJellyfin.data = {k: dict(v) for k, v in self.STATE.items()}
+        with mock.patch.object(duplicates, "log_deletion", lambda db, **k: db.rollback()):
+            duplicates._apply_resolution(self.dup, "keep_radarr", self.db)
+        self.assertFalse(self.strm.exists())
+        self.assert_state_reaches(JF_MKV)
+
+    def test_saved_state_survives_a_crash_after_the_delete(self):
+        self.jellyfin_film(JF_STRM, JF_MKV)
+        FakeJellyfin.data = {k: dict(v) for k, v in self.STATE.items()}
+
+        class Crash(BaseException):
+            pass
+
+        def crash(*a, **k):
+            raise Crash()
+        with mock.patch.object(duplicates, "convert_record_to_downloaded", crash), self.assertRaises(Crash):
+            duplicates._apply_resolution(self.dup, "keep_radarr", self.db)
+        self.assertFalse(self.strm.exists())
+        self.restart()
+        self.assert_state_reaches(JF_MKV)
+
+    def test_saved_state_survives_radarr_refusing_the_title_after_the_file_delete(self):
+        self.jellyfin_film(JF_MKV, JF_STRM)
+        FakeJellyfin.data = {k: dict(v) for k, v in self.STATE.items()}
+        with mock.patch.object(_FakeArr, "_delete_title", lambda self_, arr_id, delete_files: False), \
+                self.assertRaises(duplicates.HTTPException) as cm:
+            duplicates._apply_resolution(self.dup, "keep_vod", self.db)
+        self.assertEqual(502, cm.exception.status_code)
+        self.assertFalse(self.mkv.exists())
+        self.assert_state_reaches(JF_STRM)
+
+    def test_a_retry_after_a_failed_resolution_saves_the_state_once(self):
+        self.jellyfin_film(JF_MKV, JF_STRM)
+        FakeJellyfin.data = {("A", "film"): {"Played": True}}
+        _FakeArr.fail_file_delete = True
+        with self.assertRaises(duplicates.HTTPException):
+            duplicates._apply_resolution(self.dup, "keep_vod", self.db)
+        _FakeArr.fail_file_delete = False
+        duplicates._apply_resolution(self.dup, "keep_vod", self.db)
+        self.db.refresh(self.dup)
+        self.assertEqual(1, len(self.dup.pending_user_data))
 
     def test_saved_state_waits_a_month_then_goes(self):
         self.jellyfin_film(JF_STRM, JF_MKV)

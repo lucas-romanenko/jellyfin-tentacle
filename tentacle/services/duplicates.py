@@ -165,9 +165,12 @@ def convert_record_to_downloaded(record, media_type: str):
 # versions, and users' data is on that item (#333). When the removed copy is
 # its main version, deleting it makes Jellyfin create a new item for the kept
 # copy, with nobody's data on it. Then the data is saved on the duplicate
-# (pending_user_data) before anything is deleted, Jellyfin is told the file
-# went, and it is merged onto the new item once that appears: a worker polls
-# for a while, the nightly run catches up.
+# (pending_user_data) and committed before anything is deleted, Jellyfin is
+# told the file went, and it is merged onto the new item once that appears: a
+# worker polls for a while, the nightly run catches up. A resolution that fails
+# after that keeps the saved data (#506): it merges only onto an item whose
+# Path is the kept file, which doesn't exist while the removed copy does, and
+# it is dropped after _PENDING_DAYS.
 
 class UserDataCarryError(Exception):
     def __init__(self, status: int, message: str):
@@ -387,8 +390,14 @@ def carry_user_data(db, dup, record, keep: str) -> int:
     pending = [{"removed_path": removed_path, "kept_path": kept_path, "users": saved[item_id], "saved_at": now}
                for item_id, removed_path, kept_path in merged if saved.get(item_id)]
     if pending:
-        # Committed with the resolution; a rollback (nothing deleted) drops it too.
-        dup.pending_user_data = (dup.pending_user_data or []) + pending
+        # Committed now, before anything is deleted: once the copy is gone this
+        # is the only record of it, and a failure after the delete (log commit,
+        # crash, the *arr refusing the title) rolls the session back (#506).
+        # A retry replaces its entry rather than adding a second one.
+        fresh = {(p["removed_path"], p["kept_path"]) for p in pending}
+        dup.pending_user_data = [p for p in dup.pending_user_data or []
+                                 if (p["removed_path"], p["kept_path"]) not in fresh] + pending
+        db.commit()
         logger.info(f"Duplicate tmdb:{dup.tmdb_id}: both copies share a folder; saved "
                     f"{sum(len(p['users']) for p in pending)} user(s)' watched state for the kept copy's "
                     f"new Jellyfin item")
