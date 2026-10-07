@@ -1064,8 +1064,16 @@ def _can_manage(db: Session, user: TentacleUser, title: ArrTitle) -> bool:
     ).first() is not None
 
 
-def _find_arr_record(db: Session, title: ArrTitle):
-    """(service, record) for this title in Radarr/Sonarr, or raise 404/503."""
+def _find_arr_record(db: Session, title: ArrTitle, strict: bool = False):
+    """(service, record) for this title in Radarr/Sonarr, or raise 404/503.
+
+    strict (every non-admin caller): the record must be the one the user's
+    request is about. _can_manage checks the request by tmdb_id only, so the
+    fallback to a caller-supplied tvdb_id could land on any other show in
+    Sonarr -- which search, stop-missing and remove would then act on, files
+    included. Under strict the fallback is only taken when the request itself
+    is keyed by that TVDB id (a TVDB-only add records tmdb_id = -tvdb_id).
+    """
     if title.media_type == "movie":
         url, key = get_setting(db, "radarr_url"), get_setting(db, "radarr_api_key")
         if not (url and key):
@@ -1083,8 +1091,9 @@ def _find_arr_record(db: Session, title: ArrTitle):
         from services.sonarr import SonarrService
         svc = SonarrService(url, key)
         series = svc.get_all_series()
-        rec = next((x for x in series if title.tmdb_id and x.get("tmdbId") == title.tmdb_id), None) \
-            or next((x for x in series if title.tvdb_id and x.get("tvdbId") == title.tvdb_id), None)
+        rec = next((x for x in series if title.tmdb_id and x.get("tmdbId") == title.tmdb_id), None)
+        if rec is None and (not strict or (title.tvdb_id and title.tmdb_id == -title.tvdb_id)):
+            rec = next((x for x in series if title.tvdb_id and x.get("tvdbId") == title.tvdb_id), None)
         if not rec:
             raise HTTPException(404, "This series is not in Sonarr")
         return svc, rec
@@ -1124,7 +1133,7 @@ def search_again(title: ArrTitle, db: Session = Depends(get_db),
     """Ask Radarr/Sonarr to search for this title again, now."""
     if not _can_manage(db, user, title):
         raise HTTPException(403, "You can only manage titles you requested")
-    svc, rec = _find_arr_record(db, title)
+    svc, rec = _find_arr_record(db, title, strict=not user.is_admin)
     name = rec.get("title", "")
     if title.media_type == "movie":
         ok = svc.search_movie(rec["id"])
@@ -1161,7 +1170,7 @@ def check_releases(title: ArrTitle, db: Session = Depends(get_db),
         # releases can still be downloaded. (The Searching card's short line
         # keeps using the last check for longer.)
         return arr_insight.check(db, title.media_type, title.tmdb_id, title.tvdb_id,
-                                 max_age=0 if title.fresh else arr_insight.GRAB_FRESH)
+                                 max_age=0 if title.fresh else arr_insight.GRAB_FRESH, strict=not user.is_admin)
     except arr_insight.InsightError as e:
         raise HTTPException(e.status, str(e))
 
@@ -1176,7 +1185,8 @@ def grab_release(title: ArrTitle, db: Session = Depends(get_db),
         raise HTTPException(400, "Which release? (guid and indexer_id)")
     from services import arr_insight
     try:
-        result = arr_insight.grab(db, title.media_type, title.tmdb_id, title.tvdb_id, title.guid, title.indexer_id)
+        result = arr_insight.grab(db, title.media_type, title.tmdb_id, title.tvdb_id, title.guid, title.indexer_id,
+                                  strict=not user.is_admin)
     except arr_insight.InsightError as e:
         raise HTTPException(e.status, str(e))
     invalidate_wanted_cache()
@@ -1199,7 +1209,7 @@ def stop_missing(title: ArrTitle, db: Session = Depends(get_db),
         raise HTTPException(400, "Only shows have episodes to stop looking for")
     if not _can_manage(db, user, title):
         raise HTTPException(403, "You can only manage titles you requested")
-    svc, rec = _find_arr_record(db, title)
+    svc, rec = _find_arr_record(db, title, strict=not user.is_admin)
     name = rec.get("title", "")
     missing = _missing_aired(svc.get_episodes(rec["id"]))
     labels = {e.strip().upper() for e in title.episodes} if title.episodes is not None else None
@@ -1235,11 +1245,11 @@ def stop_missing(title: ArrTitle, db: Session = Depends(get_db),
             "message": f"Stopped looking for {labels[0] if n == 1 else f'{n} episodes'} of {name}"}
 
 
-def _series_files_on_disk(db: Session, title: ArrTitle, row) -> int:
+def _series_files_on_disk(db: Session, title: ArrTitle, row, strict: bool = False) -> int:
     """Downloaded episodes a whole-show delete would destroy. VOD folders are
     never deleted (their files are kept), so they don't count."""
     try:
-        svc, rec = _find_arr_record(db, title)
+        svc, rec = _find_arr_record(db, title, strict=strict)
     except HTTPException:
         return 0
     path = (rec.get("path") or "").lower()
@@ -1297,7 +1307,7 @@ def remove_from_arr(title: ArrTitle, request: Request, db: Session = Depends(get
     model = Movie if title.media_type == "movie" else Series
     row = db.query(model).filter(model.tmdb_id == title.tmdb_id).first() if title.tmdb_id else None
     if title.media_type == "series" and not title.delete_downloaded:
-        on_disk = _series_files_on_disk(db, title, row)
+        on_disk = _series_files_on_disk(db, title, row, strict=not user.is_admin)
         if on_disk:
             raise HTTPException(409, f"{on_disk} episode{'s are' if on_disk != 1 else ' is'} already downloaded. "
                                      "Stop looking for the missing episodes instead, or confirm deleting the whole show.")
@@ -1308,7 +1318,7 @@ def remove_from_arr(title: ArrTitle, request: Request, db: Session = Depends(get
         return {"ok": True, "title": result.get("title"), "files_deleted": True,
                 "message": f"Removed {result.get('title')} and its downloaded files"}
 
-    svc, rec = _find_arr_record(db, title)
+    svc, rec = _find_arr_record(db, title, strict=not user.is_admin)
     name = rec.get("title", "")
     path = (rec.get("path") or "").lower()
     hybrid = title.media_type == "series" and row is not None and bool(getattr(row, "sonarr_path", None))

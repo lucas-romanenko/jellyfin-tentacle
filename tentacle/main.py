@@ -92,15 +92,26 @@ def run_scheduled_sync():
         # sync itself waits before its first provider call, once its run is
         # visible -- so a waiting nightly sync can be cancelled like any other.
         pause = JobPause(db, "the scheduled provider sync")
-        active_providers = db.query(Provider).filter(Provider.active == True).all()
-        for provider in active_providers:
+        # Only the ids: the syncs take hours, and a provider waiting its turn
+        # holds no slot, so it can be deleted or switched off meanwhile (#517).
+        provider_ids = [pid for (pid,) in db.query(Provider.id).filter(Provider.active == True).all()]
+        for provider_id in provider_ids:
             # Respect the same running-guard the manual sync endpoint uses, so the
             # nightly run never starts a second concurrent sync for a provider a
             # user (or a previous nightly job) is already syncing. Check-and-set
             # atomically under _sync_lock to avoid a TOCTOU race.
             with _sync_lock:
-                if provider.id in _running_syncs:
-                    logger.info(f"Scheduled sync skipping {provider.name} — sync already running")
+                if provider_id in _running_syncs:
+                    logger.info(f"Scheduled sync skipping provider {provider_id} — sync already running")
+                    continue
+                # Read it fresh under the slot lock delete_provider() also takes:
+                # end the open transaction first so a delete committed by another
+                # request is seen (nothing is pending between providers).
+                db.commit()
+                provider = db.query(Provider).filter(Provider.id == provider_id, Provider.active == True).first()
+                if provider is None:
+                    logger.info(f"Scheduled sync skipping provider {provider_id} — "
+                                "deleted or switched off since the job started")
                     continue
                 _running_syncs[provider.id] = True
             db_running = db.query(SyncRun).filter(
@@ -240,6 +251,16 @@ def run_scheduled_sync():
             _rollback(db)
             logger.error(f"Orphan sweep failed: {e}")
 
+        # Watched state saved when a duplicate's same-folder copy was deleted,
+        # for the kept copy's new item, if the worker gave up before Jellyfin
+        # made it (#333). After the Jellyfin pipeline's scan.
+        try:
+            from services.duplicates import apply_pending_user_data
+            apply_pending_user_data(db)
+        except Exception as e:
+            _rollback(db)
+            logger.error(f"Carrying saved watched state over failed: {e}")
+
         # Flag VOD movies that play a different film than their label (found
         # once Jellyfin has probed them on first play). Same slot as the sweep:
         # it reads the whole movie library.
@@ -257,7 +278,7 @@ def run_scheduled_sync():
         logger.info("Syncing Live TV EPG data")
         try:
             from models.database import LiveChannel
-            from routers.livetv import _run_epg_sync_background, live_tv_providers
+            from routers.livetv import _epg_provider_data, _run_epg_sync_background, live_tv_providers
             from services.provider_activity import wait_for_recordings, EPG_WAIT_FOR_RECORDING_SECONDS
             epg_may_download = True
             live_providers = live_tv_providers(db)
@@ -268,22 +289,9 @@ def run_scheduled_sync():
                 all_channels = db.query(LiveChannel).filter(LiveChannel.provider_id == lp.id).all()
                 if not all_channels:
                     continue
-                enabled_count = sum(1 for ch in all_channels if ch.enabled)
-                provider_data = {
-                    "id": lp.id,
-                    "provider_type": lp.provider_type or "xtream",
-                    "server_url": lp.server_url,
-                    "username": lp.username,
-                    "password": lp.password,
-                    "user_agent": lp.user_agent or "TiviMate/4.7.0 (Linux; Android 12)",
-                    "epg_url": lp.epg_url,
-                    "channels": [
-                        {"stream_id": ch.stream_id, "epg_channel_id": ch.epg_channel_id, "name": ch.name}
-                        for ch in all_channels
-                    ],
-                    "enabled_count": enabled_count,
-                }
-                logger.info(f"EPG sync for '{lp.name}': {len(all_channels)} channels ({enabled_count} enabled)")
+                provider_data = _epg_provider_data(lp, all_channels)
+                logger.info(f"EPG sync for '{lp.name}': {len(all_channels)} channels "
+                            f"({provider_data['enabled_count']} enabled)")
                 # Only trigger the Jellyfin guide refresh if the sync actually
                 # produced data — refreshing after a failed sync makes Jellyfin
                 # re-ingest a draining/stale guide for nothing.
@@ -450,20 +458,19 @@ def reschedule_main_sync(cron: str = None) -> bool:
             cron = get_setting(db, "sync_schedule", default)
         finally:
             db.close()
-    parts = (cron or "").strip().split()
-    if len(parts) != 5 and from_settings and cron != default:
-        # A stored value that is no schedule must not leave the install with
-        # no nightly job: run at the default time and say so.
-        logger.warning(f"Invalid sync schedule '{cron}' in settings — using the default '{default}'")
-        cron, parts = default, default.split()
-    if len(parts) != 5:
-        logger.warning(f"Invalid sync schedule '{cron}' — expected 5 cron fields")
-        return False
+    from services.sync_schedule import sync_trigger
     try:
-        trigger = CronTrigger(
-            minute=parts[0], hour=parts[1],
-            day=parts[2], month=parts[3], day_of_week=parts[4]
-        )
+        trigger = sync_trigger(cron)
+    except ValueError as e:
+        if not from_settings or cron == default:
+            logger.warning(f"Invalid sync schedule '{cron}': {e}")
+            return False
+        # A stored value that is no schedule ("0 24 * * *", or "0 3 * * 7"
+        # before #458) must not leave the install with no nightly job: run at
+        # the default time and say so.
+        logger.warning(f"Invalid sync schedule '{cron}' in settings ({e}) — using the default '{default}'")
+        cron, trigger = default, sync_trigger(default)
+    try:
         scheduler.add_job(run_scheduled_sync, trigger, id="main_sync", replace_existing=True,
                           misfire_grace_time=6 * 3600)
         logger.info(f"Sync scheduled: {cron}")
@@ -514,9 +521,16 @@ def get_schedule_info() -> dict:
         cron = get_setting(db, "sync_schedule", NON_EMPTY_DEFAULTS["sync_schedule"])
     finally:
         db.close()
+    from services.sync_schedule import sync_trigger
+    try:
+        sync_trigger(cron)
+        usable = True
+    except ValueError:
+        # Startup runs the default instead (reschedule_main_sync)
+        usable = False
     parts = cron.strip().split()
     time_str = "03:00"
-    if len(parts) >= 2:
+    if usable and len(parts) >= 2:
         try:
             time_str = f"{int(parts[1]):02d}:{int(parts[0]):02d}"
         except Exception:
@@ -535,6 +549,7 @@ def get_schedule_info() -> dict:
         pass
     return {
         "cron": cron,
+        "usable": usable,
         "time": time_str,
         "timezone": str(tz),
         "timezone_abbr": tz_abbr,

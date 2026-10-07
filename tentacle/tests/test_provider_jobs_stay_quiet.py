@@ -313,16 +313,23 @@ class SecretsStayMasked(unittest.TestCase):
     def test_the_vod_token_secret_is_masked_like_the_api_keys(self):
         from routers import settings as settings_router
         self.assertIn("vod_token_secret", settings_router.SENSITIVE_KEYS)
-        src = Path(settings_router.__file__).read_text(encoding="utf-8")
-        self.assertIn("for key in SENSITIVE_KEYS:", src.split("# Mask sensitive values", 1)[1].split("\n", 2)[1])
+        db = _db()
+        self.addCleanup(db.close)
+        import models.database as mdb
+        mdb.set_setting(db, "radarr_api_key", "r" * 32)
+        self.assertNotIn("r" * 32, str(settings_router.get_settings(db)))
 
     def test_a_masked_secret_posted_back_is_not_written(self):
         """GET masks it; a client that round-trips GET -> POST must not
-        replace the real secret with 'abcd...wxyz' (every .strm would 404)."""
+        replace the real secret with the masked form (every .strm would 404)."""
         from routers import settings as settings_router
-        src = Path(settings_router.__file__).read_text(encoding="utf-8")
-        self.assertIn("sensitive_keys = SENSITIVE_KEYS", src.split("def update_settings", 1)[1])
-        self.assertIn("vod_token_secret", settings_router.SENSITIVE_KEYS)
+        import models.database as mdb
+        db = _db()
+        self.addCleanup(db.close)
+        mdb.set_setting(db, "radarr_api_key", "r" * 32)
+        shown = settings_router.get_settings(db)["radarr_api_key"]
+        settings_router.update_settings(settings_router.SettingsUpdate(settings={"radarr_api_key": shown}), db)
+        self.assertEqual("r" * 32, mdb.get_setting(db, "radarr_api_key"))
 
 
 class FrameGrabsRefuseWhileLive(unittest.TestCase):
