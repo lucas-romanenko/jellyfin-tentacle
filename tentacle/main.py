@@ -92,15 +92,25 @@ def run_scheduled_sync():
         # sync itself waits before its first provider call, once its run is
         # visible -- so a waiting nightly sync can be cancelled like any other.
         pause = JobPause(db, "the scheduled provider sync")
-        active_providers = db.query(Provider).filter(Provider.active == True).all()
-        for provider in active_providers:
+        active_providers = [pid for (pid,) in db.query(Provider.id).filter(Provider.active == True).all()]
+        for provider_id in active_providers:
             # Respect the same running-guard the manual sync endpoint uses, so the
             # nightly run never starts a second concurrent sync for a provider a
             # user (or a previous nightly job) is already syncing. Check-and-set
             # atomically under _sync_lock to avoid a TOCTOU race.
             with _sync_lock:
-                if provider.id in _running_syncs:
-                    logger.info(f"Scheduled sync skipping {provider.name} — sync already running")
+                if provider_id in _running_syncs:
+                    logger.info(f"Scheduled sync skipping provider {provider_id} — sync already running")
+                    continue
+                # Read now, not when the job started: the earlier providers'
+                # syncs take hours, and one deleted meanwhile (a delete holds
+                # this slot until its rows are gone, #450) ended the whole job.
+                db.commit()
+                provider = db.query(Provider).filter(Provider.id == provider_id,
+                                                     Provider.active == True).first()  # noqa: E712
+                if provider is None:
+                    logger.info(f"Scheduled sync skipping provider {provider_id} — deleted or switched off "
+                                f"since the job started")
                     continue
                 _running_syncs[provider.id] = True
             db_running = db.query(SyncRun).filter(
