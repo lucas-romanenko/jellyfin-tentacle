@@ -14,7 +14,7 @@ import requests
 from sqlalchemy.orm import Session
 
 from datetime import timedelta
-from models.database import Movie, Duplicate, DownloadRequest, TentacleUser, get_setting, DeletionLog
+from models.database import Movie, Duplicate, DownloadRequest, TentacleUser, get_setting, DeletionLog, get_recently_added_days
 from services.tmdb import TMDBService
 from services.nfo import write_movie_nfo, make_folder_name, refresh_arr_nfo
 from services.tagger import apply_tag_rules, get_list_tags_for_tmdb_id, detect_source_tag_from_studios
@@ -206,8 +206,9 @@ def release_vod_download(db: Session, row: Movie, drop_request_tags: bool = True
     row.date_updated = datetime.utcnow()
     set_row_tags(row, [t for t in (row.tags or []) if t not in drop],
                  owned if owned is not None else tentacle_owned_tags(db))
-    db.query(Duplicate).filter(Duplicate.tmdb_id == row.tmdb_id, Duplicate.media_type == "movie",
-                               Duplicate.resolution == "pending").delete()
+    from services.duplicates import droppable_duplicates   # not while Keep VOD holds it (#515)
+    droppable_duplicates(db, "movie", row.tmdb_id).filter(
+        Duplicate.resolution == "pending").delete(synchronize_session=False)
 
 # One Radarr scan at a time (#268). A scan loads every row, asks TMDB about
 # each new title and commits once, so two overlapping scans (two webhooks for
@@ -421,9 +422,10 @@ def _scan_radarr_library(db: Session) -> dict:
             ).delete()
             # And its duplicate tombstones, as the delete webhook does: with
             # the download gone, a "keep downloaded" one would stop the VOD
-            # copy from ever coming back (#334).
-            db.query(Duplicate).filter(Duplicate.tmdb_id == movie.tmdb_id,
-                                       Duplicate.media_type == "movie").delete()
+            # copy from ever coming back (#334). Not while Keep VOD holds
+            # them, nor one holding saved watched state (#515).
+            from services.duplicates import droppable_duplicates
+            droppable_duplicates(db, "movie", movie.tmdb_id).delete(synchronize_session=False)
             if movie.source != "radarr":
                 # A VOD title: only its download goes, the row stays.
                 release_vod_download(db, movie)
@@ -461,13 +463,13 @@ def _scan_radarr_library(db: Session) -> dict:
     # Compute tags and write NFO files for all downloaded movies
     from services.tagger import tentacle_owned_tags
     owned = tentacle_owned_tags(db)
+    recently_added_days = get_recently_added_days(db)
     for tmdb_id, db_movie in movies_needing_nfo:
         try:
             # Build tag list: built-in + source tag + rule tags + list tags + user attribution
             tags = [DOWNLOADED_MOVIES_TAG]
 
             # Recently added (within rolling window)
-            recently_added_days = int(get_setting(db, "recently_added_days", "30") or "30")
             cutoff = datetime.utcnow() - timedelta(days=recently_added_days)
             if db_movie.date_added and db_movie.date_added >= cutoff:
                 tags.append(RECENTLY_ADDED_MOVIES_TAG)

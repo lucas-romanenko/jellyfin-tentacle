@@ -199,8 +199,11 @@ def _get_list_items(list_id: int, search: Optional[str], sort: Optional[str],
 
     items = []
     for li in list_items:
-        movie = movie_map.get(li.tmdb_id) if li.tmdb_id else None
-        serie = series_map.get(li.tmdb_id) if li.tmdb_id else None
+        # TMDB numbers films and shows separately: a list's show N is not the
+        # library's film N (#510). Untyped rows are films, as in the #365 rebuild.
+        is_series = li.media_type == "series"
+        movie = movie_map.get(li.tmdb_id) if li.tmdb_id and not is_series else None
+        serie = series_map.get(li.tmdb_id) if li.tmdb_id and is_series else None
 
         if movie:
             items.append({
@@ -964,7 +967,7 @@ def list_match_suspects(db: Session = Depends(get_db)):
     return {"suspects": [{
         "tmdb_id": r.tmdb_id, "media_type": r.media_type, "title": r.title,
         "expected_minutes": r.expected_minutes, "actual_minutes": r.actual_minutes,
-        "jellyfin_item_id": r.jellyfin_item_id, "poster_path": posters.get(r.tmdb_id),
+        "jellyfin_item_id": r.jellyfin_item_id, "poster_path": posters.get(r.tmdb_id), "reason": r.reason,
         "detected_at": r.detected_at.isoformat() + "Z" if r.detected_at else None,
     } for r in rows]}
 
@@ -980,6 +983,17 @@ def dismiss_match_suspect(tmdb_id: int, db: Session = Depends(get_db)):
     row.dismissed = True
     db.commit()
     return {"ok": True}
+
+
+@router.post("/match-suspects/{tmdb_id}/undo-follow")
+def undo_follow(tmdb_id: int, db: Session = Depends(get_db),
+                user: Optional[TentacleUser] = Depends(require_admin)):
+    """A fix followed a re-listed stream that is not that film: put it back."""
+    from services.wrong_match import WrongMatchError, undo_followed_fix
+    try:
+        return undo_followed_fix(db, tmdb_id, user_name=user.display_name if user else None)
+    except WrongMatchError as e:
+        raise HTTPException(e.status, str(e))
 
 
 @router.post("/match-suspects/check", dependencies=[Depends(require_admin)])

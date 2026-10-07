@@ -42,7 +42,8 @@ but no second "ready to watch"; a bad copy being replaced still gets "A new
 copy of ... is ready to watch".
 
 **Radarr deletes a movie** (MovieDelete): DB record and `DownloadRequest`s
-removed, then `remove_item_from_playlists()` for every user in the
+removed (its duplicates too, unless Keep VOD is resolving the title or one
+holds saved watched state: server.md "Duplicates", #515), then `remove_item_from_playlists()` for every user in the
 background; the Library shows it as missing again. A file delete
 (MovieFileDelete) does the same at once, except reason `upgrade` (ignored)
 and `missingFromDisk` (Radarr can't see the file): those are collected until
@@ -143,7 +144,9 @@ it. A container that is down at the trigger still skips that night.
 both day fields set becomes an `OrTrigger`). A stored value it refuses runs
 at the default with a warning; the settings form answers 400 for one.
 
-1. refresh list subscriptions; 2. VOD sync from active providers; 3. Radarr
+1. refresh list subscriptions; 2. VOD sync from active providers (each read
+when its turn comes, under `_sync_lock`: one deleted or switched off since
+the job started is skipped, #517); 3. Radarr
 scan; 4. Sonarr scan (and Following state for every series); 5. recently
 added tags; 6. Jellyfin pipeline (scan, push tags, refresh playlists);
 7. clean the TMDB cache; 8. `sweep_orphaned_downloads()`; 9. per user:
@@ -185,11 +188,26 @@ read that row.
   check, and the sweep deleted every title not written back. A new install
   (no rows) syncs; a deliberately empty folder needs any file in it.
   `_repair_movie_strm()` and the show-folder rebuild check the root too.
+  A root that raises `OSError` when read (a stale NFS/SMB/FUSE mount) counts
+  as unmounted (#440).
 - TMDB matching (`search_movie` / `search_series`): with the provider's
   year, then, only if that found nothing good enough, once without it,
   keeping results within one year of the provider's (a local or streaming
   release year is often one off; a remake decades apart is not taken). No
-  year: one search (#265).
+  year: one search (#265). TMDB's `year` filter matches any release date
+  (re-releases too), so the first pass can bring back an older film exactly
+  titled as the label ("Dune (2024)" finds Dune 2021). Against such a
+  far-year exact title, a film within a year of the label's wins only with
+  `_CREDIBLE_VOTE_SHARE` (3 %) of its TMDB votes: a sequel under its base
+  title or a remake does, a re-release label's namesakes don't (#310).
+  Limits: two films within a year ("Wicked (2025)") take the exact title;
+  a label one off from a film the first pass doesn't return ("Dune (2020)")
+  takes the far exact title.
+- A re-searched stream whose search now finds another film keeps the film
+  its `.strm` already plays while the label still fits it by the scorer
+  (`_keeps_its_film()`, `label_names_film()`): a matcher change reaches new
+  imports only, a wrong row is Fix it's. A provider id naming the new film,
+  or a label that no longer fits (a reused stream number), moves it (#310).
 - A stream stays with the film whose `.strm` plays it (#185). After every
   category, `_place_relisted_movies()` applies that by the files: a stream
   no label placed that a film's `.strm` plays is that film, relabelled

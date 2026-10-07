@@ -92,15 +92,26 @@ def run_scheduled_sync():
         # sync itself waits before its first provider call, once its run is
         # visible -- so a waiting nightly sync can be cancelled like any other.
         pause = JobPause(db, "the scheduled provider sync")
-        active_providers = db.query(Provider).filter(Provider.active == True).all()
-        for provider in active_providers:
+        # Only the ids: the syncs take hours, and a provider waiting its turn
+        # holds no slot, so it can be deleted or switched off meanwhile (#517).
+        provider_ids = [pid for (pid,) in db.query(Provider.id).filter(Provider.active == True).all()]
+        for provider_id in provider_ids:
             # Respect the same running-guard the manual sync endpoint uses, so the
             # nightly run never starts a second concurrent sync for a provider a
             # user (or a previous nightly job) is already syncing. Check-and-set
             # atomically under _sync_lock to avoid a TOCTOU race.
             with _sync_lock:
-                if provider.id in _running_syncs:
-                    logger.info(f"Scheduled sync skipping {provider.name} — sync already running")
+                if provider_id in _running_syncs:
+                    logger.info(f"Scheduled sync skipping provider {provider_id} — sync already running")
+                    continue
+                # Read it fresh under the slot lock delete_provider() also takes:
+                # end the open transaction first so a delete committed by another
+                # request is seen (nothing is pending between providers).
+                db.commit()
+                provider = db.query(Provider).filter(Provider.id == provider_id, Provider.active == True).first()
+                if provider is None:
+                    logger.info(f"Scheduled sync skipping provider {provider_id} — "
+                                "deleted or switched off since the job started")
                     continue
                 _running_syncs[provider.id] = True
             db_running = db.query(SyncRun).filter(
