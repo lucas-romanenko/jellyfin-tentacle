@@ -36,6 +36,7 @@ from models.database import (
     Movie, Series, Provider, StreamHealth,
     log_activity, log_deletion,
 )
+from services.xtream_client import quote_cred
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +123,7 @@ def _direct_url(url: str, kind, stream_id, provider) -> str:
     if provider and kind and stream_id and vod_tokens.is_vod_url(url):
         container = url.rsplit(".", 1)[-1].split("?")[0] if "." in url else "mp4"
         path = "movie" if kind == "movie" else "series"
-        return f"{provider.server_url.rstrip('/')}/{path}/{provider.username}/{provider.password}/{stream_id}.{container}"
+        return f"{provider.server_url.rstrip('/')}/{path}/{quote_cred(provider.username)}/{quote_cred(provider.password)}/{stream_id}.{container}"
     return url
 
 

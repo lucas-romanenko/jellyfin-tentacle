@@ -31,6 +31,7 @@ from services.media_files import delete_movie_files, delete_series_files, MEDIA_
 from services.tagger import compute_tags, get_list_tags_for_tmdb_id, apply_tag_rules
 from services.exceptions import (ProviderConnectionError, ProviderDataError, SyncCancelledError, SyncError,
                                  TMDBConnectionError)
+from services.xtream_client import quote_cred
 
 logger = logging.getLogger(__name__)
 
@@ -171,7 +172,8 @@ XTREAM_HEADERS = {"User-Agent": "TiviMate/4.7.0 (Linux; Android 12)"}
 
 class XtreamClient:
     def __init__(self, provider: Provider):
-        self.base = f"{provider.server_url.rstrip('/')}/player_api.php?username={provider.username}&password={provider.password}"
+        self.base = (f"{provider.server_url.rstrip('/')}/player_api.php"
+                     f"?username={quote_cred(provider.username)}&password={quote_cred(provider.password)}")
         self.server = provider.server_url.rstrip('/')
         self.username = provider.username
         self.password = provider.password
@@ -236,12 +238,12 @@ class XtreamClient:
     def movie_stream_url(self, stream_id, container="mp4") -> str:
         if self.vod_links is not None:
             return self.vod_links.movie(stream_id, container)
-        return f"{self.server}/movie/{self.username}/{self.password}/{stream_id}.{container}"
+        return f"{self.server}/movie/{quote_cred(self.username)}/{quote_cred(self.password)}/{stream_id}.{container}"
 
     def episode_stream_url(self, episode_id, container="mp4") -> str:
         if self.vod_links is not None:
             return self.vod_links.episode(episode_id, container)
-        return f"{self.server}/series/{self.username}/{self.password}/{episode_id}.{container}"
+        return f"{self.server}/series/{quote_cred(self.username)}/{quote_cred(self.password)}/{episode_id}.{container}"
 
 
 def vod_links_for(db: Session, provider: Provider):
@@ -392,6 +394,20 @@ def _write_strm(strm_file: Path, url: str) -> None:
         raise
 
 
+def _login_encoded(url_text: str, client) -> str:
+    """A direct link of this provider written before the login was
+    URL-encoded, in the form the sync writes now. A '/' or '?' in the
+    password made it unplayable, and unreadable to the checks below, so it
+    was never rewritten. A login that needs no encoding is left as is."""
+    raw = f"/{client.username}/{client.password}/"
+    encoded = f"/{quote_cred(client.username)}/{quote_cred(client.password)}/"
+    if raw == encoded:
+        return url_text
+    for kind in ("movie", "series"):
+        url_text = url_text.replace(f"/{kind}{raw}", f"/{kind}{encoded}", 1)
+    return url_text
+
+
 def _strm_needs_rewrite(strm_file: Path, expected: str, client) -> bool:
     """An existing .strm is rewritten only when it plays the SAME stream of
     THIS Xtream provider as the sync would write today, in a different form:
@@ -414,6 +430,7 @@ def _strm_needs_rewrite(strm_file: Path, expected: str, client) -> bool:
         return True   # 0 bytes / blank: a write cut short, never a link of anyone's (#283)
     if current == expected:
         return False
+    current = _login_encoded(current, client)
     from urllib.parse import urlparse
     from services import vod_tokens
     provider_host = (urlparse(client.server).hostname or "").lower()
@@ -486,7 +503,8 @@ def _strm_plays_other_provider(strm_file: Path, client) -> bool:
     if m:
         return int(m.group(2)) in others["ids"]
     m = _XTREAM_ACCOUNT_RE.match(current)
-    return bool(m) and (m.group(1).lower(), m.group(2)) in others["accounts"]
+    from urllib.parse import unquote
+    return bool(m) and (m.group(1).lower(), unquote(m.group(2))) in others["accounts"]
 
 
 # ── M3U provider support ─────────────────────────────────────────────────
@@ -1164,7 +1182,7 @@ def _stream_origin(url_text: str, unwrap: bool = False):
     if m is None and unwrap:
         carried = _NS_CARRIED_RE.search(unquote(url_text or ""))
         m = _XTREAM_ACCOUNT_RE.match(carried.group(0)) if carried else None
-    return ("host", m.group(1).lower(), m.group(2)) if m else None
+    return ("host", m.group(1).lower(), unquote(m.group(2))) if m else None
 
 
 def _movie_row_plays_stream(client, stream: dict, strm_path, index: "_MovieIndex" = None):
