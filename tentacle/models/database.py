@@ -923,6 +923,28 @@ def get_setting(db, key: str, default: str = "") -> str:
     return s.value if s else default
 
 
+RECENTLY_ADDED_DAYS_MAX = 36500   # 100 years holds every title; timedelta overflows past year 1
+
+
+def parse_recently_added_days(value):
+    """Whole days from a stored or typed value, or None if no number can be read.
+
+    The field is <input type="number">: "14.5", "7.0" and "1e2" arrive as
+    typed, and a bare int() on them failed every sync and tag refresh (#536).
+    """
+    try:
+        days = int(float(str(value).strip()))
+    except (TypeError, ValueError, OverflowError):   # "abc"; nan, inf, 1e309 pass float() but not int()
+        return None
+    return min(max(days, 0), RECENTLY_ADDED_DAYS_MAX)
+
+
+def get_recently_added_days(db) -> int:
+    """The "Recently added" window in whole days, whatever an older save stored."""
+    days = parse_recently_added_days(get_setting(db, "recently_added_days"))
+    return int(NON_EMPTY_DEFAULTS["recently_added_days"]) if days is None else days
+
+
 def set_setting(db, key: str, value: str):
     """Set a single setting value"""
     s = db.query(Setting).filter(Setting.key == key).first()

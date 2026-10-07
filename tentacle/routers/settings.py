@@ -146,6 +146,15 @@ def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
             sync_trigger(body.settings["sync_schedule"])
         except ValueError as e:
             raise HTTPException(400, f"Sync schedule '{body.settings['sync_schedule']}' is not a valid cron: {e}")
+    if (body.settings.get("recently_added_days") or "").strip():
+        # The number field posts "14.5", "7.0" or "1e2" as typed, and every
+        # reader's int() raised on it (#536): store the whole days the window
+        # uses, refuse what no number can be read from. Blank stores the default.
+        from models.database import parse_recently_added_days
+        days = parse_recently_added_days(body.settings["recently_added_days"])
+        if days is None:
+            raise HTTPException(400, f"Recently added days '{body.settings['recently_added_days']}' is not a number")
+        body.settings["recently_added_days"] = str(days)
     from services.tmdb import TMDB_DEFAULT_TOKEN
     if (body.settings.get("tmdb_bearer_token") or "").strip() == TMDB_DEFAULT_TOKEN:
         # The built-in token stays a default: storing it would pin this install

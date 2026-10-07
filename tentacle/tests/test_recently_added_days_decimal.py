@@ -98,6 +98,30 @@ class ReadersCopeWithWhatIsStored(_Base):
         self.assertNotIn("Recently Added Movies", tags["Old"])
 
 
+class SaveStoresTheWindowUsed(_Base):
+    def _stored(self):
+        return self.db.query(Setting).filter_by(key="recently_added_days").one().value
+
+    def test_a_decimal_saves_as_its_whole_days(self):
+        for typed, stored in (("14.5", "14"), ("7.0", "7"), ("1e2", "100"), (" 21 ", "21"), ("-5", "0")):
+            with self.subTest(typed=typed):
+                self._save(recently_added_days=typed)
+                self.assertEqual(stored, self._stored())
+
+    def test_a_value_no_number_can_be_read_from_is_refused(self):
+        from fastapi import HTTPException
+        self._save(recently_added_days="21")
+        with self.assertRaises(HTTPException) as cm:
+            self._save(recently_added_days="abc", home_row_limit="9")
+        self.assertEqual(400, cm.exception.status_code)
+        self.assertEqual("21", self._stored())   # refused before anything is stored
+        self.assertNotEqual("9", mdb.get_setting(self.db, "home_row_limit"))
+
+    def test_blank_still_saves_the_default(self):
+        self._save(recently_added_days="")
+        self.assertEqual("30", self._stored())
+
+
 class ProviderSyncStarts(_Base):
     def test_a_provider_sync_gets_as_far_as_recording_its_run(self):
         from services import sync as sync_mod

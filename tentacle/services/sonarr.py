@@ -12,7 +12,7 @@ from typing import Optional
 import requests
 from sqlalchemy.orm import Session
 
-from models.database import Series, Duplicate, DownloadRequest, TentacleUser, get_setting, DeletionLog
+from models.database import Series, Duplicate, DownloadRequest, TentacleUser, get_setting, DeletionLog, get_recently_added_days
 from services.radarr import file_loss_looks_like_an_outage
 from services.duplicates import series_has_real_download, droppable_duplicates
 
@@ -882,13 +882,13 @@ def _scan_sonarr_library(db: Session) -> dict:
     # Compute tags and write NFO files for all downloaded series
     from services.tagger import tentacle_owned_tags
     owned = tentacle_owned_tags(db)
+    recently_added_days = get_recently_added_days(db)
     for tmdb_id, db_series in series_needing_nfo:
         try:
             # Build tag list: built-in + source tag + rule tags + list tags + user attribution
             tags = [DOWNLOADED_TV_TAG]
 
             # Recently added (within rolling window)
-            recently_added_days = int(get_setting(db, "recently_added_days", "30") or "30")
             cutoff = datetime.utcnow() - timedelta(days=recently_added_days)
             if db_series.date_added and db_series.date_added >= cutoff:
                 tags.append(RECENTLY_ADDED_TV_TAG)
