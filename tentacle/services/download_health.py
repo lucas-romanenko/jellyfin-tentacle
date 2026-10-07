@@ -18,7 +18,8 @@ request-path reads never write it.
 Auto-fix (both toggles default OFF):
   downloads_auto_fix_enabled    — cancel + blocklist stuck items, re-grab the best
                                   alternative release preferring the OPPOSITE
-                                  protocol from the one that failed
+                                  protocol from the one that failed (or let
+                                  the arr search: resolve_stuck_download)
   downloads_auto_import_enabled — for import_blocked items, force a ManualImport
                                   when the arr's own lookup finds exactly one
                                   unambiguous file; otherwise dequeue but keep the
@@ -206,9 +207,40 @@ def _grab_release(url: str, key: str, guid: str, indexer_id: int):
     _arr_post(url, key, "release", {"guid": guid, "indexerId": indexer_id})
 
 
+def _grab_may_have_gone_through(e: Exception) -> bool:
+    """A grab the arr answered with a 4xx or its own 500 (e.g. no download
+    client for that protocol) was refused. No answer at all (timeout, reset)
+    or a gateway's 502/503/504 may still have reached the download client."""
+    if isinstance(e, requests.HTTPError) and e.response is not None:
+        return e.response.status_code in (502, 503, 504)
+    return isinstance(e, requests.RequestException)
+
+
+def _arr_search(url: str, key: str, app: str, movie_id, episode_id) -> bool:
+    """Ask the arr to run its own automatic search for the title (what its
+    "Redownload Failed" would have done). True when the command was accepted."""
+    body = {"name": "MoviesSearch", "movieIds": [movie_id]} if app == "radarr" \
+        else {"name": "EpisodeSearch", "episodeIds": [episode_id]}
+    try:
+        _arr_post(url, key, "command", body)
+        return True
+    except Exception as e:
+        logger.warning(f"[Download health] {app} search command failed: {e}")
+        return False
+
+
 def resolve_stuck_download(db, app: str, queue_id: int, reason: str = "manual") -> dict:
     """Cancel + blocklist a stuck queue item, then grab the best alternative
-    release, preferring the opposite protocol from the one that failed."""
+    release, preferring the opposite protocol from the one that failed.
+
+    Exactly one side looks for the replacement (#444). Removing with
+    blocklist=true makes Radarr/Sonarr search again by themselves ("Redownload
+    Failed", on by default), and that grab only shows in their queue seconds
+    later, so Tentacle grabbing too downloads the title twice. When Tentacle
+    picks the replacement it removes with skipRedownload=true; when it grabs
+    nothing it asks the arr for its own search instead. A download of several
+    episodes (a season pack: several queue records, one downloadId) is left to
+    Sonarr's own re-search, which knows to look for the whole season."""
     url, key = _arr_conn(db, app)
     if not url or not key:
         return {"ok": False, "error": f"{app} not configured"}
@@ -228,37 +260,61 @@ def resolve_stuck_download(db, app: str, queue_id: int, reason: str = "manual") 
         movie_id = r.get("movieId")
         episode_id = r.get("episodeId")
         download_id = r.get("downloadId") or str(queue_id)
+        arr_name = app.capitalize()
 
+        several_episodes = app == "sonarr" and bool(r.get("downloadId")) and any(
+            x.get("downloadId") == r.get("downloadId") and x.get("episodeId") != episode_id
+            for x in records)
+        tentacle_picks = not several_episodes and bool(movie_id if app == "radarr" else episode_id)
+
+        delete_params = {"removeFromClient": "true", "blocklist": "true"}
+        if tentacle_picks:
+            delete_params["skipRedownload"] = "true"
         try:
-            _arr_delete(url, key, f"queue/{queue_id}", removeFromClient="true", blocklist="true")
+            _arr_delete(url, key, f"queue/{queue_id}", **delete_params)
         except Exception as e:
             return {"ok": False, "title": title, "error": f"cancel failed: {e}"}
 
         picked = None
-        try:
-            if app == "radarr" and movie_id:
-                releases = _arr_get(url, key, "release", movieId=movie_id)
-            elif app == "sonarr" and episode_id:
-                releases = _arr_get(url, key, "release", episodeId=episode_id)
-            else:
-                releases = []
-            candidates = [x for x in releases if not x.get("rejected")]
-            prefer = "usenet" if protocol == "torrent" else "torrent"
-            picked = next((x for x in candidates if x.get("protocol") == prefer), None) \
-                or (candidates[0] if candidates else None)
+        searching = not tentacle_picks  # the arr re-searches by itself
+        if tentacle_picks:
+            try:
+                if app == "radarr":
+                    releases = _arr_get(url, key, "release", movieId=movie_id)
+                else:
+                    releases = _arr_get(url, key, "release", episodeId=episode_id)
+                candidates = [x for x in releases if not x.get("rejected")]
+                prefer = "usenet" if protocol == "torrent" else "torrent"
+                picked = next((x for x in candidates if x.get("protocol") == prefer), None) \
+                    or (candidates[0] if candidates else None)
+            except Exception as e:
+                logger.warning(f"[Download health] replacement search failed for '{title}': {e}")
             if picked:
-                _grab_release(url, key, picked["guid"], picked["indexerId"])
-        except Exception as e:
-            logger.warning(f"[Download health] replacement search failed for '{title}': {e}")
+                try:
+                    _grab_release(url, key, picked["guid"], picked["indexerId"])
+                except Exception as e:
+                    logger.warning(f"[Download health] replacement grab for '{title}' failed: {e}")
+                    if not _grab_may_have_gone_through(e):
+                        picked = None
+            if not picked:
+                searching = _arr_search(url, key, app, movie_id, episode_id)
 
-        detail = (f"Cancelled stuck {protocol} download; replaced with {picked.get('protocol')} release: {picked.get('title')}"
-                  if picked else f"Cancelled stuck {protocol} download; no alternative release found")
+        if picked:
+            detail = (f"Cancelled stuck {protocol} download; replaced with "
+                      f"{picked.get('protocol')} release: {picked.get('title')}")
+            activity = f"Stuck download fixed: {title}"
+        elif searching:
+            detail = f"Cancelled stuck {protocol} download; {arr_name} is searching for a replacement"
+            activity = f"Stuck download cancelled ({arr_name} is searching for a replacement): {title}"
+        else:
+            detail = f"Cancelled stuck {protocol} download; no alternative release found"
+            activity = f"Stuck download cancelled (no replacement found): {title}"
         log_deletion(db, kind="download-fix", name=title, size_bytes=r.get("size") or 0,
                      reason=reason, detail=detail)
-        log_activity(db, "download_fix", f"Stuck download fixed: {title}" if picked
-                     else f"Stuck download cancelled (no replacement found): {title}")
+        log_activity(db, "download_fix", activity)
         _clear_stall_entry(db, download_id)
         return {"ok": True, "title": title, "replaced": bool(picked),
+                "searching": bool(searching and not picked),
                 "picked_title": picked.get("title") if picked else None,
                 "picked_protocol": picked.get("protocol") if picked else None}
 

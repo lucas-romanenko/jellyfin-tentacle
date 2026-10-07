@@ -20,10 +20,17 @@ from models.database import (
 )
 from routers.auth import require_admin
 from services.media_files import delete_movie_files, delete_series_files
+from services.xtream_client import quote_cred
 
 router = APIRouter(prefix="/api/providers", tags=["providers"], dependencies=[Depends(require_admin)])
 
 HEADERS = {"User-Agent": "TiviMate/4.7.0 (Linux; Android 12)"}
+
+
+def _api_base(provider) -> str:
+    """The provider's player_api.php URL with its login, percent-encoded (#529)."""
+    return (f"{provider.server_url.rstrip('/')}/player_api.php"
+            f"?username={quote_cred(provider.username)}&password={quote_cred(provider.password)}")
 
 FOREIGN_PREFIXES = {
     'AF', 'AL', 'AR', 'BE', 'BG', 'BN', 'BR', 'CN', 'CZ', 'DE', 'DK',
@@ -161,7 +168,7 @@ def fetch_provider_categories(provider: Provider):
         c = M3UClient(provider)
         return c.get_vod_categories(), c.get_series_categories(), c.vod_counts(), c.series_counts()
 
-    base = f"{provider.server_url.rstrip('/')}/player_api.php?username={provider.username}&password={provider.password}"
+    base = _api_base(provider)
     session = requests.Session()
     session.headers.update(HEADERS)
 
@@ -204,7 +211,7 @@ def test_provider_connection(provider: Provider):
             raise Exception("Playlist reachable but no VOD movies or series found")
         return {"user_info": {"auth": 1}, "_m3u": {"has_vod": n_movies > 0, "has_series": n_series > 0}}
 
-    url = f"{provider.server_url.rstrip('/')}/player_api.php?username={provider.username}&password={provider.password}"
+    url = _api_base(provider)
     r = requests.get(url, headers=HEADERS, timeout=15)
     r.raise_for_status()
     data = r.json()
@@ -291,6 +298,8 @@ def update_provider(provider_id: int, body: ProviderUpdate, db: Session = Depend
     p = db.query(Provider).filter(Provider.id == provider_id).first()
     if not p:
         raise HTTPException(404, "Provider not found")
+    from routers.livetv import _xtream_login, rewrite_xtream_channel_urls
+    before = _xtream_login(p)
     if body.name is not None:
         p.name = body.name
     if body.provider_type is not None:
@@ -315,6 +324,9 @@ def update_provider(provider_id: int, body: ProviderUpdate, db: Session = Depend
         p.active = body.active
     if body.require_tmdb_match is not None:
         p.require_tmdb_match = body.require_tmdb_match
+    # A new server or login reaches the Live TV channels now, not at the
+    # next channel sync (#469)
+    rewrite_xtream_channel_urls(p, before, db)
     db.commit()
     return {"success": True}
 
@@ -325,52 +337,67 @@ def delete_provider(provider_id: int, db: Session = Depends(get_db)):
     if not p:
         raise HTTPException(404, "Provider not found")
 
-    # ── Delete VOD files from disk ──────────────────────────────────────────
-    deleted_files = 0
+    # A sync writes each new title's files before its rows, and commits the rows
+    # once per category: a delete under it misses them, the sync's commit then
+    # fails on the deleted category, and the files stay with no row for good
+    # (#450). Take the provider's sync slot like "Sync now" and the nightly do,
+    # and hold it until the rows are gone so neither starts a sync meanwhile.
+    from routers.sync import _running_syncs, _sync_lock
+    with _sync_lock:
+        if provider_id in _running_syncs or db.query(SyncRun).filter(
+                SyncRun.provider_id == provider_id, SyncRun.status == "running").first():
+            raise HTTPException(409, "A sync of this provider is running — cancel it (or let it "
+                                     "finish), then delete the provider")
+        _running_syncs[provider_id] = True
+    try:
+        # ── Delete VOD files from disk ──────────────────────────────────────────
+        deleted_files = 0
 
-    # Movies: strm_path points to .strm file, delete file + .nfo + parent folder
-    movies = db.query(Movie).filter(Movie.provider_id == provider_id).all()
-    for m in movies:
-        deleted_files += delete_movie_files(m.strm_path)
+        # Movies: strm_path points to .strm file, delete file + .nfo + parent folder
+        movies = db.query(Movie).filter(Movie.provider_id == provider_id).all()
+        for m in movies:
+            deleted_files += delete_movie_files(m.strm_path)
 
-    # Series: strm_path points to the show directory. Only the .strm/.nfo files
-    # Tentacle wrote are removed — merged setups share this folder with Sonarr's
-    # downloads, and a recursive delete would destroy those too.
-    series = db.query(Series).filter(Series.provider_id == provider_id).all()
-    for s in series:
-        deleted_files += delete_series_files(s.strm_path)
+        # Series: strm_path points to the show directory. Only the .strm/.nfo files
+        # Tentacle wrote are removed — merged setups share this folder with Sonarr's
+        # downloads, and a recursive delete would destroy those too.
+        series = db.query(Series).filter(Series.provider_id == provider_id).all()
+        for s in series:
+            deleted_files += delete_series_files(s.strm_path)
 
-    logger.info(f"Deleted {deleted_files} VOD files from disk for provider {p.name}")
+        logger.info(f"Deleted {deleted_files} VOD files from disk for provider {p.name}")
 
-    # ── Cascade-delete all DB records ────────────────────────────────────────
-    # Remove duplicates that reference movies from this provider
-    provider_tmdb_ids = [m.tmdb_id for m in movies]
-    if provider_tmdb_ids:
-        db.query(Duplicate).filter(Duplicate.tmdb_id.in_(provider_tmdb_ids)).delete(synchronize_session=False)
+        # ── Cascade-delete all DB records ────────────────────────────────────────
+        # Remove duplicates that reference movies from this provider
+        provider_tmdb_ids = [m.tmdb_id for m in movies]
+        if provider_tmdb_ids:
+            db.query(Duplicate).filter(Duplicate.tmdb_id.in_(provider_tmdb_ids)).delete(synchronize_session=False)
 
-    deleted_movies = len(movies)
-    deleted_series = len(series)
-    db.query(Movie).filter(Movie.provider_id == provider_id).delete()
-    db.query(Series).filter(Series.provider_id == provider_id).delete()
-    # Delete category snapshots via category IDs, then categories
-    cat_ids = [c.id for c in db.query(ProviderCategory.id).filter(ProviderCategory.provider_id == provider_id).all()]
-    if cat_ids:
-        db.query(CategorySnapshot).filter(CategorySnapshot.category_id.in_(cat_ids)).delete(synchronize_session=False)
-    db.query(ProviderCategory).filter(ProviderCategory.provider_id == provider_id).delete()
-    db.query(SyncRun).filter(SyncRun.provider_id == provider_id).delete()
-    # Delete EPG programs for channels belonging to this provider, then channels/groups
-    channel_epg_ids = list({
-        gid for ch in db.query(LiveChannel).filter(LiveChannel.provider_id == provider_id)
-        for gid in (ch.guide_epg_id, ch.epg_channel_id) if gid
-    })
-    if channel_epg_ids:
-        db.query(EPGProgram).filter(EPGProgram.channel_id.in_(channel_epg_ids)).delete(synchronize_session=False)
-    db.query(LiveChannel).filter(LiveChannel.provider_id == provider_id).delete()
-    db.query(LiveChannelGroup).filter(LiveChannelGroup.provider_id == provider_id).delete()
+        deleted_movies = len(movies)
+        deleted_series = len(series)
+        db.query(Movie).filter(Movie.provider_id == provider_id).delete()
+        db.query(Series).filter(Series.provider_id == provider_id).delete()
+        # Delete category snapshots via category IDs, then categories
+        cat_ids = [c.id for c in db.query(ProviderCategory.id).filter(ProviderCategory.provider_id == provider_id).all()]
+        if cat_ids:
+            db.query(CategorySnapshot).filter(CategorySnapshot.category_id.in_(cat_ids)).delete(synchronize_session=False)
+        db.query(ProviderCategory).filter(ProviderCategory.provider_id == provider_id).delete()
+        db.query(SyncRun).filter(SyncRun.provider_id == provider_id).delete()
+        # Delete EPG programs for channels belonging to this provider, then channels/groups
+        channel_epg_ids = list({
+            gid for ch in db.query(LiveChannel).filter(LiveChannel.provider_id == provider_id)
+            for gid in (ch.guide_epg_id, ch.epg_channel_id) if gid
+        })
+        if channel_epg_ids:
+            db.query(EPGProgram).filter(EPGProgram.channel_id.in_(channel_epg_ids)).delete(synchronize_session=False)
+        db.query(LiveChannel).filter(LiveChannel.provider_id == provider_id).delete()
+        db.query(LiveChannelGroup).filter(LiveChannelGroup.provider_id == provider_id).delete()
 
-    provider_name = p.name
-    db.delete(p)
-    db.commit()
+        provider_name = p.name
+        db.delete(p)
+        db.commit()
+    finally:
+        _running_syncs.pop(provider_id, None)
 
     from models.database import log_deletion
     log_deletion(db, kind="provider-cascade", name=provider_name, reason="manual",
@@ -432,7 +459,7 @@ def test_provider(provider_id: int, db: Session = Depends(get_db)):
         p.max_connections = int(info.get("max_connections", 1))
 
         # Probe capabilities
-        base = f"{p.server_url.rstrip('/')}/player_api.php?username={p.username}&password={p.password}"
+        base = _api_base(p)
         session = requests.Session()
         session.headers.update(HEADERS)
         for attr, action in [("has_vod", "get_vod_categories"), ("has_series", "get_series_categories"), ("has_live", "get_live_categories")]:
@@ -624,7 +651,7 @@ def preview_sync(provider_id: int, db: Session = Depends(get_db)):
     # Get stream counts per category
     from services.provider_activity import refuse_while_recording
     refuse_while_recording(db, "A sync preview")
-    base = f"{p.server_url.rstrip('/')}/player_api.php?username={p.username}&password={p.password}"
+    base = _api_base(p)
     session = requests.Session()
     session.headers.update(HEADERS)
 
