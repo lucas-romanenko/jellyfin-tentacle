@@ -27,6 +27,7 @@ import hashlib
 import logging
 import re
 import threading
+from array import array
 from collections import deque
 
 import httpx
@@ -242,13 +243,15 @@ async def _decidable_start(pieces, need: int = 564):
 # Forwarded again, they repeated in the recording at every re-dial (on a
 # "newest connection wins" account every ~13 s: files 1.7-2.6x their content,
 # time jumping back at each reconnect). _ReplaySplicer joins a re-dialled
-# connection right after the last byte sent, but only when that is proven;
-# anything else goes out as it comes (duplicates at worst, never a loss).
+# connection right after the last byte sent, but only when that is proven:
+# every packet it drops equals the packet sent at that place (#520: a provider
+# that loops aired packets verbatim can repeat a frame start that was sent
+# right after packets that never were). Anything else goes out as it comes
+# (duplicates at worst, never a loss).
 _SPLICE_HOLD_BYTES = 32 * 1024 * 1024   # the most of a replay held: half a client's byte slack
 _SPLICE_HOLD_SECONDS = 30.0             # the longest the output pauses for one
 _SPLICE_DECIDE_PACKETS = 2048           # the first frame start must come within this
 _SPLICE_INDEX_MAX = 16384               # frame starts remembered (minutes of a channel)
-_SPLICE_TAIL_MAX = 4 * 1024 * 1024      # bytes since the last one, kept to compare
 
 
 def _ts_frame_start(pkt) -> bool:
@@ -271,10 +274,11 @@ class _ReplaySplicer:
     If that packet was sent before, at output offset o, the connection is a
     replay that should reach the end of what was sent at sent_total - o bytes
     past it. It is held up to that point, every frame start on the way must
-    sit exactly where it was sent (a gap in between shifts them), and the
-    bytes sent since the last frame start must come right before it. Then the
-    held replay is dropped and the stream goes on from there. Anything else
-    (a first frame never sent: a real gap or no replay; a replay that differs,
+    sit exactly where it was sent (a gap in between shifts them), and every
+    packet before the join point must equal the one sent at that place (a
+    hash per packet sent, kept as far back as a hold reaches). Then the held
+    replay is dropped and the stream goes on from there. Anything else (a
+    first frame never sent: a real gap or no replay; a replay that differs,
     is too large or too slow; a break before the join) releases what was held."""
 
     def __init__(self, channel_id: int, health: dict):
@@ -282,29 +286,23 @@ class _ReplaySplicer:
         self.sent_total = 0
         self._index: dict = {}          # frame-start packet -> where it was sent (the newest)
         self._order = deque()           # (offset, packet), oldest first
-        self._tail: list = []           # bytes sent since the last frame start
-        self._tail_len = 0
-        self._tail_ok = False           # none yet, or the tail outgrew _SPLICE_TAIL_MAX
+        # hash(packet) of every packet sent, by packet number modulo its size
+        self._ring = array("q", bytes(8 * (_SPLICE_HOLD_BYTES // 188 + 1)))
         self._breaks = deque([0])       # where a connection not joined began in the output
         self._hold = None               # the re-dialled connection's bytes while it is judged
 
     def sent(self, data: bytes) -> None:
         """Whole packets that went out, in order."""
-        base, last = self.sent_total, None
+        base, ring, size = self.sent_total, self._ring, len(self._ring)
+        p = base // 188
         for i in range(0, len(data) - 187, 188):
-            if data[i + 1] & 0x40 and _ts_frame_start(data[i:i + 188]):
-                key = data[i:i + 188]
+            key = data[i:i + 188]
+            ring[p % size] = hash(key)
+            p += 1
+            if data[i + 1] & 0x40 and _ts_frame_start(key):
                 self._index[key] = base + i
                 self._order.append((base + i, key))
-                last = i
         self.sent_total += len(data)
-        if last is not None:
-            self._tail, self._tail_len, self._tail_ok = [data[last:]], len(data) - last, True
-        elif self._tail_ok and data:
-            self._tail.append(data)
-            self._tail_len += len(data)
-            if self._tail_len > _SPLICE_TAIL_MAX:
-                self._tail, self._tail_len, self._tail_ok = [], 0, False
         # Older than a hold could reach back to: never a join point again.
         floor = self.sent_total - _SPLICE_HOLD_BYTES
         while self._order and (len(self._order) > _SPLICE_INDEX_MAX or self._order[0][0] < floor):
@@ -317,6 +315,7 @@ class _ReplaySplicer:
     def begin(self, now: float, outage: float) -> None:
         """A re-dialled connection starts delivering (its partial first packet trimmed)."""
         self._hold, self._scan, self._first, self._join = bytearray(), 0, None, None
+        self._checked = 0               # held packets found equal to the ones sent there
         self._since, self._outage = now, outage
 
     def feed(self, piece: bytes, now: float) -> bytes:
@@ -338,11 +337,10 @@ class _ReplaySplicer:
             if self._first is None:
                 if sent_at is None:
                     return self._release("it starts with a frame not sent before: a gap, or no replay")
-                if not self._tail_ok:
-                    return self._release("too long since the last frame start sent")
                 # What came before that frame (tables, the end of the previous
                 # frame) is dropped too: it must have gone out right before it,
-                # not be cut off by an earlier connection's start.
+                # not be cut off by an earlier connection's start (and below,
+                # be the very packets sent there).
                 if any(sent_at - n < b <= sent_at for b in self._breaks):
                     return self._release("what precedes its first frame was not sent")
                 self._first = (n, sent_at)
@@ -351,10 +349,18 @@ class _ReplaySplicer:
                     return self._release(f"a replay of {self._join / 1e6:.0f} MB is too large to hold")
             elif sent_at != self._first[1] + n - self._first[0]:
                 return self._release("its frames are not where they were sent")
+        if self._join is not None:
+            # Every packet dropped must be the one sent at that place (#520):
+            # held packet k was output packet sent_total/188 - join/188 + k.
+            # Checked as it arrives, so a large replay isn't hashed at once.
+            ring, size = self._ring, len(self._ring)
+            at = self.sent_total // 188 - self._join // 188
+            upto = min(len(hold), self._join) // 188
+            for k in range(self._checked, upto):
+                if hash(bytes(hold[k * 188:k * 188 + 188])) != ring[(at + k) % size]:
+                    return self._release("the bytes before the join point differ")
+            self._checked = upto
         if self._join is not None and len(hold) >= self._join:
-            tail = b"".join(self._tail)
-            if hold[self._join - len(tail):self._join] != tail:
-                return self._release("the bytes before the join point differ")
             out = bytes(hold[self._join:])
             self.health["replays_joined"] += 1
             self.health["replay_bytes_skipped"] += self._join
