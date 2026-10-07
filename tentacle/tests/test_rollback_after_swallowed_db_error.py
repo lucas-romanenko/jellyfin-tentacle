@@ -132,8 +132,8 @@ class DiscoveryPerProvider(unittest.TestCase):
 
 
 class DiscoveryLiveGroups(unittest.TestCase):
-    """The Live TV half: a group sync whose flush fails (two new categories
-    with the same name, uq_live_group) leaves the session usable."""
+    """The Live TV half: a group sync whose flush fails (here a UNIQUE
+    constraint, uq_live_group) leaves the session usable."""
 
     def test_the_session_is_usable_after_a_failed_group_sync(self):
         logging.disable(logging.CRITICAL)
@@ -143,25 +143,17 @@ class DiscoveryLiveGroups(unittest.TestCase):
                             active=True, live_tv_enabled=True, provider_type="xtream"))
         db.commit()
 
-        class Client:
-            def __init__(self, *a, **k):
-                pass
-
-            def get_live_categories(self):
-                return [{"category_id": "1", "category_name": "SPORTS"},
-                        {"category_id": "2", "category_name": "SPORTS"}]
-
-            def get_live_streams(self):
-                return []
-
-            def close(self):
-                pass
+        def failing_group_sync(provider_data, db):
+            # A real failed flush inside the group sync: the session now refuses
+            # every statement until it is rolled back.
+            db.add_all([mdb.LiveChannelGroup(provider_id=provider_data["id"], name="SPORTS"),
+                        mdb.LiveChannelGroup(provider_id=provider_data["id"], name="SPORTS")])
+            db.flush()
         import services.discovery as disc
-        with mock.patch("services.xtream_client.XtreamClient", Client):
+        with mock.patch("routers.livetv._sync_groups_from_xtream", failing_group_sync):
             result = disc.discover_new_provider_content(db)
         self.assertEqual([], result["live_new"])
         self.assertEqual(0, db.query(mdb.Setting).filter(mdb.Setting.key == "x").count())   # no PendingRollbackError
-
 
 if __name__ == "__main__":
     unittest.main()
