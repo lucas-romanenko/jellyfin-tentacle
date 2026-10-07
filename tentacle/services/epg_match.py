@@ -7,7 +7,8 @@ channels had no guide.
 
 Ordered passes, most reliable first:
   1. the admin's override (LiveChannel.epg_id_override), which syncs never touch;
-  2. the provider's tvg-id, when the feed has that channel;
+  2. the provider's tvg-id, when the feed has that channel (ignoring letter
+     case, as Jellyfin does: the feed's own spelling is then the guide id);
   3. the channel NAME, reduced by channel_name_key(), and only when it names
      exactly one feed channel of the channel's own country (or one that names
      no country), and no other channel takes that feed channel by name. The
@@ -63,11 +64,19 @@ def resolve_guide_ids(channels: list, feed_channels: list) -> dict:
 
     Returns {channel id: {"method": "override" | "tvg-id" | "name" | None,
                           "guide_id": str | None,    # what programmes are kept under
-                          "name_match": str | None,  # set only for method "name"
+                          "name_match": str | None,  # the feed id to store, for method "name"
+                                                     # and for a tvg-id the feed spells in another case
                           "reason": None | "no-tvg-id" | "tvg-id-not-in-feed" | "ambiguous" | "foreign",
                           "candidates": [feed ids]}} # for "ambiguous" and "foreign"
     """
     feed_ids = {f["id"] for f in feed_channels if f.get("id")}
+    # Jellyfin matches a tuner channel's guide id to the feed ignoring letter
+    # case, so "cnn.us" in the playlist and "CNN.us" in the feed had a guide
+    # there. A tvg-id the feed has only in another case takes the feed's own
+    # spelling, when exactly one feed id has it (an exact match always wins).
+    feed_ids_by_case = defaultdict(set)
+    for fid in feed_ids:
+        feed_ids_by_case[fid.lower()].add(fid)
     countries = {f["id"]: feed_countries(f["id"], f.get("names")) for f in feed_channels if f.get("id")}
     feed_by_key = defaultdict(set)
     feed_names = defaultdict(list)     # a feed may list one id in several <channel> elements
@@ -95,6 +104,12 @@ def resolve_guide_ids(channels: list, feed_channels: list) -> dict:
             # A feed that lists no <channel> elements at all cannot be matched
             # by name; its tvg-ids are taken on trust, as they always were.
             out[ch["id"]] = {"method": "tvg-id", "guide_id": tvg, "name_match": None,
+                             "reason": None, "candidates": []}
+        elif tvg and len(feed_ids_by_case.get(tvg.lower(), ())) == 1:
+            # Stored like a name match (LiveChannel.epg_name_match), so the
+            # guide is kept and served under the id the feed's programmes use.
+            fid = next(iter(feed_ids_by_case[tvg.lower()]))
+            out[ch["id"]] = {"method": "tvg-id", "guide_id": fid, "name_match": fid,
                              "reason": None, "candidates": []}
         else:
             needs_name.append(ch)
