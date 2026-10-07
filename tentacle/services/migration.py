@@ -116,9 +116,13 @@ def migrate_provider(
     }
 
     old_movies = db.query(Movie).filter(Movie.provider_id == from_provider.id).all()
+    # Namesakes among ALL films, whoever owns them: when the new provider (or a
+    # download) already has another film of this title and year, the new
+    # provider's sync files its one stream under that film, never lists the
+    # moved one, and its prune deletes it.
     namesakes = {}
-    for movie in old_movies:
-        key = f"{(movie.title or '').lower()}_{movie.year or ''}"
+    for title, year in db.query(Movie.title, Movie.year).all():
+        key = f"{(title or '').lower()}_{year or ''}"
         namesakes[key] = namesakes.get(key, 0) + 1
 
     for movie in old_movies:
