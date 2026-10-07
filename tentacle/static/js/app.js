@@ -1545,8 +1545,8 @@ async function loadPathStatus() {
       html += `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;${key !== 'tv' ? 'border-bottom:1px solid var(--border);' : ''}">
         <span style="width:20px;text-align:center">${icon}</span>
         <div style="flex:1">
-          <div style="font-size:13px;font-weight:500;color:var(--text1)">${info.label}</div>
-          <code style="font-size:11px;color:var(--text3)">${info.path}</code>
+          <div style="font-size:13px;font-weight:500;color:var(--text1)">${escHtml(info.label)}</div>
+          <code style="font-size:11px;color:var(--text3)">${escHtml(info.path)}</code>
         </div>
         <div>${status}</div>
       </div>`;
