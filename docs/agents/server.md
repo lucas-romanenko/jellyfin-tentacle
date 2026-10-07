@@ -355,6 +355,10 @@ User docs: `docs/features/live-tv.md`.
   names one feed id (never a guess between ids that differ only in case);
   the feed's spelling goes in `epg_name_match` and `epg_match` still says
   "tvg-id" (#523).
+- A programme's categories are stored in `epg_programs.category` joined by
+  U+001F (`xmltv.CATEGORY_SEP`, which XML can't carry) and served one
+  `<category>` each, in feed order: Jellyfin flags sports/news/kids/movie
+  when any of them is in its lists (#521).
 - A group is unique on (provider, name) with one Xtream `category_id`, but
   Xtream category names aren't unique: `_sync_groups` gives each category
   its own group (the one already on it, else its name, first listed wins,
