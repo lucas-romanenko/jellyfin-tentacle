@@ -813,6 +813,9 @@ class LiveChannel(Base):
         if (self.epg_id_override or "").strip():
             return "override"
         if self.epg_name_match:
+            # The feed's spelling of a tvg-id it has in another case (epg_match.py).
+            if self.epg_name_match.lower() == (self.epg_channel_id or "").strip().lower():
+                return "tvg-id"
             return "name"
         return "tvg-id" if (self.epg_channel_id or "").strip() else None
 
