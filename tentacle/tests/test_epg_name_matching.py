@@ -323,6 +323,27 @@ class EpgSyncMatchesByName(unittest.TestCase):
         self.db.expire_all()
         self.assertEqual(0, self.db.query(mdb.EPGProgram).filter_by(channel_id="TSN5.ca").count())
 
+    def test_a_dropped_match_leaves_another_providers_guide_alone(self):
+        """#516: programmes are keyed by guide id across providers. Q's channel
+        uses TSN5.ca by tvg-id; P's dropped name match on it must not delete
+        Q's guide, which P's sync doesn't store again."""
+        self._add_own_tsn_schedule()
+        q = mdb.Provider(name="Q", server_url="http://192.0.2.20", username="u", password="p",
+                         live_tv_enabled=True)
+        self.db.add(q)
+        self.db.flush()
+        self.db.add(mdb.LiveChannel(provider_id=q.id, name="TSN 5", stream_id="9", epg_channel_id="TSN5.ca",
+                                    stream_url="http://192.0.2.20/live/9.ts", enabled=True))
+        start = datetime.utcnow().replace(microsecond=0) + timedelta(hours=1)
+        self.db.add(mdb.EPGProgram(channel_id="TSN5.ca", title="Q's hockey", start=start,
+                                   stop=start + timedelta(hours=1)))
+        self.db.commit()
+        self.assertTrue(self._sync(), livetv_router._get_sync_status(self.pid).get("message"))
+        self.db.expire_all()
+        self.assertEqual(["Q's hockey"], [p.title for p in
+                                          self.db.query(mdb.EPGProgram).filter_by(channel_id="TSN5.ca")])
+        self.assertEqual(1, self.db.query(mdb.EPGProgram).filter_by(channel_id="old-tsn.ca").count())
+
     def test_the_channel_list_shows_how_each_guide_was_found(self):
         self._sync()
         rows = {c["stream_id"]: c for c in self._client().get("/api/live/channels").json()["channels"]}

@@ -353,7 +353,10 @@ User docs: `docs/features/live-tv.md`.
   Channels may share one `epg_channel_id` (one-to-many in the XMLTV output).
   An EPG sync first deletes every id it could store programmes under (each
   channel's guide id, name match and tvg-id, and every name match of this
-  run, kept or dropped), or the insert hits `uq_epg_program` (#467).
+  run, kept or dropped), or the insert hits `uq_epg_program` (#467),
+  except an id another provider's channel uses as its guide that this sync
+  doesn't store again: programmes are shared by guide id across providers
+  (#516).
 - A tvg-id matches a feed id exactly first, else ignoring case when that
   names one feed id (never a guess between ids that differ only in case);
   the feed's spelling goes in `epg_name_match` and `epg_match` still says
