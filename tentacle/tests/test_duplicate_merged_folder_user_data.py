@@ -157,15 +157,18 @@ class MergedFilm(_Base):
         self.assertEqual(409, cm.exception.status_code)
         self.assertTrue(self.strm.exists())
 
-    def test_a_failed_resolution_keeps_nothing_saved(self):
+    def test_a_failed_resolution_merges_nothing(self):
+        # Nothing deleted: the saved entry stays, but Jellyfin's film still has
+        # the removed copy's path, so nothing matches the kept file.
         self.jellyfin_film(JF_MKV, JF_STRM)
         FakeJellyfin.data = {("A", "film"): {"Played": True}}
         _FakeArr.fail_file_delete = True
         with self.assertRaises(duplicates.HTTPException):
             duplicates._apply_resolution(self.dup, "keep_vod", self.db)
-        self.db.refresh(self.dup)
-        self.assertIsNone(self.dup.pending_user_data)
+        self.assertTrue(self.mkv.exists())
         self.worker.assert_not_called()
+        self.assertEqual(1, dup_service.apply_pending_user_data(self.db), "still waiting")
+        self.assertEqual([], FakeJellyfin.posts)
 
     # The saved state lives nowhere else once the copy is deleted, so it is
     # committed before anything is deleted: a failure after the delete must

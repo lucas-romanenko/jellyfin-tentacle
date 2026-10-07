@@ -134,7 +134,9 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   `MediaSources`, read by `?Ids=`), and users' data is on that item. When
   the removed copy is its main version, the delete makes Jellyfin create a
   new item for the kept file with no data: the data is saved on the
-  duplicate (`pending_user_data`) before the delete, Jellyfin gets
+  duplicate (`pending_user_data`) and committed before the delete, so a
+  resolution that fails after it keeps it (#506; a retry replaces its
+  entry), Jellyfin gets
   `/Library/Media/Updated` for the removed file, and
   `apply_pending_user_data` merges it onto the item whose Path is the kept
   file (a worker polls 30 s × 30, the nightly run catches up, dropped after
