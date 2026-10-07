@@ -194,7 +194,20 @@ read that row.
   year, then, only if that found nothing good enough, once without it,
   keeping results within one year of the provider's (a local or streaming
   release year is often one off; a remake decades apart is not taken). No
-  year: one search (#265).
+  year: one search (#265). TMDB's `year` filter matches any release date
+  (re-releases too), so the first pass can bring back an older film exactly
+  titled as the label ("Dune (2024)" finds Dune 2021). Against such a
+  far-year exact title, a film within a year of the label's wins only with
+  `_CREDIBLE_VOTE_SHARE` (3 %) of its TMDB votes: a sequel under its base
+  title or a remake does, a re-release label's namesakes don't (#310).
+  Limits: two films within a year ("Wicked (2025)") take the exact title;
+  a label one off from a film the first pass doesn't return ("Dune (2020)")
+  takes the far exact title.
+- A re-searched stream whose search now finds another film keeps the film
+  its `.strm` already plays while the label still fits it by the scorer
+  (`_keeps_its_film()`, `label_names_film()`): a matcher change reaches new
+  imports only, a wrong row is Fix it's. A provider id naming the new film,
+  or a label that no longer fits (a reused stream number), moves it (#310).
 - A stream stays with the film whose `.strm` plays it (#185). After every
   category, `_place_relisted_movies()` applies that by the files: a stream
   no label placed that a film's `.strm` plays is that film, relabelled
