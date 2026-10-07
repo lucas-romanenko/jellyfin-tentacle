@@ -843,6 +843,7 @@ class EPGProgram(Base):
     start = Column(DateTime, nullable=False)
     stop = Column(DateTime, nullable=False)
 
+    # Every <category> of the programme, joined by services.xmltv.CATEGORY_SEP.
     category = Column(String, nullable=True)
     icon_url = Column(String, nullable=True)
 
