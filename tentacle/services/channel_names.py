@@ -54,31 +54,53 @@ def channel_name_key(name: str) -> str:
 
 
 # The country a provider's leading tag names: "CA:", "CA EN:", "|UK|", "[US]".
-_COUNTRY_RE = re.compile(r"^\s*[|\[(]?\s*([A-Za-z]{2}|USA)(?:[ /-][A-Za-z]{2})?\s*[|\]):]")
+_COUNTRY_RE = re.compile(r"^\s*[|\[(]?\s*([A-Za-z]{2}|USA)(?:[ /-]([A-Za-z]{2}))?\s*[|\]):]")
 # One country, two spellings.
 _SAME_COUNTRY = {"uk": "gb", "usa": "us"}
 _ID_COUNTRY_RE = re.compile(r"\.([A-Za-z]{2})$")
+# Language codes (ISO 639-1) that are no country's code (ISO 3166-1): a
+# channel tagged "EN:" or "|EN|" says which language, not which country. UK
+# and EU are left out: panels use them for the United Kingdom and Europe.
+# Codes that are both ("FR", "DE", "LT") stay countries.
+_LANGUAGE_ONLY = frozenset("""
+    aa ab ak an av ay ce cs da dv el en eo fa ff fy gv ha he hi ho hy hz ia
+    ig ii ik iu ja jv ka kj kk kl ko ks ku kv lg ln lo mi nb nd nn nv ny oc
+    oj or os pi qu rm rn sq su sw ta te ti ts ty ur vo wa wo xh yi yo zh zu
+""".split())
+
+
+def _country_code(code: str) -> str:
+    code = code.lower()
+    return _SAME_COUNTRY.get(code, code)
 
 
 def channel_country(name: str) -> Optional[str]:
-    """"CA EN: DISCOVERY HD" -> "ca", "|UK| SKY ONE" -> "gb"; None without a tag."""
+    """"CA EN: DISCOVERY HD" -> "ca", "|UK| SKY ONE" -> "gb"; None without a tag.
+
+    A language-only tag names no country: "EN: DISCOVERY" -> None, as for an
+    untagged name, and "EN CA:" -> "ca". Read as the country "en", it kept
+    the channel from every feed channel that names a country ("Discovery.us"),
+    so it got no guide by name and was reported as another country's."""
     m = _COUNTRY_RE.match(unicodedata.normalize("NFKC", name or ""))
     if not m:
         return None
-    code = m.group(1).lower()
-    return _SAME_COUNTRY.get(code, code)
+    for code in m.groups():
+        if code and code.lower() not in _LANGUAGE_ONLY:
+            return _country_code(code)
+    return None
 
 
 def feed_countries(feed_id: str, names) -> set:
     """The countries an XMLTV channel belongs to: its id's two-letter suffix
-    ("SkyOne.de") and any tag its display names carry. Empty when it says none."""
+    ("SkyOne.de") and any tag its display names carry. Empty when it says none.
+    A feed channel's language tag still counts here: a feed channel named
+    "JA: DISCOVERY" stays another channel than a "US:" one."""
     out = set()
     m = _ID_COUNTRY_RE.search(feed_id or "")
     if m:
-        code = m.group(1).lower()
-        out.add(_SAME_COUNTRY.get(code, code))
+        out.add(_country_code(m.group(1)))
     for name in names or []:
-        country = channel_country(name)
-        if country:
-            out.add(country)
+        m = _COUNTRY_RE.match(unicodedata.normalize("NFKC", name or ""))
+        if m:
+            out.add(_country_code(m.group(1)))
     return out
