@@ -3268,6 +3268,14 @@ def _run_epg_sync_background(provider_data: dict):
                 if unused:
                     programs = [p for p in programs if p["channel_id"] not in unused]
             if provider_channel_epg_ids:
+                # Programmes are keyed by guide id across providers: an id
+                # another provider's channel uses as its guide is deleted only
+                # when this sync stores it again (#516).
+                gid = _guide_id_expr()
+                others = {row[0] for row in db.query(gid).filter(
+                    LiveChannel.provider_id != pid, gid.isnot(None)).distinct()}
+                provider_channel_epg_ids -= others - {p["channel_id"] for p in programs}
+            if provider_channel_epg_ids:
                 db.query(EPGProgram).filter(
                     EPGProgram.channel_id.in_(provider_channel_epg_ids)
                 ).delete(synchronize_session=False)
