@@ -3246,6 +3246,12 @@ def _run_epg_sync_background(provider_data: dict):
                 unused = matched_ids - guide_ids - epg_ids
                 if unused:
                     programs = [p for p in programs if p["channel_id"] not in unused]
+                    # Another provider's channel can have that id as its guide
+                    # (one XMLTV source on two providers): its rows aren't ours
+                    # to delete, and none of ours are stored under it.
+                    theirs = {ch.guide_epg_id for ch in db.query(LiveChannel).filter(
+                        LiveChannel.provider_id != pid).all()} & unused
+                    provider_channel_epg_ids -= theirs
             if provider_channel_epg_ids:
                 db.query(EPGProgram).filter(
                     EPGProgram.channel_id.in_(provider_channel_epg_ids)
