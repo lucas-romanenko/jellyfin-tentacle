@@ -333,7 +333,10 @@ User docs: `docs/features/live-tv.md`.
   `hdhr_<GuideNumber>`, so it must never change. M3U channels have no
   provider id: `stream_id` is the hash of the first name + URL seen, and
   `m3u_key` the hash of the current ones, which a sync matches by. A URL
-  change (rotated token, new host) moves `m3u_key` only (#259).
+  change (rotated token, new host) moves `m3u_key` only (#259). The name
+  is everything after the first comma outside the quoted attributes; a row
+  an older build stored under the text after the name's last comma moves
+  its `m3u_key` to the whole name the same way (#525).
 - A running HLS stream reads every playlist and segment body within a total
   bound (`_aread_within()`): 10 s for a playlist, max(20 s, 3 x the target
   duration) for a segment. httpx's read timeout is per read, so a body that

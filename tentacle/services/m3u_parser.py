@@ -19,6 +19,24 @@ logger = logging.getLogger(__name__)
 ATTR_RE = re.compile(r'([\w-]+)="([^"]*)"')
 
 
+def _extinf_name(line: str) -> str:
+    """The display name of an #EXTINF line: everything after the first comma
+    outside the quoted attributes.
+
+    Taking the text after the LAST comma cut a name with a comma to its tail
+    ("UFC 300, Pereira vs Hill" read "Pereira vs Hill", #525). A line with no
+    comma outside quotes (an unbalanced quote) keeps that old reading.
+    """
+    in_quotes = False
+    for idx, c in enumerate(line):
+        if c == '"':
+            in_quotes = not in_quotes
+        elif c == "," and not in_quotes:
+            return line[idx + 1:].strip()
+    comma_idx = line.rfind(",")
+    return line[comma_idx + 1:].strip() if comma_idx != -1 else ""
+
+
 def parse_m3u(content: str) -> list[dict]:
     """
     Parse M3U content string into a list of channel dicts.
@@ -45,9 +63,7 @@ def parse_m3u(content: str) -> list[dict]:
             # Parse attributes from the #EXTINF line
             attrs = dict(ATTR_RE.findall(line))
 
-            # Display name is after the last comma
-            comma_idx = line.rfind(",")
-            display_name = line[comma_idx + 1:].strip() if comma_idx != -1 else ""
+            display_name = _extinf_name(line)
 
             # Find the URL on the next non-comment, non-empty line. Directive
             # lines (#EXTVLCOPT, #EXTGRP, ...) are skipped, but the scan stops
