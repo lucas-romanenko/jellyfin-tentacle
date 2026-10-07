@@ -60,7 +60,11 @@ def get_playlist_version() -> int:
     return _playlist_version
 
 
-PRESERVED_FIELDS = ["LastRefreshed", "DateCreated", "ItemCount", "Order"]
+# _sort_migrated: the one-time _migrate_builtin_sort_defaults has seen this
+# config, or the config was made with its default sort (set where a config is
+# created). Without it every sync ran the migration again, and a Release date
+# sort the user picked for a built-in playlist went back to DateCreated.
+PRESERVED_FIELDS = ["LastRefreshed", "DateCreated", "ItemCount", "Order", "_sort_migrated"]
 
 # Tag rule condition fields that map directly to Jellyfin API filters
 NATIVE_FIELDS = {"genre", "rating", "year"}
@@ -939,6 +943,10 @@ def sync_smartlists(db: Session, user_id: int = None) -> dict:
 
             config = _build_config(name, tag, media_types, folder_id, enabled, jf_user_id, expressions=expressions,
                                    sort_by=default_sort or "ReleaseDate", genre_logic=gl)
+            # Made with its default sort: the one-time sort migration leaves
+            # it alone. Set here, not in _build_config, so a rebuild of a
+            # config an older version left still gets its migration.
+            config["_sort_migrated"] = True
 
             if forced_max:
                 config["MaxItems"] = forced_max
@@ -2604,6 +2612,7 @@ def sync_single_custom_playlist(db: Session, user_id: int, rule_name: str, condi
         folder.mkdir(parents=True, exist_ok=True)
         config = _build_config(rule_name, tag, media_types, folder_id, True, jf_user_id,
                                expressions=expressions, genre_logic=gl)
+        config["_sort_migrated"] = True  # new config, see sync_smartlists
         # Create Jellyfin playlist
         playlist_id = _create_jellyfin_playlist(rule_name, jf_user_id, jellyfin_url, jellyfin_key,
                                                 exclude_ids=other_playlist_ids)
@@ -2771,6 +2780,7 @@ def toggle_auto_playlist_fast(db: Session, user_id: int, key: str, enabled: bool
             folder.mkdir(parents=True, exist_ok=True)
             config = _build_config(name, tag, media_types, folder_id, True, jf_user_id,
                                    sort_by=default_sort)
+            config["_sort_migrated"] = True  # new config, see sync_smartlists
             if max_items:
                 config["MaxItems"] = max_items
             playlist_id = _create_jellyfin_playlist(name, jf_user_id, jellyfin_url, jellyfin_key,

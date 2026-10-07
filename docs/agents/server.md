@@ -180,8 +180,12 @@ user_id)` computes them every time from source tags, list subscriptions
   corrupted Jellyfin's playlist folders); `write_home_config(db, user_id)`
   regenerates the home layout.
 - Sort: per playlist, stored in the on-disk config's `Order`;
-  `PRESERVED_FIELDS = ["LastRefreshed", "DateCreated", "ItemCount", "Order"]`
-  survive rebuilds. Built-ins are `(name, media_types, sort, max_items)`
+  `PRESERVED_FIELDS = ["LastRefreshed", "DateCreated", "ItemCount", "Order",
+  "_sort_migrated"]` survive rebuilds. A config gets `_sort_migrated` when it
+  is created, so the one-time `_migrate_builtin_sort_defaults` (ReleaseDate
+  to DateCreated) only touches built-ins (and any playlist named
+  "<Name>'s Downloads") an older version left without it.
+  Built-ins are `(name, media_types, sort, max_items)`
   tuples (`services/smartlists.py`). Changing the sort clears the playlist
   and re-adds items in order; `DateCreated` sorts use Tentacle's own
   `date_added`, because Jellyfin's is unreliable for bulk imports.
