@@ -256,7 +256,10 @@ def _remove_downloaded_movie(db: Session, tmdb_id: int, title: str, arr_folder: 
             db.query(DownloadRequest).filter(DownloadRequest.tmdb_id == tmdb_id, DownloadRequest.media_type == "movie").delete()
         # Clear duplicate tombstones — deleting the downloaded copy is a
         # clean slate; the title may legitimately re-import from VOD later
-        db.query(Duplicate).filter(Duplicate.tmdb_id == tmdb_id, Duplicate.media_type == "movie").delete()
+        # Not one holding users' watched state for the kept copy's new item
+        # (Keep VOD of a same-folder film, #333): that waits for Jellyfin.
+        db.query(Duplicate).filter(Duplicate.tmdb_id == tmdb_id, Duplicate.media_type == "movie",
+                                   Duplicate.pending_user_data.is_(None)).delete(synchronize_session=False)
         db.commit()
     except Exception:
         db.rollback()
