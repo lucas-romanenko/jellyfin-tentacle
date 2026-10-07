@@ -137,6 +137,40 @@ class TwoListings(unittest.TestCase):
         self.night()
         self.assertEqual({"Dark (2017) S01E01.strm": 1101, "Dark (2017) S01E02.strm": 1102}, self.plays())
 
+    def test_an_empty_twin_listing_does_not_stop_a_repair(self):
+        # #512: the DE listing answers with no episodes (a placeholder); EN
+        # re-lists E01 under a new id (#263). The empty twin offers nothing,
+        # so EN decides.
+        self.client.info["22"] = {}
+        self.night()
+        self.client.info["11"]["1"][0] = ep(1199, 1)
+        self.night()
+        self.assertEqual({"Dark (2017) S01E01.strm": 1199, "Dark (2017) S01E02.strm": 1102}, self.plays())
+
+    def test_an_empty_twin_listing_rewrites_nothing_else(self):
+        self.client.info["22"] = {}
+        self.night()
+        first = self.files()
+        time.sleep(0.02)
+        self.night()
+        self.night()
+        self.assertEqual(first, self.files())
+
+    def test_a_twin_listing_that_fails_to_load_still_repoints_nothing(self):
+        self.night()
+        self.client.info["11"]["1"][0] = ep(1199, 1)
+        self.client.info["22"]["1"][0] = ep(2299, 1)
+        real = self.client.get_series_info
+
+        def info(sid):
+            if str(sid) == "22":
+                raise ConnectionError("provider timeout")
+            return real(sid)
+        self.client.get_series_info = info
+        self.night()
+        self.assertEqual(1101, self.plays()["Dark (2017) S01E01.strm"],
+                         "a listing that could not be read may be the one E01 plays")
+
     def test_a_replaced_upload_follows_its_own_listing(self):
         self.night()
         before = self.plays()["Dark (2017) S01E01.strm"]

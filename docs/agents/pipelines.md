@@ -202,7 +202,9 @@ read that row.
   the show (one show can sit under several series ids, e.g. an EN and a DE
   category) and the series sync settles it once, after a complete fetch
   (#376). While a file's id is listed at its number by any listing nothing
-  flips.
+  flips. A listing whose fetch fails makes the show's files wait; a
+  listing that answers with no episodes offers nothing and the other
+  listings decide (#512).
 - `.strm` files are written with `_write_strm()`: a hidden temp file in the
   same folder, then a rename, so a write cut short leaves the old file
   whole. An existing `.strm` that is empty or blank is rewritten like a
