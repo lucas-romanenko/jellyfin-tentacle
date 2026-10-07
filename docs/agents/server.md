@@ -33,6 +33,10 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   (uvicorn's access log included): Xtream paths and any query parameter
   named like a secret (`*secret*`, `*token*`, `*password*`, `*api_key*`,
   `key`, ...). A new credential in a URL needs such a name, or a rule there.
+- Every Xtream URL (player_api.php, xmltv.php, the `/movie|series|live/`
+  stream paths) puts the login in through `quote_cred()`
+  (`services/xtream_client.py`); never `provider.username`/`password` raw: a
+  `#&+?/%` in it cuts or splits the URL (#529). Plain logins stay byte-identical.
 - One worker, one event loop: anything blocking in an `async def` freezes
   every stream, recording and request. The SSRF guards (`services/ssrf.py`:
   `is_safe_url`, `lan_origin_guard` and the guards it returns) resolve DNS
