@@ -2082,6 +2082,17 @@ def sync_provider(
     return run
 
 
+# A stored label starting with this was seen on the fixed/blocked stream and on
+# another stream in one listing: not unique, so it never holds or follows.
+SHARED_LABEL = "\x1f"
+
+
+def _stream_label(stream: dict) -> str:
+    """The provider's own label of a VOD stream, as stored on a MatchOverride /
+    BlockedStream: its raw name and container, tab-separated."""
+    return f"{(stream.get('name') or '').strip()}\t{(stream.get('container_extension') or '').strip().lower()}"
+
+
 def _own_stream_map(index: "_MovieIndex"):
     """(plays, row_ref) from one read of each .strm of this provider's films:
     plays maps (kind, stream number) to the film whose .strm plays it (None
@@ -2174,6 +2185,133 @@ def _place_relisted_movies(db: Session, client, provider: Provider, index: "_Mov
         db.commit()
         logger.info(f"[Sync] {provider.name}: {kept} relabelled film(s) kept, "
                     f"{repointed} .strm file(s) moved to a re-listed stream")
+
+
+def _decide_relisted(db: Session, client, provider: Provider, index: "_MovieIndex", stats: dict,
+                     held: list, labels: dict, listed_keys: set, fetch_ok: bool, followed: set,
+                     seen_ids_all: set, existing_ids: set, met_streams: dict, place) -> bool:
+    """N1: streams held because they carry the exact label of a fixed
+    (MatchOverride) or blocked (BlockedStream) stream of this provider, decided
+    once the whole listing is known. Returns fetch_ok (False when a placement
+    lookup failed: the seen set is then incomplete).
+
+    - The labelled stream's own key is still listed (or two rows share the
+      label): not a re-listing -- placed as usual.
+    - Part of the listing is missing: still held (skipped tonight; nothing is
+      pruned on such a night anyway).
+    - Exactly one row with that label, its key gone from a complete listing,
+      exactly one new stream with the label, played by no film of ours:
+      a fix follows it (the override moves to the new key; #263's repoint
+      then points the fixed film's .strm there, in place), with an Activity
+      entry and a flag the admin can undo; a block does not move (a same-label
+      re-upload is also how a provider replaces a bad file): the stream is
+      placed as usual and flagged for the admin, and the block stops holding.
+    """
+    from models.database import MatchOverride, MatchSuspect, log_activity
+    from services.wrong_match import stream_key_for_url
+    ours = None
+
+    def played_by_ours(stream):
+        nonlocal ours
+        if ours is None:
+            ours = set()
+            for path in index.own_strm.values():
+                try:
+                    ours.add(_play_ref(Path(path).read_text(encoding="utf-8").strip(), unwrap=True))
+                except (OSError, UnicodeDecodeError, TypeError):
+                    continue
+        return _play_ref(client.movie_stream_url(stream.get("stream_id"),
+                                                 stream.get("container_extension", "mp4"))) in ours
+
+    def flag(tmdb_id, reason, title):
+        s = db.query(MatchSuspect).filter(MatchSuspect.tmdb_id == tmdb_id,
+                                          MatchSuspect.media_type == "movie").first()
+        if s is None:
+            db.add(MatchSuspect(tmdb_id=tmdb_id, media_type="movie", title=title, reason=reason))
+        else:
+            s.reason, s.dismissed = reason, False
+
+    by_label, seen_ids = {}, set()
+    for stream, tag, label in held:
+        sid = str(stream.get("stream_id"))
+        if (label, sid) in seen_ids:
+            continue    # the same stream in two categories is one stream
+        seen_ids.add((label, sid))
+        by_label.setdefault(label, []).append((stream, tag))
+    for label, entries in by_label.items():
+        owners = labels.get(label, [])
+        gone = [(kind, row) for kind, row in owners if row.stream_key not in listed_keys]
+        name = label.split("\t")[0]
+        if not gone or len(owners) != 1:
+            if len(gone) < len(owners):
+                # The fixed/blocked stream and another one carry this label in one
+                # listing: when the fixed one goes, the other is no re-listing of
+                # it. Remembered, so the label never holds or follows again.
+                for _kind, row in owners:
+                    row.label = SHARED_LABEL + label
+                db.commit()
+                logger.info(f"[Sync] '{name}': listed on a fixed/blocked stream and on another one; "
+                            f"that label won't be followed")
+            elif gone:
+                logger.info(f"[Sync] '{name}': {len(owners)} fixed/blocked streams share this label; "
+                            f"re-listed streams placed as usual")
+            for stream, tag in entries:
+                tid, failed = place(stream, tag)
+                fetch_ok = fetch_ok and not failed
+            continue
+        if not (fetch_ok and isinstance(client, XtreamClient)):
+            logger.info(f"[Sync] '{name}': the fixed/blocked stream is not listed, but part of the catalogue "
+                        f"wasn't read; {len(entries)} stream(s) with its label held until a complete sync")
+            stats["skipped"] += len(entries)
+            continue
+        kind, row = gone[0]
+        stream, tag = entries[0]
+        new_key = stream_key_for_url(client.movie_stream_url(stream.get("stream_id"),
+                                                             stream.get("container_extension", "mp4")))
+        if len(entries) != 1 or played_by_ours(stream) or db.query(MatchOverride.id).filter(
+                MatchOverride.provider_id == provider.id, MatchOverride.media_type == "movie",
+                MatchOverride.stream_key == new_key).first():
+            logger.info(f"[Sync] '{name}': stream {row.stream_key} is gone, but {len(entries)} stream(s) carry "
+                        f"its label (or one already plays a film); nothing follows, placed as usual")
+            for s_, t_ in entries:
+                tid, failed = place(s_, t_)
+                fetch_ok = fetch_ok and not failed
+            continue
+        if kind == "override":
+            old_key, tid = row.stream_key, row.tmdb_id
+            row.moved_from, row.stream_key = old_key, new_key
+            if tid in existing_ids:
+                _merge_source_tag(tid, "movie", tag, provider.id, db)
+                seen_ids_all.add(tid)
+                met_streams.setdefault(tid, []).append(stream)
+                followed.add((tid, str(stream.get("stream_id"))))
+                stats["existing"] += 1
+                flag(tid, "relist_followed", row.title)
+            db.commit()
+            logger.info(f"[Sync] Stream {old_key} (fixed: TMDB {tid}) was re-listed as {new_key} "
+                        f"with the same label; the fix follows it")
+            undo = (" If the new stream is another film, choose Undo under Possible wrong movies."
+                    if tid in existing_ids else " The film is added from it on the next sync.")
+            log_activity(db, "fix_it_followed",
+                         f"Your provider re-listed the stream of '{row.title}' (fixed with Fix it) under a new "
+                         f"id; the fix followed it.{undo}", {"tmdb_id": tid, "from": old_key, "to": new_key})
+        else:
+            tid, failed = place(stream, tag)
+            fetch_ok = fetch_ok and not failed
+            if not tid:
+                # Not added (a lookup error, or no match): nothing to ask about
+                # yet; the label stays, so it is held and decided again.
+                continue
+            flag(tid, "relist_blocked", row.title)
+            row.label = None   # asked once, with the flag written; the admin decides from here
+            db.commit()
+            logger.info(f"[Sync] Stream {new_key} carries the label of blocked stream {row.stream_key}; "
+                        f"imported and flagged for the admin")
+            log_activity(db, "blocked_relisted",
+                         f"Your provider re-listed a stream labelled like one you blocked ('{row.title}'). "
+                         f"It was added and flagged under Possible wrong movies: remove it there if it is "
+                         f"still the wrong film.", {"tmdb_id": tid, "blocked": row.stream_key, "new": new_key})
+    return fetch_ok
 
 
 def _sync_movies(
@@ -2397,6 +2535,46 @@ def _sync_movies(
             logger.error(f"Failed to create files for {title}: {e}")
             return "failed"
 
+    def _place_released(stream, tag):
+        """A held stream (N1) that is not a re-listing after all: placed the
+        way a category places it -- the title map, else a TMDB lookup; an
+        existing film is met, a new one imported. Returns (tmdb id or None,
+        lookup failed)."""
+        clean_name, year = clean_title(stream.get("name", ""))
+        if not clean_name:
+            return None, False
+        lookup_key = (clean_name.lower(), year)
+        kid, metadata = _known_id(lookup_key, stream), None
+        if kid is None:
+            try:
+                metadata = tmdb.search_movie(clean_name, year, strict=True)
+            except Exception:
+                return None, True
+            kid = metadata["tmdb_id"] if metadata else None
+        if kid is None:
+            unmatched.append((stream, tag))
+            stats["skipped"] += 1
+            return None, False
+        if kid in existing_provider_tmdb_ids or kid in seen_tmdb_ids:
+            _merge_source_tag(kid, "movie", tag, provider.id, db)
+            seen_ids_all.add(kid)
+            _repair_movie_strm(client, stream, kid, provider, db, restore=_may_restore(stream, kid))
+            met_streams.setdefault(kid, []).append(stream)
+            stats["existing"] += 1
+            return kid, False
+        metadata = metadata or _details(kid)
+        if not metadata:
+            stats["skipped"] += 1
+            return None, False
+        result = _import_movie(stream, metadata, tag, lookup_key)
+        if result == "new":
+            seen_tmdb_ids.add(kid)
+            seen_ids_all.add(kid)
+            stats["new"] += 1
+            return kid, False
+        stats["failed" if result == "failed" else "existing"] += 1
+        return (kid if result == "duplicate" else None), False
+
     def _known_id(lookup_key, stream):
         return _known_title_id(
             known_titles.get(lookup_key), stream,
@@ -2435,12 +2613,38 @@ def _sync_movies(
 
     # Streams an admin reported as mislabelled ("Wrong movie"): never imported
     # again, whatever the provider calls them and whichever category they're in.
-    from services.wrong_match import blocked_keys, is_blocked, override_keys, override_for
+    from services.wrong_match import blocked_keys, is_blocked, override_keys, override_for, stream_key_for_url
     blocked = blocked_keys(db, provider.id, "movie")
     blocked_skips = 0
     # Streams an admin re-matched ("this stream is really film X"): the label is
     # wrong, so the override is used instead of matching it.
     overrides = override_keys(db, provider.id, "movie")
+    # N1: a fixed or blocked stream the provider re-lists under a new id. Their
+    # rows by key (the label each one is listed with is stored as the sync
+    # meets it), and the stored labels: a listed stream of no row whose label is
+    # one of them is held until the whole listing is known, and decided at the
+    # end (the fix follows it, the admin is asked about a block, or it is placed
+    # as usual). Xtream only: an M3U key is made from the URL.
+    relist_rows = {}      # stream key -> ("override" | "block", row)
+    relist_labels = {}    # label -> [(kind, row)]
+    relist_held = []      # (stream, source tag, label)
+    listed_keys = set()
+    listed_labels = {}    # label -> keys listed with it this sync (N1-D2)
+    if isinstance(client, XtreamClient):
+        from models.database import BlockedStream, MatchOverride
+        for o in db.query(MatchOverride).filter(MatchOverride.provider_id == provider.id,
+                                                MatchOverride.media_type == "movie").all():
+            relist_rows[o.stream_key] = ("override", o)
+        for b in db.query(BlockedStream).filter(BlockedStream.provider_id == provider.id,
+                                                BlockedStream.media_type == "movie").all():
+            relist_rows.setdefault(b.stream_key, ("block", b))
+        for kind, row in relist_rows.values():
+            if row.label and not row.label.startswith(SHARED_LABEL):
+                relist_labels.setdefault(row.label, []).append((kind, row))
+
+    def _key_of(stream):
+        return stream_key_for_url(client.movie_stream_url(stream.get("stream_id"),
+                                                          stream.get("container_extension", "mp4")))
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -2485,10 +2689,24 @@ def _sync_movies(
                                                     listed.get("container_extension", "mp4")))
             if ref:
                 listed_refs.add(ref)
+            if relist_rows:
+                listed_keys.add(_key_of(listed))
+                listed_labels.setdefault(_stream_label(listed), set()).add(_key_of(listed))
 
         # Phase 1: Clean titles and split into known vs needs-TMDB
         cleaned = []
         for stream in streams:
+            if relist_rows:
+                key = _key_of(stream)
+                owner = relist_rows.get(key)
+                if owner is not None:
+                    if owner[1].label not in (_stream_label(stream), SHARED_LABEL + _stream_label(stream)):
+                        owner[1].label = _stream_label(stream)   # stored, or the provider renamed it
+                elif relist_labels and _stream_label(stream) in relist_labels:
+                    # Labelled exactly like a fixed or blocked stream: decided
+                    # once every category has been listed (N1)
+                    relist_held.append((stream, cat.source_tag, _stream_label(stream)))
+                    continue
             if blocked and is_blocked(
                     blocked, stream.get("stream_id"),
                     client.movie_stream_url(stream.get("stream_id"), stream.get("container_extension", "mp4"))):
@@ -2834,8 +3052,27 @@ def _sync_movies(
                     seen_ids_all.add(kid)
         db.commit()
 
+    followed = set()   # (tmdb id, stream id) a fix followed this sync (N1)
+    # N1-D2: a fixed/blocked stream listed tonight whose label another listed
+    # stream also carries (also on the night the label is first learned)
+    shared = 0
+    for key, (_kind, row) in relist_rows.items():
+        if key in listed_keys and row.label and not row.label.startswith(SHARED_LABEL) \
+                and len(listed_labels.get(row.label, ())) > 1:
+            row.label = SHARED_LABEL + row.label
+            shared += 1
+    if shared:
+        db.commit()
+    if relist_held:
+        fetch_ok = _decide_relisted(db, client, provider, index, stats, relist_held, relist_labels,
+                                    listed_keys, fetch_ok, followed, seen_ids_all, existing_provider_tmdb_ids,
+                                    met_streams, _place_released)
+
+    def _may_restore_or_followed(stream, tmdb_id, guessed=False):
+        return (tmdb_id, str(stream.get("stream_id"))) in followed or _may_restore(stream, tmdb_id, guessed)
+
     _place_relisted_movies(db, client, provider, index, stats, seen_ids_all, unmatched,
-                           met_streams, listed_refs, fetch_ok, _may_restore)
+                           met_streams, listed_refs, fetch_ok, _may_restore_or_followed)
 
     logger.info(
         f"Movies complete: {stats['new']} new, {stats['existing']} existing, "
