@@ -105,7 +105,13 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   its resolution from the DB first; one no longer pending gets 409 (Resolve
   All counts it as `skipped`), so a stale tab can't delete the other copy.
   The resolution is a Literal (keep_radarr, keep_vod, keep_both; "pending"
-  is a 422).
+  is a 422). Nothing makes `(tmdb_id, media_type)` unique (two scans at
+  once can each write a row): `_resolve` merges a title's pending twin rows'
+  sources into the one resolved and marks the twins with it (#504), so a
+  twin can't later be resolved the other way and delete the kept copy.
+  Keep Downloaded on a film checks Radarr first (`_require_movie_download`):
+  409 when no `radarr` source, Radarr not configured, the film not listed or
+  no non-`.strm` file; 502 when its files can't be read.
   Keep VOD first needs the VOD copy on disk (`services/duplicates.vod_copy_on_disk`:
   a provider source's `.strm`, or a show folder with one; 409 otherwise):
   Keep Downloaded deletes the `.strm` before it saves the resolution, so a

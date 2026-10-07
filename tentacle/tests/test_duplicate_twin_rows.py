@@ -131,6 +131,19 @@ class TwinRowsOneFilm(unittest.TestCase):
         self.assertEqual(("keep_radarr", "keep_radarr"), (self.resolution(self.a), self.resolution(self.b)))
         self.assertEqual(0, r["failed"])
 
+    def test_keep_downloaded_removes_a_vod_copy_only_the_twin_knew(self):
+        other = self.root / "vod2" / "Heat (1995)" / "Heat (1995).strm"
+        other.parent.mkdir(parents=True)
+        other.write_text("http://q/movie/1.mp4")
+        twin = self.db.get(Duplicate, self.b)
+        twin.sources = [{"source": "radarr", "path": str(self.mkv)}, {"source": "provider_2", "path": str(other)}]
+        self.db.commit()
+        self.resolve(self.a, "keep_radarr")
+        self.assertFalse(self.strm.exists())
+        self.assertFalse(other.exists(), "the twin's VOD copy was left behind")
+        self.assertTrue(self.mkv.exists())
+        self.assertEqual("keep_radarr", self.resolution(self.b))
+
     def test_keep_downloaded_with_a_download_still_works(self):
         self.resolve(self.a, "keep_radarr")
         self.assertFalse(self.strm.exists())
