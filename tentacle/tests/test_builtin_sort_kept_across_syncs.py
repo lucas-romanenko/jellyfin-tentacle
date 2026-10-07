@@ -1,13 +1,12 @@
 """A sort the user picks on a built-in playlist stays across full syncs.
 
-`_migrate_builtin_sort_defaults()` is a one-time fix for built-in playlists
-made before they had a default sort: it turns a ReleaseDate sort into
-DateCreated Descending and marks the config `_sort_migrated`. The update
-branch of `sync_smartlists()` rebuilds every config and keeps only
-PRESERVED_FIELDS, so the mark never lasted: every full sync (nightly, Resync
-All, the YouTube check...) turned the dashboard's "Newest First" / "Oldest
-First" on Downloaded Movies, Downloaded TV and <Name>'s Downloads back into
-"Recently Added". Issue #534.
+Built-ins get their default sort (DateCreated) only when they are created;
+a sync never rewrites the `Order` a user picked. A one-time migration that
+turned ReleaseDate sorts back into DateCreated ran at every full sync
+(nightly, Resync All, the YouTube check...), because its mark was not in
+PRESERVED_FIELDS, so "Newest First" / "Oldest First" on Downloaded Movies,
+Downloaded TV and <Name>'s Downloads went back to "Recently Added".
+Issue #534.
 
 Run from the tentacle/ directory:  python tests/hermetic.py discover -s tests
 """

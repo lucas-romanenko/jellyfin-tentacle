@@ -627,40 +627,6 @@ def _scan_existing(smartlists_path: Path) -> dict:
     return existing
 
 
-_BUILTIN_DEFAULT_SORT = {
-    "Recently Added Movies": "DateCreated",
-    "Recently Added TV": "DateCreated",
-    "Downloaded Movies": "DateCreated",
-    "Downloaded TV": "DateCreated",
-}
-
-
-def _migrate_builtin_sort_defaults(existing: dict, smartlists_path: Path):
-    """One-time migration: fix built-in playlists created before default_sort was added.
-    If a built-in playlist has ReleaseDate sort and no _sort_migrated flag, update to DateCreated."""
-    # Also migrate per-user downloads playlists ("{Name}'s Downloads")
-    migrate_targets = dict(_BUILTIN_DEFAULT_SORT)
-    for name in existing:
-        if name.endswith("'s Downloads"):
-            migrate_targets[name] = "DateCreated"
-
-    for name, expected_sort in migrate_targets.items():
-        if name not in existing:
-            continue
-        folder, config = existing[name]
-        if config.get("_sort_migrated"):
-            continue
-        order = config.get("Order", {})
-        sort_opts = order.get("SortOptions", [])
-        current_sort = sort_opts[0].get("SortBy") if sort_opts else None
-        if current_sort == "ReleaseDate":
-            config["Order"] = {"SortOptions": [{"SortBy": expected_sort, "SortOrder": "Descending"}]}
-            logger.info(f"[SmartLists] Migrated sort for '{name}': ReleaseDate → {expected_sort}")
-        config["_sort_migrated"] = True
-        config_file = folder / "config.json"
-        config_file.write_text(json.dumps(config, indent=2), encoding="utf-8")
-
-
 def migrate_global_smartlists_to_user(db: Session, user_id: int):
     """One-time migration: move existing global /data/smartlists/* configs
     into the admin user's per-user directory. Only runs if the user's
@@ -863,10 +829,6 @@ def sync_smartlists(db: Session, user_id: int = None) -> dict:
     jf_user_id = _get_jellyfin_user_id(db, user_id)
     jellyfin_url = get_setting(db, "jellyfin_url", "")
     jellyfin_key = get_setting(db, "jellyfin_api_key", "")
-
-    # One-time migration: fix built-in playlists stuck with ReleaseDate sort
-    # that should default to DateCreated (created before default_sort was added)
-    _migrate_builtin_sort_defaults(existing, smartlists_path)
 
     # Playlists the user has explicitly enabled are protected even when they
     # aren't in `desired` right now (see the orphan cleanup below).
