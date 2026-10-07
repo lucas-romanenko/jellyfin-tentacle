@@ -2853,6 +2853,21 @@ def _upsert_channels_from_m3u(
             row.m3u_key = sids[0]
             existing[sids[0]] = row
 
+    # A name with a comma was read by older builds as the text after its last
+    # comma ("UFC 300, Pereira vs Hill" stored as "Pereira vs Hill", #525), so
+    # its row's key hashes that cut name. Same URL, cut name: it is that row;
+    # move it to the whole name's key and keep its stream_id, as above. Two
+    # rows cut to the same name are told apart by their URLs.
+    for ch in parsed_channels:
+        sid = _m3u_stable_id(ch["name"], ch["stream_url"])
+        if sid in existing or "," not in ch["name"]:
+            continue
+        old = _m3u_stable_id(ch["name"].rsplit(",", 1)[-1].strip(), ch["stream_url"])
+        if old in existing and old not in incoming:
+            row = existing.pop(old)
+            row.m3u_key = sid
+            existing[sid] = row
+
     for ch in parsed_channels:
         name = ch["name"]
         stream_url = ch["stream_url"]
