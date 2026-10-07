@@ -151,6 +151,14 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   `apply_pending_user_data` merges it onto the item whose Path is the kept
   file (a worker polls 30 s × 30, the nightly run catches up, dropped after
   30 days) (#333).
+  Radarr/Sonarr post their delete webhooks inside Keep VOD's delete calls,
+  while the resolve request holds the title. The handlers and scans drop a
+  title's duplicates only through `services/duplicates.droppable_duplicates`:
+  none while `_resolve` runs inside `resolving(media_type, tmdb_id)` (a
+  process set; the webhook can't wait on `_resolve_lock`, the resolve waits
+  for the arr, which waits for its webhook), and never a keep_vod one with
+  `pending_user_data`. After the arr call Keep VOD re-reads the row
+  (`populate_existing`): the webhook may have released or deleted it (#515).
 - **Following** = Sonarr `monitorNewItems="all"` (stricter than
   `monitored`), mirrored in `Series.sonarr_monitored`, synced both ways on
   every Sonarr scan; unfollowing keeps `monitored=true`. Hidden for ended

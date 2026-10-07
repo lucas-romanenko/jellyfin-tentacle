@@ -206,8 +206,9 @@ def release_vod_download(db: Session, row: Movie, drop_request_tags: bool = True
     row.date_updated = datetime.utcnow()
     set_row_tags(row, [t for t in (row.tags or []) if t not in drop],
                  owned if owned is not None else tentacle_owned_tags(db))
-    db.query(Duplicate).filter(Duplicate.tmdb_id == row.tmdb_id, Duplicate.media_type == "movie",
-                               Duplicate.resolution == "pending").delete()
+    from services.duplicates import droppable_duplicates   # not while Keep VOD holds it (#515)
+    droppable_duplicates(db, "movie", row.tmdb_id).filter(
+        Duplicate.resolution == "pending").delete(synchronize_session=False)
 
 # One Radarr scan at a time (#268). A scan loads every row, asks TMDB about
 # each new title and commits once, so two overlapping scans (two webhooks for
@@ -421,9 +422,10 @@ def _scan_radarr_library(db: Session) -> dict:
             ).delete()
             # And its duplicate tombstones, as the delete webhook does: with
             # the download gone, a "keep downloaded" one would stop the VOD
-            # copy from ever coming back (#334).
-            db.query(Duplicate).filter(Duplicate.tmdb_id == movie.tmdb_id,
-                                       Duplicate.media_type == "movie").delete()
+            # copy from ever coming back (#334). Not while Keep VOD holds
+            # them, nor one holding saved watched state (#515).
+            from services.duplicates import droppable_duplicates
+            droppable_duplicates(db, "movie", movie.tmdb_id).delete(synchronize_session=False)
             if movie.source != "radarr":
                 # A VOD title: only its download goes, the row stays.
                 release_vod_download(db, movie)
