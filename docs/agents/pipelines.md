@@ -143,7 +143,9 @@ it. A container that is down at the trigger still skips that night.
 both day fields set becomes an `OrTrigger`). A stored value it refuses runs
 at the default with a warning; the settings form answers 400 for one.
 
-1. refresh list subscriptions; 2. VOD sync from active providers; 3. Radarr
+1. refresh list subscriptions; 2. VOD sync from active providers (each read
+when its turn comes, under `_sync_lock`: one deleted or switched off since
+the job started is skipped, #517); 3. Radarr
 scan; 4. Sonarr scan (and Following state for every series); 5. recently
 added tags; 6. Jellyfin pipeline (scan, push tags, refresh playlists);
 7. clean the TMDB cache; 8. `sweep_orphaned_downloads()`; 9. per user:
