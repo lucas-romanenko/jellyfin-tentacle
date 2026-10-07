@@ -12,9 +12,9 @@ from typing import Optional
 import requests
 from sqlalchemy.orm import Session
 
-from models.database import Series, Duplicate, DownloadRequest, TentacleUser, get_setting, DeletionLog
+from models.database import Series, Duplicate, DownloadRequest, TentacleUser, get_setting, DeletionLog, get_recently_added_days
 from services.radarr import file_loss_looks_like_an_outage
-from services.duplicates import series_has_real_download
+from services.duplicates import series_has_real_download, droppable_duplicates
 
 DOWNLOADED_TV_TAG = "Downloaded TV"
 RECENTLY_ADDED_TV_TAG = "Recently Added TV"
@@ -847,8 +847,9 @@ def _scan_sonarr_library(db: Session) -> dict:
             ).delete()
             # Its duplicate tombstones too, as SeriesDelete does: a "keep
             # downloaded" one would keep the VOD episodes away for good (#334).
-            db.query(Duplicate).filter(Duplicate.tmdb_id == series.tmdb_id,
-                                       Duplicate.media_type == "series").delete()
+            # Not while Keep VOD holds them, nor one holding saved watched
+            # state (#515).
+            droppable_duplicates(db, "series", series.tmdb_id).delete(synchronize_session=False)
             db.delete(series)
             removed += 1
     if removed:
@@ -881,13 +882,13 @@ def _scan_sonarr_library(db: Session) -> dict:
     # Compute tags and write NFO files for all downloaded series
     from services.tagger import tentacle_owned_tags
     owned = tentacle_owned_tags(db)
+    recently_added_days = get_recently_added_days(db)
     for tmdb_id, db_series in series_needing_nfo:
         try:
             # Build tag list: built-in + source tag + rule tags + list tags + user attribution
             tags = [DOWNLOADED_TV_TAG]
 
             # Recently added (within rolling window)
-            recently_added_days = int(get_setting(db, "recently_added_days", "30") or "30")
             cutoff = datetime.utcnow() - timedelta(days=recently_added_days)
             if db_series.date_added and db_series.date_added >= cutoff:
                 tags.append(RECENTLY_ADDED_TV_TAG)

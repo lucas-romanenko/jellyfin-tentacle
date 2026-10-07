@@ -59,7 +59,8 @@ def radarr_profiles(db: Session = Depends(get_db), user: TentacleUser = Depends(
     try:
         return _profiles_with_default(db, "radarr", radarr_url, radarr_key)
     except Exception as e:
-        raise HTTPException(502, f"Failed to fetch Radarr profiles: {e}")
+        logger.warning(f"Radarr quality profiles: {e}")
+        raise HTTPException(502, f"Failed to fetch Radarr profiles ({type(e).__name__})")
 
 
 @router.get("/sonarr-profiles")
@@ -72,7 +73,8 @@ def sonarr_profiles(db: Session = Depends(get_db), user: TentacleUser = Depends(
     try:
         return _profiles_with_default(db, "sonarr", sonarr_url, sonarr_key)
     except Exception as e:
-        raise HTTPException(502, f"Failed to fetch Sonarr profiles: {e}")
+        logger.warning(f"Sonarr quality profiles: {e}")
+        raise HTTPException(502, f"Failed to fetch Sonarr profiles ({type(e).__name__})")
 
 
 @router.get("/radarr-folders")
@@ -88,7 +90,8 @@ def radarr_folders(db: Session = Depends(get_db), user: TentacleUser = Depends(g
         r.raise_for_status()
         return [{"path": f["path"], "freeSpace": f["freeSpace"]} for f in r.json()]
     except Exception as e:
-        raise HTTPException(502, f"Failed to fetch Radarr folders: {e}")
+        logger.warning(f"Radarr root folders: {e}")
+        raise HTTPException(502, f"Failed to fetch Radarr folders ({type(e).__name__})")
 
 
 @router.get("/sonarr-folders")
@@ -104,7 +107,8 @@ def sonarr_folders(db: Session = Depends(get_db), user: TentacleUser = Depends(g
         r.raise_for_status()
         return [{"path": f["path"], "freeSpace": f["freeSpace"]} for f in r.json()]
     except Exception as e:
-        raise HTTPException(502, f"Failed to fetch Sonarr folders: {e}")
+        logger.warning(f"Sonarr root folders: {e}")
+        raise HTTPException(502, f"Failed to fetch Sonarr folders ({type(e).__name__})")
 
 
 class ListCreate(BaseModel):

@@ -33,6 +33,10 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   (uvicorn's access log included): Xtream paths and any query parameter
   named like a secret (`*secret*`, `*token*`, `*password*`, `*api_key*`,
   `key`, ...). A new credential in a URL needs such a name, or a rule there.
+- Every Xtream URL (player_api.php, xmltv.php, the `/movie|series|live/`
+  stream paths) puts the login in through `quote_cred()`
+  (`services/xtream_client.py`); never `provider.username`/`password` raw: a
+  `#&+?/%` in it cuts or splits the URL (#529). Plain logins stay byte-identical.
 - One worker, one event loop: anything blocking in an `async def` freezes
   every stream, recording and request. The SSRF guards (`services/ssrf.py`:
   `is_safe_url`, `lan_origin_guard` and the guards it returns) resolve DNS
@@ -147,6 +151,14 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   `apply_pending_user_data` merges it onto the item whose Path is the kept
   file (a worker polls 30 s × 30, the nightly run catches up, dropped after
   30 days) (#333).
+  Radarr/Sonarr post their delete webhooks inside Keep VOD's delete calls,
+  while the resolve request holds the title. The handlers and scans drop a
+  title's duplicates only through `services/duplicates.droppable_duplicates`:
+  none while `_resolve` runs inside `resolving(media_type, tmdb_id)` (a
+  process set; the webhook can't wait on `_resolve_lock`, the resolve waits
+  for the arr, which waits for its webhook), and never a keep_vod one with
+  `pending_user_data`. After the arr call Keep VOD re-reads the row
+  (`populate_existing`): the webhook may have released or deleted it (#515).
 - **Following** = Sonarr `monitorNewItems="all"` (stricter than
   `monitored`), mirrored in `Series.sonarr_monitored`, synced both ways on
   every Sonarr scan; unfollowing keeps `monitored=true`. Hidden for ended
@@ -309,14 +321,17 @@ User docs: `docs/features/live-tv.md`.
   connection right after the last byte sent: it holds the connection until
   its first frame start (a video/audio PES with a PTS); if that packet was
   sent, every later frame start up to the join point must sit where it was
-  sent, the bytes since the last frame start must match, and no unjoined
-  connection may have begun in front of it. Then the replay is dropped
-  (`replays_joined`, `replay_bytes_skipped` in the health); anything
+  sent, every packet dropped must equal the packet sent at that place (a
+  ring of one `hash()` per packet sent, as far back as a hold reaches), and
+  no unjoined connection may have begun in front of it. Then the replay is
+  dropped (`replays_joined`, `replay_bytes_skipped` in the health); anything
   unproven (a gap, a seamless re-dial, a remux, a replay over 32 MB or 30 s,
   a break before the join) goes out as it came: duplicates, never a loss.
-  A joined reconnect is not damage in `_stream_ended`. A provider that
-  loops already-aired packets verbatim can be joined inside its loop (only
-  repeated bytes are dropped).
+  A joined reconnect is not damage in `_stream_ended`. A join drops only
+  packets byte-identical to the ones sent at the same place (#520: checking
+  only the frame starts let a provider's verbatim loop hide the unique
+  packets in front of it). A verbatim loop can at worst be joined one loop
+  period off, which repeats or skips only bytes already sent.
 - The HLS worker (`hls_to_mpegts()`) classifies statuses with the same
   `_raw_retryable()`: a 5xx on a playlist, a re-resolve or a segment is
   waited out (a 5xx segment is fetched again, not skipped). An expired token
@@ -329,7 +344,10 @@ User docs: `docs/features/live-tv.md`.
   `hdhr_<GuideNumber>`, so it must never change. M3U channels have no
   provider id: `stream_id` is the hash of the first name + URL seen, and
   `m3u_key` the hash of the current ones, which a sync matches by. A URL
-  change (rotated token, new host) moves `m3u_key` only (#259).
+  change (rotated token, new host) moves `m3u_key` only (#259). The name
+  is everything after the first comma outside the quoted attributes; a row
+  an older build stored under the text after the name's last comma moves
+  its `m3u_key` to the whole name the same way (#525).
 - A running HLS stream reads every playlist and segment body within a total
   bound (`_aread_within()`): 10 s for a playlist, max(20 s, 3 x the target
   duration) for a segment. httpx's read timeout is per read, so a body that
@@ -343,7 +361,18 @@ User docs: `docs/features/live-tv.md`.
   Channels may share one `epg_channel_id` (one-to-many in the XMLTV output).
   An EPG sync first deletes every id it could store programmes under (each
   channel's guide id, name match and tvg-id, and every name match of this
-  run, kept or dropped), or the insert hits `uq_epg_program` (#467).
+  run, kept or dropped), or the insert hits `uq_epg_program` (#467),
+  except an id another provider's channel uses as its guide that this sync
+  doesn't store again: programmes are shared by guide id across providers
+  (#516).
+- A tvg-id matches a feed id exactly first, else ignoring case when that
+  names one feed id (never a guess between ids that differ only in case);
+  the feed's spelling goes in `epg_name_match` and `epg_match` still says
+  "tvg-id" (#523).
+- A programme's categories are stored in `epg_programs.category` joined by
+  U+001F (`xmltv.CATEGORY_SEP`, which XML can't carry) and served one
+  `<category>` each, in feed order: Jellyfin flags sports/news/kids/movie
+  when any of them is in its lists (#521).
 - A group is unique on (provider, name) with one Xtream `category_id`, but
   Xtream category names aren't unique: `_sync_groups` gives each category
   its own group (the one already on it, else its name, first listed wins,

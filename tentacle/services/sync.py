@@ -20,9 +20,10 @@ from sqlalchemy.orm import Session
 
 from models.database import (
     Provider, ProviderCategory, Movie, Series,
-    SyncRun, CategorySnapshot, Duplicate, get_setting, set_setting, log_deletion
+    SyncRun, CategorySnapshot, Duplicate, get_setting, set_setting, log_deletion,
+    get_recently_added_days,
 )
-from services.tmdb import TMDBService
+from services.tmdb import TMDBService, label_names_film
 from services.nfo import write_movie_nfo, write_series_nfo, make_folder_name, vod_folder_name, fit_file_stem
 from services.cleaner import clean_title
 from services.m3u_parser import episode_from_title, container_from_url
@@ -31,6 +32,7 @@ from services.media_files import delete_movie_files, delete_series_files, MEDIA_
 from services.tagger import compute_tags, get_list_tags_for_tmdb_id, apply_tag_rules
 from services.exceptions import (ProviderConnectionError, ProviderDataError, SyncCancelledError, SyncError,
                                  TMDBConnectionError)
+from services.xtream_client import quote_cred
 
 logger = logging.getLogger(__name__)
 
@@ -171,7 +173,8 @@ XTREAM_HEADERS = {"User-Agent": "TiviMate/4.7.0 (Linux; Android 12)"}
 
 class XtreamClient:
     def __init__(self, provider: Provider):
-        self.base = f"{provider.server_url.rstrip('/')}/player_api.php?username={provider.username}&password={provider.password}"
+        self.base = (f"{provider.server_url.rstrip('/')}/player_api.php"
+                     f"?username={quote_cred(provider.username)}&password={quote_cred(provider.password)}")
         self.server = provider.server_url.rstrip('/')
         self.username = provider.username
         self.password = provider.password
@@ -236,12 +239,12 @@ class XtreamClient:
     def movie_stream_url(self, stream_id, container="mp4") -> str:
         if self.vod_links is not None:
             return self.vod_links.movie(stream_id, container)
-        return f"{self.server}/movie/{self.username}/{self.password}/{stream_id}.{container}"
+        return f"{self.server}/movie/{quote_cred(self.username)}/{quote_cred(self.password)}/{stream_id}.{container}"
 
     def episode_stream_url(self, episode_id, container="mp4") -> str:
         if self.vod_links is not None:
             return self.vod_links.episode(episode_id, container)
-        return f"{self.server}/series/{self.username}/{self.password}/{episode_id}.{container}"
+        return f"{self.server}/series/{quote_cred(self.username)}/{quote_cred(self.password)}/{episode_id}.{container}"
 
 
 def vod_links_for(db: Session, provider: Provider):
@@ -414,6 +417,13 @@ def _strm_needs_rewrite(strm_file: Path, expected: str, client) -> bool:
         return True   # 0 bytes / blank: a write cut short, never a link of anyone's (#283)
     if current == expected:
         return False
+    # A file written before the login was percent-encoded (#529): a '#', '?' or
+    # '/' in it broke the URL. Read it in today's form, so the checks below
+    # repair it when it plays this stream and leave it alone when not.
+    raw_user, raw_pass = getattr(client, "username", "") or "", getattr(client, "password", "") or ""
+    old_login, new_login = f"/{raw_user}/{raw_pass}/", f"/{quote_cred(raw_user)}/{quote_cred(raw_pass)}/"
+    if (raw_user or raw_pass) and old_login != new_login and old_login in current:
+        current = current.replace(old_login, new_login, 1)
     from urllib.parse import urlparse
     from services import vod_tokens
     provider_host = (urlparse(client.server).hostname or "").lower()
@@ -481,12 +491,14 @@ def _strm_plays_other_provider(strm_file: Path, client) -> bool:
         current = strm_file.read_text(encoding="utf-8").strip()
     except (OSError, UnicodeDecodeError):
         return False
+    from urllib.parse import unquote
     from services import vod_tokens
     m = vod_tokens._TOKEN_URL.search(current)
     if m:
         return int(m.group(2)) in others["ids"]
     m = _XTREAM_ACCOUNT_RE.match(current)
-    return bool(m) and (m.group(1).lower(), m.group(2)) in others["accounts"]
+    # The URL carries the username percent-encoded (#529), the accounts as typed
+    return bool(m) and (m.group(1).lower(), unquote(m.group(2))) in others["accounts"]
 
 
 # ── M3U provider support ─────────────────────────────────────────────────
@@ -1162,7 +1174,7 @@ def _stream_origin(url_text: str, unwrap: bool = False):
     if m is None and unwrap:
         carried = _NS_CARRIED_RE.search(unquote(url_text or ""))
         m = _XTREAM_ACCOUNT_RE.match(carried.group(0)) if carried else None
-    return ("host", m.group(1).lower(), m.group(2)) if m else None
+    return ("host", m.group(1).lower(), unquote(m.group(2))) if m else None
 
 
 def _movie_row_plays_stream(client, stream: dict, strm_path, index: "_MovieIndex" = None):
@@ -1687,8 +1699,12 @@ def _vod_root_unavailable(root: Path) -> bool:
 
     mergerfs/NFS/SMB/rclone all report plain "not found" for every path while
     a branch is out, and Docker shows a share that isn't mounted as the bare,
-    empty mount point."""
-    return not root.is_dir() or not any(root.iterdir())
+    empty mount point. A stale mount (NFS/SMB/FUSE) raises OSError when read:
+    unavailable too (#440)."""
+    try:
+        return not root.is_dir() or not any(root.iterdir())
+    except OSError:
+        return True
 
 
 def _swept_rows(db: Session, Model):
@@ -1920,7 +1936,7 @@ def sync_provider(
     vod_movies_path = Path("/media/vod/movies")
     vod_series_path = Path("/media/vod/shows")
     match_threshold = float(get_setting(db, "tmdb_match_threshold", "0.7"))
-    recently_added_days = int(get_setting(db, "recently_added_days", "30"))
+    recently_added_days = get_recently_added_days(db)
     require_tmdb = provider.require_tmdb_match if provider.require_tmdb_match is not None else True
 
     # Create sync run record
@@ -2066,6 +2082,28 @@ def sync_provider(
     return run
 
 
+def _own_stream_map(index: "_MovieIndex"):
+    """(plays, row_ref) from one read of each .strm of this provider's films:
+    plays maps (kind, stream number) to the film whose .strm plays it (None
+    when two rows do), row_ref a film to what its .strm plays. A file two rows
+    share, or one playing another provider's stream, counts for nobody."""
+    plays = {}
+    row_ref = {}
+    for tid, path in index.own_strm.items():
+        if not path or path in index.shared:
+            continue
+        try:
+            current = Path(path).read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeDecodeError):
+            continue
+        ref = _play_ref(current, unwrap=True)
+        if ref is None or index.is_other_provider(_stream_origin(current, unwrap=True)):
+            continue
+        row_ref[tid] = ref
+        plays[ref] = tid if plays.get(ref, tid) == tid else None   # two rows: nobody's
+    return plays, row_ref
+
+
 def _place_relisted_movies(db: Session, client, provider: Provider, index: "_MovieIndex", stats: dict,
                            seen_ids_all: set, unmatched: list, met_streams: dict, listed_refs: set,
                            fetch_ok: bool, may_restore) -> None:
@@ -2087,20 +2125,7 @@ def _place_relisted_movies(db: Session, client, provider: Provider, index: "_Mov
     xtream = isinstance(client, XtreamClient)
     if not unmatched and not (fetch_ok and xtream and met_streams):
         return
-    plays = {}    # (kind, number) -> tmdb_id of the film of ours whose .strm plays it
-    row_ref = {}  # tmdb_id -> what its .strm plays
-    for tid, path in index.own_strm.items():
-        if not path or path in index.shared:
-            continue
-        try:
-            current = Path(path).read_text(encoding="utf-8").strip()
-        except (OSError, UnicodeDecodeError):
-            continue
-        ref = _play_ref(current, unwrap=True)
-        if ref is None or index.is_other_provider(_stream_origin(current, unwrap=True)):
-            continue
-        row_ref[tid] = ref
-        plays[ref] = tid if plays.get(ref, tid) == tid else None   # two rows: nobody's
+    plays, row_ref = _own_stream_map(index)
 
     def ref_of(stream):
         return _play_ref(client.movie_stream_url(stream.get("stream_id"), stream.get("container_extension", "mp4")))
@@ -2381,6 +2406,33 @@ def _sync_movies(
     def _in_library(i):
         return i in existing_provider_tmdb_ids or i in seen_tmdb_ids
 
+    own_plays = []  # [plays] of _own_stream_map, read once, on first need
+
+    def _keeps_its_film(stream, clean_name, year, found_id):
+        """#310: the film this stream's .strm already plays, when the search
+        found another film the label still fits it: an existing row keeps its
+        film (and its watched state, playlist entries), so a matcher change
+        reaches new imports only; a wrong one is Fix it's. A stream the label
+        no longer names (a provider reusing its number), or whose provider id
+        names the new film, moves as before."""
+        hint = _provider_tmdb_hint(stream)
+        if hint is not None and hint == found_id:
+            return None
+        if found_id in index.own_strm and \
+                _movie_row_plays_stream(client, stream, index.own_strm.get(found_id), index) is True:
+            return None  # the usual case: one file read, no map
+        if not own_plays:
+            own_plays.append(_own_stream_map(index)[0])
+        tid = own_plays[0].get(_play_ref(client.movie_stream_url(
+            stream.get("stream_id"), stream.get("container_extension", "mp4"))))
+        if tid is None or tid == found_id or not _in_library(tid) or (hint is not None and hint != tid):
+            return None
+        meta = index.own_meta.get(tid) or {}
+        if not label_names_film(clean_name, year, meta.get("title"), meta.get("year"),
+                                getattr(tmdb, "match_threshold", 0.7)):
+            return None
+        return tid
+
     # Streams an admin reported as mislabelled ("Wrong movie"): never imported
     # again, whatever the provider calls them and whichever category they're in.
     from services.wrong_match import blocked_keys, is_blocked, override_keys, override_for
@@ -2531,6 +2583,14 @@ def _sync_movies(
             known_id = None
             override_hit = overrides and override_for(overrides, stream.get("stream_id"), client.movie_stream_url(
                 stream.get("stream_id"), stream.get("container_extension", "mp4"))) is not None
+            if metadata and not override_hit:
+                kept = _keeps_its_film(stream, clean_name, year, metadata.get("tmdb_id"))
+                if kept is not None:
+                    logger.debug(f"[Sync] '{stream.get('name')}' (stream {stream.get('stream_id')}) stays "
+                                f"'{index.own_meta[kept].get('title')}' (TMDB {kept}), the film its .strm "
+                                f"plays; the search now finds TMDB {metadata.get('tmdb_id')}")
+                    known_by_idx[idx] = kept
+                    metadata = None
             if metadata and not override_hit:
                 # Same name and year as another film: a claim, decided at the end (#185 D2)
                 other = _namesake_claim(_details, client, stream, metadata, index)
