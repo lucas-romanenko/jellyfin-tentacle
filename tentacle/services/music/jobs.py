@@ -47,7 +47,7 @@ def _request_done(row: MusicAlbum) -> None:
     row.request_pending, row.request_choice = False, None
 
 
-def finish_request(album_id: int, rgid: str, choice: dict = None, sleep=time.sleep):
+def finish_request(album_id: int, rgid: str, choice: dict = None, sleep=time.sleep, resumed: bool = False):
     """The worker job that completes a request: pin the original, then search.
 
     The album's row stays `request_pending` until this has pinned and searched (or
@@ -56,24 +56,40 @@ def finish_request(album_id: int, rgid: str, choice: dict = None, sleep=time.sle
     unmonitored, or one that downloaded since) is never pinned here, since a pin
     could change its files: it is checked, so Fix library offers the pin for an
     admin's Apply, and searched only if it is already pinned right and locked
-    (#242, #422)."""
+    (#242, #422). `resumed`: such a later run, which reads the album once (no
+    waiting: one job holds the worker for every pending album) and leaves an
+    album unmonitored in Lidarr since alone (the user's change)."""
     def job(db):
         client = library.lidarr_client(db)
         album = client.album(album_id)
-        for delay in RELEASE_WAIT:
+        for delay in () if resumed else RELEASE_WAIT:
             if album.get("releases"):
                 break
             sleep(delay)
             album = client.album(album_id)
+        existed = db.query(MusicAlbum).filter(MusicAlbum.mbid == album.get("foreignAlbumId")).first()
         row = library.upsert_album(db, album)
+        if existed is not None and not row.request_pending:
+            # Finished already: the same album was requested twice at once, and the
+            # other request's job pinned and searched it. Once is enough. (A row this
+            # job had to write again, removed meanwhile, is still owed.)
+            db.commit()
+            return
         if int((album.get("statistics") or {}).get("trackFileCount") or 0):
             _check_album_with_files(db, client, album_id)
+            return
+        if resumed and not album.get("monitored"):
+            _request_done(row)
+            row.verdict = {"state": "Not pinned or searched: the album was unmonitored in Lidarr after "
+                                    "it was requested."}
+            db.commit()
+            logger.info(f"[Request] album '{row.title}' was unmonitored in Lidarr since; left alone")
             return
         if not album.get("releases"):
             row.verdict = {"state": "Waiting for Lidarr to load this album's releases; the daily check "
                                     "will pin it."}
             db.commit()
-            worker.record_error(f"'{album.get('title')}': Lidarr hadn't loaded its releases after a minute")
+            worker.record_error(f"'{album.get('title')}': Lidarr hasn't loaded this album's releases yet; trying again at the next check")
             return
         if not album.get("monitored"):
             client.set_monitored([album_id], True)
@@ -167,16 +183,22 @@ def finish_pending_requests(db, errors: list = None) -> int:
     for row in rows:
         title = f"{row.artist_name} - {row.title}"
         try:
-            if not row.lidarr_album_id and not _owed_add_landed(db, library.lidarr_client(db), row):
+            # An owed add that has just landed gets its first try (which waits for
+            # the releases); any other row is a later run (resumed).
+            first_try = not row.lidarr_album_id
+            if first_try and not _owed_add_landed(db, library.lidarr_client(db), row):
                 continue
-            finish_request(row.lidarr_album_id, row.mbid, row.request_choice)(db)
-            done += 1
-            logger.info(f"[Request] '{title}': finished a request that was left unfinished")
+            finish_request(row.lidarr_album_id, row.mbid, row.request_choice, resumed=not first_try)(db)
+            if not row.request_pending:
+                done += 1
+                logger.info(f"[Request] '{title}': finished a request that was left unfinished")
         except LidarrError as e:
-            if e.status == 404:   # removed from Lidarr since: nothing is owed
-                _request_done(row)
+            if e.status == 404:   # removed from Lidarr since: nothing is owed, nothing to show
+                db.rollback()
+                db.delete(row)
                 db.commit()
-            elif errors is not None:
+                continue
+            if errors is not None:
                 errors.append(f"{title}: {e.message}")
         except (MusicBrainzError, library.MusicUnavailable) as e:
             if errors is not None:
