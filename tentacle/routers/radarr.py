@@ -6,6 +6,7 @@ Radarr library scanning, quality profiles, and provider migration
 import re
 import threading
 import logging
+from collections import Counter
 import requests
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -14,7 +15,7 @@ from pydantic import BaseModel
 from typing import Optional
 
 from models.database import get_db, Provider, Movie, ListItem, ListSubscription, DownloadRequest, Duplicate, get_setting, log_activity
-from services.radarr import (scan_radarr_library, RadarrService, file_loss_looks_like_an_outage,
+from services.radarr import (scan_radarr_library, RadarrService, download_loss_looks_like_an_outage, download_kind,
                              downloaded_movie_rows, release_vod_download)
 from services.nfo import update_nfo_tags, write_movie_nfo, make_folder_name, refresh_arr_nfo
 from services.tagger import tentacle_owned_tags
@@ -289,7 +290,7 @@ MISSING_SETTLE_SECONDS = 600
 MISSING_WINDOW_SECONDS = 6 * 3600
 _missing_lock = threading.Lock()
 _missing_pending: dict = {}          # tmdb_id -> (title, arr_folder)
-_missing_recent: dict = {}           # tmdb_id -> (monotonic time judged, was a downloaded row)
+_missing_recent: dict = {}           # tmdb_id -> (monotonic time judged, its download_kind, None if not a downloaded row)
 _missing_gen = 0
 _missing_timer = None
 
@@ -333,17 +334,19 @@ def _flush_missing_from_disk(gen: Optional[int] = None, db: Optional[Session] = 
         from models.database import SessionLocal
         db = SessionLocal()
     try:
-        rows = {m.tmdb_id for m in downloaded_movie_rows(db)}
+        rows = {m.tmdb_id: download_kind(m) for m in downloaded_movie_rows(db)}
         # Downloads already removed for an earlier report still count, in the
-        # loss and in the library it is measured against.
-        gone = sum(1 for t, (_, was_row) in recent.items() if was_row and t not in rows)
-        lost_now = rows & set(batch)
-        lost = len(lost_now) + len(rows & set(recent)) + gone
-        total = len(rows) + gone
-        if file_loss_looks_like_an_outage(lost, total):
+        # loss and in the library it is measured against. Judged over all of
+        # them and over each kind alone (#505).
+        gone = Counter(kind for t, (_, kind) in recent.items() if kind and t not in rows)
+        lost_now = rows.keys() & set(batch)
+        lost_by_kind = Counter(rows[t] for t in lost_now | (rows.keys() & set(recent))) + gone
+        total_by_kind = Counter(rows.values()) + gone
+        lost, total = sum(lost_by_kind.values()), sum(total_by_kind.values())
+        if download_loss_looks_like_an_outage(lost_by_kind, total_by_kind):
             with _missing_lock:
                 for t in batch:
-                    _missing_recent[t] = (now, t in rows)
+                    _missing_recent[t] = (now, rows.get(t))
             logger.error(
                 f"[Radarr webhook] REFUSING to remove {len(lost_now)} downloaded movies Radarr reported missing "
                 f"from disk: with the reports of the last {MISSING_WINDOW_SECONDS // 3600} h that is {lost} of "
@@ -358,7 +361,7 @@ def _flush_missing_from_disk(gen: Optional[int] = None, db: Optional[Session] = 
             except Exception as e:
                 logger.error(f"[Radarr webhook] MovieFileDelete DB cleanup failed for tmdb:{tmdb_id}: {e}")
             with _missing_lock:
-                _missing_recent[tmdb_id] = (now, tmdb_id in rows)
+                _missing_recent[tmdb_id] = (now, rows.get(tmdb_id))
         return {"status": "removed", "removed": removed}
     finally:
         if own_db:

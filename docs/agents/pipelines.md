@@ -50,7 +50,10 @@ none has come for 10 minutes and judged with the scan's storage-outage guard
 (`file_loss_looks_like_an_outage`, #106/#381), counted together with every
 `missingFromDisk` report of the last 6 hours: a loss of 3 or more and over
 half of the downloads (a share that dropped out) removes nothing, however the
-burst was spread out. A VOD title Radarr downloaded too (one row: source
+burst was spread out. The loss is judged over all downloads and over each kind
+alone (downloaded-only films, VOD titles' downloads: `download_kind`); any
+that looks like an outage refuses (`download_loss_looks_like_an_outage`, #505),
+so a share lost under one kind isn't diluted by the other's healthy downloads. A VOD title Radarr downloaded too (one row: source
 `provider_N` with `radarr_path`) keeps its row and goes back to VOD only
 (`release_vod_download`, #378): `radarr_path`, `downloaded_at`, the
 download's `jellyfin_item_id` and "Downloaded Movies" (plus the requester's
