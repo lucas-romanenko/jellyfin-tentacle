@@ -97,6 +97,10 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
         # names an unrelated film in Radarr.
         _carry_user_data(dup, record, "vod", db)
         arr = _delete_downloaded_copy(dup, record, db)
+        # Radarr/Sonarr post their delete webhooks while that call runs, and
+        # the webhook drops the title's duplicates (this one included) and
+        # releases or removes its row. Carry on with what is there now.
+        dup, record = _after_arr_delete(dup, model, db)
 
         # The (single) row is the VOD one — just clear the downloaded-copy path
         path_attr = "sonarr_path" if is_series else "radarr_path"
@@ -120,6 +124,36 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
     # Both copies in one folder: the saved watched state goes to the item
     # Jellyfin makes for the kept copy once it has seen the delete (#333).
     watch_pending_user_data(db, dup)
+    return dup
+
+
+def _after_arr_delete(dup: Duplicate, model, db: Session):
+    """(dup, record) as the database has them after the arr deleted its copy.
+
+    Radarr and Sonarr send their webhooks synchronously, inside the delete
+    call: MovieFileDelete/MovieDelete (SeriesDelete) reach Tentacle before
+    the call returns, and drop every duplicate of the title and the
+    downloaded row. Committing this session's copies then failed (UPDATE
+    matched 0 rows) and the request answered 500 after the download was
+    gone, without recording the resolution, and with the watched state saved
+    for the kept copy (#333) lost. A duplicate the webhook dropped is written
+    back, with its saved state; the row is read again."""
+    fields = {c.name: getattr(dup, c.name) for c in Duplicate.__table__.columns}
+    # Nothing else is pending: _carry_user_data set pending_user_data and
+    # _resolve the twins' merged sources, both written back below.
+    db.expire_all()
+    current = db.query(Duplicate).filter(Duplicate.id == fields["id"]).first()
+    if current is None:
+        db.expunge(dup)
+        current = Duplicate(**fields)
+        db.add(current)
+        logger.info(f"Duplicate tmdb:{fields['tmdb_id']}: the {model.__name__.lower()}'s delete webhook "
+                    f"dropped it during the resolution; recorded again")
+    else:
+        current.pending_user_data = fields["pending_user_data"]
+        current.sources = fields["sources"]
+    record = db.query(model).filter(model.tmdb_id == fields["tmdb_id"]).first()
+    return current, record
 
 
 def _carry_user_data(dup: Duplicate, record, keep: str, db: Session) -> None:
@@ -309,7 +343,14 @@ def _resolve(dup: Duplicate, resolution: str, db: Session) -> None:
                     merged.append(s)
         dup.sources = merged  # a new list, so the JSON column is saved
 
-    _apply_resolution(dup, resolution, db)
+    twin_ids = [t.id for t in twins]
+    # Keep VOD comes back with the duplicate as the database has it after
+    # the arr's delete webhook (#515), which also drops the twins: a twin it
+    # dropped stays gone (never brought back as pending), the others are
+    # marked with this one.
+    dup = _apply_resolution(dup, resolution, db) or dup
+    if twin_ids:
+        twins = db.query(Duplicate).filter(Duplicate.id.in_(twin_ids)).all()
 
     # Mark as resolved (keep in DB for stats/history)
     now = datetime.now(timezone.utc)
@@ -393,6 +434,7 @@ def resolve_all(body: ResolveAllRequest, db: Session = Depends(get_db)):
                 skipped += 1
                 continue
             dup = db.query(Duplicate).filter(Duplicate.id == dup_id).first()
+            tmdb_id = dup.tmdb_id  # dup may be detached by then (#515)
             try:
                 # Commits each one: a later failure rolls the session back, which
                 # would turn this one (one copy already deleted) back into
@@ -400,7 +442,7 @@ def resolve_all(body: ResolveAllRequest, db: Session = Depends(get_db)):
                 # copy that is left. Its twins are marked with it, then skipped.
                 _resolve(dup, body.resolution, db)
             except Exception as e:
-                logger.error(f"Failed to apply resolution for tmdb:{dup.tmdb_id}: {e}")
+                logger.error(f"Failed to apply resolution for tmdb:{tmdb_id}: {e}")
                 failed += 1
                 continue
             resolved += 1
