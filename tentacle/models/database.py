@@ -779,7 +779,8 @@ class LiveChannel(Base):
     # and it wins over everything below (#141).
     epg_id_override = Column(String, nullable=True)
     # The feed channel the last EPG sync matched by NAME, because the tvg-id
-    # was missing or the feed did not carry it (#141). Recomputed every sync.
+    # was missing or the feed did not carry it (#141), or the feed's spelling
+    # of a tvg-id it lists only in other case (#523). Recomputed every sync.
     epg_name_match = Column(String, nullable=True)
 
     # Management
@@ -809,12 +810,14 @@ class LiveChannel(Base):
 
     @property
     def epg_match(self):
-        """How guide_epg_id was chosen: "override", "name", "tvg-id" or None."""
+        """How guide_epg_id was chosen: "override", "name", "tvg-id" or None.
+        A name match that is the tvg-id in other case is a tvg-id match (#523)."""
         if (self.epg_id_override or "").strip():
             return "override"
-        if self.epg_name_match:
+        tvg = (self.epg_channel_id or "").strip()
+        if self.epg_name_match and self.epg_name_match.casefold() != tvg.casefold():
             return "name"
-        return "tvg-id" if (self.epg_channel_id or "").strip() else None
+        return "tvg-id" if tvg else None
 
 
 class LiveChannelGroup(Base):
