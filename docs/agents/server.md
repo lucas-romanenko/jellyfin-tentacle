@@ -333,6 +333,9 @@ User docs: `docs/features/live-tv.md`.
   channel sync chains into an EPG sync. The EPG (XMLTV, cached on disk) is
   stored for *all* provider channels, so newly enabled ones have a guide.
   Channels may share one `epg_channel_id` (one-to-many in the XMLTV output).
+  An EPG sync first deletes every id it could store programmes under (each
+  channel's guide id, name match and tvg-id, and every name match of this
+  run, kept or dropped), or the insert hits `uq_epg_program` (#467).
 - A group is unique on (provider, name) with one Xtream `category_id`, but
   Xtream category names aren't unique: `_sync_groups` gives each category
   its own group (the one already on it, else its name, first listed wins,

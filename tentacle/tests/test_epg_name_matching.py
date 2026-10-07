@@ -243,9 +243,9 @@ class EpgSyncMatchesByName(unittest.TestCase):
             self.assertIn(f"<title>{title}</title>", xml)
         self.assertNotIn("<title>F1</title>", xml)
 
-    def test_a_tvg_id_that_brought_programmes_keeps_its_guide(self):
-        """The feed carries the channel's own schedule without a <channel>
-        element for it: a name match must not replace that guide."""
+    def _add_own_tsn_schedule(self):
+        """The feed carries TSN 5's own schedule (its tvg-id) without a
+        <channel> element for it."""
         path = xmltv._get_cache_path(self.url)
         feed = open(path, encoding="utf-8").read()
         start = datetime.utcnow() + timedelta(hours=1)
@@ -253,12 +253,38 @@ class EpgSyncMatchesByName(unittest.TestCase):
                                      f'channel="old-tsn.ca"><title>Own schedule</title></programme></tv>')
         with open(path, "w", encoding="utf-8") as f:
             f.write(feed)
+
+    def test_a_tvg_id_that_brought_programmes_keeps_its_guide(self):
+        """A name match must not replace the guide its own tvg-id brought."""
+        self._add_own_tsn_schedule()
         self.assertTrue(self._sync())
         self.db.expire_all()
         tsn = self.db.query(mdb.LiveChannel).filter(mdb.LiveChannel.stream_id == "3").one()
         self.assertEqual("old-tsn.ca", tsn.guide_epg_id)
         self.assertIsNone(tsn.epg_name_match)
         self.assertIn("<title>Own schedule</title>", self._client().get("/hdhr/xmltv.xml").text)
+
+    def test_the_next_sync_after_a_dropped_name_match_succeeds(self):
+        """#467: the dropped match's programmes were stored under an id no
+        channel used, so the next sync never deleted them and failed on
+        UNIQUE(channel_id, start) for as long as the feed stayed the same."""
+        self._add_own_tsn_schedule()
+        self.assertTrue(self._sync())
+        self.assertTrue(self._sync(), livetv_router._get_sync_status(self.pid).get("message"))
+        self.db.expire_all()
+        self.assertEqual(0, self.db.query(mdb.EPGProgram).filter_by(channel_id="TSN5.ca").count(),
+                         "no channel's guide: not kept")
+        self.assertEqual(1, self.db.query(mdb.EPGProgram).filter_by(channel_id="old-tsn.ca").count())
+
+    def test_rows_an_earlier_sync_left_under_a_dropped_match_are_replaced(self):
+        self._add_own_tsn_schedule()
+        start = datetime.utcnow().replace(microsecond=0) + timedelta(hours=1)
+        self.db.add(mdb.EPGProgram(channel_id="TSN5.ca", title="Hockey", start=start,
+                                   stop=start + timedelta(hours=1)))
+        self.db.commit()
+        self.assertTrue(self._sync(), livetv_router._get_sync_status(self.pid).get("message"))
+        self.db.expire_all()
+        self.assertEqual(0, self.db.query(mdb.EPGProgram).filter_by(channel_id="TSN5.ca").count())
 
     def test_the_channel_list_shows_how_each_guide_was_found(self):
         self._sync()

@@ -3225,6 +3225,10 @@ def _run_epg_sync_background(provider_data: dict):
             # Replace guide data — quick transaction, no network inside it
             if resolved:
                 with_programmes = {p["channel_id"] for p in programs}
+                # The parser kept programmes for every name match, including
+                # the ones dropped below: their ids go into the delete set too,
+                # so rows an earlier sync stored under them can't collide (#467).
+                matched_ids = {v["guide_id"] for v in resolved.values() if v["guide_id"]}
                 for r in rows:
                     match = (resolved.get(r.id) or {}).get("name_match")
                     tvg = (r.epg_channel_id or "").strip()
@@ -3236,7 +3240,12 @@ def _run_epg_sync_background(provider_data: dict):
                         resolved[r.id] = {**resolved[r.id], "method": "tvg-id", "guide_id": tvg,
                                           "name_match": None}
                     r.epg_name_match = match
-                provider_channel_epg_ids |= {v["guide_id"] for v in resolved.values() if v["guide_id"]}
+                guide_ids = {v["guide_id"] for v in resolved.values() if v["guide_id"]}
+                provider_channel_epg_ids |= matched_ids | guide_ids
+                # A dropped match is no channel's guide: its programmes aren't kept.
+                unused = matched_ids - guide_ids - epg_ids
+                if unused:
+                    programs = [p for p in programs if p["channel_id"] not in unused]
             if provider_channel_epg_ids:
                 db.query(EPGProgram).filter(
                     EPGProgram.channel_id.in_(provider_channel_epg_ids)
