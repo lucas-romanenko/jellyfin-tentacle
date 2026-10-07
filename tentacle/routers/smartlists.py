@@ -580,7 +580,10 @@ def preview_count(body: PreviewRequest, db: Session = Depends(get_db), user: Ten
     }
 
     jf = JellyfinService(jf_url, jf_key)
+    # Count as the rule's owner, the same query the playlist runs (#538):
+    # without a user Jellyfin answers for every library, on stale metadata.
     query = _build_query_params(config)
+    query["user_id"] = user.jellyfin_user_id
     try:
         items = jf.query_items(**query)
     except Exception as e:
