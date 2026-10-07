@@ -1,7 +1,7 @@
 # Jellyfin, Radarr and Sonarr: hard-won notes
 
 What their APIs actually do (Jellyfin 10.11), found building Tentacle.
-Merged from Lucas's notes on 2026-09-28; the code wins.
+The code wins where they differ.
 
 ## Jellyfin
 
@@ -25,6 +25,14 @@ Merged from Lucas's notes on 2026-09-28; the code wins.
   (3) failed listings in a row is it updated anyway, with a warning and a
   `rating_cascade_unprotected` Activity entry (#161). The count lives in
   `deferred_series_updates.json` in the data dir.
+- **Two files of one film in one folder** are one item with two versions.
+  The item's Path is its main version; the other is an owned item (`OwnerId`
+  set, its id made from its path as a Video) that recursive `/Items` listings
+  leave out: only `?Ids=` or the item's `MediaSources` name it. Users'
+  data is on the main item whichever version they played. Delete the main
+  version's file and the next scan makes a new item (new id) for the other
+  file with nobody's data on it (Jellyfin's own re-attach by provider-id key
+  doesn't catch it), #333.
 - **Refreshing metadata** with `ReplaceAllMetadata=true` wipes the tags
   (TMDB has none): always `ReplaceAllMetadata=false`.
 - **NFO for downloads**: named exactly like the video
@@ -54,7 +62,7 @@ Merged from Lucas's notes on 2026-09-28; the code wins.
   (`/media/movies`, `/media/shows`, `/media/vod/...`) aren't Radarr's or
   Sonarr's. When calling their APIs, use *their* root folders (Radarr's is
   `/data/movies` in the common setup); Tentacle's own media paths are fixed
-  (see CLAUDE.md) and mapped by the compose volumes.
+  (see [server.md](server.md#stack)) and mapped by the compose volumes.
 - **Hybrid series** need a Sonarr root folder on the VOD shows directory
   (the same host folder as Tentacle's `/media/vod/shows`); Tentacle finds
   it by "vod" in the path.
@@ -62,6 +70,16 @@ Merged from Lucas's notes on 2026-09-28; the code wins.
   client category in Radarr/Sonarr doesn't exist in the client (SABnzbd,
   qBittorrent): the client downloads but the *arr can't track it, so its
   queue (and Tentacle's Activity) is empty. Check the *arr's own queue first.
+- **Deleting a file** (`DELETE moviefile/{id}`, `episodefile/{id}`) answers
+  only when it is done. With a recycle bin on another drive they copy the
+  file there first, which can take minutes, and the title keeps `hasFile`
+  until then: a timed-out delete usually still happens, so read `hasFile`
+  before calling it failed (`services/bad_copy.py`). A manual delete also
+  unmonitors the title when "Unmonitor Deleted Movies/Episodes" is on, so
+  a monitor call has to come after the delete, not before. Bad copy always
+  monitors the episode again, but monitors a movie only when it was
+  unmonitored before the press: with "Unmonitor Deleted Movies" on, a
+  monitored movie ends unmonitored.
 - **Webhooks** must use an address the *arr can reach inside the network
   (`http://<tentacle-host>:8888/api/radarr/webhook`, `.../sonarr/webhook`),
   not a public tunnel URL. Triggers: On File Import, On Movie/Series Added,
