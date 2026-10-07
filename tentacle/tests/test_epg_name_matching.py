@@ -22,7 +22,7 @@ from sqlalchemy.orm import sessionmaker
 import models.database as mdb
 import routers.livetv as livetv_router
 import services.xmltv as xmltv
-from services.channel_names import channel_name_key
+from services.channel_names import channel_country, channel_name_key, feed_countries
 from services.epg_match import coverage_report, coverage_summary, resolve_guide_ids
 from tmp_dirs import temp_dir
 
@@ -166,6 +166,43 @@ class CountryCheck(unittest.TestCase):
         self.assertEqual(1, report["enabled"]["foreign"])
         self.assertEqual([{"channel_id": 2, "name": "LT: BTV", "guide_id": "btv.lt"}], report["by_name"])
         self.assertIn("1 a name the feed has only for another country", coverage_summary(report))
+
+
+class LanguageTags(unittest.TestCase):
+    """"EN: Discovery Channel" names a language, not a country: it was read as
+    country "en", so its US namesake was "foreign" and it got no guide (#527)."""
+
+    FEED = [{"id": "DiscoveryChannel.us", "names": ["Discovery Channel"]}]
+
+    def test_a_language_tag_matches_like_an_untagged_name(self):
+        for name in ("Discovery Channel", "EN: Discovery Channel", "|EN| Discovery Channel",
+                     "[EN] DISCOVERY CHANNEL HD", "JA: Discovery Channel"):
+            with self.subTest(name=name):
+                r = resolve_guide_ids([_ch(1, name)], self.FEED)[1]
+                self.assertEqual(("name", "DiscoveryChannel.us"), (r["method"], r["guide_id"]), r["reason"])
+
+    def test_a_country_after_the_language_still_scopes_the_match(self):
+        r = resolve_guide_ids([_ch(1, "EN CA: Discovery Channel")], self.FEED)[1]
+        self.assertEqual("foreign", r["reason"])
+        feed = self.FEED + [{"id": "DiscoveryChannel.ca", "names": ["Discovery Channel"]}]
+        r = resolve_guide_ids([_ch(1, "EN CA: Discovery Channel")], feed)[1]
+        self.assertEqual(("name", "DiscoveryChannel.ca"), (r["method"], r["guide_id"]))
+
+    def test_real_country_tags_are_unchanged(self):
+        r = resolve_guide_ids([_ch(1, "UK: Discovery Channel"), _ch(2, "CA EN: Discovery Channel"),
+                               _ch(3, "CA FR: Discovery Channel"), _ch(4, "LT: Discovery Channel")], self.FEED)
+        self.assertEqual(["foreign"] * 4, [r[i]["reason"] for i in (1, 2, 3, 4)])
+        for name, country in (("UK: X", "gb"), ("|GB| X", "gb"), ("US: X", "us"), ("USA: X", "us"),
+                              ("CA: X", "ca"), ("CA EN: X", "ca"), ("CA FR: X", "ca"), ("LT: X", "lt"),
+                              ("FR: X", "fr"), ("DE: X", "de"), ("AR: X", "ar"), ("EU: X", "eu"),
+                              ("EN: X", None), ("[EN] X", None), ("EN CA: X", "ca"), ("X", None)):
+            with self.subTest(name=name):
+                self.assertEqual(country, channel_country(name))
+
+    def test_a_language_tag_on_the_feed_side_still_names_a_country(self):
+        feed = [{"id": "disc", "names": ["JA: Discovery Channel"]}]
+        self.assertEqual({"ja"}, feed_countries("disc", ["JA: Discovery Channel"]))
+        self.assertEqual("foreign", resolve_guide_ids([_ch(1, "US: Discovery Channel")], feed)[1]["reason"])
 
 
 def _stamp(dt):
