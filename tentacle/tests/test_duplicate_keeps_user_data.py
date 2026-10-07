@@ -65,6 +65,9 @@ class FakeJellyfin:
             raise ConnectionError("Jellyfin is down")
         path = url.split("http://jf", 1)[1]
         if path == "/Items":
+            if "Ids" in params:
+                ids = params["Ids"].split(",")
+                return _Resp(200, {"Items": [dict(i) for i in self.items if i["Id"] in ids]})
             if "ParentId" in params:
                 rows = [i for i in self.items if i.get("ParentId") == params["ParentId"]]
             else:
