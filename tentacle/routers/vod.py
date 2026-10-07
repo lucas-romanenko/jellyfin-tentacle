@@ -36,6 +36,7 @@ from sqlalchemy.orm import Session
 from models.database import Provider, get_db, get_setting
 from services import vod_tokens
 from services.ssrf import is_safe_url, lan_origin_guard
+from services.xtream_client import quote_cred
 from routers import livetv
 
 logger = logging.getLogger(__name__)
@@ -301,7 +302,9 @@ async def _open(client: httpx.AsyncClient, method: str, url: str, headers: dict,
             raise HTTPException(502, "Redirect without Location header")
         from urllib.parse import urljoin
         current = urljoin(current, location)
-        if not guard(current):
+        # The guard resolves DNS with a blocking getaddrinfo: off the event
+        # loop, so a resolver that hangs doesn't freeze every stream (#464).
+        if not await asyncio.to_thread(guard, current):
             logger.warning(f"[VOD] Blocked redirect to non-public host: {current}")
             raise HTTPException(502, "Stream redirect points to a non-public host")
     raise HTTPException(502, "Too many redirects")
@@ -350,6 +353,8 @@ async def _open_with_retry(client, method, url, headers, guard, owner: str, play
 
 
 def _resolve(db, kind: str, token_file: str):
+    """The stream's URL, guard, user agent and owner. Resolves DNS (twice)
+    with a blocking getaddrinfo: callers run it in a worker thread (#464)."""
     parsed = vod_tokens.parse(kind, token_file)
     # Read, never create: the secret is made by the sync that writes the
     # links. An install that never turned VOD-through-Tentacle on has none,
@@ -361,7 +366,8 @@ def _resolve(db, kind: str, token_file: str):
     if not provider or (provider.provider_type or "xtream") != "xtream" or not provider.server_url:
         raise HTTPException(404, "Unknown stream")
     path = "movie" if kind == "movie" else "series"
-    url = f"{provider.server_url.rstrip('/')}/{path}/{provider.username}/{provider.password}/{parsed['stream_id']}.{parsed['container']}"
+    login = f"{quote_cred(provider.username)}/{quote_cred(provider.password)}"
+    url = f"{provider.server_url.rstrip('/')}/{path}/{login}/{parsed['stream_id']}.{parsed['container']}"
     guard = lan_origin_guard(provider.server_url)
     if not guard(url):
         raise HTTPException(502, "Stream URL points to a non-public host")
@@ -374,7 +380,7 @@ async def vod_head(kind: str, token_file: str, request: Request, db: Session = D
     """Headers only; no lease -- a probe, not a play. Still a provider
     connection, so with recording protection on it is refused while a
     recording runs, like a play would be."""
-    url, guard, ua, owner = _resolve(db, kind, token_file)
+    url, guard, ua, owner = await asyncio.to_thread(_resolve, db, kind, token_file)
     slots = livetv._stream_slots
     slots.set_protect(livetv._protect_recordings(db))
     if slots.protect and slots.recording_active():
@@ -393,7 +399,9 @@ async def vod_head(kind: str, token_file: str, request: Request, db: Session = D
         finally:
             await resp.aclose()
     except httpx.HTTPError as e:
-        raise HTTPException(502, f"The provider did not answer: {e}")
+        # The error type only: an httpx error's text can carry the request
+        # URL, whose path holds the provider account.
+        raise HTTPException(502, f"The provider did not answer: {type(e).__name__}")
     finally:
         await client.aclose()
 
@@ -403,7 +411,7 @@ async def vod_stream(kind: str, token_file: str, request: Request, db: Session =
     """Stream one provider file through Tentacle: byte ranges passed through
     (so seeking works), resumed from where it stopped if the upstream drops,
     counted and ranked against live TV and recordings."""
-    url, guard, ua, owner = _resolve(db, kind, token_file)
+    url, guard, ua, owner = await asyncio.to_thread(_resolve, db, kind, token_file)
     # One playback per title PER CLIENT: two TVs on the same film are two
     # playbacks (two provider connections, two slots), not one that they
     # keep taking from each other.

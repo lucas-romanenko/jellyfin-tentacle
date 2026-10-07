@@ -3,8 +3,11 @@ Tentacle - Radarr Router
 Radarr library scanning, quality profiles, and provider migration
 """
 
+import re
 import threading
 import logging
+from collections import Counter
+import requests
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
@@ -12,8 +15,10 @@ from pydantic import BaseModel
 from typing import Optional
 
 from models.database import get_db, Provider, Movie, ListItem, ListSubscription, DownloadRequest, Duplicate, get_setting, log_activity
-from services.radarr import scan_radarr_library, RadarrService
+from services.radarr import (scan_radarr_library, RadarrService, download_loss_looks_like_an_outage, download_kind,
+                             downloaded_movie_rows, release_vod_download)
 from services.nfo import update_nfo_tags, write_movie_nfo, make_folder_name, refresh_arr_nfo
+from services.duplicates import droppable_duplicates
 from services.tagger import tentacle_owned_tags
 from services.migration import migrate_provider, preview_migration
 from services.logstream import log_event_generator, get_recent_logs, emit_library_event
@@ -46,10 +51,27 @@ def _check_webhook_auth(request: Request, db: Session) -> None:
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/radarr", tags=["radarr"], dependencies=[Depends(require_admin)])
 
-# Per-movie lock to prevent duplicate webhook processing (e.g. Download + MovieAdded
-# firing close together for the same movie). Only one background thread per tmdb_id.
+# One webhook pass per movie at a time (e.g. Download + MovieAdded close
+# together). An event for a movie whose pass is still running is queued and
+# run by that thread once it ends, never dropped (#380): the pass waits its
+# turn for the library-wide scan (#268), and a Download skipped meanwhile lost
+# its notice and downloaded_at. Locks are taken and released under the guard.
 _webhook_locks: dict[int, threading.Lock] = {}
+_webhook_followups: dict[int, dict] = {}   # tmdb_id -> {"title", "event_type", "is_upgrade"}
 _webhook_locks_guard = threading.Lock()
+
+
+def _queue_webhook_followup(tmdb_id, title, event_type, is_upgrade) -> None:
+    """Under _webhook_locks_guard. Events queued for one movie make one pass;
+    a Download outranks MovieAdded, and a new download outranks an upgrade."""
+    entry = _webhook_followups.get(tmdb_id)
+    if entry is None:
+        _webhook_followups[tmdb_id] = {"title": title, "event_type": event_type, "is_upgrade": is_upgrade}
+        return
+    entry["title"] = title
+    if event_type == "Download":
+        entry["is_upgrade"] = is_upgrade and (entry["event_type"] != "Download" or entry["is_upgrade"])
+        entry["event_type"] = "Download"
 
 _scan_running = False
 
@@ -214,6 +236,141 @@ def write_nfos(db: Session = Depends(get_db)):
 webhook_router = APIRouter(prefix="/api/radarr", tags=["radarr"])
 
 
+def _remove_downloaded_movie(db: Session, tmdb_id: int, title: str, arr_folder: Optional[str],
+                             clean_up_if_gone: bool = False, movie_removed: bool = False) -> int:
+    """A download's file is gone: drop its row (a VOD title's row stays and
+    goes back to VOD only, #378), its request (unless a "Bad copy"
+    replacement is coming; movie_removed: the film left Radarr, so none is)
+    and its duplicate tombstones, and take it out of every user's playlists.
+    Returns the rows that lost the download; raises on a DB error (rolled
+    back). clean_up_if_gone: the playlist clean-up runs even when the row was
+    already gone (a scan removed it while the report waited; the scan does no
+    playlist clean-up), by the download's folder only."""
+    from services.bad_copy import is_replacing
+    replacing = not movie_removed and is_replacing(db, "movie", tmdb_id)
+    try:
+        deleted = db.query(Movie).filter(Movie.tmdb_id == tmdb_id, Movie.source == "radarr").delete()
+        vod_rows = downloaded_movie_rows(db).filter(Movie.tmdb_id == tmdb_id, Movie.source != "radarr").all()
+        for row in vod_rows:
+            release_vod_download(db, row, drop_request_tags=not replacing)
+        if not replacing:  # "Bad copy": the request stands while another copy comes
+            db.query(DownloadRequest).filter(DownloadRequest.tmdb_id == tmdb_id, DownloadRequest.media_type == "movie").delete()
+        # Clear duplicate tombstones — deleting the downloaded copy is a
+        # clean slate; the title may legitimately re-import from VOD later.
+        # Not while Keep VOD (whose delete sent this) holds them, nor one
+        # holding users' saved watched state (#515).
+        droppable_duplicates(db, "movie", tmdb_id).delete(synchronize_session=False)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    if deleted:
+        emit_library_event("movie_removed", {"tmdb_id": tmdb_id, "title": title, "media_type": "movie"})
+        log_activity(db, "radarr_remove", f"Removed '{title}' from Radarr library")
+    elif vod_rows:
+        log_activity(db, "radarr_remove", f"Removed the download of '{title}'; the VOD copy stays")
+    if deleted or vod_rows or (clean_up_if_gone and arr_folder):
+        from routers.library import _cleanup_playlists_all_users
+        threading.Thread(target=_cleanup_playlists_all_users, args=(tmdb_id, "movie"),
+                         kwargs={"arr_folder": arr_folder}, daemon=True).start()
+    return deleted + len(vod_rows)
+
+
+# File deletes Radarr makes because it can't see the file any more
+# (deleteReason "missingFromDisk", #381) go through the scan's storage-outage
+# guard (#106). Radarr sends one per film as its refresh walks the library, so
+# when its storage goes away (a share mounted below the root folder, a pool
+# with a disk gone) a burst arrives -- sometimes with pauses (a slow metadata
+# call) and for longer than any fixed wait on a large library. So reports are
+# collected until none has come for MISSING_SETTLE_SECONDS, and then judged
+# like a scan's lost files together with every report of the last
+# MISSING_WINDOW_SECONDS (films removed or kept for it before): a loss that
+# looks like an outage is refused (rows, requests and tombstones kept), any
+# other is removed as before. A burst that a pause split is so judged as a
+# whole once its total looks like an outage, instead of slice by slice. In
+# memory only: after a restart the next scan judges them.
+MISSING_SETTLE_SECONDS = 600
+MISSING_WINDOW_SECONDS = 6 * 3600
+_missing_lock = threading.Lock()
+_missing_pending: dict = {}          # tmdb_id -> (title, arr_folder)
+_missing_recent: dict = {}           # tmdb_id -> (monotonic time judged, its download_kind, None if not a downloaded row)
+_missing_gen = 0
+_missing_timer = None
+
+
+def _queue_missing_from_disk(tmdb_id: int, title: str, arr_folder: Optional[str]) -> None:
+    global _missing_gen, _missing_timer
+    with _missing_lock:
+        _missing_pending[tmdb_id] = (title, arr_folder)
+        if _missing_timer is not None:
+            _missing_timer.cancel()
+        _missing_gen += 1
+        _missing_timer = threading.Timer(MISSING_SETTLE_SECONDS, _flush_missing_from_disk, args=(_missing_gen,))
+        _missing_timer.daemon = True
+        _missing_timer.start()
+
+
+def _forget_missing_from_disk(tmdb_id) -> None:
+    """The film was imported again (or removed from Radarr): its queued
+    missingFromDisk delete no longer applies, nor does its earlier report."""
+    with _missing_lock:
+        _missing_pending.pop(tmdb_id, None)
+        _missing_recent.pop(tmdb_id, None)
+
+
+def _flush_missing_from_disk(gen: Optional[int] = None, db: Optional[Session] = None) -> dict:
+    """Judge the collected missingFromDisk deletes, with the recent ones (see above)."""
+    import time
+    with _missing_lock:
+        if gen is not None and gen != _missing_gen:
+            return {"status": "superseded"}   # a newer event re-armed the timer
+        batch = dict(_missing_pending)
+        _missing_pending.clear()
+        now = time.monotonic()
+        for k in [k for k, (t, _) in _missing_recent.items() if now - t > MISSING_WINDOW_SECONDS]:
+            del _missing_recent[k]
+        recent = {k: v for k, v in _missing_recent.items() if k not in batch}
+    if not batch:
+        return {"status": "empty"}
+    own_db = db is None
+    if own_db:
+        from models.database import SessionLocal
+        db = SessionLocal()
+    try:
+        rows = {m.tmdb_id: download_kind(m) for m in downloaded_movie_rows(db)}
+        # Downloads already removed for an earlier report still count, in the
+        # loss and in the library it is measured against. Judged over all of
+        # them and over each kind alone (#505).
+        gone = Counter(kind for t, (_, kind) in recent.items() if kind and t not in rows)
+        lost_now = rows.keys() & set(batch)
+        lost_by_kind = Counter(rows[t] for t in lost_now | (rows.keys() & set(recent))) + gone
+        total_by_kind = Counter(rows.values()) + gone
+        lost, total = sum(lost_by_kind.values()), sum(total_by_kind.values())
+        if download_loss_looks_like_an_outage(lost_by_kind, total_by_kind):
+            with _missing_lock:
+                for t in batch:
+                    _missing_recent[t] = (now, rows.get(t))
+            logger.error(
+                f"[Radarr webhook] REFUSING to remove {len(lost_now)} downloaded movies Radarr reported missing "
+                f"from disk: with the reports of the last {MISSING_WINDOW_SECONDS // 3600} h that is {lost} of "
+                f"{total}. That many looks like Radarr's media storage being unavailable, not a clean-up. Rows "
+                f"kept; if the files really are gone, remove the movies from Radarr.")
+            return {"status": "refused", "kept": len(lost_now)}
+        removed = 0
+        for tmdb_id, (title, arr_folder) in batch.items():
+            try:
+                removed += _remove_downloaded_movie(db, tmdb_id, title, arr_folder, clean_up_if_gone=True)
+                logger.info(f"[Radarr webhook] MovieFileDelete (missing from disk) for '{title}' (tmdb:{tmdb_id}) — removed from DB")
+            except Exception as e:
+                logger.error(f"[Radarr webhook] MovieFileDelete DB cleanup failed for tmdb:{tmdb_id}: {e}")
+            with _missing_lock:
+                _missing_recent[tmdb_id] = (now, rows.get(tmdb_id))
+        return {"status": "removed", "removed": removed}
+    finally:
+        if own_db:
+            db.close()
+
+
 @webhook_router.post("/webhook")
 def radarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db)):
     """Radarr webhook — triggered on Download, MovieAdded, MovieDelete, MovieFileDelete events."""
@@ -250,77 +407,76 @@ def radarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
         if delete_reason == "upgrade":
             logger.info(f"[Radarr webhook] MovieFileDelete upgrade for '{title}' — ignoring")
             return {"status": "ignored", "reason": "upgrade"}
+        if str(delete_reason).lower() == "missingfromdisk":
+            # Radarr can't see the file: judged with the others of its burst (#381).
+            _queue_missing_from_disk(tmdb_id, title, arr_folder)
+            logger.info(f"[Radarr webhook] MovieFileDelete missing from disk for '{title}' — queued for the storage-outage check")
+            return {"status": "queued", "tmdb_id": tmdb_id}
         # Non-upgrade file deletion — remove from DB
-        from services.bad_copy import is_replacing
-        replacing = is_replacing(db, "movie", tmdb_id)
+        _forget_missing_from_disk(tmdb_id)
         try:
-            deleted = db.query(Movie).filter(Movie.tmdb_id == tmdb_id, Movie.source == "radarr").delete()
-            if not replacing:  # "Bad copy": the request stands while another copy comes
-                db.query(DownloadRequest).filter(DownloadRequest.tmdb_id == tmdb_id, DownloadRequest.media_type == "movie").delete()
-            # Clear duplicate tombstones — deleting the downloaded copy is a
-            # clean slate; the title may legitimately re-import from VOD later
-            db.query(Duplicate).filter(Duplicate.tmdb_id == tmdb_id, Duplicate.media_type == "movie").delete()
-            db.commit()
+            deleted = _remove_downloaded_movie(db, tmdb_id, title, arr_folder)
         except Exception as e:
-            db.rollback()
             logger.error(f"[Radarr webhook] MovieFileDelete DB cleanup failed for tmdb:{tmdb_id}: {e}")
             raise HTTPException(500, "Failed to process delete event")
-        if deleted:
-            emit_library_event("movie_removed", {"tmdb_id": tmdb_id, "title": title, "media_type": "movie"})
-            log_activity(db, "radarr_remove", f"Removed '{title}' from Radarr library")
-            from routers.library import _cleanup_playlists_all_users
-            threading.Thread(target=_cleanup_playlists_all_users, args=(tmdb_id, "movie"),
-                             kwargs={"arr_folder": arr_folder}, daemon=True).start()
-        logger.info(f"[Radarr webhook] MovieFileDelete for '{title}' (tmdb:{tmdb_id}) — removed {deleted} from DB")
+        logger.info(f"[Radarr webhook] MovieFileDelete for '{title}' (tmdb:{tmdb_id}) — download gone from {deleted} row(s)")
         return {"status": "deleted", "tmdb_id": tmdb_id}
 
     # MovieDelete — remove from DB
     if event_type == "MovieDelete":
+        _forget_missing_from_disk(tmdb_id)
         try:
-            deleted = db.query(Movie).filter(Movie.tmdb_id == tmdb_id, Movie.source == "radarr").delete()
-            db.query(DownloadRequest).filter(DownloadRequest.tmdb_id == tmdb_id, DownloadRequest.media_type == "movie").delete()
-            # Clear duplicate tombstones — deleting the downloaded copy is a
-            # clean slate; the title may legitimately re-import from VOD later
-            db.query(Duplicate).filter(Duplicate.tmdb_id == tmdb_id, Duplicate.media_type == "movie").delete()
-            db.commit()
+            deleted = _remove_downloaded_movie(db, tmdb_id, title, arr_folder, movie_removed=True)
         except Exception as e:
-            db.rollback()
             logger.error(f"[Radarr webhook] MovieDelete DB cleanup failed for tmdb:{tmdb_id}: {e}")
             raise HTTPException(500, "Failed to process delete event")
-        if deleted:
-            emit_library_event("movie_removed", {"tmdb_id": tmdb_id, "title": title, "media_type": "movie"})
-            log_activity(db, "radarr_remove", f"Removed '{title}' from Radarr library")
-            from routers.library import _cleanup_playlists_all_users
-            threading.Thread(target=_cleanup_playlists_all_users, args=(tmdb_id, "movie"),
-                             kwargs={"arr_folder": arr_folder}, daemon=True).start()
-        logger.info(f"[Radarr webhook] MovieDelete for '{title}' (tmdb:{tmdb_id}) — removed {deleted} from DB")
+        logger.info(f"[Radarr webhook] MovieDelete for '{title}' (tmdb:{tmdb_id}) — download gone from {deleted} row(s)")
         return {"status": "deleted", "tmdb_id": tmdb_id}
 
     # Download / MovieAdded — scan and tag
-    def _webhook_background(tmdb_id, title, event_type):
-        import time
-        from datetime import datetime
-        from models.database import SessionLocal, get_setting
-        from pathlib import Path
-        from services.jellyfin import JellyfinService
+    _forget_missing_from_disk(tmdb_id)
 
-        # Per-movie lock: if another webhook event for the same movie is already
-        # being processed (e.g. Download + MovieAdded close together), skip.
+    def _webhook_background(tmdb_id, title, event_type, is_upgrade):
+        # Per-movie lock: if another webhook event for the same movie is
+        # still being processed, this one runs after it, in that thread (#380).
         with _webhook_locks_guard:
-            if tmdb_id in _webhook_locks and _webhook_locks[tmdb_id].locked():
-                logger.info(f"[Radarr webhook] Skipping duplicate processing for tmdb:{tmdb_id}")
+            lock = _webhook_locks.get(tmdb_id)
+            if lock is not None and lock.locked():
+                _queue_webhook_followup(tmdb_id, title, event_type, is_upgrade)
+                logger.info(f"[Radarr webhook] tmdb:{tmdb_id} is still being processed: "
+                            f"{event_type} queued to run after it")
                 return
             # Bound the dict: prune unlocked (idle) locks if it grows large.
             if len(_webhook_locks) > 512:
                 for k in [k for k, l in _webhook_locks.items() if not l.locked()]:
                     _webhook_locks.pop(k, None)
-            if tmdb_id not in _webhook_locks:
-                _webhook_locks[tmdb_id] = threading.Lock()
-            lock = _webhook_locks[tmdb_id]
+            lock = _webhook_locks.setdefault(tmdb_id, threading.Lock())
+            lock.acquire()
 
-        if not lock.acquire(blocking=False):
-            logger.info(f"[Radarr webhook] Skipping duplicate processing for tmdb:{tmdb_id}")
-            return
+        released = False
+        try:
+            while True:
+                _webhook_pass(tmdb_id, title, event_type, is_upgrade)
+                with _webhook_locks_guard:
+                    followup = _webhook_followups.pop(tmdb_id, None)
+                    if followup is None:
+                        lock.release()
+                        released = True
+                        return
+                title, event_type, is_upgrade = followup["title"], followup["event_type"], followup["is_upgrade"]
+                logger.info(f"[Radarr webhook] Running the queued {event_type} for '{title}' (tmdb:{tmdb_id})")
+        finally:
+            if not released:
+                with _webhook_locks_guard:
+                    _webhook_followups.pop(tmdb_id, None)
+                    lock.release()
+
+    def _webhook_pass(tmdb_id, title, event_type, is_upgrade):
+        import time
+        from datetime import datetime
+        from models.database import SessionLocal, get_setting
+        from pathlib import Path
+        from services.jellyfin import JellyfinService
 
         db = SessionLocal()
         try:
@@ -342,7 +498,8 @@ def radarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
                     db_movie.date_added = datetime.utcnow()
                 db.commit()
 
-            list_items = db.query(ListItem).filter(ListItem.tmdb_id == tmdb_id).all()
+            list_items = db.query(ListItem).filter(
+                ListItem.tmdb_id == tmdb_id, ListItem.of_type("movie")).all()
             if not list_items:
                 logger.info(f"[Radarr webhook] '{title}' not in any lists")
             else:
@@ -378,72 +535,89 @@ def radarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
             jf_url = get_setting(db, "jellyfin_url")
             jf_key = get_setting(db, "jellyfin_api_key")
             jf_uid = get_setting(db, "jellyfin_user_id", "")
-            if jf_url and jf_key and db_movie.tags:
-                jf = JellyfinService(jf_url, jf_key, jf_uid)
-                movie_title = db_movie.title or title
-                movie_year = str(db_movie.year or "")
+            try:
+                if jf_url and jf_key and db_movie.tags:
+                    jf = JellyfinService(jf_url, jf_key, jf_uid)
+                    movie_title = db_movie.title or title
+                    movie_year = str(db_movie.year or "")
 
-                # Retry loop: wait for Jellyfin to index the new movie
-                jf_item = None
-                max_attempts = 5
-                for attempt in range(max_attempts):
-                    jf_item = jf.search_by_tmdb_id(
-                        tmdb_id, "Movie", title=movie_title, year=movie_year
-                    )
-                    if jf_item:
-                        break
-                    if attempt < max_attempts - 1:
-                        wait = 15 * (attempt + 1)  # 15s, 30s, 45s, 60s
-                        logger.info(
-                            f"[Radarr webhook] '{title}' not in Jellyfin yet, "
-                            f"retrying in {wait}s (attempt {attempt + 1}/{max_attempts})"
+                    # Retry loop: wait for Jellyfin to index the new movie: the item
+                    # of the file Radarr has now. After a quality upgrade the listing
+                    # can still hold the replaced file's item, about to be removed.
+                    file_name = re.split(r"[\\/]", db_movie.radarr_path or "")[-1] or None
+                    jf_item = None
+                    max_attempts = 5
+                    for attempt in range(max_attempts):
+                        jf_item = jf.search_by_tmdb_id(
+                            tmdb_id, "Movie", title=movie_title, year=movie_year, file_name=file_name
                         )
-                        time.sleep(wait)
-                        # Re-trigger scan in case it finished before file was ready
-                        if attempt == 1:
-                            try:
-                                jf.trigger_library_scan()
-                            except Exception:
-                                pass
+                        if jf_item:
+                            break
+                        if file_name and attempt == max_attempts - 1:
+                            # Never listed under that file name (another layout):
+                            # the TMDB match, as before.
+                            jf_item = jf.search_by_tmdb_id(
+                                tmdb_id, "Movie", title=movie_title, year=movie_year
+                            )
+                            break
+                        if attempt < max_attempts - 1:
+                            wait = 15 * (attempt + 1)  # 15s, 30s, 45s, 60s
+                            logger.info(
+                                f"[Radarr webhook] '{title}' not in Jellyfin yet, "
+                                f"retrying in {wait}s (attempt {attempt + 1}/{max_attempts})"
+                            )
+                            time.sleep(wait)
+                            # Re-trigger scan in case it finished before file was ready
+                            if attempt == 1:
+                                try:
+                                    jf.trigger_library_scan()
+                                except Exception:
+                                    pass
 
-                if jf_item:
-                    # Cache Jellyfin item ID for click-to-play
-                    if jf_item.get("Id") and db_movie.jellyfin_item_id != jf_item["Id"]:
-                        db_movie.jellyfin_item_id = jf_item["Id"]
-                        db.commit()
+                    if jf_item:
+                        # Cache Jellyfin item ID for click-to-play
+                        if jf_item.get("Id") and db_movie.jellyfin_item_id != jf_item["Id"]:
+                            db_movie.jellyfin_item_id = jf_item["Id"]
+                            db.commit()
 
-                    # Fetch full item DTO (includes Genres, CommunityRating, ProductionYear)
-                    # for native playlist expression matching
-                    full_item = jf.get_item_by_id(jf_item["Id"])
-                    if full_item:
-                        jf_item = full_item
+                        # Fetch full item DTO (includes Genres, CommunityRating, ProductionYear)
+                        # for native playlist expression matching
+                        full_item = jf.get_item_by_id(jf_item["Id"])
+                        if full_item:
+                            jf_item = full_item
 
-                    # Merge with existing Jellyfin tags rather than replacing
-                    existing_jf_tags = set(jf_item.get("Tags", []))
-                    desired_tags = set(db_movie.tags)
-                    merged = list(existing_jf_tags | desired_tags)
-                    if jf.set_item_tags(jf_item["Id"], merged):
-                        logger.info(f"[Radarr webhook] Pushed tags to Jellyfin for '{title}': {merged}")
-                    else:
-                        logger.warning(f"[Radarr webhook] Failed to set tags on '{title}' in Jellyfin")
-
-                    # Refresh metadata so Jellyfin fetches posters/info from TMDB,
-                    # then wait for images before notifying clients (avoids empty posters).
-                    if jf.refresh_item_metadata(jf_item["Id"]):
-                        logger.info(f"[Radarr webhook] Triggered metadata refresh for '{title}'")
-                        if jf.wait_for_images(jf_item["Id"], max_wait=30, poll_interval=3):
-                            logger.info(f"[Radarr webhook] Images ready for '{title}'")
-                            # Re-fetch full DTO now that images are available
-                            refreshed = jf.get_item_by_id(jf_item["Id"])
-                            if refreshed:
-                                jf_item = refreshed
+                        # Merge with existing Jellyfin tags rather than replacing
+                        existing_jf_tags = set(jf_item.get("Tags", []))
+                        desired_tags = set(db_movie.tags)
+                        merged = list(existing_jf_tags | desired_tags)
+                        if jf.set_item_tags(jf_item["Id"], merged):
+                            logger.info(f"[Radarr webhook] Pushed tags to Jellyfin for '{title}': {merged}")
                         else:
-                            logger.info(f"[Radarr webhook] Images not ready for '{title}' after 30s, continuing anyway")
-                else:
-                    logger.warning(
-                        f"[Radarr webhook] '{title}' (tmdb:{tmdb_id}) not found in Jellyfin "
-                        f"after {max_attempts} attempts — tags will be pushed on next scheduled scan"
-                    )
+                            logger.warning(f"[Radarr webhook] Failed to set tags on '{title}' in Jellyfin")
+
+                        # Refresh metadata so Jellyfin fetches posters/info from TMDB,
+                        # then wait for images before notifying clients (avoids empty posters).
+                        if jf.refresh_item_metadata(jf_item["Id"]):
+                            logger.info(f"[Radarr webhook] Triggered metadata refresh for '{title}'")
+                            if jf.wait_for_images(jf_item["Id"], max_wait=30, poll_interval=3):
+                                logger.info(f"[Radarr webhook] Images ready for '{title}'")
+                                # Re-fetch full DTO now that images are available
+                                refreshed = jf.get_item_by_id(jf_item["Id"])
+                                if refreshed:
+                                    jf_item = refreshed
+                            else:
+                                logger.info(f"[Radarr webhook] Images not ready for '{title}' after 30s, continuing anyway")
+                    else:
+                        logger.warning(
+                            f"[Radarr webhook] '{title}' (tmdb:{tmdb_id}) not found in Jellyfin "
+                            f"after {max_attempts} attempts — tags will be pushed on next scheduled scan"
+                        )
+            except requests.HTTPError as e:
+                # Jellyfin refused a read or write of the item (e.g. it was just
+                # removed). The tags and playlists catch up on the next scan;
+                # the notice and the rest of this pass must still happen.
+                logger.warning(f"[Radarr webhook] Jellyfin update for '{title}' stopped: {e}")
+                jf_item = None
 
             # Add item directly to matching playlists — no need to wait for
             # Jellyfin tag indexing since we match by known tags from the DB.
@@ -480,7 +654,11 @@ def radarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
                     replaced = is_replacing(db, "movie", tmdb_id)
                     if replaced:
                         clear_replacing(db, "movie", tmdb_id)
-                    if dr:
+                    if dr and is_upgrade and not replaced:
+                        # A better file for a film the requester already has:
+                        # not a new download, no second "ready to watch".
+                        logger.info(f"[Radarr webhook] '{db_movie.title}' quality upgrade: requester not notified again")
+                    elif dr:
                         create_notification(
                             db, user_id=dr.user_id, tmdb_id=tmdb_id, media_type="movie",
                             title=db_movie.title,
@@ -511,10 +689,10 @@ def radarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
         except Exception as e:
             logger.error(f"[Radarr webhook] Background processing failed: {e}", exc_info=True)
         finally:
-            lock.release()
             db.close()
 
-    thread = threading.Thread(target=_webhook_background, args=(tmdb_id, title, event_type), daemon=True)
+    is_upgrade = event_type == "Download" and payload.get("isUpgrade") is True
+    thread = threading.Thread(target=_webhook_background, args=(tmdb_id, title, event_type, is_upgrade), daemon=True)
     thread.start()
 
     return {"status": "processing", "event": event_type, "tmdb_id": tmdb_id}

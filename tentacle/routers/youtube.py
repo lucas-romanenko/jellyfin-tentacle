@@ -872,7 +872,8 @@ def diagnose(request: Request, db: Session = Depends(get_db)):
             if jf_url and jf_key:
                 try:
                     from services.jellyfin import JellyfinService
-                    jfc = JellyfinService(jf_url, jf_key, get_setting(db, "jellyfin_user_id", ""))
+                    # As the playlists' owner: Jellyfin answers 404 to anyone else.
+                    jfc = JellyfinService(jf_url, jf_key, user.jellyfin_user_id)
                     ids = {p["name"]: p["playlist_id"]
                            for p in _get_smartlists_with_playlist_ids(db, user_id=user.id)}
                     for c in channels:
@@ -1160,22 +1161,32 @@ def resume_unfinished_channels() -> list:
     index (an update, a crash) left it half-added: rows but no files, no
     playlist, and a card saying its videos were being fetched, until the next
     scheduled check, or for good with background checks off (#288). Run once
-    after start-up. A channel listed in full before is never queued, so a normal
-    restart sends nothing; a pause after a bot check still applies.
+    after start-up. So is a channel listed in full whose library videos have no
+    files yet: the listing is saved before they are written. Anything else is
+    never queued, so a normal restart sends nothing; a pause after a bot check
+    still applies.
     """
     from models.database import SessionLocal
     db = SessionLocal()
     try:
         if get_setting(db, "youtube_enabled", "false") != "true" or not client.available():
             return []
+        # The listing is saved before the files are written and the playlists
+        # made, so a restart in that stretch left library videos with no files,
+        # on a channel already marked as listed. Those are finished too.
+        unwritten = db.query(YouTubeVideo.channel_fk).filter(
+            YouTubeVideo.removed_at.is_(None),
+            YouTubeVideo.strm_path.is_(None),
+            indexer.is_library_status(YouTubeVideo.live_status))
         ids = [c.id for c in db.query(YouTubeChannel.id).filter(
             YouTubeChannel.enabled == True,  # noqa: E712
-            YouTubeChannel.last_full_check.is_(None)).all()]
+            or_(YouTubeChannel.last_full_check.is_(None),
+                YouTubeChannel.id.in_(unwritten))).all()]
     finally:
         db.close()
     if ids:
-        logger.info(f"[YouTube] {len(ids)} channel(s) were never indexed in full (a restart cut "
-                    f"their first index short); indexing them now")
+        logger.info(f"[YouTube] {len(ids)} channel(s) were not finished (a restart cut their "
+                    f"first index or the writing of their files short); indexing them now")
         _start_refresh(channel_ids=ids)
     return ids
 

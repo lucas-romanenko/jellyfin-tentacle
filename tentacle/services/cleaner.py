@@ -54,6 +54,16 @@ SCENE_MARKER_RE = re.compile(
     re.IGNORECASE,
 )
 
+_SUPERSCRIPTS = '⁰¹²³⁴⁵⁶⁷⁸⁹'
+
+
+def _is_known_tag(word: str) -> bool:
+    """A service, quality or release tag ("NF", "4K", "HEVC", "x265")."""
+    if word.upper() in STRIP_PREFIXES or SCENE_MARKER_RE.fullmatch(word):
+        return True
+    return any(re.fullmatch(p, word, re.IGNORECASE)
+               for p in QUALITY_PATTERNS[:4] + SCENE_ONLY_PATTERNS)
+
 
 def clean_list_title(title: Optional[str], year: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
     """
@@ -97,13 +107,23 @@ def clean_title(raw_name: str) -> Tuple[Optional[str], Optional[str]]:
     if not raw_name:
         return None, None
 
-    name = raw_name.strip()
+    raw = name = raw_name.strip()
 
     # Step 1: Remove bracketed prefixes [NF] or (AMZ)
-    name = re.sub(
-        r'^\s*[\[\(]([A-Z0-9+]{1,6})[\]\)]\s*[-:]?\s*',
-        '', name, flags=re.IGNORECASE
+    # A bracketed word that is no known tag and has a letter in it may be the
+    # title itself ("[REC] (2007)", "[REC]³ Genesis"): it is kept aside and
+    # put back in step 8 when nothing usable is left without it.
+    lead = None
+    lead_match = re.match(
+        r'^\s*[\[\(]([A-Z0-9+]{1,6})[\]\)]\s*[-:]?\s*', name, flags=re.IGNORECASE
     )
+    if lead_match:
+        word = lead_match.group(1)
+        if re.search(r'[A-Za-z]', word) and not _is_known_tag(word):
+            lead_end = lead_match.end(1) + 1
+            lead = name[:lead_end]
+            lead_sep = ' ' if lead_match.end() > lead_end else ''
+        name = name[lead_match.end():]
 
     # Step 2: Remove standard "PREFIX - " patterns
     # Handles: "NF - ", "AMZ - ", "D+ - ", "A+ - ", "EN - ", "EN-TOP - ", "NF-DO - "
@@ -126,6 +146,10 @@ def clean_title(raw_name: str) -> Tuple[Optional[str], Optional[str]]:
 
     # Step 3: Remove numbered rankings "250. " or "86. "
     name = re.sub(r'^\d{1,3}\.\s*', '', name)
+
+    # Steps 1-3 only cut from the front: what they cut is the head of raw.
+    head = raw[:len(raw) - len(name)]
+    after_head = name
 
     # Step 4: Handle scene dot-notation (Movie.Name.2020.1080p)
     scene_like = bool(SCENE_MARKER_RE.search(name))
@@ -155,7 +179,8 @@ def clean_title(raw_name: str) -> Tuple[Optional[str], Optional[str]]:
         year = year_match.group(1)
         name = name[:year_match.start()].strip()
     else:
-        year_match = re.search(r'\s(\d{4})\s*$', name)
+        # Not right after a colon: "Space: 1999" is a title, not "Space" + 1999.
+        year_match = re.search(r'(?<![:\s])\s+(\d{4})\s*$', name)
         if year_match:
             potential_year = year_match.group(1)
             if 1920 <= int(potential_year) <= 2035:
@@ -167,17 +192,25 @@ def clean_title(raw_name: str) -> Tuple[Optional[str], Optional[str]]:
     name = re.sub(r'[._-]+$', '', name).strip(' -:.')
 
     # Step 8: Validate
+    if lead and (len(name) < 2 or name[0] in _SUPERSCRIPTS):
+        name = f"{lead}{lead_sep}{name}".strip()
+
     if not name or len(name) < 2:
         return None, None
 
-    # Reject if starts with lowercase (truncated title like "aptain America")
+    # Reject a lower-case start only where the cleaner cut into the title
+    # ("12.to.Midnight.2024" -> "to Midnight"); "iCarly", "mother!" and
+    # "EN - eXistenZ" start lower-case on the provider's side.
     if name[0].islower():
-        return None, None
+        first = re.match(r'\w+', name).group(0)
+        clean_cut = not head or head[-1].isspace() or head[-1] in '])|'
+        if not (clean_cut and after_head.startswith(first)):
+            return None, None
 
-    # Reject gibberish (long word with no vowels)
+    # Reject gibberish (long word with no vowels; y counts: "Psych", "Flynn")
     first_word = re.split(r'[\s:,\-]', name)[0]
     first_alpha = re.sub(r'[^a-zA-Z]', '', first_word)
-    if len(first_alpha) > 4 and not re.search(r'[aeiouAEIOU]', first_alpha):
+    if len(first_alpha) > 4 and not re.search(r'[aeiouyAEIOUY]', first_alpha):
         return None, None
 
     # Validate year range
