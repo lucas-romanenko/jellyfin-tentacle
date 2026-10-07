@@ -30,6 +30,7 @@ _ensure_web_stubs()
 import models.database as mdb  # noqa: E402
 import routers.radarr as radarr  # noqa: E402
 import services.jellyfin as jfmod  # noqa: E402
+from services.bad_copy import mark_replacing  # noqa: E402
 from tmp_dirs import temp_dir  # noqa: E402
 
 TMDB = 999321
@@ -191,18 +192,24 @@ class UpgradeUsesTheNewFile(_Pass):
         self.assertEqual(["new"], self.playlist_adds)
         self.assertEqual("new", self.row())
         self.assertEqual(["Radarr downloaded 'Film'"], self.activity, "the pass ended early")
-        self.assertEqual(1, len(self.notices()))
+        # An upgrade is not a new download: no second "ready to watch" (#380).
+        self.assertEqual([], self.notices())
         self.assertNotIn(("tags", "old"), FakeJellyfin.writes)
 
     def test_replaced_item_still_listed_and_alive_is_not_used(self):
         # Jellyfin's scan has not reached the folder yet: the replaced item
         # still answers. The pass must wait for the new one, not tag it.
         FakeJellyfin.listings = [[OLD], [OLD], [NEW]]
+        db = self.Session()
+        try:
+            mark_replacing(db, "movie", TMDB)   # a bad copy replaced: its notice names the new item
+        finally:
+            db.close()
         self.download()
         self.assertEqual([], [w for w in FakeJellyfin.writes if w[1] == "old"])
         self.assertEqual(["new"], self.playlist_adds)
         self.assertEqual("new", self.row())
-        self.assertEqual([("Film has completed and is ready to watch", "new")], self.notices())
+        self.assertEqual([("A new copy of Film is ready to watch", "new")], self.notices())
 
     def test_both_listed_picks_the_new_file(self):
         FakeJellyfin.listings = [[OLD, NEW]]

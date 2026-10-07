@@ -103,6 +103,11 @@ When the original is unclear (two tracklists equally common in the first year,
 or an edition with a hidden track), the album goes to **Needs review** and you
 choose. Tentacle never guesses.
 
+Requesting an album Lidarr already has files for (one it has unmonitored, for
+example) monitors it but never re-pins it, since that could change your files:
+the album goes to **Fix library** like any other, and is searched straight
+away only if it is already on its original release, locked, and missing tracks.
+
 ## Spotify playlists
 
 **Discover → Music → From Spotify → Import a playlist.** Either:

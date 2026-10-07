@@ -24,6 +24,7 @@ from routers.auth import require_admin
 from services.youtube import client, indexer, library, playlist, resolver, traffic
 from services.youtube.sync import check_base_url, detect_base_url
 from services.youtube.errors import YouTubeBlocked, YouTubeError
+from services.secret_mask import is_shown_form, mask_url_login, restore_url_login
 
 logger = logging.getLogger(__name__)
 
@@ -503,6 +504,12 @@ def _mask(key: str) -> str:
     return (key[:4] + "..." + key[-4:]) if len(key) > 10 else ("..." if key else "")
 
 
+def _unchanged_key(sent: str, stored: str) -> bool:
+    """The page sent back exactly the masked key it was shown: keep the key.
+    Anything else is a new key, even one that contains "..."."""
+    return bool(stored) and (sent == _mask(stored) or is_shown_form(sent, stored))
+
+
 @router.get("/traffic", dependencies=[Depends(require_admin)])
 def traffic_status(db: Session = Depends(get_db)):
     """The traffic settings, the pause after a bot check, and request counts."""
@@ -515,10 +522,12 @@ def traffic_status(db: Session = Depends(get_db)):
         "min_interval_minutes": traffic.MIN_INTERVAL_MINUTES,
         "api_key": _mask(key),
         "api": feeds.api_state(),
-        "proxy": get_setting(db, "youtube_proxy", "") or "",
+        # The proxy's password is never sent back (a Save with the masked form
+        # keeps the stored one).
+        "proxy": mask_url_login(get_setting(db, "youtube_proxy", "") or ""),
         # What is really used, and why a saved one is not: YouTube requests
         # are held until it is fixed (#244).
-        "proxy_in_use": traffic.proxy(),
+        "proxy_in_use": mask_url_login(traffic.proxy()),
         "proxy_error": traffic.proxy_problem(),
         "pause": traffic.pause_state(),
         "this_hour": traffic.counts(),
@@ -530,13 +539,16 @@ def traffic_status(db: Session = Depends(get_db)):
 def save_traffic(body: TrafficSettings, db: Session = Depends(get_db)):
     from models.database import set_setting
     from services.youtube import feeds
-    try:
-        proxy = traffic.normalize_proxy(body.proxy)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
     old_proxy = get_setting(db, "youtube_proxy", "") or ""
     old_key = get_setting(db, "youtube_api_key", "") or ""
-    key = old_key if "..." in (body.api_key or "") else (body.api_key or "").strip()
+    try:
+        # The page shows the proxy with its password masked; sent back, it
+        # means the stored password.
+        proxy = traffic.normalize_proxy(restore_url_login(body.proxy or "", old_proxy))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    sent_key = (body.api_key or "").strip()
+    key = old_key if _unchanged_key(sent_key, old_key) else sent_key
 
     set_setting(db, "youtube_background_checks", "true" if body.background_checks else "false")
     set_setting(db, "youtube_index_interval_minutes", str(traffic.interval_minutes(body.interval_minutes)))
@@ -559,7 +571,7 @@ def save_traffic(body: TrafficSettings, db: Session = Depends(get_db)):
     logger.info(f"[YouTube] Traffic settings saved: background checks "
                 f"{'on' if body.background_checks else 'off'}, every "
                 f"{traffic.interval_minutes(body.interval_minutes)} min, API key "
-                f"{'set' if key else 'not set'}, proxy {proxy or 'none'}")
+                f"{'set' if key else 'not set'}, proxy {mask_url_login(proxy) or 'none'}")
     return {**traffic_status(db), "api_check": api_check}
 
 

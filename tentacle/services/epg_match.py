@@ -7,7 +7,9 @@ channels had no guide.
 
 Ordered passes, most reliable first:
   1. the admin's override (LiveChannel.epg_id_override), which syncs never touch;
-  2. the provider's tvg-id, when the feed has that channel;
+  2. the provider's tvg-id, when the feed has that channel: exactly, else
+     ignoring case when that names one feed id ("cnn.us" / "CNN.us", as
+     Jellyfin's own M3U tuner reads it, #523);
   3. the channel NAME, reduced by channel_name_key(), and only when it names
      exactly one feed channel of the channel's own country (or one that names
      no country), and no other channel takes that feed channel by name. The
@@ -63,11 +65,15 @@ def resolve_guide_ids(channels: list, feed_channels: list) -> dict:
 
     Returns {channel id: {"method": "override" | "tvg-id" | "name" | None,
                           "guide_id": str | None,    # what programmes are kept under
-                          "name_match": str | None,  # set only for method "name"
+                          "name_match": str | None,  # the feed id to store: for method "name", and
+                                                     # for a tvg-id matched ignoring case (#523)
                           "reason": None | "no-tvg-id" | "tvg-id-not-in-feed" | "ambiguous" | "foreign",
                           "candidates": [feed ids]}} # for "ambiguous" and "foreign"
     """
     feed_ids = {f["id"] for f in feed_channels if f.get("id")}
+    feed_ids_by_fold = defaultdict(set)
+    for fid in feed_ids:
+        feed_ids_by_fold[fid.casefold()].add(fid)
     countries = {f["id"]: feed_countries(f["id"], f.get("names")) for f in feed_channels if f.get("id")}
     feed_by_key = defaultdict(set)
     feed_names = defaultdict(list)     # a feed may list one id in several <channel> elements
@@ -95,6 +101,14 @@ def resolve_guide_ids(channels: list, feed_channels: list) -> dict:
             # A feed that lists no <channel> elements at all cannot be matched
             # by name; its tvg-ids are taken on trust, as they always were.
             out[ch["id"]] = {"method": "tvg-id", "guide_id": tvg, "name_match": None,
+                             "reason": None, "candidates": []}
+        elif tvg and len(folded := feed_ids_by_fold.get(tvg.casefold(), ())) == 1:
+            # The feed spells the same id in other case: take the feed's
+            # spelling, the one programmes are kept under. Never a guess
+            # between two ids that differ only in case. Not a name match, so
+            # HD/FHD copies of one channel all keep it (#523).
+            fid = next(iter(folded))
+            out[ch["id"]] = {"method": "tvg-id", "guide_id": fid, "name_match": fid,
                              "reason": None, "candidates": []}
         else:
             needs_name.append(ch)

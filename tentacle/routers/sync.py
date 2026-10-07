@@ -618,7 +618,8 @@ def get_dashboard(db: Session = Depends(get_db)):
 
 @router.get("/activity")
 def get_activity(limit: int = 15, db: Session = Depends(get_db)):
-    """Recent activity feed for dashboard"""
+    """Recent activity feed, newest first: Health's Recent Activity card."""
+    limit = max(1, min(limit, 500))
     entries = db.query(ActivityLog).order_by(
         ActivityLog.created_at.desc()
     ).limit(limit).all()

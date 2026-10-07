@@ -15,7 +15,7 @@ The result: your provider's content appears in Jellyfin as if it were a native l
 
 ## Adding a Provider
 
-Go to the **VOD** page in Tentacle and click **Add Provider**.
+Go to **Settings → Providers** in Tentacle and click **+ Add Provider**. The same provider also serves [Live TV](live-tv.md) when it is an Xtream provider whose account has live channels.
 
 ### Xtream API (Recommended)
 
@@ -41,7 +41,7 @@ For locally hosted M3U files:
 - **M3U File** — Path to the M3U file
 
 !!! tip "Test first"
-    Click the **Test** button on a provider card to verify the connection before syncing. This only tests connectivity — it doesn't download any content.
+    Click the **Test** button on the provider's card in Settings → Providers to verify the connection before syncing. This only tests connectivity — it doesn't download any content.
 
 ## Selecting Categories
 
@@ -120,7 +120,7 @@ These tags are written into the NFO files and are what power the [auto playlists
 
 ### Manual Sync
 
-Click **Sync** on a provider card to trigger a sync immediately. A progress indicator shows the current status.
+Click **Sync All** on the VOD page to trigger a sync immediately. A progress indicator shows the current status.
 
 ### Scheduled Sync
 
@@ -199,4 +199,26 @@ If you're migrating from another tool (like xtream-sync) and Tentacle detects ex
 
 ## Provider Migration
 
-If your provider changes their server URL, Tentacle can rewrite all existing `.strm` files with the new URL without re-syncing everything. This is available in Settings.
+When you switch to another provider, **Settings → Providers → ⇄ Migrate**
+moves your films to it without re-syncing everything:
+
+1. Add the new provider and choose its movie categories first. Migrate refuses
+   while it has none.
+2. In the dialog pick the old and the new provider. **Preview** shows how many
+   films move and how many stay; **Migrate** does it.
+
+A film moves when the new provider lists it in one of its chosen movie
+categories under the same title and year: its `.strm` is rewritten to play
+from the new provider, and the new provider's sync looks after it from then on.
+Everything else stays with the old provider, with its files untouched:
+
+- films the new provider doesn't list (or lists only in a category you didn't
+  choose, or under another name),
+- films on a stream you marked **Wrong movie** or re-matched on the new
+  provider,
+- a film that shares its title and year with another film in your library
+  (on any provider, or downloaded),
+- every series.
+
+The old provider is switched off, so its sync no longer runs; what stayed with
+it keeps playing from it for as long as that account works.

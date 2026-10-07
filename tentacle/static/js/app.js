@@ -135,7 +135,7 @@ async function showLoginOverlay() {
       </div>`;
     }).join('');
   } catch (e) {
-    grid.innerHTML = `<div style="color:var(--red)">Failed to load users: ${e.message}</div>`;
+    grid.innerHTML = `<div style="color:var(--red)">Failed to load users: ${escHtml(e.message)}</div>`;
   }
 }
 
@@ -436,12 +436,12 @@ async function loadUsers() {
         </div>
         <label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text3);cursor:pointer">
           Admin
-          <input type="checkbox"${toggleChecked}${toggleDisabled} onchange="toggleUserAdmin('${escHtml(u.id)}', this.checked)">
+          <input type="checkbox"${toggleChecked}${toggleDisabled} onchange="toggleUserAdmin('${escapeJS(u.id)}', this.checked)">
         </label>
       </div>`;
     }).join('');
   } catch (e) {
-    el.innerHTML = `<div style="color:var(--red)">Failed to load users: ${e.message}</div>`;
+    el.innerHTML = `<div style="color:var(--red)">Failed to load users: ${escHtml(e.message)}</div>`;
   }
 }
 
@@ -492,7 +492,10 @@ function toast(msg, type = 'success', duration = 3500) {
   const icon = type === 'loading'
     ? '<span class="toast-spinner"></span>'
     : `<span style="color:var(--${colors[type] || 'blue'})">${icons[type] ?? ''}</span>`;
-  el.innerHTML = `${icon} ${msg}`;
+  // The message is text: messages carry titles and other services' error
+  // text, so they are never read as markup (callers pass plain text).
+  el.innerHTML = `${icon} `;
+  el.appendChild(document.createTextNode(msg == null ? '' : String(msg)));
   document.getElementById('toasts').appendChild(el);
   if (duration > 0) setTimeout(() => el.remove(), duration);
   return el;
@@ -829,7 +832,10 @@ async function loadScheduleInfo() {
     // A cron that isn't "M H * * *" (set before this page showed a time, or
     // through the API) is kept by Save until the time is changed (#385).
     const daily = /^\d{1,2}\s+\d{1,2}\s+\*\s+\*\s+\*$/.test((info.cron || '').trim());
-    let txt = daily || !info.cron ? 'Runs every day at this time'
+    // One the scheduler can't use runs at the default 03:00 instead (#458).
+    let txt = info.usable === false
+      ? `Stored schedule "${info.cron}" is not a valid cron, so the sync runs every day at 03:00; a time set here replaces it`
+      : daily || !info.cron ? 'Runs every day at this time'
       : `Custom schedule "${info.cron}", kept as it is; a time set here replaces it with a daily sync`;
     if (info.timezone) {
       txt += ` · timezone ${info.timezone}`;
@@ -903,7 +909,7 @@ function renderProviderCard(p) {
       <div class="provider-actions">
         <button class="btn btn-secondary btn-sm" onclick="refreshProvider(${p.id})">Test</button>
         <button class="btn btn-secondary btn-sm" onclick="editProvider(${p.id})">Edit</button>
-        <button class="btn btn-danger btn-sm" onclick="confirmDeleteProvider(${p.id}, '${p.name}')">Delete</button>
+        <button class="btn btn-danger btn-sm" onclick="confirmDeleteProvider(${p.id}, '${escapeJS(p.name)}')">Delete</button>
       </div>
     </div>`;
 }
@@ -1357,10 +1363,10 @@ async function testService(svc) {
   try {
     const r = await api('/api/settings/check', { method: 'POST', body });
     renderChecks(box, r.checks);
-    toast(escHtml(r.message), r.success ? 'success' : 'error', r.success ? 3500 : 7000);
+    toast(r.message, r.success ? 'success' : 'error', r.success ? 3500 : 7000);
   } catch (e) {
     if (box) box.innerHTML = '';
-    toast(escHtml(e.message), 'error');
+    toast(e.message, 'error');
   }
 }
 
@@ -1422,9 +1428,9 @@ async function createMusicLibrary() {
     if (el) el.dataset.saved = lib.id || '';
     await loadJellyfinMusicLibraries();
     document.getElementById('jf-music-create').style.display = 'none';
-    toast(`Created the Jellyfin library "${escHtml(lib.name)}"`);
+    toast(`Created the Jellyfin library "${lib.name}"`);
   } catch (e) {
-    toast(escHtml(e.message), 'error', 8000);
+    toast(e.message, 'error', 8000);
   }
 }
 
@@ -1470,7 +1476,7 @@ async function regenerateMusicWebhookSecret() {
     await loadMusicWebhookInfo();
     toast('New secret made — paste the new URL into Lidarr', 'info', 6000);
   } catch (e) {
-    toast(escHtml(e.message), 'error');
+    toast(e.message, 'error');
   }
 }
 
@@ -1480,11 +1486,11 @@ async function testMusicWebhook() {
   try {
     const r = await api('/api/music/webhook/test', { method: 'POST' });
     renderChecks(box, r.checks);
-    toast(escHtml(r.message), r.success ? 'success' : 'error', r.success ? 3500 : 7000);
+    toast(r.message, r.success ? 'success' : 'error', r.success ? 3500 : 7000);
     loadMusicWebhookInfo();
   } catch (e) {
     if (box) box.innerHTML = '';
-    toast(escHtml(e.message), 'error');
+    toast(e.message, 'error');
   }
 }
 
@@ -1829,7 +1835,7 @@ function pollSyncProgress() {
             if (s.item_title) line += `: ${s.item_title}`;
             line += ` (${(s.movies_new||0)+(s.series_new||0)} new)`;
           } else if (s.item_title) {
-            line += ` — ${s.item_title}`;
+            line += line ? ` — ${s.item_title}` : s.item_title;
           }
           detail.textContent = line;
         }
