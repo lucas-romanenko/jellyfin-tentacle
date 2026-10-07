@@ -1683,14 +1683,59 @@ async function testSonarrWebhookUrl() {
 
 // ── Radarr Root Folders ───────────────────────────────────────────────────
 // ── Modals ─────────────────────────────────────────────────────────────────
+// Keyboard: an open dialog takes the focus, Tab stays inside it, and focus goes
+// back to the control that opened it when it closes. Without this, focus stayed
+// on the page behind: Tab walked the sidebar and the page under a delete or
+// resolve confirmation, and Enter/Space acted on them unseen.
+const _MODAL_FOCUSABLE = 'button:not([disabled]), a[href], input:not([disabled]):not([type="hidden"]), '
+  + 'select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+function _modalFocusables(m) {
+  return [...m.querySelectorAll(_MODAL_FOCUSABLE)].filter(el => el.getClientRects().length > 0);
+}
+
+// The dialog on top: the last open one in document order
+function _topModal() {
+  const open = [...document.querySelectorAll('.modal-overlay')]
+    .filter(o => o.id !== 'setup-overlay' && getComputedStyle(o).display !== 'none');
+  return open[open.length - 1] || null;
+}
+
 function showModal(id) {
-  document.getElementById(id).style.display = 'flex';
+  const m = document.getElementById(id);
+  const wasOpen = getComputedStyle(m).display !== 'none';
+  if (!wasOpen) m._returnFocus = document.activeElement;
+  m.style.display = 'flex';
   // Lock the page behind the sheet on phones (the modal scrolls on its own)
   document.body.classList.add('modal-open');
+  const box = m.querySelector('.modal') || m;
+  box.setAttribute('role', 'dialog');
+  box.setAttribute('aria-modal', 'true');
+  const title = box.querySelector('.modal-title');
+  if (title) {
+    if (!title.id) title.id = `${id}-title`;
+    box.setAttribute('aria-labelledby', title.id);
+  }
+  if (!wasOpen) {
+    // The first control that isn't the close cross: a form's first field, or
+    // Cancel in a confirmation (the destructive button comes after it)
+    const els = _modalFocusables(m);
+    const first = els.find(el => !el.classList.contains('modal-close')) || els[0];
+    if (first) first.focus();
+  }
+}
+
+function _hideModal(m) {
+  if (getComputedStyle(m).display === 'none') return;
+  const back = m._returnFocus;
+  const hadFocus = m.contains(document.activeElement) || document.activeElement === document.body;
+  m._returnFocus = null;
+  m.style.display = 'none';
+  if (hadFocus && back && back.isConnected && typeof back.focus === 'function') back.focus();
 }
 
 function closeModal(id) {
-  document.getElementById(id).style.display = 'none';
+  _hideModal(document.getElementById(id));
   _syncModalLock();
 }
 
@@ -1703,18 +1748,34 @@ function _syncModalLock() {
 // Close modal on overlay click
 document.addEventListener('click', e => {
   if (e.target.classList.contains('modal-overlay')) {
-    e.target.style.display = 'none';
+    _hideModal(e.target);
     _syncModalLock();
   }
 });
 
-// Close modal on Escape
+// Close modal on Escape; keep Tab inside the dialog on top
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
     document.querySelectorAll('.modal-overlay').forEach(m => {
-      if (m.id !== 'setup-overlay') m.style.display = 'none';
+      if (m.id !== 'setup-overlay') _hideModal(m);
     });
     _syncModalLock();
+    return;
+  }
+  if (e.key !== 'Tab') return;
+  // The sign-in screen sits above everything and has its own focus handling
+  const login = document.getElementById('login-overlay');
+  if (login && login.style.display === 'flex') return;
+  const m = _topModal();
+  if (!m) return;
+  const els = _modalFocusables(m);
+  if (!els.length) { e.preventDefault(); return; }
+  const first = els[0], last = els[els.length - 1];
+  if (!m.contains(document.activeElement)
+      || (e.shiftKey && document.activeElement === first)
+      || (!e.shiftKey && document.activeElement === last)) {
+    e.preventDefault();
+    (e.shiftKey ? last : first).focus();
   }
 });
 
