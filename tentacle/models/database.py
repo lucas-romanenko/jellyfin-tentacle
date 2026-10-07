@@ -660,6 +660,10 @@ class BlockedStream(Base):
     reason = Column(String, nullable=True)
     blocked_by = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # The provider's own label of the stream ("<name>\t<container>"), stored by
+    # the sync while it lists the stream: a stream re-listed under a new id
+    # with this exact label is held for the admin, never imported silently.
+    label = Column(String, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("provider_id", "media_type", "stream_key", name="uq_blocked_stream"),
@@ -680,6 +684,12 @@ class MatchOverride(Base):
     title = Column(String, nullable=True)
     set_by = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # The provider's label of the stream ("<name>\t<container>"), stored by the
+    # sync: when the provider re-lists the stream under a new id with this
+    # exact label, the fix follows it (moved_from = the key it had before, for
+    # the admin's Undo).
+    label = Column(String, nullable=True)
+    moved_from = Column(String, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("provider_id", "media_type", "stream_key", name="uq_match_override"),
@@ -700,6 +710,10 @@ class MatchSuspect(Base):
     jellyfin_item_id = Column(String, nullable=True)
     dismissed = Column(Boolean, default=False)
     detected_at = Column(DateTime, default=datetime.utcnow)
+    # None: flagged by its played length. "relist_followed": a fixed stream was
+    # re-listed and the fix followed it; "relist_blocked": a re-listed stream is
+    # labelled like one the admin blocked. The runtime check leaves these alone.
+    reason = Column(String, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("tmdb_id", "media_type", name="uq_match_suspect"),
