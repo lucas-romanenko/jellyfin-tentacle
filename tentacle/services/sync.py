@@ -958,9 +958,7 @@ def _backfill_series_episodes(
         if isinstance(episodes, list):
             episodes = {"1": episodes}
         if not episodes:
-            if slots is not None:
-                slots.unknown(show_dir)
-            return 0
+            return 0   # an empty listing offers nothing; the show's other listings decide (#512)
         if recreate:
             show_dir.mkdir(parents=True, exist_ok=True)
             chown_path(show_dir)
