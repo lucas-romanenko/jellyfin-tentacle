@@ -99,6 +99,32 @@ def _classify_conditions(conditions: list) -> str:
     return "mixed"
 
 
+def _rule_query(conditions: list, media: list, output_tag: str) -> tuple:
+    """(tag, expressions) a tag rule's playlist queries Jellyfin with.
+
+    Genre, rating and year only: Jellyfin's own fields. Only "from this
+    provider": the provider's source tags, which the tagger writes as
+    "<Provider> Movies" / "<Provider> TV". Anything else, a provider with
+    filters included: the rule's own tag, which the tagger gives only to the
+    titles that pass every condition. Querying the provider's tag there
+    filled "Netflix, Comedy" with every Netflix title.
+    """
+    conditions = conditions or []
+    if _classify_conditions(conditions) == "native":
+        return output_tag, _conditions_to_expressions(conditions)
+    source_value = _extract_source_value(conditions)
+    if source_value and len(conditions) == 1:
+        if len(media) == 1:
+            return f"{source_value} {'Movies' if media == ['Movie'] else 'TV'}", None
+        # Movies and shows: the tagger never writes the bare source value,
+        # so either suffixed tag matches.
+        return output_tag, [
+            {"MemberName": "Tags", "Operator": "Contains", "TargetValue": f"{source_value} Movies"},
+            {"MemberName": "Tags", "Operator": "Contains", "TargetValue": f"{source_value} TV"},
+        ]
+    return output_tag, None
+
+
 def _conditions_to_expressions(conditions: list) -> list:
     """Convert tag rule conditions to Jellyfin-native SmartList expressions."""
     expressions = []
@@ -564,33 +590,12 @@ def get_desired_smartlists(db: Session, user_id: int = None) -> list:
             media = ["Movie"]
         elif rule.apply_to == "series":
             media = ["Series"]
-        # Compute the correct tag for Jellyfin queries.
-        # Source/source_tag conditions need the media type suffix because the tagger
-        # writes tags like "Netflix Movies" / "Netflix TV", not just "Netflix".
-        tag = rule.output_tag
-        dual_tag_expressions = None
-        source_value = _extract_source_value(rule.conditions or [])
-        if source_value and len(media) == 1:
-            type_suffix = "Movies" if media == ["Movie"] else "TV"
-            tag = f"{source_value} {type_suffix}"
-        elif source_value and len(media) == 2:
-            # Applies to BOTH movies and series — the tagger never writes the
-            # bare source value, only "X Movies" / "X TV". Emit two OR'd tag
-            # expressions so the query matches either suffixed tag.
-            dual_tag_expressions = [
-                {"MemberName": "Tags", "Operator": "Contains", "TargetValue": f"{source_value} Movies"},
-                {"MemberName": "Tags", "Operator": "Contains", "TargetValue": f"{source_value} TV"},
-            ]
-
+        # Jellyfin's own fields, the provider's tags, or the rule's own tag.
+        tag, expressions = _rule_query(rule.conditions, media, rule.output_tag)
         gl = _extract_genre_logic(rule.conditions or [])
         sl_entry = {"name": rule.output_tag, "tag": tag, "media_type": media, "enabled": True, "source": "custom", "genre_logic": gl}
-        # If all conditions are Jellyfin-native (genre/rating/year),
-        # query Jellyfin directly instead of going through Tentacle tags
-        classification = _classify_conditions(rule.conditions or [])
-        if classification == "native":
-            sl_entry["expressions"] = _conditions_to_expressions(rule.conditions)
-        elif dual_tag_expressions is not None:
-            sl_entry["expressions"] = dual_tag_expressions
+        if expressions is not None:
+            sl_entry["expressions"] = expressions
         smartlists.append(sl_entry)
         existing_tags.add(rule.output_tag)
 
@@ -2567,17 +2572,9 @@ def sync_single_custom_playlist(db: Session, user_id: int, rule_name: str, condi
     elif apply_to == "series":
         media_types = ["Series"]
 
-    # Classify conditions and build expressions
-    classification = _classify_conditions(conditions)
-    expressions = _conditions_to_expressions(conditions) if classification == "native" else None
+    # The same query the full sync builds (get_desired_smartlists).
+    tag, expressions = _rule_query(conditions, media_types, output_tag)
     gl = _extract_genre_logic(conditions)
-
-    # Compute tag (with source suffix if applicable)
-    tag = output_tag
-    source_value = _extract_source_value(conditions)
-    if source_value and len(media_types) == 1:
-        type_suffix = "Movies" if media_types == ["Movie"] else "TV"
-        tag = f"{source_value} {type_suffix}"
 
     # Check if config already exists on disk
     existing = _scan_existing(smartlists_path)
