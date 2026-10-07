@@ -1088,21 +1088,97 @@ def _recording_stream_ids_from_jellyfin(url: str, key: str) -> "set[str] | None"
         return None
     out = set()
     now = datetime.utcnow()
-    for timer in data.get("Items") or []:
+    items = data.get("Items") or []
+    for timer in items:
         ext = timer.get("ExternalChannelId") or ""
         if not ext.startswith("hdhr_"):
             continue
         status = timer.get("Status")
         if status == "InProgress":
+            _remember_fired_timer(timer, now)
             out.add(ext[len("hdhr_"):])
-        elif status == "New" and _timer_is_imminent(timer, now):
+        elif status == "New" and _timer_counts(timer, now):
             # Jellyfin opens the tuner stream BEFORE it marks the timer
             # InProgress, so the pull that starts a recording would be a
             # viewer for its first seconds -- and at capacity, a viewer
             # cannot take a slot from a viewer. A timer that is due counts
             # as recording already.
             out.add(ext[len("hdhr_"):])
+    present = {t.get("Id") for t in items}
+    for tid, expiry in list(_fired_timers.items()):
+        if tid not in present or now >= expiry:
+            del _fired_timers[tid]
+            _fired_starts.pop(tid, None)
     return out
+
+
+# Jellyfin timers Tentacle has seen fire (Id -> end of the recording: EndDate
+# plus post-padding). When a recording's tuner open fails, Jellyfin retries
+# it every minute -- and rewrites the timer as it does so: PrePaddingSeconds
+# 0, and at each fire StartDate reset to the programme's start. A retry in
+# the pre-padding therefore reads as "starts in 14 minutes, no padding",
+# which is not imminent: it was ranked as a viewer, refused at capacity and
+# under recording protection, and after ten retries Jellyfin deleted the
+# timer before its programme began. A timer that has fired, is New again
+# with no pre-padding and has not ended is such a retry. Only read and
+# written by _recording_stream_ids_from_jellyfin, which runs one at a time
+# (the single pending lookup). Lost on restart: then as before.
+#
+# A guide refresh during a retry cycle re-arms the timer for its programme's
+# start (padding stays 0) and Jellyfin opens nothing until then; if the
+# programme moved later, the timer must not keep counting. So a remembered
+# timer counts only while it still starts by the programme start seen when
+# it fired (_fired_starts) plus the imminent window.
+_fired_timers: "dict[str, datetime]" = {}
+_fired_starts: "dict[str, datetime]" = {}
+_FIRED_GRACE_SECONDS = 30.0
+
+
+def _remember_fired_timer(timer: dict, now: "datetime") -> None:
+    tid = timer.get("Id")
+    end = _parse_timer_date(timer.get("EndDate"))
+    if not tid or end is None:
+        return
+    expiry = end + timedelta(seconds=_timer_seconds(timer.get("PostPaddingSeconds")))
+    if expiry > now:
+        _fired_timers[tid] = max(expiry, _fired_timers.get(tid, expiry))
+        start = _parse_timer_date(timer.get("StartDate"))
+        if start is not None:
+            # The programme start seen at a fire. The latest: a lookup in the
+            # 30 s before a retry fires sees StartDate = the retry time, which
+            # is earlier than the programme start the fire then resets it to.
+            _fired_starts[tid] = max(start, _fired_starts.get(tid, start))
+
+
+def _timer_counts(timer: dict, now: "datetime") -> bool:
+    """A New timer counts as recording when it is imminent, or when it is
+    Jellyfin's retry of a timer Tentacle saw fire (see _fired_timers)."""
+    if _timer_is_imminent(timer, now):
+        start = _parse_timer_date(timer.get("StartDate"))
+        pre = timedelta(seconds=_timer_seconds(timer.get("PrePaddingSeconds")))
+        if start is not None and start - pre <= now + timedelta(seconds=_FIRED_GRACE_SECONDS):
+            _remember_fired_timer(timer, now)     # due: Jellyfin fires it now
+        return True
+    tid = timer.get("Id") or ""
+    expiry = _fired_timers.get(tid)
+    start, seen = _parse_timer_date(timer.get("StartDate")), _fired_starts.get(tid)
+    return (expiry is not None and now < expiry
+            and _timer_seconds(timer.get("PrePaddingSeconds")) == 0
+            and start is not None and (seen is None or start <= seen + timedelta(seconds=_RECORDING_IMMINENT_SECONDS)))
+
+
+def _parse_timer_date(value) -> "datetime | None":
+    try:
+        return datetime.strptime((value or "")[:19], "%Y-%m-%dT%H:%M:%S")
+    except (TypeError, ValueError):
+        return None
+
+
+def _timer_seconds(value) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 _RECORDING_IMMINENT_SECONDS = 120.0
@@ -1113,17 +1189,7 @@ def _timer_is_imminent(timer: dict, now: "datetime") -> bool:
     _RECORDING_IMMINENT_SECONDS, or should already have begun -- and has
     not already ended (a timer Jellyfin never started stays "New" for ever;
     it must not keep its channel ranked as a recording)."""
-    def _parse(value):
-        try:
-            return datetime.strptime((value or "")[:19], "%Y-%m-%dT%H:%M:%S")
-        except ValueError:
-            return None
-
-    def _seconds(value):
-        try:
-            return float(value or 0)
-        except (TypeError, ValueError):
-            return 0.0
+    _parse, _seconds = _parse_timer_date, _timer_seconds
     start = _parse(timer.get("StartDate"))
     if start is None:
         return False
@@ -3919,10 +3985,18 @@ def _select_hls_variant(playlist_text: str, base_url: str):
     return best
 
 
+def _tuner_channel(db: Session, channel_id: int):
+    """The channel the tuner may stream: one it lists. The lineup, the M3U and
+    the guide all list enabled channels only, so the stream routes answer a
+    disabled channel the same as an unknown id."""
+    return db.query(LiveChannel).filter(LiveChannel.id == channel_id,
+                                        LiveChannel.enabled == True).first()  # noqa: E712
+
+
 @router.head("/api/live/stream/{channel_id}")
 async def stream_head(channel_id: int, db: Session = Depends(get_db)):
     """HEAD handler for stream URLs — Jellyfin sends HEAD to validate before playing."""
-    channel = db.query(LiveChannel).filter(LiveChannel.id == channel_id).first()
+    channel = _tuner_channel(db, channel_id)
     if not channel:
         raise HTTPException(404, "Channel not found")
     return Response(
@@ -3946,6 +4020,10 @@ async def stream_proxy(channel_id: int, db: Session = Depends(get_db)):
       2. Proxy the HLS stream as continuous MPEG-TS bytes (fetch m3u8,
          download chunks, pipe raw bytes).
     """
+    # A channel the tuner does not list (disabled) takes no slot, stops no
+    # viewer and attaches to nothing: refuse it before anything else.
+    if not _tuner_channel(db, channel_id):
+        raise HTTPException(404, "Channel not found")
     # Already pulling this channel? Attach to it instead of opening a second
     # upstream connection for byte-identical data (recording + watching the
     # same channel is the common case). Costs the provider nothing and needs
@@ -4041,7 +4119,7 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
             sem.release_lease(lease)
 
     try:
-        channel = db.query(LiveChannel).filter(LiveChannel.id == channel_id).first()
+        channel = _tuner_channel(db, channel_id)
         if not channel:
             raise HTTPException(404, "Channel not found")
 

@@ -436,7 +436,7 @@ async function loadUsers() {
         </div>
         <label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text3);cursor:pointer">
           Admin
-          <input type="checkbox"${toggleChecked}${toggleDisabled} onchange="toggleUserAdmin('${escHtml(u.id)}', this.checked)">
+          <input type="checkbox"${toggleChecked}${toggleDisabled} onchange="toggleUserAdmin('${escapeJS(u.id)}', this.checked)">
         </label>
       </div>`;
     }).join('');
@@ -492,7 +492,10 @@ function toast(msg, type = 'success', duration = 3500) {
   const icon = type === 'loading'
     ? '<span class="toast-spinner"></span>'
     : `<span style="color:var(--${colors[type] || 'blue'})">${icons[type] ?? ''}</span>`;
-  el.innerHTML = `${icon} ${msg}`;
+  // The message is text: messages carry titles and other services' error
+  // text, so they are never read as markup (callers pass plain text).
+  el.innerHTML = `${icon} `;
+  el.appendChild(document.createTextNode(msg == null ? '' : String(msg)));
   document.getElementById('toasts').appendChild(el);
   if (duration > 0) setTimeout(() => el.remove(), duration);
   return el;
@@ -906,7 +909,7 @@ function renderProviderCard(p) {
       <div class="provider-actions">
         <button class="btn btn-secondary btn-sm" onclick="refreshProvider(${p.id})">Test</button>
         <button class="btn btn-secondary btn-sm" onclick="editProvider(${p.id})">Edit</button>
-        <button class="btn btn-danger btn-sm" onclick="confirmDeleteProvider(${p.id}, '${p.name}')">Delete</button>
+        <button class="btn btn-danger btn-sm" onclick="confirmDeleteProvider(${p.id}, '${escapeJS(p.name)}')">Delete</button>
       </div>
     </div>`;
 }
@@ -1360,10 +1363,10 @@ async function testService(svc) {
   try {
     const r = await api('/api/settings/check', { method: 'POST', body });
     renderChecks(box, r.checks);
-    toast(escHtml(r.message), r.success ? 'success' : 'error', r.success ? 3500 : 7000);
+    toast(r.message, r.success ? 'success' : 'error', r.success ? 3500 : 7000);
   } catch (e) {
     if (box) box.innerHTML = '';
-    toast(escHtml(e.message), 'error');
+    toast(e.message, 'error');
   }
 }
 
@@ -1425,9 +1428,9 @@ async function createMusicLibrary() {
     if (el) el.dataset.saved = lib.id || '';
     await loadJellyfinMusicLibraries();
     document.getElementById('jf-music-create').style.display = 'none';
-    toast(`Created the Jellyfin library "${escHtml(lib.name)}"`);
+    toast(`Created the Jellyfin library "${lib.name}"`);
   } catch (e) {
-    toast(escHtml(e.message), 'error', 8000);
+    toast(e.message, 'error', 8000);
   }
 }
 
@@ -1473,7 +1476,7 @@ async function regenerateMusicWebhookSecret() {
     await loadMusicWebhookInfo();
     toast('New secret made — paste the new URL into Lidarr', 'info', 6000);
   } catch (e) {
-    toast(escHtml(e.message), 'error');
+    toast(e.message, 'error');
   }
 }
 
@@ -1483,11 +1486,11 @@ async function testMusicWebhook() {
   try {
     const r = await api('/api/music/webhook/test', { method: 'POST' });
     renderChecks(box, r.checks);
-    toast(escHtml(r.message), r.success ? 'success' : 'error', r.success ? 3500 : 7000);
+    toast(r.message, r.success ? 'success' : 'error', r.success ? 3500 : 7000);
     loadMusicWebhookInfo();
   } catch (e) {
     if (box) box.innerHTML = '';
-    toast(escHtml(e.message), 'error');
+    toast(e.message, 'error');
   }
 }
 
