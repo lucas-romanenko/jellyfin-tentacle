@@ -195,12 +195,13 @@ def summarize(releases: list, arr: str) -> dict:
     }
 
 
-def _target(db: Session, media_type: str, tmdb_id: int, tvdb_id: int) -> tuple:
+def _target(db: Session, media_type: str, tmdb_id: int, tvdb_id: int, strict: bool = False) -> tuple:
     """(app, url, key, release params, scope label, arr record, grab ids)."""
     from routers.activity import ArrTitle, _find_arr_record, _missing_aired, _ep_label
     from fastapi import HTTPException
     try:
-        svc, rec = _find_arr_record(db, ArrTitle(media_type=media_type, tmdb_id=tmdb_id, tvdb_id=tvdb_id))
+        svc, rec = _find_arr_record(db, ArrTitle(media_type=media_type, tmdb_id=tmdb_id, tvdb_id=tvdb_id),
+                                    strict=strict)
     except HTTPException as e:
         raise InsightError(e.status_code, e.detail)
     if media_type == "movie":
@@ -217,8 +218,9 @@ def _target(db: Session, media_type: str, tmdb_id: int, tvdb_id: int) -> tuple:
 
 
 def check(db: Session, media_type: str, tmdb_id: int = 0, tvdb_id: int = 0,
-          max_age: Optional[float] = None) -> dict:
-    """Search now (or reuse a check younger than max_age) and sum it up."""
+          max_age: Optional[float] = None, strict: bool = False) -> dict:
+    """Search now (or reuse a check younger than max_age) and sum it up.
+    strict: see routers.activity._find_arr_record (non-admin callers)."""
     k = title_key(media_type, tmdb_id, tvdb_id)
     ttl = CHECK_TTL if max_age is None else max_age
     asked = time.time()
@@ -246,7 +248,7 @@ def check(db: Session, media_type: str, tmdb_id: int = 0, tvdb_id: int = 0,
             # twice as long (past the clients' timeouts).
             raise running["error"]
     try:
-        return _search(db, k, media_type, tmdb_id, tvdb_id)
+        return _search(db, k, media_type, tmdb_id, tvdb_id, strict)
     except InsightError as e:
         mine["error"] = e
         raise
@@ -259,8 +261,8 @@ def check(db: Session, media_type: str, tmdb_id: int = 0, tvdb_id: int = 0,
         mine["done"].set()
 
 
-def _search(db: Session, k: str, media_type: str, tmdb_id: int, tvdb_id: int) -> dict:
-    app, url, key, params, scope, rec, ids = _target(db, media_type, tmdb_id, tvdb_id)
+def _search(db: Session, k: str, media_type: str, tmdb_id: int, tvdb_id: int, strict: bool = False) -> dict:
+    app, url, key, params, scope, rec, ids = _target(db, media_type, tmdb_id, tvdb_id, strict=strict)
     started = time.time()
     try:
         releases = _get(url, key, "release", timeout=SEARCH_TIMEOUT, **params)
@@ -294,8 +296,23 @@ def forget(media_type: str, tmdb_id: int = 0, tvdb_id: int = 0) -> None:
         _checks.pop(title_key(media_type, tmdb_id, tvdb_id), None)
 
 
-def grab(db: Session, media_type: str, tmdb_id: int, tvdb_id: int, guid: str, indexer_id: int) -> dict:
-    """Download one release from a check, even one the profile rejected."""
+def grab(db: Session, media_type: str, tmdb_id: int, tvdb_id: int, guid: str, indexer_id: int,
+         strict: bool = False) -> dict:
+    """Download one release from a check, even one the profile rejected.
+
+    strict (non-admin callers): only a release listed by this title's own
+    current check. Radarr/Sonarr accept any guid in their release cache and,
+    with the ids added below, file even a release they could not map under
+    this title; the title is what the caller's permission was checked for.
+    """
+    with _checks_lock:
+        hit = _checks.get(title_key(media_type, tmdb_id, tvdb_id))
+    if strict:
+        listed = hit and time.time() - hit["at"] < CHECK_TTL and any(
+            r.get("guid") == guid and r.get("indexer_id") == indexer_id
+            for r in (hit["data"].get("releases") or []))
+        if not listed:
+            raise InsightError(409, "That list is too old to download from. Check again for a fresh one.")
     app = "radarr" if media_type == "movie" else "sonarr"
     url, key = _conn(db, app)
     if not (url and key):
@@ -304,13 +321,12 @@ def grab(db: Session, media_type: str, tmdb_id: int, tvdb_id: int, guid: str, in
     # Name the title the check was for: Radarr/Sonarr use these only for a
     # release they couldn't map by its name ("Download anyway" on an
     # "Unknown Movie" rejection), and answer 404 for one without them.
-    with _checks_lock:
-        hit = _checks.get(title_key(media_type, tmdb_id, tvdb_id))
     body.update((hit or {}).get("ids") or {})
     try:
         r = requests.post(f"{url}/api/v3/release", headers={"X-Api-Key": key}, json=body, timeout=60)
     except Exception as e:
-        raise InsightError(502, f"Couldn't reach {app.capitalize()}: {e}")
+        logger.warning(f"[Insight] Grab: couldn't reach {app}: {e}")
+        raise InsightError(502, f"Couldn't reach {app.capitalize()} ({type(e).__name__})")
     detail = ""
     if r.status_code >= 400:
         try:

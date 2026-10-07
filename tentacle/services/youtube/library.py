@@ -208,6 +208,7 @@ def fetch_artwork(video, folder: Path) -> int:
         if not path.exists():
             try:
                 path.write_bytes(data)
+                _owned(path)
                 written += 1
             except OSError as e:
                 logger.warning(f"[YouTube] Could not write {path.name}: {e}")
@@ -223,10 +224,24 @@ def strm_url(base_url: str, video_id: str) -> str:
     return f"{base_url.rstrip('/')}/api/youtube/v/{video_id}/master.m3u8"
 
 
+def _owned(path) -> None:
+    """Give a path just created the library's owner, as VOD files get (#239):
+    PUID/PGID when set, else the owner of the folder it was made in."""
+    from services.sync import chown_path
+    chown_path(path)
+
+
 def write_video(video, channel, base_url: str, root: Path = None) -> dict:
     """Create the folder, .strm and NFO for one video. Idempotent."""
     folder = video_folder(channel.title, video, root)
+    created = []
+    p = folder
+    while not p.exists() and p != p.parent:
+        created.append(p)
+        p = p.parent
     folder.mkdir(parents=True, exist_ok=True)
+    for d in reversed(created):     # outermost first: each takes its parent's owner
+        _owned(d)
     stem = folder.name
     strm = folder / f"{stem}.strm"
     nfo = folder / "movie.nfo"
@@ -234,10 +249,14 @@ def write_video(video, channel, base_url: str, root: Path = None) -> dict:
     wrote_strm = False
     if not strm.exists():
         strm.write_text(strm_url(base_url, video.video_id), encoding="utf-8")
+        _owned(strm)
         wrote_strm = True
 
     # The NFO is safe to refresh — only the .strm's mtime matters for segments.
+    new_nfo = not nfo.exists()
     nfo.write_text(build_nfo(video, channel, base_url), encoding="utf-8")
+    if new_nfo:
+        _owned(nfo)
     art = fetch_artwork(video, folder)
 
     video.folder_path = str(folder)
@@ -347,8 +366,13 @@ def touch_strm(video) -> bool:
 
 def remove_video(video) -> int:
     """Delete one video's own folder. Never touches a shared parent."""
+    return remove_folder(video.folder_path)
+
+
+def remove_folder(folder_path) -> int:
+    """Delete one video folder by its path (see remove_video)."""
     deleted = 0
-    folder = Path(video.folder_path) if video.folder_path else None
+    folder = Path(folder_path) if folder_path else None
     if not folder or not folder.is_dir():
         return 0
     try:

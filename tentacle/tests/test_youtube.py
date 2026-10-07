@@ -1934,7 +1934,9 @@ class TestPublishWaitsForJellyfin(_PublishFixture):
         # stream is not a library item and is not waited for).
         self.jf._tagged = [0, 1, 3]
         self.ysync.publish_to_jellyfin(self.db, [self.channel])
-        queries = [c for c in self.jf.calls if c[0] == "query"]
+        # (The check after the fill counts again what a short playlist's owner
+        # may see; only the wait is looked at here.)
+        queries = [c for c in self.jf.calls if c[0] == "query"][:3]
         self.assertEqual([q[2] for q in queries], [0, 1, 3])
         self.assertEqual(queries[0][1], ("yt:tradertv-live",))
         # ...and only then were the playlists created, filled and pushed.

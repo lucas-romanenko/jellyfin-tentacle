@@ -3,6 +3,8 @@ Tentacle - Duplicates Router
 """
 
 import logging
+import threading
+from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -11,12 +13,20 @@ from models.database import get_db, get_setting, Duplicate, Movie, Series, log_d
 from routers.auth import require_admin
 from services.duplicates import (
     delete_vod_files, convert_record_to_downloaded, is_downloaded_file, arr_folder_is_vod_folder,
-    carry_user_data, UserDataCarryError,
+    carry_user_data, UserDataCarryError, watch_pending_user_data, vod_copy_on_disk, resolving,
 )
 from services.media_files import delete_series_files
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/duplicates", tags=["duplicates"], dependencies=[Depends(require_admin)])
+
+# A duplicate is resolved once (#328). Each resolution re-reads its duplicate
+# under this lock and goes ahead only while it is still pending, so Keep
+# Downloaded in one tab and Keep VOD in a stale one (or Resolve All racing a
+# single button) can't delete one copy each. One uvicorn worker, so a
+# process lock covers every request; Resolve All takes it per duplicate.
+_resolve_lock = threading.Lock()
+_LABELS = {"keep_radarr": "Kept Downloaded", "keep_vod": "Kept VOD", "keep_both": "Kept Both"}
 
 
 def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
@@ -49,6 +59,8 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
     if resolution == "keep_radarr":
         if is_series:
             _require_series_download(dup, db)
+        else:
+            _require_movie_download(dup, db)
         _carry_user_data(dup, record, "download", db)
         # Delete VOD strm/nfo files. A series' VOD path is its show folder, not
         # a .strm, so it needs the folder-aware helper (extension-based, safe in
@@ -72,12 +84,23 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
                      detail="Kept downloaded copy — VOD .strm/.nfo files deleted")
 
     elif resolution == "keep_vod":
+        # Keep VOD deletes the download: without the VOD copy on disk that
+        # leaves nothing to play. A Keep Downloaded a restart cut short after
+        # it deleted the .strm leaves the duplicate pending that way (#332).
+        if not vod_copy_on_disk(dup, record):
+            raise HTTPException(409, "The VOD copy of this title isn't on disk (it was deleted, or never "
+                                     "written), so Keep VOD would leave nothing to play. Nothing was deleted; "
+                                     "use Keep Downloaded or Keep Both.")
         # Delete the downloaded copy from the *arr that owns it: its files
         # through the file API, then the title. Never Radarr for a series:
         # TMDB movie and TV ids are separate number spaces, so a series' id
         # names an unrelated film in Radarr.
         _carry_user_data(dup, record, "vod", db)
         arr = _delete_downloaded_copy(dup, record, db)
+        # The arr's delete webhooks ran inside that call (#515): they may have
+        # released the row to VOD only or deleted it. Read it as it is now;
+        # not expire_all(), which would drop _resolve's merged dup.sources.
+        record = db.query(model).filter(model.tmdb_id == dup.tmdb_id).populate_existing().first()
 
         # The (single) row is the VOD one — just clear the downloaded-copy path
         path_attr = "sonarr_path" if is_series else "radarr_path"
@@ -86,10 +109,7 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
 
         # Legacy state: a radarr-only row (shouldn't exist alongside VOD due to
         # the unique constraint, but clean up if the row itself is radarr-owned)
-        radarr_movie = None if is_series else db.query(Movie).filter(
-            Movie.tmdb_id == dup.tmdb_id,
-            Movie.source == "radarr"
-        ).first()
+        radarr_movie = record if not is_series and record is not None and record.source == "radarr" else None
         if radarr_movie:
             db.delete(radarr_movie)
             logger.info(f"Removed Radarr DB record for tmdb:{dup.tmdb_id}")
@@ -98,6 +118,9 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
                      detail=f"Kept VOD copy — downloaded files deleted from {arr}")
 
     db.commit()
+    # Both copies in one folder: the saved watched state goes to the item
+    # Jellyfin makes for the kept copy once it has seen the delete (#333).
+    watch_pending_user_data(db, dup)
 
 
 def _carry_user_data(dup: Duplicate, record, keep: str, db: Session) -> None:
@@ -136,6 +159,37 @@ def _require_series_download(dup: Duplicate, db: Session) -> None:
         raise HTTPException(502, "Couldn't read Sonarr's episode files. Nothing was deleted; try again.")
     if not has:
         raise HTTPException(409, "Nothing downloaded for this show: Sonarr only lists the VOD .strm files. "
+                                 "Nothing was deleted; use Keep Both to dismiss it.")
+
+
+def _require_movie_download(dup: Duplicate, db: Session) -> None:
+    """Refuse Keep Downloaded for a film Radarr holds no downloaded file of,
+    as _require_series_download does for shows. Keep Downloaded deletes the
+    VOD copy; without a download that deletes the film. It happens after a
+    Keep VOD that failed half-way (Radarr deleted the file, then removing the
+    title failed), when the file was deleted in Radarr, and for a duplicate
+    between two providers (Resolve All sends Keep Downloaded for every one).
+    Radarr not configured refuses too, as Sonarr not configured does for shows."""
+    if not any((s.get("source") or "") == "radarr" for s in dup.sources or []):
+        raise HTTPException(409, "Both copies of this film are VOD streams: there is no download to keep. "
+                                 "Nothing was deleted; use Keep Both to dismiss it.")
+    url, key = get_setting(db, "radarr_url"), get_setting(db, "radarr_api_key")
+    if not url or not key:
+        raise HTTPException(409, "Radarr isn't configured, so Tentacle can't check that this film was "
+                                 "downloaded. Nothing was deleted.")
+    from services.radarr import RadarrService
+    radarr = RadarrService(url, key)
+    movie = radarr.get_movie_by_tmdb(dup.tmdb_id)
+    if not movie:
+        raise HTTPException(409, "Radarr doesn't list this film (or couldn't be read), so there is no download "
+                                 "to keep. Nothing was deleted.")
+    try:
+        files = radarr.get_movie_files(movie["id"])
+    except Exception as e:
+        logger.error(f"Keep Downloaded: could not read Radarr's files for tmdb:{dup.tmdb_id}: {e}")
+        raise HTTPException(502, "Couldn't read Radarr's files for this film. Nothing was deleted; try again.")
+    if not any(is_downloaded_file(f.get("path")) for f in files or []):
+        raise HTTPException(409, "Nothing downloaded for this film: Radarr has no file for it. "
                                  "Nothing was deleted; use Keep Both to dismiss it.")
 
 
@@ -211,12 +265,64 @@ def _delete_downloaded_copy(dup: Duplicate, record, db: Session) -> str:
     return arr
 
 
+Resolution = Literal["keep_radarr", "keep_vod", "keep_both"]
+
+
 class ResolveRequest(BaseModel):
-    resolution: str  # keep_radarr | keep_vod | keep_both
+    resolution: Resolution  # anything else (or "pending", which reopened it) is a 422
 
 
 class ResolveAllRequest(BaseModel):
-    resolution: str
+    resolution: Resolution
+
+
+def _current_resolution(db: Session, dup_id: int):
+    """The duplicate's resolution as committed now (None when it is gone),
+    not the session's copy, which may predate another request's commit."""
+    return db.query(Duplicate.resolution).filter(Duplicate.id == dup_id).scalar()
+
+
+def _pending_twins(dup: Duplicate, db: Session) -> list:
+    """The title's other pending rows. Nothing makes (tmdb_id, media_type)
+    unique: two scans at once can each write one (#504)."""
+    return db.query(Duplicate).filter(
+        Duplicate.id != dup.id,
+        Duplicate.tmdb_id == dup.tmdb_id,
+        Duplicate.media_type == dup.media_type,
+        Duplicate.resolution == "pending",
+    ).all()
+
+
+def _resolve(dup: Duplicate, resolution: str, db: Session) -> None:
+    """Resolve a pending duplicate and its pending twins together, under
+    _resolve_lock: a twin left pending could later be resolved the other way
+    and delete the copy this resolution kept (#504). The twins' sources are
+    merged in first, so a copy only a twin knew about is acted on and checked
+    too. On a refusal nothing is marked resolved."""
+    twins = _pending_twins(dup, db)
+    if twins:
+        merged = list(dup.sources or [])
+        seen = {(s.get("source"), s.get("path")) for s in merged}
+        for twin in twins:
+            for s in twin.sources or []:
+                if (s.get("source"), s.get("path")) not in seen:
+                    seen.add((s.get("source"), s.get("path")))
+                    merged.append(s)
+        dup.sources = merged  # a new list, so the JSON column is saved
+
+    # The arr's delete webhooks, sent inside Keep VOD's delete calls, leave
+    # the title's duplicates to this resolution meanwhile (#515). Should it
+    # fail after the arr deleted the download (#506), the duplicate stays
+    # pending: a retry of Keep VOD finishes it, or Keep Both dismisses it.
+    with resolving(dup.media_type, dup.tmdb_id):
+        _apply_resolution(dup, resolution, db)
+
+        # Mark as resolved (keep in DB for stats/history)
+        now = datetime.now(timezone.utc)
+        for d in (dup, *twins):
+            d.resolution = resolution
+            d.resolved_at = now
+        db.commit()
 
 
 @router.get("")
@@ -261,16 +367,15 @@ def get_duplicates(db: Session = Depends(get_db)):
 
 @router.post("/{dup_id}/resolve")
 def resolve_duplicate(dup_id: int, body: ResolveRequest, db: Session = Depends(get_db)):
-    dup = db.query(Duplicate).filter(Duplicate.id == dup_id).first()
-    if not dup:
-        raise HTTPException(404, "Duplicate not found")
-
-    _apply_resolution(dup, body.resolution, db)
-
-    # Mark as resolved (keep in DB for stats/history)
-    dup.resolution = body.resolution
-    dup.resolved_at = datetime.now(timezone.utc)
-    db.commit()
+    with _resolve_lock:
+        current = _current_resolution(db, dup_id)
+        if current is None:
+            raise HTTPException(404, "Duplicate not found")
+        if current != "pending":
+            raise HTTPException(409, f"This duplicate was already resolved ({_LABELS.get(current, current)}), "
+                                     "in another tab or by Resolve All. Nothing was deleted.")
+        dup = db.query(Duplicate).filter(Duplicate.id == dup_id).first()
+        _resolve(dup, body.resolution, db)
 
     return {"success": True}
 
@@ -283,18 +388,29 @@ def resolve_all(body: ResolveAllRequest, db: Session = Depends(get_db)):
     # Apply resolution to each duplicate (delete files, clean up DB). Only mark a
     # duplicate resolved if its resolution actually succeeded — failed ones stay
     # pending so they can be retried instead of being silently dropped.
+    # A duplicate resolved since the list was read (another tab, another
+    # Resolve All) is skipped, never resolved again.
     resolved = 0
     failed = 0
-    for dup in pending:
-        try:
-            _apply_resolution(dup, body.resolution, db)
-        except Exception as e:
-            logger.error(f"Failed to apply resolution for tmdb:{dup.tmdb_id}: {e}")
-            failed += 1
-            continue
-        dup.resolution = body.resolution
-        dup.resolved_at = datetime.now(timezone.utc)
-        resolved += 1
+    skipped = 0
+    for dup_id in [d.id for d in pending]:
+        with _resolve_lock:
+            if _current_resolution(db, dup_id) != "pending":
+                skipped += 1
+                continue
+            dup = db.query(Duplicate).filter(Duplicate.id == dup_id).first()
+            tmdb_id = dup.tmdb_id   # read now: the log line must not fail on a stale dup (#515)
+            try:
+                # Commits each one: a later failure rolls the session back, which
+                # would turn this one (one copy already deleted) back into
+                # "pending", and resolving it the other way would then delete the
+                # copy that is left. Its twins are marked with it, then skipped.
+                _resolve(dup, body.resolution, db)
+            except Exception as e:
+                logger.error(f"Failed to apply resolution for tmdb:{tmdb_id}: {e}")
+                failed += 1
+                continue
+            resolved += 1
     db.commit()
 
-    return {"success": failed == 0, "count": resolved, "total": total, "failed": failed}
+    return {"success": failed == 0, "count": resolved, "total": total, "failed": failed, "skipped": skipped}

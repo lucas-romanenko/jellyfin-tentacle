@@ -3,6 +3,7 @@ Tentacle - Settings Router
 Handles all settings API endpoints
 """
 
+import logging
 import os
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
@@ -14,6 +15,9 @@ import requests
 from models.database import get_db, Setting, get_setting, set_setting
 from routers.auth import require_admin, get_user_from_request
 from services.music.settings import SECRET_KEYS as MUSIC_SECRET_KEYS
+from services.secret_mask import looks_masked
+
+_log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/settings", tags=["settings"], dependencies=[Depends(require_admin)])
 
@@ -40,10 +44,39 @@ def get_plugin_keys(db: Session = Depends(get_db)):
     return result
 
 
-# Masked by GET /api/settings; a masked value sent back by a Save is ignored.
+# Masked by GET /api/settings (and by /raw while no user exists yet); a Save
+# that sends back the masked form keeps the stored value.
 SENSITIVE_KEYS = {"tmdb_bearer_token", "tmdb_api_key", "radarr_api_key", "sonarr_api_key",
                   "jellyfin_api_key", "trakt_client_id", "mdblist_api_key", "vod_token_secret",
-                  "youtube_api_key"} | MUSIC_SECRET_KEYS
+                  "youtube_api_key", "internal_secret", "webhook_secret",
+                  "logodev_api_key"} | MUSIC_SECRET_KEYS
+
+# Signing keys: session_secret signs the dashboard's session cookies,
+# vod_token_secret the .strm playback tokens. Nothing in the dashboard shows or
+# edits them, so no settings route serves them and a Save cannot set them.
+NEVER_SERVED = {"session_secret", "vod_token_secret"}
+
+
+# Passwords and shared secrets show no characters at all; API keys keep
+# their last four so the admin can tell which key is saved.
+PASSWORD_KEYS = {"navidrome_password", "music_webhook_secret", "internal_secret", "webhook_secret"}
+
+
+def _shown(result: dict) -> dict:
+    """Mask the secrets in a settings listing (the proxy keeps its address)."""
+    from services.secret_mask import mask, mask_url_login
+    for key in SENSITIVE_KEYS:
+        if result.get(key):
+            result[key] = mask(result[key], whole=key in PASSWORD_KEYS)
+    if result.get("youtube_proxy"):
+        result["youtube_proxy"] = mask_url_login(result["youtube_proxy"])
+    return result
+
+
+def _bootstrap(db: Session) -> bool:
+    """require_admin lets anyone in while no user exists (first-run setup)."""
+    from models.database import TentacleUser
+    return db.query(TentacleUser).count() == 0
 
 
 class SettingsUpdate(BaseModel):
@@ -60,23 +93,27 @@ class ConnectionTest(BaseModel):
 @router.get("")
 def get_settings(db: Session = Depends(get_db)):
     settings = db.query(Setting).all()
-    result = {s.key: s.value for s in settings}
-    # Mask sensitive values
-    for key in SENSITIVE_KEYS:
-        if result.get(key):
-            result[key] = result[key][:8] + "..." + result[key][-4:]
-    return result
+    result = {s.key: s.value for s in settings if s.key not in NEVER_SERVED}
+    return _shown(result)
 
 
 @router.get("/raw")
 def get_settings_raw(db: Session = Depends(get_db)):
-    """Get settings without masking - for internal use (plugin API key lookups)"""
+    """Settings for the dashboard (the Settings page shows the admin's own keys).
+
+    Never the signing keys. While no user exists yet, require_admin lets any
+    caller in (first-run setup), so every secret is masked then: setup only
+    needs the addresses."""
     settings = db.query(Setting).all()
-    result = {s.key: s.value for s in settings}
-    # Inject effective TMDB token (built-in fallback) if not explicitly set
-    if not result.get("tmdb_bearer_token") and not result.get("tmdb_api_key"):
-        from services.tmdb import TMDB_DEFAULT_TOKEN
-        result["tmdb_bearer_token"] = TMDB_DEFAULT_TOKEN
+    result = {s.key: s.value for s in settings if s.key not in NEVER_SERVED}
+    # No built-in TMDB token: the page posts every field back on Save, so
+    # serving it stored it as the user's own (#383). A copy stored that way
+    # shows as unset, so the field shows "Using built-in key" again.
+    from services.tmdb import TMDB_DEFAULT_TOKEN
+    if result.get("tmdb_bearer_token") == TMDB_DEFAULT_TOKEN:
+        result["tmdb_bearer_token"] = ""
+    if _bootstrap(db):
+        _shown(result)
     return result
 
 
@@ -85,17 +122,47 @@ def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
     from models.database import Setting
     sensitive_keys = SENSITIVE_KEYS
     from models.database import NON_EMPTY_DEFAULTS
+    from services.secret_mask import is_shown_form, restore_url_login
+    for key in NEVER_SERVED & set(body.settings):
+        _log.warning(f"Settings save: {key} is not settable here; ignored")
+        body.settings.pop(key)
     if "youtube_proxy" in body.settings:
         # Checked as the YouTube page checks it: a proxy that can't be used
         # holds every YouTube request (services/youtube/traffic.py, #244).
+        # A masked password sent back means the stored one.
         from services.youtube import traffic
+        body.settings["youtube_proxy"] = restore_url_login(
+            body.settings["youtube_proxy"] or "", get_setting(db, "youtube_proxy", "") or "")
         try:
             body.settings["youtube_proxy"] = traffic.normalize_proxy(body.settings["youtube_proxy"] or "")
         except ValueError as e:
             raise HTTPException(400, str(e))
+    if (body.settings.get("sync_schedule") or "").strip():
+        # Refused before anything is stored: a value the scheduler can't use
+        # answered success and left the old job running only until the next
+        # restart (#458). A blank one stores the default, as before.
+        from services.sync_schedule import sync_trigger
+        try:
+            sync_trigger(body.settings["sync_schedule"])
+        except ValueError as e:
+            raise HTTPException(400, f"Sync schedule '{body.settings['sync_schedule']}' is not a valid cron: {e}")
+    if (body.settings.get("recently_added_days") or "").strip():
+        # The number field posts "14.5", "7.0" or "1e2" as typed, and every
+        # reader's int() raised on it (#536): store the whole days the window
+        # uses, refuse what no number can be read from. Blank stores the default.
+        from models.database import parse_recently_added_days
+        days = parse_recently_added_days(body.settings["recently_added_days"])
+        if days is None:
+            raise HTTPException(400, f"Recently added days '{body.settings['recently_added_days']}' is not a number")
+        body.settings["recently_added_days"] = str(days)
+    from services.tmdb import TMDB_DEFAULT_TOKEN
+    if (body.settings.get("tmdb_bearer_token") or "").strip() == TMDB_DEFAULT_TOKEN:
+        # The built-in token stays a default: storing it would pin this install
+        # to it after a release changes it (#383). A stored copy is cleared.
+        body.settings["tmdb_bearer_token"] = ""
     for key, value in body.settings.items():
-        # Don't overwrite sensitive keys if they look masked
-        if key in sensitive_keys and value and "..." in value:
+        # A secret sent back exactly as the masked listing showed it is unchanged
+        if key in sensitive_keys and is_shown_form(value, get_setting(db, key, "") or ""):
             continue
         if value in ("", None):
             if key in NON_EMPTY_DEFAULTS:
@@ -114,11 +181,9 @@ def update_settings(body: SettingsUpdate, db: Session = Depends(get_db)):
     if "youtube_proxy" in body.settings:
         from services.youtube import traffic
         traffic.configure(proxy=get_setting(db, "youtube_proxy", "") or "")
-    # Mark setup complete if all required fields are filled
-    required = ["jellyfin_url", "jellyfin_api_key"]
-    all_set = all(get_setting(db, k) for k in required)
-    if all_set:
-        set_setting(db, "setup_complete", "true")
+    # setup_complete is the wizard's own to set (Get Started, Skip everything).
+    # Setting it on any save with a Jellyfin address and key ended the wizard
+    # at its first step: steps 2-6 were never shown again.
 
     if "music_reconcile_time" in body.settings:
         try:
@@ -242,7 +307,7 @@ def _trigger_post_setup_scan():
 def test_connection(body: ConnectionTest, db: Session = Depends(get_db)):
     if body.type == "tmdb":
         from services.tmdb import get_tmdb_token
-        token = body.bearer_token if (body.bearer_token and "..." not in body.bearer_token) else get_tmdb_token(db)
+        token = body.bearer_token if (body.bearer_token and not looks_masked(body.bearer_token)) else get_tmdb_token(db)
         if not token:
             raise HTTPException(400, "No TMDB token configured")
         try:
@@ -257,7 +322,7 @@ def test_connection(body: ConnectionTest, db: Session = Depends(get_db)):
             raise HTTPException(400, f"TMDB connection failed: {str(e)}")
 
     elif body.type == "mdblist":
-        key = body.api_key if (body.api_key and "..." not in body.api_key) else get_setting(db, "mdblist_api_key")
+        key = body.api_key if (body.api_key and not looks_masked(body.api_key)) else get_setting(db, "mdblist_api_key")
         if not key:
             raise HTTPException(400, "MDBList API key required")
         try:
