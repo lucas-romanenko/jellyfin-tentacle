@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from sqlalchemy import func
 from models.database import (
-    get_db, get_setting, Movie, Series, Provider,
+    get_db, get_setting, get_recently_added_days, Movie, Series, Provider,
     ListSubscription, ListItem, AutoPlaylistToggle, TentacleUser, DownloadRequest,
 )
 from routers.auth import get_user_from_request
@@ -580,7 +580,10 @@ def preview_count(body: PreviewRequest, db: Session = Depends(get_db), user: Ten
     }
 
     jf = JellyfinService(jf_url, jf_key)
+    # Count as the rule's owner, the same query the playlist runs (#538):
+    # without a user Jellyfin answers for every library, on stale metadata.
     query = _build_query_params(config)
+    query["user_id"] = user.jellyfin_user_id
     try:
         items = jf.query_items(**query)
     except Exception as e:
@@ -1131,7 +1134,7 @@ def _compute_auto_playlists(db: Session, user_id: int = None) -> list:
 
     # ── Built-in playlists ──
     from datetime import datetime, timedelta
-    recently_added_days = int(get_setting(db, "recently_added_days", "30"))
+    recently_added_days = get_recently_added_days(db)
     cutoff = datetime.utcnow() - timedelta(days=recently_added_days)
     recent_movies = db.query(func.count(Movie.id)).filter(Movie.date_added >= cutoff).scalar() or 0
     recent_series = db.query(func.count(Series.id)).filter(Series.date_added >= cutoff).scalar() or 0

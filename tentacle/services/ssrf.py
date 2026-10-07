@@ -91,6 +91,12 @@ def _url_host(url: str, allowed_hosts: Optional[Iterable[str]]) -> Tuple[Optiona
     return host, ""
 
 
+def url_host_allowed(url: str, allowed_hosts: Optional[Iterable[str]] = None) -> bool:
+    """is_safe_url() without the DNS half: http(s), a host, and (optionally)
+    on an allowlisted host. Needs no lookup, so it can run on the event loop."""
+    return _url_host(url, allowed_hosts)[0] is not None
+
+
 def is_safe_url(url: str, allowed_hosts: Optional[Iterable[str]] = None) -> bool:
     """Return True if `url` is http(s), (optionally) on an allowlisted host, and
     resolves only to public IP addresses.

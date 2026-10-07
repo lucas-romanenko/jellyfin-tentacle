@@ -6,6 +6,7 @@ Radarr library scanning, quality profiles, and provider migration
 import re
 import threading
 import logging
+from collections import Counter
 import requests
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -14,8 +15,10 @@ from pydantic import BaseModel
 from typing import Optional
 
 from models.database import get_db, Provider, Movie, ListItem, ListSubscription, DownloadRequest, Duplicate, get_setting, log_activity
-from services.radarr import scan_radarr_library, RadarrService, file_loss_looks_like_an_outage
+from services.radarr import (scan_radarr_library, RadarrService, download_loss_looks_like_an_outage, download_kind,
+                             downloaded_movie_rows, release_vod_download)
 from services.nfo import update_nfo_tags, write_movie_nfo, make_folder_name, refresh_arr_nfo
+from services.duplicates import droppable_duplicates
 from services.tagger import tentacle_owned_tags
 from services.migration import migrate_provider, preview_migration
 from services.logstream import log_event_generator, get_recent_logs, emit_library_event
@@ -48,10 +51,27 @@ def _check_webhook_auth(request: Request, db: Session) -> None:
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/radarr", tags=["radarr"], dependencies=[Depends(require_admin)])
 
-# Per-movie lock to prevent duplicate webhook processing (e.g. Download + MovieAdded
-# firing close together for the same movie). Only one background thread per tmdb_id.
+# One webhook pass per movie at a time (e.g. Download + MovieAdded close
+# together). An event for a movie whose pass is still running is queued and
+# run by that thread once it ends, never dropped (#380): the pass waits its
+# turn for the library-wide scan (#268), and a Download skipped meanwhile lost
+# its notice and downloaded_at. Locks are taken and released under the guard.
 _webhook_locks: dict[int, threading.Lock] = {}
+_webhook_followups: dict[int, dict] = {}   # tmdb_id -> {"title", "event_type", "is_upgrade"}
 _webhook_locks_guard = threading.Lock()
+
+
+def _queue_webhook_followup(tmdb_id, title, event_type, is_upgrade) -> None:
+    """Under _webhook_locks_guard. Events queued for one movie make one pass;
+    a Download outranks MovieAdded, and a new download outranks an upgrade."""
+    entry = _webhook_followups.get(tmdb_id)
+    if entry is None:
+        _webhook_followups[tmdb_id] = {"title": title, "event_type": event_type, "is_upgrade": is_upgrade}
+        return
+    entry["title"] = title
+    if event_type == "Download":
+        entry["is_upgrade"] = is_upgrade and (entry["event_type"] != "Download" or entry["is_upgrade"])
+        entry["event_type"] = "Download"
 
 _scan_running = False
 
@@ -217,22 +237,29 @@ webhook_router = APIRouter(prefix="/api/radarr", tags=["radarr"])
 
 
 def _remove_downloaded_movie(db: Session, tmdb_id: int, title: str, arr_folder: Optional[str],
-                             clean_up_if_gone: bool = False) -> int:
-    """A download's file is gone: drop its row, its request (unless a "Bad
-    copy" replacement is coming) and its duplicate tombstones, and take it out
-    of every user's playlists. Returns the rows deleted; raises on a DB error
-    (rolled back). clean_up_if_gone: the playlist clean-up runs even when the
-    row was already gone (a scan removed it while the report waited; the scan
-    does no playlist clean-up), by the download's folder only."""
+                             clean_up_if_gone: bool = False, movie_removed: bool = False) -> int:
+    """A download's file is gone: drop its row (a VOD title's row stays and
+    goes back to VOD only, #378), its request (unless a "Bad copy"
+    replacement is coming; movie_removed: the film left Radarr, so none is)
+    and its duplicate tombstones, and take it out of every user's playlists.
+    Returns the rows that lost the download; raises on a DB error (rolled
+    back). clean_up_if_gone: the playlist clean-up runs even when the row was
+    already gone (a scan removed it while the report waited; the scan does no
+    playlist clean-up), by the download's folder only."""
     from services.bad_copy import is_replacing
-    replacing = is_replacing(db, "movie", tmdb_id)
+    replacing = not movie_removed and is_replacing(db, "movie", tmdb_id)
     try:
         deleted = db.query(Movie).filter(Movie.tmdb_id == tmdb_id, Movie.source == "radarr").delete()
+        vod_rows = downloaded_movie_rows(db).filter(Movie.tmdb_id == tmdb_id, Movie.source != "radarr").all()
+        for row in vod_rows:
+            release_vod_download(db, row, drop_request_tags=not replacing)
         if not replacing:  # "Bad copy": the request stands while another copy comes
             db.query(DownloadRequest).filter(DownloadRequest.tmdb_id == tmdb_id, DownloadRequest.media_type == "movie").delete()
         # Clear duplicate tombstones — deleting the downloaded copy is a
-        # clean slate; the title may legitimately re-import from VOD later
-        db.query(Duplicate).filter(Duplicate.tmdb_id == tmdb_id, Duplicate.media_type == "movie").delete()
+        # clean slate; the title may legitimately re-import from VOD later.
+        # Not while Keep VOD (whose delete sent this) holds them, nor one
+        # holding users' saved watched state (#515).
+        droppable_duplicates(db, "movie", tmdb_id).delete(synchronize_session=False)
         db.commit()
     except Exception:
         db.rollback()
@@ -240,11 +267,13 @@ def _remove_downloaded_movie(db: Session, tmdb_id: int, title: str, arr_folder: 
     if deleted:
         emit_library_event("movie_removed", {"tmdb_id": tmdb_id, "title": title, "media_type": "movie"})
         log_activity(db, "radarr_remove", f"Removed '{title}' from Radarr library")
-    if deleted or (clean_up_if_gone and arr_folder):
+    elif vod_rows:
+        log_activity(db, "radarr_remove", f"Removed the download of '{title}'; the VOD copy stays")
+    if deleted or vod_rows or (clean_up_if_gone and arr_folder):
         from routers.library import _cleanup_playlists_all_users
         threading.Thread(target=_cleanup_playlists_all_users, args=(tmdb_id, "movie"),
                          kwargs={"arr_folder": arr_folder}, daemon=True).start()
-    return deleted
+    return deleted + len(vod_rows)
 
 
 # File deletes Radarr makes because it can't see the file any more
@@ -264,7 +293,7 @@ MISSING_SETTLE_SECONDS = 600
 MISSING_WINDOW_SECONDS = 6 * 3600
 _missing_lock = threading.Lock()
 _missing_pending: dict = {}          # tmdb_id -> (title, arr_folder)
-_missing_recent: dict = {}           # tmdb_id -> (monotonic time judged, was a downloaded row)
+_missing_recent: dict = {}           # tmdb_id -> (monotonic time judged, its download_kind, None if not a downloaded row)
 _missing_gen = 0
 _missing_timer = None
 
@@ -308,17 +337,19 @@ def _flush_missing_from_disk(gen: Optional[int] = None, db: Optional[Session] = 
         from models.database import SessionLocal
         db = SessionLocal()
     try:
-        rows = {t for (t,) in db.query(Movie.tmdb_id).filter(Movie.source == "radarr")}
+        rows = {m.tmdb_id: download_kind(m) for m in downloaded_movie_rows(db)}
         # Downloads already removed for an earlier report still count, in the
-        # loss and in the library it is measured against.
-        gone = sum(1 for t, (_, was_row) in recent.items() if was_row and t not in rows)
-        lost_now = rows & set(batch)
-        lost = len(lost_now) + len(rows & set(recent)) + gone
-        total = len(rows) + gone
-        if file_loss_looks_like_an_outage(lost, total):
+        # loss and in the library it is measured against. Judged over all of
+        # them and over each kind alone (#505).
+        gone = Counter(kind for t, (_, kind) in recent.items() if kind and t not in rows)
+        lost_now = rows.keys() & set(batch)
+        lost_by_kind = Counter(rows[t] for t in lost_now | (rows.keys() & set(recent))) + gone
+        total_by_kind = Counter(rows.values()) + gone
+        lost, total = sum(lost_by_kind.values()), sum(total_by_kind.values())
+        if download_loss_looks_like_an_outage(lost_by_kind, total_by_kind):
             with _missing_lock:
                 for t in batch:
-                    _missing_recent[t] = (now, t in rows)
+                    _missing_recent[t] = (now, rows.get(t))
             logger.error(
                 f"[Radarr webhook] REFUSING to remove {len(lost_now)} downloaded movies Radarr reported missing "
                 f"from disk: with the reports of the last {MISSING_WINDOW_SECONDS // 3600} h that is {lost} of "
@@ -333,7 +364,7 @@ def _flush_missing_from_disk(gen: Optional[int] = None, db: Optional[Session] = 
             except Exception as e:
                 logger.error(f"[Radarr webhook] MovieFileDelete DB cleanup failed for tmdb:{tmdb_id}: {e}")
             with _missing_lock:
-                _missing_recent[tmdb_id] = (now, tmdb_id in rows)
+                _missing_recent[tmdb_id] = (now, rows.get(tmdb_id))
         return {"status": "removed", "removed": removed}
     finally:
         if own_db:
@@ -388,59 +419,64 @@ def radarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
         except Exception as e:
             logger.error(f"[Radarr webhook] MovieFileDelete DB cleanup failed for tmdb:{tmdb_id}: {e}")
             raise HTTPException(500, "Failed to process delete event")
-        logger.info(f"[Radarr webhook] MovieFileDelete for '{title}' (tmdb:{tmdb_id}) — removed {deleted} from DB")
+        logger.info(f"[Radarr webhook] MovieFileDelete for '{title}' (tmdb:{tmdb_id}) — download gone from {deleted} row(s)")
         return {"status": "deleted", "tmdb_id": tmdb_id}
 
     # MovieDelete — remove from DB
     if event_type == "MovieDelete":
         _forget_missing_from_disk(tmdb_id)
         try:
-            deleted = db.query(Movie).filter(Movie.tmdb_id == tmdb_id, Movie.source == "radarr").delete()
-            db.query(DownloadRequest).filter(DownloadRequest.tmdb_id == tmdb_id, DownloadRequest.media_type == "movie").delete()
-            # Clear duplicate tombstones — deleting the downloaded copy is a
-            # clean slate; the title may legitimately re-import from VOD later
-            db.query(Duplicate).filter(Duplicate.tmdb_id == tmdb_id, Duplicate.media_type == "movie").delete()
-            db.commit()
+            deleted = _remove_downloaded_movie(db, tmdb_id, title, arr_folder, movie_removed=True)
         except Exception as e:
-            db.rollback()
             logger.error(f"[Radarr webhook] MovieDelete DB cleanup failed for tmdb:{tmdb_id}: {e}")
             raise HTTPException(500, "Failed to process delete event")
-        if deleted:
-            emit_library_event("movie_removed", {"tmdb_id": tmdb_id, "title": title, "media_type": "movie"})
-            log_activity(db, "radarr_remove", f"Removed '{title}' from Radarr library")
-            from routers.library import _cleanup_playlists_all_users
-            threading.Thread(target=_cleanup_playlists_all_users, args=(tmdb_id, "movie"),
-                             kwargs={"arr_folder": arr_folder}, daemon=True).start()
-        logger.info(f"[Radarr webhook] MovieDelete for '{title}' (tmdb:{tmdb_id}) — removed {deleted} from DB")
+        logger.info(f"[Radarr webhook] MovieDelete for '{title}' (tmdb:{tmdb_id}) — download gone from {deleted} row(s)")
         return {"status": "deleted", "tmdb_id": tmdb_id}
 
     # Download / MovieAdded — scan and tag
     _forget_missing_from_disk(tmdb_id)
 
-    def _webhook_background(tmdb_id, title, event_type):
-        import time
-        from datetime import datetime
-        from models.database import SessionLocal, get_setting
-        from pathlib import Path
-        from services.jellyfin import JellyfinService
-
-        # Per-movie lock: if another webhook event for the same movie is already
-        # being processed (e.g. Download + MovieAdded close together), skip.
+    def _webhook_background(tmdb_id, title, event_type, is_upgrade):
+        # Per-movie lock: if another webhook event for the same movie is
+        # still being processed, this one runs after it, in that thread (#380).
         with _webhook_locks_guard:
-            if tmdb_id in _webhook_locks and _webhook_locks[tmdb_id].locked():
-                logger.info(f"[Radarr webhook] Skipping duplicate processing for tmdb:{tmdb_id}")
+            lock = _webhook_locks.get(tmdb_id)
+            if lock is not None and lock.locked():
+                _queue_webhook_followup(tmdb_id, title, event_type, is_upgrade)
+                logger.info(f"[Radarr webhook] tmdb:{tmdb_id} is still being processed: "
+                            f"{event_type} queued to run after it")
                 return
             # Bound the dict: prune unlocked (idle) locks if it grows large.
             if len(_webhook_locks) > 512:
                 for k in [k for k, l in _webhook_locks.items() if not l.locked()]:
                     _webhook_locks.pop(k, None)
-            if tmdb_id not in _webhook_locks:
-                _webhook_locks[tmdb_id] = threading.Lock()
-            lock = _webhook_locks[tmdb_id]
+            lock = _webhook_locks.setdefault(tmdb_id, threading.Lock())
+            lock.acquire()
 
-        if not lock.acquire(blocking=False):
-            logger.info(f"[Radarr webhook] Skipping duplicate processing for tmdb:{tmdb_id}")
-            return
+        released = False
+        try:
+            while True:
+                _webhook_pass(tmdb_id, title, event_type, is_upgrade)
+                with _webhook_locks_guard:
+                    followup = _webhook_followups.pop(tmdb_id, None)
+                    if followup is None:
+                        lock.release()
+                        released = True
+                        return
+                title, event_type, is_upgrade = followup["title"], followup["event_type"], followup["is_upgrade"]
+                logger.info(f"[Radarr webhook] Running the queued {event_type} for '{title}' (tmdb:{tmdb_id})")
+        finally:
+            if not released:
+                with _webhook_locks_guard:
+                    _webhook_followups.pop(tmdb_id, None)
+                    lock.release()
+
+    def _webhook_pass(tmdb_id, title, event_type, is_upgrade):
+        import time
+        from datetime import datetime
+        from models.database import SessionLocal, get_setting
+        from pathlib import Path
+        from services.jellyfin import JellyfinService
 
         db = SessionLocal()
         try:
@@ -462,7 +498,8 @@ def radarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
                     db_movie.date_added = datetime.utcnow()
                 db.commit()
 
-            list_items = db.query(ListItem).filter(ListItem.tmdb_id == tmdb_id).all()
+            list_items = db.query(ListItem).filter(
+                ListItem.tmdb_id == tmdb_id, ListItem.of_type("movie")).all()
             if not list_items:
                 logger.info(f"[Radarr webhook] '{title}' not in any lists")
             else:
@@ -617,7 +654,11 @@ def radarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
                     replaced = is_replacing(db, "movie", tmdb_id)
                     if replaced:
                         clear_replacing(db, "movie", tmdb_id)
-                    if dr:
+                    if dr and is_upgrade and not replaced:
+                        # A better file for a film the requester already has:
+                        # not a new download, no second "ready to watch".
+                        logger.info(f"[Radarr webhook] '{db_movie.title}' quality upgrade: requester not notified again")
+                    elif dr:
                         create_notification(
                             db, user_id=dr.user_id, tmdb_id=tmdb_id, media_type="movie",
                             title=db_movie.title,
@@ -648,10 +689,10 @@ def radarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
         except Exception as e:
             logger.error(f"[Radarr webhook] Background processing failed: {e}", exc_info=True)
         finally:
-            lock.release()
             db.close()
 
-    thread = threading.Thread(target=_webhook_background, args=(tmdb_id, title, event_type), daemon=True)
+    is_upgrade = event_type == "Download" and payload.get("isUpgrade") is True
+    thread = threading.Thread(target=_webhook_background, args=(tmdb_id, title, event_type, is_upgrade), daemon=True)
     thread.start()
 
     return {"status": "processing", "event": event_type, "tmdb_id": tmdb_id}

@@ -149,8 +149,8 @@ class FirstSignIn(unittest.TestCase):
 
     def test_a_wrong_password_is_still_a_401(self):
         def refused(*args, **kwargs):
-            r = mock.Mock()
-            r.raise_for_status.side_effect = requests.HTTPError("401 Unauthorized")
+            r = mock.Mock(status_code=401)
+            r.raise_for_status.side_effect = requests.HTTPError("401 Unauthorized", response=r)
             return r
         with mock.patch.object(auth_router.requests, "post", refused):
             with self.assertRaises(HTTPException) as cm:

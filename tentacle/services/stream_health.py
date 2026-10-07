@@ -25,6 +25,7 @@ import json
 import time
 import logging
 import re
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -50,6 +51,12 @@ DEFAULT_BATCH_SIZE = 100
 PROBE_INTERVAL_SECONDS = 3.0
 PROVIDER_BUSY_STATUSES = {429, 509}
 _probe_state = {"provider_busy": False, "busy_seq": 0}
+# One sweep at a time: the 04:30 job and "Run sweep" both take it without
+# waiting. A second sweep would read the same cursor, probe the same titles
+# alongside the first (two connections at once is what a one-connection
+# account answers 509 to), and its start would clear the first one's
+# `provider_busy`. The scheduler's max_instances=1 only covers its own runs.
+_sweep_lock = threading.Lock()
 
 
 def _note_provider_busy():
@@ -112,10 +119,12 @@ def _direct_url(url: str, kind, stream_id, provider) -> str:
     Tentacle's /api/vod route must not be probed through Tentacle itself:
     that would take a playback slot for a health check."""
     from services import vod_tokens
+    from services.xtream_client import quote_cred
     if provider and kind and stream_id and vod_tokens.is_vod_url(url):
         container = url.rsplit(".", 1)[-1].split("?")[0] if "." in url else "mp4"
         path = "movie" if kind == "movie" else "series"
-        return f"{provider.server_url.rstrip('/')}/{path}/{provider.username}/{provider.password}/{stream_id}.{container}"
+        login = f"{quote_cred(provider.username)}/{quote_cred(provider.password)}"
+        return f"{provider.server_url.rstrip('/')}/{path}/{login}/{stream_id}.{container}"
     return url
 
 
@@ -328,9 +337,44 @@ def recheck_known_bad(db, limit: int = 0) -> dict:
             "deferred": deferred, "provider_busy": provider_busy, "remaining": remaining}
 
 
-def run_stream_health_sweep():
+def stream_health_sweep_running() -> bool:
+    return _sweep_lock.locked()
+
+
+def start_stream_health_sweep() -> bool:
+    """"Run sweep": run it in the background. False (nothing started) while a
+    sweep is already running."""
+    if not _sweep_lock.acquire(blocking=False):
+        return False
+
+    def run():
+        try:
+            _sweep()
+        finally:
+            _sweep_lock.release()
+    try:
+        threading.Thread(target=run, daemon=True, name="stream-health-sweep").start()
+    except Exception:
+        _sweep_lock.release()
+        raise
+    return True
+
+
+def run_stream_health_sweep() -> bool:
     """Daily job: recheck stale known-bad entries, then probe the next rotating
-    batch of healthy VOD titles."""
+    batch of healthy VOD titles. False (nothing probed) while a sweep is
+    already running."""
+    if not _sweep_lock.acquire(blocking=False):
+        logger.info("[Stream health] a sweep is already running — this one probes nothing")
+        return False
+    try:
+        _sweep()
+    finally:
+        _sweep_lock.release()
+    return True
+
+
+def _sweep():
     db = SessionLocal()
     try:
         stats = {"rechecked": 0, "cleared": 0, "probed": 0, "new_bad": 0, "inconclusive": 0}
