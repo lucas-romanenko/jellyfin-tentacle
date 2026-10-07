@@ -3302,25 +3302,29 @@ def _run_epg_sync_background(provider_data: dict):
                 db.add_all(batch)
                 db.flush()
 
+            # What this sync read, and the guide ids it left empty: refresh-guide
+            # re-runs a sync only when that could fill one of them (#466). Read
+            # from the rows before the coverage setting below commits: a commit
+            # expires them, and a channel removed meanwhile (an M3U playlist sync
+            # can do that) would then fail the whole sync on reload (#518).
+            import json
+            kept = {p["channel_id"] for p in programs}
+            synced_record = json.dumps({
+                "inputs": inputs,
+                "empty": sorted({r.guide_epg_id for r in rows} - {None} - kept),
+            })
+
             # How many channels actually have a guide, and why the rest do not:
             # "success" alone hid that most channels had nothing (#141).
             coverage_note = ""
             if resolved:
-                import json
                 from services.epg_match import coverage_report, coverage_summary
-                report = coverage_report(chan_info, resolved, {p["channel_id"] for p in programs})
+                report = coverage_report(chan_info, resolved, kept)
                 report["at"] = datetime.utcnow().isoformat() + "Z"
                 set_setting(db, f"livetv_epg_coverage_{pid}", json.dumps(report))
                 coverage_note = f" — {coverage_summary(report)}"
 
-            # What this sync read, and the guide ids it left empty: refresh-guide
-            # re-runs a sync only when that could fill one of them (#466).
-            import json
-            kept = {p["channel_id"] for p in programs}
-            set_setting(db, f"livetv_epg_synced_{pid}", json.dumps({
-                "inputs": inputs,
-                "empty": sorted({r.guide_epg_id for r in rows} - {None} - kept),
-            }))
+            set_setting(db, f"livetv_epg_synced_{pid}", synced_record)
 
             db.commit()
             log_activity(db, "epg_sync", f"EPG sync: {inserted} programs for {total} channels "
