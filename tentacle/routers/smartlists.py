@@ -581,6 +581,10 @@ def preview_count(body: PreviewRequest, db: Session = Depends(get_db), user: Ten
 
     jf = JellyfinService(jf_url, jf_key)
     query = _build_query_params(config)
+    # As the user, like the playlist the rule makes (_process_single_playlist_locked):
+    # without UserId Jellyfin answers as the server, with every library and no
+    # parental limit, so the count promised titles the playlist never holds.
+    query["user_id"] = user.jellyfin_user_id
     try:
         items = jf.query_items(**query)
     except Exception as e:
