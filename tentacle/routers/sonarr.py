@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from models.database import get_db, Series, ListItem, ListSubscription, DownloadRequest, Duplicate, get_setting, log_activity
 from services.sonarr import scan_sonarr_library, SonarrService
+from services.duplicates import droppable_duplicates
 from services.nfo import update_nfo_tags, write_series_nfo, refresh_arr_nfo
 from services.tagger import tentacle_owned_tags
 from services.logstream import emit_library_event
@@ -230,9 +231,11 @@ def sonarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
                 deleted = db.query(Series).filter(Series.tmdb_id == tmdb_id, Series.source == "sonarr").delete()
                 db.query(DownloadRequest).filter(DownloadRequest.tmdb_id == tmdb_id, DownloadRequest.media_type == "series").delete()
                 # Clear duplicate tombstones — deleting the downloaded copy is a
-                # clean slate; the title may legitimately re-import from VOD later
+                # clean slate; the title may legitimately re-import from VOD later.
+                # Not while Keep VOD (whose delete sent this) holds them, nor
+                # one holding users' saved watched state (#515).
                 if deleted:
-                    db.query(Duplicate).filter(Duplicate.tmdb_id == tmdb_id, Duplicate.media_type == "series").delete()
+                    droppable_duplicates(db, "series", tmdb_id).delete(synchronize_session=False)
                 db.commit()
             except Exception as e:
                 db.rollback()
@@ -242,12 +245,16 @@ def sonarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
                 emit_library_event("series_removed", {"tmdb_id": tmdb_id, "title": title, "media_type": "series"})
                 log_activity(db, "sonarr_remove", f"Removed '{title}' from Sonarr library")
                 from routers.library import _cleanup_playlists_all_users
-                threading.Thread(target=_cleanup_playlists_all_users, args=(tmdb_id, "series"), daemon=True).start()
+                # Sonarr's folder: the clean-up removes that copy only, never the
+                # VOD one "first with this TMDB id" (#296)
+                threading.Thread(target=_cleanup_playlists_all_users, args=(tmdb_id, "series"),
+                                 kwargs={"arr_folder": series_data.get("path")}, daemon=True).start()
             logger.info(f"[Sonarr webhook] SeriesDelete for '{title}' (tmdb:{tmdb_id}) — removed {deleted} from DB")
         return {"status": "deleted", "tmdb_id": tmdb_id}
 
     # Download / SeriesAdd / EpisodeFileDelete — scan and tag, coalesced (#182)
-    _queue_webhook_event(tmdb_id, title, event_type, episodes)
+    _queue_webhook_event(tmdb_id, title, event_type, episodes,
+                         is_upgrade=event_type == "Download" and payload.get("isUpgrade") is True)
     return {"status": "processing", "event": event_type, "tmdb_id": tmdb_id}
 
 
@@ -282,10 +289,11 @@ def get_quality_profiles(db: Session = Depends(get_db)):
     return [{"id": p["id"], "name": p["name"]} for p in profiles]
 
 
-def _after_scan(db, tmdb_id, title, event_type, first_episode=None, episode_count=1):
+def _after_scan(db, tmdb_id, title, event_type, first_episode=None, episode_count=1, notify=True):
     """What one series' webhook event does once the Sonarr scan has run:
     download bookkeeping, list tags, the Jellyfin tag push, playlists and the
-    ready-to-watch notification."""
+    ready-to-watch notification (not for quality upgrades only: notify=False,
+    unless a bad copy is being replaced)."""
     import time
     from models.database import get_setting
     from services.jellyfin import JellyfinService
@@ -317,7 +325,8 @@ def _after_scan(db, tmdb_id, title, event_type, first_episode=None, episode_coun
                 db_series.last_downloaded_episode = label
             db.commit()
 
-        list_items = db.query(ListItem).filter(ListItem.tmdb_id == tmdb_id).all()
+        list_items = db.query(ListItem).filter(
+            ListItem.tmdb_id == tmdb_id, ListItem.of_type("series")).all()
         if not list_items:
             logger.info(f"[Sonarr webhook] '{title}' not in any lists")
         else:
@@ -445,38 +454,43 @@ def _after_scan(db, tmdb_id, title, event_type, first_episode=None, episode_coun
                 verb = "have" if episode_count > 1 else "has"
                 notif_msg = f"{db_series.title}{ep_label} {verb} completed and {'are' if episode_count > 1 else 'is'} ready to watch"
                 from services.bad_copy import is_replacing, clear_replacing
-                if is_replacing(db, "series", tmdb_id):
+                replaced = is_replacing(db, "series", tmdb_id)
+                if replaced:
                     clear_replacing(db, "series", tmdb_id)
                     notif_msg = f"A new copy of {db_series.title}{ep_label} is ready to watch"
 
-                # Notify the requester
-                notified_user_ids = set()
-                dr = db.query(DownloadRequest).filter(
-                    DownloadRequest.tmdb_id == tmdb_id,
-                    DownloadRequest.media_type == "series"
-                ).first()
-                if dr:
-                    create_notification(
-                        db, user_id=dr.user_id, tmdb_id=tmdb_id, media_type="series",
-                        title=db_series.title, message=notif_msg,
-                        poster_path=db_series.poster_path,
-                        jellyfin_item_id=db_series.jellyfin_item_id,
-                    )
-                    notified_user_ids.add(dr.user_id)
+                if not notify and not replaced:
+                    # Only quality upgrades: the user already has these episodes.
+                    logger.info(f"[Sonarr webhook] '{db_series.title}' quality upgrade: nobody notified again")
+                else:
+                    # Notify the requester
+                    notified_user_ids = set()
+                    dr = db.query(DownloadRequest).filter(
+                        DownloadRequest.tmdb_id == tmdb_id,
+                        DownloadRequest.media_type == "series"
+                    ).first()
+                    if dr:
+                        create_notification(
+                            db, user_id=dr.user_id, tmdb_id=tmdb_id, media_type="series",
+                            title=db_series.title, message=notif_msg,
+                            poster_path=db_series.poster_path,
+                            jellyfin_item_id=db_series.jellyfin_item_id,
+                        )
+                        notified_user_ids.add(dr.user_id)
 
-                # Also notify users who follow this series (auto-monitored downloads)
-                if db_series.sonarr_monitored:
-                    from routers.library import _get_followers_for_series
-                    follower_ids = _get_followers_for_series(db, tmdb_id)
-                    for uid in follower_ids:
-                        if uid not in notified_user_ids:
-                            create_notification(
-                                db, user_id=uid, tmdb_id=tmdb_id, media_type="series",
-                                title=db_series.title, message=notif_msg,
-                                poster_path=db_series.poster_path,
-                                jellyfin_item_id=db_series.jellyfin_item_id,
-                            )
-                            notified_user_ids.add(uid)
+                    # Also notify users who follow this series (auto-monitored downloads)
+                    if db_series.sonarr_monitored:
+                        from routers.library import _get_followers_for_series
+                        follower_ids = _get_followers_for_series(db, tmdb_id)
+                        for uid in follower_ids:
+                            if uid not in notified_user_ids:
+                                create_notification(
+                                    db, user_id=uid, tmdb_id=tmdb_id, media_type="series",
+                                    title=db_series.title, message=notif_msg,
+                                    poster_path=db_series.poster_path,
+                                    jellyfin_item_id=db_series.jellyfin_item_id,
+                                )
+                                notified_user_ids.add(uid)
             except Exception as e:
                 logger.warning(f"[Sonarr webhook] Notification creation failed: {e}")
 
@@ -513,13 +527,16 @@ def _after_scan(db, tmdb_id, title, event_type, first_episode=None, episode_coun
 WEBHOOK_QUIET_SECONDS = 10
 WEBHOOK_MAX_WAIT_SECONDS = 30
 _webhook_lock = threading.Lock()
-_webhook_pending: dict = {}      # series key -> {"tmdb_id", "title", "event_type", "episodes"}
+_webhook_pending: dict = {}      # series key -> {"tmdb_id", "title", "event_type", "episodes", "notify"}
 _webhook_state: dict = {"worker": None, "first": 0.0, "last": 0.0}
 
 
-def _queue_webhook_event(tmdb_id, title, event_type, episodes) -> None:
+def _queue_webhook_event(tmdb_id, title, event_type, episodes, is_upgrade=False) -> None:
     import time
     key = tmdb_id or f"title:{title}"
+    # A quality upgrade replaced a file the user already had: not a new
+    # episode, no "ready to watch" (#380). Its scan and Jellyfin pass still run.
+    new_download = event_type == "Download" and not is_upgrade
     with _webhook_lock:
         now = time.monotonic()
         if not _webhook_pending:
@@ -527,7 +544,8 @@ def _queue_webhook_event(tmdb_id, title, event_type, episodes) -> None:
         entry = _webhook_pending.get(key)
         if entry is None:
             _webhook_pending[key] = {"tmdb_id": tmdb_id, "title": title, "event_type": event_type,
-                                     "episodes": list(episodes or []) if event_type == "Download" else []}
+                                     "episodes": list(episodes or []) if new_download else [],
+                                     "notify": new_download}
         else:
             # A Download outranks the others: it carries the episodes and the
             # ready-to-watch notification. Only a Download's episodes count: a
@@ -536,8 +554,9 @@ def _queue_webhook_event(tmdb_id, title, event_type, episodes) -> None:
                 entry["episodes"] = []
             if event_type == "Download" or entry["event_type"] != "Download":
                 entry["event_type"] = event_type
-            if event_type == "Download":
+            if new_download:
                 entry["episodes"].extend(episodes or [])
+                entry["notify"] = True
         _webhook_state["last"] = now
         if _webhook_state["worker"] is None:
             worker = threading.Thread(target=_drain_webhook_events, daemon=True, name="sonarr-webhooks")
@@ -591,7 +610,8 @@ def _drain_webhook_batches() -> None:
                     continue
                 eps = entry["episodes"]
                 _after_scan(db, entry["tmdb_id"], entry["title"], entry["event_type"],
-                            eps[0] if eps else None, episode_count=max(1, len(eps)))
+                            eps[0] if eps else None, episode_count=max(1, len(eps)),
+                            notify=entry["notify"])
         except Exception as e:
             logger.error(f"[Sonarr webhook] Processing failed: {e}", exc_info=True)
         finally:

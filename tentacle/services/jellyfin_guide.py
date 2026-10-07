@@ -1,6 +1,7 @@
 """Make Jellyfin pick up a changed Live TV lineup.
 
-Shared by the IPTV Live TV page's "Refresh guide" button and by the YouTube
+Shared by the IPTV Live TV page (which calls it after every EPG sync once
+Tentacle's address is saved on its Jellyfin Setup tab) and by the YouTube
 source, which used to leave this step to the user ("then refresh the guide in
 Jellyfin") — the one manual step in an otherwise automatic flow.
 """

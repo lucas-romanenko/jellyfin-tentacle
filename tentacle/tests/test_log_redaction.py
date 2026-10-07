@@ -200,9 +200,35 @@ class TestLogRedaction(unittest.TestCase):
         self.assertNotIn("Hunter2pw", c.text)
         self.assertIn("5.ts", c.text)
 
+    def test_the_short_xtream_path_of_m3u_playlists(self):
+        # Xtream servers' M3U playlists list channels as host/<user>/<pass>/<id>.
+        for url in ("http://prov.example:8080/alice/Hunter2pw/414149",
+                    "http://prov.example:8080/alice/Hunter2pw/414149.ts",
+                    "https://prov.example/alice/Hunter2pw/7.m3u8"):
+            with self.subTest(url=url), _Capture("routers.livetv") as c:
+                logging.getLogger("routers.livetv").info(
+                    f"[LiveTV] Stream request for channel 53 (CP24): {url}")
+                self.assertNotIn("Hunter2pw", c.text)
+                self.assertNotIn("alice", c.text)
+                self.assertIn("prov.example", c.text)
+                self.assertIn(url.rsplit("/", 1)[1], c.text)  # the stream id stays
+
+    def test_a_login_in_a_url(self):
+        with _Capture("routers.youtube") as c:
+            logging.getLogger("routers.youtube").info(
+                "[YouTube] Traffic settings saved: proxy http://alice:Hunter2pw@gluetun:8888")
+        self.assertNotIn("Hunter2pw", c.text)
+        self.assertIn("gluetun:8888", c.text)
+
     def test_ordinary_paths_are_left_alone(self):
         for s in ("/api/live/stream/123", "/api/live/sync-channels/5",
-                  "http://jellyfin:8096/Items/abc", "Synced 42 movies"):
+                  "http://jellyfin:8096/Items/abc", "Synced 42 movies",
+                  "http://tentacle:8888/api/live/stream/123",
+                  "http://tentacle:8888/api/vod/42", "http://radarr:7878/api/v3/movie/12",
+                  "http://jellyfin:8096/Items/abc/Images/Primary",
+                  "http://jellyfin:8096/Videos/abc/stream.ts",
+                  "https://image.tmdb.org/t/p/w185/abc.jpg",
+                  "http://gluetun:8888", "12:30 at http://host:8096/web/"):
             with self.subTest(s=s):
                 self.assertEqual(log_redaction.redact(s), s)
 
