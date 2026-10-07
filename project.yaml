@@ -1,6 +1,15 @@
-# How agents may work on this repo: read by the maintainer's work tracker.
+# How agents may work on this repo: read by the maintainer's work tracker (rmnk and its runner).
 lane: server-public      # public repo; main also runs on the maintainer's own server
-verify: make check       # read-only: the full unit suite, as CI runs it
-merge: approved          # agents merge a pull request only after the maintainer approves it, at that head
-deploy: false            # the maintainer deploys and releases
+verify: ops tentacle verify main  # read-only: the deploy's check (main runs, healthy, plugin active); the runner's own check is make check
+# builds main's plugin in the runner's sandbox and prints the ops line it runs; the server refuses it while Jellyfin plays anything
+deploy_command: make -C /code/jellyfin-tentacle deploy
+engine: runner           # the runner takes its tasks (/agents?r=jellyfin-tentacle)
+deploy: yes              # main runs on the maintainer's server: the merged change deploys when nothing is playing
+public: yes              # people get it only through a release: the maintainer's, always
+github_issues: yes       # other people's issues and pull requests become tasks: bugs start, the rest wait for Build it / Not now
+bugs: auto               # a confirmed bug gets a failing test, a fix and a review without asking
+features: ask            # each feature waits for the maintainer's Build it / Not now
+merge: auto              # a reviewed pull request merges once its CI is green
+release: me              # releases are the maintainer's, always
 needs_lucas_labels: [needs-lucas, security]
+caps: [reviewer=60, tester=60]  # time caps in minutes: reviews and failing tests here wait on CI

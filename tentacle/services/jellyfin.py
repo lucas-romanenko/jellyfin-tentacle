@@ -406,14 +406,15 @@ class JellyfinService:
             logger.debug(f"[Jellyfin] Could not read server id: {e}")
             return None
 
-    def _fetch_all_items(self, media_type: str = "Movie") -> List[dict]:
-        """Fetch all items of a type from Jellyfin with ProviderIds and Tags.
-        Paginates automatically for libraries with more than 10,000 items."""
-        items, _complete = self._fetch_all_items_checked(media_type)
+    def _fetch_all_items(self, media_type: str = "Movie", with_path: bool = False) -> List[dict]:
+        """Fetch all items of a type from Jellyfin with ProviderIds and Tags
+        (and Path with with_path). Paginates automatically for libraries with
+        more than 10,000 items."""
+        items, _complete = self._fetch_all_items_checked(media_type, with_path=with_path)
         return items
 
     def _fetch_all_items_checked(self, media_type: str = "Movie", user_scoped: bool = False,
-                                 ids_only: bool = False) -> tuple:
+                                 ids_only: bool = False, with_path: bool = False) -> tuple:
         """Same as _fetch_all_items, plus whether every page actually arrived.
 
         A page that times out returns None from _get, and silently breaking out
@@ -435,7 +436,7 @@ class JellyfinService:
             params = {
                 "IncludeItemTypes": media_type,
                 "Recursive": "true",
-                "Fields": "ProviderIds,Tags",
+                "Fields": "ProviderIds,Tags,Path" if with_path else "ProviderIds,Tags",
                 "Limit": page_size,
                 "StartIndex": start_index,
             }
@@ -520,19 +521,31 @@ class JellyfinService:
         return list(variants)
 
     def search_by_tmdb_id(self, tmdb_id: int, media_type: str = "Movie",
-                          title: str = None, year: str = None) -> Optional[dict]:
+                          title: str = None, year: str = None,
+                          file_name: str = None) -> Optional[dict]:
         """Find a Jellyfin item by TMDB ID, with title+year fallback.
 
         Jellyfin has no server-side filter for a specific provider ID value.
         We fetch all items and filter client-side. Falls back to normalized
         title+year matching for items without TMDB metadata (e.g. scanned MKVs).
+
+        file_name: only an item whose file has this name (any folder, any
+        case) matches. Right after a quality upgrade the listing can still hold
+        the replaced file's item, which Jellyfin removes on its next scan, and
+        a VOD copy of the same film shares its TMDB id.
         """
-        items = self._fetch_all_items(media_type)
+        items = self._fetch_all_items(media_type, with_path=bool(file_name))
         tmdb_str = str(tmdb_id)
+
+        def same_file(item):
+            if not file_name:
+                return True
+            name = re.split(r"[\\/]", item.get("Path") or "")[-1]
+            return name.casefold() == file_name.casefold()
 
         # Primary: match by TMDB ID
         for item in items:
-            if item.get("ProviderIds", {}).get("Tmdb") == tmdb_str:
+            if item.get("ProviderIds", {}).get("Tmdb") == tmdb_str and same_file(item):
                 return item
 
         # Fallback: match by normalized title + year
@@ -541,7 +554,8 @@ class JellyfinService:
             for item in items:
                 item_norm = self._normalize_title(item.get("Name", ""))
                 if (item_norm in variants
-                        and (not year or str(item.get("ProductionYear", "")) == str(year))):
+                        and (not year or str(item.get("ProductionYear", "")) == str(year))
+                        and same_file(item)):
                     return item
 
         return None
@@ -1775,6 +1789,22 @@ class JellyfinService:
             return False
         return self.delete_item(playlist_id)
 
+    def rename_tentacle_playlist(self, playlist_id: str, name: str, user_id: str = None) -> bool:
+        """Rename a playlist in place (same id, same entries) only if it carries
+        Tentacle's mark, as for deletes (#152). True when it has that name
+        afterwards."""
+        item = self._owned_playlist(playlist_id, user_id)
+        if not item:
+            logger.warning(f"[Jellyfin] Cannot read playlist {playlist_id} to rename it")
+            return False
+        if item.get("Name") == name:
+            return True
+        if not is_tentacle_playlist(item):
+            logger.info(f"[Jellyfin] Not renaming playlist '{item.get('Name')}' ({playlist_id}): "
+                        f"Tentacle didn't make it")
+            return False
+        return self._post_item_update(item, _item_update_payload(item, Name=name), "rename")
+
     def delete_item(self, item_id: str) -> bool:
         """Delete an item (playlist, collection, etc.) from Jellyfin."""
         try:
@@ -2147,7 +2177,7 @@ TAG_PUSH_BATCH = 200
 TAG_PUSH_PAUSE_SECONDS = 1.0
 
 
-def sync_owned_tags(db, jf, log_prefix: str = "Pipeline") -> dict:
+def sync_owned_tags(db, jf, log_prefix: str = "Pipeline", only: dict = None) -> dict:
     """Bring every row's Tentacle tags on its Jellyfin item in line with the DB.
 
     Rules (#180):
@@ -2161,6 +2191,8 @@ def sync_owned_tags(db, jf, log_prefix: str = "Pipeline") -> dict:
       GET of the item, and nothing is written when that GET fails;
     - an item that needs nothing is not written, so a second run writes 0.
 
+    `only` ({"Movie": {tmdb_id}, "Series": {tmdb_id}}) limits it to those rows.
+
     Returns counts: written, unchanged, not_found, errors."""
     import time
     from models.database import Movie, Series
@@ -2168,8 +2200,13 @@ def sync_owned_tags(db, jf, log_prefix: str = "Pipeline") -> dict:
     owned = tentacle_owned_tags(db)
     counts = {"written": 0, "unchanged": 0, "not_found": 0, "errors": 0}
     for media_type, model in (("Movie", Movie), ("Series", Series)):
+        rows = db.query(model)
+        if only is not None:
+            if not only.get(media_type):
+                continue
+            rows = rows.filter(model.tmdb_id.in_(only[media_type]))
         lookup, title_lookup, per_id = jf.get_tmdb_lookup_with_fallback(media_type, with_counts=True)
-        for row in db.query(model).all():
+        for row in rows.all():
             try:
                 jf_item = lookup.get(row.tmdb_id)
                 by_title = False

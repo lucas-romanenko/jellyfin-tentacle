@@ -202,7 +202,8 @@ with a placeholder segment instead of the channel since Tentacle started (`chann
 `segment`, `at`). A placeholder (`black.ts`, tuliprox's `channel_unavailable.ts` family) is never
 fetched: while the channel is opening it is refused with a 503, so Jellyfin fails the timer and
 retries it a minute later instead of recording minutes of black, and a running stream waits it out
-like a 509. Each one is logged, and gets an Activity line at most once an hour per channel.
+like a 509. Each one is logged, and gets an Activity line (shown on Health → Recent Activity) at most once
+an hour per channel.
 `POST /api/live/reserve` `{channel_id|stream_id, seconds}` holds recording
 priority for a channel ahead of a timer (for schedulers that know the start time before Jellyfin
 does); `DELETE /api/live/reserve/{channel_id}` drops it. Recording identity otherwise comes from
