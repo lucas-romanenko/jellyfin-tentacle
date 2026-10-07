@@ -45,7 +45,8 @@ def migrate_provider(
     same stream: listed in one of the new provider's chosen (whitelisted)
     movie categories under the film's title and year, not on a stream an
     admin blocked or re-matched to another film, and not under a title and
-    year two films in the library share. Its .strm is rewritten and its row
+    year it shares with any other film in the library, whoever owns it (any
+    provider, a download, no provider). Its .strm is rewritten and its row
     changes owner. Everything else (films the new provider doesn't list,
     and every series) stays with the old provider, files untouched: handed
     to the new provider, its sync never lists them and deletes them (#460).
@@ -116,9 +117,12 @@ def migrate_provider(
     }
 
     old_movies = db.query(Movie).filter(Movie.provider_id == from_provider.id).all()
+    # Namesakes anywhere in the library, whoever owns them (#508): the new
+    # provider's sync files its one "Title (Year)" stream under one film and
+    # prunes the other.
     namesakes = {}
-    for movie in old_movies:
-        key = f"{(movie.title or '').lower()}_{movie.year or ''}"
+    for title, year in db.query(Movie.title, Movie.year).all():
+        key = f"{(title or '').lower()}_{year or ''}"
         namesakes[key] = namesakes.get(key, 0) + 1
 
     for movie in old_movies:
