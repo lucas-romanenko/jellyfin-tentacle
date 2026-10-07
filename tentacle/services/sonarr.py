@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from models.database import Series, Duplicate, DownloadRequest, TentacleUser, get_setting, DeletionLog
 from services.radarr import file_loss_looks_like_an_outage
-from services.duplicates import series_has_real_download
+from services.duplicates import series_has_real_download, droppable_duplicates
 
 DOWNLOADED_TV_TAG = "Downloaded TV"
 RECENTLY_ADDED_TV_TAG = "Recently Added TV"
@@ -847,8 +847,9 @@ def _scan_sonarr_library(db: Session) -> dict:
             ).delete()
             # Its duplicate tombstones too, as SeriesDelete does: a "keep
             # downloaded" one would keep the VOD episodes away for good (#334).
-            db.query(Duplicate).filter(Duplicate.tmdb_id == series.tmdb_id,
-                                       Duplicate.media_type == "series").delete()
+            # Not while Keep VOD holds them, nor one holding saved watched
+            # state (#515).
+            droppable_duplicates(db, "series", series.tmdb_id).delete(synchronize_session=False)
             db.delete(series)
             removed += 1
     if removed:

@@ -42,7 +42,8 @@ but no second "ready to watch"; a bad copy being replaced still gets "A new
 copy of ... is ready to watch".
 
 **Radarr deletes a movie** (MovieDelete): DB record and `DownloadRequest`s
-removed, then `remove_item_from_playlists()` for every user in the
+removed (its duplicates too, unless Keep VOD is resolving the title or one
+holds saved watched state: server.md "Duplicates", #515), then `remove_item_from_playlists()` for every user in the
 background; the Library shows it as missing again. A file delete
 (MovieFileDelete) does the same at once, except reason `upgrade` (ignored)
 and `missingFromDisk` (Radarr can't see the file): those are collected until
