@@ -12,9 +12,9 @@ from typing import Optional
 import requests
 from sqlalchemy.orm import Session
 
-from models.database import Series, Duplicate, DownloadRequest, TentacleUser, get_setting, DeletionLog
+from models.database import Series, Duplicate, DownloadRequest, TentacleUser, get_setting, DeletionLog, get_recently_added_days
 from services.radarr import file_loss_looks_like_an_outage
-from services.duplicates import series_has_real_download
+from services.duplicates import series_has_real_download, droppable_duplicates
 
 DOWNLOADED_TV_TAG = "Downloaded TV"
 RECENTLY_ADDED_TV_TAG = "Recently Added TV"
@@ -845,12 +845,22 @@ def _scan_sonarr_library(db: Session) -> dict:
                 DownloadRequest.tmdb_id == series.tmdb_id,
                 DownloadRequest.media_type == "series",
             ).delete()
+            # Its duplicate tombstones too, as SeriesDelete does: a "keep
+            # downloaded" one would keep the VOD episodes away for good (#334).
+            # Not while Keep VOD holds them, nor one holding saved watched
+            # state (#515).
+            droppable_duplicates(db, "series", series.tmdb_id).delete(synchronize_session=False)
             db.delete(series)
             removed += 1
     if removed:
         logger.info(f"Sonarr scan: removed {removed} series no longer in Sonarr")
     stats["removed"] = removed
     stats["removals_refused"] = refused
+    from services.duplicates import drop_orphan_tombstones
+    stats["tombstones_dropped"] = drop_orphan_tombstones(db, "series")
+    if stats["tombstones_dropped"]:
+        logger.info(f"Sonarr scan: dropped {stats['tombstones_dropped']} keep-downloaded resolutions "
+                    f"whose download is gone; the VOD episodes can come back")
 
     # Sync monitoring state for ALL series in DB (not just those processed above)
     # Covers: VOD series added to Sonarr, series with no downloads yet, etc.
@@ -872,13 +882,13 @@ def _scan_sonarr_library(db: Session) -> dict:
     # Compute tags and write NFO files for all downloaded series
     from services.tagger import tentacle_owned_tags
     owned = tentacle_owned_tags(db)
+    recently_added_days = get_recently_added_days(db)
     for tmdb_id, db_series in series_needing_nfo:
         try:
             # Build tag list: built-in + source tag + rule tags + list tags + user attribution
             tags = [DOWNLOADED_TV_TAG]
 
             # Recently added (within rolling window)
-            recently_added_days = int(get_setting(db, "recently_added_days", "30") or "30")
             cutoff = datetime.utcnow() - timedelta(days=recently_added_days)
             if db_series.date_added and db_series.date_added >= cutoff:
                 tags.append(RECENTLY_ADDED_TV_TAG)
@@ -972,8 +982,12 @@ def _scan_sonarr_library(db: Session) -> dict:
         # NFO tags are ignored by Jellyfin for real video files — API is the only way.
         try:
             jf_lookup, jf_title_lookup = jf.get_tmdb_lookup_with_fallback("Series")
+            if not jf_lookup and not jf_title_lookup:
+                logger.warning("Jellyfin tag sync (series): Jellyfin's series listing came back empty, "
+                               "no tags pushed")
             tags_pushed = 0
-            tags_failed = 0
+            tags_failed = 0       # writes Jellyfin refused
+            tags_not_found = 0    # tagged titles Jellyfin hasn't listed (not scanned yet)
             for tmdb_id, db_series in all_series_by_tmdb.items():
                 if not db_series.tags:
                     continue
@@ -998,11 +1012,13 @@ def _scan_sonarr_library(db: Session) -> dict:
                         if jf.refresh_item_metadata(jf_item["Id"]):
                             logger.info(f"Triggered metadata refresh for '{db_series.title}' (missing poster)")
                 else:
-                    tags_failed += 1
+                    tags_not_found += 1
             stats["jf_tags_pushed"] = tags_pushed
             stats["jf_tags_failed"] = tags_failed
+            stats["jf_tags_not_found"] = tags_not_found
             logger.info(
                 f"Jellyfin tag sync (series): {tags_pushed} pushed, {tags_failed} failed, "
+                f"{tags_not_found} not in Jellyfin yet, "
                 f"{len(all_series_by_tmdb)} total series checked"
             )
         except Exception as e:

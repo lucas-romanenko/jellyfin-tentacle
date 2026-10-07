@@ -24,6 +24,7 @@ from routers.auth import require_admin
 from services.youtube import client, indexer, library, playlist, resolver, traffic
 from services.youtube.sync import check_base_url, detect_base_url
 from services.youtube.errors import YouTubeBlocked, YouTubeError
+from services.secret_mask import is_shown_form, mask_url_login, restore_url_login
 
 logger = logging.getLogger(__name__)
 
@@ -503,6 +504,12 @@ def _mask(key: str) -> str:
     return (key[:4] + "..." + key[-4:]) if len(key) > 10 else ("..." if key else "")
 
 
+def _unchanged_key(sent: str, stored: str) -> bool:
+    """The page sent back exactly the masked key it was shown: keep the key.
+    Anything else is a new key, even one that contains "..."."""
+    return bool(stored) and (sent == _mask(stored) or is_shown_form(sent, stored))
+
+
 @router.get("/traffic", dependencies=[Depends(require_admin)])
 def traffic_status(db: Session = Depends(get_db)):
     """The traffic settings, the pause after a bot check, and request counts."""
@@ -515,10 +522,12 @@ def traffic_status(db: Session = Depends(get_db)):
         "min_interval_minutes": traffic.MIN_INTERVAL_MINUTES,
         "api_key": _mask(key),
         "api": feeds.api_state(),
-        "proxy": get_setting(db, "youtube_proxy", "") or "",
+        # The proxy's password is never sent back (a Save with the masked form
+        # keeps the stored one).
+        "proxy": mask_url_login(get_setting(db, "youtube_proxy", "") or ""),
         # What is really used, and why a saved one is not: YouTube requests
         # are held until it is fixed (#244).
-        "proxy_in_use": traffic.proxy(),
+        "proxy_in_use": mask_url_login(traffic.proxy()),
         "proxy_error": traffic.proxy_problem(),
         "pause": traffic.pause_state(),
         "this_hour": traffic.counts(),
@@ -530,13 +539,16 @@ def traffic_status(db: Session = Depends(get_db)):
 def save_traffic(body: TrafficSettings, db: Session = Depends(get_db)):
     from models.database import set_setting
     from services.youtube import feeds
-    try:
-        proxy = traffic.normalize_proxy(body.proxy)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
     old_proxy = get_setting(db, "youtube_proxy", "") or ""
     old_key = get_setting(db, "youtube_api_key", "") or ""
-    key = old_key if "..." in (body.api_key or "") else (body.api_key or "").strip()
+    try:
+        # The page shows the proxy with its password masked; sent back, it
+        # means the stored password.
+        proxy = traffic.normalize_proxy(restore_url_login(body.proxy or "", old_proxy))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    sent_key = (body.api_key or "").strip()
+    key = old_key if _unchanged_key(sent_key, old_key) else sent_key
 
     set_setting(db, "youtube_background_checks", "true" if body.background_checks else "false")
     set_setting(db, "youtube_index_interval_minutes", str(traffic.interval_minutes(body.interval_minutes)))
@@ -559,7 +571,7 @@ def save_traffic(body: TrafficSettings, db: Session = Depends(get_db)):
     logger.info(f"[YouTube] Traffic settings saved: background checks "
                 f"{'on' if body.background_checks else 'off'}, every "
                 f"{traffic.interval_minutes(body.interval_minutes)} min, API key "
-                f"{'set' if key else 'not set'}, proxy {proxy or 'none'}")
+                f"{'set' if key else 'not set'}, proxy {mask_url_login(proxy) or 'none'}")
     return {**traffic_status(db), "api_check": api_check}
 
 
@@ -872,7 +884,8 @@ def diagnose(request: Request, db: Session = Depends(get_db)):
             if jf_url and jf_key:
                 try:
                     from services.jellyfin import JellyfinService
-                    jfc = JellyfinService(jf_url, jf_key, get_setting(db, "jellyfin_user_id", ""))
+                    # As the playlists' owner: Jellyfin answers 404 to anyone else.
+                    jfc = JellyfinService(jf_url, jf_key, user.jellyfin_user_id)
                     ids = {p["name"]: p["playlist_id"]
                            for p in _get_smartlists_with_playlist_ids(db, user_id=user.id)}
                     for c in channels:
@@ -1160,22 +1173,32 @@ def resume_unfinished_channels() -> list:
     index (an update, a crash) left it half-added: rows but no files, no
     playlist, and a card saying its videos were being fetched, until the next
     scheduled check, or for good with background checks off (#288). Run once
-    after start-up. A channel listed in full before is never queued, so a normal
-    restart sends nothing; a pause after a bot check still applies.
+    after start-up. So is a channel listed in full whose library videos have no
+    files yet: the listing is saved before they are written. Anything else is
+    never queued, so a normal restart sends nothing; a pause after a bot check
+    still applies.
     """
     from models.database import SessionLocal
     db = SessionLocal()
     try:
         if get_setting(db, "youtube_enabled", "false") != "true" or not client.available():
             return []
+        # The listing is saved before the files are written and the playlists
+        # made, so a restart in that stretch left library videos with no files,
+        # on a channel already marked as listed. Those are finished too.
+        unwritten = db.query(YouTubeVideo.channel_fk).filter(
+            YouTubeVideo.removed_at.is_(None),
+            YouTubeVideo.strm_path.is_(None),
+            indexer.is_library_status(YouTubeVideo.live_status))
         ids = [c.id for c in db.query(YouTubeChannel.id).filter(
             YouTubeChannel.enabled == True,  # noqa: E712
-            YouTubeChannel.last_full_check.is_(None)).all()]
+            or_(YouTubeChannel.last_full_check.is_(None),
+                YouTubeChannel.id.in_(unwritten))).all()]
     finally:
         db.close()
     if ids:
-        logger.info(f"[YouTube] {len(ids)} channel(s) were never indexed in full (a restart cut "
-                    f"their first index short); indexing them now")
+        logger.info(f"[YouTube] {len(ids)} channel(s) were not finished (a restart cut their "
+                    f"first index or the writing of their files short); indexing them now")
         _start_refresh(channel_ids=ids)
     return ids
 

@@ -10,11 +10,12 @@ is the show folder) it deletes nothing at all while converting the row, so the
 Run from tentacle/:  python -m unittest discover -s tests -p "test_keep_downloaded_merged_folder.py"
 """
 import logging, shutil, tempfile, unittest
+from unittest import mock
 from pathlib import Path
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 import models.database as mdb
-from models.database import Movie, Series, Duplicate, Provider
+from models.database import Movie, Series, Duplicate, Provider, Setting
 from tmp_dirs import temp_dir
 
 
@@ -41,9 +42,14 @@ class KeepDownloadedMergedMovieFolder(Base):
                           strm_path=str(strm), nfo_path=str(nfo), radarr_path=str(d)))
         dup = Duplicate(tmdb_id=949, media_type="movie", resolution="pending",
                         sources=[{"source": "radarr", "path": str(d)}, {"source": f"provider_{self.p.id}", "path": str(strm)}])
+        # Keep Downloaded asks Radarr that the film is still downloaded first
+        self.db.add(Setting(key="radarr_url", value="http://radarr")); self.db.add(Setting(key="radarr_api_key", value="r"))
         self.db.add(dup); self.db.commit()
         from routers.duplicates import _apply_resolution
-        _apply_resolution(dup, "keep_radarr", self.db)
+        with mock.patch("services.radarr.RadarrService") as radarr:
+            radarr.return_value.get_movie_by_tmdb.return_value = {"id": 1, "path": str(d)}
+            radarr.return_value.get_movie_files.return_value = [{"id": 1, "path": str(mkv)}]
+            _apply_resolution(dup, "keep_radarr", self.db)
         self.assertFalse(strm.exists())
         self.assertTrue(mkv.exists())
         self.assertTrue(nfo.exists(), "Keep Downloaded deleted the NFO of the downloaded copy it was told to keep")

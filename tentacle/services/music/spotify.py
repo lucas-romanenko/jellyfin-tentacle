@@ -309,24 +309,40 @@ def _stop_on_error(db, import_id: int, e: Exception) -> None:
 
 
 def request_job(import_id: int, rgids: list, user_id: Optional[int]):
-    """Worker job: request the ticked albums, one at a time, through the single request path."""
+    """Worker job: request the ticked albums, one at a time, through the single request path.
+
+    The user asked for them: a Remove of the playlist meanwhile doesn't cancel the
+    rest; there is just no row left to note each outcome on."""
     def job(db):
         from services.media_requests import RequestRefused, request_album
         imp = db.get(MusicImport, import_id)
         if not imp:
             return
-        outcomes = dict(imp.outcomes or {})
+        via = f"the Spotify import “{imp.name}”"
         for rgid in rgids:
             worker.run_urgent_jobs()
             try:
-                request_album(db, rgid, user_id=user_id, via=f"the Spotify import “{imp.name}”")
-                outcomes[rgid] = "requested"
+                request_album(db, rgid, user_id=user_id, via=via)
+                outcome = "requested"
             except RequestRefused as e:
-                outcomes[rgid] = e.message
-            imp.outcomes = dict(outcomes)
-            flag_modified(imp, "outcomes")
-            db.commit()
+                outcome = e.message
+            _note_outcome(db, import_id, rgid, outcome)
     return job
+
+
+def _note_outcome(db, import_id: int, rgid: str, outcome: str) -> None:
+    """Record one request's outcome on the import as it is now (gone: nothing to do)."""
+    from sqlalchemy.orm.exc import ObjectDeletedError, StaleDataError
+    db.rollback()   # read the row afresh: a Remove may have deleted it
+    try:
+        imp = db.get(MusicImport, import_id)
+        if imp is None:
+            return
+        imp.outcomes = dict(imp.outcomes or {}, **{rgid: outcome})
+        flag_modified(imp, "outcomes")
+        db.commit()
+    except (ObjectDeletedError, StaleDataError):
+        db.rollback()
 
 
 # ── What the pages show ──────────────────────────────────────────────────

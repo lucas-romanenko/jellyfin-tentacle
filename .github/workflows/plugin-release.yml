@@ -8,6 +8,11 @@ on:
 jobs:
   release:
     runs-on: ubuntu-latest
+    # The manifest commit goes to main past its ruleset (pull requests only)
+    # with a deploy key: the environment's secret MANIFEST_DEPLOY_KEY, which
+    # only plugin-v* tags may use (environment rule). GitHub Actions itself
+    # can't bypass a ruleset on a personal account.
+    environment: plugin-manifest
     permissions:
       contents: write
 
@@ -83,9 +88,19 @@ jobs:
       # detached tag commit makes `git checkout main` abort ("local changes would be
       # overwritten"), so we switch to main first and regenerate the entry there.
       - name: Commit updated manifest
+        env:
+          MANIFEST_DEPLOY_KEY: ${{ secrets.MANIFEST_DEPLOY_KEY }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          # pushes go over SSH with the deploy key (GitHub's host key pinned); fetches stay on https
+          [ -n "$MANIFEST_DEPLOY_KEY" ] || { echo "MANIFEST_DEPLOY_KEY is missing (environment plugin-manifest)"; exit 1; }
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$MANIFEST_DEPLOY_KEY" > ~/.ssh/manifest_key
+          chmod 600 ~/.ssh/manifest_key
+          echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" > ~/.ssh/github_known_hosts
+          git config core.sshCommand "ssh -i ~/.ssh/manifest_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/github_known_hosts"
+          git remote set-url --push origin git@github.com:lucas-romanenko/jellyfin-tentacle.git
           git fetch origin main
           git checkout main
 
