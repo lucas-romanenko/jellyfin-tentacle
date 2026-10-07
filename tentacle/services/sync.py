@@ -958,8 +958,11 @@ def _backfill_series_episodes(
         if isinstance(episodes, list):
             episodes = {"1": episodes}
         if not episodes:
-            if slots is not None:
-                slots.unknown(show_dir)
+            # A listing that answered with no episodes (a placeholder twin of a
+            # show listed twice) offers nothing: the other listings still
+            # decide its files. Marking the show unknown here kept a replaced
+            # upload (#263) on its dead id for as long as the empty twin was
+            # listed. A failed fetch raises and is marked below.
             return 0
         if recreate:
             show_dir.mkdir(parents=True, exist_ok=True)
