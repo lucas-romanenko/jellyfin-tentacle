@@ -188,6 +188,8 @@ read that row.
   check, and the sweep deleted every title not written back. A new install
   (no rows) syncs; a deliberately empty folder needs any file in it.
   `_repair_movie_strm()` and the show-folder rebuild check the root too.
+  A root that raises `OSError` when read (a stale NFS/SMB/FUSE mount) counts
+  as unmounted (#440).
 - TMDB matching (`search_movie` / `search_series`): with the provider's
   year, then, only if that found nothing good enough, once without it,
   keeping results within one year of the provider's (a local or streaming
