@@ -879,6 +879,7 @@ def _scan_sonarr_library(db: Session) -> dict:
     db.commit()
 
     # Compute tags and write NFO files for all downloaded series
+    from models.database import get_recently_added_days
     from services.tagger import tentacle_owned_tags
     owned = tentacle_owned_tags(db)
     for tmdb_id, db_series in series_needing_nfo:
@@ -887,7 +888,7 @@ def _scan_sonarr_library(db: Session) -> dict:
             tags = [DOWNLOADED_TV_TAG]
 
             # Recently added (within rolling window)
-            recently_added_days = int(get_setting(db, "recently_added_days", "30") or "30")
+            recently_added_days = get_recently_added_days(db)
             cutoff = datetime.utcnow() - timedelta(days=recently_added_days)
             if db_series.date_added and db_series.date_added >= cutoff:
                 tags.append(RECENTLY_ADDED_TV_TAG)
