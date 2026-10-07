@@ -6,6 +6,7 @@ and writes NFO files with tags for Jellyfin.
 
 import logging
 import threading
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -155,6 +156,22 @@ def file_loss_looks_like_an_outage(lost: int, total: int) -> bool:
     not counted here -- that is also the way out for a genuinely large clean-up.
     """
     return lost >= 3 and lost * 2 > total
+
+
+def download_kind(movie) -> str:
+    """The kind of download a row holds: "radarr" (downloaded-only) or "vod"
+    (a VOD title Radarr downloaded too, #378)."""
+    return "radarr" if movie.source == "radarr" else "vod"
+
+
+def download_loss_looks_like_an_outage(lost: dict, total: dict) -> bool:
+    """file_loss_looks_like_an_outage over every download and over each kind
+    on its own (#505), counts keyed by download_kind. Downloads may sit on two
+    shares; a share lost under one kind must not be diluted by the other
+    kind's healthy downloads."""
+    kinds = set(lost) | set(total)
+    return (file_loss_looks_like_an_outage(sum(lost.values()), sum(total.values()))
+            or any(file_loss_looks_like_an_outage(lost.get(k, 0), total.get(k, 0)) for k in kinds))
 
 
 def downloaded_movie_rows(db: Session):
@@ -379,7 +396,9 @@ def _scan_radarr_library(db: Session) -> dict:
     # Still in Radarr, but Radarr says the file is gone.
     lost_file = [m for m in rows if m.tmdb_id not in radarr_tmdb_ids and m.tmdb_id in listed_tmdb_ids]
     refused = 0
-    if file_loss_looks_like_an_outage(len(lost_file), len(rows)):
+    # Judged over all of them and over each kind alone (#505).
+    if download_loss_looks_like_an_outage(Counter(download_kind(m) for m in lost_file),
+                                          Counter(download_kind(m) for m in rows)):
         refused = len(lost_file)
         keep = {m.tmdb_id for m in lost_file}
         logger.error(
