@@ -1699,8 +1699,12 @@ def _vod_root_unavailable(root: Path) -> bool:
 
     mergerfs/NFS/SMB/rclone all report plain "not found" for every path while
     a branch is out, and Docker shows a share that isn't mounted as the bare,
-    empty mount point."""
-    return not root.is_dir() or not any(root.iterdir())
+    empty mount point. A stale mount (NFS/SMB/FUSE) raises OSError when read:
+    unavailable too (#440)."""
+    try:
+        return not root.is_dir() or not any(root.iterdir())
+    except OSError:
+        return True
 
 
 def _swept_rows(db: Session, Model):
