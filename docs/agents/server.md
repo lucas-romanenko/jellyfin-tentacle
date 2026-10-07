@@ -199,7 +199,8 @@ user_id)` computes them every time from source tags, list subscriptions
   regenerates the home layout.
 - Sort: per playlist, stored in the on-disk config's `Order`;
   `PRESERVED_FIELDS = ["LastRefreshed", "DateCreated", "ItemCount", "Order"]`
-  survive rebuilds. Built-ins are `(name, media_types, sort, max_items)`
+  survive rebuilds. A built-in gets its default sort only when created;
+  no sync rewrites the user's `Order`. Built-ins are `(name, media_types, sort, max_items)`
   tuples (`services/smartlists.py`). Changing the sort clears the playlist
   and re-adds items in order; `DateCreated` sorts use Tentacle's own
   `date_added`, because Jellyfin's is unreliable for bulk imports.
