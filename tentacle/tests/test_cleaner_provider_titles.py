@@ -72,5 +72,48 @@ class TestSceneTagsThatAreEnglishWords(unittest.TestCase):
                          ("Another Film", "2021"))
 
 
+class TestRealTitlesTheValidatorRejected(unittest.TestCase):
+    """Issue #452: real titles were dropped or cut down to the wrong words."""
+
+    def test_y_counts_as_a_vowel(self):
+        self.assertEqual(clean_title("Psych (2006)"), ("Psych", "2006"))
+        self.assertEqual(clean_title("Flynn (2012)"), ("Flynn", "2012"))
+        self.assertEqual(clean_title("Rhythm + Flow (2019)"), ("Rhythm + Flow", "2019"))
+        self.assertEqual(clean_title("Psych: The Movie (2017)"), ("Psych: The Movie", "2017"))
+
+    def test_provider_title_that_starts_lower_case(self):
+        self.assertEqual(clean_title("iCarly (2007)"), ("iCarly", "2007"))
+        self.assertEqual(clean_title("eXistenZ (1999)"), ("eXistenZ", "1999"))
+        self.assertEqual(clean_title("mother! (2017)"), ("mother!", "2017"))
+        self.assertEqual(clean_title("mid90s (2018)"), ("mid90s", "2018"))
+        self.assertEqual(clean_title("EN - iCarly (2007)"), ("iCarly", "2007"))
+        self.assertEqual(clean_title("[NF] mother! (2017)"), ("mother!", "2017"))
+
+    def test_title_the_cleaner_cut_into_is_still_rejected(self):
+        self.assertEqual(clean_title("12.to.Midnight.2024"), (None, None))
+        self.assertEqual(clean_title("4K-iCarly (2007)"), (None, None))
+
+    def test_bracketed_title_word_is_kept(self):
+        self.assertEqual(clean_title("[REC] (2007)"), ("[REC]", "2007"))
+        self.assertEqual(clean_title("[REC] 2 (2009)"), ("[REC] 2", "2009"))
+        self.assertEqual(clean_title("[REC]³ Genesis"), ("[REC]³ Genesis", None))
+
+    def test_bracketed_tags_still_stripped(self):
+        self.assertEqual(clean_title("[NF] (2020)"), (None, None))
+        self.assertEqual(clean_title("[HEVC] (2020)"), (None, None))
+        self.assertEqual(clean_title("[HEVC] Movie Name (2020)"), ("Movie Name", "2020"))
+        self.assertEqual(clean_title("(500) Days of Summer (2009)"), ("Days of Summer", "2009"))
+
+    def test_number_after_a_colon_is_not_the_year(self):
+        self.assertEqual(clean_title("Space: 1999"), ("Space: 1999", None))
+        self.assertEqual(clean_title("Fear Street: 1978"), ("Fear Street: 1978", None))
+        self.assertEqual(clean_title("Space: 1999 (1975)"), ("Space: 1999", "1975"))
+        self.assertEqual(clean_title("Some Film 2019"), ("Some Film", "2019"))
+
+    def test_labels_without_a_title_still_rejected(self):
+        self.assertEqual(clean_title("(2011)"), (None, None))
+        self.assertEqual(clean_title("EN - X"), (None, None))
+
+
 if __name__ == "__main__":
     unittest.main()

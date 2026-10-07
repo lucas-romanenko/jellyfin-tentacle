@@ -96,10 +96,15 @@ async function showLoginOverlay() {
     const resp = await fetch('/api/auth/users');
     if (!resp.ok) {
       if (resp.status === 400) {
-        // Jellyfin URL not configured — go to setup wizard
+        // Jellyfin URL not configured, or (before anyone has signed in) one
+        // that doesn't answer — go to setup wizard to enter or correct it
         overlay.style.display = 'none';
         if (shell) shell.removeAttribute('inert');
         document.getElementById('setup-overlay').style.display = 'flex';
+        const err = await resp.json().catch(() => ({}));
+        if (err.detail && err.detail !== 'Jellyfin URL not configured') {
+          document.getElementById('setup-jellyfin-result').innerHTML = `<span style="color:var(--red)">${escHtml(err.detail)}</span>`;
+        }
       } else {
         // Connection error (bad API key, unreachable, etc.)
         grid.innerHTML = '<div style="color:var(--red)">Cannot connect to Jellyfin. Check Settings.</div>';
@@ -130,7 +135,7 @@ async function showLoginOverlay() {
       </div>`;
     }).join('');
   } catch (e) {
-    grid.innerHTML = `<div style="color:var(--red)">Failed to load users: ${e.message}</div>`;
+    grid.innerHTML = `<div style="color:var(--red)">Failed to load users: ${escHtml(e.message)}</div>`;
   }
 }
 
@@ -283,6 +288,8 @@ async function checkSetup() {
       if (s.jellyfin_url) document.getElementById('setup-jellyfin-url').value = s.jellyfin_url;
       if (s.radarr_url) document.getElementById('setup-radarr-url').value = s.radarr_url;
       if (s.sonarr_url) document.getElementById('setup-sonarr-url').value = s.sonarr_url;
+      // Signed in already (the page was reloaded after step 2): go on at step 3.
+      if (s.jellyfin_url && s.jellyfin_api_key) setupGoTo(3);
     }
   } catch (e) {}
 }
@@ -429,12 +436,12 @@ async function loadUsers() {
         </div>
         <label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text3);cursor:pointer">
           Admin
-          <input type="checkbox"${toggleChecked}${toggleDisabled} onchange="toggleUserAdmin('${escHtml(u.id)}', this.checked)">
+          <input type="checkbox"${toggleChecked}${toggleDisabled} onchange="toggleUserAdmin('${escapeJS(u.id)}', this.checked)">
         </label>
       </div>`;
     }).join('');
   } catch (e) {
-    el.innerHTML = `<div style="color:var(--red)">Failed to load users: ${e.message}</div>`;
+    el.innerHTML = `<div style="color:var(--red)">Failed to load users: ${escHtml(e.message)}</div>`;
   }
 }
 
@@ -485,7 +492,10 @@ function toast(msg, type = 'success', duration = 3500) {
   const icon = type === 'loading'
     ? '<span class="toast-spinner"></span>'
     : `<span style="color:var(--${colors[type] || 'blue'})">${icons[type] ?? ''}</span>`;
-  el.innerHTML = `${icon} ${msg}`;
+  // The message is text: messages carry titles and other services' error
+  // text, so they are never read as markup (callers pass plain text).
+  el.innerHTML = `${icon} `;
+  el.appendChild(document.createTextNode(msg == null ? '' : String(msg)));
   document.getElementById('toasts').appendChild(el);
   if (duration > 0) setTimeout(() => el.remove(), duration);
   return el;
@@ -819,7 +829,14 @@ async function loadScheduleInfo() {
     const info = await api('/api/settings/schedule-info');
     const hint = document.getElementById('sync_schedule_hint');
     if (!hint) return;
-    let txt = 'Runs every day at this time';
+    // A cron that isn't "M H * * *" (set before this page showed a time, or
+    // through the API) is kept by Save until the time is changed (#385).
+    const daily = /^\d{1,2}\s+\d{1,2}\s+\*\s+\*\s+\*$/.test((info.cron || '').trim());
+    // One the scheduler can't use runs at the default 03:00 instead (#458).
+    let txt = info.usable === false
+      ? `Stored schedule "${info.cron}" is not a valid cron, so the sync runs every day at 03:00; a time set here replaces it`
+      : daily || !info.cron ? 'Runs every day at this time'
+      : `Custom schedule "${info.cron}", kept as it is; a time set here replaces it with a daily sync`;
     if (info.timezone) {
       txt += ` · timezone ${info.timezone}`;
       if (info.timezone_abbr) txt += ` (${info.timezone_abbr})`;
@@ -892,7 +909,7 @@ function renderProviderCard(p) {
       <div class="provider-actions">
         <button class="btn btn-secondary btn-sm" onclick="refreshProvider(${p.id})">Test</button>
         <button class="btn btn-secondary btn-sm" onclick="editProvider(${p.id})">Edit</button>
-        <button class="btn btn-danger btn-sm" onclick="confirmDeleteProvider(${p.id}, '${p.name}')">Delete</button>
+        <button class="btn btn-danger btn-sm" onclick="confirmDeleteProvider(${p.id}, '${escapeJS(p.name)}')">Delete</button>
       </div>
     </div>`;
 }
@@ -1231,8 +1248,10 @@ async function loadSettings() {
     loadServicePickers('sonarr');
     applyMusicVisibility();
     // Sync schedule is stored as cron but shown as a friendly daily time.
+    // What was shown is remembered: Save sends a schedule only when the time
+    // was changed, so it never rewrites a custom cron (#385).
     const _st = document.getElementById('sync_schedule_time');
-    if (_st) _st.value = cronToTime(settings.sync_schedule);
+    if (_st) { _st.value = cronToTime(settings.sync_schedule); _st.dataset.shown = _st.value; }
     loadScheduleInfo();
     // Show current auth user in Jellyfin integration section
     const jfLabel = document.getElementById('jellyfin-logged-in-label');
@@ -1344,10 +1363,10 @@ async function testService(svc) {
   try {
     const r = await api('/api/settings/check', { method: 'POST', body });
     renderChecks(box, r.checks);
-    toast(escHtml(r.message), r.success ? 'success' : 'error', r.success ? 3500 : 7000);
+    toast(r.message, r.success ? 'success' : 'error', r.success ? 3500 : 7000);
   } catch (e) {
     if (box) box.innerHTML = '';
-    toast(escHtml(e.message), 'error');
+    toast(e.message, 'error');
   }
 }
 
@@ -1409,9 +1428,9 @@ async function createMusicLibrary() {
     if (el) el.dataset.saved = lib.id || '';
     await loadJellyfinMusicLibraries();
     document.getElementById('jf-music-create').style.display = 'none';
-    toast(`Created the Jellyfin library "${escHtml(lib.name)}"`);
+    toast(`Created the Jellyfin library "${lib.name}"`);
   } catch (e) {
-    toast(escHtml(e.message), 'error', 8000);
+    toast(e.message, 'error', 8000);
   }
 }
 
@@ -1457,7 +1476,7 @@ async function regenerateMusicWebhookSecret() {
     await loadMusicWebhookInfo();
     toast('New secret made — paste the new URL into Lidarr', 'info', 6000);
   } catch (e) {
-    toast(escHtml(e.message), 'error');
+    toast(e.message, 'error');
   }
 }
 
@@ -1467,11 +1486,11 @@ async function testMusicWebhook() {
   try {
     const r = await api('/api/music/webhook/test', { method: 'POST' });
     renderChecks(box, r.checks);
-    toast(escHtml(r.message), r.success ? 'success' : 'error', r.success ? 3500 : 7000);
+    toast(r.message, r.success ? 'success' : 'error', r.success ? 3500 : 7000);
     loadMusicWebhookInfo();
   } catch (e) {
     if (box) box.innerHTML = '';
-    toast(escHtml(e.message), 'error');
+    toast(e.message, 'error');
   }
 }
 
@@ -1554,11 +1573,14 @@ async function saveSettings() {
     // an unreachable service clear a choice.
     if (el) settings[key] = el.dataset.loaded === '1' ? el.value : (el.dataset.saved || '');
   });
-  // Sync schedule: convert the friendly daily time back to cron for storage.
+  // Sync schedule: a changed time is stored as a daily cron. An unchanged one
+  // is not sent, so the stored schedule stays exactly as it is (#385: a
+  // "0 */6 * * *" or weekdays-only cron became "daily at H:M" on any Save).
   const _st = document.getElementById('sync_schedule_time');
-  if (_st) settings.sync_schedule = timeToCron(_st.value);
+  if (_st && _st.value !== (_st.dataset.shown ?? _st.defaultValue)) settings.sync_schedule = timeToCron(_st.value);
   try {
     await api('/api/settings', { method: 'POST', body: { settings } });
+    if (_st) _st.dataset.shown = _st.value;
     SETTINGS_PICKER_FIELDS.forEach(key => {
       const el = document.getElementById(key);
       if (el) el.dataset.saved = settings[key];
@@ -1813,7 +1835,7 @@ function pollSyncProgress() {
             if (s.item_title) line += `: ${s.item_title}`;
             line += ` (${(s.movies_new||0)+(s.series_new||0)} new)`;
           } else if (s.item_title) {
-            line += ` — ${s.item_title}`;
+            line += line ? ` — ${s.item_title}` : s.item_title;
           }
           detail.textContent = line;
         }

@@ -1,8 +1,8 @@
 # Tentacle plugin (`tentacle-plugin/`): internals
 
 Reference for coding agents; every route and its auth:
-[plugin-api.md](plugin-api.md). Merged from Lucas's notes on 2026-09-28
-and checked against the code then; the code wins.
+[plugin-api.md](plugin-api.md). Where this and the code disagree, the code
+wins.
 
 One plugin instead of five: Tentacle's home screen (hero + playlist rows),
 navbar, Discover and Activity tabs, unified TMDB search, an item detail
@@ -63,7 +63,7 @@ user's id forwarded (`GetUserIdParam()`/`AppendUserId()` in
   Jellyfin's own home sections off per user (see server.md).
 - **Logo**: served at `/Tentacle/logo.png`; CSS in `tentacle-home.css`
   swaps Jellyfin's logo (header, admin drawer, splash, home title).
-- **Releasing**: only through a `plugin-vX.Y.Z` tag (CLAUDE.md); users'
+- **Releasing**: only through a `plugin-vX.Y.Z` tag ([releasing.md](releasing.md)); users'
   Jellyfin reads the catalog from `tentacle-plugin/manifest.json` on main,
   and picks up a new version after a Jellyfin restart.
 

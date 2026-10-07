@@ -34,6 +34,12 @@
     return d.innerHTML;
   }
 
+  // Attribute-context escaping (escapes quotes, unlike esc()).
+  function escAttr(str) {
+    if (str == null) return '';
+    return String(str).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
   function apiGet(path) {
     return window.ApiClient.getJSON(window.ApiClient.getUrl(path));
   }
@@ -254,11 +260,11 @@
     }
 
     return '<div class="tfav-card ' + (wide ? 'tfav-card-wide' : 'tfav-card-poster') + '"' +
-      ' data-id="' + item.Id + '" data-type="' + esc(item.Type) + '">' +
+      ' data-id="' + item.Id + '" data-type="' + escAttr(item.Type) + '">' +
         '<div class="tfav-card-img">' + poster +
           '<button class="tfav-unfav" title="Remove from favorites" data-unfav="' + item.Id + '">&#10084;</button>' +
         '</div>' +
-        '<div class="tfav-card-name" title="' + esc(item.Name) + '">' + esc(item.Name) + '</div>' +
+        '<div class="tfav-card-name" title="' + escAttr(item.Name) + '">' + esc(item.Name) + '</div>' +
         (sub ? '<div class="tfav-card-sub">' + sub + '</div>' : '') +
       '</div>';
   }

@@ -39,9 +39,14 @@ def discover_new_provider_content(db) -> dict:
     result = {"vod_new": [], "live_new": []}
 
     # ── VOD categories ────────────────────────────────────────────────────
+    # `active` is the VOD switch. Not `live_tv_enabled == False`: the provider
+    # test turns Live TV on for every Xtream account that has live channels,
+    # so that filter skipped the usual VOD + Live TV provider and its new VOD
+    # categories were never found. A provider made on the Live TV page is
+    # active=False and stays out.
     vod_providers = (
         db.query(Provider)
-        .filter(Provider.active == True, Provider.live_tv_enabled == False)  # noqa: E712
+        .filter(Provider.active == True)  # noqa: E712
         .all()
     )
     for p in vod_providers:
