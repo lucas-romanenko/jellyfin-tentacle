@@ -351,6 +351,10 @@ User docs: `docs/features/live-tv.md`.
   An EPG sync first deletes every id it could store programmes under (each
   channel's guide id, name match and tvg-id, and every name match of this
   run, kept or dropped), or the insert hits `uq_epg_program` (#467).
+- A tvg-id matches a feed id exactly first, else ignoring case when that
+  names one feed id (never a guess between ids that differ only in case);
+  the feed's spelling goes in `epg_name_match` and `epg_match` still says
+  "tvg-id" (#523).
 - A group is unique on (provider, name) with one Xtream `category_id`, but
   Xtream category names aren't unique: `_sync_groups` gives each category
   its own group (the one already on it, else its name, first listed wins,
