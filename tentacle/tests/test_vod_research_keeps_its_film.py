@@ -8,7 +8,9 @@ film, and the film it played was pruned two nights later, with every user's
 watched state and playlist entries on it. Now the existing row keeps it as
 long as the label still fits it; the new answer only reaches new imports. A
 stream the label no longer names (a provider reusing its number) or whose
-provider id names the new film moves, as before.
+provider id names the new film moves, as before. A label with the film's own
+title (any year) whose stream its .strm plays is known without a search
+(#262 follow-up); one spelt otherwise still goes through it.
 
 On the #262 harness (real XtreamClient rules, filler so the prune can act).
 No network.
@@ -37,15 +39,32 @@ class ResearchKeepsItsFilm(Relisted):
         return path
 
     def test_a_new_answer_for_its_label_leaves_the_row_alone(self):
+        # A label spelt unlike its film's title: searched again every time (a
+        # label with the film's own title is known by its .strm, no lookup).
+        TMDB.films.update({873: ("The Color Purple", "1985"), 558915: ("The Color Purple", "2023")})
+        TMDB.search["The Colour Purple"] = 873
+        self.catalogue(stream("The Colour Purple (1986)", 103))
+        self.night()
+        path = self.strm(873)
+        self.assertIn("/103.mp4", path.read_text())
+        TMDB.search["The Colour Purple"] = 558915  # the search now finds the remake
+        self.night()
+        run = self.night()
+        self.assertIn(("search", "The Colour Purple"), TMDB.calls, "the label was not searched again")
+        self.assertIsNotNone(self.strm(873), "the film its .strm plays was pruned")
+        self.assertEqual(path, self.strm(873))
+        self.assertIn("/103.mp4", path.read_text())
+        self.assertIsNone(self.row(873).provider_missing_since)
+        self.assertIsNone(self.strm(558915), "the stream was imported a second time as the new answer")
+        self.assertEqual(0, run.movies_new)
+
+    def test_a_new_answer_for_the_films_own_title_needs_no_search(self):
         path = self.first_night()
         TMDB.search["Dune"] = 693134  # the search now finds Part Two
         self.night()
         run = self.night()
-        self.assertIn(("search", "Dune"), TMDB.calls, "the label was not searched again")
-        self.assertIsNotNone(self.strm(438631), "the film its .strm plays was pruned")
         self.assertEqual(path, self.strm(438631))
         self.assertIn("/103.mp4", path.read_text())
-        self.assertIsNone(self.row(438631).provider_missing_since)
         self.assertIsNone(self.strm(693134), "the stream was imported a second time as the new answer")
         self.assertEqual(0, run.movies_new)
 
