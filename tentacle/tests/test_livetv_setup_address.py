@@ -86,6 +86,26 @@ class SetupAddress(unittest.TestCase):
         self.assertNotIn("/api/youtube/status", out["calls"])
         self.assertTrue(out["locked"])
 
+    def test_a_saved_youtube_address_that_does_not_answer_is_not_prefilled(self):
+        # The YouTube page keeps showing its saved address even when it doesn't
+        # answer; the setup card must offer the one that does.
+        out = self._run({}, {"base_url": "http://192.0.2.99:8888", "suggested_base_url": "http://192.0.2.99:8888",
+                             "reachable": {"ok": False}, "detected": {"url": "http://192.0.2.10:8888"}})
+        self.assertEqual("http://192.0.2.10:8888", out["tuner"])
+        self.assertEqual("Detected: check it, then Save", out["hint"])
+
+    def test_a_dead_youtube_address_and_nothing_detected_falls_back_to_the_browser(self):
+        out = self._run({}, {"base_url": "http://192.0.2.99:8888", "suggested_base_url": "http://192.0.2.99:8888",
+                             "reachable": {"ok": False}, "detected": {"url": None}},
+                        {"hostname": "tentacle.lan", "port": "", "href": "http://tentacle.lan/"})
+        self.assertEqual("http://tentacle.lan:8888", out["tuner"])
+        self.assertEqual("From this browser: check it, then Save", out["hint"])
+
+    def test_a_saved_youtube_address_that_answers_is_still_used(self):
+        out = self._run({}, {"base_url": "http://192.0.2.10:8888", "suggested_base_url": "http://192.0.2.10:8888",
+                             "reachable": {"ok": True}, "detected": None})
+        self.assertEqual("http://192.0.2.10:8888", out["tuner"])
+
 
 if __name__ == "__main__":
     unittest.main()

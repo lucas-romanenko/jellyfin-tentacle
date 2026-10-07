@@ -25,6 +25,7 @@ import json
 import time
 import logging
 import re
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -50,6 +51,12 @@ DEFAULT_BATCH_SIZE = 100
 PROBE_INTERVAL_SECONDS = 3.0
 PROVIDER_BUSY_STATUSES = {429, 509}
 _probe_state = {"provider_busy": False, "busy_seq": 0}
+# One sweep at a time: the 04:30 job and "Run sweep" both take it without
+# waiting. A second sweep would read the same cursor, probe the same titles
+# alongside the first (two connections at once is what a one-connection
+# account answers 509 to), and its start would clear the first one's
+# `provider_busy`. The scheduler's max_instances=1 only covers its own runs.
+_sweep_lock = threading.Lock()
 
 
 def _note_provider_busy():
@@ -112,10 +119,12 @@ def _direct_url(url: str, kind, stream_id, provider) -> str:
     Tentacle's /api/vod route must not be probed through Tentacle itself:
     that would take a playback slot for a health check."""
     from services import vod_tokens
+    from services.xtream_client import quote_cred
     if provider and kind and stream_id and vod_tokens.is_vod_url(url):
         container = url.rsplit(".", 1)[-1].split("?")[0] if "." in url else "mp4"
         path = "movie" if kind == "movie" else "series"
-        return f"{provider.server_url.rstrip('/')}/{path}/{provider.username}/{provider.password}/{stream_id}.{container}"
+        login = f"{quote_cred(provider.username)}/{quote_cred(provider.password)}"
+        return f"{provider.server_url.rstrip('/')}/{path}/{login}/{stream_id}.{container}"
     return url
 
 
@@ -186,6 +195,10 @@ def _mark_bad(db, media_type: str, tmdb_id: int, title: str, episode: str,
     if entry:
         entry.fail_count = (entry.fail_count or 1) + 1
         entry.last_checked_at = now
+        # Dead at the address the file holds now: that is what Remove checks
+        # against (a file the sync repointed since is not this entry's).
+        if stream_url:
+            entry.stream_url = stream_url
     else:
         db.add(StreamHealth(
             media_type=media_type, tmdb_id=tmdb_id, title=title, episode=episode,
@@ -240,6 +253,13 @@ def _check_item(db, item, media_type: str, providers: dict) -> bool | None:
     alive = check_stream(db, media_type, kind, stream_id, url, provider)
     if alive is False:
         _mark_bad(db, media_type, item.tmdb_id, item.title, episode, strm_path, url)
+    elif alive is True:
+        # Alive now: an entry from an earlier dead verdict (the file was
+        # repaired or repointed since) must not keep offering Remove.
+        stale = db.query(StreamHealth).filter(StreamHealth.strm_path == strm_path).first()
+        if stale:
+            db.delete(stale)
+            db.commit()
     return alive
 
 
@@ -278,7 +298,12 @@ def recheck_known_bad(db, limit: int = 0) -> dict:
             cleared.append(entry.title)
             db.delete(entry)
             continue
-        url = entry.stream_url or _read_strm(entry.strm_path)
+        # The file's address first: a sync that repointed or repaired the
+        # .strm since (a re-listed stream id, new credentials, VOD through
+        # Tentacle) left the recorded address behind, and probing that kept
+        # a playing title "dead" for good. A blank file falls back to it.
+        current = _read_strm(entry.strm_path)
+        url = current or entry.stream_url
         if not url:
             continue
         # Each re-test is a real stream open on the account. The same manners
@@ -306,14 +331,50 @@ def recheck_known_bad(db, limit: int = 0) -> dict:
             db.delete(entry)
         elif alive is False:
             entry.fail_count = (entry.fail_count or 1) + 1
+            entry.stream_url = url   # dead at this address (Remove checks against it)
     db.commit()
     return {"rechecked": rechecked, "cleared": cleared,
             "deferred": deferred, "provider_busy": provider_busy, "remaining": remaining}
 
 
-def run_stream_health_sweep():
+def stream_health_sweep_running() -> bool:
+    return _sweep_lock.locked()
+
+
+def start_stream_health_sweep() -> bool:
+    """"Run sweep": run it in the background. False (nothing started) while a
+    sweep is already running."""
+    if not _sweep_lock.acquire(blocking=False):
+        return False
+
+    def run():
+        try:
+            _sweep()
+        finally:
+            _sweep_lock.release()
+    try:
+        threading.Thread(target=run, daemon=True, name="stream-health-sweep").start()
+    except Exception:
+        _sweep_lock.release()
+        raise
+    return True
+
+
+def run_stream_health_sweep() -> bool:
     """Daily job: recheck stale known-bad entries, then probe the next rotating
-    batch of healthy VOD titles."""
+    batch of healthy VOD titles. False (nothing probed) while a sweep is
+    already running."""
+    if not _sweep_lock.acquire(blocking=False):
+        logger.info("[Stream health] a sweep is already running — this one probes nothing")
+        return False
+    try:
+        _sweep()
+    finally:
+        _sweep_lock.release()
+    return True
+
+
+def _sweep():
     db = SessionLocal()
     try:
         stats = {"rechecked": 0, "cleared": 0, "probed": 0, "new_bad": 0, "inconclusive": 0}
@@ -412,6 +473,13 @@ def remove_dead_stream(db, entry_id: int, user_name: str = None) -> dict:
     entry = db.query(StreamHealth).filter(StreamHealth.id == entry_id).first()
     if not entry:
         return {"ok": False, "error": "Entry not found"}
+
+    # The entry says the address it found dead. A file that plays another one
+    # now (the sync repointed or repaired it) was never tested: deleting it
+    # would remove a title that may well play. Recheck tests it first.
+    current = _read_strm(entry.strm_path)
+    if current and entry.stream_url and current != entry.stream_url:
+        return {"ok": False, "error": "The file has changed since it was found dead; press Recheck first"}
 
     strm = Path(entry.strm_path)
     try:

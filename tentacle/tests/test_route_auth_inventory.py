@@ -94,5 +94,50 @@ class RouteAuthInventory(unittest.TestCase):
         self.assertEqual(sorted(set(ALLOW) - seen), [], "allowlisted routes that no longer exist")
 
 
+# Routes declared on the app itself in main.py (not on a router). Importing
+# main would start the app, so these are read from the source.
+MAIN_PUBLIC = {
+    ("GET", "/api/health"): "liveness probe: status, commit, build date",
+    ("GET", "/api/version"): "build identity, no configuration or data",
+    ("API_ROUTE", "/api/{full_path:path}"): "404 for unknown /api paths",
+}
+
+
+def _main_api_routes():
+    import ast
+    from pathlib import Path
+    tree = ast.parse((Path(__file__).resolve().parents[1] / "main.py").read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for dec in node.decorator_list:
+            if (isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute)
+                    and isinstance(dec.func.value, ast.Name) and dec.func.value.id == "app"
+                    and dec.args and isinstance(dec.args[0], ast.Constant)
+                    and str(dec.args[0].value).startswith("/api")):
+                yield dec.func.attr.upper(), dec.args[0].value
+
+
+class MainAppRoutes(unittest.TestCase):
+    def test_main_api_routes_are_the_known_public_ones(self):
+        self.assertEqual(sorted(_main_api_routes()), sorted(MAIN_PUBLIC),
+                         "an /api route was added to main.py outside a router: give it auth "
+                         "or list it here with a reason")
+
+    def test_anonymous_writes_are_all_accounted_for(self):
+        # Every allowlisted route that is not a read must authenticate in its
+        # body; this list is the whole set, so a new anonymous write fails here.
+        writes = sorted((m, p) for m, p in ALLOW if m not in ("GET", "HEAD"))
+        self.assertEqual(writes, sorted([
+            ("DELETE", "/api/library/delete-download/{tmdb_id}"),
+            ("DELETE", "/api/library/item/{media_type}/{tmdb_id}"),
+            ("POST", "/api/auth/login"),
+            ("POST", "/api/auth/logout"),
+            ("POST", "/api/music/webhook"),
+            ("POST", "/api/radarr/webhook"),
+            ("POST", "/api/sonarr/webhook"),
+        ]))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -66,9 +66,11 @@ public class TentacleTmdbController : ControllerBase
         [FromQuery] int season,
         [FromQuery] int episode)
     {
-        if (string.IsNullOrWhiteSpace(tmdbId))
+        // A TMDB id is a number (at most 10 digits): it goes into the TMDB
+        // request path and into the cache key.
+        if (string.IsNullOrWhiteSpace(tmdbId) || tmdbId.Trim().Length > 10 || !tmdbId.Trim().All(char.IsAsciiDigit))
         {
-            return BadRequest(new { error = "tmdbId is required" });
+            return BadRequest(new { error = "tmdbId must be a number" });
         }
 
         var seriesId = tmdbId.Trim();
@@ -140,9 +142,11 @@ public class TentacleTmdbController : ControllerBase
         [FromQuery] string tmdbId,
         [FromQuery] int season)
     {
-        if (string.IsNullOrWhiteSpace(tmdbId))
+        // A TMDB id is a number (at most 10 digits): it goes into the TMDB
+        // request path and into the cache key.
+        if (string.IsNullOrWhiteSpace(tmdbId) || tmdbId.Trim().Length > 10 || !tmdbId.Trim().All(char.IsAsciiDigit))
         {
-            return BadRequest(new { error = "tmdbId is required" });
+            return BadRequest(new { error = "tmdbId must be a number" });
         }
 
         var seriesId = tmdbId.Trim();

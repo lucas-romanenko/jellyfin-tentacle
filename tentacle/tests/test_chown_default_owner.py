@@ -36,7 +36,10 @@ class _Fs(unittest.TestCase):
                                        st.st_size, int(st.st_atime), int(st.st_mtime), int(st.st_ctime)))
             return f
 
+        self.chown_kwargs = []
+
         def fake_chown(p, uid, gid, *a, **k):
+            self.chown_kwargs.append(k)
             self.chowned.append((str(p), uid, gid))
             self.owner[os.path.abspath(str(p))] = (uid, gid)
 
@@ -91,6 +94,38 @@ class WithoutPuid(_Fs):
         self.assertTrue(refresh_arr_nfo(nfo, write_movie_nfo, {"title": "Only Radarr", "tmdb_id": 1}, ["T"]))
         self.assertEqual([(str(nfo), 1000, 1000)], self.chowned)
 
+    def test_a_symlinked_season_folder_keeps_its_targets_owner(self):
+        # os.chown follows links: the link (made by root) looked root-owned, so
+        # the folder it points at -- another user's, maybe outside the library
+        # -- was handed to the show folder's owner.
+        show = self.tmp / "tv" / "Show"
+        self._media_owned(show)
+        elsewhere = self.tmp / "elsewhere"
+        elsewhere.mkdir()
+        (show / "Season 02").symlink_to(elsewhere, target_is_directory=True)
+        sync.chown_path(show / "Season 02")
+        self.assertEqual([], self.chowned)
+
+    def test_a_symlinked_file_keeps_its_targets_owner(self):
+        show = self.tmp / "tv" / "Show"
+        self._media_owned(show)
+        target = self.tmp / "elsewhere.strm"
+        target.write_text("x")
+        (show / "Show S01E01.strm").symlink_to(target)
+        sync.chown_path(show / "Show S01E01.strm")
+        self.assertEqual([], self.chowned)
+
+    def test_a_link_swapped_in_after_the_check_is_not_followed(self):
+        # A library writer can turn a folder into a link between the islink
+        # check and the chown: the chown itself must not follow links.
+        show = self.tmp / "tv" / "Show"
+        self._media_owned(show)
+        (show / "Season 05").mkdir()
+        with mock.patch.object(sync.os.path, "islink", lambda p: False):
+            sync.chown_path(show / "Season 05")
+        self.assertEqual([(str(show / "Season 05"), 1000, 1000)], self.chowned)
+        self.assertEqual([{"follow_symlinks": False}], self.chown_kwargs)
+
 
 class WithPuid(_Fs):
     def setUp(self):
@@ -105,6 +140,61 @@ class WithPuid(_Fs):
         nfo = folder / "tvshow.nfo"
         self.assertTrue(refresh_arr_nfo(nfo, write_movie_nfo, {"title": "Only Sonarr", "tmdb_id": 2}, ["T"]))
         self.assertEqual([(str(nfo), 1000, 1000)], self.chowned)
+
+    def test_a_symlinked_season_folder_keeps_its_targets_owner(self):
+        show = self.tmp / "tv" / "Show"
+        show.mkdir(parents=True)
+        elsewhere = self.tmp / "elsewhere"
+        elsewhere.mkdir()
+        (show / "Season 02").symlink_to(elsewhere, target_is_directory=True)
+        sync.chown_path(show / "Season 02")
+        self.assertEqual([], self.chowned)
+
+    def test_the_chown_never_follows_a_link(self):
+        show = self.tmp / "tv" / "Show"
+        (show / "Season 05").mkdir(parents=True)
+        with mock.patch.object(sync.os.path, "islink", lambda p: False):
+            sync.chown_path(show / "Season 05")
+        self.assertEqual([{"follow_symlinks": False}], self.chown_kwargs)
+
+    def test_a_rewritten_strm_keeps_its_owner_without_following_links(self):
+        show = self.tmp / "tv" / "Show"
+        show.mkdir(parents=True)
+        strm = show / "Show S01E01.strm"
+        strm.write_text("http://old")
+        sync._write_strm(strm, "http://new")
+        self.assertEqual("http://new", strm.read_text())
+        self.assertTrue(self.chown_kwargs)
+        self.assertTrue(all(k == {"follow_symlinks": False} for k in self.chown_kwargs), self.chown_kwargs)
+
+    def _repair(self, show):
+        row = mock.Mock(strm_path=str(show), sonarr_path="/tv/x")
+        db = mock.Mock()
+        db.query.return_value.filter.return_value.all.return_value = [row]
+        return sync.repair_hybrid_ownership(db)
+
+    def test_nightly_repair_does_not_walk_into_a_symlinked_season_folder(self):
+        show = self.tmp / "tv" / "Show"
+        (show / "Season 01").mkdir(parents=True)
+        (show / "Season 01" / "a.mkv").write_text("x")
+        elsewhere = self.tmp / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "theirs.mkv").write_text("x")
+        self.owner[os.path.abspath(str(elsewhere / "theirs.mkv"))] = (1001, 1001)
+        (show / "Season 02").symlink_to(elsewhere, target_is_directory=True)
+        self._repair(show)
+        touched = {c[0] for c in self.chowned}
+        self.assertIn(str(show / "Season 01" / "a.mkv"), touched, "real folders are still repaired")
+        self.assertFalse({p for p in touched if "Season 02" in p or "elsewhere" in p}, touched)
+
+    def test_nightly_repair_skips_a_symlinked_show_folder(self):
+        real = self.tmp / "disk2" / "Show"
+        (real / "Season 01").mkdir(parents=True)
+        (real / "Season 01" / "a.mkv").write_text("x")
+        (self.tmp / "tv").mkdir()
+        (self.tmp / "tv" / "Show").symlink_to(real, target_is_directory=True)
+        self._repair(self.tmp / "tv" / "Show")
+        self.assertEqual([], self.chowned)
 
 
 if __name__ == "__main__":
