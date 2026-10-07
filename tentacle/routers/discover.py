@@ -3,6 +3,7 @@ Tentacle - Discover Router
 Trending, popular, upcoming content from TMDB + missing from user lists
 """
 
+import asyncio
 import hashlib
 import logging
 import threading
@@ -18,7 +19,7 @@ import httpx
 from models.database import get_db, get_setting, Movie, Series, ListSubscription, ListItem, DownloadRequest, LiveChannel, TentacleUser
 from routers.auth import get_user_from_request
 from services.cleaner import clean_list_title
-from services.ssrf import is_safe_url
+from services.ssrf import is_safe_url, url_host_allowed
 from services.exceptions import TMDBConnectionError
 from services.tmdb import TMDBService
 
@@ -479,18 +480,19 @@ def _get_missing_from_lists(db: Session, known_ids: dict, type_filter: str, user
         ListItem.tmdb_id.isnot(None),
     )
     if type_filter == "movies":
-        query = query.filter(ListItem.media_type == "movie")
+        query = query.filter(ListItem.of_type("movie"))
     elif type_filter == "series":
-        query = query.filter(ListItem.media_type == "series")
+        query = query.filter(ListItem.of_type("series"))
 
     all_items = query.all()
 
+    # A film and a show may share a TMDB number: they are two titles (#365).
     seen = set()
     result = []
     for item in all_items:
         mt = item.media_type or "movie"
         type_ids = known_ids.get("series" if mt == "series" else "movie", set())
-        if item.tmdb_id in type_ids or item.tmdb_id in seen:
+        if item.tmdb_id in type_ids or (item.tmdb_id, mt) in seen:
             continue
         if not item.poster_path:
             continue
@@ -498,7 +500,7 @@ def _get_missing_from_lists(db: Session, known_ids: dict, type_filter: str, user
         # Tentacle's tables never recorded is not "missing".
         if _is_in_library({"tmdb_id": item.tmdb_id, "media_type": mt}, known_ids):
             continue
-        seen.add(item.tmdb_id)
+        seen.add((item.tmdb_id, mt))
         # Clean pre-fix rows (HTML entities + baked-in year) at serving time
         clean_name, clean_year = clean_list_title(item.title, item.year)
         result.append((item.list_id, {
@@ -1373,13 +1375,18 @@ def _normalize_proxy_url(url: str) -> str:
     return url
 
 
+_TVDB_HOSTS = {"thetvdb.com"}
+
+
 @router.get("/image-proxy/{cache_key}")
 async def image_proxy(cache_key: str, url: str = ""):
     """Proxy TVDB images through the server to bypass CDN TLS fingerprinting."""
     url = _normalize_proxy_url(url)
-    # Strict host allowlist + public-IP check (substring matching like
-    # "thetvdb.com" in url is trivially bypassed, e.g. ?url=http://169.254.169.254/?x=thetvdb.com).
-    if not is_safe_url(url, allowed_hosts={"thetvdb.com"}):
+    # Strict host allowlist (substring matching like "thetvdb.com" in url is
+    # trivially bypassed, e.g. ?url=http://169.254.169.254/?x=thetvdb.com).
+    # Ahead of the cache: older versions cached any URL that merely contained
+    # "thetvdb.com", and nothing prunes the cache.
+    if not url_host_allowed(url, allowed_hosts=_TVDB_HOSTS):
         raise HTTPException(status_code=400, detail="Invalid URL")
     # The cache file is named by cache_key, so it must be the key this URL was
     # minted with (_rewrite_tvdb_url). Otherwise anyone who can reach the
@@ -1403,6 +1410,13 @@ async def image_proxy(cache_key: str, url: str = ""):
         elif ext == ".webp":
             media_type = "image/webp"
         return Response(content=cached.read_bytes(), media_type=media_type)
+
+    # The public-IP check. Only here: a file is written only after its URL
+    # passed it, so a cache hit needs no lookup. It resolves DNS with a
+    # blocking getaddrinfo: off the event loop, so a resolver that hangs
+    # doesn't freeze every stream and request (#464).
+    if not await asyncio.to_thread(is_safe_url, url, allowed_hosts=_TVDB_HOSTS):
+        raise HTTPException(status_code=400, detail="Invalid URL")
 
     # Fetch from TVDB using httpx with HTTP/2 (better TLS fingerprint).
     # follow_redirects=False: a redirect could send us to an internal host that

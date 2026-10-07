@@ -5,7 +5,7 @@ SQLAlchemy models for all entities
 
 from sqlalchemy import (
     create_engine, Column, Integer, String, Boolean, Float,
-    DateTime, Text, JSON, ForeignKey, UniqueConstraint
+    DateTime, Text, JSON, ForeignKey, UniqueConstraint, or_
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
@@ -356,6 +356,9 @@ class Duplicate(Base):
     resolution = Column(String, default="pending")  # pending | keep_radarr | keep_provider_1 | keep_both
     detected_at = Column(DateTime, default=datetime.utcnow)
     resolved_at = Column(DateTime, nullable=True)
+    # Users' watched state saved before a same-folder copy was deleted, waiting
+    # for the item Jellyfin creates for the kept copy (services/duplicates.py, #333)
+    pending_user_data = Column(JSON(none_as_null=True), nullable=True)
 
 
 # ─── Sync Runs ────────────────────────────────────────────────────────────────
@@ -435,9 +438,18 @@ class ListItem(Base):
 
     list_subscription = relationship("ListSubscription", back_populates="items")
 
+    # TMDB numbers films and shows separately: movie/N and tv/N are two titles,
+    # and a mixed list may hold both (#365). Rows without a type are films.
     __table_args__ = (
-        UniqueConstraint("list_id", "tmdb_id", name="uq_list_item"),
+        UniqueConstraint("list_id", "tmdb_id", "media_type", name="uq_list_item"),
     )
+
+    @classmethod
+    def of_type(cls, media_type: str):
+        """Filter for the rows of one TMDB namespace ("series", else films)."""
+        if media_type == "series":
+            return cls.media_type == "series"
+        return or_(cls.media_type.is_(None), cls.media_type != "series")
 
 
 # ─── Tag Rules ────────────────────────────────────────────────────────────────
@@ -767,7 +779,8 @@ class LiveChannel(Base):
     # and it wins over everything below (#141).
     epg_id_override = Column(String, nullable=True)
     # The feed channel the last EPG sync matched by NAME, because the tvg-id
-    # was missing or the feed did not carry it (#141). Recomputed every sync.
+    # was missing or the feed did not carry it (#141), or the feed's spelling
+    # of a tvg-id it lists only in other case (#523). Recomputed every sync.
     epg_name_match = Column(String, nullable=True)
 
     # Management
@@ -797,12 +810,14 @@ class LiveChannel(Base):
 
     @property
     def epg_match(self):
-        """How guide_epg_id was chosen: "override", "name", "tvg-id" or None."""
+        """How guide_epg_id was chosen: "override", "name", "tvg-id" or None.
+        A name match that is the tvg-id in other case is a tvg-id match (#523)."""
         if (self.epg_id_override or "").strip():
             return "override"
-        if self.epg_name_match:
+        tvg = (self.epg_channel_id or "").strip()
+        if self.epg_name_match and self.epg_name_match.casefold() != tvg.casefold():
             return "name"
-        return "tvg-id" if (self.epg_channel_id or "").strip() else None
+        return "tvg-id" if tvg else None
 
 
 class LiveChannelGroup(Base):
@@ -906,6 +921,28 @@ def get_setting(db, key: str, default: str = "") -> str:
     if s and key in NON_EMPTY_DEFAULTS and not (s.value or "").strip():
         return default or NON_EMPTY_DEFAULTS[key]
     return s.value if s else default
+
+
+RECENTLY_ADDED_DAYS_MAX = 36500   # 100 years holds every title; timedelta overflows past year 1
+
+
+def parse_recently_added_days(value):
+    """Whole days from a stored or typed value, or None if no number can be read.
+
+    The field is <input type="number">: "14.5", "7.0" and "1e2" arrive as
+    typed, and a bare int() on them failed every sync and tag refresh (#536).
+    """
+    try:
+        days = int(float(str(value).strip()))
+    except (TypeError, ValueError, OverflowError):   # "abc"; nan, inf, 1e309 pass float() but not int()
+        return None
+    return min(max(days, 0), RECENTLY_ADDED_DAYS_MAX)
+
+
+def get_recently_added_days(db) -> int:
+    """The "Recently added" window in whole days, whatever an older save stored."""
+    days = parse_recently_added_days(get_setting(db, "recently_added_days"))
+    return int(NON_EMPTY_DEFAULTS["recently_added_days"]) if days is None else days
 
 
 def set_setting(db, key: str, value: str):
@@ -1065,6 +1102,7 @@ def _migrate_columns():
                 continue
             _backfill_default(cursor, conn, table_name, col)
 
+    _migrate_list_items_key(conn)
     _drop_retired_tables(cursor, conn)
     _reset_guessed_made_for_kids(cursor, conn)
     conn.close()
@@ -1155,6 +1193,47 @@ def _recreate_per_user_table(conn, table, old_name, columns):
     except (sqlite3.Error, RuntimeError) as e:
         conn.rollback()
         logger.error(f"[migrate] Could not recreate {table} with an id column: {e}")
+
+
+def _migrate_list_items_key(conn):
+    """Rebuild list_items with the unique key (list_id, tmdb_id, media_type) (#365).
+
+    The old key (list_id, tmdb_id) let a list hold only one of a film and a
+    show with the same TMDB number. SQLite can't change a constraint in place,
+    so the table is recreated in one transaction. Rows without a type are
+    copied as films: SQLite treats NULLs as distinct in a UNIQUE key, so an
+    untyped row would escape it. Existing rows already satisfy the new key.
+    """
+    import sqlite3
+    from sqlalchemy.schema import CreateIndex, CreateTable
+
+    cursor = conn.cursor()
+    old_key = False
+    for index in cursor.execute("PRAGMA index_list(list_items)").fetchall():
+        if index[2]:  # unique
+            cols = [r[2] for r in conn.execute(f'PRAGMA index_info("{index[1]}")')]
+            old_key = old_key or cols == ["list_id", "tmdb_id"]
+    if not old_key:
+        return  # current schema, a fresh install, or no table yet
+    model = Base.metadata.tables["list_items"]
+    old_cols = _existing_columns(cursor, "list_items")
+    cols = [c.name for c in model.columns if c.name in old_cols]
+    select = ", ".join("COALESCE(media_type, 'movie')" if c == "media_type" else f'"{c}"' for c in cols)
+    conn.commit()
+    try:
+        cursor.execute("BEGIN IMMEDIATE")
+        cursor.execute("ALTER TABLE list_items RENAME TO _list_items_old")
+        cursor.execute(str(CreateTable(model).compile(dialect=engine.dialect)))
+        cursor.execute(f"INSERT INTO list_items ({', '.join(cols)}) SELECT {select} FROM _list_items_old")
+        copied = cursor.rowcount
+        cursor.execute("DROP TABLE _list_items_old")
+        for index in model.indexes:
+            cursor.execute(str(CreateIndex(index).compile(dialect=engine.dialect)))
+        conn.commit()
+        logger.info(f"[migrate] Rebuilt list_items with a key per film/show ({copied} row(s) kept)")
+    except sqlite3.Error as e:
+        conn.rollback()
+        logger.error(f"[migrate] Could not rebuild list_items with a key per film/show: {e}")
 
 
 def _migrate_home_row_order(cursor, conn):

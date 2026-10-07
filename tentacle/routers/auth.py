@@ -77,6 +77,50 @@ def _build_playlists_for_new_user(user_id: int) -> None:
     threading.Thread(target=_run, daemon=True, name=f"new-user-playlists-{user_id}").start()
 
 
+def follow_user_rename(db: Session, user_id: int, old_name: str, new_name: str) -> None:
+    """Carry a user renamed in Jellyfin over to their new name (#454): their
+    requested titles get the new "<name>'s Downloads" (rows, NFOs, Jellyfin),
+    then the playlist sync renames their Downloads playlist in place, and the
+    home config follows it by id."""
+    from services.jellyfin import JellyfinService, sync_owned_tags
+    from services.smartlists import (
+        _notify_jellyfin_plugin, bump_playlist_version, sync_smartlists, write_home_config,
+    )
+    from services.tagger import move_downloads_tag
+    changed = move_downloads_tag(db, user_id, old_name, new_name)
+    db.commit()
+    jf_url = get_setting(db, "jellyfin_url")
+    jf_key = get_setting(db, "jellyfin_api_key")
+    if jf_url and jf_key and (changed["Movie"] or changed["Series"]):
+        # Before the playlist is touched, so it has the new tag to match.
+        jf = JellyfinService(jf_url, jf_key, get_setting(db, "jellyfin_user_id", ""))
+        counts = sync_owned_tags(db, jf, "Rename", only=changed)
+        logger.info(f"Moved {old_name}'s Downloads to {new_name}'s on {counts['written']} Jellyfin items "
+                    f"({counts['errors']} failed, {counts['not_found']} not in Jellyfin)")
+    sync_smartlists(db, user_id=user_id)
+    write_home_config(db, user_id=user_id)
+    bump_playlist_version()
+    _notify_jellyfin_plugin(db)
+
+
+def _follow_user_rename(user_id: int, old_name: str, new_name: str) -> None:
+    """follow_user_rename() in the background, off the sign-in."""
+    def _run():
+        from models.database import SessionLocal
+        db = SessionLocal()
+        try:
+            follow_user_rename(db, user_id, old_name, new_name)
+            logger.info(f"User {user_id} renamed from '{old_name}' to '{new_name}': playlists updated")
+        except Exception as e:
+            # The nightly sync does the same: its scans retag the titles and
+            # the playlist sync renames the playlist.
+            logger.warning(f"Could not follow the rename of user {user_id} to '{new_name}': {e}")
+        finally:
+            db.close()
+
+    threading.Thread(target=_run, daemon=True, name=f"user-rename-{user_id}").start()
+
+
 def _get_session_secret(db: Session) -> str:
     return get_setting(db, "session_secret", "fallback-secret-change-me")
 
@@ -475,8 +519,16 @@ def login(body: LoginRequest, response: Response, request: Request, db: Session 
             timeout=10,
         )
         r.raise_for_status()
-    except requests.HTTPError:
-        raise HTTPException(401, "Invalid username or password")
+    except requests.HTTPError as e:
+        # Only Jellyfin's 401 is a refused password. It answers 503 for the
+        # first seconds of its startup (the wizard has it restart for the
+        # plugin), and an address that isn't Jellyfin answers 404 or 5xx (#392).
+        status = e.response.status_code if e.response is not None else None
+        if status == 401:
+            raise HTTPException(401, "Invalid username or password")
+        if status == 503:
+            raise HTTPException(503, "Jellyfin is starting up, try again in a moment")
+        raise HTTPException(502, f"Jellyfin answered HTTP {status}, check the Jellyfin address")
     except Exception as e:
         logger.error(f"Login: could not reach Jellyfin: {e}")
         raise HTTPException(502, f"Could not reach Jellyfin ({type(e).__name__})")
@@ -487,7 +539,17 @@ def login(body: LoginRequest, response: Response, request: Request, db: Session 
     jf_image_tag = data["User"].get("PrimaryImageTag")
     jf_is_admin = (data["User"].get("Policy") or {}).get("IsAdministrator") is True
 
+    renamed_from = None
+
     def _update(existing: TentacleUser) -> None:
+        nonlocal renamed_from
+        if existing.display_name and jf_user_name and existing.display_name != jf_user_name:
+            # Renamed in Jellyfin. Their "<old name>'s Downloads" stays
+            # Tentacle's tag, so it comes off the titles, and it is how the
+            # playlist sync recognises the playlist to rename (#454).
+            from services.tagger import downloads_tag, retire_tag
+            retire_tag(db, downloads_tag(existing.display_name))
+            renamed_from = existing.display_name
         existing.display_name = jf_user_name
         existing.profile_image_tag = jf_image_tag
         existing.is_admin = jf_is_admin  # Sync admin status on every login
@@ -548,6 +610,8 @@ def login(body: LoginRequest, response: Response, request: Request, db: Session 
         # with an empty "add row" list on a fresh install, where the channel
         # was typically added before anyone had logged in at all.
         _build_playlists_for_new_user(user.id)
+    elif renamed_from:
+        _follow_user_rename(user.id, renamed_from, jf_user_name)
 
     # Set session cookie. Mark Secure when the request reached us over HTTPS
     # (Cloudflare tunnel sets X-Forwarded-Proto) so the session token is not sent

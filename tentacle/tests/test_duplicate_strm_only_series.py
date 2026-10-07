@@ -186,7 +186,7 @@ class KeepDownloadedRefusesWithoutADownload(_Base):
     def test_resolve_all_leaves_the_false_one_pending(self):
         from routers.duplicates import resolve_all, ResolveAllRequest
         out = resolve_all(ResolveAllRequest(resolution="keep_radarr"), db=self.db)
-        self.assertEqual({"success": False, "count": 0, "total": 1, "failed": 1}, out)
+        self.assertEqual({"success": False, "count": 0, "total": 1, "failed": 1, "skipped": 0}, out)
         self.assertEqual("pending", self.db.query(Duplicate).one().resolution)
         self._untouched()
 

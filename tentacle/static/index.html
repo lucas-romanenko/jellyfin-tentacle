@@ -1952,6 +1952,16 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 
         <div class="card" style="margin-bottom:16px">
           <div class="card-header">
+            <div class="card-title">Recent Activity <span id="health-activity-count" style="color:var(--text3);font-weight:400"></span></div>
+            <button class="btn btn-secondary btn-sm" onclick="loadHealthActivity()">Refresh</button>
+          </div>
+          <div id="health-activity">
+            <div class="empty-state"><p>Loading…</p></div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-header">
             <div class="card-title">Deletion Log</div>
             <button class="btn btn-secondary btn-sm" onclick="loadHealthDeletions()">Refresh</button>
           </div>
@@ -3400,9 +3410,12 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
     </div>
 
     <p style="font-size:13px;color:var(--text2);margin-bottom:20px;line-height:1.6">
-      Rewrites all <code style="font-family:'DM Mono',monospace;background:var(--bg3);padding:1px 5px;border-radius:3px">.strm</code>
-      files from the old provider to stream from the new provider, matched by title.
-      Content that doesn't exist on the new provider will be flagged.
+      Moves the old provider's films to the new provider: each film the new provider lists
+      in its chosen movie categories, under the same title and year, gets its
+      <code style="font-family:'DM Mono',monospace;background:var(--bg3);padding:1px 5px;border-radius:3px">.strm</code>
+      rewritten to play from the new provider. Everything else (films it doesn't list,
+      and all series) stays with the old provider, which is switched off, with its files untouched.
+      Choose the new provider's categories first; Preview shows the counts.
     </p>
 
     <div class="form-group">

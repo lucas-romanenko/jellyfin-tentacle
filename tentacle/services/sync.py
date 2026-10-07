@@ -9,6 +9,7 @@ import re
 import zlib
 import shutil
 import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -19,7 +20,8 @@ from sqlalchemy.orm import Session
 
 from models.database import (
     Provider, ProviderCategory, Movie, Series,
-    SyncRun, CategorySnapshot, Duplicate, get_setting, set_setting, log_deletion
+    SyncRun, CategorySnapshot, Duplicate, get_setting, set_setting, log_deletion,
+    get_recently_added_days,
 )
 from services.tmdb import TMDBService
 from services.nfo import write_movie_nfo, write_series_nfo, make_folder_name, vod_folder_name, fit_file_stem
@@ -30,6 +32,7 @@ from services.media_files import delete_movie_files, delete_series_files, MEDIA_
 from services.tagger import compute_tags, get_list_tags_for_tmdb_id, apply_tag_rules
 from services.exceptions import (ProviderConnectionError, ProviderDataError, SyncCancelledError, SyncError,
                                  TMDBConnectionError)
+from services.xtream_client import quote_cred
 
 logger = logging.getLogger(__name__)
 
@@ -170,7 +173,8 @@ XTREAM_HEADERS = {"User-Agent": "TiviMate/4.7.0 (Linux; Android 12)"}
 
 class XtreamClient:
     def __init__(self, provider: Provider):
-        self.base = f"{provider.server_url.rstrip('/')}/player_api.php?username={provider.username}&password={provider.password}"
+        self.base = (f"{provider.server_url.rstrip('/')}/player_api.php"
+                     f"?username={quote_cred(provider.username)}&password={quote_cred(provider.password)}")
         self.server = provider.server_url.rstrip('/')
         self.username = provider.username
         self.password = provider.password
@@ -235,12 +239,12 @@ class XtreamClient:
     def movie_stream_url(self, stream_id, container="mp4") -> str:
         if self.vod_links is not None:
             return self.vod_links.movie(stream_id, container)
-        return f"{self.server}/movie/{self.username}/{self.password}/{stream_id}.{container}"
+        return f"{self.server}/movie/{quote_cred(self.username)}/{quote_cred(self.password)}/{stream_id}.{container}"
 
     def episode_stream_url(self, episode_id, container="mp4") -> str:
         if self.vod_links is not None:
             return self.vod_links.episode(episode_id, container)
-        return f"{self.server}/series/{self.username}/{self.password}/{episode_id}.{container}"
+        return f"{self.server}/series/{quote_cred(self.username)}/{quote_cred(self.password)}/{episode_id}.{container}"
 
 
 def vod_links_for(db: Session, provider: Provider):
@@ -285,6 +289,50 @@ def _pause_between_categories(client, db: Session, progress_callback=None, phase
         # Cancelled while waiting: stop here, not after another category's
         # provider calls and TMDB lookups.
         raise SyncCancelledError("Sync cancelled while waiting for live TV to finish")
+
+
+# One provider's VOD sync at a time (#446). A category's new rows are
+# committed once, at its end, so a second provider's sync running alongside
+# could not see them: both wrote the same "Title (Year).strm" (the last write
+# won) and both added the row, and the second commit failed on
+# UNIQUE(tmdb_id), leaving its files with no row. A sync now waits for the
+# one running and then finds its rows (a duplicate, a priority takeover), as
+# if the two had run one after the other.
+_vod_sync_lock = threading.Lock()
+_vod_sync_holder = None   # name of the provider whose sync holds the lock
+VOD_SYNC_POLL_SECONDS = 1.0
+
+
+def _wait_for_vod_sync_turn(provider: Provider, run: SyncRun, db: Session, progress_callback=None,
+                            cancel_check=None, phase: str = "movies") -> None:
+    """Take _vod_sync_lock; meanwhile say on screen whose sync it waits for,
+    stay cancellable, and book the wait to the run so the status route does
+    not call it stuck."""
+    global _vod_sync_holder
+    if not _vod_sync_lock.acquire(blocking=False):
+        db.commit()   # nothing open while waiting; the queries after it see the other sync's rows
+        from services.provider_activity import booked_wait
+        shown = None
+        with booked_wait(run.id):
+            while True:
+                holder = _vod_sync_holder or "another provider"
+                if holder != shown:
+                    shown = holder
+                    logger.info(f"Sync of {provider.name} waits for {holder}'s sync to finish")
+                    if progress_callback:
+                        progress_callback(phase, "", {}, item_title=f"Waiting for {holder}'s sync to finish",
+                                          item_pos=0, item_total=0)
+                if _vod_sync_lock.acquire(timeout=VOD_SYNC_POLL_SECONDS):
+                    break
+                if cancel_check and cancel_check():
+                    raise SyncCancelledError("Sync cancelled while waiting for another provider's sync to finish")
+    _vod_sync_holder = provider.name
+
+
+def _release_vod_sync_turn() -> None:
+    global _vod_sync_holder
+    _vod_sync_holder = None
+    _vod_sync_lock.release()
 
 
 def _direct_stream_res(prefix: str = ""):
@@ -369,6 +417,13 @@ def _strm_needs_rewrite(strm_file: Path, expected: str, client) -> bool:
         return True   # 0 bytes / blank: a write cut short, never a link of anyone's (#283)
     if current == expected:
         return False
+    # A file written before the login was percent-encoded (#529): a '#', '?' or
+    # '/' in it broke the URL. Read it in today's form, so the checks below
+    # repair it when it plays this stream and leave it alone when not.
+    raw_user, raw_pass = getattr(client, "username", "") or "", getattr(client, "password", "") or ""
+    old_login, new_login = f"/{raw_user}/{raw_pass}/", f"/{quote_cred(raw_user)}/{quote_cred(raw_pass)}/"
+    if (raw_user or raw_pass) and old_login != new_login and old_login in current:
+        current = current.replace(old_login, new_login, 1)
     from urllib.parse import urlparse
     from services import vod_tokens
     provider_host = (urlparse(client.server).hostname or "").lower()
@@ -436,12 +491,14 @@ def _strm_plays_other_provider(strm_file: Path, client) -> bool:
         current = strm_file.read_text(encoding="utf-8").strip()
     except (OSError, UnicodeDecodeError):
         return False
+    from urllib.parse import unquote
     from services import vod_tokens
     m = vod_tokens._TOKEN_URL.search(current)
     if m:
         return int(m.group(2)) in others["ids"]
     m = _XTREAM_ACCOUNT_RE.match(current)
-    return bool(m) and (m.group(1).lower(), m.group(2)) in others["accounts"]
+    # The URL carries the username percent-encoded (#529), the accounts as typed
+    return bool(m) and (m.group(1).lower(), unquote(m.group(2))) in others["accounts"]
 
 
 # ── M3U provider support ─────────────────────────────────────────────────
@@ -682,49 +739,83 @@ def _merge_source_tag(tmdb_id: int, media_type: str, source_tag: str, provider_i
             pass  # NFO update is best-effort
 
 
-def _plays_delisted_episode(strm_file: Path, client, listed: set) -> bool:
-    """True when this episode .strm plays an episode of THIS Xtream provider
-    whose id the show no longer lists (#263): the provider replaced the upload
-    under a new id, and the old one plays nothing. The file is keyed by its
-    SxxEyy, so the episode listed there now is the one to play. Not for M3U
-    (its ids are made from the URL) or a link that is not ours."""
-    if not isinstance(client, XtreamClient) or not listed:
-        return False
+def _our_episode_id(strm_file: Path, client) -> Optional[int]:
+    """The episode id this .strm plays when it is an episode of THIS Xtream
+    provider, else None. Not for M3U (its ids are made from the URL) or a
+    link that is not ours."""
+    if not isinstance(client, XtreamClient):
+        return None
     try:
         current = strm_file.read_text(encoding="utf-8").strip()
     except (OSError, UnicodeDecodeError):
-        return False
+        return None
     from urllib.parse import urlparse
     from services import vod_tokens
     m = vod_tokens._TOKEN_URL.search(current)
     if m:
-        return (m.group(1) == "series" and int(m.group(2)) == getattr(client, "provider_id", None)
-                and int(m.group(3)) not in listed)
+        ours = m.group(1) == "series" and int(m.group(2)) == getattr(client, "provider_id", None)
+        return int(m.group(3)) if ours else None
     host = (urlparse(client.server).hostname or "").lower()
     ref = _direct_ref(current, embedded=True, prefix=urlparse(client.server).path or "")
-    return ref is not None and ref[0] == host and ref[1] == "series" and ref[2] not in listed
+    return ref[2] if ref is not None and ref[0] == host and ref[1] == "series" else None
 
 
-def _write_episode_strms(client: "XtreamClient", episodes: dict, show_dir: Path, folder_name: str) -> int:
+class _EpisodeSlots:
+    """The episodes each listing of a show offers at each SxxEyy file, so a
+    file playing an id listed there by none of them can be repointed (#263):
+    the provider replaced the upload under a new id, or renumbered it (the
+    old id now sits at another number). The file is keyed by its SxxEyy, so
+    the episode listed there now is the one to play.
+
+    A provider can list one show under several series ids (an EN and a DE
+    category) that match one show folder. Judged per listing, each one took
+    the other's ids for delisted and the files flipped twice a night (#376),
+    so the series sync collects every listing and settles once, after a
+    complete fetch. A file whose id is listed at its number by any listing
+    stays as it is."""
+
+    def __init__(self):
+        self.offers = {}      # strm path -> [(episode id, stream url), ...] in listing order
+        self.unsure = set()   # show folders with a listing we couldn't read
+
+    def offer(self, strm_file: Path, ep_id: int, url: str) -> None:
+        self.offers.setdefault(strm_file, []).append((ep_id, url))
+
+    def unknown(self, show_dir: Path) -> None:
+        self.unsure.add(show_dir)
+
+    def settle(self, client) -> int:
+        """Repoint the files that play an id no listing offers at their number."""
+        rewritten = 0
+        for strm_file, offered in self.offers.items():
+            if strm_file.parent.parent in self.unsure or not strm_file.exists() or _strm_is_blank(strm_file):
+                continue
+            current = _our_episode_id(strm_file, client)
+            if current is None or current in {ep_id for ep_id, _ in offered}:
+                continue
+            _write_strm(strm_file, offered[0][1])
+            chown_path(strm_file)
+            rewritten += 1
+            logger.info(f"[Sync] Rewrote {strm_file.name}: its old episode id is no longer listed at this number")
+        return rewritten
+
+
+def _write_episode_strms(client: "XtreamClient", episodes: dict, show_dir: Path, folder_name: str,
+                         slots: Optional[_EpisodeSlots] = None) -> int:
     """Write .strm files for any episodes that don't already exist on disk.
 
     Returns the number of NEW episode files written. Safe to call on an
     existing series to back-fill newly-added seasons/episodes (idempotent).
-    An existing file is rewritten only when it plays the same stream in
-    another form, or plays another provider (a takeover, #154).
+    An existing file is rewritten when it plays the same stream in another
+    form, plays another provider (a takeover, #154), or plays an id no longer
+    listed at its number (#263, see _EpisodeSlots). That last one is left to
+    the caller's `slots` when given: the series sync settles it once all
+    listings of the show are read.
     """
     ep_count = 0
-    # Every episode id the show lists now (#263: a file playing another is stale)
-    listed = set()
-    try:
-        for eps in episodes.values():
-            if isinstance(eps, list) and eps and isinstance(eps[0], list):
-                eps = eps[0]
-            for ep in eps if isinstance(eps, list) else ():
-                if isinstance(ep, dict):
-                    listed.add(int(ep.get("id")))
-    except (TypeError, ValueError):
-        listed = set()   # an id we can't read: can't tell what is gone
+    own = slots is None
+    if own:
+        slots = _EpisodeSlots()
     for season_num, eps in episodes.items():
         if isinstance(eps, list) and eps and isinstance(eps[0], list):
             eps = eps[0]
@@ -767,10 +858,12 @@ def _write_episode_strms(client: "XtreamClient", episodes: dict, show_dir: Path,
                 _write_strm(strm_file, expected)
                 chown_path(strm_file)
                 logger.info(f"[Sync] Rewrote {strm_file.name}: stream address changed")
-            elif _plays_delisted_episode(strm_file, client, listed):
-                _write_strm(strm_file, expected)
-                chown_path(strm_file)
-                logger.info(f"[Sync] Rewrote {strm_file.name}: its old episode id is no longer listed")
+            try:
+                slots.offer(strm_file, int(ep_id), expected)
+            except (TypeError, ValueError):
+                slots.unknown(show_dir)   # an id we can't read: can't tell what is gone
+    if own:
+        slots.settle(client)
     return ep_count
 
 
@@ -808,6 +901,9 @@ def _repair_movie_strm(client, stream: dict, tmdb_id: int, provider: Provider, d
             # #185 (E25): with two films of one title, only the row's own stream
             # may restore its file -- another listing could be its namesake.
             return False
+        if _vod_root_unavailable(strm.parent.parent):
+            # Storage unavailable, as for a show folder (#439).
+            return False
         strm.parent.mkdir(parents=True, exist_ok=True)
         chown_path(strm.parent)
         _write_strm(strm, expected)
@@ -837,13 +933,14 @@ def _backfill_series_episodes(
     tmdb_id: int,
     provider: Provider,
     db: Session,
+    slots: Optional[_EpisodeSlots] = None,
 ) -> int:
     """For an EXISTING VOD series owned by this provider, fetch series info and
     write any newly-added season/episode .strm files. Returns count of new files.
 
     No-ops for series not owned by this provider or without a known folder.
     Best-effort: any provider/IO error is swallowed so a single bad series
-    doesn't break the category batch.
+    doesn't break the category batch. `slots`: see _write_episode_strms.
     """
     record = db.query(Series).filter(Series.tmdb_id == tmdb_id).first()
     if not record or record.provider_id != provider.id:
@@ -864,8 +961,7 @@ def _backfill_series_episodes(
         # VOD sweep, which deleted it, and the next sync re-imported the title as
         # new. Rebuild it instead — but only when the library root is there: a
         # missing or empty mount point means storage is unavailable.
-        root = show_dir.parent
-        if not root.is_dir() or not any(root.iterdir()):
+        if _vod_root_unavailable(show_dir.parent):
             return 0
 
     try:
@@ -874,7 +970,7 @@ def _backfill_series_episodes(
         if isinstance(episodes, list):
             episodes = {"1": episodes}
         if not episodes:
-            return 0
+            return 0   # an empty listing offers nothing; the show's other listings decide (#512)
         if recreate:
             show_dir.mkdir(parents=True, exist_ok=True)
             chown_path(show_dir)
@@ -888,12 +984,14 @@ def _backfill_series_episodes(
             chown_path(nfo)
             logger.info(f"[Sync] Restored missing folder for existing series '{record.title}'")
         folder_name = show_dir.name
-        new_eps = _write_episode_strms(client, episodes, show_dir, folder_name)
+        new_eps = _write_episode_strms(client, episodes, show_dir, folder_name, slots)
         if new_eps:
             record.date_updated = datetime.utcnow()
             logger.info(f"[Sync] Back-filled {new_eps} new episode(s) for existing series '{record.title}'")
         return new_eps
     except Exception as e:
+        if slots is not None:
+            slots.unknown(show_dir)   # this listing's episodes are unknown: repoint nothing
         logger.debug(f"[Sync] Episode back-fill failed for tmdb_id={tmdb_id}: {e}")
         return 0
 
@@ -907,7 +1005,7 @@ TAKEOVER = "takeover"
 
 
 def _take_over_files(db: Session, media_type: str, tmdb_id: int, client, item: dict,
-                     provider: Provider) -> None:
+                     provider: Provider, slots: Optional[_EpisodeSlots] = None) -> None:
     """Point a title a higher-priority provider just took over at that provider:
     the same repairs every later sync runs (see _strm_plays_other_provider),
     so paths and Jellyfin items stay. Tags are left alone: the old provider
@@ -916,7 +1014,7 @@ def _take_over_files(db: Session, media_type: str, tmdb_id: int, client, item: d
     if media_type == "movie":
         _repair_movie_strm(client, item, tmdb_id, provider, db)
     else:
-        _backfill_series_episodes(client, item, tmdb_id, provider, db)
+        _backfill_series_episodes(client, item, tmdb_id, provider, db, slots)
     logger.info(f"[Sync] tmdb:{tmdb_id} now plays from {provider.name} (higher priority)")
 
 
@@ -1076,7 +1174,7 @@ def _stream_origin(url_text: str, unwrap: bool = False):
     if m is None and unwrap:
         carried = _NS_CARRIED_RE.search(unquote(url_text or ""))
         m = _XTREAM_ACCOUNT_RE.match(carried.group(0)) if carried else None
-    return ("host", m.group(1).lower(), m.group(2)) if m else None
+    return ("host", m.group(1).lower(), unquote(m.group(2))) if m else None
 
 
 def _movie_row_plays_stream(client, stream: dict, strm_path, index: "_MovieIndex" = None):
@@ -1596,9 +1694,23 @@ VOD_MOVIES_ROOT = Path("/media/vod/movies")
 VOD_SERIES_ROOT = Path("/media/vod/shows")
 
 
-def _sweep_one_type(db: Session, Model, media_type: str, root: Path, now: datetime):
-    """Sweep one media type. Returns (removed_count, removed_titles)."""
-    rows = db.query(Model).filter(
+def _vod_root_unavailable(root: Path) -> bool:
+    """A library root that is missing or empty: the storage is not mounted.
+
+    mergerfs/NFS/SMB/rclone all report plain "not found" for every path while
+    a branch is out, and Docker shows a share that isn't mounted as the bare,
+    empty mount point. A stale mount (NFS/SMB/FUSE) raises OSError when read:
+    unavailable too (#440)."""
+    try:
+        return not root.is_dir() or not any(root.iterdir())
+    except OSError:
+        return True
+
+
+def _swept_rows(db: Session, Model):
+    """The VOD rows the sweep checks against the disk (and the sync must not
+    lose by writing onto an unmounted root)."""
+    return db.query(Model).filter(
         Model.source.like("provider_%"),
         Model.strm_path.isnot(None),
         # Titles the user opted out of .strm management are expected to have no
@@ -1606,14 +1718,35 @@ def _sweep_one_type(db: Session, Model, media_type: str, root: Path, now: dateti
         # the row and the next sync would re-import the title and rewrite the
         # file, silently undoing the opt-out.
         Model.strm_disabled.isnot(True),
-    ).all()
+    )
+
+
+def _check_vod_root_before_sync(db: Session, Model, root: Path, what: str):
+    """Raise SyncError when the library root is missing or empty while titles
+    are recorded in it (#439). Writing there put the provider's titles on the
+    container's own disk, hidden again once the share was mounted, and the
+    root was no longer empty, so the VOD sweep deleted every title the sync
+    had not written back. A new install has no rows, so it syncs."""
+    if not _vod_root_unavailable(root):
+        return
+    count = _swept_rows(db, Model).count()
+    if count:
+        raise SyncError(
+            f"{root} is missing or empty, but {count} {what} are recorded there: the storage "
+            f"looks unmounted, so nothing was synced. Mount it and sync again. If the folder "
+            f"really is empty now (a new disk), put any file in it and sync again."
+        )
+
+
+def _sweep_one_type(db: Session, Model, media_type: str, root: Path, now: datetime):
+    """Sweep one media type. Returns (removed_count, removed_titles)."""
+    rows = _swept_rows(db, Model).all()
     if not rows:
         return 0, []
 
     # A mount that is missing or empty means the storage is unavailable, not
-    # that every title was deleted. mergerfs/NFS/SMB/rclone all report plain
-    # "not found" for every path while a branch is out, which raises nothing.
-    if not root.is_dir() or not any(root.iterdir()):
+    # that every title was deleted.
+    if _vod_root_unavailable(root):
         logger.error(
             f"[VOD sweep] {root} is missing or empty — storage looks unavailable. "
             f"Skipping the {media_type} sweep rather than deleting "
@@ -1803,7 +1936,7 @@ def sync_provider(
     vod_movies_path = Path("/media/vod/movies")
     vod_series_path = Path("/media/vod/shows")
     match_threshold = float(get_setting(db, "tmdb_match_threshold", "0.7"))
-    recently_added_days = int(get_setting(db, "recently_added_days", "30"))
+    recently_added_days = get_recently_added_days(db)
     require_tmdb = provider.require_tmdb_match if provider.require_tmdb_match is not None else True
 
     # Create sync run record
@@ -1819,7 +1952,11 @@ def sync_provider(
 
     logger.info(f"Starting {sync_type} sync for provider: {provider.name} (run #{run.id})")
 
+    turn = False
     try:
+        _wait_for_vod_sync_turn(provider, run, db, progress_callback, cancel_check,
+                                "series" if sync_type == "series" else "movies")
+        turn = True
         try:
             unhide_vod_paths(db)
         except Exception as e:
@@ -1827,8 +1964,10 @@ def sync_provider(
 
         # Pre-sync disk space check
         if sync_type in ("full", "movies"):
+            _check_vod_root_before_sync(db, Movie, vod_movies_path, "films")
             _check_disk_before_sync(vod_movies_path)
         if sync_type in ("full", "series"):
+            _check_vod_root_before_sync(db, Series, vod_series_path, "shows")
             _check_disk_before_sync(vod_series_path)
 
         tmdb = TMDBService(bearer_token, data_dir, match_threshold)
@@ -1936,6 +2075,9 @@ def sync_provider(
     except Exception as e:
         logger.error(f"Sync failed: {e}", exc_info=True)
         run = _finish_run(db, run, "failed", str(e))
+    finally:
+        if turn:
+            _release_vod_sync_turn()
 
     return run
 
@@ -2709,6 +2851,8 @@ def _sync_series(
     }
     failed_lookups = _FailedLookups(db, provider.id, "series")
     lookup_now = datetime.utcnow()
+    # What every listing offers at each episode file; settled after the loop (#376)
+    slots = _EpisodeSlots()
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -2834,7 +2978,7 @@ def _sync_series(
                     _merge_source_tag(known_id, "series", cat.source_tag, provider.id, db)
                     seen_ids_all.add(known_id)
                     # Existing VOD series — back-fill any new seasons/episodes
-                    _backfill_series_episodes(client, series, known_id, provider, db)
+                    _backfill_series_episodes(client, series, known_id, provider, db, slots)
                     cat_existing += 1
                     stats["existing"] += 1
                     if item_idx % 10 == 0 or item_idx == total_in_cat:
@@ -2867,7 +3011,7 @@ def _sync_series(
             if tmdb_id in seen_tmdb_ids or tmdb_id in existing_provider_tmdb_ids:
                 _merge_source_tag(tmdb_id, "series", cat.source_tag, provider.id, db)
                 # Existing VOD series — back-fill any new seasons/episodes
-                _backfill_series_episodes(client, series, tmdb_id, provider, db)
+                _backfill_series_episodes(client, series, tmdb_id, provider, db, slots)
                 cat_existing += 1
                 stats["existing"] += 1
                 if item_idx % 10 == 0 or item_idx == total_in_cat:
@@ -2881,7 +3025,7 @@ def _sync_series(
                 existing_provider_tmdb_ids.add(tmdb_id)
                 _merge_source_tag(tmdb_id, "series", cat.source_tag, provider.id, db)
                 # Existing VOD series — back-fill any new seasons/episodes
-                _backfill_series_episodes(client, series, tmdb_id, provider, db)
+                _backfill_series_episodes(client, series, tmdb_id, provider, db, slots)
                 cat_existing += 1
                 stats["existing"] += 1
                 if item_idx % 10 == 0 or item_idx == total_in_cat:
@@ -2897,7 +3041,7 @@ def _sync_series(
             dup_answer = check_and_record_duplicate(tmdb_id, "series", f"provider_{provider.id}", str(show_dir),
                                                     provider, db)
             if dup_answer == TAKEOVER:
-                _take_over_files(db, "series", tmdb_id, client, series, provider)
+                _take_over_files(db, "series", tmdb_id, client, series, provider, slots)
             if dup_answer:
                 cat_existing += 1
                 stats["existing"] += 1
@@ -2938,7 +3082,7 @@ def _sync_series(
                 chown_path(nfo_file)
 
                 # Write episode strm files
-                ep_count = _write_episode_strms(client, episodes, show_dir, folder_name)
+                ep_count = _write_episode_strms(client, episodes, show_dir, folder_name, slots)
 
                 # Record in DB
                 series_record = Series(
@@ -3019,6 +3163,11 @@ def _sync_series(
             f"  {cat.category_name}: +{cat_new} new, "
             f"{cat_existing} existing, {cat_skipped} skipped"
         )
+
+    # A listing in an unread category may be the one an episode file plays:
+    # repoint episodes only when every listing was read, as for films (#263).
+    if fetch_ok:
+        slots.settle(client)
 
     logger.info(
         f"Series complete: {stats['new']} new, {stats['existing']} existing, "

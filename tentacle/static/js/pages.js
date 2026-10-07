@@ -677,7 +677,7 @@ function _buildSyncDetailHtml(d) {
 
   // 6. EPG
   if (d.epg_synced) {
-    html += _syncStepHtml('📡', 'Live TV EPG', 'ok', d.epg_details || 'EPG data refreshed');
+    html += _syncStepHtml('📡', 'Live TV EPG', 'ok', escapeAttr(d.epg_details || 'EPG data refreshed'));
   }
 
   // 7. Cleanup
@@ -4384,12 +4384,12 @@ function _renderCondValueInput(row, field, value) {
   const wrap = row.querySelector('[data-cond-val-wrap]');
   if (field === 'source') {
     const opts = (_conditionOptions?.sources || []).map(s =>
-      `<option value="${escapeAttr(s)}" ${s === value ? 'selected' : ''}>${s}</option>`
+      `<option value="${escapeAttr(s)}" ${s === value ? 'selected' : ''}>${escapeAttr(s)}</option>`
     ).join('');
     wrap.innerHTML = `<select class="form-input" data-cond-val><option value="">Select source...</option>${opts}</select>`;
   } else if (field === 'list') {
     const opts = (_conditionOptions?.lists || []).map(l =>
-      `<option value="${escapeAttr(l.tag)}" ${l.tag === value ? 'selected' : ''}>${l.name}</option>`
+      `<option value="${escapeAttr(l.tag)}" ${l.tag === value ? 'selected' : ''}>${escapeAttr(l.name)}</option>`
     ).join('');
     wrap.innerHTML = `<select class="form-input" data-cond-val><option value="">Select list...</option>${opts}</select>`;
   } else if (field === 'downloaded') {
@@ -4639,6 +4639,8 @@ async function _executeResolveDup(id, resolution) {
     _updateDupBadges();
   } catch (e) {
     toast(e.message, 'error');
+    loadDuplicates();  // a stale tab: show what was resolved meanwhile
+    _updateDupBadges();
   }
 }
 
@@ -4835,10 +4837,21 @@ async function previewMigration() {
     const r = await api(`/api/radarr/migration/preview?from_id=${fromId}&to_id=${toId}`);
     const el = document.getElementById('migrate-preview');
     el.style.display = 'block';
-    el.innerHTML = `From: ${r.from_provider} (${r.current_movies} movies)<br>To: ${r.to_provider}<br>${r.note ? `<span style="color:var(--amber)">${r.note}</span>` : ''}${r.error ? `<span style="color:var(--red)">Error: ${r.error}</span>` : ''}`;
+    el.innerHTML = `From: ${escapeHtml(r.from_provider)} (${r.current_movies} movies, ${r.current_series} series)<br>To: ${escapeHtml(r.to_provider)}<br>`
+      + (r.error ? `<span style="color:var(--red)">Error: ${escapeHtml(r.error)}</span>`
+        : `${r.movies_rewritten} movies move${migrationKept(r)}`);
   } catch (e) {
     toast(e.message, 'error');
   }
+}
+
+// What stays with the old provider (#460): films the new one doesn't list,
+// films it can't safely take (namesakes, no .strm), and every series.
+function migrationKept(r) {
+  const films = (r.movies_not_found || 0) + (r.movies_skipped || 0);
+  const series = r.series_kept || 0;
+  if (!films && !series) return '';
+  return `; ${films} movies and ${series} series stay with ${escapeHtml(r.from_provider || 'the old provider')}`;
 }
 
 async function runMigration(dryRun) {
@@ -4848,7 +4861,7 @@ async function runMigration(dryRun) {
   if (!dryRun && !confirm('This will rewrite .strm files. Continue?')) return;
   try {
     const r = await api('/api/radarr/migration/run', { method: 'POST', body: { from_provider_id: fromId, to_provider_id: toId, dry_run: dryRun } });
-    toast(`Migration complete: ${r.movies_rewritten} movies rewritten, ${r.movies_not_found} not found`);
+    toast(`Migration complete: ${r.movies_rewritten} movies moved${migrationKept(r)}`);
     closeModal('modal-migrate');
     loadProviders();
   } catch (e) {
@@ -5972,66 +5985,6 @@ function copyLiveSetup(type, btn) {
   });
 }
 
-// ── Provider form ─────────────────────────────────────────────────────────
-
-function fillProviderForm(p) {
-  document.getElementById('live-provider-type').value = p.provider_type || 'xtream';
-  document.getElementById('live-server-url').value = p.server_url || '';
-  document.getElementById('live-username').value = p.username || '';
-  document.getElementById('live-password').value = p.password || '';
-  document.getElementById('live-m3u-url').value = p.m3u_url || '';
-  document.getElementById('live-epg-url').value = p.epg_url || '';
-  document.getElementById('live-user-agent').value = p.user_agent || '';
-  onLiveTypeChange();
-}
-
-function onLiveTypeChange() {
-  const type = document.getElementById('live-provider-type').value;
-  document.getElementById('live-xtream-fields').style.display = type === 'xtream' ? '' : 'none';
-  document.getElementById('live-m3u-fields').style.display = type !== 'xtream' ? '' : 'none';
-}
-
-async function saveLiveProvider() {
-  const type = document.getElementById('live-provider-type').value;
-  const body = {
-    provider_type: type,
-    server_url: document.getElementById('live-server-url').value,
-    username: document.getElementById('live-username').value,
-    password: document.getElementById('live-password').value,
-    m3u_url: document.getElementById('live-m3u-url').value,
-    epg_url: document.getElementById('live-epg-url').value,
-    user_agent: document.getElementById('live-user-agent').value,
-    live_tv_enabled: true,
-  };
-
-  try {
-    const res = await api('/api/live/provider', { method: 'POST', body });
-    liveState.providerId = res.provider_id;
-    toast('Provider saved', 'success');
-  } catch (e) {
-    toast(`Save failed: ${e.message}`, 'error');
-  }
-}
-
-async function testLiveProvider() {
-  const el = document.getElementById('live-test-result');
-  el.innerHTML = '<span style="color:var(--amber)">Testing...</span>';
-  try {
-    const res = await api('/api/live/provider/test', { method: 'POST' });
-    if (res.success) {
-      let info = '';
-      if (res.info) {
-        info = ` — ${res.info.status || ''}, max ${res.info.max_connections || '?'} connections`;
-      }
-      el.innerHTML = `<span style="color:var(--green)">Connected${info}</span>`;
-    } else {
-      el.innerHTML = `<span style="color:var(--red)">${res.message}</span>`;
-    }
-  } catch (e) {
-    el.innerHTML = `<span style="color:var(--red)">${e.message}</span>`;
-  }
-}
-
 function renderLiveStats(data) {
   const el = document.getElementById('live-stats');
   el.innerHTML = `
@@ -6846,6 +6799,7 @@ function loadHealthPage() {
   loadHealthDownloads();
   loadHealthMissing();
   loadHealthStreams();
+  loadHealthActivity();
   loadHealthDeletions();
   startHealthPolling();
 }
@@ -6920,7 +6874,11 @@ async function healthRecheckStreams(btn) {
 async function healthRunStreamSweep(btn) {
   if (btn) btn.disabled = true;
   try {
-    await api('/api/health/streams/sweep', { method: 'POST' });
+    const r = await api('/api/health/streams/sweep', { method: 'POST' });
+    if (r && r.started === false) {
+      toast('A sweep is already running — results appear here as it progresses', 'info');
+      return;
+    }
     toast('Sweep started — results appear here as it progresses', 'info');
     setTimeout(loadHealthStreams, 15000);
   } catch (e) {
@@ -7183,8 +7141,11 @@ async function healthFixDownload(source, queueId, btn) {
   if (btn) btn.disabled = true;
   try {
     const r = await api('/api/health/downloads/fix', { method: 'POST', body: { source, queue_id: queueId } });
-    toast(r.replaced ? `Replaced with ${r.picked_protocol} release` : 'Cancelled — no alternative release found',
-          r.replaced ? 'success' : 'info');
+    const arr = source === 'radarr' ? 'Radarr' : 'Sonarr';
+    toast(r.replaced ? `Replaced with ${r.picked_protocol} release`
+          : r.searching ? `Cancelled — ${arr} is searching for a replacement`
+          : 'Cancelled — no alternative release found',
+          r.replaced || r.searching ? 'success' : 'info');
     loadHealthDownloads();
     loadHealthDeletions();
   } catch (e) {
@@ -7273,6 +7234,80 @@ async function loadHealthDeletions() {
   }
 }
 
+// ── Recent activity (the Activity feed: /api/sync/activity) ────────────────
+
+const _ACTIVITY_EVENT_META = {
+  'livetv_recording_damaged': { label: 'Recording damaged', cls: 'badge-red', problem: true },
+  'livetv_placeholder':       { label: 'Channel placeholder', cls: 'badge-amber', problem: true },
+  'epg_sync_failed':          { label: 'Guide failed', cls: 'badge-red', problem: true },
+  'rating_restore_failed':    { label: 'Rating restore', cls: 'badge-red', problem: true },
+  'download_fix_skipped':     { label: 'Download fix', cls: 'badge-amber', problem: true },
+  'wrong_match':              { label: 'Wrong movie?', cls: 'badge-amber', problem: true },
+  'stream_health':            { label: 'Stream health', cls: 'badge-amber' },
+  'download_fix':             { label: 'Download fix', cls: 'badge-accent' },
+  'livetv_sync':              { label: 'Live TV', cls: 'badge-blue' },
+  'livetv_config':            { label: 'Live TV', cls: 'badge-blue' },
+  'epg_sync':                 { label: 'Guide', cls: 'badge-blue' },
+  'new_live_groups':          { label: 'Live TV', cls: 'badge-blue' },
+  'vod_sync':                 { label: 'VOD sync', cls: 'badge-accent' },
+  'sync':                     { label: 'VOD sync', cls: 'badge-accent' },
+  'new_categories':           { label: 'VOD', cls: 'badge-accent' },
+  'vod_sweep':                { label: 'VOD sweep', cls: 'badge-accent' },
+  'orphan_sweep':             { label: 'Orphan sweep', cls: 'badge-accent' },
+  'radarr_scan':              { label: 'Radarr', cls: 'badge-gray' },
+  'radarr_remove':            { label: 'Radarr', cls: 'badge-gray' },
+  'sonarr_scan':              { label: 'Sonarr', cls: 'badge-gray' },
+  'sonarr_remove':            { label: 'Sonarr', cls: 'badge-gray' },
+  'jellyfin_push':            { label: 'Jellyfin', cls: 'badge-gray' },
+  'list_fetch':               { label: 'List', cls: 'badge-gray' },
+  'lists_refresh':            { label: 'List', cls: 'badge-gray' },
+  'new_playlists':            { label: 'Playlist', cls: 'badge-gray' },
+};
+
+function _activityMeta(e) {
+  const meta = _ACTIVITY_EVENT_META[e.event];
+  if (meta) return meta;
+  // An event this map doesn't know yet still shows, named after itself
+  const label = String(e.event || 'event').replace(/_/g, ' ');
+  return { label: label.charAt(0).toUpperCase() + label.slice(1), cls: 'badge-gray' };
+}
+
+function _activityIsProblem(e) {
+  return !!_activityMeta(e).problem || /_failed$/.test(e.event || '') || /\bfailed\b/i.test(e.message || '');
+}
+
+async function loadHealthActivity() {
+  const el = document.getElementById('health-activity');
+  if (!el) return;
+  try {
+    const entries = await api('/api/sync/activity?limit=100');
+    const countEl = document.getElementById('health-activity-count');
+    const problems = entries.filter(_activityIsProblem).length;
+    if (countEl) countEl.textContent = problems ? `(${problems} to look at)` : '';
+    if (!entries.length) {
+      el.innerHTML = '<div class="empty-state"><p>No activity recorded yet</p></div>';
+      return;
+    }
+    const rows = entries.map(e => {
+      const meta = _activityMeta(e);
+      const cls = _activityIsProblem(e) && !meta.problem ? 'badge-red' : meta.cls;
+      const d = _healthDate(e.created_at);
+      const when = d ? `<span title="${d.toLocaleString()}">${timeAgo(d)}</span>` : '—';
+      return `<tr>
+        <td style="white-space:nowrap">${when}</td>
+        <td><span class="badge ${cls}" style="font-size:10px">${escapeHtml(meta.label)}</span></td>
+        <td style="font-size:12px">${escapeHtml(e.message || '')}</td>
+      </tr>`;
+    }).join('');
+    el.innerHTML = `<div style="overflow-x:auto;max-height:420px;overflow-y:auto"><table>
+      <thead><tr><th>When</th><th>What</th><th>Detail</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`;
+  } catch (e) {
+    el.innerHTML = '<div class="empty-state"><p>Failed to load activity</p></div>';
+  }
+}
+
 (function exposeGlobals() {
   const fns = [
     // Activity (inline handlers)
@@ -7321,7 +7356,7 @@ async function loadHealthDeletions() {
     // Activity
     loadActivity, startActivityPolling, stopActivityPolling,
     // Health
-    loadHealthPage, loadHealthDeletions, loadHealthDownloads, stopHealthPolling,
+    loadHealthPage, loadHealthActivity, loadHealthDeletions, loadHealthDownloads, stopHealthPolling,
     saveHealthDownloadSettings, healthFixDownload, healthRemoveDownload, healthImportDownload,
     showHealthMissingTab, loadHealthMissing, healthDiagnose, healthGrabRelease, healthSearchMissing,
     loadHealthStreams, healthRecheckStreams, healthRunStreamSweep, healthClearStream, healthRemoveStream,
@@ -7329,7 +7364,7 @@ async function loadHealthDeletions() {
     loadDiscoverPage, loadDiscover, setDiscoverType, switchDiscoverSection, selectStreamingProvider, selectGenre, setGenreMode, selectList, showDiscoverDetail,
     onDiscoverSearchInput, clearDiscoverSearch,
     // Live TV
-    loadLiveTV, showLiveTab, onLiveTypeChange, saveLiveProvider, testLiveProvider,
+    loadLiveTV, showLiveTab,
     liveSyncGroups, liveSyncChannels, liveSyncEpg, fillSetupUrls, updateSetupUrls, copyLiveSetup, saveSetupAddress, editSetupAddress,
     toggleLiveGroup, toggleAllGroups, saveLiveGroups, filterLiveGroups,
     loadLiveChannels, toggleLiveChannel, renameLiveChannel, setLiveChannelGuideId, toggleAllChannels, saveLiveChannels, searchLiveChannels, filterLiveChannels, filterLiveChannelsByEpg, liveChPage,

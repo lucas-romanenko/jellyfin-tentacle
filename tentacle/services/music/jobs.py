@@ -14,7 +14,7 @@ import json
 import logging
 import time
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import or_
 
@@ -27,6 +27,12 @@ logger = logging.getLogger(__name__)
 
 # How long to wait for Lidarr to load a new album's releases (about a minute).
 RELEASE_WAIT = (2, 3, 5, 5, 10, 10, 15, 15)
+
+# An add whose answer failed may still land in Lidarr (#431): the request stays
+# owed this long, and is looked for again this many seconds after it failed (then
+# at startup and at every daily check).
+OWED_ADD_HOURS = 6
+OWED_ADD_LOOKS = (60, 300, 1800, 7200)
 
 progress = {"running": False, "done": 0, "total": 0, "started": None, "trigger": None}
 
@@ -41,13 +47,16 @@ def _request_done(row: MusicAlbum) -> None:
     row.request_pending, row.request_choice = False, None
 
 
-def finish_request(album_id: int, rgid: str, choice: dict = None, sleep=time.sleep, resumed: bool = False):
+def finish_request(album_id: int, rgid: str, choice: dict = None, sleep=time.sleep):
     """The worker job that completes a request: pin the original, then search.
 
     The album's row stays `request_pending` until this has pinned and searched (or
     handed the album to review), so a request whose job was lost is finished later
-    (finish_pending_requests). `resumed`: such a later run, which leaves an album
-    that has files since to the daily check (a pin then could change files)."""
+    (finish_pending_requests). An album that has files (one Lidarr had
+    unmonitored, or one that downloaded since) is never pinned here, since a pin
+    could change its files: it is checked, so Fix library offers the pin for an
+    admin's Apply, and searched only if it is already pinned right and locked
+    (#242, #422)."""
     def job(db):
         client = library.lidarr_client(db)
         album = client.album(album_id)
@@ -57,10 +66,8 @@ def finish_request(album_id: int, rgid: str, choice: dict = None, sleep=time.sle
             sleep(delay)
             album = client.album(album_id)
         row = library.upsert_album(db, album)
-        if resumed and int((album.get("statistics") or {}).get("trackFileCount") or 0):
-            _request_done(row)
-            db.commit()
-            logger.info(f"[Request] album '{row.title}' has files already; left to the daily check")
+        if int((album.get("statistics") or {}).get("trackFileCount") or 0):
+            _check_album_with_files(db, client, album_id)
             return
         if not album.get("releases"):
             row.verdict = {"state": "Waiting for Lidarr to load this album's releases; the daily check "
@@ -96,20 +103,73 @@ def finish_request(album_id: int, rgid: str, choice: dict = None, sleep=time.sle
     return job
 
 
+def _check_album_with_files(db, client, album_id: int) -> None:
+    """finish_request for an album that has files: check it, search only a right, locked pin."""
+    row, album = library.sync_album(db, client, album_id)
+    verdict = library.check_album(db, row, album, MusicBrainz.from_settings(db), rule.Prefs.from_settings(db))
+    searched = (verdict.category == rule.RIGHT and verdict.locked
+                and verdict.have < (verdict.pinned or {}).get("tracks", 0))
+    if searched:
+        client.search_albums([album_id])
+    _request_done(row)
+    db.commit()
+    logger.info(f"[Request] album '{row.title}' has files already: not re-pinned ({verdict.category})"
+                + ("; search started" if searched else "; any pin waits for Fix library"))
+
+
+def owe_add(db, rgid: str, found: dict, user_id, choice: dict = None) -> None:
+    """Keep a request whose add may still land in Lidarr (its answer timed out or
+    failed, and Lidarr doesn't list the album yet): a row with no Lidarr id, not
+    monitored (the album can still be requested), that finish_pending_requests pins
+    and searches once Lidarr lists the album, or drops after OWED_ADD_HOURS."""
+    artist = found.get("artist") or {}
+    row = db.query(MusicAlbum).filter(MusicAlbum.mbid == rgid).first() or MusicAlbum(mbid=rgid)
+    row.lidarr_album_id, row.lidarr_artist_id, row.monitored = None, None, False
+    row.title = found.get("title") or row.title or ""
+    row.artist_mbid = artist.get("foreignArtistId") or row.artist_mbid or ""
+    row.artist_name = artist.get("artistName") or row.artist_name or ""
+    row.category, row.verdict = "", {"state": "Requested: waiting for Lidarr to add it"}
+    row.requested_by, row.requested_at = user_id, datetime.utcnow()
+    row.request_pending, row.request_choice = True, choice
+    row.updated_at = datetime.utcnow()
+    db.add(row)
+    db.commit()
+
+    def look():
+        worker.submit(lambda job_db: finish_pending_requests(job_db), worker.NORMAL, "owed album adds")
+    for delay in OWED_ADD_LOOKS:
+        _schedule_once(look, delay, f"music_owed_adds_{delay}")
+
+
+def _owed_add_landed(db, client, row: MusicAlbum) -> bool:
+    """An owed add (a row with no Lidarr id): True once Lidarr lists the album (the
+    row then has its id); False while it doesn't, dropping it after OWED_ADD_HOURS."""
+    album = client.album_by_mbid(row.mbid)
+    if album and album.get("id"):
+        library.upsert_album(db, album)
+        db.commit()
+        return True
+    if not row.requested_at or datetime.utcnow() - row.requested_at > timedelta(hours=OWED_ADD_HOURS):
+        logger.info(f"[Request] '{row.artist_name} - {row.title}': Lidarr never added it; "
+                    "no longer waiting for it")
+        db.delete(row)
+        db.commit()
+    return False
+
+
 def finish_pending_requests(db, errors: list = None) -> int:
     """Finish requests whose pin-and-search job never ran (Tentacle restarted, or the
-    job failed). Runs at startup and at the start of every daily check."""
+    job failed), and owed adds that have landed in Lidarr since (owe_add). Runs at
+    startup and at the start of every daily check."""
     worker.run_urgent_jobs()   # a request's own job, if still queued, goes first
     rows = db.query(MusicAlbum).filter(MusicAlbum.request_pending.is_(True)).all()
     done = 0
     for row in rows:
         title = f"{row.artist_name} - {row.title}"
-        if not row.lidarr_album_id:
-            _request_done(row)
-            db.commit()
-            continue
         try:
-            finish_request(row.lidarr_album_id, row.mbid, row.request_choice, resumed=True)(db)
+            if not row.lidarr_album_id and not _owed_add_landed(db, library.lidarr_client(db), row):
+                continue
+            finish_request(row.lidarr_album_id, row.mbid, row.request_choice)(db)
             done += 1
             logger.info(f"[Request] '{title}': finished a request that was left unfinished")
         except LidarrError as e:
@@ -445,11 +505,15 @@ def retry_pictures_later(artist_id: int, delay: int = 300) -> None:
     """After an import, give the player time to scan the artist in, then set its picture."""
     def run():
         worker.submit(_pictures_for_lidarr_artist(artist_id), worker.NORMAL, "artist picture")
+    _schedule_once(run, delay, f"music_picture_{artist_id}")
+
+
+def _schedule_once(fn, delay: int, job_id: str) -> None:
     try:
         from main import schedule_once
-        schedule_once(run, delay, f"music_picture_{artist_id}")
+        schedule_once(fn, delay, job_id)
     except Exception as e:  # no scheduler (tests, CLI): the daily check catches up
-        logger.debug(f"[Music] couldn't schedule a picture retry: {e}")
+        logger.debug(f"[Music] couldn't schedule {job_id}: {e}")
 
 
 def _pictures_for_lidarr_artist(artist_id: int):
