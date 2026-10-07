@@ -86,7 +86,7 @@ async function musicDiscoverHome() {
   const tabs = document.getElementById('discover-section-tabs');
   if (tabs) {
     tabs.innerHTML = _MUSIC_TABS.map(([id, label]) =>
-      `<button class="discover-sec-tab" data-mtab="${id}" onclick="musicDiscoverTab('${id}')">${label}</button>`).join('');
+      `<button class="discover-sec-tab" data-mtab="${id}" onclick="musicDiscoverTab('${escapeJS(id)}')">${label}</button>`).join('');
   }
   if (!musicState.discover) {
     document.getElementById('discover-grid').innerHTML =
@@ -170,8 +170,8 @@ function _musicBuilding(d, which, what) {
 
 function _musicArtistCard(a) {
   const pic = a.picture
-    ? `<img class="music-artist-pic" src="${escapeAttr(a.picture)}" loading="lazy" onerror="this.outerHTML='<div class=\\'music-artist-pic\\'>${escapeAttr((a.name || '?').charAt(0))}</div>'">`
-    : `<div class="music-artist-pic">${escapeAttr((a.name || '?').charAt(0))}</div>`;
+    ? `<img class="music-artist-pic" src="${escapeAttr(a.picture)}" loading="lazy" onerror="this.outerHTML='<div class=\\'music-artist-pic\\'>${escapeJS(escapeAttr(Array.from(a.name || '?')[0]))}</div>'">`
+    : `<div class="music-artist-pic">${escapeAttr(Array.from(a.name || '?')[0])}</div>`;
   return `<div class="music-artist-card" onclick="openMusicArtist('${escapeJS(a.mbid)}')">${pic}
       <div class="music-artist-name" title="${escapeAttr(a.name)}">${escapeAttr(a.name)}</div>
       ${a.in_library ? '<span class="badge badge-green" style="font-size:9px;padding:1px 5px">In Lidarr</span>' : ''}
@@ -894,7 +894,7 @@ async function loadMusicFix(el) {
       <div class="music-fix-head">
         <span class="music-fix-title">${title} (${items.length})</span>
         ${d.auto && d.auto[key] ? '<span class="badge badge-green" style="font-size:10px">Applied automatically</span>' : ''}
-        <button class="btn btn-primary btn-sm" onclick="applyMusicFixGroup('${key}', ${items.length}, this)">Apply all ${items.length}</button>
+        <button class="btn btn-primary btn-sm" onclick="applyMusicFixGroup('${escapeJS(key)}', ${items.length}, this)">Apply all ${items.length}</button>
         <span class="music-fix-desc">${desc}${key === 'repin_trim' ? _recycleNote(d.recycle_bin) : ''}</span>
       </div>
       ${items.map(a => _fixRow(a, true, key === 'repin_trim')).join('')}
