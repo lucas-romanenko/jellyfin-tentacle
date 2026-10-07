@@ -18,6 +18,7 @@ from models.database import get_db, Provider, Movie, ListItem, ListSubscription,
 from services.radarr import (scan_radarr_library, RadarrService, download_loss_looks_like_an_outage, download_kind,
                              downloaded_movie_rows, release_vod_download)
 from services.nfo import update_nfo_tags, write_movie_nfo, make_folder_name, refresh_arr_nfo
+from services.duplicates import droppable_duplicates
 from services.tagger import tentacle_owned_tags
 from services.migration import migrate_provider, preview_migration
 from services.logstream import log_event_generator, get_recent_logs, emit_library_event
@@ -255,8 +256,10 @@ def _remove_downloaded_movie(db: Session, tmdb_id: int, title: str, arr_folder: 
         if not replacing:  # "Bad copy": the request stands while another copy comes
             db.query(DownloadRequest).filter(DownloadRequest.tmdb_id == tmdb_id, DownloadRequest.media_type == "movie").delete()
         # Clear duplicate tombstones — deleting the downloaded copy is a
-        # clean slate; the title may legitimately re-import from VOD later
-        db.query(Duplicate).filter(Duplicate.tmdb_id == tmdb_id, Duplicate.media_type == "movie").delete()
+        # clean slate; the title may legitimately re-import from VOD later.
+        # Not while Keep VOD (whose delete sent this) holds them, nor one
+        # holding users' saved watched state (#515).
+        droppable_duplicates(db, "movie", tmdb_id).delete(synchronize_session=False)
         db.commit()
     except Exception:
         db.rollback()

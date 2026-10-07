@@ -22,7 +22,7 @@ from sqlalchemy.orm import sessionmaker
 import models.database as mdb
 import routers.livetv as livetv_router
 import services.xmltv as xmltv
-from services.channel_names import channel_name_key
+from services.channel_names import channel_country, channel_name_key, feed_countries
 from services.epg_match import coverage_report, coverage_summary, resolve_guide_ids
 from tmp_dirs import temp_dir
 
@@ -168,6 +168,43 @@ class CountryCheck(unittest.TestCase):
         self.assertIn("1 a name the feed has only for another country", coverage_summary(report))
 
 
+class LanguageTags(unittest.TestCase):
+    """"EN: Discovery Channel" names a language, not a country: it was read as
+    country "en", so its US namesake was "foreign" and it got no guide (#527)."""
+
+    FEED = [{"id": "DiscoveryChannel.us", "names": ["Discovery Channel"]}]
+
+    def test_a_language_tag_matches_like_an_untagged_name(self):
+        for name in ("Discovery Channel", "EN: Discovery Channel", "|EN| Discovery Channel",
+                     "[EN] DISCOVERY CHANNEL HD", "JA: Discovery Channel"):
+            with self.subTest(name=name):
+                r = resolve_guide_ids([_ch(1, name)], self.FEED)[1]
+                self.assertEqual(("name", "DiscoveryChannel.us"), (r["method"], r["guide_id"]), r["reason"])
+
+    def test_a_country_after_the_language_still_scopes_the_match(self):
+        r = resolve_guide_ids([_ch(1, "EN CA: Discovery Channel")], self.FEED)[1]
+        self.assertEqual("foreign", r["reason"])
+        feed = self.FEED + [{"id": "DiscoveryChannel.ca", "names": ["Discovery Channel"]}]
+        r = resolve_guide_ids([_ch(1, "EN CA: Discovery Channel")], feed)[1]
+        self.assertEqual(("name", "DiscoveryChannel.ca"), (r["method"], r["guide_id"]))
+
+    def test_real_country_tags_are_unchanged(self):
+        r = resolve_guide_ids([_ch(1, "UK: Discovery Channel"), _ch(2, "CA EN: Discovery Channel"),
+                               _ch(3, "CA FR: Discovery Channel"), _ch(4, "LT: Discovery Channel")], self.FEED)
+        self.assertEqual(["foreign"] * 4, [r[i]["reason"] for i in (1, 2, 3, 4)])
+        for name, country in (("UK: X", "gb"), ("|GB| X", "gb"), ("US: X", "us"), ("USA: X", "us"),
+                              ("CA: X", "ca"), ("CA EN: X", "ca"), ("CA FR: X", "ca"), ("LT: X", "lt"),
+                              ("FR: X", "fr"), ("DE: X", "de"), ("AR: X", "ar"), ("EU: X", "eu"),
+                              ("EN: X", None), ("[EN] X", None), ("EN CA: X", "ca"), ("X", None)):
+            with self.subTest(name=name):
+                self.assertEqual(country, channel_country(name))
+
+    def test_a_language_tag_on_the_feed_side_still_names_a_country(self):
+        feed = [{"id": "disc", "names": ["JA: Discovery Channel"]}]
+        self.assertEqual({"ja"}, feed_countries("disc", ["JA: Discovery Channel"]))
+        self.assertEqual("foreign", resolve_guide_ids([_ch(1, "US: Discovery Channel")], feed)[1]["reason"])
+
+
 def _stamp(dt):
     return dt.strftime("%Y%m%d%H%M%S +0000")
 
@@ -285,6 +322,27 @@ class EpgSyncMatchesByName(unittest.TestCase):
         self.assertTrue(self._sync(), livetv_router._get_sync_status(self.pid).get("message"))
         self.db.expire_all()
         self.assertEqual(0, self.db.query(mdb.EPGProgram).filter_by(channel_id="TSN5.ca").count())
+
+    def test_a_dropped_match_leaves_another_providers_guide_alone(self):
+        """#516: programmes are keyed by guide id across providers. Q's channel
+        uses TSN5.ca by tvg-id; P's dropped name match on it must not delete
+        Q's guide, which P's sync doesn't store again."""
+        self._add_own_tsn_schedule()
+        q = mdb.Provider(name="Q", server_url="http://192.0.2.20", username="u", password="p",
+                         live_tv_enabled=True)
+        self.db.add(q)
+        self.db.flush()
+        self.db.add(mdb.LiveChannel(provider_id=q.id, name="TSN 5", stream_id="9", epg_channel_id="TSN5.ca",
+                                    stream_url="http://192.0.2.20/live/9.ts", enabled=True))
+        start = datetime.utcnow().replace(microsecond=0) + timedelta(hours=1)
+        self.db.add(mdb.EPGProgram(channel_id="TSN5.ca", title="Q's hockey", start=start,
+                                   stop=start + timedelta(hours=1)))
+        self.db.commit()
+        self.assertTrue(self._sync(), livetv_router._get_sync_status(self.pid).get("message"))
+        self.db.expire_all()
+        self.assertEqual(["Q's hockey"], [p.title for p in
+                                          self.db.query(mdb.EPGProgram).filter_by(channel_id="TSN5.ca")])
+        self.assertEqual(1, self.db.query(mdb.EPGProgram).filter_by(channel_id="old-tsn.ca").count())
 
     def test_the_channel_list_shows_how_each_guide_was_found(self):
         self._sync()

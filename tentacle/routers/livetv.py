@@ -27,6 +27,7 @@ import hashlib
 import logging
 import re
 import threading
+from array import array
 from collections import deque
 
 import httpx
@@ -242,13 +243,15 @@ async def _decidable_start(pieces, need: int = 564):
 # Forwarded again, they repeated in the recording at every re-dial (on a
 # "newest connection wins" account every ~13 s: files 1.7-2.6x their content,
 # time jumping back at each reconnect). _ReplaySplicer joins a re-dialled
-# connection right after the last byte sent, but only when that is proven;
-# anything else goes out as it comes (duplicates at worst, never a loss).
+# connection right after the last byte sent, but only when that is proven:
+# every packet it drops equals the packet sent at that place (#520: a provider
+# that loops aired packets verbatim can repeat a frame start that was sent
+# right after packets that never were). Anything else goes out as it comes
+# (duplicates at worst, never a loss).
 _SPLICE_HOLD_BYTES = 32 * 1024 * 1024   # the most of a replay held: half a client's byte slack
 _SPLICE_HOLD_SECONDS = 30.0             # the longest the output pauses for one
 _SPLICE_DECIDE_PACKETS = 2048           # the first frame start must come within this
 _SPLICE_INDEX_MAX = 16384               # frame starts remembered (minutes of a channel)
-_SPLICE_TAIL_MAX = 4 * 1024 * 1024      # bytes since the last one, kept to compare
 
 
 def _ts_frame_start(pkt) -> bool:
@@ -271,10 +274,11 @@ class _ReplaySplicer:
     If that packet was sent before, at output offset o, the connection is a
     replay that should reach the end of what was sent at sent_total - o bytes
     past it. It is held up to that point, every frame start on the way must
-    sit exactly where it was sent (a gap in between shifts them), and the
-    bytes sent since the last frame start must come right before it. Then the
-    held replay is dropped and the stream goes on from there. Anything else
-    (a first frame never sent: a real gap or no replay; a replay that differs,
+    sit exactly where it was sent (a gap in between shifts them), and every
+    packet before the join point must equal the one sent at that place (a
+    hash per packet sent, kept as far back as a hold reaches). Then the held
+    replay is dropped and the stream goes on from there. Anything else (a
+    first frame never sent: a real gap or no replay; a replay that differs,
     is too large or too slow; a break before the join) releases what was held."""
 
     def __init__(self, channel_id: int, health: dict):
@@ -282,29 +286,23 @@ class _ReplaySplicer:
         self.sent_total = 0
         self._index: dict = {}          # frame-start packet -> where it was sent (the newest)
         self._order = deque()           # (offset, packet), oldest first
-        self._tail: list = []           # bytes sent since the last frame start
-        self._tail_len = 0
-        self._tail_ok = False           # none yet, or the tail outgrew _SPLICE_TAIL_MAX
+        # hash(packet) of every packet sent, by packet number modulo its size
+        self._ring = array("q", bytes(8 * (_SPLICE_HOLD_BYTES // 188 + 1)))
         self._breaks = deque([0])       # where a connection not joined began in the output
         self._hold = None               # the re-dialled connection's bytes while it is judged
 
     def sent(self, data: bytes) -> None:
         """Whole packets that went out, in order."""
-        base, last = self.sent_total, None
+        base, ring, size = self.sent_total, self._ring, len(self._ring)
+        p = base // 188
         for i in range(0, len(data) - 187, 188):
-            if data[i + 1] & 0x40 and _ts_frame_start(data[i:i + 188]):
-                key = data[i:i + 188]
+            key = data[i:i + 188]
+            ring[p % size] = hash(key)
+            p += 1
+            if data[i + 1] & 0x40 and _ts_frame_start(key):
                 self._index[key] = base + i
                 self._order.append((base + i, key))
-                last = i
         self.sent_total += len(data)
-        if last is not None:
-            self._tail, self._tail_len, self._tail_ok = [data[last:]], len(data) - last, True
-        elif self._tail_ok and data:
-            self._tail.append(data)
-            self._tail_len += len(data)
-            if self._tail_len > _SPLICE_TAIL_MAX:
-                self._tail, self._tail_len, self._tail_ok = [], 0, False
         # Older than a hold could reach back to: never a join point again.
         floor = self.sent_total - _SPLICE_HOLD_BYTES
         while self._order and (len(self._order) > _SPLICE_INDEX_MAX or self._order[0][0] < floor):
@@ -317,6 +315,7 @@ class _ReplaySplicer:
     def begin(self, now: float, outage: float) -> None:
         """A re-dialled connection starts delivering (its partial first packet trimmed)."""
         self._hold, self._scan, self._first, self._join = bytearray(), 0, None, None
+        self._checked = 0               # held packets found equal to the ones sent there
         self._since, self._outage = now, outage
 
     def feed(self, piece: bytes, now: float) -> bytes:
@@ -338,11 +337,10 @@ class _ReplaySplicer:
             if self._first is None:
                 if sent_at is None:
                     return self._release("it starts with a frame not sent before: a gap, or no replay")
-                if not self._tail_ok:
-                    return self._release("too long since the last frame start sent")
                 # What came before that frame (tables, the end of the previous
                 # frame) is dropped too: it must have gone out right before it,
-                # not be cut off by an earlier connection's start.
+                # not be cut off by an earlier connection's start (and below,
+                # be the very packets sent there).
                 if any(sent_at - n < b <= sent_at for b in self._breaks):
                     return self._release("what precedes its first frame was not sent")
                 self._first = (n, sent_at)
@@ -351,10 +349,18 @@ class _ReplaySplicer:
                     return self._release(f"a replay of {self._join / 1e6:.0f} MB is too large to hold")
             elif sent_at != self._first[1] + n - self._first[0]:
                 return self._release("its frames are not where they were sent")
+        if self._join is not None:
+            # Every packet dropped must be the one sent at that place (#520):
+            # held packet k was output packet sent_total/188 - join/188 + k.
+            # Checked as it arrives, so a large replay isn't hashed at once.
+            ring, size = self._ring, len(self._ring)
+            at = self.sent_total // 188 - self._join // 188
+            upto = min(len(hold), self._join) // 188
+            for k in range(self._checked, upto):
+                if hash(bytes(hold[k * 188:k * 188 + 188])) != ring[(at + k) % size]:
+                    return self._release("the bytes before the join point differ")
+            self._checked = upto
         if self._join is not None and len(hold) >= self._join:
-            tail = b"".join(self._tail)
-            if hold[self._join - len(tail):self._join] != tail:
-                return self._release("the bytes before the join point differ")
             out = bytes(hold[self._join:])
             self.health["replays_joined"] += 1
             self.health["replay_bytes_skipped"] += self._join
@@ -1082,21 +1088,97 @@ def _recording_stream_ids_from_jellyfin(url: str, key: str) -> "set[str] | None"
         return None
     out = set()
     now = datetime.utcnow()
-    for timer in data.get("Items") or []:
+    items = data.get("Items") or []
+    for timer in items:
         ext = timer.get("ExternalChannelId") or ""
         if not ext.startswith("hdhr_"):
             continue
         status = timer.get("Status")
         if status == "InProgress":
+            _remember_fired_timer(timer, now)
             out.add(ext[len("hdhr_"):])
-        elif status == "New" and _timer_is_imminent(timer, now):
+        elif status == "New" and _timer_counts(timer, now):
             # Jellyfin opens the tuner stream BEFORE it marks the timer
             # InProgress, so the pull that starts a recording would be a
             # viewer for its first seconds -- and at capacity, a viewer
             # cannot take a slot from a viewer. A timer that is due counts
             # as recording already.
             out.add(ext[len("hdhr_"):])
+    present = {t.get("Id") for t in items}
+    for tid, expiry in list(_fired_timers.items()):
+        if tid not in present or now >= expiry:
+            del _fired_timers[tid]
+            _fired_starts.pop(tid, None)
     return out
+
+
+# Jellyfin timers Tentacle has seen fire (Id -> end of the recording: EndDate
+# plus post-padding). When a recording's tuner open fails, Jellyfin retries
+# it every minute -- and rewrites the timer as it does so: PrePaddingSeconds
+# 0, and at each fire StartDate reset to the programme's start. A retry in
+# the pre-padding therefore reads as "starts in 14 minutes, no padding",
+# which is not imminent: it was ranked as a viewer, refused at capacity and
+# under recording protection, and after ten retries Jellyfin deleted the
+# timer before its programme began. A timer that has fired, is New again
+# with no pre-padding and has not ended is such a retry. Only read and
+# written by _recording_stream_ids_from_jellyfin, which runs one at a time
+# (the single pending lookup). Lost on restart: then as before.
+#
+# A guide refresh during a retry cycle re-arms the timer for its programme's
+# start (padding stays 0) and Jellyfin opens nothing until then; if the
+# programme moved later, the timer must not keep counting. So a remembered
+# timer counts only while it still starts by the programme start seen when
+# it fired (_fired_starts) plus the imminent window.
+_fired_timers: "dict[str, datetime]" = {}
+_fired_starts: "dict[str, datetime]" = {}
+_FIRED_GRACE_SECONDS = 30.0
+
+
+def _remember_fired_timer(timer: dict, now: "datetime") -> None:
+    tid = timer.get("Id")
+    end = _parse_timer_date(timer.get("EndDate"))
+    if not tid or end is None:
+        return
+    expiry = end + timedelta(seconds=_timer_seconds(timer.get("PostPaddingSeconds")))
+    if expiry > now:
+        _fired_timers[tid] = max(expiry, _fired_timers.get(tid, expiry))
+        start = _parse_timer_date(timer.get("StartDate"))
+        if start is not None:
+            # The programme start seen at a fire. The latest: a lookup in the
+            # 30 s before a retry fires sees StartDate = the retry time, which
+            # is earlier than the programme start the fire then resets it to.
+            _fired_starts[tid] = max(start, _fired_starts.get(tid, start))
+
+
+def _timer_counts(timer: dict, now: "datetime") -> bool:
+    """A New timer counts as recording when it is imminent, or when it is
+    Jellyfin's retry of a timer Tentacle saw fire (see _fired_timers)."""
+    if _timer_is_imminent(timer, now):
+        start = _parse_timer_date(timer.get("StartDate"))
+        pre = timedelta(seconds=_timer_seconds(timer.get("PrePaddingSeconds")))
+        if start is not None and start - pre <= now + timedelta(seconds=_FIRED_GRACE_SECONDS):
+            _remember_fired_timer(timer, now)     # due: Jellyfin fires it now
+        return True
+    tid = timer.get("Id") or ""
+    expiry = _fired_timers.get(tid)
+    start, seen = _parse_timer_date(timer.get("StartDate")), _fired_starts.get(tid)
+    return (expiry is not None and now < expiry
+            and _timer_seconds(timer.get("PrePaddingSeconds")) == 0
+            and start is not None and (seen is None or start <= seen + timedelta(seconds=_RECORDING_IMMINENT_SECONDS)))
+
+
+def _parse_timer_date(value) -> "datetime | None":
+    try:
+        return datetime.strptime((value or "")[:19], "%Y-%m-%dT%H:%M:%S")
+    except (TypeError, ValueError):
+        return None
+
+
+def _timer_seconds(value) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 _RECORDING_IMMINENT_SECONDS = 120.0
@@ -1107,17 +1189,7 @@ def _timer_is_imminent(timer: dict, now: "datetime") -> bool:
     _RECORDING_IMMINENT_SECONDS, or should already have begun -- and has
     not already ended (a timer Jellyfin never started stays "New" for ever;
     it must not keep its channel ranked as a recording)."""
-    def _parse(value):
-        try:
-            return datetime.strptime((value or "")[:19], "%Y-%m-%dT%H:%M:%S")
-        except ValueError:
-            return None
-
-    def _seconds(value):
-        try:
-            return float(value or 0)
-        except (TypeError, ValueError):
-            return 0.0
+    _parse, _seconds = _parse_timer_date, _timer_seconds
     start = _parse(timer.get("StartDate"))
     if start is None:
         return False
@@ -2853,6 +2925,21 @@ def _upsert_channels_from_m3u(
             row.m3u_key = sids[0]
             existing[sids[0]] = row
 
+    # A name with a comma was read by older builds as the text after its last
+    # comma ("UFC 300, Pereira vs Hill" stored as "Pereira vs Hill", #525), so
+    # its row's key hashes that cut name. Same URL, cut name: it is that row;
+    # move it to the whole name's key and keep its stream_id, as above. Two
+    # rows cut to the same name are told apart by their URLs.
+    for ch in parsed_channels:
+        sid = _m3u_stable_id(ch["name"], ch["stream_url"])
+        if sid in existing or "," not in ch["name"]:
+            continue
+        old = _m3u_stable_id(ch["name"].rsplit(",", 1)[-1].strip(), ch["stream_url"])
+        if old in existing and old not in incoming:
+            row = existing.pop(old)
+            row.m3u_key = sid
+            existing[sid] = row
+
     for ch in parsed_channels:
         name = ch["name"]
         stream_url = ch["stream_url"]
@@ -3247,6 +3334,14 @@ def _run_epg_sync_background(provider_data: dict):
                 if unused:
                     programs = [p for p in programs if p["channel_id"] not in unused]
             if provider_channel_epg_ids:
+                # Programmes are keyed by guide id across providers: an id
+                # another provider's channel uses as its guide is deleted only
+                # when this sync stores it again (#516).
+                gid = _guide_id_expr()
+                others = {row[0] for row in db.query(gid).filter(
+                    LiveChannel.provider_id != pid, gid.isnot(None)).distinct()}
+                provider_channel_epg_ids -= others - {p["channel_id"] for p in programs}
+            if provider_channel_epg_ids:
                 db.query(EPGProgram).filter(
                     EPGProgram.channel_id.in_(provider_channel_epg_ids)
                 ).delete(synchronize_session=False)
@@ -3281,25 +3376,29 @@ def _run_epg_sync_background(provider_data: dict):
                 db.add_all(batch)
                 db.flush()
 
+            # What this sync read, and the guide ids it left empty: refresh-guide
+            # re-runs a sync only when that could fill one of them (#466). Read
+            # from the rows before the coverage setting below commits: a commit
+            # expires them, and a channel removed meanwhile (an M3U playlist sync
+            # can do that) would then fail the whole sync on reload (#518).
+            import json
+            kept = {p["channel_id"] for p in programs}
+            synced_record = json.dumps({
+                "inputs": inputs,
+                "empty": sorted({r.guide_epg_id for r in rows} - {None} - kept),
+            })
+
             # How many channels actually have a guide, and why the rest do not:
             # "success" alone hid that most channels had nothing (#141).
             coverage_note = ""
             if resolved:
-                import json
                 from services.epg_match import coverage_report, coverage_summary
-                report = coverage_report(chan_info, resolved, {p["channel_id"] for p in programs})
+                report = coverage_report(chan_info, resolved, kept)
                 report["at"] = datetime.utcnow().isoformat() + "Z"
                 set_setting(db, f"livetv_epg_coverage_{pid}", json.dumps(report))
                 coverage_note = f" — {coverage_summary(report)}"
 
-            # What this sync read, and the guide ids it left empty: refresh-guide
-            # re-runs a sync only when that could fill one of them (#466).
-            import json
-            kept = {p["channel_id"] for p in programs}
-            set_setting(db, f"livetv_epg_synced_{pid}", json.dumps({
-                "inputs": inputs,
-                "empty": sorted({r.guide_epg_id for r in rows} - {None} - kept),
-            }))
+            set_setting(db, f"livetv_epg_synced_{pid}", synced_record)
 
             db.commit()
             log_activity(db, "epg_sync", f"EPG sync: {inserted} programs for {total} channels "
@@ -3886,10 +3985,18 @@ def _select_hls_variant(playlist_text: str, base_url: str):
     return best
 
 
+def _tuner_channel(db: Session, channel_id: int):
+    """The channel the tuner may stream: one it lists. The lineup, the M3U and
+    the guide all list enabled channels only, so the stream routes answer a
+    disabled channel the same as an unknown id."""
+    return db.query(LiveChannel).filter(LiveChannel.id == channel_id,
+                                        LiveChannel.enabled == True).first()  # noqa: E712
+
+
 @router.head("/api/live/stream/{channel_id}")
 async def stream_head(channel_id: int, db: Session = Depends(get_db)):
     """HEAD handler for stream URLs — Jellyfin sends HEAD to validate before playing."""
-    channel = db.query(LiveChannel).filter(LiveChannel.id == channel_id).first()
+    channel = _tuner_channel(db, channel_id)
     if not channel:
         raise HTTPException(404, "Channel not found")
     return Response(
@@ -3913,6 +4020,10 @@ async def stream_proxy(channel_id: int, db: Session = Depends(get_db)):
       2. Proxy the HLS stream as continuous MPEG-TS bytes (fetch m3u8,
          download chunks, pipe raw bytes).
     """
+    # A channel the tuner does not list (disabled) takes no slot, stops no
+    # viewer and attaches to nothing: refuse it before anything else.
+    if not _tuner_channel(db, channel_id):
+        raise HTTPException(404, "Channel not found")
     # Already pulling this channel? Attach to it instead of opening a second
     # upstream connection for byte-identical data (recording + watching the
     # same channel is the common case). Costs the provider nothing and needs
@@ -4008,7 +4119,7 @@ async def _open_shared_upstream(channel_id: int, db: Session, pending: "asyncio.
             sem.release_lease(lease)
 
     try:
-        channel = db.query(LiveChannel).filter(LiveChannel.id == channel_id).first()
+        channel = _tuner_channel(db, channel_id)
         if not channel:
             raise HTTPException(404, "Channel not found")
 

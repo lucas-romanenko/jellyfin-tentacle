@@ -67,6 +67,15 @@ def _clean(text):
     return _INVALID_XML_CHARS.sub("", text) if isinstance(text, str) else text
 
 
+# A programme's categories, all kept in the one epg_programs.category column,
+# joined by U+001F: a character XML 1.0 can't carry (not even as &#31;), so
+# the parser never returns it inside a category text. A comma or newline is
+# not safe: category text can contain both. Jellyfin flags a programme as
+# sports/news/kids/movie when ANY category is in its lists, so serving only
+# the first lost "Hockey" + "Sports" (#521).
+CATEGORY_SEP = "\x1f"
+
+
 # What ElementTree escapes in an attribute value, beyond & < >.
 _ATTR_ENTITIES = {'"': "&quot;", "\r": "&#13;", "\n": "&#10;", "\t": "&#09;"}
 
@@ -90,6 +99,7 @@ def iter_xmltv(channels: Iterable[dict], programs: Iterable[dict], chunk_chars: 
     channels: [{"id": "TSN1.ca", "name": "TSN 1 HD", "logo_url": "http://..."}]
     programs: [{"channel_id": "TSN1.ca", "title": "...", "sub_title": "...", "description": "...",
                 "start": datetime, "stop": datetime, "category": "...", "icon_url": "..."}]
+    category: one or more, joined by CATEGORY_SEP; each is one <category>.
 
     Both may be generators. The whole guide used to be built as one element
     tree and one string, about 2 KB per programme, so a large lineup with a
@@ -134,7 +144,9 @@ def _xmltv_elements(channels: Iterable[dict], programs: Iterable[dict]) -> Itera
         if prog.get("description"):
             out.append(_xml_text("desc", prog["description"]))
         if prog.get("category"):
-            out.append(_xml_text("category", prog["category"]))
+            # Split before _xml_text: _clean strips the separator. A row an
+            # older build stored holds one category and serves as one.
+            out.extend(_xml_text("category", c) for c in prog["category"].split(CATEGORY_SEP) if c)
         if prog.get("icon_url"):
             out.append(f'<icon src="{_xml_attr(prog["icon_url"])}" />')
         out.append("</programme>")
@@ -162,7 +174,8 @@ def _programme_dict(prog_el, channel_id: str) -> Optional[dict]:
     title_el = prog_el.find("title")
     sub_el = prog_el.find("sub-title")
     desc_el = prog_el.find("desc")
-    cat_el = prog_el.find("category")
+    # Every non-empty category in feed order, an exact repeat once (#521).
+    categories = dict.fromkeys(t for t in ((c.text or "").strip() for c in prog_el.findall("category")) if t)
     # The first web (http/https) icon: a feed can list others first
     # (file:, data:), which are never art Jellyfin can fetch.
     icon_url = next((src for src in ((i.get("src") or "").strip() for i in prog_el.findall("icon"))
@@ -174,7 +187,7 @@ def _programme_dict(prog_el, channel_id: str) -> Optional[dict]:
         "description": desc_el.text if desc_el is not None else None,
         "start": start,
         "stop": stop,
-        "category": cat_el.text if cat_el is not None else None,
+        "category": CATEGORY_SEP.join(categories) or None,
         "icon_url": icon_url,
     }
 
@@ -188,6 +201,7 @@ def parse_xmltv(content: str) -> tuple[list[dict], list[dict]]:
         programs: [{"channel_id": str, "title": str, "sub_title": str|None,
                      "description": str|None, "start": datetime, "stop": datetime,
                      "category": str|None, "icon_url": str|None}]
+        category: one or more, joined by CATEGORY_SEP.
     """
     # Harden against XXE / entity-expansion: reject DOCTYPE/ENTITY in prologue.
     _reject_doctype_bytes(content[:4096].encode("utf-8", errors="ignore"))

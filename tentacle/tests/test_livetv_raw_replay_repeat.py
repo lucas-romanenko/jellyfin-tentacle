@@ -142,6 +142,18 @@ class Splice(unittest.IsolatedAsyncioTestCase):
         sent = {n for n in [*range(100), *range(116, 300)] if n % 10 not in (5, 7)}
         self.assertEqual(sent, set(numbered(body)), "content was lost")
 
+    async def test_a_provider_loop_after_a_gap_does_not_hide_the_gap(self):
+        """#520: the provider loops packets 90-99 verbatim right after 101-104.
+        0-99 sent; the re-dial starts at 101-104 (never sent), then the loop.
+        Its first frame (90 again) and the bytes up to the join match what was
+        sent, but 101-104 in front of it never went out: nothing is joined."""
+        looped = ([mixed(n) for n in range(100)] + [mixed(n) for n in range(101, 105)]
+                  + [mixed(n) for n in range(90, 100)] + [mixed(n) for n in range(200, 300)])
+        body = await self._body([connection(0, 100, make=looped.__getitem__),
+                                 connection(100, len(looped), then_drop=False, make=looped.__getitem__)])
+        self.assertLessEqual({101, 102, 103, 104}, set(numbered(body)), "unique packets were lost")
+        self.assertEqual(b"".join(looped), body)
+
     async def test_a_replay_in_a_mux_with_tables_and_null_packets_is_joined(self):
         """Tables and null packets repeat by themselves: no evidence either way."""
         body = await self._body([connection(0, 1000, make=mixed),

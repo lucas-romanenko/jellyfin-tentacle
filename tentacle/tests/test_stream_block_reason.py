@@ -66,7 +66,7 @@ class _StreamRoute(unittest.TestCase):
         prov = Provider(name="P", server_url=server_url, username="u", password="p")
         self.db.add(prov)
         self.db.commit()
-        ch = LiveChannel(provider_id=prov.id, name="C", stream_url=stream_url)
+        ch = LiveChannel(provider_id=prov.id, name="C", stream_url=stream_url, enabled=True)
         self.db.add(ch)
         self.db.commit()
         return ch.id

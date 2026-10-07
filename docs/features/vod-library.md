@@ -216,7 +216,8 @@ Everything else stays with the old provider, with its files untouched:
   choose, or under another name),
 - films on a stream you marked **Wrong movie** or re-matched on the new
   provider,
-- two films with the same title and year,
+- a film that shares its title and year with another film in your library
+  (on any provider, or downloaded),
 - every series.
 
 The old provider is switched off, so its sync no longer runs; what stayed with
