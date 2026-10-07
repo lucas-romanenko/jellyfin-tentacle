@@ -410,7 +410,13 @@ docs: `docs/features/music.md`; plugin side: `Api/MusicController.cs`
   `finish_pending_requests` looks it up by MBID 1, 5, 30 and 120 min later,
   at startup and each daily check; once listed it is pinned and searched,
   after `OWED_ADD_HOURS` (6) unlisted the row is dropped (#431). A 4xx owes
-  nothing.
+  nothing. That later run reads the album once (no waiting; an owed add that
+  has just landed gets a first try that waits), leaves an album unmonitored in
+  Lidarr since alone, removes the row of an album Lidarr no longer has (404),
+  and otherwise tries again at the next check. The same album requested twice
+  at once reuses the row the other request wrote, and is searched once
+  (`finish_request` skips a row that was already there and is no longer
+  pending; a row it has to write again is still owed).
 - `services/music/`: `worker.py` (one thread; urgent > normal > background),
   `jobs.py`, `original.py` (the original-release rules, pure), `apply.py`
   (pins and trims; deletions only when exactly the expected leftovers

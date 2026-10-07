@@ -24,6 +24,7 @@ from datetime import datetime
 from typing import Callable, Iterable, Optional
 
 import requests
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from models.database import DownloadRequest, Series, get_setting
@@ -393,6 +394,20 @@ def _added_after_all(client, rgid: str) -> Optional[dict]:
         return None
 
 
+def _mark_requested(db: Session, library, album: dict, user_id: Optional[int], choice: Optional[dict]):
+    row = library.upsert_album(db, album)
+    row.monitored = True
+    row.requested_by = user_id
+    row.requested_at = datetime.utcnow()
+    row.category = ""
+    row.verdict = {"state": "Requested: pinning the original release…"}
+    # Owed until finish_request has pinned and searched; picked up again after a
+    # restart and by the daily check (jobs.finish_pending_requests).
+    row.request_pending, row.request_choice = True, choice
+    db.commit()
+    return row
+
+
 def request_album(db: Session, rgid: str, *, user_id: Optional[int], via: str,
                   choice: Optional[dict] = None) -> dict:
     """Ask Lidarr for one album (a MusicBrainz release group), pinned to its original.
@@ -461,16 +476,13 @@ def request_album(db: Session, rgid: str, *, user_id: Optional[int], via: str,
     except LidarrError as e:
         raise RequestRefused(e.message, 502)
 
-    row = library.upsert_album(db, album)
-    row.monitored = True
-    row.requested_by = user_id
-    row.requested_at = datetime.utcnow()
-    row.category = ""
-    row.verdict = {"state": "Requested: pinning the original release…"}
-    # Owed until finish_request has pinned and searched; picked up again after a
-    # restart and by the daily check (jobs.finish_pending_requests).
-    row.request_pending, row.request_choice = True, choice
-    db.commit()
+    try:
+        row = _mark_requested(db, library, album, user_id, choice)
+    except IntegrityError:
+        # The same album requested twice at once (a double click, the dashboard and
+        # Jellyfin, two users): the other request wrote its row first. Use that row.
+        db.rollback()
+        row = _mark_requested(db, library, album, user_id, choice)
     worker.submit(jobs.finish_request(album["id"], rgid, choice), worker.URGENT, f"request {album.get('title')}")
     return {"status": "requested", "added_to_lidarr": added, "title": album.get("title"),
             "artist": (album.get("artist") or {}).get("artistName") or row.artist_name}
