@@ -933,12 +933,12 @@ function renderLibCard(item) {
 
   // Normal in-library card
   const poster = item.poster_path
-    ? `<img alt="" src="https://image.tmdb.org/t/p/w185${item.poster_path}" loading="lazy" onerror="this.outerHTML='<div class=\\'lib-card-poster-placeholder\\'>◫</div>'">`
+    ? `<img alt="" src="https://image.tmdb.org/t/p/w185${escapeAttr(item.poster_path)}" loading="lazy" onerror="this.outerHTML='<div class=\\'lib-card-poster-placeholder\\'>◫</div>'">`
     : `<div class="lib-card-poster-placeholder">◫</div>`;
 
   let badges = '';
   if (item.source === 'radarr' || item.source === 'sonarr') badges += `<span class="badge badge-green" style="font-size:9px;padding:1px 5px">DL</span>`;
-  if (item.source_tag) badges += `<span class="badge badge-accent" style="font-size:9px;padding:1px 5px">${item.source_tag}</span>`;
+  if (item.source_tag) badges += `<span class="badge badge-accent" style="font-size:9px;padding:1px 5px">${escapeAttr(item.source_tag)}</span>`;
   const sourceBadge = badges ? `<div class="lib-card-source" style="display:flex;flex-direction:column;gap:3px;align-items:flex-end">${badges}</div>` : '';
 
   return `
@@ -948,7 +948,7 @@ function renderLibCard(item) {
         ${sourceBadge}
       </div>
       <div class="lib-card-info">
-        <div class="lib-card-title" title="${escapeAttr(item.title)}">${item.title}</div>
+        <div class="lib-card-title" title="${escapeAttr(item.title)}">${escapeAttr(item.title)}</div>
         <div class="lib-card-meta">${item.year || '—'} · ${item.media_type === 'movie' ? '🎬' : '📺'}</div>
       </div>
     </div>`;
@@ -1001,9 +1001,9 @@ async function showAddToArrModal(tmdbId, title, year, posterPath, mediaType, tvd
   const info = document.getElementById('add-radarr-movie-info');
   const posterSrc = _imgUrl(posterPath, 'w185');
   const posterImg = posterSrc
-    ? `<img alt="" src="${posterSrc}" style="border-radius:8px;width:80px;height:120px;object-fit:cover">`
+    ? `<img alt="" src="${escapeAttr(posterSrc)}" style="border-radius:8px;width:80px;height:120px;object-fit:cover">`
     : `<div style="width:80px;height:120px;background:var(--bg3);border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--text3)">&#9707;</div>`;
-  info.innerHTML = `${posterImg}<div style="display:flex;flex-direction:column;justify-content:center"><div style="font-weight:600;font-size:17px">${title || 'Unknown'}</div><div style="color:var(--text2);font-size:14px">${year || ''}</div></div>`;
+  info.innerHTML = `${posterImg}<div style="display:flex;flex-direction:column;justify-content:center"><div style="font-weight:600;font-size:17px">${escapeAttr(title || 'Unknown')}</div><div style="color:var(--text2);font-size:14px">${escapeAttr(year || '')}</div></div>`;
 
   const select = document.getElementById('add-radarr-quality');
   select.innerHTML = '<option value="">Loading...</option>';
@@ -1130,7 +1130,7 @@ function _renderSeasons() {
       <div class="ep-picker-season-header" onclick="toggleSeasonAccordion(${s.season_number})">
         <span class="ep-arrow" id="ep-arrow-${s.season_number}">▶</span>
         <input type="checkbox" class="ep-picker-season-check" onclick="event.stopPropagation();toggleSeasonAll(${s.season_number}, this.checked)">
-        <span>${s.name || 'Season ' + s.season_number}${airYear}</span>
+        <span>${escapeAttr(s.name || 'Season ' + s.season_number)}${airYear}</span>
         <span class="ep-count">${s.episode_count} ep</span>
       </div>
       <div class="ep-picker-episodes" id="ep-list-${s.season_number}"></div>
@@ -1186,15 +1186,15 @@ function _renderEpisodes(seasonNum) {
       return `<label class="ep-picker-ep ep-have">
         <input type="checkbox" checked disabled data-season="${seasonNum}" data-episode="${ep.episode_number}">
         <span class="ep-num">${epNum}</span>
-        <span class="ep-title" title="${escapeAttr(title)}">${title}</span>
+        <span class="ep-title" title="${escapeAttr(title)}">${escapeAttr(title)}</span>
         <span class="ep-dl-badge ${badgeClass}">${badgeText}</span>
       </label>`;
     }
     return `<label class="ep-picker-ep">
       <input type="checkbox" data-season="${seasonNum}" data-episode="${ep.episode_number}" onchange="updateSeasonCheckbox(${seasonNum})">
       <span class="ep-num">${epNum}</span>
-      <span class="ep-title" title="${escapeAttr(title)}">${title}</span>
-      <span class="ep-date">${airDate}</span>
+      <span class="ep-title" title="${escapeAttr(title)}">${escapeAttr(title)}</span>
+      <span class="ep-date">${escapeAttr(airDate)}</span>
     </label>`;
   }).join('');
   _updateSeasonStatus(seasonNum, eps.length);
@@ -1295,9 +1295,9 @@ async function showManageEpisodesModal(tmdbId, title, year, posterPath) {
   const info = document.getElementById('add-radarr-movie-info');
   const managePosterSrc = _imgUrl(posterPath, 'w185');
   const posterImg = managePosterSrc
-    ? `<img alt="" src="${managePosterSrc}" style="border-radius:8px;width:80px;height:120px;object-fit:cover">`
+    ? `<img alt="" src="${escapeAttr(managePosterSrc)}" style="border-radius:8px;width:80px;height:120px;object-fit:cover">`
     : `<div style="width:80px;height:120px;background:var(--bg3);border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--text3)">&#9707;</div>`;
-  info.innerHTML = `${posterImg}<div style="display:flex;flex-direction:column;justify-content:center"><div style="font-weight:600;font-size:17px">${title || 'Unknown'}</div><div style="color:var(--text2);font-size:14px">${year || ''}</div></div>`;
+  info.innerHTML = `${posterImg}<div style="display:flex;flex-direction:column;justify-content:center"><div style="font-weight:600;font-size:17px">${escapeAttr(title || 'Unknown')}</div><div style="color:var(--text2);font-size:14px">${escapeAttr(year || '')}</div></div>`;
 
   // Hide add-specific fields
   document.getElementById('add-radarr-quality').parentElement.style.display = 'none';
@@ -1361,7 +1361,7 @@ async function showManageEpisodesModal(tmdbId, title, year, posterPath) {
         return `<label class="ep-picker-ep">
           <input type="checkbox" ${ep.monitored ? 'checked' : ''} data-season="${sn}" data-episode="${ep.episodeNumber}" onchange="updateSeasonCheckbox(${sn})">
           <span class="ep-num">${epNum}</span>
-          <span class="ep-title" title="${escapeAttr(ep.title || '')}">${ep.title || ''}</span>
+          <span class="ep-title" title="${escapeAttr(ep.title || '')}">${escapeAttr(ep.title || '')}</span>
           ${dlBadge}
         </label>`;
       }).join('');
@@ -1417,9 +1417,9 @@ async function showDownloadMoreModal(tmdbId, title, year, posterPath) {
   const info = document.getElementById('add-radarr-movie-info');
   const dlMorePosterSrc = _imgUrl(posterPath, 'w185');
   const posterImg = dlMorePosterSrc
-    ? `<img alt="" src="${dlMorePosterSrc}" style="border-radius:8px;width:80px;height:120px;object-fit:cover">`
+    ? `<img alt="" src="${escapeAttr(dlMorePosterSrc)}" style="border-radius:8px;width:80px;height:120px;object-fit:cover">`
     : `<div style="width:80px;height:120px;background:var(--bg3);border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--text3)">&#9707;</div>`;
-  info.innerHTML = `${posterImg}<div style="display:flex;flex-direction:column;justify-content:center"><div style="font-weight:600;font-size:17px">${title || 'Unknown'}</div><div style="color:var(--text2);font-size:14px">${year || ''}</div></div>`;
+  info.innerHTML = `${posterImg}<div style="display:flex;flex-direction:column;justify-content:center"><div style="font-weight:600;font-size:17px">${escapeAttr(title || 'Unknown')}</div><div style="color:var(--text2);font-size:14px">${escapeAttr(year || '')}</div></div>`;
 
   // Show quality profile selector (needed for Sonarr add)
   document.getElementById('add-radarr-quality').parentElement.style.display = '';
@@ -1710,19 +1710,19 @@ async function showMediaDetail(tmdbId, mediaType) {
     const isSeries = mediaType === 'series';
     document.getElementById('detail-body').innerHTML = `
       <div class="detail-layout" style="display:flex;gap:20px">
-        ${data.poster_path ? `<img alt="" src="${_imgUrl(data.poster_path, 'w185')}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
+        ${data.poster_path ? `<img alt="" src="${escapeAttr(_imgUrl(data.poster_path, 'w185'))}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
         <div style="flex:1">
-          <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${data.year || '—'} · ${data.runtime ? data.runtime+'m' : ''} · ★ ${data.rating || '—'}</div>
-          <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${data.overview || 'No overview available.'}</p>
+          <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${escapeAttr(data.year || '—')} · ${data.runtime ? data.runtime+'m' : ''} · ★ ${escapeAttr(data.rating || '—')}</div>
+          <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${escapeAttr(data.overview || 'No overview available.')}</p>
           <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
-            ${(data.genres||[]).map(g => `<span class="badge badge-gray">${g}</span>`).join('')}
+            ${(data.genres||[]).map(g => `<span class="badge badge-gray">${escapeAttr(g)}</span>`).join('')}
           </div>
           <div style="display:flex;gap:6px;flex-wrap:wrap">
-            ${(data.tags||[]).map(t => `<span class="badge badge-accent">${t}</span>`).join('')}
+            ${(data.tags||[]).map(t => `<span class="badge badge-accent">${escapeAttr(t)}</span>`).join('')}
           </div>
           <div style="margin-top:16px;font-size:11px;color:var(--text3);font-family:'DM Mono',monospace">
-            Source: ${data.source} · Added: ${data.date_added ? new Date(data.date_added).toLocaleDateString() : '—'}
-            ${data.strm_path ? `<br>Path: ${data.strm_path}` : ''}
+            Source: ${escapeAttr(data.source)} · Added: ${data.date_added ? new Date(data.date_added).toLocaleDateString() : '—'}
+            ${data.strm_path ? `<br>Path: ${escapeAttr(data.strm_path)}` : ''}
           </div>
           ${data.is_vod ? `<label class="detail-follow-toggle" style="margin-top:10px" title="Turn this off to keep the title in the catalog but stop Tentacle writing or repairing its .strm files — for shows you have switched to downloaded copies">
             <input type="checkbox" ${data.strm_managed ? 'checked' : ''} onchange="toggleStrmManaged('${escapeJS(mediaType)}', ${tmdbId}, this.checked)">
@@ -1861,7 +1861,7 @@ async function _fmLoad(q) {
     _fm.cands = d.candidates || [];
     list.innerHTML = _fm.cands.length ? _fm.cands.map((c, i) => `
       <button class="fm-cand" onclick="_fmPick(${i})">
-        ${c.poster_path ? `<img alt="" src="${_imgUrl(c.poster_path, 'w92')}" loading="lazy">` : '<div class="fm-noposter"></div>'}
+        ${c.poster_path ? `<img alt="" src="${escapeAttr(_imgUrl(c.poster_path, 'w92'))}" loading="lazy">` : '<div class="fm-noposter"></div>'}
         <span class="fm-cand-text"><span class="fm-cand-title">${escapeAttr(c.title)}</span>
           <span class="fm-cand-meta">${escapeAttr([c.year, c.runtime ? c.runtime + ' min' : '', c.language_name || ''].filter(Boolean).join(' · '))}
             ${c.runtime_matches ? '<span class="badge badge-green">same length</span>' : ''}
@@ -1933,7 +1933,7 @@ async function loadMatchSuspects() {
     card.style.display = '';
     document.getElementById('wrong-match-list').innerHTML = suspects.length ? suspects.map(x => `
       <div class="wm-row">
-        ${x.poster_path ? `<img alt="" src="${_imgUrl(x.poster_path, 'w92')}" class="wm-poster" loading="lazy" onerror="this.style.visibility='hidden'">` : '<div class="wm-poster"></div>'}
+        ${x.poster_path ? `<img alt="" src="${escapeAttr(_imgUrl(x.poster_path, 'w92'))}" class="wm-poster" loading="lazy" onerror="this.style.visibility='hidden'">` : '<div class="wm-poster"></div>'}
         <div class="wm-info">
           <div class="wm-title">${escapeAttr(x.title || '')}</div>
           <div class="wm-meta">${x.reason === 'relist_followed' ? 'Your provider re-listed its stream under a new id; your fix followed it'
@@ -2173,7 +2173,7 @@ async function detailToggleSeason(sn) {
 
       rows += `<div class="detail-ep-row">
         <span class="ep-num">${epNum}</span>
-        <span class="detail-ep-name">${nameMap[epNum] || ''}</span>
+        <span class="detail-ep-name">${escapeAttr(nameMap[epNum] || '')}</span>
         ${badges.join('')}
         ${isDl && !isVod ? `<button class="ep-replace-btn" title="Bad copy? Get another one" aria-label="Bad copy? Get another one"
           onclick="replaceCopy('series', ${epState.tmdbId}, ${sn}, ${epNum}, this)">↻</button>` : ''}
@@ -2188,7 +2188,7 @@ async function detailToggleSeason(sn) {
         const dateLabel = ep.air_date ? new Date(ep.air_date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : 'TBA';
         rows += `<div class="detail-ep-row" style="opacity:0.5">
           <span class="ep-num">${ep.episode_number}</span>
-          <span class="detail-ep-name">${ep.name || ''}</span>
+          <span class="detail-ep-name">${escapeAttr(ep.name || '')}</span>
           <span class="ep-dl-badge" style="background:var(--bg3);color:var(--text3)">${dateLabel}</span>
         </div>`;
       }
@@ -2212,19 +2212,19 @@ async function showCoverageDetail(tmdbId, mediaType, title, year, posterPath) {
     document.getElementById('detail-title').textContent = data.title;
     document.getElementById('detail-body').innerHTML = `
       <div class="detail-layout" style="display:flex;gap:20px">
-        ${data.poster_path ? `<img alt="" src="${_imgUrl(data.poster_path, 'w185')}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
+        ${data.poster_path ? `<img alt="" src="${escapeAttr(_imgUrl(data.poster_path, 'w185'))}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
         <div style="flex:1">
-          <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${data.year || '—'} · ${data.runtime ? data.runtime+'m' : ''} · ★ ${data.rating || '—'}</div>
-          <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${data.overview || 'No overview available.'}</p>
+          <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${escapeAttr(data.year || '—')} · ${data.runtime ? data.runtime+'m' : ''} · ★ ${escapeAttr(data.rating || '—')}</div>
+          <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${escapeAttr(data.overview || 'No overview available.')}</p>
           <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
-            ${(data.genres||[]).map(g => `<span class="badge badge-gray">${g}</span>`).join('')}
+            ${(data.genres||[]).map(g => `<span class="badge badge-gray">${escapeAttr(g)}</span>`).join('')}
           </div>
           <div style="display:flex;gap:6px;flex-wrap:wrap">
-            ${(data.tags||[]).map(t => `<span class="badge badge-accent">${t}</span>`).join('')}
+            ${(data.tags||[]).map(t => `<span class="badge badge-accent">${escapeAttr(t)}</span>`).join('')}
           </div>
           <div style="margin-top:16px;font-size:11px;color:var(--text3);font-family:'DM Mono',monospace">
-            Source: ${data.source} · Added: ${data.date_added ? new Date(data.date_added).toLocaleDateString() : '—'}
-            ${data.strm_path ? `<br>Path: ${data.strm_path}` : ''}
+            Source: ${escapeAttr(data.source)} · Added: ${data.date_added ? new Date(data.date_added).toLocaleDateString() : '—'}
+            ${data.strm_path ? `<br>Path: ${escapeAttr(data.strm_path)}` : ''}
           </div>
         </div>
       </div>`;
@@ -2239,12 +2239,12 @@ async function showCoverageDetail(tmdbId, mediaType, title, year, posterPath) {
       document.getElementById('detail-title').textContent = data.title || title || 'Unknown';
       document.getElementById('detail-body').innerHTML = `
         <div class="detail-layout" style="display:flex;gap:20px">
-          ${data.poster_path ? `<img alt="" src="${_imgUrl(data.poster_path, 'w185')}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
+          ${data.poster_path ? `<img alt="" src="${escapeAttr(_imgUrl(data.poster_path, 'w185'))}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
           <div style="flex:1">
-            <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${data.year || '—'} · ${data.runtime ? data.runtime+'m · ' : ''}★ ${data.rating || '—'}</div>
-            <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${data.overview || 'No overview available.'}</p>
+            <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${escapeAttr(data.year || '—')} · ${data.runtime ? data.runtime+'m · ' : ''}★ ${escapeAttr(data.rating || '—')}</div>
+            <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${escapeAttr(data.overview || 'No overview available.')}</p>
             <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
-              ${(data.genres||[]).map(g => `<span class="badge badge-gray">${g}</span>`).join('')}
+              ${(data.genres||[]).map(g => `<span class="badge badge-gray">${escapeAttr(g)}</span>`).join('')}
             </div>
             <div style="margin-top:8px;padding-top:12px;border-top:1px solid var(--border)">
               <span class="badge" style="background:var(--red-dim);color:var(--red);margin-bottom:8px">Not in library</span>
@@ -2259,9 +2259,9 @@ async function showCoverageDetail(tmdbId, mediaType, title, year, posterPath) {
       document.getElementById('detail-title').textContent = title || 'Unknown';
       document.getElementById('detail-body').innerHTML = `
         <div class="detail-layout" style="display:flex;gap:20px">
-          ${posterPath ? `<img alt="" src="${_imgUrl(posterPath, 'w185')}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
+          ${posterPath ? `<img alt="" src="${escapeAttr(_imgUrl(posterPath, 'w185'))}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
           <div style="flex:1">
-            <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${year || '—'}</div>
+            <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${escapeAttr(year || '—')}</div>
             <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">Not in library yet.</p>
           </div>
         </div>`;
@@ -2381,7 +2381,7 @@ async function loadListCoverageInline(listId) {
         ${addBtns}
       </div>`;
   } catch (e) {
-    el.innerHTML = `<div style="font-size:12px;color:var(--red)">${e.message}</div>`;
+    el.innerHTML = `<div style="font-size:12px;color:var(--red)">${escapeAttr(e.message)}</div>`;
   }
 }
 
@@ -2884,7 +2884,7 @@ async function showListCoverage(listId, listName) {
     renderCoverage(data);
   } catch (e) {
     document.getElementById('coverage-loading').innerHTML =
-      `<div style="color:var(--red);font-size:13px">${e.message}</div>`;
+      `<div style="color:var(--red);font-size:13px">${escapeAttr(e.message)}</div>`;
   }
 }
 
@@ -3013,7 +3013,7 @@ function _applyCoverageFilter() {
 
 function coverageCard(item, showAdd = false) {
   const poster = item.poster_path
-    ? `<img src="${_imgUrl(item.poster_path, 'w200')}" alt="" loading="lazy">`
+    ? `<img src="${escapeAttr(_imgUrl(item.poster_path, 'w200'))}" alt="" loading="lazy">`
     : `<div class="no-poster">🎬</div>`;
   const year = item.year ? ` (${item.year})` : '';
   const isSeries = (item.media_type || 'movie') === 'series';
@@ -3026,7 +3026,7 @@ function coverageCard(item, showAdd = false) {
     : '';
   return `<div class="coverage-card" ${clickAttr}>
     ${poster}${addBtn}
-    <div class="card-title" title="${escapeAttr((item.title || '') + year)}">${item.title || 'Unknown'}${year}</div>
+    <div class="card-title" title="${escapeAttr((item.title || '') + year)}">${escapeAttr(item.title || 'Unknown')}${escapeAttr(year)}</div>
   </div>`;
 }
 
@@ -4148,7 +4148,7 @@ function _renderGenreChips(selected = []) {
   const selSet = new Set(selected.map(s => s.toLowerCase()));
   container.innerHTML = genres.map(g => {
     const sel = selSet.has(g.toLowerCase()) ? ' selected' : '';
-    return `<span class="genre-chip${sel}" data-genre="${escapeAttr(g)}" onclick="toggleGenreChip(this)">${g}</span>`;
+    return `<span class="genre-chip${sel}" data-genre="${escapeAttr(g)}" onclick="toggleGenreChip(this)">${escapeAttr(g)}</span>`;
   }).join('');
   if (!genres.length) {
     container.innerHTML = '<span style="font-size:12px;color:var(--text3)">No genres found</span>';
@@ -4588,7 +4588,7 @@ function renderDupList() {
       return `
         <div class="dup-source-card" style="border-left:3px solid ${color}">
           <div style="font-size:12px;font-weight:500;margin-bottom:4px">${icon} ${sourceLabel}</div>
-          <div style="font-size:11px;color:var(--text3);font-family:'DM Mono',monospace;word-break:break-all">${s.path || '(path not recorded)'}</div>
+          <div style="font-size:11px;color:var(--text3);font-family:'DM Mono',monospace;word-break:break-all">${escapeAttr(s.path || '(path not recorded)')}</div>
         </div>`;
     }).join('');
 
@@ -4598,12 +4598,12 @@ function renderDupList() {
 
     return `
       <div class="dup-row" style="display:flex;gap:16px;align-items:flex-start">
-        ${poster ? `<img src="${poster}" style="width:48px;border-radius:6px;flex-shrink:0" alt="">` : ''}
+        ${poster ? `<img src="${escapeAttr(poster)}" style="width:48px;border-radius:6px;flex-shrink:0" alt="">` : ''}
         <div style="flex:1;min-width:0">
           <div class="dup-header">
             <span class="badge ${dup.resolution === 'pending' ? 'badge-amber' : 'badge-green'}">${dup.resolution === 'pending' ? 'Pending' : resLabel[dup.resolution] || dup.resolution}</span>
             <span class="badge badge-gray">${dup.media_type}</span>
-            <span style="font-size:13px;font-weight:500">${title}</span>
+            <span style="font-size:13px;font-weight:500">${escapeAttr(title)}</span>
           </div>
           <div class="dup-sources">${sourceCards}</div>
           ${dup.resolution === 'pending' ? `
@@ -5004,7 +5004,7 @@ function _activityPosterFailed(img) {
 function _activityPoster(path) {
   const src = path ? _imgUrl(path, 'w185') : '';
   if (!src || _activityBadPosters.has(src)) return '<div class="activity-poster-placeholder">◫</div>';
-  return `<img alt="" src="${src}" loading="lazy" onerror="_activityPosterFailed(this)">`;
+  return `<img alt="" src="${escapeAttr(src)}" loading="lazy" onerror="_activityPosterFailed(this)">`;
 }
 
 // ── Search again / Remove on a Searching card ──────────────────────────
@@ -5469,7 +5469,7 @@ async function loadDiscover() {
       ? _discoverActiveSection : _discoverSections[0].id;
     switchDiscoverSection(targetId);
   } catch (e) {
-    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Failed to load discover: ${e.message}</p></div>`;
+    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Failed to load discover: ${escapeAttr(e.message)}</p></div>`;
   }
 }
 
@@ -5543,7 +5543,7 @@ async function loadStreamingSection() {
     renderDiscoverGrid(data.items || []);
   } catch (e) {
     if (view !== _discoverView) return;
-    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Failed to load: ${e.message}</p></div>`;
+    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Failed to load: ${escapeAttr(e.message)}</p></div>`;
   }
 }
 
@@ -5577,7 +5577,7 @@ async function loadGenreSection() {
     };
     const genrePills = genres.map(g => {
       const active = g.id === _genreActive;
-      return `<button onclick="selectGenre(${g.id})" style="padding:6px 14px;border-radius:16px;border:1px solid ${active ? 'var(--accent)' : 'var(--border2)'};background:${active ? 'var(--accent)' : 'var(--bg2)'};color:${active ? '#fff' : 'var(--text3)'};font-size:12px;font-weight:500;cursor:pointer;font-family:'DM Sans',sans-serif">${g.name}</button>`;
+      return `<button onclick="selectGenre(${g.id})" style="padding:6px 14px;border-radius:16px;border:1px solid ${active ? 'var(--accent)' : 'var(--border2)'};background:${active ? 'var(--accent)' : 'var(--bg2)'};color:${active ? '#fff' : 'var(--text3)'};font-size:12px;font-weight:500;cursor:pointer;font-family:'DM Sans',sans-serif">${escapeAttr(g.name)}</button>`;
     }).join('');
     pills.innerHTML =
       `<div style="display:flex;gap:8px;width:100%;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--border2)">${modeBtn('top_rated','Top Rated')}${modeBtn('new','Newly Released')}</div>` +
@@ -5591,7 +5591,7 @@ async function loadGenreSection() {
     renderDiscoverGrid(data.items || []);
   } catch (e) {
     if (view !== _discoverView) return;
-    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Failed to load: ${e.message}</p></div>`;
+    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Failed to load: ${escapeAttr(e.message)}</p></div>`;
   }
 }
 
@@ -5633,7 +5633,7 @@ async function loadListsSection() {
     renderDiscoverGrid(data.items || []);
   } catch (e) {
     if (view !== _discoverView) return;
-    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Failed to load: ${e.message}</p></div>`;
+    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Failed to load: ${escapeAttr(e.message)}</p></div>`;
   }
 }
 
@@ -5662,7 +5662,7 @@ function renderDiscoverGrid(items) {
   grid.innerHTML = items.map(item => {
     const posterSrc = _imgUrl(item.poster_path, 'w185');
     const poster = posterSrc
-      ? `<img alt="" src="${posterSrc}" loading="lazy" onerror="this.outerHTML='<div class=\\'lib-card-poster-placeholder\\'>◫</div>'">`
+      ? `<img alt="" src="${escapeAttr(posterSrc)}" loading="lazy" onerror="this.outerHTML='<div class=\\'lib-card-poster-placeholder\\'>◫</div>'">`
       : `<div class="lib-card-poster-placeholder">◫</div>`;
     const tvdbId = item.tvdb_id || 0;
     const tmdbId = item.tmdb_id || 0;
@@ -5695,8 +5695,8 @@ function renderDiscoverGrid(items) {
           ${addBtn}
         </div>
         <div class="lib-card-info">
-          <div class="lib-card-title" title="${escapeAttr(item.title)}">${item.title}</div>
-          <div class="lib-card-meta">${item.year || '—'} · ★ ${item.rating || '—'}</div>
+          <div class="lib-card-title" title="${escapeAttr(item.title)}">${escapeAttr(item.title)}</div>
+          <div class="lib-card-meta">${escapeAttr(item.year || '—')} · ★ ${escapeAttr(item.rating || '—')}</div>
           ${listTag}
         </div>
       </div>`;
@@ -5736,7 +5736,7 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
       const pct = (dlInfo.progress || 0).toFixed(0);
       const st = dlInfo.status === 'importing' ? 'Importing…' : dlInfo.status === 'queued' ? 'Queued' :
         dlInfo.status === 'stuck' ? 'Stuck' : dlInfo.status === 'import_blocked' ? 'Import blocked' : `Downloading ${pct}%`;
-      const eta = dlInfo.eta ? ` · ETA ${dlInfo.eta}` : '';
+      const eta = dlInfo.eta ? ` · ETA ${escapeAttr(dlInfo.eta)}` : '';
       actionBtn = `<span class="badge ${dlInfo.status === 'stuck' ? 'badge-red' : 'badge-accent'}" style="font-size:12px;padding:4px 10px">${st}${eta}</span>`;
     } else if (isInLibrary && isSeries && data.library_source === 'sonarr') {
       actionBtn = `<span class="badge badge-green" style="font-size:12px;padding:4px 10px">In Library</span>${watchBtn} <button class="btn btn-secondary btn-sm" style="margin-left:6px" onclick="closeModal('modal-media-detail');showManageEpisodesModal(${detailTmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}')">Manage Episodes</button>`;
@@ -5756,12 +5756,12 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
     const detailPosterSrc = _imgUrl(data.poster_path, 'w185');
     document.getElementById('detail-body').innerHTML = `
       <div class="detail-layout" style="display:flex;gap:20px">
-        ${detailPosterSrc ? `<img alt="" src="${detailPosterSrc}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
+        ${detailPosterSrc ? `<img alt="" src="${escapeAttr(detailPosterSrc)}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
         <div style="flex:1">
-          <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${data.year || year || '—'} · ${data.runtime ? data.runtime+'m · ' : ''}★ ${data.rating || '—'}</div>
-          <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${data.overview || 'No overview available.'}</p>
+          <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${escapeAttr(data.year || year || '—')} · ${data.runtime ? data.runtime+'m · ' : ''}★ ${escapeAttr(data.rating || '—')}</div>
+          <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${escapeAttr(data.overview || 'No overview available.')}</p>
           <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
-            ${(data.genres||[]).map(g => `<span class="badge badge-gray">${g}</span>`).join('')}
+            ${(data.genres||[]).map(g => `<span class="badge badge-gray">${escapeAttr(g)}</span>`).join('')}
           </div>
           <div style="margin-top:8px">
             ${actionBtn}${_trailerBtn(data.trailer_url)}
@@ -5773,9 +5773,9 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
     document.getElementById('detail-title').textContent = title || 'Unknown';
     document.getElementById('detail-body').innerHTML = `
       <div class="detail-layout" style="display:flex;gap:20px">
-        ${_imgUrl(posterPath, 'w185') ? `<img alt="" src="${_imgUrl(posterPath, 'w185')}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
+        ${_imgUrl(posterPath, 'w185') ? `<img alt="" src="${escapeAttr(_imgUrl(posterPath, 'w185'))}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
         <div style="flex:1">
-          <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${year || '—'}</div>
+          <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${escapeAttr(year || '—')}</div>
           <p style="font-size:13px;color:var(--text2)">Could not load details.</p>
         </div>
       </div>`;
@@ -5836,12 +5836,12 @@ async function doDiscoverSearch(query) {
     const data = await api(`/api/discover/search?q=${encodeURIComponent(query)}&type=${_discoverType}`);
     const items = data.items || [];
     if (!items.length) {
-      grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>No results for "${query}"</p></div>`;
+      grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>No results for "${escapeAttr(query)}"</p></div>`;
       return;
     }
     renderDiscoverGrid(items);
   } catch (e) {
-    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Search failed: ${e.message}</p></div>`;
+    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Search failed: ${escapeAttr(e.message)}</p></div>`;
   }
 }
 
