@@ -11,6 +11,8 @@ from typing import Optional
 
 import requests
 
+from services.xtream_client import quote_cred
+
 logger = logging.getLogger(__name__)
 
 # Regex to extract key="value" attributes from #EXTINF lines
@@ -160,5 +162,5 @@ def xtream_streams_to_m3u(
             f'#EXTINF:-1 tvg-id="{epg_id}" tvg-name="{name}" '
             f'tvg-logo="{logo}" group-title="{cat_name}",{name}'
         )
-        lines.append(f"{server}/{sid}.ts?username={username}&password={password}")
+        lines.append(f"{server}/{sid}.ts?username={quote_cred(username)}&password={quote_cred(password)}")
     return "\n".join(lines)
