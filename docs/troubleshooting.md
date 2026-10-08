@@ -187,6 +187,36 @@ Click the Categories tab — Tentacle auto-fetches categories on first visit. If
 2. Verify credentials are correct
 3. Some providers may be temporarily unavailable
 
+### A red banner says the provider is failing
+
+Every hour Tentacle logs in to each provider and opens a few seconds of
+one stream. When either fails twice in a row (two minutes apart), every
+dashboard page shows a red banner with the reason. It goes away by itself
+once the check passes; **Check now** checks again at once, **Hide** hides it
+until the reason changes. Nothing is checked while live TV or a recording is
+running through Tentacle, so a check never cuts a stream.
+
+| The banner says | Usually means |
+|---|---|
+| Provider refusing: 403 | The provider blocks your IP, the account has expired, or the server URL has moved. Ask the provider. |
+| Provider refusing streams: 403 (the login still works) | IP block, or the account is over its connection limit (another device is using it). |
+| Provider rejects the login | Wrong username or password, or the account has expired. Check them in Settings → Providers. |
+| Provider address not found (404) / answers with a web page | The server URL has moved, or a block page answers instead of the provider. |
+| Provider server error (HTTP 5xx) | A problem on the provider's side; usually passes. |
+| Provider unreachable | No answer, connection refused, or the name does not resolve: the provider is down or the URL is wrong. |
+| Provider account expired on ... / Provider account is ... | What the provider itself reports about the account. |
+| Provider test streams not found (404) | The titles tried have left the provider; the next sync replaces them. |
+
+**Alerts on your phone:** in Settings → Integrations → Pushover, enter an
+application token (create an application at pushover.net) and your user
+key, Save, then press **Send test**. Tentacle then sends one message when a
+provider starts failing and one when it works again.
+
+**For a monitor** (Uptime Kuma, rmnk, ...): `GET /api/provider-status`
+needs no sign-in and answers 200 `{"status": "ok"}`, or 503 with the
+reasons while a provider is failing. It names no provider and carries no
+URL or login.
+
 ### VOD content missing metadata
 
 If titles appear without posters or proper names:

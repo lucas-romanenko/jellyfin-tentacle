@@ -1376,6 +1376,10 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 .arr-problems-head button { margin-left: auto; }
 .arr-problems ul { margin: 6px 0 0; padding-left: 18px; color: var(--text2); }
 .arr-problems a { color: inherit; }
+.provider-problems { border-color: rgba(239, 68, 68, .7); background: rgba(239, 68, 68, .16); }
+.provider-problems .arr-problems-head { color: var(--red); }
+.provider-problems ul { list-style: none; padding-left: 0; color: var(--text); }
+.arr-problems-actions { margin-left: auto; display: flex; gap: 6px; }
 .activity-problems { margin-bottom: 14px; }
 .activity-check { font-size: 12px; margin-top: 2px; }
 .activity-check.rejected, .activity-check.none { color: var(--amber); }
@@ -1780,6 +1784,8 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 
     <!-- Radarr/Sonarr problems (admins): the usual cause of "it never downloads" -->
     <div id="arr-problems-banner" class="arr-problems" style="display:none"></div>
+    <!-- IPTV provider failing (admins): the hourly provider check -->
+    <div id="provider-problems-banner" class="arr-problems error provider-problems" style="display:none" role="alert"></div>
 
     <!-- Pages -->
     <div class="page-content">
@@ -2408,6 +2414,23 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
                 <div class="form-label">Logo.dev API Key</div>
                 <input class="form-input mono" id="logodev_api_key" type="password" placeholder="pk_...">
                 <div class="form-hint">Optional. Enables streaming service logos on playlist artwork. Get a key at logo.dev</div>
+              </div>
+
+              <hr class="divider">
+
+              <div class="section-title">Pushover</div>
+              <div class="form-hint" style="margin-bottom:10px">Tentacle checks every IPTV provider each hour. When one starts failing, the dashboard shows a red banner and Pushover sends one message to your phone, and one more when it works again. Create an application at pushover.net for the app token; the user key is on your Pushover home page.</div>
+              <div class="form-group">
+                <div class="form-label">Pushover App Token</div>
+                <input class="form-input mono" id="pushover_app_token" type="password" placeholder="Application API token" autocomplete="off">
+              </div>
+              <div class="form-group">
+                <div class="form-label">Pushover User Key</div>
+                <div style="display:flex;gap:8px;align-items:center">
+                  <input class="form-input mono" id="pushover_user_key" type="password" placeholder="Your user key" autocomplete="off">
+                  <button class="btn btn-secondary" onclick="testPushover()">Send test</button>
+                </div>
+                <div class="form-hint">Leave both empty for no messages; the banner shows either way.</div>
               </div>
 
               <hr class="divider">

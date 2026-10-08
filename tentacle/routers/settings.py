@@ -49,7 +49,7 @@ def get_plugin_keys(db: Session = Depends(get_db)):
 SENSITIVE_KEYS = {"tmdb_bearer_token", "tmdb_api_key", "radarr_api_key", "sonarr_api_key",
                   "jellyfin_api_key", "trakt_client_id", "mdblist_api_key", "vod_token_secret",
                   "youtube_api_key", "internal_secret", "webhook_secret",
-                  "logodev_api_key"} | MUSIC_SECRET_KEYS
+                  "logodev_api_key", "pushover_app_token", "pushover_user_key"} | MUSIC_SECRET_KEYS
 
 # Signing keys: session_secret signs the dashboard's session cookies,
 # vod_token_secret the .strm playback tokens. Nothing in the dashboard shows or
@@ -807,6 +807,28 @@ def test_webhook(body: WebhookTest):
         raise
     except Exception as e:
         raise HTTPException(400, f"Webhook test failed: {str(e)}")
+
+
+class PushoverTest(BaseModel):
+    app_token: Optional[str] = None
+    user_key: Optional[str] = None
+
+
+@router.post("/test-pushover")
+def test_pushover(body: PushoverTest, db: Session = Depends(get_db)):
+    """Send a test message with the keys on screen (a masked one means the saved one)."""
+    from services import pushover
+    saved_token, saved_user = pushover.keys(db)
+    token = (body.app_token or "").strip()
+    user = (body.user_key or "").strip()
+    token = saved_token if not token or looks_masked(token) else token
+    user = saved_user if not user or looks_masked(user) else user
+    ok, error = pushover.post(token, user, "Tentacle: test message",
+                              "Provider alerts from Tentacle will arrive like this.",
+                              (get_setting(db, "external_url", "") or "").strip())
+    if not ok:
+        raise HTTPException(400, error)
+    return {"success": True, "message": "Test message sent"}
 
 
 class JellyfinLogin(BaseModel):

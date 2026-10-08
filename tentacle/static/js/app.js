@@ -12,6 +12,7 @@ const state = {
   _loginSelectedUser: null,  // Jellyfin user selected on login page
   sessionExpired: false,     // a request came back 401: pollers stop until the page reloads after sign-in
   _arrProblemsTimer: null,
+  _providerProblemsTimer: null,
 };
 
 // ── Init ──────────────────────────────────────────────────────────────────
@@ -43,6 +44,8 @@ async function postLoginInit() {
     checkRunningSyncs();
     loadArrProblems();
     state._arrProblemsTimer = setInterval(loadArrProblems, 120000);
+    loadProviderProblems();
+    state._providerProblemsTimer = setInterval(loadProviderProblems, 120000);
   }
   // Music module: show its tabs and search only when it is on.
   if (typeof loadMusicConfig === 'function') loadMusicConfig();
@@ -73,6 +76,48 @@ function hideArrProblems() {
   const el = document.getElementById('arr-problems-banner');
   _arrProblemsHidden = el.dataset.sig || '';   // back if the problems change
   el.style.display = 'none';
+}
+
+// ── IPTV provider failing banner (admins) ─────────────────────────────────
+// The hourly provider check (log in, open a test stream). Gone by itself once
+// the check passes again; Hide keeps it away until the failure changes.
+let _providerProblemsHidden = '';
+async function loadProviderProblems(data) {
+  const el = document.getElementById('provider-problems-banner');
+  if (!el) return;
+  let providers = [];
+  try { providers = (data || await api('/api/health/providers')).providers || []; } catch (e) { return; }
+  const failing = providers.filter(p => p.state === 'failing');
+  const sig = failing.map(p => [p.id, p.step, p.kind, p.code, p.since].join(':')).join('|');
+  if (!failing.length || sig === _providerProblemsHidden) { el.style.display = 'none'; return; }
+  const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+  el.innerHTML = `<div class="arr-problems-head">⚠ ${failing.length === 1 ? 'An IPTV provider is failing' : `${failing.length} IPTV providers are failing`}: streams may not play
+      <span class="arr-problems-actions"><button class="btn btn-secondary btn-sm" id="provider-check-btn" onclick="checkProvidersNow()">Check now</button>
+      <button class="btn btn-secondary btn-sm" onclick="hideProviderProblems()">Hide</button></span></div>
+    <ul>${failing.map(p => `<li>⚠ <strong>${esc(p.name)}:</strong> ${esc(p.reason)}</li>`).join('')}</ul>`;
+  el.dataset.sig = sig;
+  el.style.display = '';
+}
+function hideProviderProblems() {
+  const el = document.getElementById('provider-problems-banner');
+  _providerProblemsHidden = el.dataset.sig || '';
+  el.style.display = 'none';
+}
+async function checkProvidersNow() {
+  const btn = document.getElementById('provider-check-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Checking…'; }
+  try {
+    const r = await api('/api/health/providers/check', { method: 'POST' });
+    if (r.skipped) toast('Live TV or a recording is running, so nothing was checked. Try again when it ends.', 'warning', 6000);
+    else if (r.failing) toast(`Checked: ${r.failing} provider${r.failing === 1 ? '' : 's'} still failing`, 'error');
+    else toast('Checked: every provider works');
+    _providerProblemsHidden = '';
+    await loadProviderProblems(r);
+  } catch (e) {
+    toast(e.message, 'error', 8000);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Check now'; }
+  }
 }
 
 // ── Login ─────────────────────────────────────────────────────────────────
@@ -259,6 +304,7 @@ async function doLogout() {
 // whatever the page needs afresh.
 function stopAllPolling() {
   if (state._arrProblemsTimer) { clearInterval(state._arrProblemsTimer); state._arrProblemsTimer = null; }
+  if (state._providerProblemsTimer) { clearInterval(state._providerProblemsTimer); state._providerProblemsTimer = null; }
   if (state._syncPollInterval) { clearInterval(state._syncPollInterval); state._syncPollInterval = null; }
   for (const fn of ['stopActivityPolling', 'stopDownloadPolling', 'stopHealthPolling',
                     'stopYouTubePolling', 'stopLivePolling',
@@ -1200,6 +1246,7 @@ const SETTINGS_TEXT_FIELDS = [
   'jellyfin_url', 'jellyfin_api_key', 'jellyfin_public_url',
   'recently_added_days', 'tmdb_match_threshold',
   'webhook_host', 'sonarr_webhook_host', 'trakt_client_id', 'logodev_api_key',
+  'pushover_app_token', 'pushover_user_key',
   'hybrid_series_layout',
   // Music
   'lidarr_url', 'lidarr_api_key', 'navidrome_url', 'navidrome_public_url', 'navidrome_username', 'navidrome_password',
@@ -1652,6 +1699,19 @@ async function testWebhookUrl() {
     toast(r.message);
   } catch (e) {
     toast('Webhook test failed: ' + e.message, 'error');
+  }
+}
+
+async function testPushover() {
+  const body = {
+    app_token: document.getElementById('pushover_app_token')?.value.trim(),
+    user_key: document.getElementById('pushover_user_key')?.value.trim(),
+  };
+  try {
+    const r = await api('/api/settings/test-pushover', { method: 'POST', body });
+    toast(r.message);
+  } catch (e) {
+    toast(e.message, 'error', 8000);
   }
 }
 

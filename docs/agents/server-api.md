@@ -25,6 +25,13 @@ parameters, or a helper it calls):
   Radarr/Sonarr webhooks (protected only by the optional `webhook_secret`
   query parameter; set it) and the music webhook (secret always required).
 
+Declared on the app in `main.py` (no router, all **none**; listed in
+`tests/test_route_auth_inventory.py` MAIN_PUBLIC): `GET /api/health`
+(liveness), `GET /api/version` (build identity), `GET /api/provider-status`
+(the provider health check for a monitor: 200 `{"status": "ok"}`, or 503
+`{"status": "failing", "since", "checked_at", "problems": [reason]}`; no
+provider names, URLs or logins).
+
 | Method | Path | Auth | Handler |
 |---|---|---|---|
 | GET | `/api/activity` | user | activity.py:get_activity |
@@ -74,6 +81,8 @@ parameters, or a helper it calls):
 | POST | `/api/health/missing/grab` | admin | health.py:grab_missing_release |
 | GET | `/api/health/missing/movies` | admin | health.py:missing_movies |
 | POST | `/api/health/missing/search` | admin | health.py:search_missing_item |
+| GET | `/api/health/providers` | admin | health.py:provider_health |
+| POST | `/api/health/providers/check` | admin | health.py:check_providers_now |
 | GET | `/api/health/streams` | admin | health.py:get_stream_health |
 | POST | `/api/health/streams/check` | admin | health.py:check_stream_now |
 | POST | `/api/health/streams/clear` | admin | health.py:clear_stream_entry |
@@ -211,6 +220,7 @@ parameters, or a helper it calls):
 | POST | `/api/settings/stale-files/delete` | admin | settings.py:delete_stale_files |
 | POST | `/api/settings/stale-files/dismiss` | admin | settings.py:dismiss_stale_files |
 | POST | `/api/settings/test` | admin | settings.py:test_connection |
+| POST | `/api/settings/test-pushover` | admin | settings.py:test_pushover |
 | POST | `/api/settings/test-webhook` | admin | settings.py:test_webhook |
 | GET | `/api/smartlists` | user | smartlists.py:list_smartlists |
 | POST | `/api/smartlists/add-row` | user | smartlists.py:add_row |
