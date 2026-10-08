@@ -1,7 +1,7 @@
 """
 Tentacle - Health Router
 Library housekeeping: deletion audit log, download health, missing content,
-stream health. Admin-only.
+provider health, stream health. Admin-only.
 """
 
 import logging
@@ -288,6 +288,30 @@ def arr_problems(db: Session = Depends(get_db)):
     """Radarr/Sonarr's own warnings and errors, plus low disk space (cached 60 s)."""
     from services.arr_insight import problems
     return {"problems": problems(db)}
+
+
+# ─── Provider health ──────────────────────────────────────────────────────────
+
+@router.get("/providers")
+def provider_health(db: Session = Depends(get_db)):
+    """The hourly provider check's state per provider (the dashboard banner)."""
+    from services import provider_health as ph
+    from services.pushover import configured
+    return {"providers": ph.provider_view(db), "running": ph.check_running(),
+            "pushover": configured(db)}
+
+
+@router.post("/providers/check")
+def check_providers_now(db: Session = Depends(get_db)):
+    """"Check now": every provider once, without the 2-minute confirmation."""
+    from services.provider_activity import refuse_while_recording
+    refuse_while_recording(db, "A provider check")
+    from services import provider_health as ph
+    result = ph.check_now(db)
+    if result is None:
+        raise HTTPException(409, "A provider check is already running (a failure is confirmed 2 minutes "
+                                 "after it is first seen). Try again in a few minutes.")
+    return {**result, "providers": ph.provider_view(db)}
 
 
 # ─── Stream health ────────────────────────────────────────────────────────────

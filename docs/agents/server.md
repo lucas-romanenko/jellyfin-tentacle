@@ -286,6 +286,32 @@ user_id)` computes them every time from source tags, list subscriptions
   can be there twice (VOD + download). Resolve the item from its path or
   its own id.
 
+## Provider health (`services/provider_health.py`)
+
+- Hourly (job `provider_health`, plus once 2 min after start), per provider
+  that is `active` or has `live_tv_enabled`: the API login (Xtream
+  `player_api.php`: status, `auth`, account `status`, `exp_date`; M3U URL:
+  the first 64 KB must be `#EXTM3U`; M3U file: none), then a 64 KB Range GET
+  of up to 3 of its VOD movies (the provider's own URL, `_direct_url`) and
+  then its first 2 live channels. 404/410 tries the next title; 429/509 is
+  no verdict; an API failure skips the stream step.
+- A new failure is checked again 2 minutes later (`RETRY_DELAY_SECONDS`)
+  before it counts. "Check now" (`POST /api/health/providers/check`) skips
+  that confirmation. Both stand aside (check nothing, keep the state) while
+  `live_streams_active()` or `recording_protected()`; one lock keeps them
+  from running at once (409).
+- State: setting `provider_health` (JSON by provider id: `state`
+  ok/failing/unknown, `since`, `checked_at`, `skipped_at`, `step`, `code`,
+  `kind`, `reason`, `alerted`, `recovery_due`). Reasons never carry a URL or
+  a login; times are the container's local time (`TZ`).
+- Messages through `services/pushover.py` (settings `pushover_app_token`,
+  `pushover_user_key`, masked; sent in the POST body): one when a provider
+  starts failing, one when it works again (only if the first went out);
+  a failed send is tried on the next run.
+- Shown on the dashboard by `loadProviderProblems()` (`static/js/app.js`,
+  admins, every 2 min), and to monitors by `GET /api/provider-status`
+  (503 while failing, no names).
+
 ## UI words
 
 The UI says "Playlist" everywhere; the code says SmartList, TagRule,

@@ -99,6 +99,7 @@ class RouteAuthInventory(unittest.TestCase):
 MAIN_PUBLIC = {
     ("GET", "/api/health"): "liveness probe: status, commit, build date",
     ("GET", "/api/version"): "build identity, no configuration or data",
+    ("GET", "/api/provider-status"): "monitor (rmnk): ok / failing and the reasons, no provider names, URLs or logins",
     ("API_ROUTE", "/api/{full_path:path}"): "404 for unknown /api paths",
 }
 

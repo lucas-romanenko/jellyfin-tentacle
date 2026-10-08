@@ -666,6 +666,22 @@ def setup_scheduler(db):
     )
     logger.info("Stream health sweep scheduled: daily at 04:30")
 
+    # Provider health: log in to each provider and open one test stream every
+    # hour; a confirmed failure shows on the dashboard and goes to Pushover
+    # (services/provider_health.py). Once shortly after start, so the state is
+    # fresh after a restart.
+    from services.provider_health import run_provider_health
+    scheduler.add_job(
+        run_provider_health,
+        IntervalTrigger(hours=1),
+        id="provider_health",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    schedule_once(run_provider_health, 120, "provider_health_first")
+    logger.info("Provider health check scheduled: hourly")
+
     # YouTube source: check enabled channels for new uploads and live streams.
     # The job checks the youtube_enabled setting itself, so the schedule can
     # stay in place whether or not the feature is turned on.
@@ -897,6 +913,21 @@ BUILD_DATE = (os.environ.get("TENTACLE_BUILD_DATE") or "").strip() or "unknown"
 @app.get("/api/health")
 def health():
     return {"status": "ok", "commit": BUILD_COMMIT, "built": BUILD_DATE}
+
+
+@app.get("/api/provider-status")
+def provider_status():
+    """For a monitor (rmnk): 200 {"status": "ok"}, or 503 {"status":
+    "failing", "since", "checked_at", "problems": [reason, ...]} while the
+    hourly check finds a provider failing. Unauthenticated like /api/version,
+    so it carries no provider names, URLs or logins."""
+    from services.provider_health import public_status
+    db = SessionLocal()
+    try:
+        code, body = public_status(db)
+    finally:
+        db.close()
+    return JSONResponse(body, status_code=code)
 
 
 def code_drift(manifest_path: str = ".build-manifest") -> dict:
