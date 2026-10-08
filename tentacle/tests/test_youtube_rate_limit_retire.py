@@ -130,8 +130,10 @@ class ARetiredVideoIsReadAgain(_Db):
                    "live_status": "not_live", "duration": 600, "timestamp": 1758412800}
         listing = {"entries": [{"id": "p" * 11, "title": "Back again"}]}
         with mock.patch.object(indexer.client, "flat_listing", return_value=listing), \
-             mock.patch.object(indexer.client, "video_details", return_value=details):
+             mock.patch.object(indexer.client, "video_details", return_value=details), \
+             mock.patch.object(resolver, "resolve") as plays:
             indexer.index_channel(self.db, ch)
+        plays.assert_called_once_with("p" * 11, backoff=False)
         self.db.refresh(video)
         self.assertIsNone(video.removed_at)
         self.assertIsNone(video.skip_reason)
