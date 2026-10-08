@@ -36,8 +36,8 @@ def _via(request: Optional[Request]) -> str:
     return "Tentacle's dashboard"
 
 
-def _refused(e: RequestRefused) -> HTTPException:
-    return HTTPException(e.status, e.message)
+def _refused(e: RequestRefused, user) -> HTTPException:
+    return HTTPException(e.status, e.for_user(user))
 
 
 def _profiles_with_default(db: Session, service: str, url: str, key: str) -> list:
@@ -934,7 +934,7 @@ def add_to_radarr(body: AddMissingBody, db: Session = Depends(get_db),
             legacy_profile_id=body.quality_profile_id,
             already_owned=downloaded, want_release_date=len(body.tmdb_ids) == 1)
     except RequestRefused as e:
-        raise _refused(e)
+        raise _refused(e, user)
     return outcome.as_response()
 
 
@@ -960,7 +960,7 @@ def add_to_sonarr(body: AddMissingBody, db: Session = Depends(get_db),
             selected_episodes=body.selected_episodes, monitor_new=body.monitor_new or False,
             already_owned=downloaded)
     except RequestRefused as e:
-        raise _refused(e)
+        raise _refused(e, user)
     return outcome.as_response()
 
 
@@ -1085,7 +1085,7 @@ def fetch_list(list_id: int, db: Session = Depends(get_db), user: TentacleUser =
             radarr_added = outcome.report.added
             radarr_error = outcome.report.detail
         except RequestRefused as e:
-            radarr_error = e.message
+            radarr_error = e.for_user(user)
             logger.warning(f"Auto-add to Radarr skipped for '{lst.name}': {e.message}")
 
     log_activity(db, "list_fetch", f"Fetched '{lst.name}' — {store_stats['stored']} items stored")
@@ -1281,7 +1281,7 @@ def add_missing_to_radarr(list_id: int, body: AddMissingBody = None, db: Session
             legacy_profile_id=body.quality_profile_id if body else None,
             already_owned=lambda tid: db.query(Movie).filter(Movie.tmdb_id == tid).first() is not None)
     except RequestRefused as e:
-        raise _refused(e)
+        raise _refused(e, user)
     return outcome.as_response()
 
 
@@ -1314,5 +1314,5 @@ def add_missing_to_sonarr(list_id: int, body: AddMissingBody = None, db: Session
             season_folder=True if season_folder is None else season_folder,
             already_owned=lambda tid: db.query(Series).filter(Series.tmdb_id == tid).first() is not None)
     except RequestRefused as e:
-        raise _refused(e)
+        raise _refused(e, user)
     return outcome.as_response()

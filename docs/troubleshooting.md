@@ -239,6 +239,7 @@ source", "Could not read Radarr's root folders…"). The common ones:
 | Could not read Radarr's/Sonarr's root folders | The *arr was busy or down. Nothing was added — retry in a moment. |
 | Sonarr could not find this show in its TVDB metadata source | The show isn't on TheTVDB yet (usually very new). Nothing you can fix in Tentacle. |
 | Pick a default Radarr/Sonarr quality profile in Tentacle's settings | Pick one under Radarr/Sonarr in Settings → Connections. Tentacle won't guess. |
+| Requests aren't set up yet / aren't working right now: an admin has to… | What a non-admin sees for the same problems (they can't open Settings). An admin fixes it as in the rows around this one. |
 | the root folder Tentacle used does not exist | Add a root folder in the *arr (Settings → Media Management), or pick another default root folder in Settings → Connections. |
 | the quality profile Tentacle used no longer exists / Your default quality profile no longer exists | Pick another default in Settings → Connections. |
 | another series/movie is already using that folder | A folder collision in the *arr — rename or remove the existing one. |
