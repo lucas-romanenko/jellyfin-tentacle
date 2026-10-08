@@ -14,7 +14,7 @@ import unittest
 from datetime import datetime
 from unittest import mock
 
-from models.database import DownloadRequest, Duplicate, Movie, TentacleUser
+from models.database import DeletionLog, DownloadRequest, Duplicate, Movie, TentacleUser
 from tests import test_duplicate_keep_vod_delete_webhook as keep_vod
 from tests.test_duplicate_keep_vod_merged_folder import _FakeArr
 from tests.test_duplicate_keeps_user_data import setUpModule, tearDownModule  # noqa: F401
@@ -61,7 +61,7 @@ class KeepVodReleasesTheDownload(keep_vod._Base):
         self.db.commit()
         self.dup_id = dup.id
 
-    def assert_vod_only(self):
+    def assert_vod_only(self, recorded=True):
         row = self.fresh().query(Movie).one()
         self.assertEqual(("provider_1", str(self.strm)), (row.source, row.strm_path), "the VOD copy must stay")
         self.assertTrue(self.strm.exists())
@@ -77,7 +77,8 @@ class KeepVodReleasesTheDownload(keep_vod._Base):
         self.assertNotIn("<tag>Downloaded Movies</tag>", nfo, "the .strm's NFO brings the tag back")
         self.assertIn("<tag>Netflix Movies</tag>", nfo)
         self.assertEqual(0, self.db.query(DownloadRequest).count(), "the film left Radarr; its request stays")
-        self.assert_recorded()
+        if recorded:
+            self.assert_recorded()
 
     def test_no_delete_webhook(self):
         # Radarr's Connect not set up for deletes: nothing but Keep VOD itself.
@@ -94,7 +95,11 @@ class KeepVodReleasesTheDownload(keep_vod._Base):
             self.assertEqual({"success": True}, self.resolve(self.dup_id))
         for payload in late:
             self.radarr_webhook(payload)
-        self.assert_vod_only()
+        # The late MovieDelete clears the title's duplicate tombstones (the
+        # download is gone, a clean slate); the deletion log keeps the resolve.
+        self.assert_vod_only(recorded=False)
+        self.assertEqual(1, self.fresh().query(DeletionLog).filter(
+            DeletionLog.kind == "duplicate-resolve").count())
 
     def test_delete_webhook_during_the_resolution(self):
         # Already right before #549 (the webhook releases the row); stays so.

@@ -186,14 +186,15 @@ def downloaded_movie_rows(db: Session):
 
 
 def release_vod_download(db: Session, row: Movie, drop_request_tags: bool = True,
-                         owned: Optional[set] = None) -> None:
+                         owned: Optional[set] = None, drop_duplicate: bool = True) -> None:
     """A VOD title's Radarr download is gone: the row goes back to a plain VOD
     title (#378). Its download path, download date and the download's
     Jellyfin item id go, and "Downloaded Movies" (with the requester's
     "<name>'s Downloads" when the request goes too) comes off the row and the
     .strm's NFO, so the next tag push takes it off the VOD item in Jellyfin
-    and the playlists drop it. A pending duplicate for the pair is dismissed.
-    The VOD copy stays. Does not commit."""
+    and the playlists drop it. A pending duplicate for the pair is dismissed
+    (drop_duplicate=False: Keep VOD, which records it itself). The VOD copy
+    stays. Does not commit."""
     from services.tagger import set_row_tags, tentacle_owned_tags, current_downloads_tags
     drop = {DOWNLOADED_MOVIES_TAG}
     if drop_request_tags:
@@ -206,6 +207,8 @@ def release_vod_download(db: Session, row: Movie, drop_request_tags: bool = True
     row.date_updated = datetime.utcnow()
     set_row_tags(row, [t for t in (row.tags or []) if t not in drop],
                  owned if owned is not None else tentacle_owned_tags(db))
+    if not drop_duplicate:
+        return
     from services.duplicates import droppable_duplicates   # not while Keep VOD holds it (#515)
     droppable_duplicates(db, "movie", row.tmdb_id).filter(
         Duplicate.resolution == "pending").delete(synchronize_session=False)

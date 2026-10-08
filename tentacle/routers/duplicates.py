@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from datetime import datetime, timezone
-from models.database import get_db, get_setting, Duplicate, Movie, Series, log_deletion
+from models.database import get_db, get_setting, DownloadRequest, Duplicate, Movie, Series, log_deletion
 from routers.auth import require_admin
 from services.duplicates import (
     delete_vod_files, convert_record_to_downloaded, is_downloaded_file, arr_folder_is_vod_folder,
@@ -102,10 +102,18 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
         # not expire_all(), which would drop _resolve's merged dup.sources.
         record = db.query(model).filter(model.tmdb_id == dup.tmdb_id).populate_existing().first()
 
-        # The (single) row is the VOD one — just clear the downloaded-copy path
-        path_attr = "sonarr_path" if is_series else "radarr_path"
-        if record is not None and getattr(record, path_attr, None):
-            setattr(record, path_attr, None)
+        if is_series:
+            # The (single) row is the VOD one — just clear the downloaded-copy path
+            if record is not None and record.sonarr_path:
+                record.sonarr_path = None
+        elif record is not None and record.source != "radarr":
+            # The film left Radarr: the row goes back to VOD only and the
+            # request goes, as on MovieDelete. Done here, not left to Radarr's
+            # delete webhook, which may never come or come late (#549).
+            from services.radarr import release_vod_download
+            release_vod_download(db, record, drop_duplicate=False)
+            db.query(DownloadRequest).filter(DownloadRequest.tmdb_id == dup.tmdb_id,
+                                             DownloadRequest.media_type == "movie").delete()
 
         # Legacy state: a radarr-only row (shouldn't exist alongside VOD due to
         # the unique constraint, but clean up if the row itself is radarr-owned)

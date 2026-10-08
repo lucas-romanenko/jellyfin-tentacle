@@ -165,6 +165,9 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   for the arr, which waits for its webhook), and never a keep_vod one with
   `pending_user_data`. After the arr call Keep VOD re-reads the row
   (`populate_existing`): the webhook may have released or deleted it (#515).
+  On a film it then releases the VOD row itself (`release_vod_download`)
+  and deletes the request, so it doesn't depend on the webhook coming in
+  time or at all (#549).
 - **Following** = Sonarr `monitorNewItems="all"` (stricter than
   `monitored`), mirrored in `Series.sonarr_monitored`, synced both ways on
   every Sonarr scan; unfollowing keeps `monitored=true`. Hidden for ended
