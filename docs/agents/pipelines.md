@@ -62,7 +62,9 @@ download's `jellyfin_item_id` and "Downloaded Movies" (plus the requester's
 `.strm`'s NFO, the pending duplicate dismissed; the next tag push takes the
 tag off the VOD item. The Radarr scan does the same for a download Radarr
 no longer has, and counts these rows in its outage guard
-(`downloaded_movie_rows`).
+(`downloaded_movie_rows`). Keep VOD on a film duplicate releases the row
+the same way (and deletes the request) without waiting for Radarr's delete
+webhook (#549).
 
 **Sonarr deletes a series** (SeriesDelete): a hybrid keeps its VOD record
 (`sonarr_path`, `sonarr_monitored` cleared); a Sonarr-only series is
