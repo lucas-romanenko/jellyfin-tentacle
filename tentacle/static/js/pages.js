@@ -4186,7 +4186,7 @@ async function _updateMatchCount() {
   try {
     const r = await api('/api/smartlists/preview-count', { method: 'POST', body: { apply_to, conditions } });
     if (r.count === -1) {
-      el.innerHTML = 'Preview not available for provider/list filters';
+      el.innerHTML = 'Preview not available for these filters';
       el.style.display = '';
     } else {
       el.innerHTML = `<span class="count-num">${r.count}</span> item${r.count !== 1 ? 's' : ''} match`;
