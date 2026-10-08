@@ -4837,7 +4837,7 @@ async function writeNfos(btn) {
 // ── PROVIDER MIGRATION ────────────────────────────────────────────────────
 async function showMigrate() {
   const providers = state.providers || await api('/api/providers').catch(() => []);
-  const opts = providers.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
+  const opts = providers.map(p => `<option value="${escapeAttr(String(p.id))}">${escapeAttr(p.name)}</option>`).join('');
   document.getElementById('migrate-from').innerHTML = opts;
   document.getElementById('migrate-to').innerHTML = opts;
   document.getElementById('migrate-preview').style.display = 'none';
@@ -5898,7 +5898,7 @@ async function loadLiveTV() {
     }
   } catch (e) {
     if (statsEl) statsEl.innerHTML =
-      `<div style="grid-column:1/-1;color:var(--red);font-size:13px">Failed to load: ${e.message}</div>`;
+      `<div style="grid-column:1/-1;color:var(--red);font-size:13px">Failed to load: ${escapeAttr(e.message)}</div>`;
   }
 }
 
@@ -6057,7 +6057,7 @@ function renderLiveGroups(groups) {
   if (loadedEl) loadedEl.style.display = '';
 
   el.innerHTML = groups.map((g, i) => `
-    <div class="live-group-row" data-group-id="${g.id}" data-group-idx="${i}" data-group-name="${(g.name || '').toLowerCase()}">
+    <div class="live-group-row" data-group-id="${g.id}" data-group-idx="${i}" data-group-name="${escapeAttr((g.name || '').toLowerCase())}">
       <span class="group-name">${escapeAttr(g.name || '')}</span>
       <span class="group-count">${g.channel_count || 0} ch</span>
       <button type="button" class="live-toggle ${g.enabled ? 'on' : ''}" aria-label="Show ${escapeAttr(g.name || '')} in Live TV" aria-pressed="${g.enabled ? 'true' : 'false'}" onclick="toggleLiveGroup(${g.id}, this, event)"></button>
@@ -6139,7 +6139,7 @@ function populateGroupFilter(groups) {
   if (!sel) return;
   const enabledGroups = groups.filter(g => g.enabled).sort((a, b) => a.name.localeCompare(b.name));
   sel.innerHTML = '<option value="">All Groups</option>' +
-    enabledGroups.map(g => `<option value="${g.name}">${g.name} (${g.channel_count || 0})</option>`).join('');
+    enabledGroups.map(g => `<option value="${escapeAttr(g.name)}">${escapeAttr(g.name)} (${g.channel_count || 0})</option>`).join('');
 }
 
 // ── Channels ──────────────────────────────────────────────────────────────
@@ -6234,7 +6234,7 @@ function renderLiveChannels(channels, total) {
 
   el.innerHTML = channels.map((ch, i) => `
     <div class="live-ch-row" data-ch-idx="${i}">
-      ${ch.logo_url ? `<img alt="" class="live-ch-logo" src="${ch.logo_url}" loading="lazy" onerror="this.style.display='none'">` : `<div class="live-ch-logo"></div>`}
+      ${ch.logo_url ? `<img alt="" class="live-ch-logo" src="${escapeAttr(ch.logo_url)}" loading="lazy" onerror="this.style.display='none'">` : `<div class="live-ch-logo"></div>`}
       <span class="live-ch-name">${escapeAttr(ch.name)}${ch.custom_name ? ` <span style="color:var(--text3);font-size:11px">(${escapeAttr(ch.provider_name)})</span>` : ''}</span>
       <span class="live-ch-group">${escapeAttr(ch.group_title || '')}</span>
       <button type="button" class="live-ch-epg-badge ${ch.has_epg_data ? 'has-epg' : 'no-epg'}" title="${escapeAttr(_liveGuideTitle(ch))}" onclick="setLiveChannelGuideId(${i})">${ch.has_epg_data ? (ch.epg_match === 'name' ? 'EPG (by name)' : ch.epg_match === 'override' ? 'EPG (set)' : 'Has EPG') : 'No EPG'}</button>
@@ -6434,12 +6434,12 @@ function startEpgPoll() {
     try {
       const s = await api(`/api/live/sync-status?provider_id=${liveState.providerId}`);
       if (s.phase !== 'epg') return; // different sync running
-      statusEl.innerHTML = `<span style="color:var(--amber)">${s.message || 'Syncing...'}</span>` +
+      statusEl.innerHTML = `<span style="color:var(--amber)">${escapeAttr(s.message || 'Syncing...')}</span>` +
         (s.progress != null ? ` <div class="live-progress" style="width:120px;display:inline-block;vertical-align:middle;margin-left:6px"><div class="live-progress-bar" style="width:${s.progress}%"></div></div>` : '');
 
       if (s.status === 'complete') {
         clearInterval(liveState.epgPollTimer);
-        statusEl.innerHTML = `<span style="color:var(--green)">${s.message}</span>`;
+        statusEl.innerHTML = `<span style="color:var(--green)">${escapeAttr(s.message)}</span>`;
         toast('EPG sync complete', 'success');
         refreshLiveStats();
         // Auto-refresh Jellyfin guide if server address is configured
@@ -6453,7 +6453,7 @@ function startEpgPoll() {
         } catch (e) {}
       } else if (s.status === 'error') {
         clearInterval(liveState.epgPollTimer);
-        statusEl.innerHTML = `<span style="color:var(--red)">${s.message}</span>`;
+        statusEl.innerHTML = `<span style="color:var(--red)">${escapeAttr(s.message)}</span>`;
         toast('EPG sync failed', 'error');
       }
     } catch (e) {
@@ -6469,7 +6469,7 @@ function startSyncPoll() {
   liveState.syncPollTimer = setInterval(async () => {
     try {
       const s = await api(`/api/live/sync-status?provider_id=${liveState.providerId}`);
-      statusEl.innerHTML = `${s.message || ''} ${s.progress != null ? `<div class="live-progress" style="width:120px;display:inline-block;vertical-align:middle;margin-left:6px"><div class="live-progress-bar" style="width:${s.progress}%"></div></div>` : ''}`;
+      statusEl.innerHTML = `${escapeAttr(s.message || '')} ${s.progress != null ? `<div class="live-progress" style="width:120px;display:inline-block;vertical-align:middle;margin-left:6px"><div class="live-progress-bar" style="width:${s.progress}%"></div></div>` : ''}`;
 
       // Channel sync chains into EPG sync automatically — handle EPG completion here too
       if (s.phase === 'epg' && s.status === 'complete') {
