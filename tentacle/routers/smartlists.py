@@ -545,7 +545,7 @@ class PreviewRequest(BaseModel):
 @router.post("/preview-count")
 def preview_count(body: PreviewRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Return the number of items matching the given conditions (for live preview)."""
-    from services.smartlists import _classify_conditions, _conditions_to_expressions, _build_query_params, _extract_genre_logic
+    from services.smartlists import _rule_expressions, _build_query_params, _extract_genre_logic
     from services.jellyfin import JellyfinService
 
     jf_url = get_setting(db, "jellyfin_url")
@@ -563,20 +563,17 @@ def preview_count(body: PreviewRequest, db: Session = Depends(get_db), user: Ten
     elif body.apply_to == "series":
         media = ["Series"]
 
-    classification = _classify_conditions(conditions)
-
-    # Build a minimal config to reuse _build_query_params
-    expressions = []
-    if classification == "native":
-        expressions = _conditions_to_expressions(conditions)
-    else:
-        # For tentacle/mixed conditions, we can't easily preview without tag data
-        # Just count items with any tag-based conditions as 0
+    # The query the playlist will run. A rule that queries its own tag (list,
+    # runtime, downloaded) can't be counted before the tagger has run.
+    tag, expressions = _rule_expressions(conditions, media, "")
+    if not expressions and not tag:
         return {"count": -1}  # -1 signals "can't preview"
+    if not expressions:
+        expressions = [{"MemberName": "Tags", "Operator": "Contains", "TargetValue": tag}]
 
     config = {
         "MediaTypes": media,
-        "ExpressionSets": [{"Expressions": expressions}] if expressions else [],
+        "ExpressionSets": [{"Expressions": expressions}],
     }
 
     jf = JellyfinService(jf_url, jf_key)

@@ -95,7 +95,13 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   [jellyfin-notes.md](jellyfin-notes.md).
 - **Tag suffix**: source tags get the media type appended ("Netflix" →
   "Netflix Movies" / "Netflix TV"); playlist expressions must use the
-  suffixed tag (`_extract_source_value()` in `services/smartlists.py`).
+  suffixed tag.
+- **A rule's playlist query** (`_rule_expressions()` in
+  `services/smartlists.py`, shared by the full sync, saving the rule and the
+  builder's preview count): genre/rating/year only → Jellyfin's own fields;
+  one provider plus zero or more genre/rating/year → the provider's suffixed
+  tag(s) AND those fields (#540); anything else (list, runtime, downloaded)
+  → the rule's own output tag, filled only after the tagger runs.
 - **Recently Added** is a rolling window (default 30 days), refreshed on
   every scheduled sync.
 - **Duplicates**: found when a download also exists as VOD; resolved ones

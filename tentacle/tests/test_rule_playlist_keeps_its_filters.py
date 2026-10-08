@@ -156,5 +156,53 @@ class TestSavingTheRule(_Base):
                 self.assertEqual(_query(filled), _query(self.desired(name)))
 
 
+class TestPreviewCount(_Base):
+    """The rule builder's "N items match" asks Jellyfin what the playlist will."""
+
+    def setUp(self):
+        super().setUp()
+        import main
+        from routers import auth
+        set_setting(self.db, "jellyfin_url", "http://jf.invalid")
+        set_setting(self.db, "jellyfin_api_key", "k")
+        self.db.refresh(self.user)
+        self.db.expunge(self.user)
+        engine = create_engine(f"sqlite:///{self.tmp}/t.db", connect_args={"check_same_thread": False})
+        self.addCleanup(engine.dispose)
+        Session = sessionmaker(bind=engine)
+
+        def get_db():
+            s = Session()
+            try:
+                yield s
+            finally:
+                s.close()
+        self.app = main.app
+        self.app.dependency_overrides[mdb.get_db] = get_db
+        self.app.dependency_overrides[auth.get_user_from_request] = lambda: self.user
+        self.addCleanup(self.app.dependency_overrides.clear)
+        self.asked = []
+        p = mock.patch("services.jellyfin.JellyfinService.query_items",
+                       lambda svc, **kw: self.asked.append(kw) or [{"Id": "1"}, {"Id": "2"}])
+        p.start()
+        self.addCleanup(p.stop)
+
+    def count(self, conditions, apply_to="movies"):
+        from fastapi.testclient import TestClient
+        r = TestClient(self.app).post("/api/smartlists/preview-count",
+                                      json={"apply_to": apply_to, "conditions": conditions})
+        self.assertEqual(200, r.status_code)
+        return r.json()["count"]
+
+    def test_provider_plus_genre_is_counted_with_both(self):
+        self.assertEqual(2, self.count([NETFLIX, COMEDY]))
+        self.assertEqual(["Netflix Movies"], self.asked[0]["tags"])
+        self.assertEqual(["Comedy"], self.asked[0]["genres"])
+
+    def test_a_condition_only_the_tagger_knows_is_not_previewed(self):
+        self.assertEqual(-1, self.count([NETFLIX, ON_LIST]))
+        self.assertEqual([], self.asked)
+
+
 if __name__ == "__main__":
     unittest.main()
