@@ -882,7 +882,8 @@ def create_list(body: ListCreate, db: Session = Depends(get_db), user: TentacleU
             ListSubscription.user_id == user.id)}
         own |= {t for (t,) in db.query(TagRule.output_tag).filter(TagRule.user_id == user.id)}
         from services.tagger import name_key, youtube_title_taken
-        taken = {name_key(t) for t in tentacle_owned_tags(db) - own}
+        # A deleted list's or rule's tag is free again (#542).
+        taken = {name_key(t) for t in tentacle_owned_tags(db, include_retired=False) - own}
         if name_key(tag) in taken or youtube_title_taken(db, tag):
             raise HTTPException(400, f"The tag '{tag}' is already used by Tentacle or by another "
                                      f"user's list — choose a different tag")

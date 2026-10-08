@@ -108,5 +108,64 @@ class TestCreateRefusesATakenTag(unittest.TestCase):
         self.assertTrue(self._create("Watchlist", user=self.mom)["success"])
 
 
+class TestADeletedListsTagCanBeUsedAgain(unittest.TestCase):
+    """Deleting a list (or a rule, or renaming a rule's tag) retires its tag so
+    Refresh Tags still takes it off titles. create_list() counted retired tags
+    as taken, so once a list was gone nobody could add a list with its tag
+    again, not even the same user re-adding the same list (#542)."""
+    URL = "https://trakt.tv/users/rob/lists/watchlist"
+
+    def setUp(self):
+        from models.database import ListSubscription, TentacleUser
+        self.db = _fresh_db()
+        self.rob = TentacleUser(jellyfin_user_id="u-rob", display_name="Rob")
+        self.mom = TentacleUser(jellyfin_user_id="u-mom", display_name="Mom")
+        self.db.add_all([self.rob, self.mom])
+        self.db.commit()
+        self.db.add(ListSubscription(user_id=self.mom.id, name="Mom's", type="trakt",
+                                     tag="Mom's picks", url="https://trakt.tv/users/mom/lists/p"))
+        self.db.commit()
+
+    def tearDown(self):
+        self.db.close()
+
+    def _create(self, tag, user=None):
+        from routers import lists
+        body = lists.ListCreate(name=tag, type="trakt", url=self.URL, tag=tag)
+        return lists.create_list(body, db=self.db, user=user or self.rob)
+
+    def _delete(self, list_id, user=None):
+        from routers import lists
+        return lists.delete_list(list_id, db=self.db, user=user or self.rob)
+
+    def test_the_same_user_can_add_a_deleted_list_again(self):
+        self._delete(self._create("Watchlist")["id"])
+        self.assertTrue(self._create("Watchlist")["success"])
+
+    def test_another_user_can_use_a_deleted_lists_tag(self):
+        self._delete(self._create("Watchlist")["id"])
+        self.assertTrue(self._create("watchlist", user=self.mom)["success"])
+
+    def test_a_deleted_or_renamed_rules_tag_can_become_a_list_tag(self):
+        from services.tagger import retire_tag
+        retire_tag(self.db, "Christmas")   # what delete_rule and a tag rename record
+        self.db.commit()
+        self.assertTrue(self._create("Christmas")["success"])
+
+    def test_a_retired_tag_another_user_still_uses_stays_refused(self):
+        from fastapi import HTTPException
+        from services.tagger import retire_tag
+        retire_tag(self.db, "Mom's picks")
+        self.db.commit()
+        with self.assertRaises(HTTPException) as caught:
+            self._create("Mom's picks")
+        self.assertEqual(caught.exception.status_code, 400)
+
+    def test_the_deleted_lists_tag_is_still_tentacles(self):
+        from services.tagger import tentacle_owned_tags
+        self._delete(self._create("Watchlist")["id"])
+        self.assertIn("Watchlist", tentacle_owned_tags(self.db))
+
+
 if __name__ == "__main__":
     unittest.main()
