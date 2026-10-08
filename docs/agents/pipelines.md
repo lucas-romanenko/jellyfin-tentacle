@@ -62,7 +62,9 @@ download's `jellyfin_item_id` and "Downloaded Movies" (plus the requester's
 `.strm`'s NFO, the pending duplicate dismissed; the next tag push takes the
 tag off the VOD item. The Radarr scan does the same for a download Radarr
 no longer has, and counts these rows in its outage guard
-(`downloaded_movie_rows`).
+(`downloaded_movie_rows`). Keep VOD on a film duplicate releases the row
+the same way (and deletes the request) without waiting for Radarr's delete
+webhook (#549).
 
 **Sonarr deletes a series** (SeriesDelete): a hybrid keeps its VOD record
 (`sonarr_path`, `sonarr_monitored` cleared); a Sonarr-only series is
@@ -74,7 +76,9 @@ episodes ("VOD") and downloaded ones ("DL") as checked and disabled, and
 season coverage ("5/8"). The chosen episodes go to
 `POST /api/lists/add-to-sonarr` with `selected_episodes`; Tentacle adds the
 series with an explicit `path` in the existing VOD folder, `monitor: none`,
-then monitors only the chosen episodes, sets `monitorNewItems="all"` when
+waits until Sonarr has set it up (up to 3 minutes from the add; past that
+the request fails with the reason, the series stays in Sonarr), then
+monitors only the chosen episodes, sets `monitorNewItems="all"` when
 "Auto-download new episodes" (default on) is ticked, starts a search, and
 records `sonarr_path`/`sonarr_monitored` at once.
 

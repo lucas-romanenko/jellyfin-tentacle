@@ -171,6 +171,15 @@ def fetch_api_uploads(channel) -> list:
             for i in data.get("items", []) if i.get("contentDetails", {}).get("videoId")]
 
 
+def api_playlist_size(playlist_id: str) -> Optional[int]:
+    """How many entries a playlist has, from the Data API (1 quota unit); None
+    when the API does not say (a private or removed playlist)."""
+    data = _api_get("playlists", {"part": "contentDetails", "id": playlist_id})
+    items = data.get("items") or []
+    count = (items[0].get("contentDetails") or {}).get("itemCount") if items else None
+    return count if isinstance(count, int) else None
+
+
 _DURATION_RE = re.compile(r"^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$")
 
 

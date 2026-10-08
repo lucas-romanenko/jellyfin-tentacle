@@ -463,7 +463,7 @@ def tag_conflict(db: Session, tag: str, user_id: Optional[int], list_id: Optiona
     return None
 
 
-def tentacle_owned_tags(db: Session) -> set:
+def tentacle_owned_tags(db: Session, include_retired: bool = True) -> set:
     """Every tag name Tentacle itself can put on a Jellyfin item.
 
     "Refresh Tags" replaces an item's whole tag list with Tentacle's computed
@@ -477,6 +477,9 @@ def tentacle_owned_tags(db: Session) -> set:
     the recency and download built-ins, every list subscription's tag and every
     tag rule's output tag — including inactive ones, so a tag that stops being
     produced is still recognised as ours and removed.
+
+    `include_retired=False` leaves out the deleted / renamed list and rule tags:
+    what something produces now, for deciding whether a tag is taken (#542).
     """
     owned = builtin_tags(db)
     for (tag,) in db.query(ListSubscription.tag).distinct():
@@ -488,7 +491,8 @@ def tentacle_owned_tags(db: Session) -> set:
     # ...and every list / rule tag that has since been deleted or renamed. Once
     # the row is gone nothing above produces the tag any more, so without this
     # it read as somebody else's and stayed on every item for ever.
-    owned |= retired_tags(db)
+    if include_retired:
+        owned |= retired_tags(db)
     # Each requester's "<name>'s Downloads": the Radarr/Sonarr scans keep it
     # on the rows they attribute, so one on an item no row carries is stale.
     # A renamed user's old one is among the retired tags above (#454).

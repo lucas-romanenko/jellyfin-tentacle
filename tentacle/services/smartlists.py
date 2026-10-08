@@ -68,16 +68,6 @@ NATIVE_FIELDS = {"genre", "rating", "year"}
 TENTACLE_FIELDS = {"source", "source_tag", "list", "downloaded", "runtime"}
 
 
-def _extract_source_value(conditions: list) -> str | None:
-    """If the conditions contain a source or source_tag equals condition,
-    return the value. The tagger appends a type suffix (Movies/TV) to these."""
-    for cond in conditions:
-        field = cond.get("field", "")
-        if field in ("source", "source_tag") and cond.get("operator") == "equals":
-            return cond.get("value", "")
-    return None
-
-
 def _extract_genre_logic(conditions: list) -> str:
     """Extract genre_logic from conditions (default 'and')."""
     for c in conditions:
@@ -118,6 +108,34 @@ def _conditions_to_expressions(conditions: list) -> list:
         elif field == "year":
             expressions.append({"MemberName": "ProductionYear", "Operator": mapped_op, "TargetValue": value})
     return expressions
+
+
+def _rule_expressions(conditions: list, media: list, output_tag: str) -> tuple[str, list | None]:
+    """(tag, expressions) for a tag rule's playlist query, the same for the
+    full sync and for saving the rule.
+
+    - Only genre/rating/year: Jellyfin's own fields.
+    - One provider ("source"/"source_tag" equals) plus zero or more of
+      genre/rating/year: the provider's tag(s) ("X Movies" / "X TV", the
+      suffix the tagger writes) AND Jellyfin's fields, so the filters are kept
+      (#540) and the playlist fills on save.
+    - Anything else (list, runtime, downloaded, two providers): the rule's own
+      tag, which the tagger gives only to titles that pass every condition.
+    """
+    conditions = conditions or []
+    if conditions and _classify_conditions(conditions) == "native":
+        return output_tag, _conditions_to_expressions(conditions)
+    sources = [c for c in conditions if c.get("field") in ("source", "source_tag")]
+    rest = [c for c in conditions if c not in sources]
+    if (len(sources) != 1 or sources[0].get("operator") != "equals"
+            or not sources[0].get("value") or any(c.get("field") not in NATIVE_FIELDS for c in rest)):
+        return output_tag, None
+    value = sources[0]["value"]
+    source_tags = [f"{value} {'Movies' if m == 'Movie' else 'TV'}" for m in media]
+    if not rest and len(source_tags) == 1:
+        return source_tags[0], None
+    expressions = [{"MemberName": "Tags", "Operator": "Contains", "TargetValue": t} for t in source_tags]
+    return source_tags[0], expressions + _conditions_to_expressions(rest)
 
 
 # ── Per-user SmartLists paths ────────────────────────────────────────────────
@@ -564,33 +582,11 @@ def get_desired_smartlists(db: Session, user_id: int = None) -> list:
             media = ["Movie"]
         elif rule.apply_to == "series":
             media = ["Series"]
-        # Compute the correct tag for Jellyfin queries.
-        # Source/source_tag conditions need the media type suffix because the tagger
-        # writes tags like "Netflix Movies" / "Netflix TV", not just "Netflix".
-        tag = rule.output_tag
-        dual_tag_expressions = None
-        source_value = _extract_source_value(rule.conditions or [])
-        if source_value and len(media) == 1:
-            type_suffix = "Movies" if media == ["Movie"] else "TV"
-            tag = f"{source_value} {type_suffix}"
-        elif source_value and len(media) == 2:
-            # Applies to BOTH movies and series — the tagger never writes the
-            # bare source value, only "X Movies" / "X TV". Emit two OR'd tag
-            # expressions so the query matches either suffixed tag.
-            dual_tag_expressions = [
-                {"MemberName": "Tags", "Operator": "Contains", "TargetValue": f"{source_value} Movies"},
-                {"MemberName": "Tags", "Operator": "Contains", "TargetValue": f"{source_value} TV"},
-            ]
-
+        tag, expressions = _rule_expressions(rule.conditions, media, rule.output_tag)
         gl = _extract_genre_logic(rule.conditions or [])
         sl_entry = {"name": rule.output_tag, "tag": tag, "media_type": media, "enabled": True, "source": "custom", "genre_logic": gl}
-        # If all conditions are Jellyfin-native (genre/rating/year),
-        # query Jellyfin directly instead of going through Tentacle tags
-        classification = _classify_conditions(rule.conditions or [])
-        if classification == "native":
-            sl_entry["expressions"] = _conditions_to_expressions(rule.conditions)
-        elif dual_tag_expressions is not None:
-            sl_entry["expressions"] = dual_tag_expressions
+        if expressions:
+            sl_entry["expressions"] = expressions
         smartlists.append(sl_entry)
         existing_tags.add(rule.output_tag)
 
@@ -625,40 +621,6 @@ def _scan_existing(smartlists_path: Path) -> dict:
             except Exception:
                 continue
     return existing
-
-
-_BUILTIN_DEFAULT_SORT = {
-    "Recently Added Movies": "DateCreated",
-    "Recently Added TV": "DateCreated",
-    "Downloaded Movies": "DateCreated",
-    "Downloaded TV": "DateCreated",
-}
-
-
-def _migrate_builtin_sort_defaults(existing: dict, smartlists_path: Path):
-    """One-time migration: fix built-in playlists created before default_sort was added.
-    If a built-in playlist has ReleaseDate sort and no _sort_migrated flag, update to DateCreated."""
-    # Also migrate per-user downloads playlists ("{Name}'s Downloads")
-    migrate_targets = dict(_BUILTIN_DEFAULT_SORT)
-    for name in existing:
-        if name.endswith("'s Downloads"):
-            migrate_targets[name] = "DateCreated"
-
-    for name, expected_sort in migrate_targets.items():
-        if name not in existing:
-            continue
-        folder, config = existing[name]
-        if config.get("_sort_migrated"):
-            continue
-        order = config.get("Order", {})
-        sort_opts = order.get("SortOptions", [])
-        current_sort = sort_opts[0].get("SortBy") if sort_opts else None
-        if current_sort == "ReleaseDate":
-            config["Order"] = {"SortOptions": [{"SortBy": expected_sort, "SortOrder": "Descending"}]}
-            logger.info(f"[SmartLists] Migrated sort for '{name}': ReleaseDate → {expected_sort}")
-        config["_sort_migrated"] = True
-        config_file = folder / "config.json"
-        config_file.write_text(json.dumps(config, indent=2), encoding="utf-8")
 
 
 def migrate_global_smartlists_to_user(db: Session, user_id: int):
@@ -863,10 +825,6 @@ def sync_smartlists(db: Session, user_id: int = None) -> dict:
     jf_user_id = _get_jellyfin_user_id(db, user_id)
     jellyfin_url = get_setting(db, "jellyfin_url", "")
     jellyfin_key = get_setting(db, "jellyfin_api_key", "")
-
-    # One-time migration: fix built-in playlists stuck with ReleaseDate sort
-    # that should default to DateCreated (created before default_sort was added)
-    _migrate_builtin_sort_defaults(existing, smartlists_path)
 
     # Playlists the user has explicitly enabled are protected even when they
     # aren't in `desired` right now (see the orphan cleanup below).
@@ -2567,17 +2525,9 @@ def sync_single_custom_playlist(db: Session, user_id: int, rule_name: str, condi
     elif apply_to == "series":
         media_types = ["Series"]
 
-    # Classify conditions and build expressions
-    classification = _classify_conditions(conditions)
-    expressions = _conditions_to_expressions(conditions) if classification == "native" else None
-    gl = _extract_genre_logic(conditions)
-
-    # Compute tag (with source suffix if applicable)
-    tag = output_tag
-    source_value = _extract_source_value(conditions)
-    if source_value and len(media_types) == 1:
-        type_suffix = "Movies" if media_types == ["Movie"] else "TV"
-        tag = f"{source_value} {type_suffix}"
+    # The same query get_desired_smartlists() builds for this rule
+    tag, expressions = _rule_expressions(conditions, media_types, output_tag)
+    gl = _extract_genre_logic(conditions or [])
 
     # Check if config already exists on disk
     existing = _scan_existing(smartlists_path)

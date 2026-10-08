@@ -43,6 +43,12 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   with a blocking `getaddrinfo`, so async code calls them through
   `asyncio.to_thread` (#371, #464); `url_host_allowed` is the allowlist
   half, no lookup.
+- Dashboard dialogs (`.modal-overlay`) open and close only through
+  `showModal()`/`closeModal()` (`static/js/app.js`, "Modals"), never by
+  setting `style.display`: they move the focus in, keep Tab inside, give
+  the focus back to the opener and set the dialog role (#552). Their test
+  runs that block under node (`tests/test_dashboard_dialog_keyboard.py`), so
+  its helpers stay inside it.
 
 ## Auth and users (`routers/auth.py`)
 
@@ -95,7 +101,13 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   [jellyfin-notes.md](jellyfin-notes.md).
 - **Tag suffix**: source tags get the media type appended ("Netflix" →
   "Netflix Movies" / "Netflix TV"); playlist expressions must use the
-  suffixed tag (`_extract_source_value()` in `services/smartlists.py`).
+  suffixed tag.
+- **A rule's playlist query** (`_rule_expressions()` in
+  `services/smartlists.py`, shared by the full sync, saving the rule and the
+  builder's preview count): genre/rating/year only → Jellyfin's own fields;
+  one provider plus zero or more genre/rating/year → the provider's suffixed
+  tag(s) AND those fields (#540); anything else (list, runtime, downloaded)
+  → the rule's own output tag, filled only after the tagger runs.
 - **Recently Added** is a rolling window (default 30 days), refreshed on
   every scheduled sync.
 - **Duplicates**: found when a download also exists as VOD; resolved ones
@@ -159,6 +171,9 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   for the arr, which waits for its webhook), and never a keep_vod one with
   `pending_user_data`. After the arr call Keep VOD re-reads the row
   (`populate_existing`): the webhook may have released or deleted it (#515).
+  On a film it then releases the VOD row itself (`release_vod_download`)
+  and deletes the request, so it doesn't depend on the webhook coming in
+  time or at all (#549).
 - **Following** = Sonarr `monitorNewItems="all"` (stricter than
   `monitored`), mirrored in `Series.sonarr_monitored`, synced both ways on
   every Sonarr scan; unfollowing keeps `monitored=true`. Hidden for ended
@@ -199,7 +214,8 @@ user_id)` computes them every time from source tags, list subscriptions
   regenerates the home layout.
 - Sort: per playlist, stored in the on-disk config's `Order`;
   `PRESERVED_FIELDS = ["LastRefreshed", "DateCreated", "ItemCount", "Order"]`
-  survive rebuilds. Built-ins are `(name, media_types, sort, max_items)`
+  survive rebuilds. A built-in gets its default sort only when created;
+  no sync rewrites the user's `Order`. Built-ins are `(name, media_types, sort, max_items)`
   tuples (`services/smartlists.py`). Changing the sort clears the playlist
   and re-adds items in order; `DateCreated` sorts use Tentacle's own
   `date_added`, because Jellyfin's is unreliable for bulk imports.

@@ -341,6 +341,43 @@ class TestProfilesEndpoint(_Base):
         self.assertTrue(all("is_default" in p for p in lists.sonarr_profiles(self.db, self.user)))
 
 
+class TestPickedEpisodesNotApplied(_Base):
+    """#532: a series Sonarr added whose picked episodes could not be monitored
+    reads as failed with the reason, and is still recorded as requested."""
+
+    REASON = "Added to Sonarr, but Sonarr had not finished setting the show up."
+
+    def request(self, **ids):
+        from services import media_requests
+        from services.sonarr import SonarrService
+
+        def add_series(svc, *a, **kw):
+            svc.last_error = self.REASON
+            return {"id": 3, "path": "/tv/Show", "tmdbId": 7}
+
+        self.set("sonarr_quality_profile_id", "6")
+        with mock.patch.object(SonarrService, "add_series", autospec=True, side_effect=add_series), \
+             mock.patch.object(media_requests, "_bust_discover_cache") as bust:
+            out = media_requests.request_series(self.db, user_id=1, via="test",
+                                                selected_episodes=[{"season": 1, "episode": 2}], **ids)
+        return out, bust
+
+    def check(self, out, bust, added_id, request_id):
+        from models.database import DownloadRequest
+        resp = out.as_response()
+        self.assertEqual((resp["added"], resp["failed"]), (0, 1), resp)
+        self.assertEqual(resp["detail"], self.REASON)
+        self.assertEqual(out.added, [added_id])
+        bust.assert_called_once()
+        self.assertEqual([r.tmdb_id for r in self.db.query(DownloadRequest).all()], [request_id])
+
+    def test_tmdb_title(self):
+        self.check(*self.request(tmdb_ids=[7]), 7, 7)
+
+    def test_tvdb_only_title(self):
+        self.check(*self.request(tvdb_ids=[5]), -5, 7)
+
+
 ROOT = Path(__file__).resolve().parents[2]
 
 

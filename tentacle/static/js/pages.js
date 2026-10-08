@@ -27,11 +27,14 @@ function escapeJS(str) {
 // Quality profile picker for an add. "Default" (the profile picked in
 // Settings) sends nothing; any other choice is sent as this request's
 // override. Never preselect the *arr's first profile: it is usually "Any".
+// Only an admin can open Settings, so anyone else is told an admin picks it.
 function _profileOptionsHtml(profiles) {
   const def = (profiles || []).find(p => p.is_default);
   const first = def
     ? `<option value="">Default — ${escapeAttr(def.name)}</option>`
-    : '<option value="">Default (none picked yet — set one in Settings)</option>';
+    : state.currentUser?.is_admin
+      ? '<option value="">Default (none picked yet — set one in Settings)</option>'
+      : '<option value="">Default (none picked yet — an admin has to pick one)</option>';
   return first + (profiles || []).filter(p => !p.is_default)
     .map(p => `<option value="${escapeAttr(String(p.id))}">${escapeAttr(p.name)}</option>`).join('');
 }
@@ -116,15 +119,15 @@ function renderHistoryRuns(runs) {
       .slice(0, 8)
       .map(([name, stats]) => `
         <span class="run-cat-pill ${stats.new > 0 ? 'has-new' : ''}">
-          ${name.split(' - ').pop()} ${stats.new > 0 ? `+${stats.new}` : stats.total || ''}
+          ${escapeAttr(name.split(' - ').pop())} ${stats.new > 0 ? `+${Number(stats.new) || 0}` : escapeAttr(String(stats.total || ''))}
         </span>`).join('');
 
     return `
       <div class="run-row">
         <div class="run-header">
           <div class="dot dot-${statusColor}"></div>
-          <span style="font-size:13px;font-weight:500">${run.provider_name}</span>
-          <span class="badge badge-gray">${run.sync_type}</span>
+          <span style="font-size:13px;font-weight:500">${escapeAttr(run.provider_name)}</span>
+          <span class="badge badge-gray">${escapeAttr(run.sync_type)}</span>
           ${run.status === 'finishing' ? '<span class="badge badge-amber" title="The VOD part is done; Jellyfin is still being updated (library scan, tags, playlists)">updating Jellyfin</span>' : ''}
           <span style="font-size:12px;color:var(--text3);font-family:'DM Mono',monospace">${dateStr}</span>
           <span style="font-size:11px;color:var(--text3);margin-left:auto">⏱ ${duration}</span>
@@ -137,7 +140,7 @@ function renderHistoryRuns(runs) {
           ${run.movies_failed > 0 ? `<div class="run-number" style="color:var(--red)"><span>${run.movies_failed}</span>failed</div>` : ''}
         </div>
         ${catPills ? `<div class="run-cats">${catPills}</div>` : ''}
-        ${run.error_message ? `<div style="margin-top:8px;font-size:12px;color:var(--red);font-family:'DM Mono',monospace">${run.error_message}</div>` : ''}
+        ${run.error_message ? `<div style="margin-top:8px;font-size:12px;color:var(--red);font-family:'DM Mono',monospace">${escapeAttr(run.error_message)}</div>` : ''}
       </div>`;
   }).join('');
 }
@@ -513,13 +516,13 @@ function renderLibDownloads(data) {
     const statusClass = rawStatus === 'stuck' ? 'stuck' :
       rawStatus === 'import_blocked' ? 'blocked' :
       rawStatus.includes('import') ? 'importing' : rawStatus.includes('queue') ? 'queued' : 'downloading';
-    const eta = d.eta ? ` · ${d.eta}` : '';
-    const qual = d.quality ? ` · ${d.quality}` : '';
-    const reqBy = d.requested_by ? `<span class="dl-requested-by">${d.requested_by}</span>` : '';
+    const eta = d.eta ? ` · ${escapeAttr(d.eta)}` : '';
+    const qual = d.quality ? ` · ${escapeAttr(d.quality)}` : '';
+    const reqBy = d.requested_by ? `<span class="dl-requested-by">${escapeAttr(d.requested_by)}</span>` : '';
     return `<div class="dl-item">
-      <div class="dl-item-title">${d.title || 'Unknown'}${d.episode ? ' — ' + d.episode : ''}</div>
+      <div class="dl-item-title">${escapeAttr(d.title || 'Unknown')}${d.episode ? ' — ' + escapeAttr(d.episode) : ''}</div>
       ${reqBy}
-      <div class="dl-item-status ${statusClass}">${status}${qual}${eta}</div>
+      <div class="dl-item-status ${statusClass}">${escapeAttr(status)}${qual}${eta}</div>
       <div class="dl-item-bar"><div class="dl-item-bar-fill" style="width:${pct}%"></div></div>
       <div class="dl-item-pct">${pct}%</div>
     </div>`;
@@ -567,11 +570,11 @@ function openSyncDetailModal() {
   const body = document.getElementById('sync-detail-body');
   if (!overlay || !body) return;
   body.innerHTML = _buildSyncDetailHtml(_lastSyncData);
-  overlay.style.display = '';
+  showModal('modal-sync-detail');
 }
 
 function closeSyncDetailModal() {
-  document.getElementById('modal-sync-detail').style.display = 'none';
+  closeModal('modal-sync-detail');
 }
 
 function _syncStepHtml(icon, label, status, detail) {
@@ -603,7 +606,7 @@ function _buildSyncDetailHtml(d) {
       let ch = [];
       if (l.added > 0) ch.push(`<span style="color:var(--green)">+${l.added}</span>`);
       if (l.removed > 0) ch.push(`<span style="color:var(--red)">-${l.removed}</span>`);
-      return `${l.name} (${ch.join(', ')})`;
+      return `${escapeAttr(l.name)} (${ch.join(', ')})`;
     });
     html += _syncStepHtml('↻', 'List Refresh', 'ok', parts.join(' · '));
   } else {
@@ -615,7 +618,7 @@ function _buildSyncDetailHtml(d) {
   if (providers.length > 0) {
     providers.forEach(p => {
       if (p.status === 'failed') {
-        html += _syncStepHtml('⟳', `VOD: ${p.name}`, 'failed', p.error || 'Sync failed');
+        html += _syncStepHtml('⟳', `VOD: ${escapeAttr(p.name)}`, 'failed', escapeAttr(p.error || 'Sync failed'));
         return;
       }
       let lines = [];
@@ -643,17 +646,17 @@ function _buildSyncDetailHtml(d) {
       }
       // New titles
       if (p.movie_titles && p.movie_titles.length > 0) {
-        lines.push(`<span style="color:var(--text3)">New movies: ${p.movie_titles.join(', ')}</span>`);
+        lines.push(`<span style="color:var(--text3)">New movies: ${escapeAttr(p.movie_titles.join(', '))}</span>`);
       }
       if (p.series_titles && p.series_titles.length > 0) {
-        lines.push(`<span style="color:var(--text3)">New series: ${p.series_titles.join(', ')}</span>`);
+        lines.push(`<span style="color:var(--text3)">New series: ${escapeAttr(p.series_titles.join(', '))}</span>`);
       }
       // New categories
       if (p.new_categories && p.new_categories.length > 0) {
-        lines.push(`<span style="color:var(--amber)">${p.new_categories.length} new categories: ${p.new_categories.join(', ')}</span>`);
+        lines.push(`<span style="color:var(--amber)">${p.new_categories.length} new categories: ${escapeAttr(p.new_categories.join(', '))}</span>`);
       }
       const dur = p.duration_seconds ? ` (${_fmtDuration(p.duration_seconds)})` : '';
-      html += _syncStepHtml('⟳', `VOD: ${p.name}${dur}`, 'ok', lines.join('<br>') || 'No changes');
+      html += _syncStepHtml('⟳', `VOD: ${escapeAttr(p.name)}${dur}`, 'ok', lines.join('<br>') || 'No changes');
     });
   }
 
@@ -933,12 +936,12 @@ function renderLibCard(item) {
 
   // Normal in-library card
   const poster = item.poster_path
-    ? `<img alt="" src="https://image.tmdb.org/t/p/w185${item.poster_path}" loading="lazy" onerror="this.outerHTML='<div class=\\'lib-card-poster-placeholder\\'>◫</div>'">`
+    ? `<img alt="" src="https://image.tmdb.org/t/p/w185${escapeAttr(item.poster_path)}" loading="lazy" onerror="this.outerHTML='<div class=\\'lib-card-poster-placeholder\\'>◫</div>'">`
     : `<div class="lib-card-poster-placeholder">◫</div>`;
 
   let badges = '';
   if (item.source === 'radarr' || item.source === 'sonarr') badges += `<span class="badge badge-green" style="font-size:9px;padding:1px 5px">DL</span>`;
-  if (item.source_tag) badges += `<span class="badge badge-accent" style="font-size:9px;padding:1px 5px">${item.source_tag}</span>`;
+  if (item.source_tag) badges += `<span class="badge badge-accent" style="font-size:9px;padding:1px 5px">${escapeAttr(item.source_tag)}</span>`;
   const sourceBadge = badges ? `<div class="lib-card-source" style="display:flex;flex-direction:column;gap:3px;align-items:flex-end">${badges}</div>` : '';
 
   return `
@@ -948,7 +951,7 @@ function renderLibCard(item) {
         ${sourceBadge}
       </div>
       <div class="lib-card-info">
-        <div class="lib-card-title" title="${escapeAttr(item.title)}">${item.title}</div>
+        <div class="lib-card-title" title="${escapeAttr(item.title)}">${escapeAttr(item.title)}</div>
         <div class="lib-card-meta">${item.year || '—'} · ${item.media_type === 'movie' ? '🎬' : '📺'}</div>
       </div>
     </div>`;
@@ -1001,9 +1004,9 @@ async function showAddToArrModal(tmdbId, title, year, posterPath, mediaType, tvd
   const info = document.getElementById('add-radarr-movie-info');
   const posterSrc = _imgUrl(posterPath, 'w185');
   const posterImg = posterSrc
-    ? `<img alt="" src="${posterSrc}" style="border-radius:8px;width:80px;height:120px;object-fit:cover">`
+    ? `<img alt="" src="${escapeAttr(posterSrc)}" style="border-radius:8px;width:80px;height:120px;object-fit:cover">`
     : `<div style="width:80px;height:120px;background:var(--bg3);border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--text3)">&#9707;</div>`;
-  info.innerHTML = `${posterImg}<div style="display:flex;flex-direction:column;justify-content:center"><div style="font-weight:600;font-size:17px">${title || 'Unknown'}</div><div style="color:var(--text2);font-size:14px">${year || ''}</div></div>`;
+  info.innerHTML = `${posterImg}<div style="display:flex;flex-direction:column;justify-content:center"><div style="font-weight:600;font-size:17px">${escapeAttr(title || 'Unknown')}</div><div style="color:var(--text2);font-size:14px">${escapeAttr(year || '')}</div></div>`;
 
   const select = document.getElementById('add-radarr-quality');
   select.innerHTML = '<option value="">Loading...</option>';
@@ -1130,7 +1133,7 @@ function _renderSeasons() {
       <div class="ep-picker-season-header" onclick="toggleSeasonAccordion(${s.season_number})">
         <span class="ep-arrow" id="ep-arrow-${s.season_number}">▶</span>
         <input type="checkbox" class="ep-picker-season-check" onclick="event.stopPropagation();toggleSeasonAll(${s.season_number}, this.checked)">
-        <span>${s.name || 'Season ' + s.season_number}${airYear}</span>
+        <span>${escapeAttr(s.name || 'Season ' + s.season_number)}${airYear}</span>
         <span class="ep-count">${s.episode_count} ep</span>
       </div>
       <div class="ep-picker-episodes" id="ep-list-${s.season_number}"></div>
@@ -1186,15 +1189,15 @@ function _renderEpisodes(seasonNum) {
       return `<label class="ep-picker-ep ep-have">
         <input type="checkbox" checked disabled data-season="${seasonNum}" data-episode="${ep.episode_number}">
         <span class="ep-num">${epNum}</span>
-        <span class="ep-title" title="${escapeAttr(title)}">${title}</span>
+        <span class="ep-title" title="${escapeAttr(title)}">${escapeAttr(title)}</span>
         <span class="ep-dl-badge ${badgeClass}">${badgeText}</span>
       </label>`;
     }
     return `<label class="ep-picker-ep">
       <input type="checkbox" data-season="${seasonNum}" data-episode="${ep.episode_number}" onchange="updateSeasonCheckbox(${seasonNum})">
       <span class="ep-num">${epNum}</span>
-      <span class="ep-title" title="${escapeAttr(title)}">${title}</span>
-      <span class="ep-date">${airDate}</span>
+      <span class="ep-title" title="${escapeAttr(title)}">${escapeAttr(title)}</span>
+      <span class="ep-date">${escapeAttr(airDate)}</span>
     </label>`;
   }).join('');
   _updateSeasonStatus(seasonNum, eps.length);
@@ -1295,9 +1298,9 @@ async function showManageEpisodesModal(tmdbId, title, year, posterPath) {
   const info = document.getElementById('add-radarr-movie-info');
   const managePosterSrc = _imgUrl(posterPath, 'w185');
   const posterImg = managePosterSrc
-    ? `<img alt="" src="${managePosterSrc}" style="border-radius:8px;width:80px;height:120px;object-fit:cover">`
+    ? `<img alt="" src="${escapeAttr(managePosterSrc)}" style="border-radius:8px;width:80px;height:120px;object-fit:cover">`
     : `<div style="width:80px;height:120px;background:var(--bg3);border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--text3)">&#9707;</div>`;
-  info.innerHTML = `${posterImg}<div style="display:flex;flex-direction:column;justify-content:center"><div style="font-weight:600;font-size:17px">${title || 'Unknown'}</div><div style="color:var(--text2);font-size:14px">${year || ''}</div></div>`;
+  info.innerHTML = `${posterImg}<div style="display:flex;flex-direction:column;justify-content:center"><div style="font-weight:600;font-size:17px">${escapeAttr(title || 'Unknown')}</div><div style="color:var(--text2);font-size:14px">${escapeAttr(year || '')}</div></div>`;
 
   // Hide add-specific fields
   document.getElementById('add-radarr-quality').parentElement.style.display = 'none';
@@ -1361,7 +1364,7 @@ async function showManageEpisodesModal(tmdbId, title, year, posterPath) {
         return `<label class="ep-picker-ep">
           <input type="checkbox" ${ep.monitored ? 'checked' : ''} data-season="${sn}" data-episode="${ep.episodeNumber}" onchange="updateSeasonCheckbox(${sn})">
           <span class="ep-num">${epNum}</span>
-          <span class="ep-title" title="${escapeAttr(ep.title || '')}">${ep.title || ''}</span>
+          <span class="ep-title" title="${escapeAttr(ep.title || '')}">${escapeAttr(ep.title || '')}</span>
           ${dlBadge}
         </label>`;
       }).join('');
@@ -1417,9 +1420,9 @@ async function showDownloadMoreModal(tmdbId, title, year, posterPath) {
   const info = document.getElementById('add-radarr-movie-info');
   const dlMorePosterSrc = _imgUrl(posterPath, 'w185');
   const posterImg = dlMorePosterSrc
-    ? `<img alt="" src="${dlMorePosterSrc}" style="border-radius:8px;width:80px;height:120px;object-fit:cover">`
+    ? `<img alt="" src="${escapeAttr(dlMorePosterSrc)}" style="border-radius:8px;width:80px;height:120px;object-fit:cover">`
     : `<div style="width:80px;height:120px;background:var(--bg3);border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--text3)">&#9707;</div>`;
-  info.innerHTML = `${posterImg}<div style="display:flex;flex-direction:column;justify-content:center"><div style="font-weight:600;font-size:17px">${title || 'Unknown'}</div><div style="color:var(--text2);font-size:14px">${year || ''}</div></div>`;
+  info.innerHTML = `${posterImg}<div style="display:flex;flex-direction:column;justify-content:center"><div style="font-weight:600;font-size:17px">${escapeAttr(title || 'Unknown')}</div><div style="color:var(--text2);font-size:14px">${escapeAttr(year || '')}</div></div>`;
 
   // Show quality profile selector (needed for Sonarr add)
   document.getElementById('add-radarr-quality').parentElement.style.display = '';
@@ -1710,19 +1713,19 @@ async function showMediaDetail(tmdbId, mediaType) {
     const isSeries = mediaType === 'series';
     document.getElementById('detail-body').innerHTML = `
       <div class="detail-layout" style="display:flex;gap:20px">
-        ${data.poster_path ? `<img alt="" src="${_imgUrl(data.poster_path, 'w185')}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
+        ${data.poster_path ? `<img alt="" src="${escapeAttr(_imgUrl(data.poster_path, 'w185'))}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
         <div style="flex:1">
-          <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${data.year || '—'} · ${data.runtime ? data.runtime+'m' : ''} · ★ ${data.rating || '—'}</div>
-          <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${data.overview || 'No overview available.'}</p>
+          <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${escapeAttr(data.year || '—')} · ${data.runtime ? data.runtime+'m' : ''} · ★ ${escapeAttr(data.rating || '—')}</div>
+          <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${escapeAttr(data.overview || 'No overview available.')}</p>
           <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
-            ${(data.genres||[]).map(g => `<span class="badge badge-gray">${g}</span>`).join('')}
+            ${(data.genres||[]).map(g => `<span class="badge badge-gray">${escapeAttr(g)}</span>`).join('')}
           </div>
           <div style="display:flex;gap:6px;flex-wrap:wrap">
-            ${(data.tags||[]).map(t => `<span class="badge badge-accent">${t}</span>`).join('')}
+            ${(data.tags||[]).map(t => `<span class="badge badge-accent">${escapeAttr(t)}</span>`).join('')}
           </div>
           <div style="margin-top:16px;font-size:11px;color:var(--text3);font-family:'DM Mono',monospace">
-            Source: ${data.source} · Added: ${data.date_added ? new Date(data.date_added).toLocaleDateString() : '—'}
-            ${data.strm_path ? `<br>Path: ${data.strm_path}` : ''}
+            Source: ${escapeAttr(data.source)} · Added: ${data.date_added ? new Date(data.date_added).toLocaleDateString() : '—'}
+            ${data.strm_path ? `<br>Path: ${escapeAttr(data.strm_path)}` : ''}
           </div>
           ${data.is_vod ? `<label class="detail-follow-toggle" style="margin-top:10px" title="Turn this off to keep the title in the catalog but stop Tentacle writing or repairing its .strm files — for shows you have switched to downloaded copies">
             <input type="checkbox" ${data.strm_managed ? 'checked' : ''} onchange="toggleStrmManaged('${escapeJS(mediaType)}', ${tmdbId}, this.checked)">
@@ -1861,7 +1864,7 @@ async function _fmLoad(q) {
     _fm.cands = d.candidates || [];
     list.innerHTML = _fm.cands.length ? _fm.cands.map((c, i) => `
       <button class="fm-cand" onclick="_fmPick(${i})">
-        ${c.poster_path ? `<img alt="" src="${_imgUrl(c.poster_path, 'w92')}" loading="lazy">` : '<div class="fm-noposter"></div>'}
+        ${c.poster_path ? `<img alt="" src="${escapeAttr(_imgUrl(c.poster_path, 'w92'))}" loading="lazy">` : '<div class="fm-noposter"></div>'}
         <span class="fm-cand-text"><span class="fm-cand-title">${escapeAttr(c.title)}</span>
           <span class="fm-cand-meta">${escapeAttr([c.year, c.runtime ? c.runtime + ' min' : '', c.language_name || ''].filter(Boolean).join(' · '))}
             ${c.runtime_matches ? '<span class="badge badge-green">same length</span>' : ''}
@@ -1933,13 +1936,16 @@ async function loadMatchSuspects() {
     card.style.display = '';
     document.getElementById('wrong-match-list').innerHTML = suspects.length ? suspects.map(x => `
       <div class="wm-row">
-        ${x.poster_path ? `<img alt="" src="${_imgUrl(x.poster_path, 'w92')}" class="wm-poster" loading="lazy" onerror="this.style.visibility='hidden'">` : '<div class="wm-poster"></div>'}
+        ${x.poster_path ? `<img alt="" src="${escapeAttr(_imgUrl(x.poster_path, 'w92'))}" class="wm-poster" loading="lazy" onerror="this.style.visibility='hidden'">` : '<div class="wm-poster"></div>'}
         <div class="wm-info">
           <div class="wm-title">${escapeAttr(x.title || '')}</div>
-          <div class="wm-meta">Plays <strong>${x.actual_minutes} min</strong> — this film is ${x.expected_minutes} min</div>
+          <div class="wm-meta">${x.reason === 'relist_followed' ? 'Your provider re-listed its stream under a new id; your fix followed it'
+            : x.reason === 'relist_blocked' ? 'A re-listed stream, labelled like one you blocked as the wrong movie'
+            : `Plays <strong>${x.actual_minutes} min</strong> — this film is ${x.expected_minutes} min`}</div>
         </div>
         <div class="wm-actions">
-          <button class="btn btn-primary btn-sm" onclick="openFixMatch(${x.tmdb_id}, '${escapeJS(x.title || '')}')">Fix it</button>
+          ${x.reason === 'relist_followed' ? `<button class="btn btn-primary btn-sm" onclick="undoFollowedFix(${x.tmdb_id})">Undo</button>`
+            : `<button class="btn btn-primary btn-sm" onclick="openFixMatch(${x.tmdb_id}, '${escapeJS(x.title || '')}')">Fix it</button>`}
           <button class="btn btn-secondary btn-sm" onclick="dismissMatchSuspect(${x.tmdb_id})">It's fine</button>
         </div>
       </div>`).join('') : '<div class="wm-meta" style="padding:4px 0">Nothing flagged right now.</div>';
@@ -1952,6 +1958,12 @@ async function loadMatchSuspects() {
 
 async function dismissMatchSuspect(tmdbId) {
   try { await api(`/api/library/match-suspects/${tmdbId}/dismiss`, { method: 'POST' }); loadMatchSuspects(); }
+  catch (e) { toast(e.message, 'error'); }
+}
+
+async function undoFollowedFix(tmdbId) {
+  if (!confirm('The re-listed stream is not this film? Your fix goes back to the old stream, and the re-listed one is added by its own name on the next sync. If the old stream stays gone, this copy is removed after two syncs, like any film your provider dropped.')) return;
+  try { const r = await api(`/api/library/match-suspects/${tmdbId}/undo-follow`, { method: 'POST' }); toast(r.message || 'Undone'); loadMatchSuspects(); }
   catch (e) { toast(e.message, 'error'); }
 }
 
@@ -2164,7 +2176,7 @@ async function detailToggleSeason(sn) {
 
       rows += `<div class="detail-ep-row">
         <span class="ep-num">${epNum}</span>
-        <span class="detail-ep-name">${nameMap[epNum] || ''}</span>
+        <span class="detail-ep-name">${escapeAttr(nameMap[epNum] || '')}</span>
         ${badges.join('')}
         ${isDl && !isVod ? `<button class="ep-replace-btn" title="Bad copy? Get another one" aria-label="Bad copy? Get another one"
           onclick="replaceCopy('series', ${epState.tmdbId}, ${sn}, ${epNum}, this)">↻</button>` : ''}
@@ -2179,7 +2191,7 @@ async function detailToggleSeason(sn) {
         const dateLabel = ep.air_date ? new Date(ep.air_date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : 'TBA';
         rows += `<div class="detail-ep-row" style="opacity:0.5">
           <span class="ep-num">${ep.episode_number}</span>
-          <span class="detail-ep-name">${ep.name || ''}</span>
+          <span class="detail-ep-name">${escapeAttr(ep.name || '')}</span>
           <span class="ep-dl-badge" style="background:var(--bg3);color:var(--text3)">${dateLabel}</span>
         </div>`;
       }
@@ -2203,19 +2215,19 @@ async function showCoverageDetail(tmdbId, mediaType, title, year, posterPath) {
     document.getElementById('detail-title').textContent = data.title;
     document.getElementById('detail-body').innerHTML = `
       <div class="detail-layout" style="display:flex;gap:20px">
-        ${data.poster_path ? `<img alt="" src="${_imgUrl(data.poster_path, 'w185')}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
+        ${data.poster_path ? `<img alt="" src="${escapeAttr(_imgUrl(data.poster_path, 'w185'))}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
         <div style="flex:1">
-          <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${data.year || '—'} · ${data.runtime ? data.runtime+'m' : ''} · ★ ${data.rating || '—'}</div>
-          <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${data.overview || 'No overview available.'}</p>
+          <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${escapeAttr(data.year || '—')} · ${data.runtime ? data.runtime+'m' : ''} · ★ ${escapeAttr(data.rating || '—')}</div>
+          <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${escapeAttr(data.overview || 'No overview available.')}</p>
           <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
-            ${(data.genres||[]).map(g => `<span class="badge badge-gray">${g}</span>`).join('')}
+            ${(data.genres||[]).map(g => `<span class="badge badge-gray">${escapeAttr(g)}</span>`).join('')}
           </div>
           <div style="display:flex;gap:6px;flex-wrap:wrap">
-            ${(data.tags||[]).map(t => `<span class="badge badge-accent">${t}</span>`).join('')}
+            ${(data.tags||[]).map(t => `<span class="badge badge-accent">${escapeAttr(t)}</span>`).join('')}
           </div>
           <div style="margin-top:16px;font-size:11px;color:var(--text3);font-family:'DM Mono',monospace">
-            Source: ${data.source} · Added: ${data.date_added ? new Date(data.date_added).toLocaleDateString() : '—'}
-            ${data.strm_path ? `<br>Path: ${data.strm_path}` : ''}
+            Source: ${escapeAttr(data.source)} · Added: ${data.date_added ? new Date(data.date_added).toLocaleDateString() : '—'}
+            ${data.strm_path ? `<br>Path: ${escapeAttr(data.strm_path)}` : ''}
           </div>
         </div>
       </div>`;
@@ -2230,12 +2242,12 @@ async function showCoverageDetail(tmdbId, mediaType, title, year, posterPath) {
       document.getElementById('detail-title').textContent = data.title || title || 'Unknown';
       document.getElementById('detail-body').innerHTML = `
         <div class="detail-layout" style="display:flex;gap:20px">
-          ${data.poster_path ? `<img alt="" src="${_imgUrl(data.poster_path, 'w185')}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
+          ${data.poster_path ? `<img alt="" src="${escapeAttr(_imgUrl(data.poster_path, 'w185'))}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
           <div style="flex:1">
-            <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${data.year || '—'} · ${data.runtime ? data.runtime+'m · ' : ''}★ ${data.rating || '—'}</div>
-            <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${data.overview || 'No overview available.'}</p>
+            <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${escapeAttr(data.year || '—')} · ${data.runtime ? data.runtime+'m · ' : ''}★ ${escapeAttr(data.rating || '—')}</div>
+            <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${escapeAttr(data.overview || 'No overview available.')}</p>
             <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
-              ${(data.genres||[]).map(g => `<span class="badge badge-gray">${g}</span>`).join('')}
+              ${(data.genres||[]).map(g => `<span class="badge badge-gray">${escapeAttr(g)}</span>`).join('')}
             </div>
             <div style="margin-top:8px;padding-top:12px;border-top:1px solid var(--border)">
               <span class="badge" style="background:var(--red-dim);color:var(--red);margin-bottom:8px">Not in library</span>
@@ -2250,9 +2262,9 @@ async function showCoverageDetail(tmdbId, mediaType, title, year, posterPath) {
       document.getElementById('detail-title').textContent = title || 'Unknown';
       document.getElementById('detail-body').innerHTML = `
         <div class="detail-layout" style="display:flex;gap:20px">
-          ${posterPath ? `<img alt="" src="${_imgUrl(posterPath, 'w185')}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
+          ${posterPath ? `<img alt="" src="${escapeAttr(_imgUrl(posterPath, 'w185'))}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
           <div style="flex:1">
-            <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${year || '—'}</div>
+            <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${escapeAttr(year || '—')}</div>
             <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">Not in library yet.</p>
           </div>
         </div>`;
@@ -2372,7 +2384,7 @@ async function loadListCoverageInline(listId) {
         ${addBtns}
       </div>`;
   } catch (e) {
-    el.innerHTML = `<div style="font-size:12px;color:var(--red)">${e.message}</div>`;
+    el.innerHTML = `<div style="font-size:12px;color:var(--red)">${escapeAttr(e.message)}</div>`;
   }
 }
 
@@ -2579,8 +2591,8 @@ async function loadAutoPlaylists() {
           <div class="auto-pl-row">
             ${control}
             <div class="auto-pl-info">
-              <div style="font-size:13px;font-weight:500">${p.name}</div>
-              <div style="font-size:11px;color:var(--text3)">${p.origin}</div>
+              <div style="font-size:13px;font-weight:500">${escapeAttr(p.name)}</div>
+              <div style="font-size:11px;color:var(--text3)">${escapeAttr(p.origin)}</div>
             </div>
             <div class="auto-pl-actions">
               ${sortDrop}
@@ -2875,7 +2887,7 @@ async function showListCoverage(listId, listName) {
     renderCoverage(data);
   } catch (e) {
     document.getElementById('coverage-loading').innerHTML =
-      `<div style="color:var(--red);font-size:13px">${e.message}</div>`;
+      `<div style="color:var(--red);font-size:13px">${escapeAttr(e.message)}</div>`;
   }
 }
 
@@ -3004,7 +3016,7 @@ function _applyCoverageFilter() {
 
 function coverageCard(item, showAdd = false) {
   const poster = item.poster_path
-    ? `<img src="${_imgUrl(item.poster_path, 'w200')}" alt="" loading="lazy">`
+    ? `<img src="${escapeAttr(_imgUrl(item.poster_path, 'w200'))}" alt="" loading="lazy">`
     : `<div class="no-poster">🎬</div>`;
   const year = item.year ? ` (${item.year})` : '';
   const isSeries = (item.media_type || 'movie') === 'series';
@@ -3017,7 +3029,7 @@ function coverageCard(item, showAdd = false) {
     : '';
   return `<div class="coverage-card" ${clickAttr}>
     ${poster}${addBtn}
-    <div class="card-title" title="${escapeAttr((item.title || '') + year)}">${item.title || 'Unknown'}${year}</div>
+    <div class="card-title" title="${escapeAttr((item.title || '') + year)}">${escapeAttr(item.title || 'Unknown')}${escapeAttr(year)}</div>
   </div>`;
 }
 
@@ -3467,8 +3479,8 @@ async function loadSmartLists() {
     const lists = data.smartlists || [];
 
     statusEl.innerHTML = data.path_accessible
-      ? `<span style="color:var(--green)">${data.path}</span>`
-      : `<span style="color:var(--red)">${data.path} (not accessible)</span>`;
+      ? `<span style="color:var(--green)">${escapeAttr(data.path)}</span>`
+      : `<span style="color:var(--red)">${escapeAttr(data.path)} (not accessible)</span>`;
 
     if (!lists.length) {
       el.innerHTML = '<div class="empty-state" style="padding:24px"><p>No SmartLists to manage yet. Run a sync first.</p></div>';
@@ -3490,9 +3502,9 @@ async function loadSmartLists() {
         : '<span class="badge" style="background:var(--amber-dim);color:var(--amber)">Missing</span>';
 
       html += `<tr style="border-bottom:1px solid var(--border)">
-        <td style="padding:8px 12px;color:var(--text)">${sl.name}</td>
-        <td style="padding:8px 12px"><span class="badge badge-accent">${sl.tag}</span></td>
-        <td style="padding:8px 12px;color:var(--text2)">${mediaLabel}</td>
+        <td style="padding:8px 12px;color:var(--text)">${escapeAttr(sl.name)}</td>
+        <td style="padding:8px 12px"><span class="badge badge-accent">${escapeAttr(sl.tag)}</span></td>
+        <td style="padding:8px 12px;color:var(--text2)">${escapeAttr(mediaLabel)}</td>
         <td style="padding:8px 12px;text-align:center">${statusBadge}</td>
       </tr>`;
     }
@@ -3544,14 +3556,14 @@ async function loadHomeScreen() {
       heroSelect.innerHTML = '<option value="">-- disabled --</option>';
       for (const p of playlists) {
         const selected = config.hero && config.hero.playlist_id === p.playlist_id ? ' selected' : '';
-        heroSelect.innerHTML += `<option value="${p.playlist_id}"${selected}>${p.name}</option>`;
+        heroSelect.innerHTML += `<option value="${escapeAttr(p.playlist_id)}"${selected}>${escapeAttr(p.name)}</option>`;
       }
     } catch (_) {
       // Fallback to home rows if endpoint fails
       heroSelect.innerHTML = '<option value="">-- disabled --</option>';
       for (const r of homeRows) {
         const selected = config.hero && config.hero.playlist_id === r.playlist_id ? ' selected' : '';
-        heroSelect.innerHTML += `<option value="${r.playlist_id}"${selected}>${r.display_name}</option>`;
+        heroSelect.innerHTML += `<option value="${escapeAttr(r.playlist_id)}"${selected}>${escapeAttr(r.display_name)}</option>`;
       }
     }
 
@@ -3777,7 +3789,7 @@ function renderHomeRows() {
     <div class="home-row-item" data-idx="${i}">
       <span style="color:var(--text3);font-size:11px;width:20px;text-align:center;flex-shrink:0">${i + 1}</span>
       <span class="row-grip" aria-label="Drag to reorder" title="Drag to reorder">&#x2630;</span>
-      <span class="row-name">${row.display_name}</span>
+      <span class="row-name">${escapeAttr(row.display_name)}</span>
       <div class="row-controls">
         ${shapeSelect}
         ${maxItemsInput}
@@ -3931,7 +3943,7 @@ async function showAddHomeRow() {
     if (builtins.length) {
       select.innerHTML += '<optgroup label="Jellyfin Sections">';
       for (const s of builtins) {
-        select.innerHTML += `<option value="builtin:${s.section_id}">${s.display_name}</option>`;
+        select.innerHTML += `<option value="builtin:${s.section_id}">${escapeAttr(s.display_name)}</option>`;
       }
       select.innerHTML += '</optgroup>';
     }
@@ -3940,14 +3952,14 @@ async function showAddHomeRow() {
     if (youtube.length) {
       select.innerHTML += '<optgroup label="YouTube Channels">';
       for (const p of youtube) {
-        select.innerHTML += `<option value="playlist:${p.playlist_id}">${p.name}</option>`;
+        select.innerHTML += `<option value="playlist:${escapeAttr(p.playlist_id)}">${escapeAttr(p.name)}</option>`;
       }
       select.innerHTML += '</optgroup>';
     }
     if (others.length) {
       select.innerHTML += '<optgroup label="Tentacle Playlists">';
       for (const p of others) {
-        select.innerHTML += `<option value="playlist:${p.playlist_id}">${p.name}</option>`;
+        select.innerHTML += `<option value="playlist:${escapeAttr(p.playlist_id)}">${escapeAttr(p.name)}</option>`;
       }
       select.innerHTML += '</optgroup>';
     }
@@ -4094,13 +4106,13 @@ async function loadTagRules() {
         if (c.field === 'downloaded') display = c.value === 'yes' ? 'Downloaded (Radarr)' : 'VOD only';
         else if (c.field === 'list') display = `List: ${c.value}`;
         else if (c.field === 'source') display = `Provider: ${c.value}`;
-        return `<span class="badge badge-gray">${display}</span>`;
+        return `<span class="badge badge-gray">${escapeAttr(display)}</span>`;
       }).join(' ');
 
       return `
         <div class="list-item">
           <div class="list-info" style="flex:1">
-            <div class="list-name">${rule.name}</div>
+            <div class="list-name">${escapeAttr(rule.name)}</div>
             <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px">
               <span class="badge badge-accent">${typeLabels[rule.apply_to] || rule.apply_to}</span>
               ${condStr}
@@ -4139,7 +4151,7 @@ function _renderGenreChips(selected = []) {
   const selSet = new Set(selected.map(s => s.toLowerCase()));
   container.innerHTML = genres.map(g => {
     const sel = selSet.has(g.toLowerCase()) ? ' selected' : '';
-    return `<span class="genre-chip${sel}" data-genre="${escapeAttr(g)}" onclick="toggleGenreChip(this)">${g}</span>`;
+    return `<span class="genre-chip${sel}" data-genre="${escapeAttr(g)}" onclick="toggleGenreChip(this)">${escapeAttr(g)}</span>`;
   }).join('');
   if (!genres.length) {
     container.innerHTML = '<span style="font-size:12px;color:var(--text3)">No genres found</span>';
@@ -4177,7 +4189,7 @@ async function _updateMatchCount() {
   try {
     const r = await api('/api/smartlists/preview-count', { method: 'POST', body: { apply_to, conditions } });
     if (r.count === -1) {
-      el.innerHTML = 'Preview not available for provider/list filters';
+      el.innerHTML = 'Preview not available for these filters';
       el.style.display = '';
     } else {
       el.innerHTML = `<span class="count-num">${r.count}</span> item${r.count !== 1 ? 's' : ''} match`;
@@ -4239,10 +4251,10 @@ async function showAddTagRule() {
   await _ensureConditionOptions();
   const srcPick = document.getElementById('tr-source-pick');
   srcPick.innerHTML = '<option value="">Select...</option>' +
-    (_conditionOptions?.sources || []).map(s => `<option value="${escapeAttr(s)}">${s}</option>`).join('');
+    (_conditionOptions?.sources || []).map(s => `<option value="${escapeAttr(s)}">${escapeAttr(s)}</option>`).join('');
   const listPick = document.getElementById('tr-list-pick');
   listPick.innerHTML = '<option value="">Select...</option>' +
-    (_conditionOptions?.lists || []).map(l => `<option value="${escapeAttr(l.tag)}">${l.name}</option>`).join('');
+    (_conditionOptions?.lists || []).map(l => `<option value="${escapeAttr(l.tag)}">${escapeAttr(l.name)}</option>`).join('');
   _renderGenreChips([]);
 
   showModal('modal-tag-rule');
@@ -4319,12 +4331,12 @@ async function editTagRule(id) {
     }
     const srcPick = document.getElementById('tr-source-pick');
     srcPick.innerHTML = '<option value="">Select...</option>' +
-      (_conditionOptions?.sources || []).map(s => `<option value="${escapeAttr(s)}">${s}</option>`).join('');
+      (_conditionOptions?.sources || []).map(s => `<option value="${escapeAttr(s)}">${escapeAttr(s)}</option>`).join('');
     if (srcCond) { srcPick.value = srcCond.value; srcPick.style.display = ''; }
     else srcPick.style.display = 'none';
     const listPick = document.getElementById('tr-list-pick');
     listPick.innerHTML = '<option value="">Select...</option>' +
-      (_conditionOptions?.lists || []).map(l => `<option value="${escapeAttr(l.tag)}">${l.name}</option>`).join('');
+      (_conditionOptions?.lists || []).map(l => `<option value="${escapeAttr(l.tag)}">${escapeAttr(l.name)}</option>`).join('');
     if (listCond) { listPick.value = listCond.value; listPick.style.display = ''; }
     else listPick.style.display = 'none';
 
@@ -4579,7 +4591,7 @@ function renderDupList() {
       return `
         <div class="dup-source-card" style="border-left:3px solid ${color}">
           <div style="font-size:12px;font-weight:500;margin-bottom:4px">${icon} ${sourceLabel}</div>
-          <div style="font-size:11px;color:var(--text3);font-family:'DM Mono',monospace;word-break:break-all">${s.path || '(path not recorded)'}</div>
+          <div style="font-size:11px;color:var(--text3);font-family:'DM Mono',monospace;word-break:break-all">${escapeAttr(s.path || '(path not recorded)')}</div>
         </div>`;
     }).join('');
 
@@ -4589,12 +4601,12 @@ function renderDupList() {
 
     return `
       <div class="dup-row" style="display:flex;gap:16px;align-items:flex-start">
-        ${poster ? `<img src="${poster}" style="width:48px;border-radius:6px;flex-shrink:0" alt="">` : ''}
+        ${poster ? `<img src="${escapeAttr(poster)}" style="width:48px;border-radius:6px;flex-shrink:0" alt="">` : ''}
         <div style="flex:1;min-width:0">
           <div class="dup-header">
             <span class="badge ${dup.resolution === 'pending' ? 'badge-amber' : 'badge-green'}">${dup.resolution === 'pending' ? 'Pending' : resLabel[dup.resolution] || dup.resolution}</span>
             <span class="badge badge-gray">${dup.media_type}</span>
-            <span style="font-size:13px;font-weight:500">${title}</span>
+            <span style="font-size:13px;font-weight:500">${escapeAttr(title)}</span>
           </div>
           <div class="dup-sources">${sourceCards}</div>
           ${dup.resolution === 'pending' ? `
@@ -4751,8 +4763,8 @@ function appendLogLine(entry) {
   const line = document.createElement('div');
   line.className = 'log-line';
   line.innerHTML = `
-    <span class="log-ts">${ts}</span>
-    <span class="log-level ${entry.color}">${entry.level.substring(0,4)}</span>
+    <span class="log-ts">${escapeAttr(ts)}</span>
+    <span class="log-level ${entry.color}">${escapeAttr(entry.level.substring(0,4))}</span>
     <span class="log-msg ${isHighlight ? 'highlight' : isError ? 'error' : ''}">${escapeHtml(entry.msg)}</span>`;
 
   body.appendChild(line);
@@ -4828,7 +4840,7 @@ async function writeNfos(btn) {
 // ── PROVIDER MIGRATION ────────────────────────────────────────────────────
 async function showMigrate() {
   const providers = state.providers || await api('/api/providers').catch(() => []);
-  const opts = providers.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
+  const opts = providers.map(p => `<option value="${escapeAttr(String(p.id))}">${escapeAttr(p.name)}</option>`).join('');
   document.getElementById('migrate-from').innerHTML = opts;
   document.getElementById('migrate-to').innerHTML = opts;
   document.getElementById('migrate-preview').style.display = 'none';
@@ -4995,7 +5007,7 @@ function _activityPosterFailed(img) {
 function _activityPoster(path) {
   const src = path ? _imgUrl(path, 'w185') : '';
   if (!src || _activityBadPosters.has(src)) return '<div class="activity-poster-placeholder">◫</div>';
-  return `<img alt="" src="${src}" loading="lazy" onerror="_activityPosterFailed(this)">`;
+  return `<img alt="" src="${escapeAttr(src)}" loading="lazy" onerror="_activityPosterFailed(this)">`;
 }
 
 // ── Search again / Remove on a Searching card ──────────────────────────
@@ -5443,7 +5455,10 @@ async function loadDiscover() {
     _discoverSections = data.sections || [];
     if (!_discoverSections.length) {
       tabsEl.innerHTML = '';
-      grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>${escHtml(data.warning || 'No content found. Check your TMDB bearer token in Settings.')}</p></div>`;
+      const fallback = state.currentUser?.is_admin
+        ? 'No content found. Check your TMDB bearer token in Settings.'
+        : 'No content found. Discover needs a TMDB connection, which an admin sets up.';
+      grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>${escHtml(data.warning || fallback)}</p></div>`;
       return;
     }
     if (data.warning) toast(data.warning, 'warning', 6000);
@@ -5460,7 +5475,7 @@ async function loadDiscover() {
       ? _discoverActiveSection : _discoverSections[0].id;
     switchDiscoverSection(targetId);
   } catch (e) {
-    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Failed to load discover: ${e.message}</p></div>`;
+    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Failed to load discover: ${escapeAttr(e.message)}</p></div>`;
   }
 }
 
@@ -5534,7 +5549,7 @@ async function loadStreamingSection() {
     renderDiscoverGrid(data.items || []);
   } catch (e) {
     if (view !== _discoverView) return;
-    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Failed to load: ${e.message}</p></div>`;
+    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Failed to load: ${escapeAttr(e.message)}</p></div>`;
   }
 }
 
@@ -5568,7 +5583,7 @@ async function loadGenreSection() {
     };
     const genrePills = genres.map(g => {
       const active = g.id === _genreActive;
-      return `<button onclick="selectGenre(${g.id})" style="padding:6px 14px;border-radius:16px;border:1px solid ${active ? 'var(--accent)' : 'var(--border2)'};background:${active ? 'var(--accent)' : 'var(--bg2)'};color:${active ? '#fff' : 'var(--text3)'};font-size:12px;font-weight:500;cursor:pointer;font-family:'DM Sans',sans-serif">${g.name}</button>`;
+      return `<button onclick="selectGenre(${g.id})" style="padding:6px 14px;border-radius:16px;border:1px solid ${active ? 'var(--accent)' : 'var(--border2)'};background:${active ? 'var(--accent)' : 'var(--bg2)'};color:${active ? '#fff' : 'var(--text3)'};font-size:12px;font-weight:500;cursor:pointer;font-family:'DM Sans',sans-serif">${escapeAttr(g.name)}</button>`;
     }).join('');
     pills.innerHTML =
       `<div style="display:flex;gap:8px;width:100%;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--border2)">${modeBtn('top_rated','Top Rated')}${modeBtn('new','Newly Released')}</div>` +
@@ -5582,7 +5597,7 @@ async function loadGenreSection() {
     renderDiscoverGrid(data.items || []);
   } catch (e) {
     if (view !== _discoverView) return;
-    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Failed to load: ${e.message}</p></div>`;
+    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Failed to load: ${escapeAttr(e.message)}</p></div>`;
   }
 }
 
@@ -5624,7 +5639,7 @@ async function loadListsSection() {
     renderDiscoverGrid(data.items || []);
   } catch (e) {
     if (view !== _discoverView) return;
-    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Failed to load: ${e.message}</p></div>`;
+    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Failed to load: ${escapeAttr(e.message)}</p></div>`;
   }
 }
 
@@ -5653,7 +5668,7 @@ function renderDiscoverGrid(items) {
   grid.innerHTML = items.map(item => {
     const posterSrc = _imgUrl(item.poster_path, 'w185');
     const poster = posterSrc
-      ? `<img alt="" src="${posterSrc}" loading="lazy" onerror="this.outerHTML='<div class=\\'lib-card-poster-placeholder\\'>◫</div>'">`
+      ? `<img alt="" src="${escapeAttr(posterSrc)}" loading="lazy" onerror="this.outerHTML='<div class=\\'lib-card-poster-placeholder\\'>◫</div>'">`
       : `<div class="lib-card-poster-placeholder">◫</div>`;
     const tvdbId = item.tvdb_id || 0;
     const tmdbId = item.tmdb_id || 0;
@@ -5686,8 +5701,8 @@ function renderDiscoverGrid(items) {
           ${addBtn}
         </div>
         <div class="lib-card-info">
-          <div class="lib-card-title" title="${escapeAttr(item.title)}">${item.title}</div>
-          <div class="lib-card-meta">${item.year || '—'} · ★ ${item.rating || '—'}</div>
+          <div class="lib-card-title" title="${escapeAttr(item.title)}">${escapeAttr(item.title)}</div>
+          <div class="lib-card-meta">${escapeAttr(item.year || '—')} · ★ ${escapeAttr(item.rating || '—')}</div>
           ${listTag}
         </div>
       </div>`;
@@ -5727,7 +5742,7 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
       const pct = (dlInfo.progress || 0).toFixed(0);
       const st = dlInfo.status === 'importing' ? 'Importing…' : dlInfo.status === 'queued' ? 'Queued' :
         dlInfo.status === 'stuck' ? 'Stuck' : dlInfo.status === 'import_blocked' ? 'Import blocked' : `Downloading ${pct}%`;
-      const eta = dlInfo.eta ? ` · ETA ${dlInfo.eta}` : '';
+      const eta = dlInfo.eta ? ` · ETA ${escapeAttr(dlInfo.eta)}` : '';
       actionBtn = `<span class="badge ${dlInfo.status === 'stuck' ? 'badge-red' : 'badge-accent'}" style="font-size:12px;padding:4px 10px">${st}${eta}</span>`;
     } else if (isInLibrary && isSeries && data.library_source === 'sonarr') {
       actionBtn = `<span class="badge badge-green" style="font-size:12px;padding:4px 10px">In Library</span>${watchBtn} <button class="btn btn-secondary btn-sm" style="margin-left:6px" onclick="closeModal('modal-media-detail');showManageEpisodesModal(${detailTmdbId},'${escapeJS(data.title||title||'')}','${escapeJS(data.year||year||'')}','${escapeJS(data.poster_path||posterPath||'')}')">Manage Episodes</button>`;
@@ -5747,12 +5762,12 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
     const detailPosterSrc = _imgUrl(data.poster_path, 'w185');
     document.getElementById('detail-body').innerHTML = `
       <div class="detail-layout" style="display:flex;gap:20px">
-        ${detailPosterSrc ? `<img alt="" src="${detailPosterSrc}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
+        ${detailPosterSrc ? `<img alt="" src="${escapeAttr(detailPosterSrc)}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
         <div style="flex:1">
-          <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${data.year || year || '—'} · ${data.runtime ? data.runtime+'m · ' : ''}★ ${data.rating || '—'}</div>
-          <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${data.overview || 'No overview available.'}</p>
+          <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${escapeAttr(data.year || year || '—')} · ${data.runtime ? data.runtime+'m · ' : ''}★ ${escapeAttr(data.rating || '—')}</div>
+          <p style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px">${escapeAttr(data.overview || 'No overview available.')}</p>
           <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
-            ${(data.genres||[]).map(g => `<span class="badge badge-gray">${g}</span>`).join('')}
+            ${(data.genres||[]).map(g => `<span class="badge badge-gray">${escapeAttr(g)}</span>`).join('')}
           </div>
           <div style="margin-top:8px">
             ${actionBtn}${_trailerBtn(data.trailer_url)}
@@ -5764,9 +5779,9 @@ async function showDiscoverDetail(tmdbId, mediaType, title, year, posterPath, in
     document.getElementById('detail-title').textContent = title || 'Unknown';
     document.getElementById('detail-body').innerHTML = `
       <div class="detail-layout" style="display:flex;gap:20px">
-        ${_imgUrl(posterPath, 'w185') ? `<img alt="" src="${_imgUrl(posterPath, 'w185')}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
+        ${_imgUrl(posterPath, 'w185') ? `<img alt="" src="${escapeAttr(_imgUrl(posterPath, 'w185'))}" class="detail-poster" style="width:120px;height:180px;object-fit:cover;border-radius:6px;flex-shrink:0">` : ''}
         <div style="flex:1">
-          <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${year || '—'}</div>
+          <div style="font-size:13px;color:var(--text2);margin-bottom:12px">${escapeAttr(year || '—')}</div>
           <p style="font-size:13px;color:var(--text2)">Could not load details.</p>
         </div>
       </div>`;
@@ -5827,12 +5842,12 @@ async function doDiscoverSearch(query) {
     const data = await api(`/api/discover/search?q=${encodeURIComponent(query)}&type=${_discoverType}`);
     const items = data.items || [];
     if (!items.length) {
-      grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>No results for "${query}"</p></div>`;
+      grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>No results for "${escapeAttr(query)}"</p></div>`;
       return;
     }
     renderDiscoverGrid(items);
   } catch (e) {
-    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Search failed: ${e.message}</p></div>`;
+    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Search failed: ${escapeAttr(e.message)}</p></div>`;
   }
 }
 
@@ -5889,7 +5904,7 @@ async function loadLiveTV() {
     }
   } catch (e) {
     if (statsEl) statsEl.innerHTML =
-      `<div style="grid-column:1/-1;color:var(--red);font-size:13px">Failed to load: ${e.message}</div>`;
+      `<div style="grid-column:1/-1;color:var(--red);font-size:13px">Failed to load: ${escapeAttr(e.message)}</div>`;
   }
 }
 
@@ -6048,7 +6063,7 @@ function renderLiveGroups(groups) {
   if (loadedEl) loadedEl.style.display = '';
 
   el.innerHTML = groups.map((g, i) => `
-    <div class="live-group-row" data-group-id="${g.id}" data-group-idx="${i}" data-group-name="${(g.name || '').toLowerCase()}">
+    <div class="live-group-row" data-group-id="${g.id}" data-group-idx="${i}" data-group-name="${escapeAttr((g.name || '').toLowerCase())}">
       <span class="group-name">${escapeAttr(g.name || '')}</span>
       <span class="group-count">${g.channel_count || 0} ch</span>
       <button type="button" class="live-toggle ${g.enabled ? 'on' : ''}" aria-label="Show ${escapeAttr(g.name || '')} in Live TV" aria-pressed="${g.enabled ? 'true' : 'false'}" onclick="toggleLiveGroup(${g.id}, this, event)"></button>
@@ -6130,7 +6145,7 @@ function populateGroupFilter(groups) {
   if (!sel) return;
   const enabledGroups = groups.filter(g => g.enabled).sort((a, b) => a.name.localeCompare(b.name));
   sel.innerHTML = '<option value="">All Groups</option>' +
-    enabledGroups.map(g => `<option value="${g.name}">${g.name} (${g.channel_count || 0})</option>`).join('');
+    enabledGroups.map(g => `<option value="${escapeAttr(g.name)}">${escapeAttr(g.name)} (${g.channel_count || 0})</option>`).join('');
 }
 
 // ── Channels ──────────────────────────────────────────────────────────────
@@ -6225,7 +6240,7 @@ function renderLiveChannels(channels, total) {
 
   el.innerHTML = channels.map((ch, i) => `
     <div class="live-ch-row" data-ch-idx="${i}">
-      ${ch.logo_url ? `<img alt="" class="live-ch-logo" src="${ch.logo_url}" loading="lazy" onerror="this.style.display='none'">` : `<div class="live-ch-logo"></div>`}
+      ${ch.logo_url ? `<img alt="" class="live-ch-logo" src="${escapeAttr(ch.logo_url)}" loading="lazy" onerror="this.style.display='none'">` : `<div class="live-ch-logo"></div>`}
       <span class="live-ch-name">${escapeAttr(ch.name)}${ch.custom_name ? ` <span style="color:var(--text3);font-size:11px">(${escapeAttr(ch.provider_name)})</span>` : ''}</span>
       <span class="live-ch-group">${escapeAttr(ch.group_title || '')}</span>
       <button type="button" class="live-ch-epg-badge ${ch.has_epg_data ? 'has-epg' : 'no-epg'}" title="${escapeAttr(_liveGuideTitle(ch))}" onclick="setLiveChannelGuideId(${i})">${ch.has_epg_data ? (ch.epg_match === 'name' ? 'EPG (by name)' : ch.epg_match === 'override' ? 'EPG (set)' : 'Has EPG') : 'No EPG'}</button>
@@ -6425,12 +6440,12 @@ function startEpgPoll() {
     try {
       const s = await api(`/api/live/sync-status?provider_id=${liveState.providerId}`);
       if (s.phase !== 'epg') return; // different sync running
-      statusEl.innerHTML = `<span style="color:var(--amber)">${s.message || 'Syncing...'}</span>` +
+      statusEl.innerHTML = `<span style="color:var(--amber)">${escapeAttr(s.message || 'Syncing...')}</span>` +
         (s.progress != null ? ` <div class="live-progress" style="width:120px;display:inline-block;vertical-align:middle;margin-left:6px"><div class="live-progress-bar" style="width:${s.progress}%"></div></div>` : '');
 
       if (s.status === 'complete') {
         clearInterval(liveState.epgPollTimer);
-        statusEl.innerHTML = `<span style="color:var(--green)">${s.message}</span>`;
+        statusEl.innerHTML = `<span style="color:var(--green)">${escapeAttr(s.message)}</span>`;
         toast('EPG sync complete', 'success');
         refreshLiveStats();
         // Auto-refresh Jellyfin guide if server address is configured
@@ -6444,7 +6459,7 @@ function startEpgPoll() {
         } catch (e) {}
       } else if (s.status === 'error') {
         clearInterval(liveState.epgPollTimer);
-        statusEl.innerHTML = `<span style="color:var(--red)">${s.message}</span>`;
+        statusEl.innerHTML = `<span style="color:var(--red)">${escapeAttr(s.message)}</span>`;
         toast('EPG sync failed', 'error');
       }
     } catch (e) {
@@ -6460,7 +6475,7 @@ function startSyncPoll() {
   liveState.syncPollTimer = setInterval(async () => {
     try {
       const s = await api(`/api/live/sync-status?provider_id=${liveState.providerId}`);
-      statusEl.innerHTML = `${s.message || ''} ${s.progress != null ? `<div class="live-progress" style="width:120px;display:inline-block;vertical-align:middle;margin-left:6px"><div class="live-progress-bar" style="width:${s.progress}%"></div></div>` : ''}`;
+      statusEl.innerHTML = `${escapeAttr(s.message || '')} ${s.progress != null ? `<div class="live-progress" style="width:120px;display:inline-block;vertical-align:middle;margin-left:6px"><div class="live-progress-bar" style="width:${s.progress}%"></div></div>` : ''}`;
 
       // Channel sync chains into EPG sync automatically — handle EPG completion here too
       if (s.phase === 'epg' && s.status === 'complete') {
@@ -7126,7 +7141,7 @@ async function loadHealthDownloads() {
                    <button class="btn btn-secondary btn-sm" onclick="healthRemoveDownload('${escapeJS(d.source)}', ${d.queue_id}, false, this)">Remove</button>`;
       }
       return `<tr>
-        <td><span class="badge ${meta.cls}" style="font-size:10px">${meta.label}</span></td>
+        <td><span class="badge ${meta.cls}" style="font-size:10px">${escapeAttr(meta.label)}</span></td>
         <td>${name}${reason}${stallNote}</td>
         <td style="white-space:nowrap;color:var(--text3);font-size:12px">${sub || '—'}</td>
         <td style="white-space:nowrap">${prog}${d.eta ? ` <span style="color:var(--text3)">· ${escapeHtml(d.eta)}</span>` : ''}</td>
@@ -7222,7 +7237,7 @@ async function loadHealthDeletions() {
       const meta = _DELETION_KIND_META[e.kind] || { label: e.kind, cls: 'badge-accent' };
       const d = _healthDate(e.created_at);
       const when = d ? `<span title="${d.toLocaleString()}">${timeAgo(d)}</span>` : '—';
-      const who = e.reason === 'manual' && e.user_name ? escapeHtml(e.user_name) : e.reason;
+      const who = e.reason === 'manual' && e.user_name ? e.user_name : e.reason;
       return `<tr>
         <td style="white-space:nowrap">${when}</td>
         <td><span class="badge ${meta.cls}" style="font-size:10px">${meta.label}</span></td>
@@ -7319,7 +7334,7 @@ async function loadHealthActivity() {
     // Activity (inline handlers)
     _activityPosterFailed, activitySearchAgain, activityRemove, activityStopMissing, _smAll, _smCount, _smGo, openReleaseCheck, _rcLoad, _rcGrab, replaceCopy,
     // Wrong movie (mislabelled provider streams)
-    reportWrongMovie, dismissMatchSuspect, unblockStream, openFixMatch, _fmLoad, _fmFrames, _fmPick, _fmRemove,
+    reportWrongMovie, dismissMatchSuspect, undoFollowedFix, unblockStream, openFixMatch, _fmLoad, _fmFrames, _fmPick, _fmRemove,
     // Lists page
     loadLists, loadListCards,
     saveQuickList, onQuickListUrlInput, onQuickListNameInput, onModalUrlInput, onModalNameInput,

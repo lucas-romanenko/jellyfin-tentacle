@@ -301,7 +301,8 @@ def check_runtime_mismatches(db: Session) -> dict:
     # Flags whose title is gone, or that no longer mismatch (unless dismissed —
     # the admin's call stands).
     for tmdb_id, s in existing.items():
-        if tmdb_id not in still and not s.dismissed:
+        # A re-listing flag (N1) stays while its film is a VOD film here
+        if tmdb_id not in still and not s.dismissed and (not s.reason or tmdb_id not in expected):
             db.delete(s)
     db.commit()
     logger.info(f"[WrongMatch] Runtime check: {checked} probed VOD movie(s) compared, {flagged} newly flagged")
@@ -980,6 +981,46 @@ def _rematch_movie(db: Session, tmdb_id: int, new_tmdb_id: int, user_name: Optio
     _refresh_caches()
     return {"ok": True, "title": row.title, "year": row.year, "tmdb_id": new_tmdb_id, "in_place": False,
             "message": f"Fixed: this is {row.title} ({row.year}). Jellyfin is picking it up now."}
+
+
+def undo_followed_fix(db: Session, tmdb_id: int, user_name: str = None) -> dict:
+    """The admin says the stream a fix followed (the provider re-listed a
+    fixed stream under a new id with the same label) is not that film: the fix
+    goes back to the old stream id, stops following, and the copy's .strm
+    plays the old stream again, in place. The new stream is then placed by its
+    label on the next sync, as before the fix followed it."""
+    from models.database import MatchOverride, Provider
+    from services.sync import _write_strm, chown_path, make_provider_client
+    ov = db.query(MatchOverride).filter(MatchOverride.tmdb_id == tmdb_id, MatchOverride.media_type == "movie",
+                                        MatchOverride.moved_from.isnot(None)).first()
+    if ov is None:
+        raise WrongMatchError(404, "No fix of this film followed a re-listed stream")
+    if db.query(MatchOverride.id).filter(MatchOverride.provider_id == ov.provider_id,
+                                         MatchOverride.media_type == "movie",
+                                         MatchOverride.stream_key == ov.moved_from).first():
+        raise WrongMatchError(409, "The old stream already has another fix, so this can't be undone here")
+    provider = db.query(Provider).filter(Provider.id == ov.provider_id).first()
+    row = db.query(Movie).filter(Movie.tmdb_id == tmdb_id, Movie.provider_id == ov.provider_id).first()
+    new_key, old_key = ov.stream_key, ov.moved_from
+    if row is not None and row.strm_path and provider is not None and not row.strm_disabled:
+        ext = (ov.label or "").split("\t")[-1] or "mp4"
+        try:
+            strm = Path(row.strm_path)
+            _write_strm(strm, make_provider_client(provider).movie_stream_url(old_key, ext))
+            chown_path(strm)
+        except OSError as e:
+            raise WrongMatchError(500, f"Couldn't write the copy's .strm file, so nothing was changed ({e})")
+    ov.stream_key, ov.moved_from, ov.label = old_key, None, None   # never follows again
+    db.query(MatchSuspect).filter(MatchSuspect.tmdb_id == tmdb_id, MatchSuspect.media_type == "movie",
+                                  MatchSuspect.reason == "relist_followed").delete()
+    db.commit()
+    log_deletion(db, kind="rematch", name=ov.title or str(tmdb_id), media_type="movie", reason="manual",
+                 user_name=user_name,
+                 detail=f"Undid a fix that followed a re-listed stream: back from stream {new_key} to {old_key}")
+    logger.info(f"[WrongMatch] Fix of tmdb:{tmdb_id} back on stream {old_key} (was following {new_key}) "
+                f"by {user_name}")
+    return {"ok": True, "message": f"Undone: {ov.title} plays its old stream again, and the re-listed "
+                                   f"stream is added by its own name on the next sync."}
 
 
 def override_keys(db: Session, provider_id: int, media_type: str = "movie") -> dict:

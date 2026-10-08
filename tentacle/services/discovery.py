@@ -56,6 +56,7 @@ def discover_new_provider_content(db) -> dict:
                 logger.info(f"[Discovery] {len(new_names)} new VOD categories from '{p.name}': {new_names[:5]}")
                 result["vod_new"].extend(new_names)
         except Exception as e:
+            _rollback(db)   # first: reading p.name on a failed session raises again
             logger.warning(f"[Discovery] VOD category refresh failed for '{p.name}': {e}")
 
     # ── Live TV groups ───────────────────────────────────────────────────
@@ -71,6 +72,7 @@ def discover_new_provider_content(db) -> dict:
                 logger.info(f"[Discovery] {len(new_names)} new Live TV groups from '{p.name}': {new_names[:5]}")
                 result["live_new"].extend(new_names)
         except Exception as e:
+            _rollback(db)   # first: reading p.name on a failed session raises again
             logger.warning(f"[Discovery] Live TV group refresh failed for '{p.name}': {e}")
 
     # ── Notify ───────────────────────────────────────────────────────────
@@ -78,6 +80,17 @@ def discover_new_provider_content(db) -> dict:
         _record_notice(db, result["vod_new"], result["live_new"])
 
     return result
+
+
+def _rollback(db) -> None:
+    """After a provider's refresh failed: a failed flush leaves the session
+    refusing every statement until it is rolled back, so every later provider,
+    and the new-content notice, failed with it. Drops only that provider's
+    uncommitted rows (they are found again next time)."""
+    try:
+        db.rollback()
+    except Exception as e:
+        logger.warning(f"[Discovery] Could not roll back the session: {e}")
 
 
 def _refresh_vod_categories(db, provider) -> list:

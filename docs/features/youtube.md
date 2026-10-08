@@ -55,6 +55,11 @@ https://www.youtube.com/playlist?list=PLxxxxxxxx
 @channelname
 ```
 
+A playlist keeps its newest videos by upload date, whether its owner adds new
+videos at the bottom (YouTube's default) or at the top. Tentacle reads up to
+1,000 entries of a playlist. With a YouTube Data API key the hourly check sees
+a video added at the bottom; without one the daily full check finds it.
+
 ## Per-channel options
 
 Nothing here downloads anything. Each video becomes a small pointer file

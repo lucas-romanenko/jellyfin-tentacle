@@ -2682,13 +2682,13 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
           <div class="modal" style="max-width:440px">
             <div class="modal-header">
               <div class="modal-title" style="color:var(--amber)">Confirm Deletion</div>
-              <button class="modal-close" onclick="document.getElementById('stale-confirm-modal').style.display='none'">&times;</button>
+              <button class="modal-close" onclick="closeModal('stale-confirm-modal')">&times;</button>
             </div>
             <div style="padding:16px;font-size:13px;color:var(--text2);line-height:1.5">
               <p style="margin:0 0 12px">This will delete <strong id="stale-confirm-strm">0</strong> .strm files and <strong id="stale-confirm-nfo">0</strong> .nfo files from your VOD folders.</p>
               <p style="margin:0 0 16px;color:var(--red)">This cannot be undone.</p>
               <div style="display:flex;gap:8px;justify-content:flex-end">
-                <button class="btn btn-secondary btn-sm" onclick="document.getElementById('stale-confirm-modal').style.display='none'">Cancel</button>
+                <button class="btn btn-secondary btn-sm" onclick="closeModal('stale-confirm-modal')">Cancel</button>
                 <button class="btn btn-danger btn-sm" onclick="executeDeleteStaleFiles()">Delete All</button>
               </div>
             </div>
