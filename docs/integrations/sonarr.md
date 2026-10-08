@@ -156,6 +156,12 @@ When adding a new series to Sonarr:
 | Pilot | Only S01E01 |
 | Pick Episodes | Opens the episode picker for manual selection |
 
+With **Pick Episodes** (and **Download More Episodes**) the add waits until
+Sonarr has set the show up before it monitors and searches the picked
+episodes: a few seconds normally, longer when Sonarr is busy. If Sonarr has
+not finished within 3 minutes, the show stays in Sonarr and the message
+says to pick the episodes in **Manage Episodes**.
+
 ## Manage Episodes
 
 For series already in Sonarr, you can change which episodes are monitored:

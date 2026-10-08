@@ -74,7 +74,9 @@ episodes ("VOD") and downloaded ones ("DL") as checked and disabled, and
 season coverage ("5/8"). The chosen episodes go to
 `POST /api/lists/add-to-sonarr` with `selected_episodes`; Tentacle adds the
 series with an explicit `path` in the existing VOD folder, `monitor: none`,
-then monitors only the chosen episodes, sets `monitorNewItems="all"` when
+waits until Sonarr has set it up (up to 3 minutes from the add; past that
+the request fails with the reason, the series stays in Sonarr), then
+monitors only the chosen episodes, sets `monitorNewItems="all"` when
 "Auto-download new episodes" (default on) is ticked, starts a search, and
 records `sonarr_path`/`sonarr_monitored` at once.
 
