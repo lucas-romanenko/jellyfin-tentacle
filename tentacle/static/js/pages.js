@@ -570,11 +570,11 @@ function openSyncDetailModal() {
   const body = document.getElementById('sync-detail-body');
   if (!overlay || !body) return;
   body.innerHTML = _buildSyncDetailHtml(_lastSyncData);
-  overlay.style.display = '';
+  showModal('modal-sync-detail');
 }
 
 function closeSyncDetailModal() {
-  document.getElementById('modal-sync-detail').style.display = 'none';
+  closeModal('modal-sync-detail');
 }
 
 function _syncStepHtml(icon, label, status, detail) {

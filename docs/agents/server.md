@@ -43,6 +43,12 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   with a blocking `getaddrinfo`, so async code calls them through
   `asyncio.to_thread` (#371, #464); `url_host_allowed` is the allowlist
   half, no lookup.
+- Dashboard dialogs (`.modal-overlay`) open and close only through
+  `showModal()`/`closeModal()` (`static/js/app.js`, "Modals"), never by
+  setting `style.display`: they move the focus in, keep Tab inside, give
+  the focus back to the opener and set the dialog role (#552). Their test
+  runs that block under node (`tests/test_dashboard_dialog_keyboard.py`), so
+  its helpers stay inside it.
 
 ## Auth and users (`routers/auth.py`)
 
