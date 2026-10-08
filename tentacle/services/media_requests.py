@@ -250,6 +250,20 @@ _NO_VOD_ROOT = (
     "Without one of these, downloads would create a duplicate series in Jellyfin.")
 
 
+def _series_added(db: Session, out: RequestOutcome, sonarr, added_id: int, request_id: int,
+                  user_id: Optional[int]):
+    """Bookkeeping for a series that is now in Sonarr. When its picked
+    episodes could not be applied (sonarr.last_error), the request still
+    reads as failed, with that reason."""
+    if sonarr.last_error:
+        out.report.record(FAILED, sonarr.last_error)
+    else:
+        out.report.record(ADDED)
+    out.added.append(added_id)
+    if user_id is not None:
+        record_download_request(db, request_id, "series", user_id)
+
+
 def request_series(db: Session, *, tmdb_ids: Iterable[int] = (), tvdb_ids: Iterable[int] = (),
                    user_id: Optional[int], via: str,
                    quality_profile_override: Optional[int] = None,
@@ -334,10 +348,7 @@ def request_series(db: Session, *, tmdb_ids: Iterable[int] = (), tvdb_ids: Itera
             # Sonarr already has it — the outcome the user wanted, not a failure.
             out.report.record(EXISTS)
         elif result:
-            out.report.record(ADDED)
-            out.added.append(tmdb_id)
-            if user_id is not None:
-                record_download_request(db, tmdb_id, "series", user_id)
+            _series_added(db, out, sonarr, tmdb_id, tmdb_id, user_id)
             # Mark VOD series with sonarr_path so scan skips duplicate detection
             if existing and (existing.source or "").startswith("provider_") and result.get("path"):
                 existing.sonarr_path = result["path"]
@@ -355,11 +366,8 @@ def request_series(db: Session, *, tmdb_ids: Iterable[int] = (), tvdb_ids: Itera
         if result and result.get("alreadyExists"):
             out.report.record(EXISTS)
         elif result:
-            out.report.record(ADDED)
-            out.added.append(-tvdb_id)
-            if user_id is not None:
-                # Sonarr's tmdbId when it has one, else the negative tvdb id
-                record_download_request(db, result.get("tmdbId") or -tvdb_id, "series", user_id)
+            # Sonarr's tmdbId when it has one, else the negative tvdb id
+            _series_added(db, out, sonarr, -tvdb_id, result.get("tmdbId") or -tvdb_id, user_id)
         else:
             out.report.record(FAILED, sonarr.last_error)
 

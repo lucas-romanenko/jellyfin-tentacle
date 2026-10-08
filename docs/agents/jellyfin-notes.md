@@ -80,6 +80,16 @@ The code wins where they differ.
   monitors the episode again, but monitors a movie only when it was
   unmonitored before the press: with "Unmonitor Deleted Movies" on, a
   monitored movie ends unmonitored.
+- **Adding a series** (`POST /series`): Sonarr answers before it has set
+  the series up. A queued refresh creates the episodes, then the scan
+  applies `addOptions.monitor` (a write of the whole series row), queues
+  the post-add search and clears `addOptions`; on a busy Sonarr (three
+  command threads) that is minutes later. Until then `GET /series/{id}`
+  still carries `addOptions`. A series PUT before it is overwritten, an
+  episode monitor PUT is undone by the add's `monitor`, and an unmonitored
+  series makes the post-add search reject every release. So presets leave
+  the series monitored, and Pick Episodes waits for `addOptions` to clear
+  (`SonarrService._await_series_setup`, `SETUP_WAIT_SECONDS`).
 - **Webhooks** must use an address the *arr can reach inside the network
   (`http://<tentacle-host>:8888/api/radarr/webhook`, `.../sonarr/webhook`),
   not a public tunnel URL. Triggers: On File Import, On Movie/Series Added,
