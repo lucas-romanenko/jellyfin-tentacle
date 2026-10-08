@@ -263,8 +263,23 @@ MAX_KEEP = 100
 LIVE_PEEK = 5
 
 
+# How much of a playlist source is read. A playlist lists in its own order, and
+# YouTube adds new videos at the bottom unless the owner turned that off, so
+# "the newest N" may sit at either end and the whole playlist is read (#544).
+# Flat entries come 100 to a request: at most 10 small requests, and only on a
+# full listing. A bottom-added playlist longer than this misses its newest.
+PLAYLIST_LISTING_CAP = 1000
+
+
+def _is_playlist_url(url: str) -> bool:
+    return "/playlist?" in url
+
+
 def tab_limit(channel: YouTubeChannel, url: str) -> int:
-    """How far to read one tab: the streams tab only as far as needed."""
+    """How far to read one tab: the streams tab only as far as needed, a
+    playlist as a whole."""
+    if _is_playlist_url(url):
+        return PLAYLIST_LISTING_CAP
     if url.endswith("/streams") and not channel.include_streams:
         return LIVE_PEEK
     return listing_limit(channel)
@@ -527,24 +542,46 @@ def _feed_entries(channel: YouTubeChannel):
         return None
 
 
+def _playlist_size(channel: YouTubeChannel):
+    """A playlist source's item count from the Data API, or None (no key, not a
+    playlist, or the API could not say). Raises YouTubeBlocked."""
+    if channel.kind != "playlist" or not channel.playlist_id or not feeds.api_available():
+        return None
+    try:
+        return feeds.api_playlist_size(channel.playlist_id)
+    except YouTubeBlocked:
+        raise
+    except (feeds.FeedUnavailable, YouTubeError) as e:
+        logger.debug(f"[YouTube] Could not read the size of '{channel.title}': {e}")
+        return None
+
+
 def _light_check(db: Session, channel: YouTubeChannel, known: set):
-    """The scheduled check: is anything new? (result, feed_ids).
+    """The scheduled check: is anything new? (result, feed_ids, playlist_size).
 
     result is None when the tabs have to be listed: something is new, the feed
-    can't be read, the channel was never listed, or the last full listing is
-    older than FULL_CHECK_HOURS. Otherwise only the live status of pending
-    streams is brought up to date and a result is returned — one small request
-    for most channels.
+    can't be read, the channel was never listed, a playlist changed size, or
+    the last full listing is older than FULL_CHECK_HOURS. Otherwise only the
+    live status of pending streams is brought up to date and a result is
+    returned — one small request for most channels.
     """
     now = datetime.utcnow()
     entries = _feed_entries(channel)
     if entries is None:
-        return None, None
+        return None, None, None
     ids = [e["id"] for e in entries]
+    # A playlist's feed lists from the top, and YouTube adds new videos at the
+    # bottom by default: only its size shows they came (#544). Without a key
+    # they are found by the daily full listing.
+    size = _playlist_size(channel)
     if not channel.last_full_check or \
             now - channel.last_full_check > timedelta(seconds=traffic.jitter(FULL_CHECK_HOURS * 3600, 0.15)):
         # Due for a full listing anyway; the feed ids read here are stored with it.
-        return None, ids
+        return None, ids, size
+    if size is not None and size != channel.playlist_size:
+        logger.info(f"[YouTube] '{channel.title}': the playlist now has {size} entries "
+                    f"(was {channel.playlist_size}); listing it")
+        return None, ids, size
     # Ids the last full listing already saw in the feed and dealt with — older
     # than "the newest N", Shorts the channel skips, a video filed under another
     # source. Without this each would read as new on every check.
@@ -554,7 +591,7 @@ def _light_check(db: Session, channel: YouTubeChannel, known: set):
              and not (e.get("short") and not channel.include_shorts)]
     if fresh:
         logger.info(f"[YouTube] '{channel.title}': {len(fresh)} new in its feed; listing it")
-        return None, ids
+        return None, ids, size
 
     # A Live TV channel also peeks at the top of its streams tab, as every check
     # did before: one small listing that shows what is live or scheduled, whether
@@ -571,7 +608,7 @@ def _light_check(db: Session, channel: YouTubeChannel, known: set):
                     if status in PENDING_LIVE and vid not in known and vid not in handled]
         if new_live:
             logger.info(f"[YouTube] '{channel.title}': a new live or scheduled stream; listing it")
-            return None, ids
+            return None, ids, size
     live_changes = _update_pending(db, channel, listed_status) if channel.live_enabled else 0
 
     channel.last_checked = now
@@ -581,7 +618,7 @@ def _light_check(db: Session, channel: YouTubeChannel, known: set):
     db.commit()
     return {"skipped": False, "light": True, "new": 0, "seen": len(ids), "filtered": 0,
             "skips": {}, "listing": channel.last_listing or {}, "beyond": 0,
-            "retitled": [], "live_changes": live_changes}, ids
+            "retitled": [], "live_changes": live_changes}, ids, size
 
 
 def _mark_blocked(db: Session, channel: YouTubeChannel, e: Exception) -> None:
@@ -631,10 +668,10 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
     known = {v.video_id for v in db.query(YouTubeVideo.video_id).filter(
         YouTubeVideo.channel_fk == channel.id).all()}
 
-    feed_ids = None
+    feed_ids = playlist_size = None
     if light:
         try:
-            result, feed_ids = _light_check(db, channel, known)
+            result, feed_ids, playlist_size = _light_check(db, channel, known)
         except YouTubeBlocked as e:
             _mark_blocked(db, channel, e)
             raise
@@ -678,22 +715,40 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
     # have listed plenty that the channel's settings then excluded. Those need
     # opposite fixes, and telling them apart previously meant reading the logs.
     listing: dict = {}
+    #
+    # Each item also names the segment whose "newest N" it counts towards. A
+    # channel's tabs are newest first and share one. A playlist is read whole
+    # and walked from both ends, each with its own N: flat entries carry no
+    # date, and the owner may add new videos at the bottom (YouTube's default)
+    # or the top. Retention then keeps the newest N by upload date (#544).
     try:
         for url in _tab_urls(channel):
-            info = _list_tab(url, min(limit, tab_limit(channel, url)))
-            tab = url.rsplit("/", 1)[-1] if "/playlist?" not in url else "playlist"
+            playlist = _is_playlist_url(url)
+            info = _list_tab(url, tab_limit(channel, url) if playlist
+                             else min(limit, tab_limit(channel, url)))
+            tab = url.rsplit("/", 1)[-1] if not playlist else "playlist"
             library_tab = not (tab == "streams" and not channel.include_streams)
-            count = 0
+            entries = []
             for entry in (info.get("entries") or []):
                 vid = entry.get("id")
                 if not vid or not VIDEO_ID_RE.match(vid):
                     continue
-                count += 1
+                entries.append(entry)
                 seen_ids.append(vid)
-                ordered.append((vid, entry, library_tab))
-                if vid not in known:
-                    new_videos.append(vid)
-            listing[tab] = count
+            listing[tab] = len(entries)
+            if playlist:
+                total = info.get("playlist_count")
+                if isinstance(total, int) and total > len(info.get("entries") or []) >= PLAYLIST_LISTING_CAP:
+                    logger.info(f"[YouTube] '{channel.title}' has {total} entries; only the first "
+                                f"{PLAYLIST_LISTING_CAP} are read")
+                segments = [("end", entries[::-1][:limit]), ("start", entries[:limit])]
+            else:
+                segments = [("tabs", entries)]
+            for segment, part in segments:
+                for entry in part:
+                    ordered.append((entry["id"], entry, library_tab, segment))
+                    if entry["id"] not in known:
+                        new_videos.append(entry["id"])
     except YouTubeBlocked as e:
         _mark_blocked(db, channel, e)
         raise
@@ -712,7 +767,7 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
     # indexed while scheduled would otherwise keep live_status="is_upcoming"
     # forever and never become playable on its Live TV channel.
     try:
-        _update_pending(db, channel, {vid: entry.get("live_status") for vid, entry, _ in ordered})
+        _update_pending(db, channel, {vid: entry.get("live_status") for vid, entry, *_ in ordered})
     except YouTubeBlocked as e:
         _mark_blocked(db, channel, e)
         raise
@@ -736,8 +791,22 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
     # library tab is older than "the newest N" and would only be retired by
     # retention; it is left unfetched. Each fetch is rate-limited and slow, so
     # this is also what keeps a first index short. Skipped entries do not
-    # count, which is what the listing margin past N is for.
-    seen_kept, beyond = 0, 0
+    # count, which is what the listing margin past N is for. Counted per
+    # segment (one for a channel, one per end of a playlist).
+    seen_kept = {segment: 0 for *_, segment in ordered}
+    beyond = set()
+    playlist_source = channel.kind == "playlist"
+    # A playlist's other end is usually its oldest: there a video retention
+    # already retired counts like a kept one, or each run would fetch the next
+    # few old ones only to retire them again.
+    counted_ids = kept_ids
+    if playlist_source:
+        counted_ids = kept_ids | {v.video_id for v in db.query(YouTubeVideo.video_id).filter(
+            YouTubeVideo.channel_fk == channel.id,
+            YouTubeVideo.removed_at.isnot(None),
+            YouTubeVideo.skip_reason.is_(None),
+            is_library_status(YouTubeVideo.live_status),
+        ).all()}
 
     def _note_skip(reason: str):
         nonlocal skipped
@@ -748,7 +817,14 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
 
     def _report():
         if on_progress:
-            on_progress(min(seen_kept, keep), keep)
+            on_progress(min(max(seen_kept.values(), default=0), keep), keep)
+
+    def _pass(vid: str):
+        """Past the newest N of its segment: not fetched. A playlist's other
+        end may still reach it."""
+        beyond.add(vid)
+        if playlist_source:
+            handled.discard(vid)
 
     # youtube_videos.video_id is unique across ALL channels, but `known` only
     # covers this one. A video listed twice here (e.g. on /streams and /videos)
@@ -763,17 +839,18 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
             YouTubeVideo.video_id.in_(fresh[i:i + 500])).all()}
     handled = set()
 
-    for vid, entry, library_tab in ordered:
+    for vid, entry, library_tab, segment in ordered:
         if vid in handled:
             continue
         handled.add(vid)
+        beyond.discard(vid)
         if vid in elsewhere:
             _note_skip("already indexed under another channel or playlist")
             continue
         if vid in known:
             if vid in retry_due:
-                if library_tab and seen_kept >= keep:
-                    beyond += 1
+                if library_tab and seen_kept[segment] >= keep:
+                    _pass(vid)
                     continue
                 row = retry_due[vid]
                 try:
@@ -805,7 +882,7 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
                     row.removed_at, row.skip_reason = None, None
                     added += 1
                     if library_tab and details.get("live_status") not in PENDING_LIVE:
-                        seen_kept += 1
+                        seen_kept[segment] += 1
                 else:
                     row.skip_reason = reason
                     _note_skip(reason)
@@ -855,12 +932,12 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
                     video.title = title
                     retitled.append(vid)
                     db.commit()
-            if library_tab and vid in kept_ids:
-                seen_kept += 1
+            if library_tab and vid in counted_ids:
+                seen_kept[segment] += 1
                 _report()
             continue
-        if library_tab and seen_kept >= keep:
-            beyond += 1
+        if library_tab and seen_kept[segment] >= keep:
+            _pass(vid)
             continue
         try:
             details = _details(vid)
@@ -924,7 +1001,7 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
         added += 1
         db.commit()
         if library_tab and details.get("live_status") not in PENDING_LIVE:
-            seen_kept += 1
+            seen_kept[segment] += 1
         # Reported per video: a first index can take minutes, and waiting for
         # the whole channel to finish leaves the UI with nothing to show.
         _report()
@@ -948,6 +1025,13 @@ def index_channel(db: Session, channel: YouTubeChannel, limit: int = None,
     # no feed and leaves the stored ids as they were.)
     if feed_ids is not None:
         channel.feed_ids = feed_ids
+    # Likewise the playlist's size, which the light check compares (#544).
+    if playlist_size is not None:
+        channel.playlist_size = playlist_size
+    if playlist_source:
+        # The middle of a playlist is not fetched either.
+        beyond |= {v for v in seen_ids if v not in known and v not in handled}
+    beyond = len(beyond)
     channel.last_error = None
     channel.error_count = 0
     channel.blocked_until = None

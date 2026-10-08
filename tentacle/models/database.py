@@ -290,6 +290,10 @@ class YouTubeChannel(Base):
     # The ids the feed showed when the tabs were last listed: already dealt
     # with, so the next feed check reacts only to ids beyond these.
     feed_ids = Column(JSON, nullable=True)
+    # A playlist source's item count (Data API) at its last full listing. New
+    # videos usually go to the bottom of a playlist, where its feed never shows
+    # them; a change in size is what tells the light check to list it (#544).
+    playlist_size = Column(Integer, nullable=True)
     last_error = Column(String, nullable=True)
     error_count = Column(Integer, default=0)
     # Why videos were passed over on the last index, as {reason: count}. Skips

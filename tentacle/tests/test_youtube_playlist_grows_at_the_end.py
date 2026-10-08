@@ -106,6 +106,38 @@ class TestPlaylistAppendedAtTheEnd(unittest.TestCase):
         self._sync()
         self.assertEqual(self._in_library(), [_vid(17), _vid(18), _vid(19)])
 
+    def test_a_short_playlist_that_adds_at_the_top_keeps_its_newest(self):
+        # Shorter than N + 5: both ends cover the whole playlist. Read from the
+        # bottom first, its oldest fill that end's N; the top end still has to
+        # reach the newest ones.
+        self.playlist = [_vid(i) for i in range(7, -1, -1)]
+        self._sync()
+        self.assertEqual(self._in_library(), [_vid(5), _vid(6), _vid(7)])
+
+    def test_listing_it_again_fetches_nothing(self):
+        # The top end holds the oldest videos, which retention retires: they
+        # count as dealt with, or every run would fetch the next few old ones.
+        self._sync()
+        from services.youtube import indexer
+        with mock.patch.object(indexer, "_details",
+                               side_effect=AssertionError("fetched although nothing is new")):
+            self._sync()
+        self.assertEqual(self._in_library(), [_vid(17), _vid(18), _vid(19)])
+
+
+class TestApiPlaylistSize(unittest.TestCase):
+    def test_reads_the_item_count(self):
+        from services.youtube import feeds
+        answer = {"items": [{"id": "PLx", "contentDetails": {"itemCount": 42}}]}
+        with mock.patch.object(feeds, "_api_get", return_value=answer) as get:
+            self.assertEqual(feeds.api_playlist_size("PLx"), 42)
+        get.assert_called_once_with("playlists", {"part": "contentDetails", "id": "PLx"})
+
+    def test_a_playlist_the_api_does_not_return_has_no_size(self):
+        from services.youtube import feeds
+        with mock.patch.object(feeds, "_api_get", return_value={"items": []}):
+            self.assertIsNone(feeds.api_playlist_size("PLgone"))
+
 
 if __name__ == "__main__":
     unittest.main()
