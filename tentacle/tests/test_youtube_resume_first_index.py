@@ -29,7 +29,7 @@ class UnfinishedFirstIndexIsResumed(_Db):
         set_setting(self.db, "youtube_enabled", "true")
         half = self.channel(title="Half", slug="half", channel_id="UC" + "h" * 22)
         self.channel(title="Done", slug="done", channel_id="UC" + "d" * 22,
-                     last_full_check=datetime(2026, 9, 28))
+                     last_checked=datetime(2026, 9, 28), last_full_check=datetime(2026, 9, 28))
         queued, start = self._resume()
         self.assertEqual([half.id], queued)
         start.assert_called_once_with(channel_ids=[half.id])
@@ -43,8 +43,19 @@ class UnfinishedFirstIndexIsResumed(_Db):
 
     def test_nothing_is_queued_on_a_normal_restart(self):
         set_setting(self.db, "youtube_enabled", "true")
-        self.channel(last_full_check=datetime(2026, 9, 28))
+        self.channel(last_checked=datetime(2026, 9, 28), last_full_check=datetime(2026, 9, 28))
         self.channel(title="Off", slug="off", channel_id="UC" + "o" * 22, enabled=False)
+        queued, start = self._resume()
+        self.assertEqual([], queued)
+        start.assert_not_called()
+
+    def test_nothing_is_queued_on_the_first_start_after_an_upgrade(self):
+        # A channel indexed by a build from before the feed checks: last_full_check
+        # did not exist, so the migration left it empty on every channel.
+        set_setting(self.db, "youtube_enabled", "true")
+        self.channel(last_checked=datetime(2026, 9, 20), last_full_check=None)
+        self.channel(title="Two", slug="two", channel_id="UC" + "t" * 22,
+                     last_checked=datetime(2026, 9, 20), last_full_check=None)
         queued, start = self._resume()
         self.assertEqual([], queued)
         start.assert_not_called()

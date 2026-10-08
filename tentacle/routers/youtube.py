@@ -1183,6 +1183,10 @@ def resume_unfinished_channels() -> list:
     try:
         if get_setting(db, "youtube_enabled", "false") != "true" or not client.available():
             return []
+        # Never checked at all, not "never listed in full": last_full_check came
+        # with the feed checks, so on the first start after an upgrade from an
+        # older build it is empty on every channel, and all of them were
+        # listed and published again a minute after start-up.
         # The listing is saved before the files are written and the playlists
         # made, so a restart in that stretch left library videos with no files,
         # on a channel already marked as listed. Those are finished too.
@@ -1192,7 +1196,7 @@ def resume_unfinished_channels() -> list:
             indexer.is_library_status(YouTubeVideo.live_status))
         ids = [c.id for c in db.query(YouTubeChannel.id).filter(
             YouTubeChannel.enabled == True,  # noqa: E712
-            or_(YouTubeChannel.last_full_check.is_(None),
+            or_(YouTubeChannel.last_checked.is_(None),
                 YouTubeChannel.id.in_(unwritten))).all()]
     finally:
         db.close()
