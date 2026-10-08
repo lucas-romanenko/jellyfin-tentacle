@@ -758,11 +758,11 @@ function confirmDeleteStaleFiles() {
   if (!_staleData) return;
   document.getElementById('stale-confirm-strm').textContent = _staleData.strm_count;
   document.getElementById('stale-confirm-nfo').textContent = _staleData.nfo_count;
-  document.getElementById('stale-confirm-modal').style.display = 'flex';
+  showModal('stale-confirm-modal');
 }
 
 async function executeDeleteStaleFiles() {
-  document.getElementById('stale-confirm-modal').style.display = 'none';
+  closeModal('stale-confirm-modal');
   try {
     const res = await api('/api/settings/stale-files/delete', { method: 'POST', body: JSON.stringify({ confirm: true }) });
     document.getElementById('stale-files-banner').style.display = 'none';
@@ -1687,38 +1687,102 @@ async function testSonarrWebhookUrl() {
 
 // ── Radarr Root Folders ───────────────────────────────────────────────────
 // ── Modals ─────────────────────────────────────────────────────────────────
+// Dialogs open and close only through showModal()/closeModal(): they take the
+// keyboard focus, keep Tab inside and give the focus back to the opener (#552)
+let _modalTitleSeq = 0;
+
+function _modalShown(o) {
+  return getComputedStyle(o).display !== 'none';
+}
+
+function _modalTabbables(root) {
+  return [...root.querySelectorAll('button, [href], input, select, textarea, [tabindex]')]
+    .filter(el => !el.disabled && el.tabIndex >= 0 && el.getClientRects().length);
+}
+
 function showModal(id) {
-  document.getElementById(id).style.display = 'flex';
+  const m = document.getElementById(id);
+  const wasOpen = _modalShown(m);
+  m.style.display = 'flex';
   // Lock the page behind the sheet on phones (the modal scrolls on its own)
   document.body.classList.add('modal-open');
+  const box = m.querySelector('.modal');
+  if (box) {
+    box.setAttribute('role', 'dialog');
+    box.setAttribute('aria-modal', 'true');
+    const title = box.querySelector('.modal-title');
+    if (title) {
+      if (!title.id) title.id = 'modal-title-' + (++_modalTitleSeq);
+      box.setAttribute('aria-labelledby', title.id);
+    }
+  }
+  if (wasOpen) return;
+  m._opener = document.activeElement;
+  // First control, not ✕ (in a confirmation that is Cancel); ✕ only when there's nothing else yet
+  const tabbables = _modalTabbables(m);
+  const first = tabbables.find(el => !el.classList.contains('modal-close')) || tabbables[0];
+  if (first) first.focus();
 }
 
 function closeModal(id) {
-  document.getElementById(id).style.display = 'none';
+  _hideModal(document.getElementById(id));
   _syncModalLock();
+}
+
+function _hideModal(m) {
+  const active = document.activeElement;
+  const hadFocus = !active || active === document.body || m.contains(active);
+  m.style.display = 'none';
+  const opener = m._opener;
+  m._opener = null;
+  if (hadFocus && opener && opener !== document.body && opener.isConnected) opener.focus();
 }
 
 // Release the page scroll lock once no modal is showing (whatever closed it)
 function _syncModalLock() {
-  const anyOpen = [...document.querySelectorAll('.modal-overlay')].some(o => getComputedStyle(o).display !== 'none');
+  const anyOpen = [...document.querySelectorAll('.modal-overlay')].some(_modalShown);
   document.body.classList.toggle('modal-open', anyOpen);
 }
 
 // Close modal on overlay click
 document.addEventListener('click', e => {
   if (e.target.classList.contains('modal-overlay')) {
-    e.target.style.display = 'none';
+    _hideModal(e.target);
     _syncModalLock();
   }
 });
 
-// Close modal on Escape
 document.addEventListener('keydown', e => {
+  // Close modals on Escape, the top one first so each hands the focus back down the chain
   if (e.key === 'Escape') {
-    document.querySelectorAll('.modal-overlay').forEach(m => {
-      if (m.id !== 'setup-overlay') m.style.display = 'none';
+    [...document.querySelectorAll('.modal-overlay')].reverse().forEach(m => {
+      if (m.id !== 'setup-overlay' && _modalShown(m)) _hideModal(m);
     });
     _syncModalLock();
+    return;
+  }
+  if (e.key !== 'Tab') return;
+  // The sign-in and setup screens cover everything and keep their own Tab order
+  for (const id of ['login-overlay', 'setup-overlay']) {
+    const o = document.getElementById(id);
+    if (o && _modalShown(o)) return;
+  }
+  const open = [...document.querySelectorAll('.modal-overlay')].filter(_modalShown);
+  const m = open[open.length - 1];
+  if (!m) return;
+  const tabbables = _modalTabbables(m);
+  if (!tabbables.length) { e.preventDefault(); return; }
+  const first = tabbables[0], last = tabbables[tabbables.length - 1];
+  const active = document.activeElement;
+  if (!m.contains(active)) {
+    e.preventDefault();
+    (e.shiftKey ? last : first).focus();
+  } else if (!e.shiftKey && active === last) {
+    e.preventDefault();
+    first.focus();
+  } else if (e.shiftKey && active === first) {
+    e.preventDefault();
+    last.focus();
   }
 });
 
