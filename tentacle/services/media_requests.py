@@ -37,12 +37,21 @@ _NAMES = {"radarr": "Radarr", "sonarr": "Sonarr"}
 
 
 class RequestRefused(Exception):
-    """Nothing was sent to the *arr. `message` is written for the user."""
+    """Nothing was sent to the *arr. `message` is written for an admin (and the
+    log); `user_message`, when set, for anyone else: the fix is in Settings,
+    which only an admin can open."""
 
-    def __init__(self, message: str, status: int = 400):
+    def __init__(self, message: str, status: int = 400, user_message: Optional[str] = None):
         super().__init__(message)
         self.message = message
         self.status = status
+        self.user_message = user_message
+
+    def for_user(self, user) -> str:
+        """The text to show this user (a TentacleUser, or None)."""
+        if self.user_message and user is not None and not user.is_admin:
+            return self.user_message
+        return self.message
 
 
 @dataclass
@@ -62,6 +71,12 @@ def no_default_message(service: str) -> str:
     name = _NAMES[service]
     return (f"Pick a default {name} quality profile in Tentacle's settings (Settings → Connections). "
             f"Tentacle won't guess one: {name}'s first profile is usually \"Any\".")
+
+
+def no_default_user_message(service: str) -> str:
+    name = _NAMES[service]
+    return (f"Requests aren't set up yet: an admin has to pick a default {name} quality profile "
+            f"in Tentacle before anything can be added.")
 
 
 def default_quality_profile(db: Session, service: str) -> Optional[int]:
@@ -109,7 +124,7 @@ def _choose_profile(db: Session, service: str, url: str, key: str,
                     f"fill it in without the user choosing. Using the default instead.")
     default = default_quality_profile(db, service)
     if override is None and default is None:
-        raise RequestRefused(no_default_message(service))
+        raise RequestRefused(no_default_message(service), user_message=no_default_user_message(service))
     chosen = override if override is not None else default
     names = read_quality_profiles(url, key)
     if names is not None and chosen not in names:
@@ -117,7 +132,10 @@ def _choose_profile(db: Session, service: str, url: str, key: str,
             raise RequestRefused(f"The quality profile you picked (id {chosen}) no longer exists in {name}. "
                                  f"Pick another.")
         raise RequestRefused(f"Your default {name} quality profile (id {chosen}) no longer exists in {name}. "
-                             f"Pick another in Tentacle's settings (Settings → Connections).")
+                             f"Pick another in Tentacle's settings (Settings → Connections).",
+                             user_message=f"Requests aren't working right now: the default {name} quality "
+                                          f"profile no longer exists in {name}, and an admin has to pick "
+                                          f"another in Tentacle.")
     label = (names or {}).get(chosen, f"id {chosen}")
     return chosen, f"{label} ({'chosen for this request' if override is not None else 'default'})"
 
@@ -141,6 +159,9 @@ def _bust_discover_cache():
 
 # ── Movies ────────────────────────────────────────────────────────────────
 
+_NO_ROOT_USER = "{name} isn't ready for requests yet (it has no root folder): an admin has to add one in {name}."
+
+
 def _radarr_root(db: Session, url: str, key: str) -> tuple:
     configured = (get_setting(db, "radarr_root_folder") or "").strip()
     if configured:
@@ -148,7 +169,7 @@ def _radarr_root(db: Session, url: str, key: str) -> tuple:
     try:
         return arr_add.radarr_root_folder(url, key), "automatic"
     except RuntimeError as e:  # Radarr answered, but has no root folders
-        raise RequestRefused(str(e), 503)
+        raise RequestRefused(str(e), 503, user_message=_NO_ROOT_USER.format(name="Radarr"))
     except Exception as e:
         logger.warning(f"Failed to fetch Radarr root folders: {e}")
         raise RequestRefused("Could not read Radarr's root folders (Radarr may be busy or down). "
@@ -230,7 +251,8 @@ def _sonarr_root_folders(sonarr) -> list:
                              "Nothing was added — please retry in a moment.", 503)
     if not folders:
         raise RequestRefused("Sonarr has no root folders configured. Add one in Sonarr → Settings → "
-                             "Media Management, then retry.", 503)
+                             "Media Management, then retry.", 503,
+                             user_message=_NO_ROOT_USER.format(name="Sonarr"))
     return folders
 
 
@@ -386,7 +408,9 @@ def _lidarr_defaults(db: Session) -> dict:
     missing = [name for name, value in (("root folder", root), ("quality profile", quality),
                                         ("metadata profile", metadata)) if not value]
     if missing:
-        raise RequestRefused(f"Pick a Lidarr {', '.join(missing)} in Tentacle's settings (Settings → Connections).")
+        raise RequestRefused(f"Pick a Lidarr {', '.join(missing)} in Tentacle's settings (Settings → Connections).",
+                             user_message=f"Album requests aren't set up yet: an admin has to pick a Lidarr "
+                                          f"{', '.join(missing)} in Tentacle.")
     return {"root": root, "quality": int(quality), "metadata": int(metadata)}
 
 

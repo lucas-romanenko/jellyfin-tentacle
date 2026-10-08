@@ -106,8 +106,9 @@ async function showLoginOverlay() {
           document.getElementById('setup-jellyfin-result').innerHTML = `<span style="color:var(--red)">${escHtml(err.detail)}</span>`;
         }
       } else {
-        // Connection error (bad API key, unreachable, etc.)
-        grid.innerHTML = '<div style="color:var(--red)">Cannot connect to Jellyfin. Check Settings.</div>';
+        // Connection error (bad API key, unreachable, etc.). Nobody is signed
+        // in here, so nobody can open Settings.
+        grid.innerHTML = '<div style="color:var(--red)">Cannot connect to Jellyfin right now. Check that Jellyfin is running, then try again.</div>';
       }
       return;
     }

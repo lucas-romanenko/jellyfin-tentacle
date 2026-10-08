@@ -143,6 +143,20 @@ class DefaultProfileGone(_Base):
                     self.refused(service, self.admin))
 
 
+class LidarrDefaultsMissing(_Base):
+    def test_each_user_gets_their_text(self):
+        from services.media_requests import RequestRefused, _lidarr_defaults
+        with self.assertRaises(RequestRefused) as cm:
+            _lidarr_defaults(self.db)
+        e = cm.exception
+        self.assertIn("Settings →", e.for_user(self.admin))
+        text = e.for_user(self.nora)
+        self.assertNotIn("Settings", text, text)
+        self.assertIn("an admin has to pick a Lidarr", text)
+        # No user (an internal caller): the admin text, as in the log.
+        self.assertEqual(e.message, e.for_user(None))
+
+
 ESC = functions("pages.js", ["escapeAttr"]) + functions("app.js", ["escHtml"])
 
 

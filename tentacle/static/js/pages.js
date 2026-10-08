@@ -27,11 +27,14 @@ function escapeJS(str) {
 // Quality profile picker for an add. "Default" (the profile picked in
 // Settings) sends nothing; any other choice is sent as this request's
 // override. Never preselect the *arr's first profile: it is usually "Any".
+// Only an admin can open Settings, so anyone else is told an admin picks it.
 function _profileOptionsHtml(profiles) {
   const def = (profiles || []).find(p => p.is_default);
   const first = def
     ? `<option value="">Default — ${escapeAttr(def.name)}</option>`
-    : '<option value="">Default (none picked yet — set one in Settings)</option>';
+    : state.currentUser?.is_admin
+      ? '<option value="">Default (none picked yet — set one in Settings)</option>'
+      : '<option value="">Default (none picked yet — an admin has to pick one)</option>';
   return first + (profiles || []).filter(p => !p.is_default)
     .map(p => `<option value="${escapeAttr(String(p.id))}">${escapeAttr(p.name)}</option>`).join('');
 }
@@ -5452,7 +5455,10 @@ async function loadDiscover() {
     _discoverSections = data.sections || [];
     if (!_discoverSections.length) {
       tabsEl.innerHTML = '';
-      grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>${escHtml(data.warning || 'No content found. Check your TMDB bearer token in Settings.')}</p></div>`;
+      const fallback = state.currentUser?.is_admin
+        ? 'No content found. Check your TMDB bearer token in Settings.'
+        : 'No content found. Discover needs a TMDB connection, which an admin sets up.';
+      grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>${escHtml(data.warning || fallback)}</p></div>`;
       return;
     }
     if (data.warning) toast(data.warning, 'warning', 6000);
