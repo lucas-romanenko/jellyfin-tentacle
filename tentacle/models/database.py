@@ -660,6 +660,10 @@ class BlockedStream(Base):
     reason = Column(String, nullable=True)
     blocked_by = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # The provider's own label of the stream ("<name>\t<container>"), stored by
+    # the sync while it lists the stream: a stream re-listed under a new id
+    # with this exact label is held for the admin, never imported silently.
+    label = Column(String, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("provider_id", "media_type", "stream_key", name="uq_blocked_stream"),
@@ -680,6 +684,12 @@ class MatchOverride(Base):
     title = Column(String, nullable=True)
     set_by = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # The provider's label of the stream ("<name>\t<container>"), stored by the
+    # sync: when the provider re-lists the stream under a new id with this
+    # exact label, the fix follows it (moved_from = the key it had before, for
+    # the admin's Undo).
+    label = Column(String, nullable=True)
+    moved_from = Column(String, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("provider_id", "media_type", "stream_key", name="uq_match_override"),
@@ -700,6 +710,10 @@ class MatchSuspect(Base):
     jellyfin_item_id = Column(String, nullable=True)
     dismissed = Column(Boolean, default=False)
     detected_at = Column(DateTime, default=datetime.utcnow)
+    # None: flagged by its played length. "relist_followed": a fixed stream was
+    # re-listed and the fix followed it; "relist_blocked": a re-listed stream is
+    # labelled like one the admin blocked. The runtime check leaves these alone.
+    reason = Column(String, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("tmdb_id", "media_type", name="uq_match_suspect"),
@@ -779,7 +793,8 @@ class LiveChannel(Base):
     # and it wins over everything below (#141).
     epg_id_override = Column(String, nullable=True)
     # The feed channel the last EPG sync matched by NAME, because the tvg-id
-    # was missing or the feed did not carry it (#141). Recomputed every sync.
+    # was missing or the feed did not carry it (#141), or the feed's spelling
+    # of a tvg-id it lists only in other case (#523). Recomputed every sync.
     epg_name_match = Column(String, nullable=True)
 
     # Management
@@ -809,12 +824,14 @@ class LiveChannel(Base):
 
     @property
     def epg_match(self):
-        """How guide_epg_id was chosen: "override", "name", "tvg-id" or None."""
+        """How guide_epg_id was chosen: "override", "name", "tvg-id" or None.
+        A name match that is the tvg-id in other case is a tvg-id match (#523)."""
         if (self.epg_id_override or "").strip():
             return "override"
-        if self.epg_name_match:
+        tvg = (self.epg_channel_id or "").strip()
+        if self.epg_name_match and self.epg_name_match.casefold() != tvg.casefold():
             return "name"
-        return "tvg-id" if (self.epg_channel_id or "").strip() else None
+        return "tvg-id" if tvg else None
 
 
 class LiveChannelGroup(Base):
@@ -918,6 +935,28 @@ def get_setting(db, key: str, default: str = "") -> str:
     if s and key in NON_EMPTY_DEFAULTS and not (s.value or "").strip():
         return default or NON_EMPTY_DEFAULTS[key]
     return s.value if s else default
+
+
+RECENTLY_ADDED_DAYS_MAX = 36500   # 100 years holds every title; timedelta overflows past year 1
+
+
+def parse_recently_added_days(value):
+    """Whole days from a stored or typed value, or None if no number can be read.
+
+    The field is <input type="number">: "14.5", "7.0" and "1e2" arrive as
+    typed, and a bare int() on them failed every sync and tag refresh (#536).
+    """
+    try:
+        days = int(float(str(value).strip()))
+    except (TypeError, ValueError, OverflowError):   # "abc"; nan, inf, 1e309 pass float() but not int()
+        return None
+    return min(max(days, 0), RECENTLY_ADDED_DAYS_MAX)
+
+
+def get_recently_added_days(db) -> int:
+    """The "Recently added" window in whole days, whatever an older save stored."""
+    days = parse_recently_added_days(get_setting(db, "recently_added_days"))
+    return int(NON_EMPTY_DEFAULTS["recently_added_days"]) if days is None else days
 
 
 def set_setting(db, key: str, value: str):
@@ -1295,6 +1334,26 @@ def seed_defaults(db):
             db.commit()
         except IntegrityError:
             db.rollback()  # another worker inserted it first — fine
+    _forget_stored_builtin_tmdb_token(db)
+
+
+def _forget_stored_builtin_tmdb_token(db):
+    """A stored tmdb_bearer_token equal to the built-in token means "none of
+    my own": until #383 any Settings save stored the built-in token that
+    GET /api/settings/raw filled into the field. Clear it, so the field shows
+    "Using built-in key" again and a later built-in token reaches this install.
+    The token every TMDB call uses stays the same (get_tmdb_token falls back
+    to the built-in one), and a token of the user's own is never equal to it.
+    """
+    from services.tmdb import TMDB_DEFAULT_TOKEN
+    row = db.query(Setting).filter(Setting.key == "tmdb_bearer_token",
+                                   Setting.value == TMDB_DEFAULT_TOKEN).first()
+    # With a v3 tmdb_api_key stored, /plugin-keys stops adding the built-in
+    # bearer once none is stored: the plugin would switch to that key. Keep it.
+    if row is not None and not get_setting(db, "tmdb_api_key"):
+        row.value = ""
+        db.commit()
+        logger.info("[migrate] Cleared a stored copy of the built-in TMDB token (Settings shows the built-in key again)")
 
 
 def migrate_orphaned_data_to_user(db, user_id: int):

@@ -72,6 +72,8 @@ class FakeJf:
         self.db = db
         self.deleted = []
         self.refreshed = []
+        self.updates = []
+        self.user_id = "u1"
         self.row_present_at_delete = None
         self.items = {}
         self.extra = []
@@ -102,6 +104,24 @@ class FakeJf:
 
     def refresh_item_metadata(self, item_id, replace_all=False):
         self.refreshed.append((item_id, replace_all))
+        return True
+
+    # "Fix it" in place (#294): the strict reads, the ItemUpdate, the refresh
+    def get_item_strict(self, item_id):
+        item = self.get_item_by_id(item_id)
+        return dict(item) if item else None
+
+    def movie_paths_strict(self):
+        return self._all()
+
+    def update_item(self, item_id, payload):
+        self.updates.append((item_id, payload))
+        item = self.get_item_by_id(item_id)
+        if item is not None:
+            item["ProviderIds"] = dict(payload.get("ProviderIds") or {})
+
+    def refresh_item_identity(self, item_id):
+        self.refreshed.append((item_id, "identity"))
         return True
 
     def search_by_tmdb_id(self, tmdb_id, media_type="Movie", **k):
@@ -711,9 +731,12 @@ class TestRematch(_Base):
         self.assertEqual([old_strm.name], [p.name for p in old_strm.parent.glob("*.strm")])
         self.assertFalse(any(old_strm.parent.parent.glob("The Decline*")), "no second folder")
         self.assertIn("Tag1 Movies", row.tags, "source category tags are kept")
-        self.assertEqual([(f"jf-{self.tmdb}", True)], self.jf.refreshed,
+        self.assertEqual([(f"jf-{self.tmdb}", "identity")], self.jf.refreshed,
                          "Jellyfin re-reads the NFO into the same item")
         self.assertEqual(f"jf-{self.tmdb}", row.jellyfin_item_id)
+        self.assertEqual([f"jf-{self.tmdb}"], [i for i, _ in self.jf.updates],
+                         "Jellyfin is given the new identity before anything is saved")
+        self.assertEqual({"Tmdb": "674607"}, self.jf.updates[0][1]["ProviderIds"])
         self.assertEqual([], self.jf.deleted)
         import time as _t
         _t.sleep(0.2)
@@ -845,7 +868,7 @@ class TestRematch(_Base):
                           "Path": "/downloads/Movie 9 (2020)/Movie 9 (2020).mkv"}]
         self.rematch()
         self.assertEqual([], self.jf.deleted)
-        self.assertEqual([(f"jf-{self.tmdb}", True)], self.jf.refreshed,
+        self.assertEqual([(f"jf-{self.tmdb}", "identity")], self.jf.refreshed,
                          "only the .strm's own item is refreshed, never the download")
 
     def test_tmdb_down_while_rebuilding_a_fixed_copy_neither_fails_the_sync_nor_imports_the_wrong_label(self):

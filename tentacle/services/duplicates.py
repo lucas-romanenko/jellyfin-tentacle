@@ -16,6 +16,7 @@ import logging
 import threading
 import time
 import unicodedata
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -47,6 +48,44 @@ def drop_orphan_tombstones(db, media_type: str) -> int:
         Duplicate.resolution == "keep_radarr",
         ~Duplicate.tmdb_id.in_(db.query(model.tmdb_id)),
     ).delete(synchronize_session=False)
+
+
+# Titles a resolution is acting on now, (media_type, tmdb_id) (#515). Radarr
+# and Sonarr post their delete webhooks inside Keep VOD's delete calls, so
+# the handlers run while the resolve request holds the title's duplicates.
+# They can't wait for _resolve_lock (the resolve waits for the arr, which
+# waits for its webhook), so they leave those duplicates alone instead. One
+# uvicorn worker, so a process set covers every request.
+_resolving = set()
+_resolving_lock = threading.Lock()
+
+
+@contextmanager
+def resolving(media_type: str, tmdb_id: int):
+    key = (media_type, tmdb_id)
+    with _resolving_lock:
+        _resolving.add(key)
+    try:
+        yield
+    finally:
+        with _resolving_lock:
+            _resolving.discard(key)
+
+
+def droppable_duplicates(db, media_type: str, tmdb_id: int):
+    """The query of a title's duplicates its download's delete may drop.
+    None while a resolution acts on the title: it marks them itself, twins
+    included. Otherwise all but a Keep VOD one holding users' saved watched
+    state (#333): its kept copy is the VOD one, which an arr delete doesn't
+    touch, and the state waits there for Jellyfin's new item (applied or
+    dropped after _PENDING_DAYS). Delete with synchronize_session=False."""
+    from sqlalchemy import false, or_
+    from models.database import Duplicate
+    q = db.query(Duplicate).filter(Duplicate.tmdb_id == tmdb_id, Duplicate.media_type == media_type)
+    with _resolving_lock:
+        if (media_type, tmdb_id) in _resolving:
+            return q.filter(false())
+    return q.filter(or_(Duplicate.resolution != "keep_vod", Duplicate.pending_user_data.is_(None)))
 
 
 def series_has_real_download(sonarr, series_id) -> Optional[bool]:

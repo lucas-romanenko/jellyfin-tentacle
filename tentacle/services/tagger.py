@@ -14,7 +14,7 @@ from typing import List, Optional
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from models.database import Movie, Series, ListSubscription, ListItem, TagRule, get_setting
+from models.database import Movie, Series, ListSubscription, ListItem, TagRule, get_setting, get_recently_added_days
 
 logger = logging.getLogger(__name__)
 
@@ -661,7 +661,7 @@ def refresh_recently_added_tags(db: Session):
       stops tagging titles it no longer covers.
     Rows (and NFOs) are only written when their tags change.
     """
-    days = int(get_setting(db, "recently_added_days", "30") or 30)
+    days = get_recently_added_days(db)
     cutoff = datetime.utcnow() - timedelta(days=days)
 
     dynamic = dynamic_tags(db)

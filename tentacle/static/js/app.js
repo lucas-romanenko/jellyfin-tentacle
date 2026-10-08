@@ -135,7 +135,7 @@ async function showLoginOverlay() {
       </div>`;
     }).join('');
   } catch (e) {
-    grid.innerHTML = `<div style="color:var(--red)">Failed to load users: ${e.message}</div>`;
+    grid.innerHTML = `<div style="color:var(--red)">Failed to load users: ${escHtml(e.message)}</div>`;
   }
 }
 
@@ -436,12 +436,12 @@ async function loadUsers() {
         </div>
         <label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text3);cursor:pointer">
           Admin
-          <input type="checkbox"${toggleChecked}${toggleDisabled} onchange="toggleUserAdmin('${escHtml(u.id)}', this.checked)">
+          <input type="checkbox"${toggleChecked}${toggleDisabled} onchange="toggleUserAdmin('${escapeJS(u.id)}', this.checked)">
         </label>
       </div>`;
     }).join('');
   } catch (e) {
-    el.innerHTML = `<div style="color:var(--red)">Failed to load users: ${e.message}</div>`;
+    el.innerHTML = `<div style="color:var(--red)">Failed to load users: ${escHtml(e.message)}</div>`;
   }
 }
 
@@ -492,7 +492,10 @@ function toast(msg, type = 'success', duration = 3500) {
   const icon = type === 'loading'
     ? '<span class="toast-spinner"></span>'
     : `<span style="color:var(--${colors[type] || 'blue'})">${icons[type] ?? ''}</span>`;
-  el.innerHTML = `${icon} ${msg}`;
+  // The message is text: messages carry titles and other services' error
+  // text, so they are never read as markup (callers pass plain text).
+  el.innerHTML = `${icon} `;
+  el.appendChild(document.createTextNode(msg == null ? '' : String(msg)));
   document.getElementById('toasts').appendChild(el);
   if (duration > 0) setTimeout(() => el.remove(), duration);
   return el;
@@ -527,9 +530,9 @@ async function testSetupJellyfin() {
   el.innerHTML = 'Testing...';
   try {
     const r = await api('/api/settings/test', { method: 'POST', body: { type: 'jellyfin', url, api_key: key } });
-    el.innerHTML = `<span style="color:var(--green)">${r.message}</span>`;
+    el.innerHTML = `<span style="color:var(--green)">${escHtml(r.message)}</span>`;
   } catch (e) {
-    el.innerHTML = `<span style="color:var(--red)">${e.message}</span>`;
+    el.innerHTML = `<span style="color:var(--red)">${escHtml(e.message)}</span>`;
   }
 }
 
@@ -608,9 +611,9 @@ async function testSetupArr(type) {
   el.innerHTML = 'Testing...';
   try {
     const r = await api('/api/settings/test', { method: 'POST', body: { type, url, api_key: key } });
-    el.innerHTML = `<span style="color:var(--green)">${r.message}</span>`;
+    el.innerHTML = `<span style="color:var(--green)">${escHtml(r.message)}</span>`;
   } catch (e) {
-    el.innerHTML = `<span style="color:var(--red)">${e.message}</span>`;
+    el.innerHTML = `<span style="color:var(--red)">${escHtml(e.message)}</span>`;
     return;
   }
   // Connected: offer the default quality profile right here.
@@ -887,8 +890,8 @@ function renderProviderCard(p) {
           <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px;flex-wrap:wrap">
             ${capBadges}
           </div>
-          <div class="provider-card-name" style="margin-top:6px">${p.name}</div>
-          <div class="provider-card-url">${(p.provider_type && p.provider_type !== 'xtream') ? ((p.m3u_url || '').split('?')[0] || 'M3U playlist') : p.server_url}</div>
+          <div class="provider-card-name" style="margin-top:6px">${escHtml(p.name)}</div>
+          <div class="provider-card-url">${escHtml((p.provider_type && p.provider_type !== 'xtream') ? ((p.m3u_url || '').split('?')[0] || 'M3U playlist') : p.server_url)}</div>
         </div>
         <div style="display:flex;align-items:center;gap:6px">
           <div class="dot dot-${statusColor}"></div>
@@ -906,7 +909,7 @@ function renderProviderCard(p) {
       <div class="provider-actions">
         <button class="btn btn-secondary btn-sm" onclick="refreshProvider(${p.id})">Test</button>
         <button class="btn btn-secondary btn-sm" onclick="editProvider(${p.id})">Edit</button>
-        <button class="btn btn-danger btn-sm" onclick="confirmDeleteProvider(${p.id}, '${p.name}')">Delete</button>
+        <button class="btn btn-danger btn-sm" onclick="confirmDeleteProvider(${p.id}, '${escapeJS(p.name)}')">Delete</button>
       </div>
     </div>`;
 }
@@ -1122,9 +1125,9 @@ function renderCatList() {
       <input type="checkbox" class="cat-checkbox" id="cat-${c.id}"
         ${c.whitelisted ? 'checked' : ''}
         onchange="toggleCatLocal(${c.id}, this.checked)">
-      <label for="cat-${c.id}" class="cat-name" title="${c.name}">${c.name}</label>
-      <span class="badge ${c.type === 'movie' ? 'badge-accent' : 'badge-pink'}">${c.type}</span>
-      ${c.source_tag ? `<span class="badge badge-gray">${c.source_tag}</span>` : ''}
+      <label for="cat-${c.id}" class="cat-name" title="${escHtml(c.name)}">${escHtml(c.name)}</label>
+      <span class="badge ${c.type === 'movie' ? 'badge-accent' : 'badge-pink'}">${escHtml(c.type)}</span>
+      ${c.source_tag ? `<span class="badge badge-gray">${escHtml(c.source_tag)}</span>` : ''}
       ${c.title_count ? `<span style="font-size:11px;color:var(--text3);font-family:'DM Mono',monospace">${c.title_count}</span>` : ''}
     </div>
   `).join('');
@@ -1360,10 +1363,10 @@ async function testService(svc) {
   try {
     const r = await api('/api/settings/check', { method: 'POST', body });
     renderChecks(box, r.checks);
-    toast(escHtml(r.message), r.success ? 'success' : 'error', r.success ? 3500 : 7000);
+    toast(r.message, r.success ? 'success' : 'error', r.success ? 3500 : 7000);
   } catch (e) {
     if (box) box.innerHTML = '';
-    toast(escHtml(e.message), 'error');
+    toast(e.message, 'error');
   }
 }
 
@@ -1425,9 +1428,9 @@ async function createMusicLibrary() {
     if (el) el.dataset.saved = lib.id || '';
     await loadJellyfinMusicLibraries();
     document.getElementById('jf-music-create').style.display = 'none';
-    toast(`Created the Jellyfin library "${escHtml(lib.name)}"`);
+    toast(`Created the Jellyfin library "${lib.name}"`);
   } catch (e) {
-    toast(escHtml(e.message), 'error', 8000);
+    toast(e.message, 'error', 8000);
   }
 }
 
@@ -1473,7 +1476,7 @@ async function regenerateMusicWebhookSecret() {
     await loadMusicWebhookInfo();
     toast('New secret made — paste the new URL into Lidarr', 'info', 6000);
   } catch (e) {
-    toast(escHtml(e.message), 'error');
+    toast(e.message, 'error');
   }
 }
 
@@ -1483,11 +1486,11 @@ async function testMusicWebhook() {
   try {
     const r = await api('/api/music/webhook/test', { method: 'POST' });
     renderChecks(box, r.checks);
-    toast(escHtml(r.message), r.success ? 'success' : 'error', r.success ? 3500 : 7000);
+    toast(r.message, r.success ? 'success' : 'error', r.success ? 3500 : 7000);
     loadMusicWebhookInfo();
   } catch (e) {
     if (box) box.innerHTML = '';
-    toast(escHtml(e.message), 'error');
+    toast(e.message, 'error');
   }
 }
 
@@ -1542,8 +1545,8 @@ async function loadPathStatus() {
       html += `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;${key !== 'tv' ? 'border-bottom:1px solid var(--border);' : ''}">
         <span style="width:20px;text-align:center">${icon}</span>
         <div style="flex:1">
-          <div style="font-size:13px;font-weight:500;color:var(--text1)">${info.label}</div>
-          <code style="font-size:11px;color:var(--text3)">${info.path}</code>
+          <div style="font-size:13px;font-weight:500;color:var(--text1)">${escHtml(info.label)}</div>
+          <code style="font-size:11px;color:var(--text3)">${escHtml(info.path)}</code>
         </div>
         <div>${status}</div>
       </div>`;
