@@ -371,12 +371,18 @@ User docs: `docs/features/live-tv.md`.
   no unjoined connection may have begun in front of it. Then the replay is
   dropped (`replays_joined`, `replay_bytes_skipped` in the health); anything
   unproven (a gap, a seamless re-dial, a remux, a replay over 32 MB or 30 s,
-  a break before the join) goes out as it came: duplicates, never a loss.
-  A joined reconnect is not damage in `_stream_ended`. A join drops only
-  packets byte-identical to the ones sent at the same place (#520: checking
-  only the frame starts let a provider's verbatim loop hide the unique
-  packets in front of it). A verbatim loop can at worst be joined one loop
-  period off, which repeats or skips only bytes already sent.
+  a break before the first frame start) goes out as it came: duplicates,
+  never a loss. A connection that breaks inside its replay, every whole
+  packet it held already checked equal to the one sent there, carried
+  nothing new: it is dropped (counted as joined; its wait is covered only
+  when a later re-dial joins) and the next re-dial is judged against the
+  same output (on a newest-connection-wins account a re-dial can be closed
+  again before its ~20 s replay is through). A joined reconnect is not
+  damage in `_stream_ended`. A join drops only packets byte-identical to
+  the ones sent at the same place (#520: checking only the frame starts let
+  a provider's verbatim loop hide the unique packets in front of it). A
+  verbatim loop can at worst be joined one loop period off, which repeats
+  or skips only bytes already sent.
 - The HLS worker (`hls_to_mpegts()`) classifies statuses with the same
   `_raw_retryable()`: a 5xx on a playlist, a re-resolve or a segment is
   waited out (a 5xx segment is fetched again, not skipped). An expired token
