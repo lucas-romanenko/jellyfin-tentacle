@@ -400,11 +400,22 @@ class StandsAsideMidRun(Base_):
         self.assertIsNotNone(s["skipped_at"])
         self.assertEqual([m["title"] for m in self.sent], ["Tentacle: Acme IPTV is failing"])
 
+    def test_the_result_says_skipped_and_counts_only_the_providers_checked(self):
+        self.add_second_provider()
+        with self.assertLogs("services.provider_health", level="INFO") as logs:
+            result = self.run_with_live_start({API: api_ok(), SERVER + "/movie/": FakeResponse(206),
+                                               "http://two.example.test/": api_ok()},
+                                              starts_after=MOVIE_URLS[0], confirm=False)
+        self.assertEqual((result["skipped"], result["checked"]), (True, 1))
+        self.assertEqual(len([line for line in logs.output if "started during the check" in line]), 1)
+
     def test_no_live_tv_checks_everything(self):
         self.add_second_provider()
-        self.run_with_live_start({API: api_ok(), MOVIE_URLS[0]: FakeResponse(404, data=b""),
-                                  SERVER + "/movie/": FakeResponse(206),
-                                  "http://two.example.test/": api_ok()}, starts_after="http://never.example.test/")
+        result = self.run_with_live_start({API: api_ok(), MOVIE_URLS[0]: FakeResponse(404, data=b""),
+                                           SERVER + "/movie/": FakeResponse(206),
+                                           "http://two.example.test/": api_ok()},
+                                          starts_after="http://never.example.test/")
+        self.assertEqual((result["skipped"], result["checked"]), (False, 2))
         self.assertEqual(self.net.calls[1:3], MOVIE_URLS[:2])
         self.assertEqual([e["state"] for e in ph.load_state(self.db).values()], ["ok", "ok"])
 
