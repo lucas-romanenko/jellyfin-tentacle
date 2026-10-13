@@ -332,6 +332,83 @@ class StandsAside(Base_):
         self.assertEqual(ph.load_state(self.db), {})
 
 
+class StandsAsideMidRun(Base_):
+    """Live TV or a recording that starts while a run is under way (#603): the
+    run looks again before every connection it opens, not only at its start."""
+
+    def run_with_live_start(self, routes, starts_after, nth=1,
+                            target="services.provider_activity.live_streams_active", **kw):
+        """`target` turns True once the nth request starting with `starts_after` was made."""
+        started, seen = {"live": False}, {"n": 0}
+        orig = Net.get
+
+        def get(net, url, **kw):
+            try:
+                return orig(net, url, **kw)
+            finally:
+                if url.startswith(starts_after):
+                    seen["n"] += 1
+                    if seen["n"] >= nth:
+                        started["live"] = True
+        with mock.patch.object(Net, "get", get), mock.patch(target, side_effect=lambda *a: started["live"]):
+            return self.run_check(routes, **kw)
+
+    def add_second_provider(self):
+        p = Provider(name="Second IPTV", provider_type="xtream", server_url="http://two.example.test",
+                     username="u2", password="p2", active=True)
+        self.db.add(p)
+        self.db.commit()
+        return p
+
+    def test_a_recording_that_starts_after_the_login_gets_no_test_stream(self):
+        self.run_with_live_start({API: api_ok(), SERVER + "/movie/": FakeResponse(206)}, starts_after=API)
+        self.assertEqual([u for u in self.net.calls if "/movie/" in u], [])
+        s = self.state()
+        self.assertEqual(s["state"], "unknown")
+        self.assertIsNotNone(s["skipped_at"])
+
+    def test_a_recording_that_starts_between_test_streams_is_not_cut(self):
+        self.run_with_live_start({API: api_ok(), MOVIE_URLS[0]: FakeResponse(404, data=b""),
+                                  SERVER + "/movie/": FakeResponse(206)}, starts_after=MOVIE_URLS[0])
+        self.assertEqual(self.net.calls[self.net.calls.index(MOVIE_URLS[0]) + 1:], [])
+        self.assertEqual(self.state()["state"], "unknown")
+
+    def test_a_protected_recording_that_starts_mid_run_is_not_cut(self):
+        self.run_with_live_start({API: api_ok(), SERVER + "/movie/": FakeResponse(206)}, starts_after=API,
+                                 target="services.provider_activity.recording_protected")
+        self.assertEqual([u for u in self.net.calls if "/movie/" in u], [])
+
+    def test_the_next_provider_is_not_checked_once_live_tv_started(self):
+        self.add_second_provider()
+        self.run_with_live_start({API: api_ok(), SERVER + "/movie/": FakeResponse(206),
+                                  "http://two.example.test/": api_ok()}, starts_after=MOVIE_URLS[0])
+        self.assertFalse([u for u in self.net.calls if u.startswith("http://two.example.test/")],
+                         "the second provider is left alone while live TV runs")
+        self.assertEqual(self.state()["state"], "ok", "the first provider's verdict stands")
+        self.assertEqual([e["state"] for e in ph.load_state(self.db).values()], ["ok", "unknown"])
+
+    def test_the_confirming_recheck_looks_again_before_each_provider(self):
+        two = self.add_second_provider()
+        # Both fail; on the re-check 2 minutes later live TV starts during the
+        # first provider's login: the second is not re-checked, and its
+        # unconfirmed failure is no verdict.
+        self.run_with_live_start({API: FakeResponse(403), "http://two.example.test/": FakeResponse(403)},
+                                 starts_after=API, nth=2)
+        self.assertEqual(len([u for u in self.net.calls if u.startswith("http://two.example.test/")]), 1)
+        s = ph.load_state(self.db)[str(two.id)]
+        self.assertEqual(s["state"], "unknown")
+        self.assertIsNotNone(s["skipped_at"])
+        self.assertEqual([m["title"] for m in self.sent], ["Tentacle: Acme IPTV is failing"])
+
+    def test_no_live_tv_checks_everything(self):
+        self.add_second_provider()
+        self.run_with_live_start({API: api_ok(), MOVIE_URLS[0]: FakeResponse(404, data=b""),
+                                  SERVER + "/movie/": FakeResponse(206),
+                                  "http://two.example.test/": api_ok()}, starts_after="http://never.example.test/")
+        self.assertEqual(self.net.calls[1:3], MOVIE_URLS[:2])
+        self.assertEqual([e["state"] for e in ph.load_state(self.db).values()], ["ok", "ok"])
+
+
 class NoSecrets(Base_):
     def test_reasons_messages_and_logs_carry_no_url_or_login(self):
         answers = [FakeResponse(403), api_ok(auth=0), FakeResponse(200, None), FakeResponse(502),
