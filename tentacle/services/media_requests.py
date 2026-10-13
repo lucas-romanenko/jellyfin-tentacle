@@ -27,7 +27,7 @@ import requests
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from models.database import DownloadRequest, Series, get_setting
+from models.database import DownloadRequest, Series, TentacleUser, get_setting
 from services import arr_add
 from services.arr_add import ADDED, EXISTS, FAILED, AddReport
 
@@ -270,6 +270,9 @@ _NO_VOD_ROOT = (
     "Root Folder in Sonarr → Settings → Media Management, then retry — or "
     "switch to the shared-library layout in Tentacle Settings → Integrations. "
     "Without one of these, downloads would create a duplicate series in Jellyfin.")
+_NO_VOD_ROOT_USER = (
+    "Sonarr isn't ready to add episodes to shows from the IPTV provider yet (it has no root folder "
+    "for them): an admin has to set that up. Nothing was added.")
 
 
 def _series_added(db: Session, out: RequestOutcome, sonarr, added_id: int, request_id: int,
@@ -317,6 +320,9 @@ def request_series(db: Session, *, tmdb_ids: Iterable[int] = (), tvdb_ids: Itera
 
     out = RequestOutcome()
     tmdb = None
+    # The per-show reasons below reach whoever asked: a non-admin can't open
+    # Tentacle's or Sonarr's settings, so they get the user text (#554).
+    requester = db.get(TentacleUser, user_id) if user_id is not None else None
     for tmdb_id in tmdb_ids:
         if already_owned and already_owned(tmdb_id):
             out.report.record(EXISTS)
@@ -344,7 +350,7 @@ def request_series(db: Session, *, tmdb_ids: Iterable[int] = (), tvdb_ids: Itera
                     try:
                         folders = _sonarr_root_folders(sonarr)
                     except RequestRefused as e:
-                        out.report.record(FAILED, e.message)
+                        out.report.record(FAILED, e.for_user(requester))
                         continue
                 vod_root = next((rf["path"].rstrip("/") for rf in folders if "vod" in rf["path"].lower()), None)
                 if vod_root:
@@ -352,7 +358,8 @@ def request_series(db: Session, *, tmdb_ids: Iterable[int] = (), tvdb_ids: Itera
                 elif not existing.sonarr_path:
                     # vod_root layout but no VOD root folder in Sonarr: downloading
                     # to the regular root would show the series TWICE in Jellyfin.
-                    out.report.record(FAILED, _NO_VOD_ROOT)
+                    out.report.record(FAILED, RequestRefused(_NO_VOD_ROOT, user_message=_NO_VOD_ROOT_USER)
+                                      .for_user(requester))
                     logger.warning(f"Blocked hybrid add for tmdb:{tmdb_id} — no VOD root folder in Sonarr")
                     continue
 
