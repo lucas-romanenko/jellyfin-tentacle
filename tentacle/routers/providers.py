@@ -328,6 +328,10 @@ def update_provider(provider_id: int, body: ProviderUpdate, db: Session = Depend
     # next channel sync (#469)
     rewrite_xtream_channel_urls(p, before, db)
     db.commit()
+    # ...and the films and episodes already in the library (#142)
+    if _xtream_login(p) != before:
+        from services import provider_relink
+        provider_relink.start_relink(p.id, before)
     return {"success": True}
 
 

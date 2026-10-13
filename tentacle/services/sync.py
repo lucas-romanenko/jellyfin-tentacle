@@ -402,11 +402,14 @@ def _strm_needs_rewrite(strm_file: Path, expected: str, client) -> bool:
         including a file that wraps the provider URL in a resume proxy
         (URL-encoded), when moving TO Tentacle's route;
       - the provider's own URL with changed credentials, scheme, port or
-        container extension.
+        container extension;
+      - the same stream with this provider's own login on another host: the
+        provider moved, and its new address was saved before a save rewrote
+        the files (#142; services/provider_relink.py does it at the save).
     Everything else is left alone: another stream id (a title listed twice
-    would otherwise flip every night), another host, a proxy of somebody's
-    own, and M3U providers (their playlist URLs may rotate tokens or hosts
-    on every fetch)."""
+    would otherwise flip every night), another host with another login, a
+    proxy of somebody's own, and M3U providers (their playlist URLs may
+    rotate tokens or hosts on every fetch)."""
     if not isinstance(client, XtreamClient):
         return False
     try:
@@ -437,21 +440,36 @@ def _strm_needs_rewrite(strm_file: Path, expected: str, client) -> bool:
         if m is None or int(m.group(2)) != getattr(client, "provider_id", None):
             return None
         return m.group(1), int(m.group(3))
+
+    def moved(url_text):
+        """(kind, id) of a direct URL with this provider's login on another host."""
+        m = _MOVED_RE.match(url_text or "")
+        if (m is None or not (raw_user or raw_pass) or m.group(1).lower() == provider_host
+                or f"/{m.group(3)}/{m.group(4)}/" != new_login):
+            return None
+        return m.group(2).lower(), int(m.group(5))
     want = ours(expected)
     if want is not None:                                   # moving TO Tentacle's route
         have = ours(current)
         if have is not None:
             return have == want                            # new secret / address
         ref = _direct_ref(current, embedded=True, prefix=prefix)
-        return ref is not None and ref == (provider_host, want[0], want[1])
+        return (ref is not None and ref == (provider_host, want[0], want[1])) or moved(current) == want
     exp = _direct_ref(expected, prefix=prefix)
     if exp is None:
         return False
     have = ours(current)
     if have is not None:                                   # moving back to direct
         return have == (exp[1], exp[2])
+    if moved(current) == (exp[1], exp[2]):
+        return True                                        # the provider moved
     ref = _direct_ref(current, prefix=prefix)
     return ref is not None and ref == exp and exp[0] == provider_host
+
+
+# A direct Xtream stream URL without a path prefix: host, kind, user,
+# password, stream id (_strm_needs_rewrite, a provider that moved).
+_MOVED_RE = re.compile(r"(?i)^https?://([^/:?#]+)(?::\d+)?/(movie|series)/([^/?#]+)/([^/?#]+)/(\d+)\.[a-z0-9]+$")
 
 
 # A direct Xtream stream URL, for its host and username.

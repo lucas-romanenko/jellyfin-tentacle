@@ -149,6 +149,60 @@ class TheProvidersPageStartsIt(_Base):
                                       self.db)
         start.assert_not_called()
 
+    def test_the_live_tv_page_saves_the_same_row_and_starts_it_too(self):
+        import routers.livetv as livetv
+        self.provider.live_tv_enabled = True
+        self.db.commit()
+        with mock.patch("services.provider_relink.start_relink") as start:
+            livetv.save_live_provider(livetv.LiveProviderConfig(server_url=NEW), self.db)
+            livetv.save_live_provider(livetv.LiveProviderConfig(epg_url=NEW + "/xmltv.php"), self.db)
+        start.assert_called_once_with(self.provider.id, (OLD, "u", "p1"))
+
+
+class TheBackgroundRun(_Base):
+    """start_relink's run: rewrite, then a Jellyfin scan (Jellyfin keeps the
+    old URL until it sees the file changed) and an Activity entry that
+    names neither the address nor the login."""
+
+    def _run(self):
+        from services import provider_relink
+        Session = sessionmaker(bind=self.db.get_bind())
+        scans = []
+
+        class _Jellyfin:
+            def __init__(self, *a):
+                pass
+
+            def trigger_library_scan(self, library_id=None):
+                scans.append(library_id)
+                return True
+        mdb.set_setting(self.db, "jellyfin_url", "http://jellyfin.test")
+        mdb.set_setting(self.db, "jellyfin_api_key", "x")
+        before = (OLD, "u", "p1")
+        self.provider.server_url = NEW
+        self.db.commit()
+        with mock.patch("models.database.SessionLocal", Session), \
+                mock.patch("services.jellyfin.JellyfinService", _Jellyfin), \
+                mock.patch("services.sync.chown_path", lambda p: None):
+            provider_relink._run(self.provider.id, before)
+        self.db.expire_all()
+        return scans
+
+    def test_rewrites_scans_and_says_so(self):
+        film = self._movie(1, "Film (2020)", f"{OLD}/movie/u/p1/42.mkv")
+        scans = self._run()
+        self.assertEqual(f"{NEW}/movie/u/p1/42.mkv", film.read_text(encoding="utf-8"))
+        self.assertEqual([None], scans)
+        entry = self.db.query(mdb.ActivityLog).filter_by(event="provider_relinked").one()
+        self.assertIn("1 films and 0 episodes", entry.message)
+        self.assertNotIn("new-panel", entry.message)
+        self.assertNotIn("p1", entry.message)
+
+    def test_nothing_to_rewrite_no_scan_no_entry(self):
+        self._movie(1, "Mine (2020)", "http://nas.local/films/mine.mkv")
+        self.assertEqual([], self._run())
+        self.assertEqual(0, self.db.query(mdb.ActivityLog).count())
+
 
 class TheSyncHealsAFileOnTheProvidersFormerHost(unittest.TestCase):
     """For installs that saved the new address before the fix: the same

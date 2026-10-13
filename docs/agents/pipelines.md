@@ -120,7 +120,19 @@ provider rewrites its Live TV channels' `stream_url`
 (`{server}/live/{user}/{pass}/{id}.{ext}`, keeping each channel's format) in
 the same commit, `rewrite_xtream_channel_urls()` in `routers/livetv.py`; no
 request to the provider, no channel sync (#469). M3U channel URLs come from
-the playlist and only a channel sync changes them.
+the playlist and only a channel sync changes them. After the commit the
+same change starts `provider_relink.start_relink()` (#142): a background
+thread waits for a running sync of that provider, rewrites every direct VOD
+`.strm` of its rows (`Movie.strm_path`, every `*.strm` under
+`Series.strm_path`) that still holds the old `{server}/movie|series/{user}/{pass}/`
+to the form the sync writes today (direct, or a Tentacle link when VOD
+through Tentacle is on), then triggers a Jellyfin scan (Jellyfin keeps the
+old URL until it sees the file change) and logs a `provider_relinked`
+Activity entry with the counts. Tentacle links, proxies and other
+providers' files are left alone. For files the save missed (saved before the
+fix, a sync racing it), the sync's `_strm_needs_rewrite()` treats a direct
+URL with this provider's login and stream id on another host as the provider
+moved, and rewrites it.
 
 **A stuck download is fixed** (Health → Downloads → **Fix**, or the 5-minute
 auto-fix sweep; `resolve_stuck_download()` in `services/download_health.py`):

@@ -197,6 +197,22 @@ If you're migrating from another tool (like xtream-sync) and Tentacle detects ex
 - **Delete and start fresh** — Removes old files so Tentacle can create properly tagged ones
 - **Dismiss** — Keep old files (not recommended — they won't have proper metadata or tags)
 
+## Changing Your Provider's Address or Login
+
+When your provider gives you a new server URL (or a new username or
+password) for the same account, edit the provider in **Settings → Providers**
+and save. The films and episodes already in your library are updated to the
+new address in the background, Jellyfin rescans, and an entry in Activity
+says how many moved. Live TV channels follow at once. The next sync also
+repairs any title still on the old address.
+
+Titles the new address no longer lists are removed by the sync, like any title
+a provider drops: marked by one sync, removed by the next one that still
+doesn't list them (see [Safety Guards on Removal](#safety-guards-on-removal)).
+
+If the new link is a different service (another panel, other stream ids),
+that is a new provider: add it and use Migrate (below).
+
 ## Provider Migration
 
 When you switch to another provider, **Settings → Providers → ⇄ Migrate**

@@ -1947,6 +1947,7 @@ def save_live_provider(body: LiveProviderConfig, db: Session = Depends(get_db)):
 
     # Find existing live TV provider only — never reuse VOD providers
     provider = db.query(Provider).filter(Provider.live_tv_enabled == True).first()
+    before = None   # the saved provider's (server, user, pass), for the .strm rewrite (#142)
 
     if not provider:
         # Create a dedicated live TV provider
@@ -1988,6 +1989,9 @@ def save_live_provider(body: LiveProviderConfig, db: Session = Depends(get_db)):
 
     db.commit()
     db.refresh(provider)
+    if before is not None and _xtream_login(provider) != before:
+        from services import provider_relink
+        provider_relink.start_relink(provider.id, before)
 
     log_activity(db, "livetv_config", f"Live TV provider updated: {provider.name}")
     return {"success": True, "provider_id": provider.id}
