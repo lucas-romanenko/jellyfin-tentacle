@@ -15,7 +15,9 @@ account, a moved URL) used to break every stream with nothing saying so.
 - Each check is a real connection on the account, and a one-connection
   account answers a second one by cutting the first (often a recording,
   services/provider_activity.py). So a run checks nothing while Tentacle
-  proxies live TV or a protected recording; the next hour tries again.
+  proxies live TV or a protected recording, and looks again before every
+  connection it opens (a recording can start mid-run); the next hour tries
+  again.
 
 Reasons are short and plain, and never carry a URL or a login: they are
 shown on the dashboard, sent to the phone and served unauthenticated by
@@ -314,6 +316,11 @@ def _check_streams(db, p: Provider, ua: str, api_ok: bool, sleep) -> dict:
     for index, url in enumerate(urls):
         if index:
             sleep(PROBE_PAUSE_SECONDS)
+        # Looked at again before every connection, not only when the run
+        # starts: a recording that began after the API login (or during the
+        # pause after a gone title) is the stream this probe would cut.
+        if _stand_aside(db):
+            return _busy("stream")
         result, code = _probe(url, ua)
         if result == "ok":
             return _ok(stream_tested=True)
@@ -451,7 +458,9 @@ def check_providers(db, confirm_delay=RETRY_DELAY_SECONDS, sleep=time.sleep) -> 
     outcomes, first_at = {}, {}
     for p in providers:
         first_at[p.id] = _now()
-        outcomes[p.id] = check_provider(db, p, sleep)
+        # A provider's check takes up to a few minutes (the login, then up to
+        # five test streams): live TV may have started during the last one.
+        outcomes[p.id] = _busy("api") if _stand_aside(db) else check_provider(db, p, sleep)
 
     unconfirmed = [p.id for p in providers
                    if outcomes[p.id]["verdict"] == "fail"
@@ -461,13 +470,12 @@ def check_providers(db, confirm_delay=RETRY_DELAY_SECONDS, sleep=time.sleep) -> 
                     f"{confirm_delay:.0f}s before saying so")
         db.commit()           # no read transaction held through the wait
         sleep(confirm_delay)
-        aside = _stand_aside(db)
         for pid in unconfirmed:
             p = db.get(Provider, pid)
             if p is None:
                 outcomes.pop(pid, None)
                 continue
-            outcomes[pid] = _busy("api") if aside else check_provider(db, p, sleep)
+            outcomes[pid] = _busy("api") if _stand_aside(db) else check_provider(db, p, sleep)
             if outcomes[pid]["verdict"] == "ok":
                 logger.info(f"[Provider health] {p.name}: the failure did not repeat")
 
