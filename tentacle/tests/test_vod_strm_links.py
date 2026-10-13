@@ -153,10 +153,12 @@ class ExistingFilesAreRewrittenInPlace(unittest.TestCase):
         self.assertEqual("http://cf.panel.test/movie/u/p/42.mkv", self.strm.read_text())
 
     def test_files_that_are_not_this_providers_own_url_are_left_alone(self):
-        """Whatever carries the same stream id: another host, a proxy with
-        the provider URL unencoded in its query, a proxy that puts the
-        provider's path under its own prefix, a URL with a query."""
-        for text in ("http://other.example/movie/u/p/42.mkv",
+        """Whatever carries the same stream id: another host with another
+        login, a proxy with the provider URL unencoded in its query, a proxy
+        that puts the provider's path under its own prefix, a URL with a
+        query. (Another host with this provider's own login is the provider
+        moved, and is rewritten: test_provider_address_change_strms, #142.)"""
+        for text in ("http://other.example/movie/someone/else/42.mkv",
                      "http://192.168.2.10:9000/play?url=http://cf.panel.test/movie/u/p/42.mkv",
                      "http://myproxy.lan/xtream/movie/u/p/42.mkv",
                      "http://cf.panel.test/movie/u/p/42.mkv?token=abc"):
