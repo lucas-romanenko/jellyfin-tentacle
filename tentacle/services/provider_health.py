@@ -14,8 +14,9 @@ account, a moved URL) used to break every stream with nothing saying so.
   on the next run.
 - Each check is a real connection on the account, and a one-connection
   account answers a second one by cutting the first (often a recording,
-  services/provider_activity.py). So a run checks nothing while Tentacle
-  proxies live TV or a protected recording; the next hour tries again.
+  services/provider_activity.py). So a run looks before every connection
+  it opens and stops, with no verdict, once Tentacle proxies live TV or a
+  protected recording; the next hour tries again.
 
 Reasons are short and plain, and never carry a URL or a login: they are
 shown on the dashboard, sent to the phone and served unauthenticated by
@@ -109,6 +110,11 @@ def _ok(**extra) -> dict:
 
 def _busy(step: str, code=None) -> dict:
     return {"verdict": "busy", "step": step, "code": code}
+
+
+def _aside(step: str) -> dict:
+    """Stood aside: live TV or a recording started while the run was under way."""
+    return {**_busy(step), "aside": True}
 
 
 def _fail(step: str, kind: str, code=None, detail: str = "") -> dict:
@@ -314,6 +320,8 @@ def _check_streams(db, p: Provider, ua: str, api_ok: bool, sleep) -> dict:
     for index, url in enumerate(urls):
         if index:
             sleep(PROBE_PAUSE_SECONDS)
+        if _stand_aside(db):
+            return _aside("stream")
         result, code = _probe(url, ua)
         if result == "ok":
             return _ok(stream_tested=True)
@@ -448,10 +456,19 @@ def check_providers(db, confirm_delay=RETRY_DELAY_SECONDS, sleep=time.sleep) -> 
         logger.info("[Provider health] live TV or a recording is running: nothing checked this time")
         return {"skipped": True, "checked": 0}
 
-    outcomes, first_at = {}, {}
+    outcomes, first_at, logged = {}, {}, []
+
+    def check(p):
+        """One provider, unless live TV or a recording started since the last look."""
+        out = _aside("api") if _stand_aside(db) else check_provider(db, p, sleep)
+        if out.get("aside") and not logged:
+            logged.append(True)
+            logger.info("[Provider health] live TV or a recording started during the check: providers not checked yet wait for the next run")
+        return out
+
     for p in providers:
         first_at[p.id] = _now()
-        outcomes[p.id] = check_provider(db, p, sleep)
+        outcomes[p.id] = check(p)
 
     unconfirmed = [p.id for p in providers
                    if outcomes[p.id]["verdict"] == "fail"
@@ -461,13 +478,12 @@ def check_providers(db, confirm_delay=RETRY_DELAY_SECONDS, sleep=time.sleep) -> 
                     f"{confirm_delay:.0f}s before saying so")
         db.commit()           # no read transaction held through the wait
         sleep(confirm_delay)
-        aside = _stand_aside(db)
         for pid in unconfirmed:
             p = db.get(Provider, pid)
             if p is None:
                 outcomes.pop(pid, None)
                 continue
-            outcomes[pid] = _busy("api") if aside else check_provider(db, p, sleep)
+            outcomes[pid] = check(p)
             if outcomes[pid]["verdict"] == "ok":
                 logger.info(f"[Provider health] {p.name}: the failure did not repeat")
 
@@ -477,7 +493,8 @@ def check_providers(db, confirm_delay=RETRY_DELAY_SECONDS, sleep=time.sleep) -> 
             _apply(db, state, p, outcomes[p.id], first_at[p.id], now)
     _save_state(db, state)
     failing = [s for s in state.values() if s.get("state") == "failing"]
-    return {"skipped": False, "checked": len(outcomes), "failing": len(failing)}
+    checked = sum(1 for o in outcomes.values() if o["verdict"] in ("ok", "fail"))
+    return {"skipped": bool(logged), "checked": checked, "failing": len(failing)}
 
 
 def run_provider_health() -> bool:

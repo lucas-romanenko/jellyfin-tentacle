@@ -297,9 +297,12 @@ user_id)` computes them every time from source tags, list subscriptions
   no verdict; an API failure skips the stream step.
 - A new failure is checked again 2 minutes later (`RETRY_DELAY_SECONDS`)
   before it counts. "Check now" (`POST /api/health/providers/check`) skips
-  that confirmation. Both stand aside (check nothing, keep the state) while
-  `live_streams_active()` or `recording_protected()`; one lock keeps them
-  from running at once (409).
+  that confirmation. Both look for `live_streams_active()` or
+  `recording_protected()` before every connection (each provider, each test
+  stream, each confirming re-check) and stand aside once either is true: no
+  verdict, the state kept, `skipped_at` set; the result says `skipped` and
+  `checked` counts only the providers that got a verdict. One lock keeps
+  them from running at once (409).
 - State: setting `provider_health` (JSON by provider id: `state`
   ok/failing/unknown, `since`, `checked_at`, `skipped_at`, `step`, `code`,
   `kind`, `reason`, `alerted`, `recovery_due`). Reasons never carry a URL or

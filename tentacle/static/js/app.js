@@ -108,7 +108,8 @@ async function checkProvidersNow() {
   if (btn) { btn.disabled = true; btn.textContent = 'Checking…'; }
   try {
     const r = await api('/api/health/providers/check', { method: 'POST' });
-    if (r.skipped) toast('Live TV or a recording is running, so nothing was checked. Try again when it ends.', 'warning', 6000);
+    if (r.skipped && r.checked) toast('Live TV or a recording started during the check, so not every provider was checked.', 'warning', 6000);
+    else if (r.skipped) toast('Live TV or a recording is running, so nothing was checked. Try again when it ends.', 'warning', 6000);
     else if (r.failing) toast(`Checked: ${r.failing} provider${r.failing === 1 ? '' : 's'} still failing`, 'error');
     else toast('Checked: every provider works');
     _providerProblemsHidden = '';
