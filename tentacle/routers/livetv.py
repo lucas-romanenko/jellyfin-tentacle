@@ -246,8 +246,9 @@ async def _decidable_start(pieces, need: int = 564):
 # connection right after the last byte sent, but only when that is proven:
 # every packet it drops equals the packet sent at that place (#520: a provider
 # that loops aired packets verbatim can repeat a frame start that was sent
-# right after packets that never were). Anything else goes out as it comes
-# (duplicates at worst, never a loss).
+# right after packets that never were). A connection closed again before it
+# reaches that point is dropped on the same proof (#609). Anything else goes
+# out as it comes (duplicates at worst, never a loss).
 _SPLICE_HOLD_BYTES = 32 * 1024 * 1024   # the most of a replay held: half a client's byte slack
 _SPLICE_HOLD_SECONDS = 30.0             # the longest the output pauses for one
 _SPLICE_DECIDE_PACKETS = 2048           # the first frame start must come within this
@@ -277,9 +278,11 @@ class _ReplaySplicer:
     sit exactly where it was sent (a gap in between shifts them), and every
     packet before the join point must equal the one sent at that place (a
     hash per packet sent, kept as far back as a hold reaches). Then the held
-    replay is dropped and the stream goes on from there. Anything else (a
-    first frame never sent: a real gap or no replay; a replay that differs,
-    is too large or too slow; a break before the join) releases what was held."""
+    replay is dropped and the stream goes on from there. A connection that
+    ends before the join point after all it held was proven so is dropped
+    too (#609). Anything else (a first frame never sent: a real gap or no
+    replay; a replay that differs, is too large or too slow; a break before
+    anything was proven) releases what was held."""
 
     def __init__(self, channel_id: int, health: dict):
         self.channel_id, self.health = channel_id, health
@@ -290,6 +293,7 @@ class _ReplaySplicer:
         self._ring = array("q", bytes(8 * (_SPLICE_HOLD_BYTES // 188 + 1)))
         self._breaks = deque([0])       # where a connection not joined began in the output
         self._hold = None               # the re-dialled connection's bytes while it is judged
+        self._carried = 0.0             # outages of replays dropped unjoined, until one joins (#609)
 
     def sent(self, data: bytes) -> None:
         """Whole packets that went out, in order."""
@@ -364,7 +368,9 @@ class _ReplaySplicer:
             out = bytes(hold[self._join:])
             self.health["replays_joined"] += 1
             self.health["replay_bytes_skipped"] += self._join
-            self.health["_covered_seconds"] = self.health.get("_covered_seconds", 0.0) + self._outage
+            self.health["_covered_seconds"] = (self.health.get("_covered_seconds", 0.0)
+                                               + self._outage + self._carried)
+            self._carried = 0.0
             logger.info(f"[LiveTV] Raw stream for channel {self.channel_id}: rejoined where it "
                         f"stopped, {self._join / 1e6:.1f} MB the provider sent again skipped")
             self._hold = None
@@ -374,11 +380,26 @@ class _ReplaySplicer:
         return b""
 
     def abort(self) -> bytes:
-        """The connection ended while it was being judged: what it held goes out."""
-        return self._release("the connection ended before the join point") if self._hold is not None else b""
+        """The connection ended while it was being judged. A proven replay
+        (first frame sent, every whole packet the one sent there) brought
+        nothing new: dropped (#609). Anything else goes out."""
+        if self._hold is None:
+            return b""
+        if self._join is None or self._checked != len(self._hold) // 188:
+            return self._release("the connection ended before the join point")
+        # Its torn last packet never goes out either: only whole packets do.
+        skipped, self._hold = self._checked * 188, None
+        self.health["replays_joined"] += 1
+        self.health["replay_bytes_skipped"] += skipped
+        # Its wait is covered only if a later re-dial joins.
+        self._carried += self._outage
+        logger.info(f"[LiveTV] Raw stream for channel {self.channel_id}: closed during its replay, "
+                    f"{skipped / 1e6:.1f} MB the provider sent again skipped")
+        return b""
 
     def _release(self, why: str) -> bytes:
         out, self._hold = bytes(self._hold), None
+        self._carried = 0.0             # the waits before it were not covered
         self._breaks.append(self.sent_total)
         logger.info(f"[LiveTV] Raw stream for channel {self.channel_id}: re-dial not joined ({why}); "
                     f"sent as it came")
