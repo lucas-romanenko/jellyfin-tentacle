@@ -369,9 +369,13 @@ User docs: `docs/features/live-tv.md`.
   sent, every packet dropped must equal the packet sent at that place (a
   ring of one `hash()` per packet sent, as far back as a hold reaches), and
   no unjoined connection may have begun in front of it. Then the replay is
-  dropped (`replays_joined`, `replay_bytes_skipped` in the health); anything
-  unproven (a gap, a seamless re-dial, a remux, a replay over 32 MB or 30 s,
-  a break before the join) goes out as it came: duplicates, never a loss.
+  dropped (`replays_joined`, `replay_bytes_skipped` in the health). A
+  connection closed again before the join point, after its first frame and
+  every whole packet it held were proven so, is dropped the same way and
+  counted joined (#609); its outage counts as covered only once a later
+  re-dial joins. Anything unproven (a gap, a seamless re-dial, a remux, a
+  replay over 32 MB or 30 s, a break before the first frame start) goes out
+  as it came: duplicates, never a loss.
   A joined reconnect is not damage in `_stream_ended`. A join drops only
   packets byte-identical to the ones sent at the same place (#520: checking
   only the frame starts let a provider's verbatim loop hide the unique
