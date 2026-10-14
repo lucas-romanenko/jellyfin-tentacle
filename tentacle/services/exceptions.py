@@ -21,6 +21,15 @@ class ProviderDataError(TentacleError):
     pass
 
 
+class ProviderRefusedError(ProviderDataError):
+    """The provider refused several requests in a row (HTTP 401/403): the
+    client sends no more for this run (services.xtream_client.RefusalGuard)"""
+    def __init__(self, status: int):
+        self.status = status
+        super().__init__(f"the provider refuses this server (HTTP {status}): usually an IP block or a "
+                         f"blocked account; Tentacle stopped asking for this run")
+
+
 class TMDBMatchError(TentacleError):
     """TMDB lookup or matching failed"""
     def __init__(self, title: str, detail: str = ""):

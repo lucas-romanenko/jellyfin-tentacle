@@ -604,6 +604,14 @@ def _resume_youtube_channels() -> None:
         logger.warning(f"[YouTube] Could not resume unfinished channels: {e}")
 
 
+def _resume_provider_relinks() -> None:
+    from services.provider_relink import resume_pending
+    try:
+        resume_pending()
+    except Exception as e:
+        logger.warning(f"[Relink] Could not resume a provider's .strm rewrite: {e}")
+
+
 def setup_scheduler(db):
     """Setup cron scheduler from settings"""
     reschedule_main_sync()
@@ -689,6 +697,8 @@ def setup_scheduler(db):
     # A channel whose first index a restart cut short is picked up a minute
     # after start-up, background checks or not (#288).
     schedule_once(_resume_youtube_channels, 60, "youtube_resume_first_index")
+    # A provider save's .strm rewrite a restart cut short (#149)
+    schedule_once(_resume_provider_relinks, 60, "provider_relink_resume")
     # Music module: the daily reconcile (checks the setting itself when it runs),
     # and any request a restart interrupted before its pin and search.
     reschedule_music_reconcile()

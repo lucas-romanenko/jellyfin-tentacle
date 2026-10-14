@@ -129,10 +129,32 @@ to the form the sync writes today (direct, or a Tentacle link when VOD
 through Tentacle is on), then triggers a Jellyfin scan (Jellyfin keeps the
 old URL until it sees the file change) and logs a `provider_relinked`
 Activity entry with the counts. Tentacle links, proxies and other
-providers' files are left alone. For files the save missed (saved before the
-fix, a sync racing it), the sync's `_strm_needs_rewrite()` treats a direct
-URL with this provider's login and stream id on another host as the provider
-moved, and rewrites it.
+providers' files are left alone. The save also writes the old address to
+the setting `provider_relink_pending` (`{provider_id: [server, user, pass]}`,
+the oldest one when saved twice) in its own commit; `_run` clears it, and
+`resume_pending()` (scheduled a minute after start-up) runs what a restart
+cut short (#149). Every Xtream sync first runs `relink_before_sync()`, before
+its storage checks and any provider request: `relink_strms(db, provider,
+before)` with the pending old address if any, and always the rule "this
+provider's current login on another host" (`sync._MOVED_RE`, the same rule
+the sync's `_strm_needs_rewrite()` applies to listed titles, minus hosts of
+other providers with the same login: those files play the other provider),
+so files in categories the provider refused follow too. An M3U provider whose `m3u_url`
+changed gets `{"m3u": true}`: while it is pending the sync's client has
+`repoint_all`, `_strm_needs_rewrite()` rewrites any listed file that differs
+from the playlist, and a full sync with every category read clears it.
+Without one M3U files are never rewritten (tokens rotate).
+
+**A provider refuses this server** (#149): both Xtream clients
+(`sync.XtreamClient`, `xtream_client.XtreamClient`) send every API request
+through a `RequestGuard`: at least `XTREAM_MIN_REQUEST_GAP` (0.25 s) between
+two requests, and after `PROVIDER_REFUSAL_LIMIT` (3) answers 401/403 in a row
+every further call raises `ProviderRefusedError` without a request (a success
+resets the count; 5xx, 429 and timeouts don't count). The VOD sync marks every
+category left unread without its pause, stops a series category mid-way
+(not counted: the empty-category guard's memory stays), and the run's message
+carries the refusal reason. The Live TV channel sync re-raises it: no
+lineup is saved. Only a new run (a new client) asks again.
 
 **A stuck download is fixed** (Health → Downloads → **Fix**, or the 5-minute
 auto-fix sweep; `resolve_stuck_download()` in `services/download_health.py`):

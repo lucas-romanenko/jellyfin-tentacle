@@ -35,6 +35,7 @@ from datetime import datetime, timedelta
 from typing import Optional, List
 
 from services.epg_categories import infer_category
+from services.exceptions import ProviderRefusedError
 from services.youtube import livetv as youtube_livetv
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -1988,6 +1989,7 @@ def save_live_provider(body: LiveProviderConfig, db: Session = Depends(get_db)):
         db.add(provider)
     else:
         before = _xtream_login(provider)
+        m3u_before = provider.m3u_url
         if body.name is not None:
             provider.name = body.name
         if body.provider_type is not None:
@@ -2007,6 +2009,10 @@ def save_live_provider(body: LiveProviderConfig, db: Session = Depends(get_db)):
         if body.live_tv_enabled is not None:
             provider.live_tv_enabled = body.live_tv_enabled
         rewrite_xtream_channel_urls(provider, before, db)
+        # Recorded in this commit: a restart before the rewrite ran loses nothing (#149)
+        from services import provider_relink
+        if provider_relink.address_changed(provider, before, m3u_before):
+            provider_relink.record_pending(db, provider, before)
 
     db.commit()
     db.refresh(provider)
@@ -2499,6 +2505,8 @@ def _sync_channels_from_xtream(provider_data: dict, db: Session) -> dict:
             try:
                 streams = client.get_live_streams(category_id=cat_id)
                 all_streams.extend(streams)
+            except ProviderRefusedError:
+                raise   # the provider refuses this server: no more groups, no lineup to save (#149)
             except Exception as e:
                 logger.warning(f"[LiveTV] {provider_name}: failed to fetch category {cat_id}: {e}")
 
