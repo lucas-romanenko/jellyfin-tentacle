@@ -188,6 +188,30 @@ class Splice(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(range(200)), set(got), "content was lost")
         self.assertEqual(list(range(100, 200)), got[-100:], "the last re-dial was not joined")
 
+    async def test_a_connection_that_breaks_during_its_replay_repeats_nothing(self):
+        """#609: 80-94 were all sent before (0-99) and proven so packet by
+        packet; the connection drops before it reaches the join point, so none
+        of it is new and none of it goes out again."""
+        body = await self._body([connection(0, 100), connection(80, 95),
+                                 connection(85, 200, then_drop=False)])
+        self.assertEqual(list(range(200)), packets(body))
+
+    async def test_a_connection_that_breaks_mid_packet_during_its_replay_repeats_nothing(self):
+        """The same in a mux, cut inside a packet: its torn tail never goes out either."""
+        torn = b"".join(mixed(n) for n in range(240, 270))[:-100]
+        body = await self._body([connection(0, 300, make=mixed),
+                                 _live([torn[:2000], torn[2000:]], then=_dropped()),
+                                 connection(250, 500, then_drop=False, make=mixed)])
+        self.assertEqual(b"".join(mixed(n) for n in range(500)), body)
+
+    async def test_a_connection_that_breaks_before_its_first_frame_is_sent_whole(self):
+        """Only a table, a frame's middle and a null packet arrived: nothing is
+        proven, so it goes out as it came."""
+        body = await self._body([connection(0, 300, make=mixed), connection(295, 298, make=mixed),
+                                 connection(300, 400, then_drop=False, make=mixed)])
+        want = b"".join(mixed(n) for n in [*range(300), *range(295, 298), *range(300, 400)])
+        self.assertEqual(want, body)
+
     async def test_a_replay_larger_than_the_hold_is_sent_whole(self):
         with patch.object(livetv, "_SPLICE_HOLD_BYTES", 188 * 50):
             got = packets(await self._body([connection(0, 100), connection(30, 200, then_drop=False)]))
@@ -293,6 +317,23 @@ class SpliceHealth(unittest.IsolatedAsyncioTestCase):
     async def test_a_reconnect_not_joined_is_still_damage(self):
         got, last, writes = await self._record([connection(0, 100), connection(80, 150)], (170, 200, 1200))
         self.assertEqual((2, 1), (last["reconnects"], last["replays_joined"]))
+        self.assertIn("livetv_recording_damaged", writes)
+
+    async def test_a_reconnect_closed_during_its_replay_is_not_damage(self):
+        """#609: the second re-dial (80-94) drops before its join point, all
+        of it already sent; the third joins. Nothing was lost."""
+        got, last, writes = await self._record([connection(0, 100), connection(80, 95), connection(85, 150)],
+                                               (130, 200, 1200))
+        self.assertEqual(list(range(200)), got)
+        self.assertEqual((3, 3), (last["reconnects"], last["replays_joined"]))
+        self.assertEqual((15 + 15 + 20) * 188, last["replay_bytes_skipped"])
+        self.assertNotIn("livetv_recording_damaged", writes)
+
+    async def test_a_reconnect_closed_during_its_replay_then_a_gap_is_damage(self):
+        """The replay that was dropped is followed by a re-dial past what was
+        sent: the recording did lose content."""
+        got, last, writes = await self._record([connection(0, 100), connection(80, 95)], (120, 199, 1200))
+        self.assertEqual(list(range(100)) + list(range(120, 200)), got[:180])
         self.assertIn("livetv_recording_damaged", writes)
 
 
