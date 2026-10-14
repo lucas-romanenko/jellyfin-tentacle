@@ -18,6 +18,7 @@ Run from the tentacle/ directory:  python -m unittest discover -s tests
 """
 import types
 import unittest
+import unittest.mock
 
 import requests
 
@@ -57,6 +58,9 @@ class _Session:
         self.calls.append(url)
         status = self.statuses.pop(0) if len(self.statuses) > 1 else self.statuses[0]
         return _Response(status)
+
+    def close(self):
+        pass
 
 
 def _client(session):
@@ -143,6 +147,82 @@ class TheSyncEndsSayingSo(NightlyHarness):
         self.assertEqual("failed", run.status)
         self.assertIn("refus", (run.error_message or "").lower())
         self.assertNotIn(LOGIN[1], run.error_message or "")
+
+
+class TheSyncIsPaced(unittest.TestCase):
+    """At most 4 API requests a second on one client: both blocks started
+    while a sync hit the panel at about 7 a second for minutes."""
+
+    def test_requests_keep_a_minimum_gap(self):
+        from services.xtream_client import XTREAM_MIN_REQUEST_GAP
+        now = [100.0]
+        sent_at = []
+
+        class _Timed(_Session):
+            def get(self, url, timeout=None, **kw):
+                sent_at.append(now[0])
+                now[0] += 0.01          # the panel answers fast
+                return super().get(url, timeout, **kw)
+        client = _client(_Timed(200))
+        client.guard.clock = lambda: now[0]
+        client.guard.sleep = lambda s: now.__setitem__(0, now[0] + s)
+        for i in range(5):
+            client.get_vod_streams(str(i))
+            client.get_series_info(i)
+        gaps = [b - a for a, b in zip(sent_at, sent_at[1:])]
+        self.assertEqual(10, len(sent_at))
+        self.assertTrue(all(g >= XTREAM_MIN_REQUEST_GAP - 1e-9 for g in gaps), gaps)
+
+
+class TheLiveTvClientStopsToo(unittest.TestCase):
+    """The Live TV channel and group syncs use services.xtream_client: the
+    same stop, and a refused channel fetch ends the lineup fetch instead of
+    returning a short one."""
+
+    def _client(self, *statuses):
+        from services.xtream_client import XtreamClient
+        c = XtreamClient("http://panel.example", *LOGIN)
+        c.session = _Session(*statuses)
+        c.guard.gap = 0
+        return c
+
+    def test_a_few_refusals_then_no_more_requests(self):
+        from services.exceptions import ProviderRefusedError
+        client = self._client(403)
+        with self.assertRaises(ProviderRefusedError):
+            client.get_all_live_streams_by_category([str(i) for i in range(20)], delay=0)
+        self.assertEqual(REFUSAL_LIMIT, len(client.session.calls))
+
+    def test_the_channel_sync_fails_and_keeps_its_lineup(self):
+        import routers.livetv as livetv
+        from services.exceptions import ProviderRefusedError
+        client = self._client(403)
+
+        class _Groups:
+            def __init__(self, cat):
+                self.category_id, self.name = cat, f"G{cat}"
+
+        class _Query:
+            def filter(self, *a):
+                return self
+
+            def all(self):
+                return [_Groups(str(i)) for i in range(10)]
+
+        class _Db:
+            def query(self, *a):
+                return _Query()
+
+        upserted = []
+        with unittest.mock.patch("services.xtream_client.XtreamClient", lambda **kw: client), \
+                unittest.mock.patch.object(livetv, "_upsert_channels", lambda *a, **k: upserted.append(a)), \
+                unittest.mock.patch.object(livetv, "_set_sync_status", lambda *a, **k: None):
+            with self.assertRaises(ProviderRefusedError):
+                livetv._sync_channels_from_xtream({"id": 1, "name": "P", "server_url": "http://panel.example",
+                                                   "username": LOGIN[0], "password": LOGIN[1],
+                                                   "user_agent": "x"}, _Db())
+        self.assertEqual(REFUSAL_LIMIT, len(client.session.calls))
+        self.assertEqual([], upserted)
 
 
 if __name__ == "__main__":

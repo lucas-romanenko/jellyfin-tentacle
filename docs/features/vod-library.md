@@ -203,8 +203,25 @@ When your provider gives you a new server URL (or a new username or
 password) for the same account, edit the provider in **Settings → Providers**
 and save. The films and episodes already in your library are updated to the
 new address in the background, Jellyfin rescans, and an entry in Activity
-says how many moved. Live TV channels follow at once. The next sync also
-repairs any title still on the old address.
+says how many moved. Live TV channels follow at once. Every sync also
+repairs any title still on the old address before it asks the provider for
+anything, so this works even when the provider refuses the sync, and a
+restart before the update ran doesn't lose it.
+
+For an M3U provider, save the new playlist address: the next full sync points
+every film and episode it lists at the new playlist's addresses.
+
+### Provider refusing (HTTP 403)
+
+A provider that blocks your server (an IP block, often after many requests,
+or a blocked account) answers every request with 403. After three refusals
+in a row Tentacle stops asking for the rest of that sync, so the block isn't
+made worse, and the run says "the provider refuses this server". Nothing is
+removed from your library on such a night. Tentacle can't lift the block:
+check whether the same link works in another app on the same network (for
+example TiviMate), and if it doesn't, ask the provider to unblock your IP or
+account. A new link from them doesn't help while the IP or account is
+blocked. Once **Check now** on the dashboard banner passes, sync again.
 
 Titles the new address no longer lists are removed by the sync, like any title
 a provider drops: marked by one sync, removed by the next one that still

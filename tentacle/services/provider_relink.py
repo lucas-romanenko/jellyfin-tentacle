@@ -7,7 +7,16 @@ changes the server or login, relink_strms rewrites this provider's own direct
 files from the old form to the one the sync writes today. Anything else (a
 Tentacle VOD link, which reads the provider's address when played, a proxy, a
 hand-made file, another provider's rows) is left alone.
+
+#149: the save also records the old address (setting provider_relink_pending)
+until the rewrite has run, so a restart before it ran loses nothing
+(resume_pending, at start-up). Every Xtream sync runs it first, before any
+request to the provider (relink_before_sync): files that still carry the
+provider's current login on a former host follow even when the provider
+refuses the whole sync. An M3U provider's new playlist address is recorded the
+same way, and its next full sync rewrites every listed file that differs.
 """
+import json
 import logging
 import re
 import threading
@@ -38,28 +47,59 @@ def _old_url_re(before: tuple):
     return re.compile(rf"^{re.escape(server.rstrip('/'))}/(movie|series)/(?:{alts})/(\d+)\.([A-Za-z0-9]+)$")
 
 
-def relink_strms(db: Session, provider: Provider, before: tuple) -> dict:
+def _moved_matcher(db: Session, provider):
+    """(kind, id, ext) of a direct URL with the provider's current login on
+    another host (the provider moved), else None: the rule the sync's
+    _strm_needs_rewrite applies to listed titles (sync._MOVED_RE). Not on
+    another configured provider's host with the same login: that file plays
+    the other provider (a takeover the sync heals by stream, #154)."""
+    from urllib.parse import urlparse
+    from services.sync import _MOVED_RE
+    user, password = provider.username or "", provider.password or ""
+    host = (urlparse(provider.server_url or "").hostname or "").lower()
+    logins = {(quote_cred(user), quote_cred(password)), (user, password)}
+    others = {(urlparse(p.server_url or "").hostname or "").lower()
+              for p in db.query(Provider).filter(Provider.id != provider.id).all()
+              if (p.username or "", p.password or "") == (user, password)}
+
+    def match(url_text: str):
+        m = _MOVED_RE.match(url_text)
+        if (m is None or not host or m.group(1).lower() in {host} | others
+                or (m.group(3), m.group(4)) not in logins):
+            return None
+        return m.group(2).lower(), m.group(5), url_text.rsplit(".", 1)[1]
+    return match
+
+
+def relink_strms(db: Session, provider: Provider, before: tuple = None) -> dict:
     """Rewrite the provider's direct .strm files that still carry `before`
     ((server, user, pass) from before the save, as for
-    rewrite_xtream_channel_urls). Returns {"movies": n, "episodes": n}."""
+    rewrite_xtream_channel_urls), or the provider's current login on another
+    host. With `before` None only the latter (#149: no old address known).
+    Returns {"movies": n, "episodes": n}."""
     from services.sync import XtreamClient, _write_strm, chown_path, vod_links_for
 
     counts = {"movies": 0, "episodes": 0}
-    if (_login(provider) == before or not provider.server_url or not before[0]
-            or (provider.provider_type or "xtream") != "xtream"):
+    if (not provider.server_url or (provider.provider_type or "xtream") != "xtream"
+            or not (provider.username or provider.password)):
         return counts
-    old = _old_url_re(before)
+    old = _old_url_re(before) if before and before[0] and tuple(before) != _login(provider) else None
+    moved = _moved_matcher(db, provider)
     client = XtreamClient(provider)
     client.vod_links = vod_links_for(db, provider)
 
     def relink(strm: Path, key: str) -> None:
         try:
-            m = old.match(strm.read_text(encoding="utf-8").strip())
-            if m is None:
+            current = strm.read_text(encoding="utf-8").strip()
+            m = old.match(current) if old is not None else None
+            ref = (m.group(1).lower(), m.group(2), m.group(3)) if m is not None else moved(current)
+            if ref is None:
                 return
-            kind, stream_id, ext = m.group(1).lower(), m.group(2), m.group(3)
+            kind, stream_id, ext = ref
             url = (client.movie_stream_url(stream_id, ext) if kind == "movie"
                    else client.episode_stream_url(stream_id, ext))
+            if url == current:
+                return
             _write_strm(strm, url)
             chown_path(strm)
             counts[key] += 1
@@ -102,8 +142,10 @@ def _run(provider_id: int, before: tuple) -> None:
     try:
         provider = db.query(Provider).filter(Provider.id == provider_id).first()
         if provider is None:
+            clear_pending(db, provider_id)
             return
         counts = relink_strms(db, provider, before)
+        clear_pending(db, provider_id, kind="xtream")
         if not (counts["movies"] or counts["episodes"]):
             return
         # Jellyfin keeps the old URL until a scan sees the file changed
@@ -128,3 +170,131 @@ def start_relink(provider_id: int, before: tuple) -> None:
     Jellyfin scan and an Activity entry."""
     threading.Thread(target=_run, args=(provider_id, before), daemon=True,
                      name=f"provider-relink-{provider_id}").start()
+
+
+# ── What a save still owes, across restarts (#149) ───────────────────────
+# Setting provider_relink_pending: JSON {provider_id: entry}. An Xtream
+# provider's entry is [server, user, pass], its address before the save (the
+# one its files carry); an M3U provider's is {"m3u": true} (its playlist moved).
+
+PENDING_KEY = "provider_relink_pending"
+M3U_TYPES = ("m3u_url", "m3u_file")
+
+
+def pending(db: Session) -> dict:
+    from models.database import get_setting
+    try:
+        value = json.loads(get_setting(db, PENDING_KEY, "") or "{}")
+    except ValueError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _store(db: Session, entries: dict) -> None:
+    """Into the session only: the caller commits (a save, in its own commit)."""
+    from models.database import Setting
+    row = db.query(Setting).filter(Setting.key == PENDING_KEY).first()
+    if row is None:
+        db.add(Setting(key=PENDING_KEY, value=json.dumps(entries)))
+    else:
+        row.value = json.dumps(entries)
+
+
+def address_changed(provider: Provider, before: tuple, m3u_before) -> bool:
+    """A save moved what the provider's files play: an Xtream provider's
+    server or login, an M3U provider's playlist address."""
+    if (provider.provider_type or "xtream") in M3U_TYPES:
+        return (provider.m3u_url or "") != (m3u_before or "")
+    return _login(provider) != tuple(before)
+
+
+def record_pending(db: Session, provider: Provider, before: tuple = None) -> None:
+    """A save changed the provider's address or login: what its files must
+    follow, kept until the rewrite has run. Xtream: `before`, the address
+    before the save; a second save before the rewrite ran keeps the first one
+    (the address the files still carry). M3U: a marker for its next sync.
+    Not committed: the save's own commit carries it."""
+    entries = pending(db)
+    key = str(provider.id)
+    if (provider.provider_type or "xtream") in M3U_TYPES:
+        entries[key] = {"m3u": True}
+    elif before and before[0]:
+        if not isinstance(entries.get(key), list):
+            entries[key] = list(before)
+    else:
+        return
+    _store(db, entries)
+
+
+def clear_pending(db: Session, provider_id: int, kind: str = None) -> None:
+    """Drop the provider's entry; with `kind` ("xtream", "m3u") only one of that kind."""
+    entries = pending(db)
+    entry = entries.get(str(provider_id))
+    if entry is None:
+        return
+    if (kind == "xtream" and not isinstance(entry, list)) or (kind == "m3u" and not isinstance(entry, dict)):
+        return
+    del entries[str(provider_id)]
+    _store(db, entries)
+    db.commit()
+
+
+def relink_before_sync(db: Session, provider: Provider) -> dict:
+    """Run by every sync before its first request to the provider (#149):
+    repoint an Xtream provider's files to its current address (a pending
+    save's old address, and its current login on any other host), then clear
+    the pending entry. Local file work only, so a provider that refuses the
+    sync still gets its library repointed; the Jellyfin scan after the sync
+    picks the files up."""
+    counts = {"movies": 0, "episodes": 0}
+    if (provider.provider_type or "xtream") in M3U_TYPES:
+        return counts
+    entry = pending(db).get(str(provider.id))
+    before = tuple(entry) if isinstance(entry, list) and len(entry) == 3 else None
+    try:
+        counts = relink_strms(db, provider, before)
+    except Exception as e:
+        logger.warning(f"[Relink] {provider.name}: repointing files before the sync failed: {e}")
+        return counts
+    if before is not None:
+        clear_pending(db, provider.id, kind="xtream")
+    logger.info(f"[Relink] {provider.name} before the sync: {counts['movies']} films and "
+                f"{counts['episodes']} episodes repointed to its current address")
+    return counts
+
+
+def m3u_pending(db: Session, provider: Provider) -> bool:
+    """An M3U provider's playlist moved and no full sync has followed it yet:
+    the sync's client then rewrites every listed title's file that differs
+    from the playlist (client.repoint_all), until a full sync read every
+    category (finish_m3u_pending). Without one, M3U files stay as they are
+    (tokens that rotate must not rewrite the library every night)."""
+    if (provider.provider_type or "xtream") not in M3U_TYPES:
+        return False
+    entry = pending(db).get(str(provider.id))
+    if not (isinstance(entry, dict) and entry.get("m3u")):
+        return False
+    logger.info(f"[Relink] {provider.name}: its playlist moved; this sync rewrites every listed "
+                f"film and episode that plays another address")
+    return True
+
+
+def finish_m3u_pending(db: Session, provider: Provider, client) -> None:
+    """After a full sync of an M3U provider that read every category."""
+    if getattr(client, "repoint_all", False):
+        clear_pending(db, provider.id, kind="m3u")
+
+
+def resume_pending() -> None:
+    """At start-up: the rewrites a restart cut short (the save's thread never
+    ran or never finished), each run as _run does."""
+    from models.database import SessionLocal
+    db = SessionLocal()
+    try:
+        todo = [(int(k), tuple(v)) for k, v in pending(db).items()
+                if str(k).isdigit() and isinstance(v, list) and len(v) == 3]
+    finally:
+        db.close()
+    for provider_id, before in todo:
+        logger.info(f"[Relink] Resuming the .strm rewrite a restart cut short (provider {provider_id})")
+        _run(provider_id, before)

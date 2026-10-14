@@ -30,9 +30,9 @@ from services.m3u_parser import episode_from_title, container_from_url
 from services.duplicates import delete_vod_files, convert_record_to_downloaded
 from services.media_files import delete_movie_files, delete_series_files, MEDIA_SUFFIXES
 from services.tagger import compute_tags, get_list_tags_for_tmdb_id, apply_tag_rules
-from services.exceptions import (ProviderConnectionError, ProviderDataError, SyncCancelledError, SyncError,
-                                 TMDBConnectionError)
-from services.xtream_client import quote_cred
+from services.exceptions import (ProviderConnectionError, ProviderDataError, ProviderRefusedError,
+                                 SyncCancelledError, SyncError, TMDBConnectionError)
+from services.xtream_client import RequestGuard, quote_cred
 
 logger = logging.getLogger(__name__)
 
@@ -198,10 +198,20 @@ class XtreamClient:
         # (setting `vod_via_tentacle_enabled`): the .strm files then point
         # at Tentacle's /api/vod route instead of at the provider.
         self.vod_links = None
+        # Paces the API requests and stops them once the provider refuses
+        # this server (#149): a refused sync went on asking for every
+        # category and series left, and the block lasted longer.
+        self.guard = RequestGuard()
+
+    def _request(self, url: str):
+        self.guard.before()
+        r = self.session.get(url, timeout=self.timeout)
+        self.guard.after(getattr(r, "status_code", None))
+        return r
 
     def _get(self, action: str, extra: str = "") -> list:
         try:
-            r = self.session.get(f"{self.base}&action={action}{extra}", timeout=self.timeout)
+            r = self._request(f"{self.base}&action={action}{extra}")
             r.raise_for_status()
             try:
                 data = r.json()
@@ -231,8 +241,7 @@ class XtreamClient:
         return self._get(f"get_series&category_id={category_id}")
 
     def get_series_info(self, series_id: str) -> dict:
-        r = self.session.get(f"{self.base}&action=get_series_info&series_id={series_id}",
-                             timeout=self.timeout)
+        r = self._request(f"{self.base}&action=get_series_info&series_id={series_id}")
         r.raise_for_status()
         return r.json()
 
@@ -409,9 +418,17 @@ def _strm_needs_rewrite(strm_file: Path, expected: str, client) -> bool:
     Everything else is left alone: another stream id (a title listed twice
     would otherwise flip every night), another host with another login, a
     proxy of somebody's own, and M3U providers (their playlist URLs may
-    rotate tokens or hosts on every fetch)."""
+    rotate tokens or hosts on every fetch), except while a save that moved
+    their playlist is pending (client.repoint_all, #149): then any listed
+    file that plays another address follows the playlist."""
     if not isinstance(client, XtreamClient):
-        return False
+        if not getattr(client, "repoint_all", False) or not expected:
+            return False
+        try:
+            current = strm_file.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeDecodeError):
+            return False
+        return current != expected
     try:
         current = strm_file.read_text(encoding="utf-8").strip()
     except (OSError, UnicodeDecodeError):
@@ -1885,9 +1902,16 @@ def _provider_error_reason(e: Exception) -> str:
     return re.sub(r"https?://\S+", "<provider URL>", text)[:200]
 
 
-def _unread_summary(unread: list, total: int) -> str:
+def _refused_reason(client):
+    """Why the client stopped asking (the provider refuses this server, #149), else None."""
+    status = getattr(getattr(client, "guard", None), "refused_status", None)
+    return str(ProviderRefusedError(status)) if isinstance(status, int) else None
+
+
+def _unread_summary(unread: list, total: int, reason: str = None) -> str:
     """"N of M categories could not be read (reason)", with the first reason."""
-    return f"{len(unread)} of {total} categor{'y' if total == 1 else 'ies'} could not be read ({unread[0][1]})"
+    return (f"{len(unread)} of {total} categor{'y' if total == 1 else 'ies'} could not be read "
+            f"({reason or unread[0][1]})")
 
 
 def _finish_run(db: Session, run: SyncRun, status: str, message: str) -> SyncRun:
@@ -1991,6 +2015,10 @@ def sync_provider(
             unhide_vod_paths(db)
         except Exception as e:
             logger.warning(f"Could not move hidden VOD folders: {e}")
+        # A new address reaches every file first, locally: a provider that
+        # refuses this sync still gets its library off the former host (#149)
+        from services import provider_relink
+        provider_relink.relink_before_sync(db, provider)
 
         # Pre-sync disk space check
         if sync_type in ("full", "movies"):
@@ -2011,6 +2039,7 @@ def sync_provider(
         client.job_pause.run_id = run.id    # protected waits are booked to this run (routers.sync)
         client.vod_links = vod_links_for(db, provider)
         _note_other_providers(client, provider, db)
+        client.repoint_all = provider_relink.m3u_pending(db, provider)
         # Before the first provider call, with the run already visible (so a
         # waiting sync can be seen and cancelled from the dashboard).
         _pause_between_categories(client, db, progress_callback,
@@ -2075,14 +2104,19 @@ def sync_provider(
         run.status = "completed"
         run.error_message = None
         if unread:
-            summary = _unread_summary(unread, total_cats)
+            # Refused from some point on: that is the reason, not the first
+            # refusals' plain "HTTP 403"
+            reason = _refused_reason(client) or unread[0][1]
+            summary = _unread_summary(unread, total_cats, reason)
             logger.warning(f"Sync of {provider.name}: {summary}")
             if len(unread) >= total_cats:
                 run.status = "failed"
                 run.error_message = (f"The provider could not be read for any of its {total_cats} "
-                                     f"categor{'y' if total_cats == 1 else 'ies'} ({unread[0][1]})")
+                                     f"categor{'y' if total_cats == 1 else 'ies'} ({reason})")
             else:
                 run.error_message = summary
+        elif sync_type == "full":
+            provider_relink.finish_m3u_pending(db, provider, client)
         run.category_stats = category_stats
         run.new_movies = new_movies_feed[:50]  # Keep last 50 for feed
         run.new_series = new_series_feed[:50]
@@ -2735,6 +2769,12 @@ def _sync_movies(
         cat_failed = 0
         cat_skipped = 0
 
+        refused = _refused_reason(client)
+        if refused:   # the provider refuses this server: no more requests, no waits (#149)
+            fetch_ok = False
+            unread.append((cat.category_name, refused))
+            continue
+
         _pause_between_categories(client, db, progress_callback, "movies", cat.category_name, stats)
         logger.info(f"Processing category: {cat.category_name}")
 
@@ -3239,6 +3279,12 @@ def _sync_series(
         cat_skipped = 0
         cat_failed = 0
 
+        refused = _refused_reason(client)
+        if refused:   # the provider refuses this server: no more requests, no waits (#149)
+            fetch_ok = False
+            unread.append((cat.category_name, refused))
+            continue
+
         _pause_between_categories(client, db, progress_callback, "series", cat.category_name, stats)
         logger.info(f"Processing category: {cat.category_name}")
 
@@ -3327,6 +3373,8 @@ def _sync_series(
         for item_idx, (series, raw_name, clean_name, year) in enumerate(cleaned, 1):
             if cancel_check and cancel_check():
                 raise SyncCancelledError()
+            if _refused_reason(client):
+                break   # refused mid-category: the rest would only fail (#149)
 
             items_since_disk_check += 1
             if items_since_disk_check >= DISK_CHECK_INTERVAL:
@@ -3508,6 +3556,15 @@ def _sync_series(
             # Periodic progress log — every 10 items or last item
             if item_idx % 10 == 0 or item_idx == total_in_cat:
                 logger.info(f"  {cat.category_name} ({item_idx}/{total_in_cat}) — {cat_new} new, {cat_existing} existing")
+
+        refused = _refused_reason(client)
+        if refused:
+            # Part of this category's series went unread: keep what was done,
+            # but not as the category's count (the empty-category guard's memory)
+            fetch_ok = False
+            unread.append((cat.category_name, refused))
+            db.commit()
+            continue
 
         # Commit all new series for this category at once
         # The count is also the guard's memory (_category_went_empty): a category

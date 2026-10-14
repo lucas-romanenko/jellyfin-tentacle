@@ -32,6 +32,8 @@ from typing import Optional
 
 import requests
 
+from services.exceptions import ProviderRefusedError
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_USER_AGENT = "TiviMate/4.7.0 (Linux; Android 12)"
@@ -49,6 +51,53 @@ def quote_cred(value) -> str:
     '#&+?/%' and spaces are percent-encoded: raw, they cut or split the URL.
     Every URL with a provider login builds it with this."""
     return urllib.parse.quote(str(value or ""), safe=_CRED_SAFE)
+
+
+PROVIDER_REFUSAL_LIMIT = 3       # refused API requests in a row before a client stops asking
+XTREAM_MIN_REQUEST_GAP = 0.25    # seconds between two API requests of one client (at most 4/s)
+
+
+class RequestGuard:
+    """One client's API requests to an Xtream panel: paced, and stopped once
+    the panel refuses this server (#149).
+
+    A panel that blocks an IP or an account answers 401/403 to everything, and
+    its flood protection counts those requests too: a sync that kept asking
+    (every category left, every series) made the block last longer. After
+    PROVIDER_REFUSAL_LIMIT refusals in a row every further call raises
+    ProviderRefusedError without a request. A success starts the count again;
+    server errors (5xx, 429/509) and timeouts are not refusals. One guard per
+    client, so the next run starts fresh."""
+
+    def __init__(self, gap: float = XTREAM_MIN_REQUEST_GAP):
+        self.gap = gap
+        self.clock = time.monotonic
+        self.sleep = time.sleep
+        self.refusals = 0
+        self.refused_status = None   # set once the client stopped asking
+        self._last = None
+
+    def before(self) -> None:
+        """Call before each request: raises once stopped, else waits out the gap."""
+        if self.refused_status is not None:
+            raise ProviderRefusedError(self.refused_status)
+        if self._last is not None and self.gap > 0:
+            wait = self._last + self.gap - self.clock()
+            if wait > 0:
+                self.sleep(wait)
+        self._last = self.clock()
+
+    def after(self, status) -> None:
+        """Call with each answer's status code."""
+        if status in (401, 403):
+            self.refusals += 1
+            if self.refusals >= PROVIDER_REFUSAL_LIMIT:
+                self.refused_status = status
+                logger.warning(f"The provider refused {self.refusals} requests in a row (HTTP {status}): "
+                               f"no more requests this run")
+                raise ProviderRefusedError(status)
+        elif isinstance(status, int) and status < 400:
+            self.refusals = 0
 
 
 def live_stream_url(server: str, username: str, password: str, stream_id, extension: str = "m3u8") -> str:
@@ -80,6 +129,7 @@ class XtreamClient:
             "Accept-Language": "en-US,en;q=0.9",
             "Connection": "keep-alive",
         })
+        self.guard = RequestGuard()
 
     # ── helpers ──────────────────────────────────────────────────────────
 
@@ -96,8 +146,10 @@ class XtreamClient:
 
     def _get_json(self, url: str, timeout: Optional[int] = None) -> list | dict:
         t = timeout or self.timeout
+        self.guard.before()
         # Use (connect_timeout, read_timeout) tuple for large responses
         resp = self.session.get(url, timeout=(10, t))
+        self.guard.after(getattr(resp, "status_code", None))
         resp.raise_for_status()
         try:
             return resp.json()
@@ -155,6 +207,8 @@ class XtreamClient:
                 all_streams.extend(streams)
                 if progress_callback:
                     progress_callback(i + 1, total, len(all_streams))
+            except ProviderRefusedError:
+                raise   # the provider refuses this server: no lineup to report
             except Exception as e:
                 logger.warning(f"Failed to fetch live streams for category {cat_id}: {e}")
             if delay > 0:

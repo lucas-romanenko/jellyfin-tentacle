@@ -30,7 +30,7 @@ from sqlalchemy.orm import sessionmaker
 
 import models.database as mdb
 from models.database import Movie, Provider, Series
-from nightly_harness import NightlyHarness
+from nightly_harness import FakeTMDB, NightlyHarness
 import services.sync as sync
 from tmp_dirs import temp_dir
 
@@ -96,6 +96,15 @@ class NoOldAddressKnown(_Base):
         self.assertEqual(f"{OLD}/movie/u/p1/43.mkv", others.read_text(encoding="utf-8"))
         self.assertEqual(before, current.stat().st_mtime_ns)
 
+    def test_a_file_on_another_providers_host_with_the_same_login_is_left_alone(self):
+        """A title a higher-priority provider took over whose file still plays
+        the other provider: the sync heals it by stream id (#154), not this."""
+        self.other.server_url = "http://backup.example"
+        self.db.commit()
+        film = self._movie(1, "Film (2020)", "http://backup.example/movie/u/p1/42.mkv")
+        self._relink()
+        self.assertEqual("http://backup.example/movie/u/p1/42.mkv", film.read_text(encoding="utf-8"))
+
 
 class ARestartDoesNotLoseTheRewrite(_Base):
     """The save's background thread never ran (the process restarted): the
@@ -154,6 +163,65 @@ class TheSyncRepointsFirst(NightlyHarness):
             sync.sync_provider(self.provider, "full", self.db)
         self.assertEqual("http://provider/movie/u/p/42.mp4", film.read_text(encoding="utf-8"))
         self.assertEqual("http://provider/series/u/p/700.mkv", ep.read_text(encoding="utf-8"))
+
+
+class AnM3uPlaylistThatMoved(NightlyHarness):
+    """An M3U provider's playlist at a new address lists its titles on a new
+    host. After a save of the new playlist address the next full sync points
+    every listed film and episode at it, once; without a save nothing is
+    rewritten (playlist tokens may rotate on every fetch)."""
+
+    def setUp(self):
+        super().setUp()
+        import routers.providers as providers
+        self.providers = providers
+        sync.make_provider_client = self._saved["make_provider_client"]
+        root = Path(temp_dir(self))
+        self.playlist = root / "new.m3u"
+        self.playlist.write_text("#EXTM3U\n"
+                                 '#EXTINF:-1 group-title="Films",Film (2010)\n'
+                                 "http://new-host.example/movie/u/p/42.mkv\n"
+                                 '#EXTINF:-1 group-title="Shows",Show (2010) S01E01\n'
+                                 "http://new-host.example/series/u/p/700.mkv\n", encoding="utf-8")
+        self.provider.provider_type, self.provider.m3u_url = "m3u_file", str(root / "old.m3u")
+        self.db.commit()
+        self.add_category("Films", "movie")
+        self.add_category("Shows", "series")
+        FakeTMDB.ids = {"Film": 1, "Show": 2}
+        self.film = self.vod / "movies" / "Film (2010)" / "Film (2010).strm"
+        self.film.parent.mkdir(parents=True)
+        self.film.write_text("http://old-host.example/movie/u/p/42.mkv", encoding="utf-8")
+        show = self.vod / "shows" / "Show (2010)"
+        self.ep = show / "Season 01" / "Show (2010) S01E01.strm"
+        self.ep.parent.mkdir(parents=True)
+        self.ep.write_text("http://old-host.example/series/u/p/700.mkv", encoding="utf-8")
+        source = f"provider_{self.provider.id}"
+        self.db.add_all([Movie(tmdb_id=1, title="Film", year="2010", source=source, provider_id=self.provider.id,
+                               strm_path=str(self.film)),
+                         Series(tmdb_id=2, title="Show", year="2010", source=source, provider_id=self.provider.id,
+                                strm_path=str(show))])
+        self.db.commit()
+
+    def _sync(self):
+        with mock.patch("services.sync.chown_path", lambda p: None):
+            return sync.sync_provider(self.provider, "full", self.db)
+
+    def test_a_saved_new_playlist_moves_every_listed_file(self):
+        self.providers.update_provider(self.provider.id, self.providers.ProviderUpdate(m3u_url=str(self.playlist)),
+                                       self.db)
+        run = self._sync()
+        self.assertEqual("completed", run.status, run.error_message)
+        self.assertEqual("http://new-host.example/movie/u/p/42.mkv", self.film.read_text(encoding="utf-8"))
+        self.assertEqual("http://new-host.example/series/u/p/700.mkv", self.ep.read_text(encoding="utf-8"))
+        pending = json.loads(mdb.get_setting(self.db, "provider_relink_pending", "") or "{}")
+        self.assertNotIn(str(self.provider.id), pending)
+
+    def test_without_a_save_nothing_is_rewritten(self):
+        self.provider.m3u_url = str(self.playlist)
+        self.db.commit()
+        self._sync()
+        self.assertEqual("http://old-host.example/movie/u/p/42.mkv", self.film.read_text(encoding="utf-8"))
+        self.assertEqual("http://old-host.example/series/u/p/700.mkv", self.ep.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

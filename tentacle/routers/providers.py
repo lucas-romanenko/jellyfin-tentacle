@@ -300,6 +300,7 @@ def update_provider(provider_id: int, body: ProviderUpdate, db: Session = Depend
         raise HTTPException(404, "Provider not found")
     from routers.livetv import _xtream_login, rewrite_xtream_channel_urls
     before = _xtream_login(p)
+    m3u_before = p.m3u_url
     if body.name is not None:
         p.name = body.name
     if body.provider_type is not None:
@@ -327,10 +328,14 @@ def update_provider(provider_id: int, body: ProviderUpdate, db: Session = Depend
     # A new server or login reaches the Live TV channels now, not at the
     # next channel sync (#469)
     rewrite_xtream_channel_urls(p, before, db)
+    # ...and the films and episodes already in the library (#142), recorded in
+    # this commit so a restart before the rewrite ran loses nothing (#149)
+    from services import provider_relink
+    relink = _xtream_login(p) != before
+    if provider_relink.address_changed(p, before, m3u_before):
+        provider_relink.record_pending(db, p, before)
     db.commit()
-    # ...and the films and episodes already in the library (#142)
-    if _xtream_login(p) != before:
-        from services import provider_relink
+    if relink:
         provider_relink.start_relink(p.id, before)
     return {"success": True}
 
