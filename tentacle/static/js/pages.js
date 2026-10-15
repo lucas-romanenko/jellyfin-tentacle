@@ -936,7 +936,7 @@ function renderLibCard(item) {
 
   // Normal in-library card
   const poster = item.poster_path
-    ? `<img alt="" src="https://image.tmdb.org/t/p/w185${escapeAttr(item.poster_path)}" loading="lazy" onerror="this.outerHTML='<div class=\\'lib-card-poster-placeholder\\'>◫</div>'">`
+    ? `<img alt="" src="${escapeAttr(_imgUrl(item.poster_path, 'w185'))}" loading="lazy" onerror="this.outerHTML='<div class=\\'lib-card-poster-placeholder\\'>◫</div>'">`
     : `<div class="lib-card-poster-placeholder">◫</div>`;
 
   let badges = '';
@@ -4596,7 +4596,7 @@ function renderDupList() {
     }).join('');
 
     const title = dup.title || `TMDB #${dup.tmdb_id}`;
-    const poster = dup.poster_path ? `https://image.tmdb.org/t/p/w92${dup.poster_path}` : '';
+    const poster = _imgUrl(dup.poster_path, 'w92');
     const resLabel = { keep_radarr: 'Kept Downloaded', keep_vod: 'Kept VOD', keep_both: 'Kept Both' };
 
     return `

@@ -34,6 +34,40 @@ def _x(text) -> str:
     return _xml_escape(cleaned, {'"': "&quot;", "'": "&apos;"})
 
 
+def artwork_url(path, size: str) -> str:
+    """A poster or backdrop for an NFO <thumb>, escaped: a TMDB path gets
+    TMDB's image host, a full URL (a provider's own picture, for a title kept
+    without a TMDB match) is used as it is."""
+    path = str(path or "")
+    if path.startswith(("http://", "https://")):
+        return _x(path)
+    return _x(f"https://image.tmdb.org/t/p/{size}{path}")
+
+
+# A full URL that the writer once put behind TMDB's image host
+_BROKEN_THUMB = re.compile(r"(<thumb[^>]*>)https://image\.tmdb\.org/t/p/w\d+(https?://[^<]*)(</thumb>)")
+
+
+def repair_artwork(nfo_path: Path) -> bool:
+    """Rewrite the dead image links an NFO written before the fix carries
+    (https://image.tmdb.org/t/p/w500http://provider/...), so Jellyfin finds
+    the picture. Returns True when the file changed."""
+    try:
+        text = nfo_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    from html import unescape
+    fixed = _BROKEN_THUMB.sub(lambda m: m.group(1) + _x(unescape(m.group(2))) + m.group(3), text)
+    if fixed == text:
+        return False
+    try:
+        nfo_path.write_text(fixed, encoding="utf-8")
+    except OSError as e:
+        logger.warning(f"Could not repair the artwork in {nfo_path}: {e}")
+        return False
+    return True
+
+
 def write_movie_nfo(
     nfo_path: Path,
     metadata: dict,
@@ -109,11 +143,11 @@ def write_movie_nfo(
 
         # Poster/artwork
         if metadata.get("poster_path"):
-            poster_url = f"https://image.tmdb.org/t/p/w500{metadata['poster_path']}"
+            poster_url = artwork_url(metadata["poster_path"], "w500")
             lines.append(f'  <thumb aspect="poster">{poster_url}</thumb>')
 
         if metadata.get("backdrop_path"):
-            backdrop_url = f"https://image.tmdb.org/t/p/w1280{metadata['backdrop_path']}"
+            backdrop_url = artwork_url(metadata["backdrop_path"], "w1280")
             lines.append(f'  <fanart><thumb>{backdrop_url}</thumb></fanart>')
 
         lines.append('</movie>')
@@ -182,11 +216,11 @@ def write_series_nfo(
             lines.append('  </actor>')
 
         if metadata.get("poster_path"):
-            poster_url = f"https://image.tmdb.org/t/p/w500{metadata['poster_path']}"
+            poster_url = artwork_url(metadata["poster_path"], "w500")
             lines.append(f'  <thumb aspect="poster">{poster_url}</thumb>')
 
         if metadata.get("backdrop_path"):
-            backdrop_url = f"https://image.tmdb.org/t/p/w1280{metadata['backdrop_path']}"
+            backdrop_url = artwork_url(metadata["backdrop_path"], "w1280")
             lines.append(f'  <fanart><thumb>{backdrop_url}</thumb></fanart>')
 
         lines.append('</tvshow>')

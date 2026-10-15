@@ -68,7 +68,7 @@ Yes. On the VOD page, click **Sync All**. For Radarr/Sonarr, you can trigger sca
 
 ### Why was some content skipped during sync?
 
-By default, content that can't be matched to TMDB is skipped. This filters out placeholder entries and garbled titles. You can disable "Require TMDB Match" in the provider settings to include everything.
+By default, content that can't be matched to TMDB is skipped. This filters out placeholder entries and garbled titles. You can disable "Require TMDB Match" in the provider settings to include everything: titles TMDB doesn't know then keep the provider's own name and picture.
 
 ### What's the difference between VOD and downloaded content?
 

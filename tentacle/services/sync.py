@@ -1768,6 +1768,31 @@ def _swept_rows(db: Session, Model):
     )
 
 
+def _repair_provider_artwork(db: Session, provider: Provider) -> int:
+    """NFOs of this provider's titles kept without a TMDB match, written
+    before the fix: their <thumb> put the provider's picture behind TMDB's
+    image host, a dead link, so Jellyfin showed no image. Only rows whose
+    picture is a full URL are read; the Jellyfin scan after the sync picks the
+    changed NFOs up. Returns how many files changed."""
+    from sqlalchemy import or_
+    from services.nfo import repair_artwork
+    fixed = 0
+    for Model in (Movie, Series):
+        rows = db.query(Model).filter(Model.provider_id == provider.id, Model.strm_path.isnot(None),
+                                      or_(Model.poster_path.like("http%"), Model.backdrop_path.like("http%"))).all()
+        for row in rows:
+            if Model is Movie:
+                nfo = Path(row.nfo_path) if row.nfo_path else Path(row.strm_path).with_suffix(".nfo")
+            else:
+                nfo = Path(row.strm_path) / "tvshow.nfo"
+            if repair_artwork(nfo):
+                chown_path(nfo)
+                fixed += 1
+    if fixed:
+        logger.info(f"[Sync] {provider.name}: repaired the image links of {fixed} titles kept without a TMDB match")
+    return fixed
+
+
 def _check_vod_root_before_sync(db: Session, Model, root: Path, what: str):
     """Raise SyncError when the library root is missing or empty while titles
     are recorded in it (#439). Writing there put the provider's titles on the
@@ -2019,6 +2044,10 @@ def sync_provider(
         # refuses this sync still gets its library off the former host (#149)
         from services import provider_relink
         provider_relink.relink_before_sync(db, provider)
+        try:
+            _repair_provider_artwork(db, provider)
+        except Exception as e:
+            logger.warning(f"Could not repair image links: {e}")
 
         # Pre-sync disk space check
         if sync_type in ("full", "movies"):
