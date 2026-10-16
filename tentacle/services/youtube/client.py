@@ -8,7 +8,8 @@ import logging
 from typing import Optional
 
 from services.youtube import traffic
-from services.youtube.errors import PausedByBotCheck, YouTubeBlocked, classify
+from services.youtube.errors import (PausedByBotCheck, VideoUnavailable, YouTubeBlocked,
+                                     YouTubeUnavailable, classify)
 
 logger = logging.getLogger(__name__)
 
@@ -49,14 +50,82 @@ def _ydl_class():
     return _counting_class
 
 
-def _ydl(extra: dict = None):
+class _Warnings:
+    """yt-dlp's logger for one extraction: keeps its warnings, prints nothing.
+
+    With ignore_no_formats_error (which an upcoming stream's details need),
+    yt-dlp does not raise when YouTube refuses a video page. It reports the
+    reason as a warning and returns a "video" with no formats, no date, no length
+    and the title "youtube video #<id>". The reason is only to be had here.
+    """
+
+    def __init__(self):
+        self.messages = []
+
+    def debug(self, msg):
+        pass
+
+    def info(self, msg):
+        pass
+
+    def warning(self, msg):
+        self.messages.append(str(msg))
+
+    def error(self, msg):
+        self.messages.append(str(msg))
+
+
+def _ydl(extra: dict = None, log: _Warnings = None):
     opts = dict(_BASE_OPTS)
     # The proxy (if set) and a player cache that survives restarts, so the
     # player code is not fetched again for every extraction.
     opts.update(traffic.ydl_options())
     if extra:
         opts.update(extra)
+    if log is not None:
+        opts["logger"] = log
     return _ydl_class()(opts)
+
+
+# What in a video page's refusal is about this server rather than the video.
+_SERVER_MARKERS = ("not a bot", "rate-limited", "rate limited", "captcha", "http error 429",
+                   "too many requests", "unusual traffic", "google.com/sorry")
+
+
+def _refusal(info: dict, warnings: list):
+    """The error a video page with no formats really was, or None.
+
+    A rate limit, a captcha or a bot check is about this server (the pause);
+    private, removed, members-only or age-gated is about the video. Both used
+    to come back as an ordinary video: a new upload read during a rate limit
+    became a dateless "youtube video #<id>" that retention then deleted, no
+    bot check on a video page ever started the pause, and a dead video was
+    never known to be gone. An upcoming stream has no formats yet and is fine.
+    """
+    if info.get("formats"):
+        return None
+    upcoming = info.get("live_status") == "is_upcoming"
+    # yt-dlp's own remarks ("No video formats found!") are not YouTube's answer.
+    reasons = [m for m in warnings if m.startswith("[youtube")]
+    errors = [classify(Exception(m)) for m in reasons]
+    # A pause stops every YouTube request, so only wording that is about this
+    # server starts one. "Try again later" alone is not: YouTube also says it
+    # about one video ("still being processed", "something went wrong"), and
+    # read as a block such a video paused everything again after every pause.
+    for message, error in zip(reasons, errors):
+        if isinstance(error, YouTubeBlocked) and any(m in message.lower() for m in _SERVER_MARKERS):
+            return error
+    for error in errors:
+        if isinstance(error, VideoUnavailable) and not upcoming:
+            return error
+    for message, error in zip(reasons, errors):
+        if isinstance(error, YouTubeBlocked) and not upcoming:
+            return YouTubeUnavailable(message)      # a hiccup: the resolver backs off, the indexer retries
+    if not upcoming and warnings:
+        # Nothing recognised: returned as before, but said, so a new wording
+        # from YouTube shows up in the log rather than as placeholder videos.
+        logger.info(f"[YouTube] {info.get('id')}: no formats, and yt-dlp said: {warnings[0][:200]}")
+    return None
 
 
 def available() -> bool:
@@ -87,8 +156,9 @@ def extract(url: str, extra_opts: dict = None) -> dict:
     """
     # Nothing is sent while YouTube requests are paused after a bot check.
     traffic.ensure_allowed()
+    log = _Warnings()
     try:
-        with _ydl(extra_opts) as ydl:
+        with _ydl(extra_opts, log) as ydl:
             info = ydl.extract_info(url, download=False)
     except Exception as e:  # yt_dlp raises its own hierarchy
         error = classify(e)
@@ -97,6 +167,12 @@ def extract(url: str, extra_opts: dict = None) -> dict:
         raise error from e
     if info is None:
         raise classify(Exception(f"yt-dlp returned nothing for {url}"))
+    if not (extra_opts or {}).get("extract_flat"):
+        refused = _refusal(info, log.messages)
+        if refused is not None:
+            if isinstance(refused, YouTubeBlocked):
+                traffic.record_block(str(refused))
+            raise refused
     traffic.note_success()
     return info
 
