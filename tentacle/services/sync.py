@@ -437,6 +437,10 @@ def _strm_needs_rewrite(strm_file: Path, expected: str, client) -> bool:
         return True   # 0 bytes / blank: a write cut short, never a link of anyone's (#283)
     if current == expected:
         return False
+    if expected and expected.startswith(current):
+        # Only the start of today's address: a write cut short (#629). It plays
+        # nothing, and is no other stream, host or proxy of anyone's.
+        return True
     # A file written before the login was percent-encoded (#529): a '#', '?' or
     # '/' in it broke the URL. Read it in today's form, so the checks below
     # repair it when it plays this stream and leave it alone when not.

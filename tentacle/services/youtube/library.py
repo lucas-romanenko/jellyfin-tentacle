@@ -248,7 +248,8 @@ def write_video(video, channel, base_url: str, root: Path = None) -> dict:
 
     wrote_strm = False
     if not strm.exists():
-        strm.write_text(strm_url(base_url, video.video_id), encoding="utf-8")
+        from services.sync import _write_strm
+        _write_strm(strm, strm_url(base_url, video.video_id))   # never a cut-short file (#629)
         _owned(strm)
         wrote_strm = True
 
@@ -303,7 +304,8 @@ def rewrite_strm(video, base_url: str) -> bool:
     try:
         if path.read_text(encoding="utf-8").strip() == wanted:
             return False
-        path.write_text(wanted, encoding="utf-8")
+        from services.sync import _write_strm
+        _write_strm(path, wanted)   # a write cut short leaves the old file whole (#629)
         return True
     except OSError as e:
         logger.warning(f"[YouTube] Could not rewrite {path}: {e}")

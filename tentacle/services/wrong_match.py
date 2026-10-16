@@ -958,7 +958,8 @@ def _rematch_movie(db: Session, tmdb_id: int, new_tmdb_id: int, user_name: Optio
     new_strm, new_nfo = new_dir / f"{folder}.strm", new_dir / f"{folder}.nfo"
     new_dir.mkdir(parents=True, exist_ok=True)
     chown_path(new_dir)
-    new_strm.write_text(stream_url, encoding="utf-8")
+    from services.sync import _write_strm
+    _write_strm(new_strm, stream_url)   # never a cut-short file (#283, #629)
     chown_path(new_strm)
     write_movie_nfo(new_nfo, new, tags)
     chown_path(new_nfo)
