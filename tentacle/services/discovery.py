@@ -60,9 +60,13 @@ def discover_new_provider_content(db) -> dict:
             logger.warning(f"[Discovery] VOD category refresh failed for '{p.name}': {e}")
 
     # ── Live TV groups ───────────────────────────────────────────────────
+    # Selected on `live_tv_enabled` alone. A provider set up on the Live TV
+    # page is active=False (`active` is the VOD switch), so a filter on
+    # `active` left out the usual Live TV provider: its new groups were never found (the
+    # nightly guide had the same mistake, #174).
     live_providers = (
         db.query(Provider)
-        .filter(Provider.active == True, Provider.live_tv_enabled == True)  # noqa: E712
+        .filter(Provider.live_tv_enabled == True)  # noqa: E712
         .all()
     )
     for p in live_providers:
