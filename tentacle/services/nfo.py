@@ -217,7 +217,7 @@ def update_nfo_tags(nfo_path: Path, tags: List[str], owned: Optional[set] = None
     try:
         import html
         import re
-        content = nfo_path.read_text(encoding='utf-8')
+        content = original = nfo_path.read_text(encoding='utf-8')
         existing = [html.unescape(t) for t in re.findall(r'^[ \t]*<tag>(.*?)</tag>', content, flags=re.MULTILINE)]
         kept = [t for t in existing if owned is not None and t not in owned]
         final = kept + [t for t in tags if t not in kept]
@@ -235,6 +235,13 @@ def update_nfo_tags(nfo_path: Path, tags: List[str], owned: Optional[set] = None
             tag_xml = '\n'.join(f'  <tag>{_x(t)}</tag>' for t in final)
             content = content.replace(close_tag, f'{tag_xml}\n{close_tag}')
 
+        if content == original:
+            # Nothing to change: an NFO that is not Tentacle's XML (Radarr's or
+            # Sonarr's metadata-URL NFO, a release .nfo with the video's name)
+            # has no closing tag to put the tags before. Counting it as written
+            # made every Radarr/Sonarr scan, and so every webhook, trigger a
+            # full Jellyfin library scan.
+            return False
         nfo_path.write_text(content, encoding='utf-8')
         return True
 
