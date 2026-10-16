@@ -5440,6 +5440,7 @@ let _missingLists = { movies: null, series: null };
 let _missingActiveList = 'all';
 
 async function loadDiscover() {
+  const view = ++_discoverView;
   if (_discoverType === 'music' && typeof musicDiscoverHome === 'function') return musicDiscoverHome();
   document.getElementById('discover-streaming-pills').classList.remove('music-pills');
   const grid = document.getElementById('discover-grid');
@@ -5452,6 +5453,7 @@ async function loadDiscover() {
       api(`/api/discover?type=${_discoverType}`),
       _activityData ? Promise.resolve() : loadActivity().catch(() => {}),
     ]);
+    if (view !== _discoverView) return;
     _discoverSections = data.sections || [];
     if (!_discoverSections.length) {
       tabsEl.innerHTML = '';
@@ -5475,12 +5477,13 @@ async function loadDiscover() {
       ? _discoverActiveSection : _discoverSections[0].id;
     switchDiscoverSection(targetId);
   } catch (e) {
+    if (view !== _discoverView) return;
     grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Failed to load discover: ${escapeAttr(e.message)}</p></div>`;
   }
 }
 
 // Bumped whenever the Discover grid is repainted for a different section, pill,
-// list or genre. A loader that answers after the user has moved on must not
+// list or genre, a Movies/TV/Music switch or a search. A loader that answers after the user has moved on must not
 // paint its (now wrong) titles under the tab that is selected.
 let _discoverView = 0;
 
@@ -5833,6 +5836,7 @@ function clearDiscoverSearch() {
 }
 
 async function doDiscoverSearch(query) {
+  const view = ++_discoverView;
   if (_discoverType === 'music' && typeof musicSearch === 'function') return musicSearch(query);
   const grid = document.getElementById('discover-grid');
   const tabsEl = document.getElementById('discover-section-tabs');
@@ -5840,6 +5844,7 @@ async function doDiscoverSearch(query) {
   grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text3)"><span class="toast-spinner"></span> Searching…</div>';
   try {
     const data = await api(`/api/discover/search?q=${encodeURIComponent(query)}&type=${_discoverType}`);
+    if (view !== _discoverView) return;
     const items = data.items || [];
     if (!items.length) {
       grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>No results for "${escapeAttr(query)}"</p></div>`;
@@ -5847,6 +5852,7 @@ async function doDiscoverSearch(query) {
     }
     renderDiscoverGrid(items);
   } catch (e) {
+    if (view !== _discoverView) return;
     grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Search failed: ${escapeAttr(e.message)}</p></div>`;
   }
 }
