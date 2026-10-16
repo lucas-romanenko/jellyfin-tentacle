@@ -151,7 +151,7 @@ Nothing changes until you press **Apply**, per album or per group. Each album
 is checked again with fresh data first. Extra tracks are only removed when
 Lidarr matched every original track and exactly the expected number is left
 over; anything else stops with nothing deleted. Every deletion goes to the
-Deletion log.
+Deletion Log on the Health page.
 
 !!! tip "Set a recycle bin in Lidarr first"
     Removed tracks go to Lidarr's recycle bin (*Settings → Media Management*).

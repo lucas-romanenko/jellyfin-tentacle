@@ -7222,6 +7222,21 @@ const _DELETION_KIND_META = {
   'stale-cleanup':     { label: 'Stale cleanup', cls: 'badge-amber' },
   'download-fix':      { label: 'Download fix', cls: 'badge-amber' },
   'stream-health':     { label: 'Stream health', cls: 'badge-amber' },
+  'arr-remove':        { label: 'Removed from Radarr/Sonarr', cls: 'badge-red' },
+  'arr-unmonitor':     { label: 'Stopped searching', cls: 'badge-amber' },
+  'bad-copy':          { label: 'Bad copy', cls: 'badge-amber' },
+  'wrong-match':       { label: 'Wrong match', cls: 'badge-amber' },
+  'rematch':           { label: 'Rematch', cls: 'badge-amber' },
+  'strm-optout':       { label: '.strm opt-out', cls: 'badge-amber' },
+  'music-extra-track': { label: 'Extra track', cls: 'badge-amber' },
+  'radarr-scan':       { label: 'Gone from Radarr', cls: 'badge-accent' },
+  'sonarr-scan':       { label: 'Gone from Sonarr', cls: 'badge-accent' },
+  'sync-prune':        { label: 'Gone from provider', cls: 'badge-accent' },
+  'smartlist-orphan':  { label: 'Playlist cleanup', cls: 'badge-accent' },
+  // Removals a safety limit refused: nothing was deleted
+  'sync-prune-blocked':   { label: 'Prune refused', cls: 'badge-gray' },
+  'orphan-sweep-blocked': { label: 'Orphan sweep refused', cls: 'badge-gray' },
+  'vod-sweep-blocked':    { label: 'VOD sweep refused', cls: 'badge-gray' },
 };
 
 async function loadHealthDeletions() {
@@ -7234,13 +7249,15 @@ async function loadHealthDeletions() {
       return;
     }
     const rows = entries.map(e => {
-      const meta = _DELETION_KIND_META[e.kind] || { label: e.kind, cls: 'badge-accent' };
+      const meta = _DELETION_KIND_META[e.kind] || { label: escapeHtml(e.kind || ''), cls: 'badge-accent' };
+      const tip = (e.kind || '').endsWith('-blocked')
+        ? ' title="Nothing was deleted: a safety limit stopped this removal"' : '';
       const d = _healthDate(e.created_at);
       const when = d ? `<span title="${d.toLocaleString()}">${timeAgo(d)}</span>` : '—';
       const who = e.reason === 'manual' && e.user_name ? e.user_name : e.reason;
       return `<tr>
         <td style="white-space:nowrap">${when}</td>
-        <td><span class="badge ${meta.cls}" style="font-size:10px">${meta.label}</span></td>
+        <td><span class="badge ${meta.cls}" style="font-size:10px"${tip}>${meta.label}</span></td>
         <td>${escapeHtml(e.name || '')}</td>
         <td style="white-space:nowrap;color:var(--text3)">${escapeHtml(who || '')}</td>
         <td style="color:var(--text3);font-size:12px">${escapeHtml(e.detail || '')}</td>
