@@ -179,7 +179,7 @@ class DashboardTexts(unittest.TestCase):
 
     def empty_discover(self, is_admin):
         src = (_user(is_admin) + ESC
-               + "let _discoverType = 'movies', _activityData = {}, _discoverSections = [];\n"
+               + "let _discoverType = 'movies', _activityData = {}, _discoverSections = [], _discoverView = 0;\n"
                + functions("pages.js", ["loadDiscover"]))
         html = render(src, "API['/api/discover'] = {sections: []};", "await loadDiscover()")["discover-grid"][-1]
         return Page(html).text
