@@ -340,6 +340,15 @@ def update_provider(provider_id: int, body: ProviderUpdate, db: Session = Depend
     return {"success": True}
 
 
+# Settings keyed by a provider's id, removed with it (see delete_provider).
+_PROVIDER_SETTING_KEYS = (
+    "livetv_m3u_switched_off_{}",   # #158: names the user switched off
+    "livetv_epg_coverage_{}",
+    "livetv_epg_synced_{}",
+    "livetv_output_formats_{}",
+)
+
+
 @router.delete("/{provider_id}")
 def delete_provider(provider_id: int, db: Session = Depends(get_db)):
     p = db.query(Provider).filter(Provider.id == provider_id).first()
@@ -401,6 +410,16 @@ def delete_provider(provider_id: int, db: Session = Depends(get_db)):
             db.query(EPGProgram).filter(EPGProgram.channel_id.in_(channel_epg_ids)).delete(synchronize_session=False)
         db.query(LiveChannel).filter(LiveChannel.provider_id == provider_id).delete()
         db.query(LiveChannelGroup).filter(LiveChannelGroup.provider_id == provider_id).delete()
+        # State kept in settings under this provider's id: SQLite hands the next
+        # provider the same id when this one had the highest, and it would
+        # inherit it (a channel switched off here arriving switched off there).
+        db.query(Setting).filter(
+            Setting.key.in_([k.format(provider_id) for k in _PROVIDER_SETTING_KEYS])
+        ).delete(synchronize_session=False)
+        from services import provider_relink
+        pending = provider_relink.pending(db)
+        if pending.pop(str(provider_id), None) is not None:
+            provider_relink._store(db, pending)
 
         provider_name = p.name
         db.delete(p)
