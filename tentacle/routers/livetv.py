@@ -35,7 +35,7 @@ from datetime import datetime, timedelta
 from typing import Optional, List
 
 from services.epg_categories import infer_category
-from services.exceptions import ProviderRefusedError
+from services.exceptions import ProviderDataError, ProviderRefusedError
 from services.youtube import livetv as youtube_livetv
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -2501,6 +2501,7 @@ def _sync_channels_from_xtream(provider_data: dict, db: Session) -> dict:
 
         # Fetch per-category (only enabled ones)
         all_streams = []
+        failed, last_error = 0, None
         for i, cat_id in enumerate(category_ids):
             try:
                 streams = client.get_live_streams(category_id=cat_id)
@@ -2508,6 +2509,7 @@ def _sync_channels_from_xtream(provider_data: dict, db: Session) -> dict:
             except ProviderRefusedError:
                 raise   # the provider refuses this server: no more groups, no lineup to save (#149)
             except Exception as e:
+                failed, last_error = failed + 1, e
                 logger.warning(f"[LiveTV] {provider_name}: failed to fetch category {cat_id}: {e}")
 
             pct = 5 + int(((i + 1) / len(category_ids)) * 85)
@@ -2518,6 +2520,14 @@ def _sync_channels_from_xtream(provider_data: dict, db: Session) -> dict:
             if (i + 1) % 20 == 0 or (i + 1) == len(category_ids):
                 logger.info(f"[LiveTV] {provider_name}: {i + 1}/{len(category_ids)} groups, {len(all_streams)} channels")
 
+        if category_ids and failed == len(category_ids):
+            # Not one group could be read: a failed sync, not "0 channels". The
+            # refusal guard only steps in after several refusals in a row, so an
+            # install with one or two groups ended up here, reported a success and
+            # moved last_live_sync on while the provider refused everything.
+            from services.log_redaction import redact
+            raise ProviderDataError(
+                f"none of the {len(category_ids)} enabled group(s) could be read ({redact(str(last_error))})")
         logger.info(f"[LiveTV] {provider_name}: {len(all_streams)} channels fetched for enabled groups")
         _set_sync_status(provider_id, {"phase": "running", "progress": 95, "message": f"Saving {len(all_streams)} channels..."})
 
