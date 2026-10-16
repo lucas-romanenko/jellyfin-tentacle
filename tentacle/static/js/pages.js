@@ -6002,14 +6002,18 @@ function updateSetupUrls() {
   document.getElementById('live-setup-xmltv-preview').textContent = `${base}/hdhr/xmltv.xml`;
 }
 
-function copyLiveSetup(type, btn) {
+async function copyLiveSetup(type, btn) {
   const base = getSetupBase();
   const url = type === 'tuner' ? base : `${base}/hdhr/xmltv.xml`;
-  navigator.clipboard.writeText(url).then(() => {
-    const orig = btn.textContent;
-    btn.textContent = 'Copied!';
-    setTimeout(() => btn.textContent = orig, 1500);
-  });
+  try {
+    await navigator.clipboard.writeText(url);
+  } catch (_) {
+    toast('Copy failed — use HTTPS or copy manually', 'error');
+    return;
+  }
+  const orig = btn.textContent;
+  btn.textContent = 'Copied!';
+  setTimeout(() => btn.textContent = orig, 1500);
 }
 
 function renderLiveStats(data) {
