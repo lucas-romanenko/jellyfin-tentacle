@@ -100,9 +100,13 @@ def delete_series_files(show_dir) -> int:
         for strm in list(root.rglob("*.strm")):
             try:
                 nfo = strm.with_suffix(".nfo")
+                # A downloaded episode named like this .strm (merged folder)
+                # owns that NFO: Sonarr wrote it for the download, as Radarr
+                # does for a film (delete_movie_files).
+                keep_nfo = _has_same_stem_media(strm)
                 strm.unlink()
                 deleted += 1
-                if nfo.exists():
+                if nfo.exists() and not keep_nfo:
                     nfo.unlink()
                     deleted += 1
             except OSError as e:

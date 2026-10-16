@@ -649,12 +649,13 @@ def _stale_nfo_count(vod_dir) -> int:
     no real media is left in it — so in a merged Radarr/Sonarr library the
     banner promised far more than the action deleted (#107).
     """
-    from services.media_files import _has_media_files
+    from services.media_files import _has_media_files, _has_same_stem_media
     count = 0
     seen = set()
     for strm in vod_dir.rglob("*.strm"):
         nfo = strm.with_suffix(".nfo")
-        if nfo.exists() and nfo not in seen:
+        # Kept beside a download of the same name: it describes the download.
+        if nfo.exists() and nfo not in seen and not _has_same_stem_media(strm):
             seen.add(nfo)
             count += 1
     # Show-level metadata goes only with a show that holds .strm episodes and no media.
