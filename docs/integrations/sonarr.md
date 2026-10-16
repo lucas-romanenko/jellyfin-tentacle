@@ -201,6 +201,8 @@ tentacle:
     - /path/to/vod/shows:/media/vod/shows      # VOD series (for hybrid detection)
 ```
 
+Sonarr may call its root folder anything (`/data/shows`, `/data/tv`, `/data/media/tv-shows`): Tentacle finds each series by its folder name under `/media/shows`, so mount the same host folder Sonarr's root folder is on. When a scan can't find series there, the log says so ("downloads not found under /media/shows") and no `tvshow.nfo` or tags are written beside them. Series in a VOD folder (hybrid series) are left to the VOD sync.
+
 ## Download Client Prerequisites
 
 Same as Radarr — the download client category must match what Sonarr expects. If Sonarr's Activity → Queue is empty while downloads are running, the category is misconfigured. See [Troubleshooting](../troubleshooting.md) for details.
