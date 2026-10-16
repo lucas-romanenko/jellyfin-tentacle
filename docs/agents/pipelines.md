@@ -272,7 +272,10 @@ read that row.
   category, `_place_relisted_movies()` applies that by the files: a stream
   no label placed (no TMDB match, or a label the cleaner rejects) that a
   film's `.strm` plays is that film, relabelled (counted as existing and
-  seen, so never pruned, #262, #621); a film met this
+  seen, so never pruned, #262, #621). A known label is checked against
+  the files too when this provider has the same title in another year
+  (`_known_title_id()` `rivals`): a stream relabelled onto the year of our
+  other remake stays with the film whose `.strm` plays it (#627). A film met this
   sync whose `.strm` plays a stream of this provider no longer listed
   anywhere (a complete fetch, Xtream only) is pointed at its current
   stream in place (#263). Episodes: a file whose episode id no listing of
