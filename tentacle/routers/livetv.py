@@ -120,6 +120,13 @@ async def _send_checked(client, url: str, headers: dict, guard=None):
         if not await asyncio.to_thread(guard, current):
             logger.warning(f"[LiveTV] Blocked redirect to non-public host: {current}")
             raise HTTPException(502, "Stream redirect points to a non-public host")
+        if _placeholder_name(current):
+            # A redirect to a provider placeholder (black.ts, #140): not the
+            # channel, so it is never fetched (#624). The caller gets an empty
+            # response whose URL is the placeholder's, and refuses it by name
+            # exactly as it did when the placeholder had been fetched.
+            return httpx.Response(200, headers={"content-type": "video/mp2t"},
+                                  request=httpx.Request("GET", current, headers=headers))
     raise HTTPException(502, "Too many redirects")
 
 

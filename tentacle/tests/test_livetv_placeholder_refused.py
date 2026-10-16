@@ -87,10 +87,11 @@ class RefusedAtOpen(_Base):
         }, BASE)
 
     async def test_a_redirect_to_a_placeholder_is_refused(self):
-        await self._refused({
+        log = await self._refused({
             PANEL: [_resp(302, PANEL, headers={"location": BLACK})],
             BLACK: [_resp(200, BLACK, b"G" * 188, {"content-type": "video/mp2t"})],
         }, PANEL)
+        self.assertNotIn(BLACK, log, "#624: the placeholder was fetched before it was refused")
 
     async def test_activity_hears_about_a_channel_at_most_hourly(self):
         script = {BASE: [_resp(200, BASE, _playlist("/video/black.ts").encode(), PLAYLIST_CT)]}
@@ -254,9 +255,10 @@ class RunningStreams(_Base):
             seg + "c3.ts": [_resp(200, seg + "c3.ts", b"CHUNK3")],
             BLACK: [_resp(200, BLACK, b"BLACK")],
         }
-        body, _log = await self._record(script)
+        body, log = await self._record(script)
         self.assertNotIn(b"BLACK", body)
         self.assertEqual(b"CHUNK1CHUNK2CHUNK3", body)
+        self.assertNotIn(BLACK, log, "#624: the placeholder was fetched before it was refused")
         self.assertEqual(1, livetv._placeholders[1]["count"])
 
     async def test_a_raw_redial_that_lands_on_a_placeholder_is_retried(self):
@@ -268,6 +270,7 @@ class RunningStreams(_Base):
         }
         body, log, *_ = await _play(script)
         self.assertEqual(b"AAAABBBB", body, "the placeholder's bytes reached the recording")
+        self.assertNotIn(BLACK, log, "#624: the placeholder was fetched before it was refused")
         self.assertEqual(1, livetv._placeholders[1]["count"])
 
 
