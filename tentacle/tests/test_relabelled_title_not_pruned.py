@@ -10,6 +10,7 @@ Reported by therobmilne with this reproduction; runs the real sync_provider +
 sweep_orphaned_vod_records nights from nightly_harness (fake provider, TMDB).
 """
 import unittest
+from pathlib import Path
 
 from web_stubs import _ensure_web_stubs
 
@@ -67,6 +68,71 @@ class RelabelledSeries(NightlyHarness):
     def test_label_the_cleaner_rejects_is_kept(self):
         self.assertIsNotNone(self._relabel("EN - X"),
                              "series pruned although the same series id is still listed (label rejected by the cleaner)")
+
+    def test_listing_ids_are_recorded(self):
+        self.add_category("s1", type_="series")
+        self.catalogue_series("s1", ["Show 1", "Show 2"])
+        self.night()
+        for title, sid in self.client.series["s1"]:
+            self.assertEqual(self.series_row(FakeTMDB.ids[title]).provider_series_ids, [str(sid)])
+
+    def test_relabelled_show_is_back_filled(self):
+        """Kept as that show: a new episode of the relabelled listing is written."""
+        sid = 5000 + 13
+        base = self.client.get_series_info
+
+        def info(series_id):
+            got = base(series_id)
+            if series_id == sid:
+                got["episodes"]["1"].append({"id": series_id * 10 + 2, "episode_num": 2,
+                                             "container_extension": "mp4"})
+            return got
+        self.add_category("s1", type_="series")
+        self.catalogue_series("s1", [f"Show {i}" for i in range(100)])
+        self.night()
+        self.client.series["s1"] = [(("Unmatched Title" if t == "Show 13" else t), s)
+                                    for t, s in self.client.series["s1"]]
+        self.client.get_series_info = info
+        self.night()
+        row = self.series_row(FakeTMDB.ids["Show 13"])
+        self.assertEqual(len(list(Path(row.strm_path).glob("Season */*.strm"))), 2)
+
+    def test_reused_id_naming_another_show_is_pruned(self):
+        """The provider's id now lists other episodes under a label that doesn't
+        resolve: not that show; pruned as before, and its files not rewritten."""
+        self.add_category("s1", type_="series")
+        self.catalogue_series("s1", [f"Show {i}" for i in range(100)])
+        self.night()
+        tmdb, sid = FakeTMDB.ids["Show 13"], 5000 + 13
+        files = list(Path(self.series_row(tmdb).strm_path).glob("Season */*.strm"))
+        before = {f: f.read_text() for f in files}
+        self.assertTrue(before)
+        base = self.client.get_series_info
+        self.client.get_series_info = lambda s: (
+            {"episodes": {"1": [{"id": 999001, "episode_num": 1, "container_extension": "mp4"}]}}
+            if s == sid else base(s))
+        self.client.series["s1"] = [(("Unmatched Title" if t == "Show 13" else t), s)
+                                    for t, s in self.client.series["s1"]]
+        self.night()
+        self.assertEqual({f: f.read_text() for f in files if f.exists()}, before)
+        for _ in range(2):
+            self.night()
+        self.assertIsNone(self.series_row(tmdb))
+
+    def test_no_files_to_compare_is_kept(self):
+        """Opted out of .strm files: nothing to tell by, kept on doubt."""
+        self.add_category("s1", type_="series")
+        self.catalogue_series("s1", [f"Show {i}" for i in range(100)])
+        self.night()
+        tmdb = FakeTMDB.ids["Show 13"]
+        row = self.series_row(tmdb)
+        row.strm_disabled = True
+        self.db.commit()
+        self.client.series["s1"] = [(("EN - X" if t == "Show 13" else t), s)
+                                    for t, s in self.client.series["s1"]]
+        for _ in range(3):
+            self.night()
+        self.assertIsNotNone(self.series_row(tmdb))
 
 
 if __name__ == "__main__":
