@@ -290,6 +290,11 @@ user_id)` computes them every time from source tags, list subscriptions
 - Never act on "the first Jellyfin item with this TMDB id": the same film
   can be there twice (VOD + download). Resolve the item from its path or
   its own id.
+- Every `log_deletion()`/`DeletionLog(...)` kind needs a label in
+  `_DELETION_KIND_META` (`static/js/pages.js`), or Health → Deletion Log
+  shows the raw code (`tests/test_deletion_log_kinds.py` enforces it).
+  `*-blocked` kinds record removals a safety limit refused (nothing
+  deleted): label "… refused", gray badge.
 
 ## Provider health (`services/provider_health.py`)
 
