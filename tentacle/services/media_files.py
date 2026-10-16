@@ -82,7 +82,8 @@ def delete_series_files(show_dir) -> int:
     metadata option and Jellyfin's NFO saver write per-episode `SxxEyy.nfo` and
     `season.nfo` next to the downloaded `.mkv`s, and deleting every `.nfo` in
     the tree stripped the metadata off episodes Tentacle never touched. Only an
-    NFO sharing its stem with a `.strm` we are removing is ours.
+    NFO sharing its stem with a `.strm` we are removing is ours, unless a
+    download with that stem sits beside it: then it describes the download (#614).
 
     `tvshow.nfo` is shared by both sources (Tentacle writes it for VOD and for
     Sonarr series), so it is removed only when no real media is left anywhere in
@@ -100,9 +101,10 @@ def delete_series_files(show_dir) -> int:
         for strm in list(root.rglob("*.strm")):
             try:
                 nfo = strm.with_suffix(".nfo")
+                has_download = _has_same_stem_media(strm)
                 strm.unlink()
                 deleted += 1
-                if nfo.exists():
+                if nfo.exists() and not has_download:
                     nfo.unlink()
                     deleted += 1
             except OSError as e:
