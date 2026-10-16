@@ -1043,9 +1043,20 @@ def _live_stream_format(db) -> str:
     return raw if raw in _LIVE_STREAM_FORMATS else _DEFAULT_LIVE_STREAM_FORMAT
 
 
+# Settings kept per provider, keyed by its id. Deleted with the provider
+# (providers.delete_provider): SQLite gives the next provider the same id, which
+# would inherit them (#625). A new per-provider key goes in PROVIDER_SETTING_KEYS.
+_OUTPUT_FORMATS_KEY = "livetv_output_formats_{}"
+_EPG_COVERAGE_KEY = "livetv_epg_coverage_{}"
+_EPG_SYNCED_KEY = "livetv_epg_synced_{}"
+_M3U_SWITCHED_OFF_KEY = "livetv_m3u_switched_off_{}"
+PROVIDER_SETTING_KEYS = (_OUTPUT_FORMATS_KEY, _EPG_COVERAGE_KEY, _EPG_SYNCED_KEY,
+                         _M3U_SWITCHED_OFF_KEY)
+
+
 def _remembered_output_formats(db, provider_id: int) -> list:
     import json
-    raw = get_setting(db, f"livetv_output_formats_{provider_id}", "") or ""
+    raw = get_setting(db, _OUTPUT_FORMATS_KEY.format(provider_id), "") or ""
     try:
         val = json.loads(raw) if raw.strip() else []
     except ValueError:
@@ -1058,7 +1069,7 @@ def _remember_output_formats(db, provider_id: int, info: dict) -> None:
     import json
     formats = ((info or {}).get("user_info") or {}).get("allowed_output_formats")
     if isinstance(formats, list) and formats:
-        set_setting(db, f"livetv_output_formats_{provider_id}",
+        set_setting(db, _OUTPUT_FORMATS_KEY.format(provider_id),
                     json.dumps([str(v).lower() for v in formats]))
 
 
@@ -2251,7 +2262,7 @@ def epg_coverage(provider_id: Optional[int] = None, db: Session = Depends(get_db
     for p in live_tv_providers(db):
         if provider_id and p.id != provider_id:
             continue
-        raw = get_setting(db, f"livetv_epg_coverage_{p.id}", "")
+        raw = get_setting(db, _EPG_COVERAGE_KEY.format(p.id), "")
         try:
             report = json.loads(raw) if raw else None
         except ValueError:
@@ -2885,9 +2896,9 @@ def _dedupe_m3u(parsed_channels: list[dict]) -> list[dict]:
 # Channels the user switched off that the M3U playlist then dropped (#158). An
 # M3U sync deletes a channel that leaves the playlist, and one listed again is
 # a NEW row, which starts with its group's state: a channel switched off in an
-# enabled group came back on. Their names are kept per provider, so one that
-# returns stays off. (Xtream channels are never deleted, so they keep the row.)
-_M3U_SWITCHED_OFF_KEY = "livetv_m3u_switched_off_{}"
+# enabled group came back on. Their names are kept per provider
+# (_M3U_SWITCHED_OFF_KEY), so one that returns stays off. (Xtream channels are
+# never deleted, so they keep the row.)
 _M3U_SWITCHED_OFF_MAX = 2000
 
 
@@ -3172,7 +3183,7 @@ def _epg_resync_useless(db: Session, provider, missing: set) -> bool:
     programmes: running it again can't give those channels a guide (#466)."""
     import json
     try:
-        last = json.loads(get_setting(db, f"livetv_epg_synced_{provider.id}", "") or "null")
+        last = json.loads(get_setting(db, _EPG_SYNCED_KEY.format(provider.id), "") or "null")
     except ValueError:
         return False
     if not isinstance(last, dict) or not missing <= set(last.get("empty") or ()):
@@ -3428,10 +3439,10 @@ def _run_epg_sync_background(provider_data: dict):
                 from services.epg_match import coverage_report, coverage_summary
                 report = coverage_report(chan_info, resolved, kept)
                 report["at"] = datetime.utcnow().isoformat() + "Z"
-                set_setting(db, f"livetv_epg_coverage_{pid}", json.dumps(report))
+                set_setting(db, _EPG_COVERAGE_KEY.format(pid), json.dumps(report))
                 coverage_note = f" — {coverage_summary(report)}"
 
-            set_setting(db, f"livetv_epg_synced_{pid}", synced_record)
+            set_setting(db, _EPG_SYNCED_KEY.format(pid), synced_record)
 
             db.commit()
             log_activity(db, "epg_sync", f"EPG sync: {inserted} programs for {total} channels "

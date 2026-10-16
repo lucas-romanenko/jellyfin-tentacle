@@ -239,6 +239,14 @@ def clear_pending(db: Session, provider_id: int, kind: str = None) -> None:
     db.commit()
 
 
+def forget(db: Session, provider_id: int) -> None:
+    """Drop a deleted provider's entry, into the session only (the delete
+    commits): the next provider may get its id (#625)."""
+    entries = pending(db)
+    if entries.pop(str(provider_id), None) is not None:
+        _store(db, entries)
+
+
 def relink_before_sync(db: Session, provider: Provider) -> dict:
     """Run by every sync before its first request to the provider (#149):
     repoint an Xtream provider's files to its current address (a pending

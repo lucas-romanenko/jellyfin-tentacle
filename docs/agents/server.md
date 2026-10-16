@@ -253,6 +253,11 @@ user_id)` computes them every time from source tags, list subscriptions
   (`_running_syncs`): refused (409) while a sync of it runs, and holds the
   slot until its commit so no sync starts meanwhile. A sync writes files
   before it commits their rows, so a delete under it left orphan files.
+  It also removes what is keyed by the provider's id: the Live TV settings
+  (`livetv.PROVIDER_SETTING_KEYS`), its `provider_relink_pending` and
+  `provider_health` entries, blocked streams and match fixes. SQLite gives the
+  next provider the highest deleted id again, so anything new keyed by
+  provider id must go there too (#625).
 - Downloaded content only (never VOD, which is admin-only from the
   dashboard): the TV app or the web plugin calls
   `DELETE /TentacleDiscover/LibraryItem/{type}/{id}?jellyfinItemId=`, the
