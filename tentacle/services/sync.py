@@ -1264,24 +1264,30 @@ def _same_film_name(a: dict, b: dict) -> bool:
         and str(a.get("year") or "") == str(b.get("year") or "")
 
 
-def _known_title_id(ids, stream: dict, owns, namesake_of=None):
+def _known_title_id(ids, stream: dict, owns, namesake_of=None, rivals=()):
     """The already-imported film a stream is, from the title->ids map, or None
     when it needs a real lookup. `owns(id)` is _movie_row_plays_stream for it;
     `namesake_of(hint, id)` says whether TMDB names the hinted film with the
-    same title and year as row `id`.
+    same title and year as row `id`; `rivals` are this provider's films with
+    the same title in another year (remakes).
 
     One film with this title and a stream that carries no hint (or the same id)
     is the normal case, and stays a map lookup with no file read. Otherwise a
     stream keeps the film its .strm already plays, a hint picks among namesakes
     already imported, a hint that is not a namesake of the one known film is
     ignored (no name search), and a stream the map cannot place gets a real
-    lookup."""
+    lookup. A stream relabelled onto the year of another film of ours with the
+    same title stays with the one whose .strm plays it (#627)."""
     if not ids:
         return None
     hint = _provider_tmdb_hint(stream)
     if hint is not None and not any(i > 0 for i in ids):
         hint = None  # provider-only titles (synthetic ids): the hint means nothing here
     if len(ids) == 1 and (hint is None or hint == ids[0]):
+        if hint is None and rivals and owns(ids[0]) is False:
+            playing = [r for r in rivals if owns(r) is True]
+            if len(playing) == 1:
+                return playing[0]  # relabelled onto our other remake's year (#627)
         return ids[0]
     verdicts = {i: owns(i) for i in ids}
     for i in ids:
@@ -2671,10 +2677,15 @@ def _sync_movies(
         return (kid if result == "duplicate" else None), False
 
     def _known_id(lookup_key, stream):
+        ids = known_titles.get(lookup_key)
+        if not ids:
+            return None
+        rivals = [t for t in index.own_by_title.get(_plain_title(lookup_key[0]), ())
+                  if t not in ids and _in_library(t) and index.own_strm.get(t) not in index.shared]
         return _known_title_id(
-            known_titles.get(lookup_key), stream,
+            ids, stream,
             lambda i: _movie_row_plays_stream(client, stream, index.own_strm.get(i), index),
-            _namesake_of)
+            _namesake_of, rivals)
 
     def _in_library(i):
         return i in existing_provider_tmdb_ids or i in seen_tmdb_ids

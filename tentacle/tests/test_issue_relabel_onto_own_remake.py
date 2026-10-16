@@ -64,6 +64,58 @@ class RelabelOntoOwnRemake(Relisted):
         heat_1995 = self.db.query(Movie).filter(Movie.tmdb_id == 101).one()
         self.assertIn("/600.", Path(heat_1995.strm_path).read_text())
 
+    def test_a_provider_id_naming_the_known_film_wins_as_before(self):
+        self.listing(stream("Heat (1986)", 500), stream("Heat (1995)", 600))
+        self.night()
+        # Relabelled with the provider's TMDB id of Heat (1995): a correction.
+        self.listing(stream("Heat (1995)", 500, 101), stream("Heat (1995)", 600))
+        self.night()
+        self.night()
+        self.db.expire_all()
+        self.assertIsNone(self.db.query(Movie).filter(Movie.tmdb_id == 100).first(),
+                          "the provider's id names Heat (1995): stream 500 is no longer Heat (1986)")
+        heat_1995 = self.db.query(Movie).filter(Movie.tmdb_id == 101).one()
+        self.assertIn("/600.", Path(heat_1995.strm_path).read_text())
+
+    def test_a_new_stream_neither_film_plays_goes_to_the_label(self):
+        self.listing(stream("Heat (1986)", 500), stream("Heat (1995)", 600))
+        self.night()
+        calls = []
+        real = sync._known_title_id
+        self.addCleanup(setattr, sync, "_known_title_id", real)
+
+        def spy(ids, stream, *a, **k):
+            found = real(ids, stream, *a, **k)
+            calls.append((stream["stream_id"], found))
+            return found
+        sync._known_title_id = spy
+        self.listing(stream("Heat (1986)", 500), stream("Heat (1995)", 600), stream("Heat (1995)", 700))
+        self.night()
+        self.night()
+        self.db.expire_all()
+        self.assertIn((700, 101), calls)
+        self.assertNotIn((700, 100), calls)
+        heat_1986 = self.db.query(Movie).filter(Movie.tmdb_id == 100).one()
+        self.assertIn("/500.", Path(heat_1986.strm_path).read_text())
+        heat_1995 = self.db.query(Movie).filter(Movie.tmdb_id == 101).one()
+        self.assertIn("/600.", Path(heat_1995.strm_path).read_text())
+
+    def test_one_film_of_a_title_reads_no_file_for_its_known_label(self):
+        self.listing(stream("Heat (1995)", 600))
+        self.night()
+        reads = []
+        real = sync._movie_row_plays_stream
+        self.addCleanup(setattr, sync, "_movie_row_plays_stream", real)
+
+        def counting(client, stream, *a, **k):
+            if stream.get("stream_id") == 600:
+                reads.append(stream["stream_id"])
+            return real(client, stream, *a, **k)
+        sync._movie_row_plays_stream = counting
+        self.night()
+        self.assertEqual(reads, [], "a known label with no remake in the library must stay a map lookup")
+        self.assertIsNotNone(self.db.query(Movie).filter(Movie.tmdb_id == 101).first())
+
 
 if __name__ == "__main__":
     unittest.main()
