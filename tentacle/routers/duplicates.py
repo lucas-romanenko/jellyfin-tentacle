@@ -103,9 +103,14 @@ def _apply_resolution(dup: Duplicate, resolution: str, db: Session):
         record = db.query(model).filter(model.tmdb_id == dup.tmdb_id).populate_existing().first()
 
         if is_series:
-            # The (single) row is the VOD one — just clear the downloaded-copy path
-            if record is not None and record.sonarr_path:
-                record.sonarr_path = None
+            # The show left Sonarr: the row goes back to VOD only and the
+            # request goes, as on SeriesDelete (#617). Done here, not left to
+            # Sonarr's delete webhook, which may never come or come late.
+            if record is not None and record.source != "sonarr" and (record.sonarr_path or record.downloaded_at):
+                from services.sonarr import release_vod_series_download
+                release_vod_series_download(db, record, drop_duplicate=False)
+                db.query(DownloadRequest).filter(DownloadRequest.tmdb_id == dup.tmdb_id,
+                                                 DownloadRequest.media_type == "series").delete()
         elif record is not None and record.source != "radarr":
             # The film left Radarr: the row goes back to VOD only and the
             # request goes, as on MovieDelete. Done here, not left to Radarr's

@@ -227,7 +227,9 @@ def sonarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
                 hybrid = db.query(Series).filter(Series.tmdb_id == tmdb_id, Series.source != "sonarr").first()
                 if hybrid:
                     hybrid.sonarr_monitored = False
-                    hybrid.sonarr_path = None
+                    # Back to VOD only: no "Downloaded TV", no download date (#617)
+                    from services.sonarr import release_vod_series_download
+                    release_vod_series_download(db, hybrid)
                 deleted = db.query(Series).filter(Series.tmdb_id == tmdb_id, Series.source == "sonarr").delete()
                 db.query(DownloadRequest).filter(DownloadRequest.tmdb_id == tmdb_id, DownloadRequest.media_type == "series").delete()
                 # Clear duplicate tombstones — deleting the downloaded copy is a
