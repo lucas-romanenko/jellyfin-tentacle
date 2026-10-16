@@ -63,6 +63,10 @@ The code wins where they differ.
   Sonarr's. When calling their APIs, use *their* root folders (Radarr's is
   `/data/movies` in the common setup); Tentacle's own media paths are fixed
   (see [server.md](server.md#stack)) and mapped by the compose volumes.
+  The other way round, a Radarr/Sonarr path becomes Tentacle's with
+  `media_files.local_arr_folder` (`/data/movies` → `/media/movies`, else
+  the folder by name under the mount; Windows paths too). Never
+  `str.replace` or `Path()` on their paths: other roots and `D:\...` break.
 - **Hybrid series** need a Sonarr root folder on the VOD shows directory
   (the same host folder as Tentacle's `/media/vod/shows`); Tentacle finds
   it by "vod" in the path.

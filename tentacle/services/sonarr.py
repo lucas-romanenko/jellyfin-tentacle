@@ -22,6 +22,8 @@ DOWNLOADED_TV_TAG = "Downloaded TV"
 RECENTLY_ADDED_TV_TAG = "Recently Added TV"
 from services.tmdb import TMDBService
 from services.nfo import write_series_nfo, refresh_arr_nfo
+from services import media_files
+from services.media_files import is_vod_arr_path
 from services.tagger import apply_tag_rules, get_list_tags_for_tmdb_id, detect_source_tag_from_studios
 from services.exceptions import SonarrConnectionError
 from services.logstream import emit_library_event
@@ -1013,6 +1015,8 @@ def _scan_sonarr_library(db: Session) -> dict:
     from services.tagger import tentacle_owned_tags
     owned = tentacle_owned_tags(db)
     recently_added_days = get_recently_added_days(db)
+    not_found = 0
+    first_not_found = ""
     for tmdb_id, db_series in series_needing_nfo:
         try:
             # Build tag list: built-in + source tag + rule tags + list tags + user attribution
@@ -1061,10 +1065,12 @@ def _scan_sonarr_library(db: Session) -> dict:
             # Write NFO if series folder exists on disk
             if not db_series.sonarr_path:
                 continue
-            # Remap Sonarr's container path to Tentacle's mount
-            local_path = db_series.sonarr_path.replace("/data/shows", "/media/shows", 1)
-            series_folder = Path(local_path)
-            if not series_folder.exists():
+            # Sonarr's folder under Tentacle's mount, by path or by name (#649)
+            series_folder = media_files.local_arr_folder(db_series.sonarr_path, media_files.SONARR_MEDIA_ROOT, "/data/shows")
+            if series_folder is None:
+                if not is_vod_arr_path(db_series.sonarr_path):
+                    not_found += 1
+                    first_not_found = first_not_found or db_series.sonarr_path
                 continue
 
             # Build NFO metadata from DB record
@@ -1079,6 +1085,8 @@ def _scan_sonarr_library(db: Session) -> dict:
                 "poster_path": db_series.poster_path,
                 "backdrop_path": db_series.backdrop_path,
                 "status": db_series.status,
+                # A new NFO for an old download keeps its date (#266)
+                "date_added": db_series.downloaded_at or db_series.date_added,
             }
 
             # tvshow.nfo goes in the series root folder
@@ -1090,6 +1098,13 @@ def _scan_sonarr_library(db: Session) -> dict:
 
         except Exception as e:
             logger.debug(f"NFO/tag processing failed for {db_series.title}: {e}")
+
+    if not_found:
+        root = media_files.SONARR_MEDIA_ROOT
+        logger.warning(
+            f"Sonarr scan: {not_found} downloads not found under {root} (first: Sonarr's "
+            f"{first_not_found}); no NFO or tags written beside them. Mount the folder Sonarr "
+            f"downloads to at {root} (Settings → Library Paths).")
 
     db.commit()
 

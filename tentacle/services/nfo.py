@@ -34,6 +34,15 @@ def _x(text) -> str:
     return _xml_escape(cleaned, {'"': "&quot;", "'": "&apos;"})
 
 
+def _date_added(metadata: dict) -> str:
+    """<dateadded>, which Jellyfin reads as the item's DateCreated: the
+    download's own date when the caller has one (metadata["date_added"], a
+    datetime), else now. An NFO created today for a years-old download put it
+    at the top of "Latest" (#266, #649)."""
+    when = metadata.get("date_added")
+    return (when if isinstance(when, datetime) else datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
+
+
 def write_movie_nfo(
     nfo_path: Path,
     metadata: dict,
@@ -93,7 +102,7 @@ def write_movie_nfo(
             lines.append(f'  <tag>{_x(tag)}</tag>')
 
         # Date added
-        lines.append(f'  <dateadded>{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</dateadded>')
+        lines.append(f'  <dateadded>{_date_added(metadata)}</dateadded>')
 
         # Directors
         for director in (metadata.get("directors") or []):
@@ -169,7 +178,7 @@ def write_series_nfo(
         for tag in tags:
             lines.append(f'  <tag>{_x(tag)}</tag>')
 
-        lines.append(f'  <dateadded>{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</dateadded>')
+        lines.append(f'  <dateadded>{_date_added(metadata)}</dateadded>')
 
         for creator in (metadata.get("creators") or []):
             lines.append(f'  <director>{_x(creator)}</director>')

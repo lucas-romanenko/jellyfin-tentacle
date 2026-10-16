@@ -188,5 +188,35 @@ class SonarrRootElsewhere(_Base):
         self.assertEqual([], self._warnings(logs, "/data/vod/Series"))
 
 
+class WriteNfosRoutes(_Base):
+    """The Write NFOs buttons find the same folders as the scans: Radarr's
+    looked only for "<title> (<year>)" under /media/movies, Sonarr's used
+    Sonarr's own path as Tentacle's."""
+
+    def test_radarr_route_finds_a_folder_radarr_named_differently(self):
+        import routers.radarr as route
+        from datetime import datetime
+        folder = self.movies / "Heat.1995.1080p"
+        folder.mkdir()
+        (folder / "Heat.1995.1080p.mkv").write_bytes(b"x")
+        self.db.add(mdb.Movie(tmdb_id=949, title="Heat", year="1995", source="radarr",
+                              radarr_path="/data/media/movies/Heat.1995.1080p/Heat.1995.1080p.mkv",
+                              downloaded_at=datetime(2020, 1, 1, 10, 20, 30)))
+        self.db.commit()
+        self.assertEqual(1, route.write_nfos(db=self.db)["written"])
+        nfo = folder / "Heat.1995.1080p.nfo"
+        self.assertEqual(["2020-01-01 10:20:30"], self._dates(nfo))
+
+    def test_sonarr_route_maps_sonarrs_path(self):
+        import routers.sonarr as route
+        folder = self.shows / "Breaking Bad (2008)"
+        folder.mkdir()
+        self.db.add(mdb.Series(tmdb_id=1396, title="Breaking Bad", year="2008", source="sonarr",
+                               sonarr_path="/data/tv/Breaking Bad (2008)"))
+        self.db.commit()
+        self.assertEqual(1, route.write_nfos(db=self.db)["written"])
+        self.assertTrue((folder / "tvshow.nfo").exists())
+
+
 if __name__ == "__main__":
     unittest.main()
