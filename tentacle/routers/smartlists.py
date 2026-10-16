@@ -925,6 +925,23 @@ def set_row_shape(req: RowShapeRequest, db: Session = Depends(get_db), user: Ten
     return {"success": True, "shape": shape, **notify}
 
 
+def _jellyfin_item_name(db: Session, user: TentacleUser, item_id: str) -> Optional[str]:
+    """The name Jellyfin shows this user for an item (a playlist), or None."""
+    from services.jellyfin import JellyfinService
+    url = get_setting(db, "jellyfin_url", "")
+    key = get_setting(db, "jellyfin_api_key", "")
+    if not url or not key or not item_id:
+        return None
+    try:
+        item = JellyfinService(url, key, user.jellyfin_user_id)._get(
+            f"/Items/{item_id}", params={"userId": user.jellyfin_user_id} if user.jellyfin_user_id else None)
+    except Exception as e:
+        logger.debug(f"Hero: could not read the name of {item_id} from Jellyfin: {e}")
+        return None
+    name = (item or {}).get("Name") if isinstance(item, dict) else None
+    return name.strip() if isinstance(name, str) and name.strip() else None
+
+
 @router.post("/hero")
 def set_hero(req: HeroPickRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Read JSON, update hero, write JSON back. That's it."""
@@ -944,7 +961,9 @@ def set_hero(req: HeroPickRequest, db: Session = Depends(get_db), user: Tentacle
             else:
                 all_playlists = _get_smartlists_with_playlist_ids(db, user_id=user.id)
                 pl = next((p for p in all_playlists if p["playlist_id"] == req.playlist_id), None)
-                display_name = pl["name"] if pl else req.playlist_id
+                # A playlist made in Jellyfin (the plugin passes any id through):
+                # ask Jellyfin for its name; the id is only the last resort.
+                display_name = pl["name"] if pl else (_jellyfin_item_name(db, user, req.playlist_id) or req.playlist_id)
             config["hero"] = {
                 "enabled": True,
                 "playlist_id": req.playlist_id,
@@ -955,6 +974,9 @@ def set_hero(req: HeroPickRequest, db: Session = Depends(get_db), user: Tentacle
                 "require_trailer": existing_hero.get("require_trailer", False),
                 "item_count": existing_hero.get("item_count", 10),
             }
+            if "trailer_audio" in existing_hero:
+                # Set by hero-sort; picking another playlist must not drop it.
+                config["hero"]["trailer_audio"] = existing_hero["trailer_audio"]
         else:
             config["hero"] = {"enabled": False, "playlist_id": "", "display_name": "", "sort_by": "random", "sort_order": "Descending", "require_logo": True, "require_trailer": False, "item_count": 10}
 
