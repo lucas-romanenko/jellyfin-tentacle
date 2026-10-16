@@ -263,8 +263,9 @@ read that row.
   or a label that no longer fits (a reused stream number), moves it (#310).
 - A stream stays with the film whose `.strm` plays it (#185). After every
   category, `_place_relisted_movies()` applies that by the files: a stream
-  no label placed that a film's `.strm` plays is that film, relabelled
-  (counted as existing and seen, so never pruned, #262); a film met this
+  no label placed (no TMDB match, or a label the cleaner rejects) that a
+  film's `.strm` plays is that film, relabelled (counted as existing and
+  seen, so never pruned, #262, #621); a film met this
   sync whose `.strm` plays a stream of this provider no longer listed
   anywhere (a complete fetch, Xtream only) is pointed at its current
   stream in place (#263). Episodes: a file whose episode id no listing of
@@ -276,6 +277,17 @@ read that row.
   flips. A listing whose fetch fails makes the show's files wait; a
   listing that answers with no episodes offers nothing and the other
   listings decide (#512).
+- Series rows remember the provider series ids their listings were met by
+  (`Series.provider_series_ids`, `_record_series_listings()`: tonight's set
+  after a complete fetch, added to after a partial one; cleared on a
+  takeover). A listing no label placed whose id a row of ours recorded,
+  and that no listing met tonight, is that show relabelled when its
+  episodes are ones the row's `.strm` files play
+  (`_place_relabelled_series()`, one `get_series_info`): kept, seen,
+  back-filled. Files that play none of them: the id now names another
+  show, left to the prune. No files to compare (opted out, or the listing
+  can't be read): kept, nothing written (#621). A show relabelled before
+  its id was ever recorded is still pruned.
 - `.strm` files are written with `_write_strm()`: a hidden temp file in the
   same folder, then a rename, so a write cut short leaves the old file
   whole. An existing `.strm` that is empty or blank is rewritten like a
