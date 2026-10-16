@@ -209,7 +209,10 @@ def update_nfo_tags(nfo_path: Path, tags: List[str], owned: Optional[set] = None
     also carries its own tags (TMDB keywords, hand tags), and they stay. Without
     it every <tag> line is replaced. A file whose tags already match is not
     written at all: every Refresh Tags press rewrote about 25k NFOs, and
-    Jellyfin re-read each of them (#165).
+    Jellyfin re-read each of them (#165). A file with neither </movie> nor
+    </tvshow> (Radarr's/Sonarr's metadata-URL NFO, a release .nfo) is left
+    alone: there is nowhere to put the tags, and counting it as written made
+    every Radarr/Sonarr scan trigger a full Jellyfin library scan (#628).
     """
     if not nfo_path.exists():
         return False
@@ -217,24 +220,30 @@ def update_nfo_tags(nfo_path: Path, tags: List[str], owned: Optional[set] = None
     try:
         import html
         import re
-        content = nfo_path.read_text(encoding='utf-8')
-        existing = [html.unescape(t) for t in re.findall(r'^[ \t]*<tag>(.*?)</tag>', content, flags=re.MULTILINE)]
+        original = nfo_path.read_text(encoding='utf-8')
+        existing = [html.unescape(t) for t in re.findall(r'^[ \t]*<tag>(.*?)</tag>', original, flags=re.MULTILINE)]
         kept = [t for t in existing if owned is not None and t not in owned]
         final = kept + [t for t in tags if t not in kept]
         if set(final) == set(existing) and len(final) == len(existing):
             return False
 
+        # Tags go in before the closing tag. A file with neither (a
+        # metadata-URL NFO, a release .nfo) is not ours to rewrite.
+        close_tag = next((t for t in ('</movie>', '</tvshow>') if t in original), None)
+        if close_tag is None:
+            logger.debug(f"{nfo_path}: no </movie> or </tvshow>, tags left to the Jellyfin API")
+            return False
+
         # Remove existing tags, whole lines only. The old pattern also ate the
         # newline BEFORE each tag, so tags in the middle of the file glued the
         # lines around them together, a little more on every rewrite.
-        content = re.sub(r'^[ \t]*<tag>.*?</tag>[ \t]*(?:\r?\n|$)', '', content, flags=re.MULTILINE)
-
-        # Insert new tags before closing tag
-        close_tag = '</movie>' if '</movie>' in content else '</tvshow>'
+        content = re.sub(r'^[ \t]*<tag>.*?</tag>[ \t]*(?:\r?\n|$)', '', original, flags=re.MULTILINE)
         if final:
             tag_xml = '\n'.join(f'  <tag>{_x(t)}</tag>' for t in final)
             content = content.replace(close_tag, f'{tag_xml}\n{close_tag}')
 
+        if content == original:
+            return False
         nfo_path.write_text(content, encoding='utf-8')
         return True
 

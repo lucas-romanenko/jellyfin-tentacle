@@ -19,7 +19,10 @@ The code wins where they differ. Internals: [server.md](server.md).
      gets Tentacle's `<tag>` lines changed (`refresh_arr_nfo`), never
      rebuilt: a rebuild reset `<dateadded>`, which Jellyfin reads as
      DateCreated, so every scan moved old downloads to the top of "Latest"
-     (#266). The scans run one at a time per app (`_scan_lock`, #268).
+     (#266). One with neither `</movie>` nor `</tvshow>` (a metadata-URL
+     NFO, a release `.nfo`) is left alone and not counted as written, else
+     every scan triggered a full library scan (#628). The scans run one at
+     a time per app (`_scan_lock`, #268).
 2. **Tags**: VOD through NFO; downloads through the API
    (`set_item_tags`): "Downloaded Movies", "Recently Added Movies", list
    tags (e.g. "IMDB TOP 250"). Source tags carry the type suffix.
