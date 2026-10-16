@@ -369,7 +369,10 @@ User docs: `docs/features/live-tv.md`.
   the first packet for a start mid-packet, judged on the first 564 bytes
   held by `_decidable_start()` -- and a text type or a `{`/`<` start; never
   proxied). A mid-packet start's partial packet is dropped. 401/403/404 stop
-  at once. A re-dial counts as a reconnect only once it delivers, and as a
+  at once, except 401/403 on a recording: waited out on the refusal cap for
+  `_DENIED_GRACE` (180 s) of unbroken refusal (#646: an IP block, Cloudflare
+  or flood protection refuses everything for a minute or two), then it ends.
+  A re-dial counts as a reconnect only once it delivers, and as a
   recovery (backoff and budget reset) only once it delivered past 10 s.
 - Many panels start every raw connection with their buffer (~20 s already
   sent, byte for byte). `_ReplaySplicer` (#368) joins a re-dialled
@@ -397,7 +400,11 @@ User docs: `docs/features/live-tv.md`.
   (401/403/404/407/410 from a token URL) re-resolves the channel URL, at most
   `_MAX_RERESOLVE` times in a row; a 407 from the channel URL itself (an
   ended session while the token is renewed) does not count for a recording
-  and is waited out on the refusal cap. Viewers keep the three tries.
+  and is waited out on the refusal cap. A 401/403 from the channel URL on a
+  recording does not count either for `_DENIED_GRACE` (180 s) of unbroken
+  refusal (`_denied_grace()`, #646), then counts as before; the token URL's
+  401/403 that starts each re-resolve always counts. Viewers keep the three
+  tries.
 - Channel ids are the provider's `stream_id` (stable across changes), used
   as `GuideNumber`; Jellyfin keys the channel, its timers and favourites on
   `hdhr_<GuideNumber>`, so it must never change. M3U channels have no
