@@ -92,6 +92,13 @@ class RelabelOntoOwnRemake(_Remakes):
         self.assertIsNone(self.plays(100), "the hinted label decides, as before")
         self.assertEqual(600, self.plays(101))
 
+    def test_a_provider_tmdb_id_naming_the_film_that_plays_it_keeps_it(self):
+        """The label says 1995, the provider's TMDB id says 1986: the file and
+        the id agree, the stream stays with Heat (1986)."""
+        self.start()
+        self.nights(stream("Heat (1995)", 500, 100), stream("Heat (1995)", 600))
+        self.assertEqual((500, 600), (self.plays(100), self.plays(101)))
+
     def test_the_relabelled_stream_stays_with_its_film_when_the_other_one_is_delisted(self):
         """Stream 600 is gone and 500 now says "Heat (1995)": the film that plays
         500 keeps it (#185); Heat (1995), whose stream left, goes as any
