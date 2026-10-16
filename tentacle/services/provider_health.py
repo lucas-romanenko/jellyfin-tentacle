@@ -365,6 +365,20 @@ def _save_state(db, state: dict) -> None:
     set_setting(db, SETTING_KEY, json.dumps(state))
 
 
+def forget(db, provider_id: int) -> None:
+    """Drop a deleted provider's state, into the session only (the delete
+    commits). check_providers prunes only ids that no longer exist, and the
+    next provider may get this one's id: it would start "failing since ..."
+    (#625)."""
+    state = load_state(db)
+    if state.pop(str(provider_id), None) is None:
+        return
+    from models.database import Setting
+    row = db.query(Setting).filter(Setting.key == SETTING_KEY).first()
+    if row is not None:
+        row.value = json.dumps(state)
+
+
 def _unknown() -> dict:
     return {"state": "unknown", "since": None, "checked_at": None, "skipped_at": None,
             "step": None, "code": None, "kind": None, "reason": None,
