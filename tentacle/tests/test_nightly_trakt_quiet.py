@@ -22,8 +22,11 @@ class NightlyTraktQuiet(nightly.NightlyEpgForLiveProvider):
         self.db.add(mdb.ListSubscription(name="Watchlist", type="trakt", tag="Watchlist",
                                          url="https://trakt.tv/users/someone/lists/watchlist"))
         self.db.commit()
+        # Turn logging on for this test, then give back the level it found:
+        # forcing CRITICAL here silenced every module run after this one.
+        previous = logging.root.manager.disable
         logging.disable(logging.NOTSET)
-        self.addCleanup(logging.disable, logging.CRITICAL)
+        self.addCleanup(logging.disable, previous)
 
     def test_the_nightly_job_syncs_its_guide(self):
         with self.assertLogs("main", level="INFO") as logs:
