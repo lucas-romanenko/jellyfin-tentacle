@@ -7,6 +7,7 @@ and writes NFO files with tags for Jellyfin.
 import logging
 import threading
 import time
+from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -14,7 +15,7 @@ import requests
 from sqlalchemy.orm import Session
 
 from models.database import Series, Duplicate, DownloadRequest, TentacleUser, get_setting, DeletionLog, get_recently_added_days
-from services.radarr import file_loss_looks_like_an_outage
+from services.radarr import download_loss_looks_like_an_outage
 from services.duplicates import series_has_real_download, droppable_duplicates
 
 DOWNLOADED_TV_TAG = "Downloaded TV"
@@ -630,6 +631,57 @@ def _dismiss_strm_only_duplicates(db: Session, sonarr: "SonarrService", all_seri
     return dismissed
 
 
+def series_download_kind(series) -> str:
+    """The kind of download a row holds: "sonarr" (downloaded-only) or "vod"
+    (a VOD show Sonarr downloaded too), keyed like services.radarr.download_kind."""
+    return "sonarr" if series.source == "sonarr" else "vod"
+
+
+def downloaded_series_rows(db: Session):
+    """Rows that hold a Sonarr download: the downloaded-only ones, and VOD
+    shows Sonarr downloaded too (#617). A VOD show counts by its download
+    date, not its sonarr_path: Add to Sonarr sets the path before anything is
+    downloaded, and only a Sonarr download dates a VOD row. That also finds
+    rows an older SeriesDelete left with the date but no path."""
+    from sqlalchemy import or_
+    return db.query(Series).filter(or_(Series.source == "sonarr", Series.downloaded_at.isnot(None)))
+
+
+def holds_series_download(row) -> bool:
+    """True when a VOD show's row claims a Sonarr download (its date, or the
+    "Downloaded TV" tag), not only a request Sonarr is still searching for."""
+    return row.downloaded_at is not None or DOWNLOADED_TV_TAG in (row.tags or [])
+
+
+def release_vod_series_download(db: Session, row: Series, owned: Optional[set] = None,
+                                keep_sonarr_path: bool = False, drop_duplicate: bool = True) -> None:
+    """A VOD show's Sonarr download is gone: the row goes back to a plain VOD
+    show, as services.radarr.release_vod_download does for films (#617). Its
+    download date and the download's Jellyfin item id go, its NFO is the VOD
+    show's tvshow.nfo again, and "Downloaded TV" and "<name>'s Downloads" come
+    off the row and that NFO, so the next tag push takes them off the VOD show
+    in Jellyfin. keep_sonarr_path: Sonarr still lists the show, so it stays an
+    intentional add (a later download is no duplicate). A pending duplicate
+    for the pair is dismissed (drop_duplicate=False: Keep VOD, which records
+    it itself). The VOD files stay. Does not commit."""
+    from services.tagger import set_row_tags, tentacle_owned_tags, current_downloads_tags
+    drop = {DOWNLOADED_TV_TAG} | current_downloads_tags(db)
+    if not keep_sonarr_path:
+        row.sonarr_path = None
+    row.downloaded_at = None
+    row.last_downloaded_episode = None
+    row.jellyfin_item_id = None   # the deleted download's item; re-matched on use
+    if row.strm_path:             # a VOD show's folder; the scan pointed nfo_path at the download's
+        row.nfo_path = str(Path(row.strm_path) / "tvshow.nfo")
+    row.date_updated = datetime.utcnow()
+    set_row_tags(row, [t for t in (row.tags or []) if t not in drop],
+                 owned if owned is not None else tentacle_owned_tags(db))
+    if not drop_duplicate:
+        return
+    droppable_duplicates(db, "series", row.tmdb_id).filter(
+        Duplicate.resolution == "pending").delete(synchronize_session=False)
+
+
 def scan_sonarr_library(db: Session) -> dict:
     """
     Scan Sonarr library and:
@@ -691,6 +743,8 @@ def _scan_sonarr_library(db: Session) -> dict:
 
     # Map resolved tmdb_id -> Sonarr tvdbId so the NFO writer can include <tvdbid>.
     series_tvdb_by_tmdb: dict = {}
+    # Every show with episode files, by its resolved tmdb id.
+    resolved_tmdb_ids: set = set()
 
     for show in downloaded:
         tmdb_id = show.get("tmdbId") or 0
@@ -714,6 +768,7 @@ def _scan_sonarr_library(db: Session) -> dict:
         if not tmdb_id:
             logger.debug(f"Sonarr: skipping '{title}' — no TMDB ID (tvdb:{show.get('tvdbId')})")
             continue
+        resolved_tmdb_ids.add(tmdb_id)
 
         # Remember the TVDB id for this resolved series (for <tvdbid> in the NFO).
         if show.get("tvdbId"):
@@ -857,20 +912,21 @@ def _scan_sonarr_library(db: Session) -> dict:
 
     stats["false_duplicates_dismissed"] = _dismiss_strm_only_duplicates(db, sonarr, all_series)
 
-    # Remove series no longer in Sonarr
-    sonarr_tmdb_ids = set()
-    for s in downloaded:
-        tid = s.get("tmdbId") or 0
-        if tid:
-            sonarr_tmdb_ids.add(tid)
-    listed_tmdb_ids = {s.get("tmdbId") for s in all_series if s.get("tmdbId")}
-    rows = db.query(Series).filter(Series.source == "sonarr").all()
+    # Remove series no longer in Sonarr. "With files" by the ids the loop
+    # above resolved: a show Sonarr lists without a tmdbId (found by TVDB or
+    # title) would otherwise lose the row the same scan just tagged.
+    sonarr_tmdb_ids = resolved_tmdb_ids
+    listed_tmdb_ids = {s.get("tmdbId") for s in all_series if s.get("tmdbId")} | sonarr_tmdb_ids
+    # VOD shows with a download count too: they lose it the same way (#617).
+    rows = downloaded_series_rows(db).all()
     # Still in Sonarr, but Sonarr says it has no episode files (see
-    # services.radarr.file_loss_looks_like_an_outage).
+    # services.radarr.file_loss_looks_like_an_outage), judged over all of
+    # them and over each kind alone (#505).
     lost_file = [r for r in rows if r.tmdb_id not in sonarr_tmdb_ids and r.tmdb_id in listed_tmdb_ids]
     refused = 0
     keep = set()
-    if file_loss_looks_like_an_outage(len(lost_file), len(rows)):
+    if download_loss_looks_like_an_outage(Counter(series_download_kind(r) for r in lost_file),
+                                          Counter(series_download_kind(r) for r in rows)):
         refused = len(lost_file)
         keep = {r.tmdb_id for r in lost_file}
         logger.error(
@@ -879,32 +935,56 @@ def _scan_sonarr_library(db: Session) -> dict:
             f"like Sonarr's media storage being unavailable, not a clean-up. Rows kept; if the "
             f"files really are gone, remove the series from Sonarr.")
     removed = 0
+    released = 0
+    owned = None
     for series in rows:
-        if series.tmdb_id not in sonarr_tmdb_ids and series.tmdb_id not in keep:
-            emit_library_event("series_removed", {
-                "tmdb_id": series.tmdb_id,
-                "title": series.title,
-                "media_type": "series",
-            })
-            # Same transaction as the delete: the scan commits once, at the end.
-            db.add(DeletionLog(
-                kind="sonarr-scan", media_type="series", reason="removed-from-sonarr", name=series.title,
-                detail="no longer in Sonarr" if series.tmdb_id not in listed_tmdb_ids
-                else "Sonarr reports no episode files"))
+        if series.tmdb_id in sonarr_tmdb_ids or series.tmdb_id in keep:
+            continue
+        if series.source != "sonarr":
+            # A VOD show: only its download goes, the row stays. Its request
+            # and duplicate tombstones go as below. While Sonarr still lists
+            # the show it keeps sonarr_path: an intentional add, as when it
+            # was requested and nothing was downloaded yet.
             db.query(DownloadRequest).filter(
                 DownloadRequest.tmdb_id == series.tmdb_id,
                 DownloadRequest.media_type == "series",
             ).delete()
-            # Its duplicate tombstones too, as SeriesDelete does: a "keep
-            # downloaded" one would keep the VOD episodes away for good (#334).
-            # Not while Keep VOD holds them, nor one holding saved watched
-            # state (#515).
             droppable_duplicates(db, "series", series.tmdb_id).delete(synchronize_session=False)
-            db.delete(series)
-            removed += 1
+            if owned is None:
+                from services.tagger import tentacle_owned_tags
+                owned = tentacle_owned_tags(db)
+            release_vod_series_download(db, series, owned,
+                                        keep_sonarr_path=series.tmdb_id in listed_tmdb_ids)
+            released += 1
+            logger.info(f"Sonarr scan: '{series.title}' (tmdb:{series.tmdb_id}) lost its download "
+                        f"({'no episode files' if series.tmdb_id in listed_tmdb_ids else 'no longer in Sonarr'}); "
+                        f"the VOD show stays")
+            continue
+        emit_library_event("series_removed", {
+            "tmdb_id": series.tmdb_id,
+            "title": series.title,
+            "media_type": "series",
+        })
+        # Same transaction as the delete: the scan commits once, at the end.
+        db.add(DeletionLog(
+            kind="sonarr-scan", media_type="series", reason="removed-from-sonarr", name=series.title,
+            detail="no longer in Sonarr" if series.tmdb_id not in listed_tmdb_ids
+            else "Sonarr reports no episode files"))
+        db.query(DownloadRequest).filter(
+            DownloadRequest.tmdb_id == series.tmdb_id,
+            DownloadRequest.media_type == "series",
+        ).delete()
+        # Its duplicate tombstones too, as SeriesDelete does: a "keep
+        # downloaded" one would keep the VOD episodes away for good (#334).
+        # Not while Keep VOD holds them, nor one holding saved watched
+        # state (#515).
+        droppable_duplicates(db, "series", series.tmdb_id).delete(synchronize_session=False)
+        db.delete(series)
+        removed += 1
     if removed:
         logger.info(f"Sonarr scan: removed {removed} series no longer in Sonarr")
     stats["removed"] = removed
+    stats["released"] = released
     stats["removals_refused"] = refused
     from services.duplicates import drop_orphan_tombstones
     stats["tombstones_dropped"] = drop_orphan_tombstones(db, "series")

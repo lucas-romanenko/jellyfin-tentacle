@@ -171,9 +171,9 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   for the arr, which waits for its webhook), and never a keep_vod one with
   `pending_user_data`. After the arr call Keep VOD re-reads the row
   (`populate_existing`): the webhook may have released or deleted it (#515).
-  On a film it then releases the VOD row itself (`release_vod_download`)
-  and deletes the request, so it doesn't depend on the webhook coming in
-  time or at all (#549).
+  It then releases the VOD row itself (films `release_vod_download`, #549;
+  series `release_vod_series_download`, #617) and deletes the request, so
+  it doesn't depend on the webhook coming in time or at all.
 - **Following** = Sonarr `monitorNewItems="all"` (stricter than
   `monitored`), mirrored in `Series.sonarr_monitored`, synced both ways on
   every Sonarr scan; unfollowing keeps `monitored=true`. Hidden for ended
@@ -183,8 +183,8 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   in the VOD folder (needs a Sonarr root folder on the VOD shows directory;
   `add_to_sonarr` in `routers/lists.py` picks the root with "vod" in its
   path) and sets `Series.sonarr_path`, which stops the next scan from
-  calling it a duplicate. Sonarr SeriesDelete on a hybrid clears
-  `sonarr_path`/`sonarr_monitored` and keeps the VOD record.
+  calling it a duplicate. Sonarr SeriesDelete on a hybrid keeps the VOD
+  record and releases its download (pipelines.md "Sonarr deletes a series").
 - **Unaired episodes** are left out of counts (Sonarr `airDateUtc`): "7/7
   +1 upcoming", not "7/8".
 

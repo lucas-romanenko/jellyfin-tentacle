@@ -205,6 +205,48 @@ class HybridShowLosesItsDownload(unittest.TestCase):
         self.assertIsNone(after["downloaded_at"])
         self.assertEqual(0, self.db.query(Duplicate).count(), "duplicate detection came back for it")
 
+    def test_row_left_stuck_by_an_old_series_delete_is_healed(self):
+        """Before the fix SeriesDelete cleared only sonarr_path: the row kept
+        the date and the tags. The next scan releases it."""
+        row = self.row()
+        row.downloaded_at = datetime(2026, 9, 1)
+        row.tags = ["Netflix TV", "Downloaded TV", "requester's Downloads"]
+        self.db.commit()
+        self.listed = [self._other()]
+        stats = self.scan()
+        after = self.claims()
+        self.assertIsNone(after["sonarr_path"])
+        self.assert_vod_only(after)
+        self.assertEqual(1, stats.get("released"), stats)
+
+    def test_show_listed_without_tmdb_id_keeps_its_download(self):
+        """Sonarr lists the show without a tmdbId; the scan finds it by TVDB
+        and must not release the download it just tagged."""
+        class FakeTMDB:
+            def __init__(self, *a, **k):
+                pass
+
+            def find_by_tvdb_id(self, tvdb_id):
+                return TMDB if tvdb_id == 5 else None
+
+            def search_series(self, *a, **k):
+                return None
+
+            def get_series_details(self, *a, **k):
+                return None
+
+        show = self._show(files=1)
+        show["tmdbId"] = 0
+        self.listed = [show, self._other()]
+        with mock.patch("services.tmdb.get_tmdb_token", lambda *a, **k: "t"), \
+                mock.patch("services.sonarr.TMDBService", FakeTMDB):
+            self.downloaded_first()
+            stats = self.scan()
+        after = self.claims()
+        self.assertTrue(after["Downloaded TV"], f"released while Sonarr has its files: {stats} {after}")
+        self.assertIsNotNone(after["downloaded_at"])
+        self.assertEqual(0, stats.get("released"), stats)
+
     def test_many_vod_shows_losing_files_at_once_is_an_outage(self):
         """The storage guard (#106, per kind #505) covers VOD shows' downloads too."""
         shows = [(TMDB, 5, self.dl)]
