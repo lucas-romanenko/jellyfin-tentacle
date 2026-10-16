@@ -99,6 +99,21 @@ class PlaceholderNeverFetched(RefusedAtOpen, RunningStreams):
         self.assertNotIn(BLACK, log, "the placeholder was fetched before it was refused")
         self.assertEqual(1, livetv._placeholders[1]["count"])
 
+    async def test_worker_variant_redirected_to_a_placeholder_does_not_fetch_it(self):
+        """The open could not read the variant (503), so the worker does: it
+        redirects to black.ts, which was read as the variant playlist. Nothing
+        has been sent yet, so the stream ends."""
+        script = {
+            BASE: [_resp(200, BASE, MASTER.encode(), PLAYLIST_CT)],
+            VARIANT: [_resp(503, VARIANT), _resp(302, VARIANT, headers={"location": BLACK})],
+            BLACK: [_resp(200, BLACK, b"BLACK")],
+        }
+        body, log = await self._record(script)
+        self.assertEqual(b"", body)
+        self.assertEqual(2, log.count(VARIANT))
+        self.assertNotIn(BLACK, log, "the placeholder was fetched before it was refused")
+        self.assertEqual(1, livetv._placeholders[1]["count"])
+
 
 def load_tests(loader, tests, pattern):
     # The imported RefusedAtOpen and RunningStreams run from their own module;

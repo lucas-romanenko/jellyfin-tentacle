@@ -99,6 +99,10 @@ async def _send_checked(client, url: str, headers: dict, guard=None):
     Returns the open streaming response (caller closes it) for the first hop
     that is not a redirect.
 
+    A URL that names a provider placeholder (black.ts, ...: _placeholder_name),
+    the first one or a redirect target, is never fetched: it raises
+    _ProviderPlaceholder, and then no response is open (#624).
+
     `guard` validates every hop; callers pass one scoped to the channel's
     provider (#76) so a deliberately-configured LAN re-streamer works while
     everything else is still held to is_safe_url().
@@ -106,6 +110,9 @@ async def _send_checked(client, url: str, headers: dict, guard=None):
     guard = guard or is_safe_url
     current = url
     for _ in range(_MAX_STREAM_REDIRECTS):
+        placeholder = _placeholder_name(current)
+        if placeholder:
+            raise _ProviderPlaceholder(placeholder)
         req = client.build_request("GET", current, headers=headers)
         resp = await client.send(req, stream=True)
         if resp.status_code not in (301, 302, 303, 307, 308):
@@ -484,7 +491,7 @@ _REFUSAL_BACKOFF_CAP = 15.0
 # usually black. Proxied as the channel, a scheduled recording "succeeds" with
 # ten minutes of black that Jellyfin never retries, or dies on its own buffer
 # with an error that says nothing about the cause (#140). Recognised by file
-# name, never fetched, and refused with a 503 while the channel is opening, so
+# name, never fetched (redirect targets included: _send_checked), and refused with a 503 while the channel is opening, so
 # Jellyfin fails the timer honestly and tries again a minute later.
 _PLACEHOLDER_STEMS = {
     "black",
@@ -4323,6 +4330,8 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         raise httpx.ReadTimeout(f"the playlist did not arrive within "
                                                 f"{_OPEN_PLAYLIST_READ:.0f}s", request=resp.request)
                 break
+            except _ProviderPlaceholder as e:
+                await _refuse_placeholder(channel_id, e.segment)
             except httpx.HTTPError as e:
                 if resp is not None:
                     # Retry the server that refused, not the whole chain: that
@@ -4377,9 +4386,6 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
 
         tokenized_url = str(resp.url)
         logger.info(f"[LiveTV] Resolved tokenized URL for channel {channel_id}: {tokenized_url}")
-        placeholder = _placeholder_name(tokenized_url)
-        if placeholder:
-            await _refuse_placeholder(channel_id, placeholder)
 
         content_type = resp.headers.get("content-type", "")
         is_hls = "mpegurl" in content_type.lower()
@@ -4398,21 +4404,17 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 variant = _select_hls_variant(playlist_text, playlist_base)
                 if not variant or not await asyncio.to_thread(guard, variant):
                     break
-                placeholder = _placeholder_name(variant)
-                if placeholder:
-                    await _refuse_placeholder(channel_id, placeholder)
                 v_resp = None
                 try:
                     v_resp = await asyncio.wait_for(
                         _send_checked(client, variant, {"User-Agent": user_agent}, guard), 10.0)
                     v_resp.raise_for_status()
-                    placeholder = _placeholder_name(str(v_resp.url))
-                    if placeholder:
-                        await _refuse_placeholder(channel_id, placeholder)
                     variant_text = (await asyncio.wait_for(v_resp.aread(), 10.0)).decode(
                         "utf-8", errors="replace")
                 except _PlaceholderRefusal:
                     raise
+                except _ProviderPlaceholder as e:
+                    await _refuse_placeholder(channel_id, e.segment)
                 except Exception as e:
                     # Anything else (a refusal, a blocked redirect) is the
                     # stream's to handle, on the terms it always had.
@@ -4581,15 +4583,12 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         try:
                             new_resp = await _send_checked(raw_client, stream_url, ua, guard)
                             new_resp.raise_for_status()
-                            placeholder = _placeholder_name(str(new_resp.url))
-                            if placeholder:
-                                raise _ProviderPlaceholder(placeholder)
                             if "mpegurl" in new_resp.headers.get("content-type", "").lower():
                                 raise httpx.HTTPError("the channel now answers with a playlist")
                         except _ProviderPlaceholder as e:
                             # Not the channel: waited out like a refusal, and
-                            # its bytes never reach the recording (#140).
-                            await new_resp.aclose()
+                            # its bytes never reach the recording (#140), and
+                            # _send_checked never fetched it (#624).
                             reason = str(e)
                             backoff_cap = _REFUSAL_BACKOFF_CAP
                             await _note_placeholder(channel_id, e.segment)
@@ -4829,9 +4828,6 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 playlist: it has no end."""
                 r = await _send_checked(hls_client, stream_url, ua_headers, guard)
                 try:
-                    placeholder = _placeholder_name(str(r.url))
-                    if placeholder:
-                        raise _ProviderPlaceholder(placeholder)
                     r.raise_for_status()
                     if "mpegurl" not in r.headers.get("content-type", "").lower():
                         raise _NotAPlaylist("the channel now answers with a stream, not a playlist")
@@ -5045,6 +5041,14 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                                 "utf-8", errors="replace")
                         finally:
                             await v_resp.aclose()
+                    except _ProviderPlaceholder as e:
+                        # The variant points (or redirects) at a stand-in
+                        # clip: never read as a playlist (#624).
+                        if await _placeholder_refusal(e.segment, "Variant playlist fetch"):
+                            return
+                        await _backoff_sleep()
+                        variant_retry = True
+                        break
                     except Exception as e:
                         if _token_expired(e):
                             if await _reresolve("Variant playlist fetch", e):
@@ -5210,12 +5214,6 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         try:
                             chunk_resp = await _send_checked(hls_client, chunk_url, ua_headers, guard)
                             try:
-                                # A segment URL can redirect to the placeholder: its
-                                # bytes are black, not the channel, and are never
-                                # written (#140). Waited out like one in the playlist.
-                                placeholder = _placeholder_name(str(chunk_resp.url))
-                                if placeholder:
-                                    raise _ProviderPlaceholder(placeholder)
                                 chunk_resp.raise_for_status()
                                 payload = await _aread_within(chunk_resp, _segment_read_limit(target_duration),
                                                               segment_stretch)
@@ -5224,6 +5222,9 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                             break
                         except Exception as e:
                             chunk_error = e
+                            # A segment URL can redirect to the placeholder:
+                            # _send_checked refuses it unfetched (#624), and it is
+                            # waited out like one in the playlist (#140).
                             if isinstance(e, _ProviderPlaceholder):
                                 if not in_placeholder:
                                     in_placeholder = True
@@ -5320,6 +5321,20 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                             "utf-8", errors="replace")
                     finally:
                         await pl_resp.aclose()
+                except _ProviderPlaceholder as e:
+                    # The playlist URL now redirects to a stand-in clip: not a
+                    # playlist (#624). Keep the one in hand and ask again;
+                    # in_placeholder keeps the failure clock running until a
+                    # real segment arrives.
+                    if not in_placeholder:
+                        in_placeholder = True
+                        await _note_placeholder(channel_id, e.segment)
+                    if _note_failure(e, "Playlist refresh"):
+                        return
+                    backoff_cap = _REFUSAL_BACKOFF_CAP
+                    refused_since = None
+                    await _backoff_sleep()
+                    continue
                 except Exception as e:
                     if _token_expired(e):
                         refused_since = None
