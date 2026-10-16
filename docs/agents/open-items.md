@@ -20,3 +20,8 @@ Known gaps worth fixing (each is a feature: it waits for the maintainer's go).
   library emptied on purpose would never be written again without a way out.
 - The Radarr/Sonarr webhooks accept unsigned events unless `webhook_secret`
   is set: consider making it required, as the music webhook's is.
+- The Radarr and Sonarr scans set a hybrid row's (VOD title also
+  downloaded) tags with the bare `source_tag` ("Netflix") where the VOD
+  sync writes the suffixed one ("Netflix TV"): `tags.append(...source_tag)`
+  in their NFO stage. Check whether the VOD playlist keeps such a title;
+  releasing a download (#378, #617) keeps what the scan left.

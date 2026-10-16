@@ -66,9 +66,24 @@ no longer has, and counts these rows in its outage guard
 the same way (and deletes the request) without waiting for Radarr's delete
 webhook (#549).
 
-**Sonarr deletes a series** (SeriesDelete): a hybrid keeps its VOD record
-(`sonarr_path`, `sonarr_monitored` cleared); a Sonarr-only series is
-deleted; then playlists as above.
+**Sonarr deletes a series** (SeriesDelete): a Sonarr-only series is
+deleted, then playlists as above. A VOD show Sonarr held too keeps its row
+(`sonarr_monitored` cleared). One that held a download (`downloaded_at` or
+"Downloaded TV": `holds_series_download`) goes back to VOD only
+(`release_vod_series_download`, the series twin of `release_vod_download`,
+#617): `sonarr_path`, `downloaded_at`, `last_downloaded_episode`, the
+download's `jellyfin_item_id`, "Downloaded TV" and the requester's
+"<name>'s Downloads" cleared, `nfo_path` back to the VOD folder's
+`tvshow.nfo`, the pending duplicate dismissed. One Sonarr was still
+searching for only loses `sonarr_path`. No playlist clean-up for the VOD
+row: Jellyfin usually merges both folders into one show, which stays in its
+VOD playlists; the tag push takes it out of the others. The Sonarr scan
+releases a VOD show whose download Sonarr no longer has (left Sonarr, or no
+episode files; it keeps `sonarr_path` while Sonarr still lists it) and
+counts these rows in its outage guard per kind (`downloaded_series_rows`:
+source sonarr, or any row with `downloaded_at`, since Add to Sonarr sets
+`sonarr_path` before anything is downloaded). Keep VOD on a series
+duplicate releases the row the same way and deletes the request.
 
 **"Download more episodes"** on a VOD series: the client loads TMDB seasons,
 VOD episodes and Sonarr episodes in parallel; the picker shows VOD
