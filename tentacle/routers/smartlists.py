@@ -6,6 +6,7 @@ Manage per-user Jellyfin SmartList config files.
 import os
 import json
 import logging
+import re
 import time
 import threading
 from pathlib import Path
@@ -925,9 +926,42 @@ def set_row_shape(req: RowShapeRequest, db: Session = Depends(get_db), user: Ten
     return {"success": True, "shape": shape, **notify}
 
 
+_JELLYFIN_ID = re.compile(r"[0-9a-fA-F]{32}|[0-9a-fA-F-]{36}")
+
+
+def _hero_display_name(db: Session, user: TentacleUser, playlist_id: str) -> str:
+    """Name for a picked hero playlist: its home row, else Tentacle's playlist,
+    else what Jellyfin calls it for this user (a playlist made in Jellyfin, #650).
+    Jellyfin is asked as the user, so one they can't see stays unnamed; the id is
+    the last resort. Runs outside home_config_lock: a slow Jellyfin must not hold
+    up other home-config writes (the file is replaced atomically)."""
+    rows = (_read_home_json(user) or {}).get("rows") or []
+    matching = next((r for r in rows if r.get("playlist_id") == playlist_id), None)
+    if matching and matching.get("display_name"):
+        return matching["display_name"]
+    all_playlists = _get_smartlists_with_playlist_ids(db, user_id=user.id)
+    pl = next((p for p in all_playlists if p["playlist_id"] == playlist_id), None)
+    if pl:
+        return pl["name"]
+
+    jellyfin_url = get_setting(db, "jellyfin_url", "")
+    jellyfin_key = get_setting(db, "jellyfin_api_key", "")
+    if jellyfin_url and jellyfin_key and user.jellyfin_user_id and _JELLYFIN_ID.fullmatch(playlist_id):
+        from services.jellyfin import JellyfinService
+        try:
+            jf = JellyfinService(jellyfin_url, jellyfin_key, user.jellyfin_user_id)
+            name = (jf._get(jf._item_path(playlist_id)) or {}).get("Name")
+            if isinstance(name, str) and name.strip():
+                return name
+        except Exception as e:
+            logger.debug(f"Hero playlist name lookup failed for {playlist_id}: {e}")
+    return playlist_id
+
+
 @router.post("/hero")
 def set_hero(req: HeroPickRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Read JSON, update hero, write JSON back. That's it."""
+    display_name = _hero_display_name(db, user, req.playlist_id) if req.playlist_id else ""
     with home_config_lock:
         config = _read_home_json(user)
         if not config:
@@ -937,14 +971,6 @@ def set_hero(req: HeroPickRequest, db: Session = Depends(get_db), user: Tentacle
 
         existing_hero = config.get("hero", {})
         if req.playlist_id:
-            # Look up display name from rows first, then all playlists
-            matching = next((r for r in config["rows"] if r.get("playlist_id") == req.playlist_id), None)
-            if matching:
-                display_name = matching["display_name"]
-            else:
-                all_playlists = _get_smartlists_with_playlist_ids(db, user_id=user.id)
-                pl = next((p for p in all_playlists if p["playlist_id"] == req.playlist_id), None)
-                display_name = pl["name"] if pl else req.playlist_id
             config["hero"] = {
                 "enabled": True,
                 "playlist_id": req.playlist_id,
@@ -953,6 +979,8 @@ def set_hero(req: HeroPickRequest, db: Session = Depends(get_db), user: Tentacle
                 "sort_order": existing_hero.get("sort_order", "Descending"),
                 "require_logo": existing_hero.get("require_logo", True),
                 "require_trailer": existing_hero.get("require_trailer", False),
+                # Missing means muted, as in the plugin's HeroConfig and write_home_config
+                "trailer_audio": existing_hero.get("trailer_audio", False),
                 "item_count": existing_hero.get("item_count", 10),
             }
         else:

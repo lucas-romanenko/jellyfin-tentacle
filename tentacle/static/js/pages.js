@@ -3588,7 +3588,7 @@ async function loadHomeScreen() {
     }
     const trailerAudioCheckbox = document.getElementById('home-hero-trailer-audio');
     if (trailerAudioCheckbox && config.hero) {
-      trailerAudioCheckbox.checked = config.hero.trailer_audio !== false;
+      trailerAudioCheckbox.checked = config.hero.trailer_audio === true;
     }
 
     // Merge Continue Watching + Next Up toggle
@@ -3844,7 +3844,7 @@ async function updateHeroSort() {
   const sortOrder = dir === 'asc' ? 'Ascending' : 'Descending';
   const requireLogo = document.getElementById('home-hero-require-logo')?.checked ?? true;
   const requireTrailer = document.getElementById('home-hero-require-trailer')?.checked ?? false;
-  const trailerAudio = document.getElementById('home-hero-trailer-audio')?.checked ?? true;
+  const trailerAudio = document.getElementById('home-hero-trailer-audio')?.checked ?? false;
   const itemCount = parseInt(document.getElementById('home-hero-item-count')?.value) || 10;
   try {
     const r = await api('/api/smartlists/hero-sort', {

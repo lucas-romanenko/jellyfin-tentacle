@@ -230,7 +230,8 @@ user_id)` computes them every time from source tags, list subscriptions
 
 ```json
 {"hero": {"enabled": true, "playlist_id": "…", "display_name": "…", "sort_by": "random",
-          "sort_order": "Descending", "require_logo": true, "require_trailer": false},
+          "sort_order": "Descending", "require_logo": true, "require_trailer": false,
+          "trailer_audio": false, "item_count": 10},
  "rows": [{"type": "playlist", "playlist_id": "…", "display_name": "…", "order": 1, "max_items": 20},
           {"type": "builtin", "section_id": "resumevideo", "display_name": "Continue Watching", "order": 2}]}
 ```
@@ -238,7 +239,13 @@ user_id)` computes them every time from source tags, list subscriptions
 - Row keys: `playlist:<guid>` or `builtin:<section_id>` (reorder/remove).
 - The hero has its own sort; `require_logo` (default on) keeps only items
   with a backdrop and a logo; `require_trailer` only items with a trailer.
-  The plugin applies both when rendering.
+  The plugin applies both when rendering. `trailer_audio` is off when
+  missing everywhere (plugin `HeroConfig`, `write_home_config`, the
+  dashboard); `set_hero` carries every setting over to a newly picked
+  playlist.
+- `set_hero` names the hero from its row, else Tentacle's playlist, else
+  Jellyfin's item `Name` read as that user (`/Users/{uid}/Items/{id}`, so a
+  playlist they can't see stays unnamed); the id is the last resort.
 - `write_home_config()` checks the hero playlist still exists (else first
   available, or off) and remaps rows and hero by `display_name` when a sync
   recreated playlists with new ids (otherwise rows silently vanish).
