@@ -394,6 +394,9 @@ PROBLEMS_TTL = 60
 LOW_DISK_BYTES = 20 * 1024 ** 3
 LOW_DISK_FRACTION = 0.05
 _problems_cache: dict = {"at": 0, "data": None}
+# One pass at a time: callers that find the cache cold wait for the pass
+# that is running and use its answer, instead of each reading every app.
+_problems_lock = threading.Lock()
 
 # Health sources that stop downloads from happening.
 _KINDS = [("indexer", "indexer"), ("downloadclient", "download_client"), ("rootfolder", "root_folder"),
@@ -442,10 +445,32 @@ def _disk_problems(url: str, key: str, app: str) -> list:
 
 
 def problems(db: Session) -> list:
-    """Warnings and errors from Radarr/Sonarr's health list, plus low disk space."""
-    now = time.time()
-    if _problems_cache["data"] is not None and now - _problems_cache["at"] < PROBLEMS_TTL:
+    """Warnings and errors from Radarr/Sonarr's health list, plus low disk space.
+
+    Runs on every Activity request. A pass reads health, root folders and disk
+    space from each app in turn (up to 40 s per app), so it is single-flight
+    and its cache is stamped when it finished: stamped with its start, a pass
+    slower than PROBLEMS_TTL was stored already expired, and every later
+    request ran it again (the #171 pattern)."""
+    cached = _fresh_problems()
+    if cached is not None:
+        return cached
+    with _problems_lock:
+        cached = _fresh_problems()  # the pass we waited for
+        if cached is not None:
+            return cached
+        out = _problems_pass(db)
+        _problems_cache.update(at=time.time(), data=out)
+        return out
+
+
+def _fresh_problems() -> Optional[list]:
+    if _problems_cache["data"] is not None and time.time() - _problems_cache["at"] < PROBLEMS_TTL:
         return _problems_cache["data"]
+    return None
+
+
+def _problems_pass(db: Session) -> list:
     out, seen_disks = [], set()
     for app_key, app in (("radarr", "Radarr"), ("sonarr", "Sonarr")):
         url, key = _conn(db, app_key)
@@ -473,7 +498,6 @@ def problems(db: Session) -> list:
                     out.append(p)
         except Exception as e:
             logger.debug(f"[Insight] {app} disk space check failed: {e}")
-    _problems_cache.update(at=now, data=out)
     return out
 
 
