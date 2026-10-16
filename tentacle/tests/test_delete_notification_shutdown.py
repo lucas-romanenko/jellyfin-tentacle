@@ -60,6 +60,17 @@ class TestShutdownWaitsForTheLastBatch(unittest.TestCase):
         self.assertIn(tracked.group(1), self.stop,
                       f"StopAsync never looks at {tracked.group(1)}")
 
+    def test_stop_waits_for_every_tracked_batch(self):
+        """The checks above pass as long as StopAsync awaits something and
+        mentions the set; removing the wait itself went unnoticed. It must
+        wait on a snapshot of the tracked batches, all of them."""
+        launched = re.search(r"(\w+)\s*=\s*Task\.Run\(", self.process)
+        tracked = re.search(r"(_\w+)\.Add\(\s*%s\s*\)" % launched.group(1), self.process).group(1)
+        snap = re.search(r"(\w+)\s*=\s*%s\.ToArray\(\)" % re.escape(tracked), self.stop)
+        self.assertIsNotNone(snap, f"StopAsync does not take a snapshot of {tracked}")
+        self.assertRegex(self.stop, r"await\s+Task\.WhenAll\(\s*%s\s*\)" % snap.group(1),
+                         "StopAsync does not wait for the batches it found")
+
     def test_the_wait_is_bounded_by_the_shutdown_token(self):
         self.assertRegex(self.stop, r"cancellationToken",
                          "StopAsync ignores the host's shutdown token; a hung "
