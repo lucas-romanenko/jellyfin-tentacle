@@ -191,7 +191,9 @@ def _raw_retryable(status) -> bool:
     has just handed out -- and any 5xx, including the non-standard 513 and
     Cloudflare's 520-524. Both cleared within minutes in production, while
     ending on them cut running recordings for good (#298). 401/403/404 still
-    stop at once: at the channel URL they mean the login or the channel."""
+    stop at once: at the channel URL they mean the login or the channel --
+    except 401/403 on a running recording's re-dial, waited out for
+    _DENIED_GRACE first (#646)."""
     return status is not None and (status in _OPEN_RETRYABLE_STATUS or status == 407
                                    or 500 <= status < 600)
 
@@ -430,7 +432,8 @@ def _raw_media_type(content_type: str) -> str:
 # Except a 407 from the channel URL itself on a RECORDING: this provider
 # family answers 407 for an ended session for a few seconds while the token
 # is renewed, so it is waited out like a refusal, as the raw path does
-# (_raw_retryable). 401/403 there still end it: the login is refused.
+# (_raw_retryable). 401/403 there are waited out for _DENIED_GRACE on a
+# recording (#646), then end it: the login is refused.
 _TOKEN_EXPIRED_STATUS = {401, 403, 404, 407, 410}
 _MAX_RERESOLVE = 3
 # #184: a running HLS stream refused (429/509) for _REVIVE_AFTER s in a row
@@ -465,6 +468,11 @@ _RAW_MARK_EVERY = 5.0
 # For a recording, a 404/410 counts toward _MAX_RERESOLVE only after this long
 # of unbroken 404/410 (a panel blip is seconds); viewers keep the 3-try rule.
 _GONE_GRACE = 180.0
+# For a recording, a 401/403 is waited out on the refusal cap for this long of
+# unbroken 401/403 before it ends the stream (#646: an IP block, Cloudflare or
+# a panel's flood protection refuses everything for a minute or two). Raw TS:
+# the re-dial; HLS: the channel URL's answer to a re-resolve. Viewers end at once.
+_DENIED_GRACE = 180.0
 # An HLS recording whose channel URL keeps answering with a continuous stream
 # instead of a playlist ends after this long, so Jellyfin re-opens on it.
 _STREAM_ANSWER_LIMIT = 120.0
@@ -4475,6 +4483,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
             backoff_cap = _BACKOFF_CAP        # grows to _REFUSAL_BACKOFF_CAP after a 429/509
             failing_since = None
             slept = 0.0          # the bound must hold even if the clock stands still
+            denied_at = None     # recordings: (clock, slept) at the first 401/403 of this run (#646)
             ua = {"User-Agent": user_agent}
             # MPEG-TS is 188-byte packets. Only whole packets go downstream, so
             # the tail of a packet cut off by a drop never reaches the recording
@@ -4541,6 +4550,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                                 align = align and piece[:1] == b"G"
                             if failing_since is not None and loop.time() - opened_at >= HEALTHY_AFTER:
                                 failing_since, slept, backoff, backoff_cap = None, 0.0, 1.0, _BACKOFF_CAP
+                                denied_at = None
                             pending += splicer.feed(piece, loop.time())
                             if len(pending) >= 131072:
                                 cut = len(pending) - (len(pending) % 188) if align else len(pending)
@@ -4569,6 +4579,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     # is still a failure, or a viewer's budget would never run out.
                     if last_piece is not None and last_piece - opened_at >= HEALTHY_AFTER:
                         failing_since, slept, backoff, backoff_cap = None, 0.0, 1.0, _BACKOFF_CAP
+                        denied_at = None
                     if dropped_at is None:      # else: the outage never ended
                         dropped_at = loop.time()
                     redialled = False
@@ -4619,8 +4630,23 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                                 if status in _REFUSAL_STATUS or status == 407:
                                     backoff_cap = _REFUSAL_BACKOFF_CAP
                                 continue
+                            denied_for = None
+                            if status in (401, 403) and is_recording is not None and is_recording():
+                                # #646: an IP block or flood protection answers
+                                # 403 to everything for a minute or two. A
+                                # recording waits that out on the refusal cap;
+                                # a login refused for longer still ends it.
+                                if denied_at is None:
+                                    denied_at = (loop.time(), slept)
+                                denied_for = max(loop.time() - denied_at[0], slept - denied_at[1])
+                                if denied_for < _DENIED_GRACE:
+                                    reason = str(e)
+                                    health["errors"] += 1
+                                    backoff_cap = _REFUSAL_BACKOFF_CAP
+                                    continue
+                            refused = f" (refused for {denied_for:.0f}s)" if denied_for is not None else ""
                             logger.error(f"[LiveTV] Raw stream for channel {channel_id} cannot be "
-                                         f"re-opened, stopping: {e}")
+                                         f"re-opened{refused}, stopping: {e}")
                             return
                         raw_resp = new_resp
                         redialled = True
@@ -4827,6 +4853,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
             refused_since = None       # first 429/509 of the current refresh run (#184)
             revive = {"last": None, "gap": _REVIVE_COOLDOWN, "held": False, "flow_since": None}
             gone_since = None          # first 404/410 of the current run (recordings)
+            denied_since = None        # first channel-URL 401/403 of the current run (recordings, #646)
             stream_answer_since = None # first non-playlist answer of the channel URL
 
             def _token_expired(exc) -> bool:
@@ -4971,6 +4998,14 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                             reresolve_run -= 1
                             await _backoff_sleep()
                             return False
+                        if _denied_grace(st):
+                            # The channel URL itself refuses too: an IP block
+                            # or flood protection, for a minute or two (#646).
+                            # Not counted for a recording until _DENIED_GRACE
+                            # of it; waited out on the refusal cap.
+                            reresolve_run -= 1
+                            await _backoff_sleep()
+                            return False
                         if counted and _gone_grace(st):
                             reresolve_run -= 1
                             backoff_cap = _REFUSAL_BACKOFF_CAP
@@ -5016,8 +5051,9 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 404/410 (a channel really removed). Viewers keep the 3-try
                 rule; 401/403/407 are never graced here -- a 407 from the
                 channel URL on a recording is waited out in _reresolve
-                instead (keyed on the channel URL's answer: the token URL's
-                407 that triggers every re-resolve must not be)."""
+                instead, and a 401/403 there by _denied_grace (keyed on the
+                channel URL's answer: the token URL's 401/403/407 that
+                triggers every re-resolve must not be)."""
                 nonlocal gone_since
                 if status not in (404, 410) or not (is_recording is not None and is_recording()):
                     return False
@@ -5025,6 +5061,21 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 if gone_since is None:
                     gone_since = now
                 return now - gone_since < _GONE_GRACE
+
+            def _denied_grace(status) -> bool:
+                """True while the channel URL's 401/403 on a RECORDING should
+                not yet count toward _MAX_RERESOLVE (#646): an IP block,
+                Cloudflare or a panel's flood protection refuses everything
+                for a minute or two. It counts only after _DENIED_GRACE of
+                unbroken refusal (the login really refused); viewers keep
+                the 3-try rule."""
+                nonlocal denied_since
+                if status not in (401, 403) or not (is_recording is not None and is_recording()):
+                    return False
+                now = asyncio.get_running_loop().time()
+                if denied_since is None:
+                    denied_since = now
+                return now - denied_since < _DENIED_GRACE
 
             while True:
                 # Master playlist? Follow the best variant before treating any
@@ -5285,7 +5336,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     got_new = True
                     fatal_chunk_skips = 0
                     yielded_any = True
-                    reresolve_run, after_reresolve, gone_since = 0, False, None
+                    reresolve_run, after_reresolve, gone_since, denied_since = 0, False, None, None
                     refused_since = None
                     # The cooldown resets only after _REVIVE_RESET_AFTER of
                     # unbroken delivery (Q3); a failure run restarts the clock.
