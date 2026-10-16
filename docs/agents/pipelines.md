@@ -296,7 +296,12 @@ read that row.
   same folder, then a rename, so a write cut short leaves the old file
   whole. An existing `.strm` that is empty or blank is rewritten like a
   missing one (`_strm_is_blank()`; a movie only from the row's own stream,
-  as for a restore), since it plays nothing (#283).
+  as for a restore), since it plays nothing (#283). An Xtream `.strm` that
+  holds only the start of the address the sync writes today (a strict
+  prefix) is rewritten too (`_strm_needs_rewrite()`, #629). "Fix it"
+  moving a copy (`wrong_match.rematch_movie`) and the YouTube library
+  (`write_video`, `rewrite_strm`) write through `_write_strm()` as well;
+  `write_video` repairs a blank or cut-short YouTube `.strm`.
 
 ## How changes reach the clients
 

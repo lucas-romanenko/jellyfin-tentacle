@@ -414,7 +414,9 @@ def _strm_needs_rewrite(strm_file: Path, expected: str, client) -> bool:
         container extension;
       - the same stream with this provider's own login on another host: the
         provider moved, and its new address was saved before a save rewrote
-        the files (#142; services/provider_relink.py does it at the save).
+        the files (#142; services/provider_relink.py does it at the save);
+      - a blank file, or one holding only the start of today's address: a
+        write cut short (#283, #629).
     Everything else is left alone: another stream id (a title listed twice
     would otherwise flip every night), another host with another login, a
     proxy of somebody's own, and M3U providers (their playlist URLs may
@@ -437,6 +439,8 @@ def _strm_needs_rewrite(strm_file: Path, expected: str, client) -> bool:
         return True   # 0 bytes / blank: a write cut short, never a link of anyone's (#283)
     if current == expected:
         return False
+    if expected.startswith(current):
+        return True   # a strict prefix of today's address: a write cut short, never a link of anyone's (#629)
     # A file written before the login was percent-encoded (#529): a '#', '?' or
     # '/' in it broke the URL. Read it in today's form, so the checks below
     # repair it when it plays this stream and leave it alone when not.
