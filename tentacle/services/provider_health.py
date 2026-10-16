@@ -17,6 +17,11 @@ account, a moved URL) used to break every stream with nothing saying so.
   services/provider_activity.py). So a run looks before every connection
   it opens and stops, with no verdict, once Tentacle proxies live TV or a
   protected recording; the next hour tries again.
+- What syncs and live streams already learn counts too (`note`, #652), with
+  no connection of its own: a refusal (401/403) is confirmed by a second one
+  RETRY_DELAY_SECONDS or more later, a sync or stream that worked clears a
+  failure of its own step. An outage during a recording shows, and a
+  recovered provider clears without waiting for the hourly check.
 
 Reasons are short and plain, and never carry a URL or a login: they are
 shown on the dashboard, sent to the phone and served unauthenticated by
@@ -43,6 +48,9 @@ logger = logging.getLogger(__name__)
 
 SETTING_KEY = "provider_health"
 RETRY_DELAY_SECONDS = 120
+# A noted refusal waits this long for the one that confirms it; older, it
+# starts the count again.
+SUSPECT_SECONDS = 3600
 API_TIMEOUT = (10, 20)
 STREAM_TIMEOUT = (10, 15)
 PROBE_PAUSE_SECONDS = 3.0
@@ -58,6 +66,10 @@ GONE_STATUSES = {404, 410}
 # The hourly job and "Check now" never run at once: two checks are two
 # connections, which is what a one-connection account cuts a stream for.
 _run_lock = threading.Lock()
+# Held for each read-change-write of the state: by `note` (syncs, streams)
+# and by a check's saves, so neither writes over what the other just wrote.
+# Never _run_lock: a note while a check runs must not make "Check now" 409.
+_state_lock = threading.Lock()
 
 
 def _now() -> datetime:
@@ -361,6 +373,19 @@ def load_state(db) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _load_fresh(db) -> dict:
+    """The state as committed now. A session hands back the row it read
+    before (its identity map) unless told to read it again."""
+    from models.database import Setting
+    row = (db.query(Setting).filter(Setting.key == SETTING_KEY)
+           .populate_existing().first())
+    try:
+        data = json.loads((row.value if row else "") or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def _save_state(db, state: dict) -> None:
     set_setting(db, SETTING_KEY, json.dumps(state))
 
@@ -382,7 +407,7 @@ def forget(db, provider_id: int) -> None:
 def _unknown() -> dict:
     return {"state": "unknown", "since": None, "checked_at": None, "skipped_at": None,
             "step": None, "code": None, "kind": None, "reason": None,
-            "alerted": False, "recovery_due": None}
+            "alerted": False, "recovery_due": None, "suspect": None}
 
 
 def _watched(db) -> list:
@@ -411,6 +436,7 @@ def _apply(db, state: dict, p: Provider, outcome: dict, first_at: datetime, now:
         state[key] = entry
         return
     entry["checked_at"] = now.isoformat()
+    entry["suspect"] = None     # a verdict settles a refusal still waiting for its second
     if verdict == "ok":
         if prev.get("state") == "failing":
             since = _parse(prev.get("since"))
@@ -454,19 +480,30 @@ def _apply(db, state: dict, p: Provider, outcome: dict, first_at: datetime, now:
 
 def check_providers(db, confirm_delay=RETRY_DELAY_SECONDS, sleep=time.sleep) -> dict:
     """Check every watched provider, update the state, send what is due.
-    `confirm_delay` None: no confirming re-check ("Check now")."""
+    `confirm_delay` None: no confirming re-check ("Check now").
+
+    The state read here only decides which failures need confirming: syncs
+    and streams note theirs while the check runs (minutes, with the wait),
+    so each save re-reads it under _state_lock and changes only its part."""
     state = load_state(db)
     providers = _watched(db)
     ids = {str(p.id) for p in providers}
-    for key in [k for k in state if k not in ids]:
-        del state[key]        # deleted or turned off
+
+    def fresh() -> dict:
+        current = _load_fresh(db)
+        for key in [k for k in current if k not in ids]:
+            del current[key]        # deleted or turned off
+        return current
+
     now = _now()
     if _stand_aside(db):
-        for p in providers:
-            entry = {**_unknown(), **state.get(str(p.id), {}), "name": p.name}
-            entry["skipped_at"] = now.isoformat()
-            state[str(p.id)] = entry
-        _save_state(db, state)
+        with _state_lock:
+            state = fresh()
+            for p in providers:
+                entry = {**_unknown(), **state.get(str(p.id), {}), "name": p.name}
+                entry["skipped_at"] = now.isoformat()
+                state[str(p.id)] = entry
+            _save_state(db, state)
         logger.info("[Provider health] live TV or a recording is running: nothing checked this time")
         return {"skipped": True, "checked": 0}
 
@@ -502,13 +539,77 @@ def check_providers(db, confirm_delay=RETRY_DELAY_SECONDS, sleep=time.sleep) -> 
                 logger.info(f"[Provider health] {p.name}: the failure did not repeat")
 
     now = _now()
-    for p in providers:
-        if p.id in outcomes:
-            _apply(db, state, p, outcomes[p.id], first_at[p.id], now)
-    _save_state(db, state)
+    with _state_lock:
+        state = fresh()
+        for p in providers:
+            if p.id in outcomes:
+                _apply(db, state, p, outcomes[p.id], first_at[p.id], now)
+        _save_state(db, state)
     failing = [s for s in state.values() if s.get("state") == "failing"]
     checked = sum(1 for o in outcomes.values() if o["verdict"] in ("ok", "fail"))
     return {"skipped": bool(logged), "checked": checked, "failing": len(failing)}
+
+
+# ─── What syncs and streams learn ─────────────────────────────────────────────
+
+def note(db, provider_id, ok: bool, step: str, code=None) -> None:
+    """What a sync ("api") or a live stream ("stream") just learned about a
+    provider (#652). Opens no connection, commits its own write, never raises.
+
+    ok: clears a refusal waiting for its second, and a failure of the same
+    step (a sync working says nothing about refused streams, a stream
+    working nothing about a refused login; the hourly check covers those).
+    Not ok (a 401/403): like the check, a refusal counts only once a second
+    one comes RETRY_DELAY_SECONDS or more after the first (and within
+    SUSPECT_SECONDS); one blip changes nothing."""
+    try:
+        with _state_lock:
+            _note(db, provider_id, ok, step, code)
+    except Exception as e:
+        logger.warning(f"[Provider health] could not note what a {'sync' if step == 'api' else 'stream'} "
+                       f"learned about provider {provider_id}: {redact(str(e))}")
+        try:
+            db.rollback()
+        except Exception:
+            pass
+
+
+def _note(db, provider_id, ok: bool, step: str, code) -> None:
+    p = next((p for p in _watched(db) if p.id == provider_id), None)
+    if p is None:
+        return
+    state = _load_fresh(db)
+    key = str(p.id)
+    entry = {**_unknown(), **(state.get(key) or {}), "name": p.name}
+    suspect = entry.get("suspect") if isinstance(entry.get("suspect"), dict) else None
+    now = _now()
+    if ok:
+        changed = suspect is not None
+        entry["suspect"] = None
+        state[key] = entry
+        if entry.get("state") == "failing" and entry.get("step") == step:
+            _apply(db, state, p, _ok(), now, now)
+            changed = True
+        if changed:
+            _save_state(db, state)
+        return
+    if entry.get("state") == "failing":
+        return          # already said; the check's reason stays
+    at = _parse(suspect.get("at")) if suspect else None
+    age = (now - at).total_seconds() if at else None
+    what = "a sync" if step == "api" else "a stream"
+    if age is None or age < 0 or age >= SUSPECT_SECONDS:
+        entry["suspect"] = {"at": now.isoformat(), "step": step, "code": code}
+        state[key] = entry
+        _save_state(db, state)
+        logger.info(f"[Provider health] {p.name} refused {what} (HTTP {code}); failing if that happens "
+                    f"again in {RETRY_DELAY_SECONDS}s or more")
+        return
+    if age < RETRY_DELAY_SECONDS:
+        return          # the same blip
+    kind = "login" if step == "api" and code == 401 else "http"
+    _apply(db, state, p, _fail(step, kind, code), at, now)
+    _save_state(db, state)
 
 
 def run_provider_health() -> bool:

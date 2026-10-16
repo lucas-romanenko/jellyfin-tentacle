@@ -34,6 +34,7 @@ import httpx
 from datetime import datetime, timedelta
 from typing import Optional, List
 
+from services import provider_health
 from services.epg_categories import infer_category
 from services.exceptions import ProviderDataError, ProviderRefusedError
 from services.youtube import livetv as youtube_livetv
@@ -465,6 +466,9 @@ _RIVAL_STREAMING_FRESH = 60.0
 _REVIVE_RESET_AFTER = 600.0
 # How often a raw TS stream re-marks itself as delivering (Q1).
 _RAW_MARK_EVERY = 5.0
+# A connection that delivered this long is a stream that works (#335): it
+# ends a raw re-dial's outage, and tells provider health (#652).
+_HEALTHY_AFTER = 10.0
 # For a recording, a 404/410 counts toward _MAX_RERESOLVE only after this long
 # of unbroken 404/410 (a panel blip is seconds); viewers keep the 3-try rule.
 _GONE_GRACE = 180.0
@@ -1554,6 +1558,8 @@ def _stream_ended(channel_id: int, entry: dict, recording: bool, hls: bool = Fal
                "replay_bytes_skipped": h.get("replay_bytes_skipped", 0)}
     _recent_streams.append(summary)
     del _recent_streams[:-_RECENT_STREAMS_MAX]
+    if h.get("ended_on_error") and h.get("_refused") in (401, 403):
+        _tell_provider_health(channel_id, False, h["_refused"])
     # A raw TS reconnect is a gap unless it was joined where the stream
     # stopped (#368): then the provider's buffer covered the wait. An HLS
     # "interruption" can be one segment retried in place within the playlist
@@ -1620,8 +1626,47 @@ def _status_set(channel_id: int, state: str, last_error: "str | None" = None):
     if state == "streaming":
         cur["last_ok"] = now          # when it last delivered (#184's rival test)
         cur.pop("waiting_for", None)
+        if now - cur["since"] >= _HEALTHY_AFTER and cur.get("heard_since") != cur["since"]:
+            # Delivering for _HEALTHY_AFTER: once per stretch, so a stream
+            # that recovers mid-recording is heard within seconds (#652).
+            cur["heard_since"] = cur["since"]
+            _tell_provider_health(channel_id, True)
     if last_error is not None:
         cur["last_error"] = last_error
+
+
+def _refusal_heard(health: dict, status) -> None:
+    """The provider's latest answer to this stream's channel URL: a 401/403
+    is kept until something else answers, so a stream that ends on it tells
+    provider health (#652). 407, 404/410 and 429/509 are not refusals."""
+    if status in (401, 403):
+        health["_refused"] = status
+    else:
+        health.pop("_refused", None)
+
+
+def _tell_provider_health(channel_id: int, ok: bool, code=None):
+    """What a live stream learned about its provider, for provider health
+    (#652). In the default executor with a session of its own: the event
+    loop never touches the database. Never raises; the future (None without
+    a running loop) is only awaited by tests."""
+    def _write():
+        db = None
+        try:
+            db = SessionLocal()
+            provider_id = (db.query(LiveChannel.provider_id)
+                           .filter(LiveChannel.id == channel_id).scalar())
+            if isinstance(provider_id, int):
+                provider_health.note(db, provider_id, ok, "stream", code)
+        except Exception as e:
+            logger.debug(f"[LiveTV] Could not tell provider health about channel {channel_id}: {e}")
+        finally:
+            if db is not None:
+                db.close()
+    try:
+        return asyncio.get_running_loop().run_in_executor(None, _write)
+    except RuntimeError:
+        return None
 
 
 def _account_key(provider) -> "tuple | None":
@@ -2509,6 +2554,7 @@ def _sync_channels_from_xtream(provider_data: dict, db: Session) -> dict:
         user_agent=provider_data["user_agent"],
     )
 
+    all_failed = False
     try:
         # Get enabled groups and their category IDs
         enabled_groups = db.query(LiveChannelGroup).filter(
@@ -2553,6 +2599,7 @@ def _sync_channels_from_xtream(provider_data: dict, db: Session) -> dict:
         # error text holds the URL with the login: redact it.
         if category_ids and failed_groups == len(category_ids):
             from services.log_redaction import redact
+            all_failed = True
             raise ProviderDataError(
                 f"none of the {len(category_ids)} enabled group(s) could be read ({redact(str(last_error))})")
 
@@ -2578,10 +2625,20 @@ def _sync_channels_from_xtream(provider_data: dict, db: Session) -> dict:
         db.commit()
 
         log_activity(db, "livetv_sync", f"Live TV channel sync for {provider_name}: {stats['new']} new, {stats['updated']} updated, {stats['total']} total")
+        if category_ids:
+            # At least one group read: the provider answers this server (#652)
+            provider_health.note(db, provider_id, True, "api")
         return stats
 
     except Exception as e:
         logger.error(f"[LiveTV] Channel sync failed for {provider_name}: {e}", exc_info=True)
+        # Refused (the guard stopped, or every group answered 401/403):
+        # provider health hears it, even while its own check stands aside
+        # for a recording (#652). Never one group a panel restricts.
+        guard = getattr(client, "guard", None)
+        refused = guard.refused(all_failed) if guard is not None else None
+        if refused in (401, 403):
+            provider_health.note(db, provider_id, False, "api", refused)
         raise
     finally:
         client.close()
@@ -4381,6 +4438,8 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     # account (/live/<user>/<pass>/). The log line above is redacted.
                     why = (f"the provider answered {e.response.status_code}"
                            if isinstance(e, httpx.HTTPStatusError) else type(e).__name__)
+                    if isinstance(e, httpx.HTTPStatusError) and e.response.status_code in (401, 403):
+                        _tell_provider_health(channel_id, False, e.response.status_code)
                     raise HTTPException(502, f"Failed to connect to stream: {why}")
                 if (not open_reresolved and open_url != stream_url and rival_delivering is not None
                         and isinstance(e, httpx.HTTPStatusError)
@@ -4478,7 +4537,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
             # hangs up would be re-dialled once a second for ever.
             nonlocal raw_resp
             FAILURE_BUDGET = failure_budget   # 0 = until the client leaves
-            HEALTHY_AFTER = 10.0
+            HEALTHY_AFTER = _HEALTHY_AFTER
             backoff = 1.0
             backoff_cap = _BACKOFF_CAP        # grows to _REFUSAL_BACKOFF_CAP after a 429/509
             failing_since = None
@@ -4605,6 +4664,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         new_resp = None
                         try:
                             new_resp = await _send_checked(raw_client, stream_url, ua, guard)
+                            _refusal_heard(health, getattr(new_resp, "status_code", None))
                             new_resp.raise_for_status()
                             if "mpegurl" in new_resp.headers.get("content-type", "").lower():
                                 raise httpx.HTTPError("the channel now answers with a playlist")
@@ -4780,6 +4840,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 # failure budget, run on until a real segment arrives.
                 return
             in_placeholder = False
+            health.pop("_refused", None)
             if failing_since is not None:
                 health["reconnecting_seconds"] += asyncio.get_running_loop().time() - failing_since
                 health["reconnects"] += 1   # an outage recovered from
@@ -4866,6 +4927,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 or _NotAPlaylist for a continuous stream -- never read as a
                 playlist: it has no end."""
                 r = await _send_checked(hls_client, stream_url, ua_headers, guard)
+                _refusal_heard(health, getattr(r, "status_code", None))
                 try:
                     r.raise_for_status()
                     if "mpegurl" not in r.headers.get("content-type", "").lower():

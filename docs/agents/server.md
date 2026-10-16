@@ -315,8 +315,29 @@ user_id)` computes them every time from source tags, list subscriptions
   them from running at once (409).
 - State: setting `provider_health` (JSON by provider id: `state`
   ok/failing/unknown, `since`, `checked_at`, `skipped_at`, `step`, `code`,
-  `kind`, `reason`, `alerted`, `recovery_due`). Reasons never carry a URL or
-  a login; times are the container's local time (`TZ`).
+  `kind`, `reason`, `alerted`, `recovery_due`, `suspect`). Reasons never
+  carry a URL or a login; times are the container's local time (`TZ`).
+- Syncs and live streams feed the same state through `note(db, provider_id,
+  ok, step, code)` (#652): no connection of its own, commits its own write,
+  never raises, ignores providers not watched. `step` "api": the VOD sync
+  (`sync._tell_provider_health`, xtream and m3u_url) and the Live TV
+  channel sync; "stream": a live stream (`livetv._tell_provider_health`, in
+  the executor on its own session). Refused = 401/403 only: the guard
+  stopped asking, or nothing was read and the last answer was a refusal
+  (`RequestGuard.refused`; one restricted category is nothing); a raw
+  re-dial or HLS channel-URL refusal the stream ended on (`health["_refused"]`);
+  a first open answered 401/403. A first refusal sets `suspect`; a second
+  one `RETRY_DELAY_SECONDS` to `SUSPECT_SECONDS` (1 h) later is the failure
+  (since the first, API 401 = "login"); older starts again. Worked = a sync
+  that read every category (channel sync: one group), a stream delivering
+  for `_HEALTHY_AFTER` (10 s, once per streaming stretch): it clears
+  `suspect` and a failure of the same step only (the hourly check covers the
+  other). Already failing: a refusal changes nothing. A check verdict
+  clears `suspect`.
+- `_state_lock` covers every read-change-write: `note`, and the check's
+  stand-aside save and final save, which re-read the state fresh
+  (`_load_fresh`, `populate_existing`) so a note during the confirmation
+  wait survives. Notes never take `_run_lock` ("Check now" would 409).
 - Messages through `services/pushover.py` (settings `pushover_app_token`,
   `pushover_user_key`, masked; sent in the POST body): one when a provider
   starts failing, one when it works again (only if the first went out);

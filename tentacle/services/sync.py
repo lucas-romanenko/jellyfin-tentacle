@@ -1929,6 +1929,26 @@ def _unread_summary(unread: list, total: int, reason: str = None) -> str:
             f"({reason or unread[0][1]})")
 
 
+def _tell_provider_health(db: Session, provider: Provider, client, run: SyncRun,
+                          unread: list, total_cats: int) -> None:
+    """What this run learned about the provider, for its health (#652): it
+    refused the sync (401/403), or every category read. Anything else
+    (part unread, 5xx, timeouts) says nothing. An M3U file has no provider
+    to hear from. Never fails the sync."""
+    if (provider.provider_type or "xtream") not in ("xtream", "m3u_url") or total_cats <= 0:
+        return
+    try:
+        from services import provider_health
+        guard = getattr(client, "guard", None)
+        code = guard.refused(len(unread) >= total_cats) if guard is not None else None
+        if code in (401, 403):
+            provider_health.note(db, provider.id, False, "api", code)
+        elif run.status == "completed" and not unread:
+            provider_health.note(db, provider.id, True, "api")
+    except Exception as e:
+        logger.warning(f"Could not tell provider health about the sync of {provider.name}: {e}")
+
+
 def _finish_run(db: Session, run: SyncRun, status: str, message: str) -> SyncRun:
     """Record how a sync run ended after an error (#270).
 
@@ -2140,6 +2160,7 @@ def sync_provider(
 
         db.commit()
         logger.info(f"Sync complete in {run.duration_seconds}s")
+        _tell_provider_health(db, provider, client, run, unread, total_cats)
 
     except SyncCancelledError as e:
         msg = str(e) or "Cancelled by user"
