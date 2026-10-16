@@ -2660,10 +2660,36 @@ def _sync_movies(
         return (kid if result == "duplicate" else None), False
 
     def _known_id(lookup_key, stream):
-        return _known_title_id(
+        kid = _known_title_id(
             known_titles.get(lookup_key), stream,
             lambda i: _movie_row_plays_stream(client, stream, index.own_strm.get(i), index),
             _namesake_of)
+        if kid is not None:
+            return _remake_that_plays(kid, stream) or kid
+        return kid
+
+    def _remake_that_plays(kid, stream):
+        """The label names one film of ours, but another one with the same
+        title in another year (a remake) is the one whose .strm plays this very
+        stream: the stream stays with that film (#185), else the relabel left
+        it unlisted and pruned it with every user's data (#627). Only titles
+        with two or more films of ours pay the file reads; not when the
+        provider's TMDB id names a film, and not when the labelled film plays
+        this stream or that can't be told."""
+        meta = index.own_meta.get(kid)
+        if not meta or _provider_tmdb_hint(stream) is not None:
+            return None
+        others = [t for t in index.own_by_title.get(_plain_title(meta.get("title") or ""), ()) if t != kid]
+        if not others or _movie_row_plays_stream(client, stream, index.own_strm.get(kid), index) is not False:
+            return None
+        rows = [t for t in others if _in_library(t) and index.own_strm.get(t) not in index.shared
+                and _movie_row_plays_stream(client, stream, index.own_strm.get(t), index) is True]
+        if len(rows) != 1:
+            return None
+        logger.info(f"[Sync] '{stream.get('name')}' (stream {stream.get('stream_id')}) stays "
+                    f"'{index.own_meta[rows[0]].get('title')}' ({index.own_meta[rows[0]].get('year')}, "
+                    f"TMDB {rows[0]}): its .strm plays it")
+        return rows[0]
 
     def _in_library(i):
         return i in existing_provider_tmdb_ids or i in seen_tmdb_ids
