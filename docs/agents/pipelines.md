@@ -169,7 +169,11 @@ resets the count; 5xx, 429 and timeouts don't count). The VOD sync marks every
 category left unread without its pause, stops a series category mid-way
 (not counted: the empty-category guard's memory stays), and the run's message
 carries the refusal reason. The Live TV channel sync re-raises it: no
-lineup is saved. Only a new run (a new client) asks again.
+lineup is saved. Only a new run (a new client) asks again. Below the limit
+(one or two enabled groups) or on 5xx, a channel sync where every enabled
+group fails raises `ProviderDataError` (reason redacted) before the upsert:
+phase `error`, `last_live_sync` and Activity untouched (#630). Some groups
+failing, or a group answering `[]`, is still a success.
 
 **A stuck download is fixed** (Health → Downloads → **Fix**, or the 5-minute
 auto-fix sweep; `resolve_stuck_download()` in `services/download_health.py`):
