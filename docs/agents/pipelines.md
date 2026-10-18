@@ -113,6 +113,21 @@ bumps the version) and answers with item counts per playlist.
 saves the toggle, then a full sync/refresh/artwork/home config/notify/bump.
 The UI flips the switch before the answer (optimistic).
 
+**A list is fetched, refreshed or deleted** (`POST /api/lists/{id}/fetch`,
+`POST /api/lists/refresh-all`, `DELETE /api/lists/{id}`):
+`apply_list_tags_to_library()` rewrites the rows and NFOs and collects the
+titles whose tags it changed (a delete runs it with no items, so the tag
+comes off the titles only the deleted list gave it). After the endpoint's
+commit, `_follow_list_change()` in the background pushes those titles' tags
+to Jellyfin (`sync_owned_tags(only=...)`: Jellyfin keeps tags set through
+its API, so NFOs alone change nothing), then for the owner and any other
+user with a list or rule on the tag refreshes the playlists (a delete runs
+`sync_smartlists()` first, so the playlist goes) and writes the home
+config, bumps the version and notifies the plugin. A deleted list's row goes
+at once (`write_home_config(dropped_ids=...)`) instead of lingering 7 days
+as unresolvable. Refresh all makes one push for all its lists. If Jellyfin
+fails, one WARNING and the nightly catches up (#679).
+
 **Home rows** (Home Screen tab): `add-row` (inserted at the top),
 `remove-row`, `reorder`, `hero`, `hero-sort`, `row-max-items`, `toolbar`
 under `/api/smartlists/`: each writes the home JSON, notifies the plugin
