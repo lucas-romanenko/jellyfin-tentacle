@@ -747,6 +747,9 @@ def _scan_sonarr_library(db: Session) -> dict:
     series_tvdb_by_tmdb: dict = {}
     # Every show with episode files, by its resolved tmdb id.
     resolved_tmdb_ids: set = set()
+    stats["strm_only"] = 0
+    stats["strm_only_released"] = 0
+    owned_tags = None
 
     for show in downloaded:
         tmdb_id = show.get("tmdbId") or 0
@@ -794,6 +797,14 @@ def _scan_sonarr_library(db: Session) -> dict:
             if series_path and existing.sonarr_path != series_path:
                 existing.sonarr_path = series_path
                 changed = True
+            # Sonarr 4 counts Tentacle's own .strm files as episode files, so
+            # a VOD show Sonarr holds at its VOD folder has episodeFileCount > 0
+            # without a single download (#255, #682). Asked once, for VOD rows
+            # only; None (Sonarr didn't answer) keeps the download path below.
+            real = None
+            is_vod_row = bool(existing.source and existing.source.startswith("provider_"))
+            if is_vod_row:
+                real = series_has_real_download(sonarr, show.get("id"))
             sonarr_date = None
             if show.get("added"):
                 try:
@@ -808,19 +819,17 @@ def _scan_sonarr_library(db: Session) -> dict:
             # added to Sonarr). Never moved BACK: the Download webhook bumps it
             # to the newest episode import, which is what a "recently
             # downloaded" row should sort by.
-            if sonarr_date and existing.downloaded_at is None:
+            if sonarr_date and existing.downloaded_at is None and real is not False:
                 existing.downloaded_at = sonarr_date
                 changed = True
             # If this was a VOD-only row, create a duplicate record
             # Skip if sonarr_path already set (intentional add via "Download More Episodes").
-            # Sonarr 4 counts Tentacle's own .strm files as episode files, so
-            # a series Sonarr holds at the VOD folder has episodeFileCount > 0
-            # without a single download: no duplicate then (Keep Downloaded
-            # would delete the whole VOD show). Unknown (Sonarr didn't answer)
-            # is recorded as before; resolving it checks again.
-            if (existing.source and existing.source.startswith("provider_") and not had_sonarr_path
+            # Only .strm files: no duplicate (Keep Downloaded would delete the
+            # whole VOD show). Unknown (Sonarr didn't answer) is recorded as
+            # before; resolving it checks again.
+            if (is_vod_row and not had_sonarr_path
                     and tmdb_id not in existing_dup_tmdb_ids
-                    and series_has_real_download(sonarr, show.get("id")) is not False):
+                    and real is not False):
                 db.add(Duplicate(
                     tmdb_id=tmdb_id,
                     media_type="series",
@@ -853,9 +862,32 @@ def _scan_sonarr_library(db: Session) -> dict:
                     if detected:
                         existing.source_tag = detected
                         changed = True
+            if real is False:
+                # No download: the tag/NFO step below would give it "Downloaded
+                # TV" and write that into its NFO. Take off what an older scan
+                # gave it; "Recently Added TV" follows the VOD row's own date,
+                # as the nightly recency pass has it.
+                stats["strm_only"] += 1
+                if holds_series_download(existing):
+                    from services.tagger import set_row_tags, tentacle_owned_tags
+                    if owned_tags is None:
+                        owned_tags = tentacle_owned_tags(db)
+                    release_vod_series_download(db, existing, owned_tags,
+                                                keep_sonarr_path=True, drop_duplicate=False)
+                    cutoff = datetime.utcnow() - timedelta(days=get_recently_added_days(db))
+                    if not (existing.date_added and existing.date_added >= cutoff):
+                        set_row_tags(existing, [t for t in (existing.tags or []) if t != RECENTLY_ADDED_TV_TAG],
+                                     owned_tags)
+                    stats["strm_only_released"] += 1
+                    logger.info(f"Sonarr scan: '{existing.title}' (tmdb:{tmdb_id}) is no download any more: "
+                                f"Sonarr only lists Tentacle's VOD .strm files for it; its download tags "
+                                f"and date came off")
+                    changed = True
             if changed:
                 existing.date_updated = datetime.utcnow()
                 stats["updated"] += 1
+            if real is False:
+                continue
 
             series_needing_nfo.append((tmdb_id, existing))
         else:
@@ -1116,7 +1148,7 @@ def _scan_sonarr_library(db: Session) -> dict:
         from services.jellyfin import JellyfinService
         jf = JellyfinService(jellyfin_url, jellyfin_key, jellyfin_uid)
 
-        if stats["nfo_written"] > 0 or stats["new"] > 0:
+        if stats["nfo_written"] > 0 or stats["new"] > 0 or stats["strm_only_released"] > 0:
             try:
                 jf.trigger_library_scan()
                 logger.info("Triggered Jellyfin library scan after Sonarr NFO updates")

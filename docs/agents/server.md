@@ -142,7 +142,10 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   answering 200. A series only counts as downloaded when Sonarr lists an
   episode file that is not a `.strm` (`series_has_real_download`): the
   Sonarr scan records no duplicate otherwise and dismisses (keep_both)
-  pending ones like that, and Keep Downloaded on a series checks again
+  pending ones like that; it also treats such a VOD show as no download (no
+  `downloaded_at`, no "Downloaded TV", no tag or NFO write: it skips the
+  tag/NFO step) and releases one an older scan tagged (#682, see
+  pipelines.md), and Keep Downloaded on a series checks again
   before deleting anything (409 when nothing is downloaded, 502 when
   Sonarr can't be asked). Before either Keep deletes a copy,
   `services/duplicates.carry_user_data` merges every Jellyfin user's
