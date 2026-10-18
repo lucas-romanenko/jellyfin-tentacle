@@ -77,6 +77,23 @@ class RelabelOntoOwnRemake(Relisted):
         heat_1995 = self.db.query(Movie).filter(Movie.tmdb_id == 101).one()
         self.assertIn("/600.", Path(heat_1995.strm_path).read_text())
 
+    def test_a_provider_id_naming_the_film_that_plays_it_keeps_it(self):
+        """Only the label's year is wrong: the provider's own TMDB id still
+        names Heat (1986), and Heat (1986)'s .strm plays the stream. The id
+        and the file agree, so the stream stays with Heat (1986)."""
+        self.listing(stream("Heat (1986)", 500), stream("Heat (1995)", 600))
+        self.night()
+        self.listing(stream("Heat (1995)", 500, 100), stream("Heat (1995)", 600))
+        self.night()
+        self.night()
+        self.db.expire_all()
+        kept = self.db.query(Movie).filter(Movie.tmdb_id == 100).first()
+        self.assertIsNotNone(kept, "Heat (1986) was pruned although its .strm plays stream 500 and the "
+                                   "provider's TMDB id for stream 500 names it")
+        self.assertIn("/500.", Path(kept.strm_path).read_text())
+        heat_1995 = self.db.query(Movie).filter(Movie.tmdb_id == 101).one()
+        self.assertIn("/600.", Path(heat_1995.strm_path).read_text())
+
     def test_a_new_stream_neither_film_plays_goes_to_the_label(self):
         self.listing(stream("Heat (1986)", 500), stream("Heat (1995)", 600))
         self.night()
