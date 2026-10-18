@@ -706,14 +706,16 @@ def refresh_list(lst: ListSubscription, db: Session, bearer_token: str = "",
                                   f"list was kept as it was.")])))
     items = keep_unread_items(lst, items, db)
     store_stats = store_list_items(lst, items, db)
-    store_stats["tagged"] = apply_list_tags_to_library(items, lst.tag, db)
+    changed = {"Movie": set(), "Series": set()}
+    store_stats["tagged"] = apply_list_tags_to_library(items, lst.tag, db, changed=changed)
+    store_stats["changed"] = changed
     lst.last_fetched = datetime.utcnow()
     lst.last_item_count = store_stats["stored"]
     lst.last_fetch_note = getattr(items, "note", "") or None
     return items, store_stats
 
 
-def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
+def apply_list_tags_to_library(items: list, tag: str, db: Session, changed: Optional[dict] = None) -> int:
     """Match list items to library content and apply/remove tags via NFO update.
 
     Respects media_type from list items to avoid cross-type TMDB ID collisions
@@ -721,7 +723,14 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
 
     Also removes the tag from any library items that are no longer on the list,
     so stale tags get cleaned up on every list refresh.
+
+    `changed` ({"Movie": set(), "Series": set()}), when given, collects the
+    TMDB ids whose tags this changed, so the caller can push just those to
+    Jellyfin (an NFO alone does not change a Jellyfin item's tags, #679).
     """
+    def _changed(kind, tmdb_id):
+        if changed is not None:
+            changed.setdefault(kind, set()).add(tmdb_id)
     from services.tagger import tentacle_owned_tags
     owned = tentacle_owned_tags(db)   # an NFO's other tags stay (#165)
     # Build set of (tmdb_id, media_type) that should have this tag
@@ -765,6 +774,7 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
         movie.tags = tags
         if movie.nfo_path:
             update_nfo_tags(Path(movie.nfo_path), tags, owned)
+        _changed("Movie", movie.tmdb_id)
         cleaned += 1
 
     for series in db.query(Series).all():
@@ -778,6 +788,7 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
         series.tags = tags
         if series.nfo_path:
             update_nfo_tags(Path(series.nfo_path), tags, owned)
+        _changed("Series", series.tmdb_id)
         cleaned += 1
 
     if cleaned:
@@ -800,6 +811,7 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
                     series.tags = tags
                     if series.nfo_path:
                         update_nfo_tags(Path(series.nfo_path), tags, owned)
+                    _changed("Series", series.tmdb_id)
                     tagged += 1
         elif media_type == "movie":
             movie = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
@@ -810,6 +822,7 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
                     movie.tags = tags
                     if movie.nfo_path:
                         update_nfo_tags(Path(movie.nfo_path), tags, owned)
+                    _changed("Movie", movie.tmdb_id)
                     tagged += 1
         else:
             movie = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
@@ -820,6 +833,7 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
                     movie.tags = tags
                     if movie.nfo_path:
                         update_nfo_tags(Path(movie.nfo_path), tags, owned)
+                    _changed("Movie", movie.tmdb_id)
                     tagged += 1
                 continue
 
@@ -831,10 +845,59 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
                     series.tags = tags
                     if series.nfo_path:
                         update_nfo_tags(Path(series.nfo_path), tags, owned)
+                    _changed("Series", series.tmdb_id)
                     tagged += 1
 
     db.commit()
     return tagged
+
+
+def push_list_changes(db: Session, user_id: Optional[int], changed: dict, why: str = "List") -> None:
+    """Bring Jellyfin in line with a list change now, not at the nightly sync (#679).
+
+    A list refresh or delete rewrites NFOs, but Jellyfin keeps tags that were
+    set through its API, so a title that left a list stayed in its playlist and
+    home row until the nightly push. In the background (the push lists the
+    library, which takes a while on a big one): push just the changed titles,
+    as the user rename does, then refresh the owner's playlists. A Jellyfin
+    that isn't set up or doesn't answer leaves it to the nightly sync.
+    """
+    if not (changed.get("Movie") or changed.get("Series")):
+        return
+    jf_url = get_setting(db, "jellyfin_url")
+    jf_key = get_setting(db, "jellyfin_api_key")
+    if not jf_url or not jf_key:
+        return
+    jf_uid = get_setting(db, "jellyfin_user_id", "")
+    only = {"Movie": set(changed.get("Movie") or ()), "Series": set(changed.get("Series") or ())}
+    log = logging.getLogger(__name__)
+
+    def _bg():
+        from services.jellyfin import JellyfinService, sync_owned_tags
+        bg_db = SessionLocal()
+        try:
+            jf = JellyfinService(jf_url, jf_key, jf_uid)
+            counts = sync_owned_tags(bg_db, jf, why, only=only)
+            log.info(f"{why}: list tags pushed to {counts.get('written', 0)} Jellyfin item(s) "
+                     f"({counts.get('errors', 0)} failed, {counts.get('not_found', 0)} not in Jellyfin)")
+            if user_id is not None:
+                from services.smartlists import (_notify_jellyfin_plugin, refresh_smartlist_playlists,
+                                                 sync_smartlists, write_home_config)
+                sync_smartlists(bg_db, user_id=user_id)
+                refresh_smartlist_playlists(bg_db, user_id=user_id)
+                write_home_config(bg_db, user_id=user_id)
+                _notify_jellyfin_plugin(bg_db)
+        except Exception as e:
+            log.warning(f"{why}: could not bring Jellyfin in line now ({e}); the nightly sync will")
+        finally:
+            bg_db.close()
+
+    threading.Thread(target=_bg, daemon=True, name=f"list-change-{user_id}").start()
+
+
+def _merge_changed(into: dict, more: Optional[dict]) -> None:
+    for kind, ids in (more or {}).items():
+        into.setdefault(kind, set()).update(ids)
 
 
 @router.get("")
@@ -973,9 +1036,15 @@ def delete_list(list_id: int, db: Session = Depends(get_db), user: TentacleUser 
     if not lst:
         raise HTTPException(404, "List not found")
     from services.tagger import retire_tag
-    retire_tag(db, lst.tag)
+    tag = lst.tag
+    retire_tag(db, tag)
     db.delete(lst)
     db.commit()
+    changed = {"Movie": set(), "Series": set()}
+    if tag:
+        # Strip it now (any other list or rule that still gives it keeps it).
+        apply_list_tags_to_library([], tag, db, changed=changed)
+    push_list_changes(db, user.id, changed, "List delete")
     return {"success": True}
 
 
@@ -1027,6 +1096,7 @@ def refresh_all_lists(db: Session = Depends(get_db), user: TentacleUser = Depend
     refreshed = 0
     errors = []
     warnings = []
+    changed = {"Movie": set(), "Series": set()}
     for lst in active_lists:
         try:
             items, store_stats = refresh_list(lst, db, bearer, trakt_cid, tmdb)
@@ -1036,12 +1106,14 @@ def refresh_all_lists(db: Session = Depends(get_db), user: TentacleUser = Depend
             if lst.last_fetch_note:
                 warnings.append(f"{lst.name}: {lst.last_fetch_note}")
             refreshed += 1
+            _merge_changed(changed, store_stats.get("changed"))
             logger.info(f"Refreshed list '{lst.name}': {store_stats['stored']} items")
         except Exception as e:
             errors.append(f"{lst.name}: {e}")
             logger.warning(f"Failed to refresh list '{lst.name}': {e}")
 
     db.commit()
+    push_list_changes(db, user.id, changed, "Lists refresh")
     log_activity(db, "lists_refresh", f"Refreshed {refreshed} lists")
     return {"success": True, "refreshed": refreshed, "errors": errors, "warnings": warnings}
 
@@ -1066,6 +1138,7 @@ def fetch_list(list_id: int, db: Session = Depends(get_db), user: TentacleUser =
         raise HTTPException(400, "Failed to fetch list or list is empty")
     tagged = store_stats.get("tagged", 0)
     db.commit()
+    push_list_changes(db, user.id, store_stats.get("changed") or {}, "List fetch")
 
     # Auto-add missing movies to Radarr
     radarr_added = 0
