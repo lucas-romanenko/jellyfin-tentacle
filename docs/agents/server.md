@@ -333,7 +333,11 @@ user_id)` computes them every time from source tags, list subscriptions
   stopped asking, or nothing was read and the last answer was a refusal
   (`RequestGuard.refused`; one restricted category is nothing); a raw
   re-dial or HLS channel-URL refusal the stream ended on (`health["_refused"]`);
-  a first open answered 401/403. A first refusal sets `suspect`; a second
+  a first open answered 401/403. A stream refusal is not noted while
+  another channel of the same `provider_id` delivers (streaming, heard past
+  `_HEALTHY_AFTER`, marked within `_RIVAL_STREAMING_FRESH`:
+  `_delivering_channels`, read on the loop): a per-channel 401/403, a
+  channel not in the package (#674). A first refusal sets `suspect`; a second
   one `RETRY_DELAY_SECONDS` to `SUSPECT_SECONDS` (1 h) later is the failure
   (since the first, API 401 = "login"); older starts again. Worked = a sync
   that read every category (channel sync: one group), a stream delivering

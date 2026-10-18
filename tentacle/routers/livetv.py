@@ -1645,19 +1645,50 @@ def _refusal_heard(health: dict, status) -> None:
         health.pop("_refused", None)
 
 
+def _delivering_channels(except_id: int) -> "list[int]":
+    """Channels other than except_id whose stream delivers now: streaming,
+    this stretch heard past _HEALTHY_AFTER, marked within
+    _RIVAL_STREAMING_FRESH (#674). Reads _stream_status: event loop only."""
+    try:
+        now = asyncio.get_running_loop().time()
+    except RuntimeError:
+        return []
+    out = []
+    for cid, st in list(_stream_status.items()):
+        if cid == except_id or st.get("state") != "streaming":
+            continue
+        if st.get("heard_since") is None or st.get("heard_since") != st.get("since"):
+            continue
+        last = st.get("last_ok")
+        if last is not None and now - last <= _RIVAL_STREAMING_FRESH:
+            out.append(cid)
+    return out
+
+
 def _tell_provider_health(channel_id: int, ok: bool, code=None):
     """What a live stream learned about its provider, for provider health
     (#652). In the default executor with a session of its own: the event
-    loop never touches the database. Never raises; the future (None without
-    a running loop) is only awaited by tests."""
+    loop never touches the database. A refusal while another channel of the
+    same provider delivers is about that channel, not the provider: not
+    noted (#674). Never raises; the future (None without a running loop) is
+    only awaited by tests."""
+    delivering = [] if ok else _delivering_channels(channel_id)
+
     def _write():
         db = None
         try:
             db = SessionLocal()
             provider_id = (db.query(LiveChannel.provider_id)
                            .filter(LiveChannel.id == channel_id).scalar())
-            if isinstance(provider_id, int):
-                provider_health.note(db, provider_id, ok, "stream", code)
+            if not isinstance(provider_id, int):
+                return
+            if delivering and db.query(LiveChannel.id).filter(
+                    LiveChannel.id.in_(delivering),
+                    LiveChannel.provider_id == provider_id).first() is not None:
+                logger.info(f"[LiveTV] Channel {channel_id} was refused (HTTP {code}) while another "
+                            f"channel of the same provider delivers: not counted against the provider")
+                return
+            provider_health.note(db, provider_id, ok, "stream", code)
         except Exception as e:
             logger.debug(f"[LiveTV] Could not tell provider health about channel {channel_id}: {e}")
         finally:
