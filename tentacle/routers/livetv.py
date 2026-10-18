@@ -1645,19 +1645,47 @@ def _refusal_heard(health: dict, status) -> None:
         health.pop("_refused", None)
 
 
+def _delivering_channels(except_id: int) -> list:
+    """Channels whose upstream delivers right now: streaming for at least
+    _HEALTHY_AFTER (its stretch was heard, see _status_set) and marked within
+    _RIVAL_STREAMING_FRESH. Read on the event loop, which owns _stream_status."""
+    try:
+        now = asyncio.get_running_loop().time()
+    except RuntimeError:
+        return []
+    return [cid for cid, e in list(_stream_status.items())
+            if cid != except_id and e.get("state") == "streaming"
+            and e.get("heard_since") is not None and e.get("heard_since") == e.get("since")
+            and now - e.get("last_ok", float("-inf")) < _RIVAL_STREAMING_FRESH]
+
+
 def _tell_provider_health(channel_id: int, ok: bool, code=None):
     """What a live stream learned about its provider, for provider health
     (#652). In the default executor with a session of its own: the event
     loop never touches the database. Never raises; the future (None without
-    a running loop) is only awaited by tests."""
+    a running loop) is only awaited by tests.
+
+    A refusal is not noted while another channel of the same provider
+    delivers: the provider answers this server, so the 401/403 is about that
+    one channel (not in the package, locked), and a working recording must
+    not raise "failing" on the phone and the dashboard."""
+    delivering = [] if ok else _delivering_channels(channel_id)
+
     def _write():
         db = None
         try:
             db = SessionLocal()
             provider_id = (db.query(LiveChannel.provider_id)
                            .filter(LiveChannel.id == channel_id).scalar())
-            if isinstance(provider_id, int):
-                provider_health.note(db, provider_id, ok, "stream", code)
+            if not isinstance(provider_id, int):
+                return
+            if delivering and (db.query(LiveChannel.id)
+                               .filter(LiveChannel.id.in_(delivering),
+                                       LiveChannel.provider_id == provider_id).first()) is not None:
+                logger.info(f"[LiveTV] Channel {channel_id} was refused (HTTP {code}) while another channel "
+                            f"of the same provider delivers: not counted against the provider")
+                return
+            provider_health.note(db, provider_id, ok, "stream", code)
         except Exception as e:
             logger.debug(f"[LiveTV] Could not tell provider health about channel {channel_id}: {e}")
         finally:
