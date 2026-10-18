@@ -435,6 +435,11 @@ User docs: `docs/features/live-tv.md`.
   until restart). Chosen at open time (`_live_open_urls`), so no channel sync
   is needed; `livetv_stream_format` = `m3u8`/`ts` overrides. Why: the comment
   above `_LIVE_STREAM_FORMATS`.
+- `discover.json` `TunerCount` is at least the stream ceiling
+  (`_hdhr_tuner_count`). Jellyfin 10.11 enforces the count saved with its
+  tuner: copied from TunerCount only when it discovers the device on the
+  network; a tuner added by URL saves 0 (no limit; the field is hidden for
+  HDHomeRun). Jellyfin lists TunerCount tuners either way.
 - Raw MPEG-TS streams re-dial from the channel URL when the provider drops
   them (`stream_generator()` in `_stream_proxy_inner`). Waited out like a
   509 (the viewer budget; no limit while a recording is attached): transport
