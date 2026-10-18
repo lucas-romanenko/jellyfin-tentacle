@@ -416,8 +416,8 @@ def _watched(db) -> list:
 
 
 def _stand_aside(db) -> bool:
-    from services.provider_activity import live_streams_active, recording_protected
-    return live_streams_active() or recording_protected(db)
+    from services.provider_activity import jellyfin_playing, live_streams_active, recording_protected
+    return live_streams_active() or recording_protected(db) or jellyfin_playing(db)
 
 
 def _link(db) -> str:
