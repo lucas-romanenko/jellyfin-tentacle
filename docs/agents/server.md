@@ -317,9 +317,12 @@ user_id)` computes them every time from source tags, list subscriptions
   no verdict; an API failure skips the stream step.
 - A new failure is checked again 2 minutes later (`RETRY_DELAY_SECONDS`)
   before it counts. "Check now" (`POST /api/health/providers/check`) skips
-  that confirmation. Both look for `live_streams_active()` or
-  `recording_protected()` before every connection (each provider, each test
-  stream, each confirming re-check) and stand aside once either is true: no
+  that confirmation. Both look for `live_streams_active()`,
+  `recording_protected()` or `jellyfin_playing()` (Jellyfin `/Sessions` has
+  a `NowPlayingItem`, or doesn't answer: a VOD .strm plays straight from the
+  provider, and a test stream next to it cuts it) before every connection
+  (each provider, each test stream, each confirming re-check) and stand
+  aside once one is true: no
   verdict, the state kept, `skipped_at` set; the result says `skipped` and
   `checked` counts only the providers that got a verdict. One lock keeps
   them from running at once (409).
