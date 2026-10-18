@@ -559,7 +559,11 @@ def fetch_trakt_list(url: str, client_id: str = "") -> list:
         # Convert URL to API endpoint
         # e.g. https://trakt.tv/users/username/lists/listname
         # → https://api.trakt.tv/users/username/lists/listname/items
-        api_url = url.rstrip('/').replace('trakt.tv', 'api.trakt.tv') + '/items'
+        # From the path, whatever trakt.tv host the list was copied from
+        # (www., app., api.): a string replace made www.api.trakt.tv and put a
+        # pasted ?query before /items (#681).
+        from urllib.parse import urlparse
+        api_url = f"https://api.trakt.tv{urlparse(url).path.rstrip('/')}/items"
         # Checked again post-transform: the request below carries the real
         # trakt-api-key, so it must never be sent to a caller-chosen host.
         if not is_safe_url(api_url, allowed_hosts=LIST_ALLOWED_HOSTS["trakt"]):
