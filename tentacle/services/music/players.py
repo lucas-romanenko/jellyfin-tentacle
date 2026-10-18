@@ -156,10 +156,32 @@ class JellyfinPlayer(Player):
     def rescan(self) -> None:
         if not self.library_id:
             return
-        r = requests.post(f"{self.url}/Items/{self.library_id}/Refresh", headers={"X-Emby-Token": self.key},
-                          params={"Recursive": "true"}, timeout=TIMEOUT)
+        # The refresh modes must be given: without them Jellyfin adds a new album
+        # without reading its files' tags (named after its folder, tracks after
+        # their files, no MusicBrainz ids), and later library scans leave it so.
+        # "Default" reads what is new and keeps what is there, like a library scan.
+        path = f"/Items/{self.library_id}/Refresh"
+        params = {"Recursive": "true", "MetadataRefreshMode": "Default", "ImageRefreshMode": "Default",
+                  "ReplaceAllMetadata": "false", "ReplaceAllImages": "false"}
+        if self._lists_nothing():
+            # A library created on an empty folder (Lidarr's new root folder) has
+            # no folder under it in Jellyfin until a full library scan, and a
+            # refresh of the library finds nothing new before that.
+            path, params = "/Library/Refresh", None
+        r = requests.post(f"{self.url}{path}", headers={"X-Emby-Token": self.key},
+                          params=params, timeout=TIMEOUT)
         r.raise_for_status()
-        logger.info("[Jellyfin] Music library refresh started")
+        logger.info("[Jellyfin] Music library refresh started"
+                    + (" (a full library scan: the music library is still empty in Jellyfin)" if params is None else ""))
+
+    def _lists_nothing(self) -> bool:
+        """True when Jellyfin lists nothing under the music library (an unknown
+        answer counts as not empty: the library refresh is the cheap one)."""
+        try:
+            listing = self._get("/Items", {"ParentId": self.library_id, "Limit": 1})
+        except (requests.RequestException, ValueError):
+            return False
+        return not (listing.get("TotalRecordCount") or listing.get("Items"))
 
     def album_url(self, rgid: str, title: str = "") -> Optional[str]:
         from routers.discover import _jellyfin_web_url
