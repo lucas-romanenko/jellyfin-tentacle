@@ -9,3 +9,6 @@ contact_links:
   - name: Questions and ideas
     url: https://github.com/lucas-romanenko/jellyfin-tentacle/discussions
     about: Ask how to do something or talk an idea through.
+  - name: Report a security vulnerability
+    url: https://github.com/lucas-romanenko/jellyfin-tentacle/security/advisories/new
+    about: Privately, not in a public issue (see SECURITY.md).
