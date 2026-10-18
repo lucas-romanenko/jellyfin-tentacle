@@ -85,7 +85,15 @@ releases a VOD show whose download Sonarr no longer has (left Sonarr, or no
 episode files; it keeps `sonarr_path` while Sonarr still lists it) and
 counts these rows in its outage guard per kind (`downloaded_series_rows`:
 source sonarr, or any row with `downloaded_at`, since Add to Sonarr sets
-`sonarr_path` before anything is downloaded). Keep VOD on a series
+`sonarr_path` before anything is downloaded). A VOD show Sonarr holds
+with only Tentacle's `.strm` files (`series_has_real_download` is False:
+Sonarr 4 counts them as episode files) is no download (#682): the scan
+keeps its `sonarr_path` and Following state but gives it no date, no tags
+and no NFO write, and releases a row an older scan tagged
+(`keep_sonarr_path=True`, its duplicate left to
+`_dismiss_strm_only_duplicates`; "Recently Added TV" comes off too unless
+the row's own `date_added` is in the window), then triggers a Jellyfin
+library scan. Sonarr not answering keeps the download path. Keep VOD on a series
 duplicate releases the row the same way and deletes the request.
 
 **"Download more episodes"** on a VOD series: the client loads TMDB seasons,
