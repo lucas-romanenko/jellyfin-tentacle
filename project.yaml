@@ -6,7 +6,7 @@ deploy_command: make -C /code/jellyfin-tentacle deploy
 engine: runner           # the runner takes its tasks (/agents?r=jellyfin-tentacle)
 deploy: yes              # main runs on the maintainer's server: the merged change deploys when nothing is playing
 public: yes              # people get it only through a release: the maintainer's, always
-github_issues: yes       # other people's issues and pull requests become tasks: bugs start, the rest wait for Build it / Not now
+github_issues: no        # other people's issues and pull requests are picked up by the maintainer's Dev agent, not the runner
 bugs: auto               # a confirmed bug gets a failing test, a fix and a review without asking
 features: ask            # each feature waits for the maintainer's Build it / Not now
 merge: auto              # a reviewed pull request merges once its CI is green
