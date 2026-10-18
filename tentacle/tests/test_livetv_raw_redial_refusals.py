@@ -7,10 +7,13 @@ Cloudflare answer 513/520/522 for a few minutes now and then. The raw re-dial
 treated every status outside _OPEN_RETRYABLE_STATUS as permanent, so one such
 answer ended a running recording for good, although the channel worked again
 a few minutes later. They are now waited out like a 509: within the viewer's
-budget, and for as long as a recording is attached. 401/403/404 still stop.
+budget, and for as long as a recording is attached. 401/403/404 still stop
+(a recording waits a 401/403 out for _DENIED_GRACE first: #646,
+test_livetv_recording_denied_grace).
 """
 import unittest
 
+import routers.livetv as livetv
 from test_livetv_open_single_fetch import PANEL, TOKENIZED, _redirect, _resp
 from test_livetv_raw_reconnect import _dropped, _live
 from test_livetv_reconnect_budget import _play
@@ -50,11 +53,17 @@ class StillBounded(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(sum(slept), 60 + 18.1)
         self.assertLessEqual(log.count(PANEL) - 1, 20)
 
-    async def test_401_still_stops_even_for_a_recording(self):
+    async def test_401_still_stops_a_viewer(self):
+        script = {PANEL: [_redirect(), _resp(401, PANEL)], TOKENIZED: [_live([A], then=_dropped())]}
+        body, log, slept = await _play(script, failure_budget=0, is_recording=lambda: False)
+        self.assertEqual(A, body)
+        self.assertEqual(1, len(slept))
+
+    async def test_401_for_good_still_ends_a_recording_after_the_grace(self):
         script = {PANEL: [_redirect(), _resp(401, PANEL)], TOKENIZED: [_live([A], then=_dropped())]}
         body, log, slept = await _play(script, failure_budget=0, is_recording=lambda: True)
         self.assertEqual(A, body)
-        self.assertEqual(1, len(slept))
+        self.assertLessEqual(sum(slept), livetv._DENIED_GRACE + 18.1)
 
     async def test_404_still_stops(self):
         script = {PANEL: [_redirect(), _resp(404, PANEL)], TOKENIZED: [_live([A], then=_dropped())]}

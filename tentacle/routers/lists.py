@@ -9,6 +9,7 @@ import threading
 import requests
 from datetime import datetime
 from typing import Optional
+from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -556,10 +557,15 @@ def fetch_trakt_list(url: str, client_id: str = "") -> list:
             "Not refreshed: no Trakt client ID is configured (Settings → Connections). "
             "The previous items were kept."))
     try:
-        # Convert URL to API endpoint
-        # e.g. https://trakt.tv/users/username/lists/listname
+        # Convert URL to API endpoint: the pasted URL's path on api.trakt.tv,
+        # whatever trakt.tv host it came from (www., app., api.), without its
+        # query or fragment (#681).
+        # e.g. https://app.trakt.tv/users/username/lists/listname?sort=rank,asc
         # → https://api.trakt.tv/users/username/lists/listname/items
-        api_url = url.rstrip('/').replace('trakt.tv', 'api.trakt.tv') + '/items'
+        path = urlparse(url).path.rstrip('/')
+        if path.endswith('/items'):
+            path = path[:-len('/items')]
+        api_url = f"https://api.trakt.tv{path}/items"
         # Checked again post-transform: the request below carries the real
         # trakt-api-key, so it must never be sent to a caller-chosen host.
         if not is_safe_url(api_url, allowed_hosts=LIST_ALLOWED_HOSTS["trakt"]):
@@ -706,14 +712,16 @@ def refresh_list(lst: ListSubscription, db: Session, bearer_token: str = "",
                                   f"list was kept as it was.")])))
     items = keep_unread_items(lst, items, db)
     store_stats = store_list_items(lst, items, db)
-    store_stats["tagged"] = apply_list_tags_to_library(items, lst.tag, db)
+    changed = {"Movie": set(), "Series": set()}
+    store_stats["tagged"] = apply_list_tags_to_library(items, lst.tag, db, changed=changed)
+    store_stats["changed"] = changed
     lst.last_fetched = datetime.utcnow()
     lst.last_item_count = store_stats["stored"]
     lst.last_fetch_note = getattr(items, "note", "") or None
     return items, store_stats
 
 
-def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
+def apply_list_tags_to_library(items: list, tag: str, db: Session, changed: dict = None) -> int:
     """Match list items to library content and apply/remove tags via NFO update.
 
     Respects media_type from list items to avoid cross-type TMDB ID collisions
@@ -721,8 +729,13 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
 
     Also removes the tag from any library items that are no longer on the list,
     so stale tags get cleaned up on every list refresh.
+
+    `changed` ({"Movie": set(), "Series": set()}), when given, gets the TMDB
+    id of every row whose tags this changed: what the tag push must write.
     """
     from services.tagger import tentacle_owned_tags
+    if changed is None:
+        changed = {"Movie": set(), "Series": set()}
     owned = tentacle_owned_tags(db)   # an NFO's other tags stay (#165)
     # Build set of (tmdb_id, media_type) that should have this tag
     valid_ids = set()
@@ -765,6 +778,7 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
         movie.tags = tags
         if movie.nfo_path:
             update_nfo_tags(Path(movie.nfo_path), tags, owned)
+        changed["Movie"].add(movie.tmdb_id)
         cleaned += 1
 
     for series in db.query(Series).all():
@@ -778,6 +792,7 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
         series.tags = tags
         if series.nfo_path:
             update_nfo_tags(Path(series.nfo_path), tags, owned)
+        changed["Series"].add(series.tmdb_id)
         cleaned += 1
 
     if cleaned:
@@ -800,6 +815,7 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
                     series.tags = tags
                     if series.nfo_path:
                         update_nfo_tags(Path(series.nfo_path), tags, owned)
+                    changed["Series"].add(series.tmdb_id)
                     tagged += 1
         elif media_type == "movie":
             movie = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
@@ -810,6 +826,7 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
                     movie.tags = tags
                     if movie.nfo_path:
                         update_nfo_tags(Path(movie.nfo_path), tags, owned)
+                    changed["Movie"].add(movie.tmdb_id)
                     tagged += 1
         else:
             movie = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
@@ -820,6 +837,7 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
                     movie.tags = tags
                     if movie.nfo_path:
                         update_nfo_tags(Path(movie.nfo_path), tags, owned)
+                    changed["Movie"].add(movie.tmdb_id)
                     tagged += 1
                 continue
 
@@ -831,10 +849,73 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
                     series.tags = tags
                     if series.nfo_path:
                         update_nfo_tags(Path(series.nfo_path), tags, owned)
+                    changed["Series"].add(series.tmdb_id)
                     tagged += 1
 
     db.commit()
     return tagged
+
+
+def _users_on_tags(db: Session, tags: set, owner_id: int) -> set:
+    """The owner plus every other user whose list or tag rule gives one of
+    these tags (shared tags from before the conflict check, #162): their
+    playlists match the same titles."""
+    from models.database import TagRule
+    users = {owner_id}
+    if tags:
+        users |= {u for (u,) in db.query(ListSubscription.user_id).filter(
+            ListSubscription.tag.in_(tags)) if u is not None}
+        users |= {u for (u,) in db.query(TagRule.user_id).filter(
+            TagRule.output_tag.in_(tags)) if u is not None}
+    return users
+
+
+def _follow_list_change(db: Session, user_ids: set, changed: Optional[dict], removed: bool = False) -> None:
+    """Carry a list change to Jellyfin and its users' playlists (#679).
+
+    The rows and NFOs are already right, but Jellyfin keeps tags set through
+    its API: the changed titles' tags are pushed first, then each user's
+    playlists are refreshed (for a deleted list synced, so its playlist goes)
+    and their home config written. Runs in the background, started after the
+    endpoint's last commit; a Jellyfin that fails leaves it to the nightly."""
+    jf_url = get_setting(db, "jellyfin_url")
+    jf_key = get_setting(db, "jellyfin_api_key")
+    if not jf_url or not jf_key:
+        return
+    jf_user_id = get_setting(db, "jellyfin_user_id", "")
+    changed = {k: set(v) for k, v in (changed or {}).items() if v}
+    user_ids = sorted(user_ids)
+
+    def _run():
+        from services.jellyfin import JellyfinService, sync_owned_tags
+        import services.smartlists as sl
+        bg = SessionLocal()
+        try:
+            if changed:
+                # Before the playlists, so they match the new tags.
+                jf = JellyfinService(jf_url, jf_key, jf_user_id)
+                counts = sync_owned_tags(bg, jf, "Lists", only=changed)
+                logger.info(f"[Lists] Pushed the tags of {sum(len(v) for v in changed.values())} title(s) "
+                            f"to Jellyfin: {counts['written']} written, {counts['unchanged']} unchanged, "
+                            f"{counts['not_found']} not in Jellyfin, {counts['errors']} failed")
+            for uid in user_ids:
+                gone = frozenset()
+                if removed:
+                    before = {p["playlist_id"] for p in sl._get_smartlists_with_playlist_ids(bg, user_id=uid)}
+                    sl.sync_smartlists(bg, user_id=uid)
+                    after = {p["playlist_id"] for p in sl._get_smartlists_with_playlist_ids(bg, user_id=uid)}
+                    gone = frozenset(before - after)
+                sl.refresh_smartlist_playlists(bg, user_id=uid)
+                sl.write_home_config(bg, user_id=uid, dropped_ids=gone)
+            sl.bump_playlist_version()
+            sl._notify_jellyfin_plugin(bg)
+        except Exception as e:
+            logger.warning(f"[Lists] Could not carry the list change to Jellyfin's tags and playlists: {e} "
+                           f"(the nightly sync will catch up)")
+        finally:
+            bg.close()
+
+    threading.Thread(target=_run, daemon=True, name="list-change").start()
 
 
 @router.get("")
@@ -973,9 +1054,16 @@ def delete_list(list_id: int, db: Session = Depends(get_db), user: TentacleUser 
     if not lst:
         raise HTTPException(404, "List not found")
     from services.tagger import retire_tag
-    retire_tag(db, lst.tag)
+    tag = lst.tag
+    retire_tag(db, tag)
     db.delete(lst)
     db.commit()
+    # With the list gone, this strips its tag from the titles it gave it,
+    # keeping those another list on the tag or a sharing rule still gives:
+    # left on them, a user who takes the freed tag (#542) got these titles.
+    changed = {"Movie": set(), "Series": set()}
+    apply_list_tags_to_library([], tag, db, changed=changed)
+    _follow_list_change(db, _users_on_tags(db, {tag}, user.id), changed, removed=True)
     return {"success": True}
 
 
@@ -1027,12 +1115,15 @@ def refresh_all_lists(db: Session = Depends(get_db), user: TentacleUser = Depend
     refreshed = 0
     errors = []
     warnings = []
+    changed = {"Movie": set(), "Series": set()}
     for lst in active_lists:
         try:
             items, store_stats = refresh_list(lst, db, bearer, trakt_cid, tmdb)
             if items is None:
                 errors.append(f"{lst.name}: empty or failed")
                 continue
+            for media_type, ids in (store_stats.get("changed") or {}).items():
+                changed.setdefault(media_type, set()).update(ids)
             if lst.last_fetch_note:
                 warnings.append(f"{lst.name}: {lst.last_fetch_note}")
             refreshed += 1
@@ -1043,6 +1134,9 @@ def refresh_all_lists(db: Session = Depends(get_db), user: TentacleUser = Depend
 
     db.commit()
     log_activity(db, "lists_refresh", f"Refreshed {refreshed} lists")
+    if refreshed:
+        # One push and one playlist refresh for every list, not one per list.
+        _follow_list_change(db, _users_on_tags(db, {l.tag for l in active_lists}, user.id), changed)
     return {"success": True, "refreshed": refreshed, "errors": errors, "warnings": warnings}
 
 
@@ -1096,6 +1190,7 @@ def fetch_list(list_id: int, db: Session = Depends(get_db), user: TentacleUser =
         _notify_jellyfin_plugin(db)
     except Exception:
         pass
+    _follow_list_change(db, _users_on_tags(db, {lst.tag}, user.id), store_stats.get("changed"))
 
     return {
         "success": True,

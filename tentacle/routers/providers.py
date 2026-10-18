@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 from models.database import (
     get_db, Provider, ProviderCategory, CategorySnapshot, Setting,
     Movie, Series, Duplicate, SyncRun, LiveChannel, LiveChannelGroup, EPGProgram,
+    BlockedStream, MatchOverride,
 )
 from routers.auth import require_admin
 from services.media_files import delete_movie_files, delete_series_files
@@ -401,6 +402,16 @@ def delete_provider(provider_id: int, db: Session = Depends(get_db)):
             db.query(EPGProgram).filter(EPGProgram.channel_id.in_(channel_epg_ids)).delete(synchronize_session=False)
         db.query(LiveChannel).filter(LiveChannel.provider_id == provider_id).delete()
         db.query(LiveChannelGroup).filter(LiveChannelGroup.provider_id == provider_id).delete()
+        # State keyed by the provider's id: SQLite gives the next provider the
+        # same id, which would inherit it (#625). All in this one commit.
+        from routers.livetv import PROVIDER_SETTING_KEYS
+        from services import provider_health, provider_relink
+        db.query(Setting).filter(Setting.key.in_([k.format(provider_id) for k in PROVIDER_SETTING_KEYS])) \
+            .delete(synchronize_session=False)
+        db.query(BlockedStream).filter(BlockedStream.provider_id == provider_id).delete()
+        db.query(MatchOverride).filter(MatchOverride.provider_id == provider_id).delete()
+        provider_relink.forget(db, provider_id)
+        provider_health.forget(db, provider_id)
 
         provider_name = p.name
         db.delete(p)
@@ -411,7 +422,8 @@ def delete_provider(provider_id: int, db: Session = Depends(get_db)):
     from models.database import log_deletion
     log_deletion(db, kind="provider-cascade", name=provider_name, reason="manual",
                  detail=f"Provider deleted — {deleted_movies} movie(s), {deleted_series} series, "
-                        f"{deleted_files} file(s) removed from disk, plus categories/sync history/Live TV data")
+                        f"{deleted_files} file(s) removed from disk, plus categories/sync history/Live TV data/"
+                        "blocked streams/match fixes")
 
     # ── Rebuild playlists and home config ────────────────────────────────────
     # Source-tag playlists (e.g. "Netflix Movies") may now be orphaned if all

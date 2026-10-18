@@ -19,7 +19,10 @@ The code wins where they differ. Internals: [server.md](server.md).
      gets Tentacle's `<tag>` lines changed (`refresh_arr_nfo`), never
      rebuilt: a rebuild reset `<dateadded>`, which Jellyfin reads as
      DateCreated, so every scan moved old downloads to the top of "Latest"
-     (#266). The scans run one at a time per app (`_scan_lock`, #268).
+     (#266). One with neither `</movie>` nor `</tvshow>` (a metadata-URL
+     NFO, a release `.nfo`) is left alone and not counted as written, else
+     every scan triggered a full library scan (#628). The scans run one at
+     a time per app (`_scan_lock`, #268).
 2. **Tags**: VOD through NFO; downloads through the API
    (`set_item_tags`): "Downloaded Movies", "Recently Added Movies", list
    tags (e.g. "IMDB TOP 250"). Source tags carry the type suffix.
@@ -66,9 +69,32 @@ no longer has, and counts these rows in its outage guard
 the same way (and deletes the request) without waiting for Radarr's delete
 webhook (#549).
 
-**Sonarr deletes a series** (SeriesDelete): a hybrid keeps its VOD record
-(`sonarr_path`, `sonarr_monitored` cleared); a Sonarr-only series is
-deleted; then playlists as above.
+**Sonarr deletes a series** (SeriesDelete): a Sonarr-only series is
+deleted, then playlists as above. A VOD show Sonarr held too keeps its row
+(`sonarr_monitored` cleared). One that held a download (`downloaded_at` or
+"Downloaded TV": `holds_series_download`) goes back to VOD only
+(`release_vod_series_download`, the series twin of `release_vod_download`,
+#617): `sonarr_path`, `downloaded_at`, `last_downloaded_episode`, the
+download's `jellyfin_item_id`, "Downloaded TV" and the requester's
+"<name>'s Downloads" cleared, `nfo_path` back to the VOD folder's
+`tvshow.nfo`, the pending duplicate dismissed. One Sonarr was still
+searching for only loses `sonarr_path`. No playlist clean-up for the VOD
+row: Jellyfin usually merges both folders into one show, which stays in its
+VOD playlists; the tag push takes it out of the others. The Sonarr scan
+releases a VOD show whose download Sonarr no longer has (left Sonarr, or no
+episode files; it keeps `sonarr_path` while Sonarr still lists it) and
+counts these rows in its outage guard per kind (`downloaded_series_rows`:
+source sonarr, or any row with `downloaded_at`, since Add to Sonarr sets
+`sonarr_path` before anything is downloaded). A VOD show Sonarr holds
+with only Tentacle's `.strm` files (`series_has_real_download` is False:
+Sonarr 4 counts them as episode files) is no download (#682): the scan
+keeps its `sonarr_path` and Following state but gives it no date, no tags
+and no NFO write, and releases a row an older scan tagged
+(`keep_sonarr_path=True`, its duplicate left to
+`_dismiss_strm_only_duplicates`; "Recently Added TV" comes off too unless
+the row's own `date_added` is in the window), then triggers a Jellyfin
+library scan. Sonarr not answering keeps the download path. Keep VOD on a series
+duplicate releases the row the same way and deletes the request.
 
 **"Download more episodes"** on a VOD series: the client loads TMDB seasons,
 VOD episodes and Sonarr episodes in parallel; the picker shows VOD
@@ -94,6 +120,21 @@ bumps the version) and answers with item counts per playlist.
 **An auto playlist is toggled**: `POST /api/smartlists/auto-playlists/toggle`
 saves the toggle, then a full sync/refresh/artwork/home config/notify/bump.
 The UI flips the switch before the answer (optimistic).
+
+**A list is fetched, refreshed or deleted** (`POST /api/lists/{id}/fetch`,
+`POST /api/lists/refresh-all`, `DELETE /api/lists/{id}`):
+`apply_list_tags_to_library()` rewrites the rows and NFOs and collects the
+titles whose tags it changed (a delete runs it with no items, so the tag
+comes off the titles only the deleted list gave it). After the endpoint's
+commit, `_follow_list_change()` in the background pushes those titles' tags
+to Jellyfin (`sync_owned_tags(only=...)`: Jellyfin keeps tags set through
+its API, so NFOs alone change nothing), then for the owner and any other
+user with a list or rule on the tag refreshes the playlists (a delete runs
+`sync_smartlists()` first, so the playlist goes) and writes the home
+config, bumps the version and notifies the plugin. A deleted list's row goes
+at once (`write_home_config(dropped_ids=...)`) instead of lingering 7 days
+as unresolvable. Refresh all makes one push for all its lists. If Jellyfin
+fails, one WARNING and the nightly catches up (#679).
 
 **Home rows** (Home Screen tab): `add-row` (inserted at the top),
 `remove-row`, `reorder`, `hero`, `hero-sort`, `row-max-items`, `toolbar`
@@ -154,7 +195,11 @@ resets the count; 5xx, 429 and timeouts don't count). The VOD sync marks every
 category left unread without its pause, stops a series category mid-way
 (not counted: the empty-category guard's memory stays), and the run's message
 carries the refusal reason. The Live TV channel sync re-raises it: no
-lineup is saved. Only a new run (a new client) asks again.
+lineup is saved. Only a new run (a new client) asks again. Below the limit
+(one or two enabled groups) or on 5xx, a channel sync where every enabled
+group fails raises `ProviderDataError` (reason redacted) before the upsert:
+phase `error`, `last_live_sync` and Activity untouched (#630). Some groups
+failing, or a group answering `[]`, is still a success.
 
 **A stuck download is fixed** (Health → Downloads → **Fix**, or the 5-minute
 auto-fix sweep; `resolve_stuck_download()` in `services/download_health.py`):
@@ -248,8 +293,12 @@ read that row.
   or a label that no longer fits (a reused stream number), moves it (#310).
 - A stream stays with the film whose `.strm` plays it (#185). After every
   category, `_place_relisted_movies()` applies that by the files: a stream
-  no label placed that a film's `.strm` plays is that film, relabelled
-  (counted as existing and seen, so never pruned, #262); a film met this
+  no label placed (no TMDB match, or a label the cleaner rejects) that a
+  film's `.strm` plays is that film, relabelled (counted as existing and
+  seen, so never pruned, #262, #621). A known label is checked against
+  the files too when this provider has the same title in another year
+  (`_known_title_id()` `rivals`): a stream relabelled onto the year of our
+  other remake stays with the film whose `.strm` plays it (#627). A film met this
   sync whose `.strm` plays a stream of this provider no longer listed
   anywhere (a complete fetch, Xtream only) is pointed at its current
   stream in place (#263). Episodes: a file whose episode id no listing of
@@ -261,11 +310,27 @@ read that row.
   flips. A listing whose fetch fails makes the show's files wait; a
   listing that answers with no episodes offers nothing and the other
   listings decide (#512).
+- Series rows remember the provider series ids their listings were met by
+  (`Series.provider_series_ids`, `_record_series_listings()`: tonight's set
+  after a complete fetch, added to after a partial one; cleared on a
+  takeover). A listing no label placed whose id a row of ours recorded,
+  and that no listing met tonight, is that show relabelled when its
+  episodes are ones the row's `.strm` files play
+  (`_place_relabelled_series()`, one `get_series_info`): kept, seen,
+  back-filled. Files that play none of them: the id now names another
+  show, left to the prune. No files to compare (opted out, or the listing
+  can't be read): kept, nothing written (#621). A show relabelled before
+  its id was ever recorded is still pruned.
 - `.strm` files are written with `_write_strm()`: a hidden temp file in the
   same folder, then a rename, so a write cut short leaves the old file
   whole. An existing `.strm` that is empty or blank is rewritten like a
   missing one (`_strm_is_blank()`; a movie only from the row's own stream,
-  as for a restore), since it plays nothing (#283).
+  as for a restore), since it plays nothing (#283). An Xtream `.strm` that
+  holds only the start of the address the sync writes today (a strict
+  prefix) is rewritten too (`_strm_needs_rewrite()`, #629). "Fix it"
+  moving a copy (`wrong_match.rematch_movie`) and the YouTube library
+  (`write_video`, `rewrite_strm`) write through `_write_strm()` as well;
+  `write_video` repairs a blank or cut-short YouTube `.strm`.
 
 ## How changes reach the clients
 

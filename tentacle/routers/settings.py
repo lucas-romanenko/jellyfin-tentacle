@@ -647,14 +647,15 @@ def _stale_nfo_count(vod_dir) -> int:
     The banner used to count every .nfo in the tree, but since #28 the cleanup
     removes only a .strm's own NFO, plus a show's tvshow.nfo / season.nfo when
     no real media is left in it — so in a merged Radarr/Sonarr library the
-    banner promised far more than the action deleted (#107).
+    banner promised far more than the action deleted (#107). A .strm's NFO
+    beside a same-stem download is kept too, so it isn't counted (#614).
     """
-    from services.media_files import _has_media_files
+    from services.media_files import _has_media_files, _has_same_stem_media
     count = 0
     seen = set()
     for strm in vod_dir.rglob("*.strm"):
         nfo = strm.with_suffix(".nfo")
-        if nfo.exists() and nfo not in seen:
+        if nfo.exists() and nfo not in seen and not _has_same_stem_media(strm):
             seen.add(nfo)
             count += 1
     # Show-level metadata goes only with a show that holds .strm episodes and no media.

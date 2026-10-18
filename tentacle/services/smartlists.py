@@ -1219,11 +1219,13 @@ def write_home_json(path: Path, config: dict) -> None:
     _atomic_write_json(path, config)
 
 
-def write_home_config(db: Session, user_id: int = None) -> dict:
+def write_home_config(db: Session, user_id: int = None, dropped_ids: frozenset = frozenset()) -> dict:
     """Generate and write per-user home config based on current SmartLists.
 
     Preserves existing row order, hero pick, and built-in Jellyfin sections.
     Only playlist rows are validated against disk (built-in sections are always kept).
+    `dropped_ids` are playlists the user just deleted (a deleted list, #679):
+    their rows go now instead of lingering as unresolvable.
     Returns the config dict that was written.
     """
     home_row_limit = int(get_setting(db, "home_row_limit", "20") or "20")
@@ -1297,6 +1299,7 @@ def write_home_config(db: Session, user_id: int = None) -> dict:
         now_iso = datetime.utcnow().isoformat()
         rows = []
         aged_out = []  # (row, name, since, reason) unresolvable past the grace period
+        dropped = []   # rows of a playlist the user just deleted
         for r in existing_rows:
             if r.get("type") == "builtin":
                 # Always keep built-in sections
@@ -1316,6 +1319,9 @@ def write_home_config(db: Session, user_id: int = None) -> dict:
                 r["type"] = "playlist"
                 r.pop("unresolved_since", None)
                 rows.append(r)
+            elif r.get("playlist_id") in dropped_ids:
+                logger.info(f"Home config: dropping row '{r.get('display_name')}' — its playlist was deleted")
+                dropped.append(r)
             else:
                 # Unresolvable this run. Home rows are hand-configured and are
                 # never re-added automatically, so dropping one on a transient
@@ -1353,7 +1359,10 @@ def write_home_config(db: Session, user_id: int = None) -> dict:
         # (remaps, sort info, hero). Returning the old config here froze the file
         # permanently: aged rows only get older, so the condition held on every run.
         aged_ids = {id(r) for r, *_ in aged_out}
-        existing_playlist_rows = [r for r in existing_rows if r.get("type") != "builtin"]
+        # A dropped row is a delete the user asked for, not a loss to guard.
+        dropped_rows = {id(r) for r in dropped}
+        existing_playlist_rows = [r for r in existing_rows
+                                  if r.get("type") != "builtin" and id(r) not in dropped_rows]
         kept_playlist_rows = [r for r in rows if r.get("type") != "builtin" and id(r) not in aged_ids]
         if aged_out and existing_playlist_rows and len(kept_playlist_rows) < len(existing_playlist_rows) / 2:
             logger.warning(

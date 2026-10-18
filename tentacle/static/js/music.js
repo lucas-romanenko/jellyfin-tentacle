@@ -524,15 +524,17 @@ async function musicSearch(query) {
   const tabs = document.getElementById('discover-section-tabs');
   if (tabs) tabs.innerHTML = '';
   const seq = ++musicState.seq;
+  // doDiscoverSearch just bumped it: a switch to Movies/TV or a cleared box moves it on
+  const view = _discoverView;
   grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text3)"><span class="toast-spinner"></span> Searching MusicBrainz…</div>';
   let data;
   try {
     data = await api(`/api/music/search?q=${encodeURIComponent(query)}`);
   } catch (e) {
-    if (seq === musicState.seq) grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Search failed: ${escapeAttr(e.message)}</p></div>`;
+    if (seq === musicState.seq && view === _discoverView) grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Search failed: ${escapeAttr(e.message)}</p></div>`;
     return;
   }
-  if (seq !== musicState.seq || data.stale) return;
+  if (seq !== musicState.seq || view !== _discoverView || data.stale) return;
   const { artists = [], albums = [], songs = [] } = data;
   if (!artists.length && !albums.length && !songs.length) {
     grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>No music found for "${escapeAttr(query)}"</p></div>`;

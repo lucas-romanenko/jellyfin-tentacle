@@ -219,6 +219,9 @@ class Series(Base):
     source_tag = Column(String, nullable=True)
     tags = Column(JSON, default=list)
     sonarr_monitored = Column(Boolean, default=False)  # True = following for new episodes
+    # The provider's series ids (strings) its listings placed on this row: a
+    # relabelled listing whose label no longer resolves is recognised by them (#621)
+    provider_series_ids = Column(JSON, nullable=True)
 
     # Jellyfin
     jellyfin_item_id = Column(String, nullable=True)

@@ -414,7 +414,9 @@ def _strm_needs_rewrite(strm_file: Path, expected: str, client) -> bool:
         container extension;
       - the same stream with this provider's own login on another host: the
         provider moved, and its new address was saved before a save rewrote
-        the files (#142; services/provider_relink.py does it at the save).
+        the files (#142; services/provider_relink.py does it at the save);
+      - a blank file, or one holding only the start of today's address: a
+        write cut short (#283, #629).
     Everything else is left alone: another stream id (a title listed twice
     would otherwise flip every night), another host with another login, a
     proxy of somebody's own, and M3U providers (their playlist URLs may
@@ -437,6 +439,8 @@ def _strm_needs_rewrite(strm_file: Path, expected: str, client) -> bool:
         return True   # 0 bytes / blank: a write cut short, never a link of anyone's (#283)
     if current == expected:
         return False
+    if expected.startswith(current):
+        return True   # a strict prefix of today's address: a write cut short, never a link of anyone's (#629)
     # A file written before the login was percent-encoded (#529): a '#', '?' or
     # '/' in it broke the URL. Read it in today's form, so the checks below
     # repair it when it plays this stream and leave it alone when not.
@@ -969,6 +973,7 @@ def _backfill_series_episodes(
     provider: Provider,
     db: Session,
     slots: Optional[_EpisodeSlots] = None,
+    series_info: Optional[dict] = None,
 ) -> int:
     """For an EXISTING VOD series owned by this provider, fetch series info and
     write any newly-added season/episode .strm files. Returns count of new files.
@@ -976,6 +981,7 @@ def _backfill_series_episodes(
     No-ops for series not owned by this provider or without a known folder.
     Best-effort: any provider/IO error is swallowed so a single bad series
     doesn't break the category batch. `slots`: see _write_episode_strms.
+    `series_info`: the listing's info when the caller already fetched it.
     """
     record = db.query(Series).filter(Series.tmdb_id == tmdb_id).first()
     if not record or record.provider_id != provider.id:
@@ -1000,7 +1006,8 @@ def _backfill_series_episodes(
             return 0
 
     try:
-        series_info = client.get_series_info(series.get("series_id"))
+        if series_info is None:
+            series_info = client.get_series_info(series.get("series_id"))
         episodes = series_info.get("episodes", {})
         if isinstance(episodes, list):
             episodes = {"1": episodes}
@@ -1257,24 +1264,31 @@ def _same_film_name(a: dict, b: dict) -> bool:
         and str(a.get("year") or "") == str(b.get("year") or "")
 
 
-def _known_title_id(ids, stream: dict, owns, namesake_of=None):
+def _known_title_id(ids, stream: dict, owns, namesake_of=None, rivals=()):
     """The already-imported film a stream is, from the title->ids map, or None
     when it needs a real lookup. `owns(id)` is _movie_row_plays_stream for it;
     `namesake_of(hint, id)` says whether TMDB names the hinted film with the
-    same title and year as row `id`.
+    same title and year as row `id`; `rivals` are this provider's films with
+    the same title in another year (remakes).
 
     One film with this title and a stream that carries no hint (or the same id)
     is the normal case, and stays a map lookup with no file read. Otherwise a
     stream keeps the film its .strm already plays, a hint picks among namesakes
     already imported, a hint that is not a namesake of the one known film is
     ignored (no name search), and a stream the map cannot place gets a real
-    lookup."""
+    lookup. A stream relabelled onto the year of another film of ours with the
+    same title stays with the one whose .strm plays it (#627), also when the
+    provider's id names that other film (#672)."""
     if not ids:
         return None
     hint = _provider_tmdb_hint(stream)
     if hint is not None and not any(i > 0 for i in ids):
         hint = None  # provider-only titles (synthetic ids): the hint means nothing here
     if len(ids) == 1 and (hint is None or hint == ids[0]):
+        if hint is None and rivals and owns(ids[0]) is False:
+            playing = [r for r in rivals if owns(r) is True]
+            if len(playing) == 1:
+                return playing[0]  # relabelled onto our other remake's year (#627)
         return ids[0]
     verdicts = {i: owns(i) for i in ids}
     for i in ids:
@@ -1284,6 +1298,8 @@ def _known_title_id(ids, stream: dict, owns, namesake_of=None):
         return hint
     if len(ids) == 1 and verdicts[ids[0]] is None:
         return ids[0]  # cannot tell: as before
+    if hint is not None and hint in rivals and owns(hint) is True:
+        return hint  # only the label's year is wrong: the provider's id and our .strm name the rival (#672)
     if len(ids) == 1 and hint is not None and namesake_of is not None and not namesake_of(hint, ids[0]):
         return ids[0]  # another listing of the known film with a wrong id: as before
     return None
@@ -1470,6 +1486,8 @@ def check_and_record_duplicate(
         existing.provider_id = provider.id
         existing.source = source
         existing.date_updated = datetime.utcnow()
+        if media_type == "series":
+            existing.provider_series_ids = None   # the old provider's ids name nothing here (#621)
         return TAKEOVER
 
     # Same provider (e.g. re-sync / appears in a second category of the same
@@ -1914,6 +1932,26 @@ def _unread_summary(unread: list, total: int, reason: str = None) -> str:
             f"({reason or unread[0][1]})")
 
 
+def _tell_provider_health(db: Session, provider: Provider, client, run: SyncRun,
+                          unread: list, total_cats: int) -> None:
+    """What this run learned about the provider, for its health (#652): it
+    refused the sync (401/403), or every category read. Anything else
+    (part unread, 5xx, timeouts) says nothing. An M3U file has no provider
+    to hear from. Never fails the sync."""
+    if (provider.provider_type or "xtream") not in ("xtream", "m3u_url") or total_cats <= 0:
+        return
+    try:
+        from services import provider_health
+        guard = getattr(client, "guard", None)
+        code = guard.refused(len(unread) >= total_cats) if guard is not None else None
+        if code in (401, 403):
+            provider_health.note(db, provider.id, False, "api", code)
+        elif run.status == "completed" and not unread:
+            provider_health.note(db, provider.id, True, "api")
+    except Exception as e:
+        logger.warning(f"Could not tell provider health about the sync of {provider.name}: {e}")
+
+
 def _finish_run(db: Session, run: SyncRun, status: str, message: str) -> SyncRun:
     """Record how a sync run ended after an error (#270).
 
@@ -2125,6 +2163,7 @@ def sync_provider(
 
         db.commit()
         logger.info(f"Sync complete in {run.duration_seconds}s")
+        _tell_provider_health(db, provider, client, run, unread, total_cats)
 
     except SyncCancelledError as e:
         msg = str(e) or "Cancelled by user"
@@ -2626,6 +2665,8 @@ def _sync_movies(
         lookup failed)."""
         clean_name, year = clean_title(stream.get("name", ""))
         if not clean_name:
+            unmatched.append((stream, tag))   # its .strm may still play it (#621)
+            stats["skipped"] += 1
             return None, False
         lookup_key = (clean_name.lower(), year)
         kid, metadata = _known_id(lookup_key, stream), None
@@ -2660,10 +2701,15 @@ def _sync_movies(
         return (kid if result == "duplicate" else None), False
 
     def _known_id(lookup_key, stream):
+        ids = known_titles.get(lookup_key)
+        if not ids:
+            return None
+        rivals = [t for t in index.own_by_title.get(_plain_title(lookup_key[0]), ())
+                  if t not in ids and _in_library(t) and index.own_strm.get(t) not in index.shared]
         return _known_title_id(
-            known_titles.get(lookup_key), stream,
+            ids, stream,
             lambda i: _movie_row_plays_stream(client, stream, index.own_strm.get(i), index),
-            _namesake_of)
+            _namesake_of, rivals)
 
     def _in_library(i):
         return i in existing_provider_tmdb_ids or i in seen_tmdb_ids
@@ -2914,6 +2960,9 @@ def _sync_movies(
                                   item_title=clean_name or raw_name, item_pos=item_idx, item_total=total_in_cat)
 
             if not clean_name:
+                # A label the cleaner rejects: a film whose .strm plays this
+                # stream is still that film, relabelled (#621, as #262)
+                unmatched.append((stream, cat.source_tag))
                 cat_skipped += 1
                 stats["skipped"] += 1
                 if item_idx % 10 == 0 or item_idx == total_in_cat:
@@ -3222,6 +3271,125 @@ def _sync_movies(
                                           "categories": len(whitelisted_cats), "unread": unread}
 
 
+def _episode_refs(client, episodes) -> set:
+    """What a series listing's episodes play, as _play_ref gives it."""
+    if isinstance(episodes, list):
+        episodes = {"1": episodes}
+    refs = set()
+    for eps in (episodes or {}).values():
+        if isinstance(eps, list) and eps and isinstance(eps[0], list):
+            eps = eps[0]
+        for ep in eps if isinstance(eps, list) else []:
+            if isinstance(ep, dict) and ep.get("id") is not None:
+                ref = _play_ref(client.episode_stream_url(ep.get("id"), ep.get("container_extension", "mp4")))
+                if ref is not None:
+                    refs.add(ref)
+    return refs
+
+
+def _row_plays_listing(record: Series, refs: set):
+    """True / False when the row's episode .strm files do / do not play one of
+    the listing's episodes; None when that can't be told (no files of ours)."""
+    if not refs or not record.strm_path or record.strm_disabled:
+        return None
+    told = False
+    for strm in Path(record.strm_path).glob("Season */*.strm"):
+        try:
+            ref = _play_ref(strm.read_text(encoding="utf-8").strip(), unwrap=True)
+        except (OSError, UnicodeDecodeError):
+            continue
+        if ref is None:
+            continue
+        if ref in refs:
+            return True
+        told = True
+    return False if told else None
+
+
+def _place_relabelled_series(db: Session, client, provider: Provider, stats: dict, seen_ids_all: set,
+                             unplaced: list, met: dict, slots: "_EpisodeSlots") -> None:
+    """#621, the series counterpart of #262: a listing no label placed (no
+    TMDB match, or a label the cleaner rejects) whose series id a row of ours
+    recorded is that show, relabelled by the provider, when its episodes are
+    the ones the row's .strm files play: kept (counted as existing and seen)
+    and back-filled. A row whose files play none of them is another show
+    under a reused id: left to the prune. A row with no files to tell by
+    (opted out, or the listing can't be read) is kept but not written to:
+    keeping a show on doubt is cheap, deleting it isn't.
+
+    Only rows no listing met tonight are looked at, so the cost is one
+    get_series_info per relabelled show (what its back-fill costs anyway)."""
+    by_id, shared = {}, set()
+    for tid, ids in db.query(Series.tmdb_id, Series.provider_series_ids).filter(
+            Series.provider_id == provider.id).all():
+        for sid in ids or []:
+            if sid in by_id and by_id[sid] != tid:
+                shared.add(sid)
+            by_id[sid] = tid
+    decided = {}   # series id -> tmdb_id kept, or None
+    kept = 0
+    for series, tag in unplaced:
+        sid = str(series.get("series_id"))
+        if sid not in decided:
+            tid = by_id.get(sid) if sid not in shared else None
+            if tid is None or tid in seen_ids_all:
+                continue
+            decided[sid] = None
+            record = db.query(Series).filter(Series.tmdb_id == tid, Series.provider_id == provider.id).first()
+            if record is None:
+                continue
+            try:
+                info = client.get_series_info(series.get("series_id")) or {}
+                plays = _row_plays_listing(record, _episode_refs(client, info.get("episodes")))
+            except Exception as e:
+                logger.debug(f"[Sync] Could not read series {sid} for '{record.title}': {e}")
+                info, plays = None, None
+            if plays is False:
+                logger.info(f"[Sync] '{series.get('name')}' (series {sid}) was '{record.title}' (TMDB {tid}), "
+                            f"but none of its episodes are that show's: left to the prune")
+                continue
+            decided[sid] = tid
+            seen_ids_all.add(tid)
+            if plays:
+                _backfill_series_episodes(client, series, tid, provider, db, slots, series_info=info)
+                logger.info(f"[Sync] '{series.get('name')}' (series {sid}) is still '{record.title}' "
+                            f"(TMDB {tid}): relabelled by the provider")
+            else:
+                logger.info(f"[Sync] '{series.get('name')}' (series {sid}) is still listed for "
+                            f"'{record.title}' (TMDB {tid}); its episodes can't be compared, kept as is")
+        tid = decided.get(sid)
+        if tid is None:
+            continue
+        _merge_source_tag(tid, "series", tag, provider.id, db)
+        met.setdefault(tid, set()).add(sid)
+        stats["skipped"] -= 1
+        stats["existing"] += 1
+        kept += 1
+    if kept:
+        db.commit()
+        logger.info(f"[Sync] {provider.name}: {kept} relabelled series listing(s) kept")
+
+
+def _record_series_listings(db: Session, provider: Provider, met: dict, fetch_ok: bool) -> None:
+    """Remember which listings each series row of ours was met by tonight
+    (#621): tonight's set after a complete fetch, added to the old one when
+    part of the catalogue went unread. Rows not met keep theirs."""
+    if not met:
+        return
+    changes = []
+    for rid, tid, had in db.query(Series.id, Series.tmdb_id, Series.provider_series_ids).filter(
+            Series.provider_id == provider.id).all():
+        if tid not in met:
+            continue
+        ids = set(met[tid]) if fetch_ok else set(met[tid]) | set(had or [])
+        ids = sorted(ids)
+        if ids != (had or []):
+            changes.append({"id": rid, "provider_series_ids": ids})
+    if changes:
+        db.bulk_update_mappings(Series, changes)
+        db.commit()
+
+
 def _sync_series(
     provider: Provider,
     client: XtreamClient,
@@ -3270,6 +3438,11 @@ def _sync_series(
     lookup_now = datetime.utcnow()
     # What every listing offers at each episode file; settled after the loop (#376)
     slots = _EpisodeSlots()
+    met = {}        # tmdb_id -> the series ids of the listings placed on it tonight (#621)
+    unplaced = []   # (series, source tag): listings no label placed
+
+    def _met(tid, series):
+        met.setdefault(tid, set()).add(str(series.get("series_id")))
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -3387,6 +3560,7 @@ def _sync_series(
                                   item_title=clean_name or raw_name, item_pos=item_idx, item_total=total_in_cat)
 
             if not clean_name:
+                unplaced.append((series, cat.source_tag))
                 cat_skipped += 1
                 stats["skipped"] += 1
                 if item_idx % 10 == 0 or item_idx == total_in_cat:
@@ -3402,6 +3576,7 @@ def _sync_series(
                 if known_id in existing_provider_tmdb_ids or known_id in seen_tmdb_ids:
                     _merge_source_tag(known_id, "series", cat.source_tag, provider.id, db)
                     seen_ids_all.add(known_id)
+                    _met(known_id, series)
                     # Existing VOD series — back-fill any new seasons/episodes
                     _backfill_series_episodes(client, series, known_id, provider, db, slots)
                     cat_existing += 1
@@ -3412,6 +3587,7 @@ def _sync_series(
 
             if not metadata:
                 if require_tmdb or (idx in failed_idx and failed_lookups.defer(lookup_key, lookup_now)):
+                    unplaced.append((series, cat.source_tag))
                     cat_skipped += 1
                     stats["skipped"] += 1
                     if item_idx % 10 == 0 or item_idx == total_in_cat:
@@ -3435,6 +3611,7 @@ def _sync_series(
 
             if tmdb_id in seen_tmdb_ids or tmdb_id in existing_provider_tmdb_ids:
                 _merge_source_tag(tmdb_id, "series", cat.source_tag, provider.id, db)
+                _met(tmdb_id, series)
                 # Existing VOD series — back-fill any new seasons/episodes
                 _backfill_series_episodes(client, series, tmdb_id, provider, db, slots)
                 cat_existing += 1
@@ -3449,6 +3626,7 @@ def _sync_series(
             if db.query(Series).filter(Series.tmdb_id == tmdb_id, Series.provider_id == provider.id).first():
                 existing_provider_tmdb_ids.add(tmdb_id)
                 _merge_source_tag(tmdb_id, "series", cat.source_tag, provider.id, db)
+                _met(tmdb_id, series)
                 # Existing VOD series — back-fill any new seasons/episodes
                 _backfill_series_episodes(client, series, tmdb_id, provider, db, slots)
                 cat_existing += 1
@@ -3467,6 +3645,7 @@ def _sync_series(
                                                     provider, db)
             if dup_answer == TAKEOVER:
                 _take_over_files(db, "series", tmdb_id, client, series, provider, slots)
+                _met(tmdb_id, series)
             if dup_answer:
                 cat_existing += 1
                 stats["existing"] += 1
@@ -3528,6 +3707,7 @@ def _sync_series(
                     date_added=now,
                 )
                 db.add(series_record)
+                _met(tmdb_id, series)
 
                 existing_provider_tmdb_ids.add(tmdb_id)
                 known_titles[lookup_key] = tmdb_id
@@ -3597,6 +3777,10 @@ def _sync_series(
             f"  {cat.category_name}: +{cat_new} new, "
             f"{cat_existing} existing, {cat_skipped} skipped"
         )
+
+    if unplaced and not _refused_reason(client):
+        _place_relabelled_series(db, client, provider, stats, seen_ids_all, unplaced, met, slots)
+    _record_series_listings(db, provider, met, fetch_ok)
 
     # A listing in an unread category may be the one an episode file plays:
     # repoint episodes only when every listing was read, as for films (#263).
