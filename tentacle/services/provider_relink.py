@@ -306,3 +306,123 @@ def resume_pending() -> None:
     for provider_id, before in todo:
         logger.info(f"[Relink] Resuming the .strm rewrite a restart cut short (provider {provider_id})")
         _run(provider_id, before)
+
+
+# ── VOD through Tentacle (the default) ───────────────────────────────────
+# `vod_via_tentacle_enabled` (on unless set to "false") decides the address
+# every provider .strm carries. The sync rewrites them too (_strm_needs_rewrite),
+# but only at its next run; this rewrites them locally, with no request to the
+# provider: at start-up (an upgraded install moves over within minutes) and
+# after a save that flips the setting. Idempotent: a file already in the
+# right form is not touched. A restart that cuts it short loses nothing.
+
+_vod_route_lock = threading.Lock()
+
+
+def relink_vod_route(db: Session, provider: Provider) -> dict:
+    """Rewrite the provider's own .strm files to the form the switch asks for:
+    its direct URL (today's server and login) becomes Tentacle's /api/vod
+    link when it is on, and its /api/vod link becomes the direct URL when it
+    is off. Anything else (another host, another provider's link, a proxy, a
+    hand-made file, an opted-out title) is left alone, as the sync does.
+    Returns {"movies": n, "episodes": n, "no_address": bool}: `no_address`
+    when it is on but no safe address for Tentacle is known
+    (sync.vod_base_url_for), so nothing is written and direct links stay."""
+    from routers.vod import vod_enabled
+    from services import vod_tokens
+    from services.sync import XtreamClient, _write_strm, chown_path, vod_links_for
+
+    counts = {"movies": 0, "episodes": 0, "no_address": False}
+    if (not provider.server_url or (provider.provider_type or "xtream") != "xtream"
+            or not (provider.username or provider.password)):
+        return counts
+    client = XtreamClient(provider)
+    client.vod_links = vod_links_for(db, provider)
+    if vod_enabled(db) and client.vod_links is None:
+        counts["no_address"] = True
+        return counts
+    direct = _old_url_re(_login(provider))
+
+    def relink(strm: Path, key: str) -> None:
+        try:
+            current = strm.read_text(encoding="utf-8").strip()
+            m = direct.match(current)
+            if m is not None:
+                kind, stream_id, ext = m.group(1).lower(), m.group(2), m.group(3)
+            else:
+                t = vod_tokens._TOKEN_URL.search(current)
+                if t is None or int(t.group(2)) != provider.id:
+                    return
+                kind, stream_id, ext = t.group(1), t.group(3), t.group(5)
+            url = (client.movie_stream_url(stream_id, ext) if kind == "movie"
+                   else client.episode_stream_url(stream_id, ext))
+            if url == current:
+                return
+            _write_strm(strm, url)
+            chown_path(strm)
+            counts[key] += 1
+        except (OSError, UnicodeDecodeError) as e:
+            logger.debug(f"[Relink] Skipped {strm}: {e}")
+
+    for movie in db.query(Movie).filter(Movie.provider_id == provider.id, Movie.strm_path.isnot(None)).all():
+        if not movie.strm_disabled:
+            relink(Path(movie.strm_path), "movies")
+    for series in db.query(Series).filter(Series.provider_id == provider.id, Series.strm_path.isnot(None)).all():
+        if series.strm_disabled:
+            continue
+        try:
+            files = sorted(Path(series.strm_path).rglob("*.strm"))
+        except OSError:
+            continue
+        for strm in files:
+            relink(strm, "episodes")
+    return counts
+
+
+def _run_vod_route() -> None:
+    from models.database import SessionLocal, get_setting, log_activity
+    from routers.vod import vod_enabled
+    with _vod_route_lock:      # one rewrite after the other; the last setting wins
+        db = SessionLocal()
+        try:
+            total = {"movies": 0, "episodes": 0}
+            no_address = False
+            for provider in db.query(Provider).all():
+                if (provider.provider_type or "xtream") != "xtream":
+                    continue
+                # A sync that started before the save writes the old form
+                # after us: let it finish first.
+                _wait_for_sync(provider.id)
+                db.expire_all()   # the setting as it is now, not as it was when we started waiting
+                counts = relink_vod_route(db, provider)
+                no_address = no_address or counts["no_address"]
+                total["movies"] += counts["movies"]
+                total["episodes"] += counts["episodes"]
+            on = vod_enabled(db)
+            if no_address:
+                logger.warning("[Relink] The .strm files keep direct provider links (see the reason above)")
+            if not (total["movies"] or total["episodes"]):
+                return
+            url, key = get_setting(db, "jellyfin_url", ""), get_setting(db, "jellyfin_api_key", "")
+            if url and key:
+                try:
+                    from services.jellyfin import JellyfinService
+                    JellyfinService(url, key, get_setting(db, "jellyfin_user_id", "")).trigger_library_scan(None)
+                except Exception as e:
+                    logger.warning(f"[Relink] Jellyfin library scan failed: {e}")
+            how = "through Tentacle" if on else "straight from the provider"
+            logger.info(f"[Relink] {total['movies']} films and {total['episodes']} episodes now play {how}")
+            log_activity(db, "vod_route_relinked",
+                         f"{total['movies']} films and {total['episodes']} episodes now play {how}", total)
+        except Exception as e:
+            logger.error(f"[Relink] Rewriting the .strm files for the VOD switch failed: {e}")
+        finally:
+            db.close()
+
+
+def start_vod_route_relink() -> None:
+    """At start-up, and after a save that flipped `vod_via_tentacle_enabled`:
+    rewrite every provider's .strm files in a thread of its own (it may wait
+    hours for a running sync), then a Jellyfin scan and an Activity entry
+    when anything changed."""
+    threading.Thread(target=_run_vod_route, daemon=True, name="vod-route-relink").start()
