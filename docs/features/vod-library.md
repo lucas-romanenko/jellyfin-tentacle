@@ -174,10 +174,17 @@ a storage hiccup must never be able to wipe a library:
   provider's titles (minimum 50). Anything larger is logged loudly and skipped
   — check the provider before assuming the catalog really shrank.
 - **The nightly orphan sweep probes the mount first.** If `/media/vod/movies`
-  or `/media/vod/shows` is missing or empty, the sweep is skipped entirely
-  rather than concluding that every title was deleted. This matters on
-  mergerfs, unionfs, NFS, SMB and rclone, where a branch dropping out makes
-  every file report as missing while the mount itself stays up.
+  or `/media/vod/shows` is missing or empty, or holds none of the titles
+  Tentacle recorded there, the sweep is skipped entirely rather than
+  concluding that every title was deleted. This matters on mergerfs, unionfs,
+  NFS, SMB and rclone, where a branch dropping out makes every file report as
+  missing while the mount itself stays up, and in a merged setup, where a
+  Radarr or Sonarr import can land on the bare mount point of a share that
+  isn't mounted.
+- **The sync refuses an unmounted folder.** In the same cases the provider
+  sync fails with "the storage looks unmounted" and writes nothing. Mount the
+  share and sync again. If the folder really is new (a new disk), put an empty
+  file named `.tentacle-library` in it and sync again.
 
 Blocked removals are recorded in the deletion log (Health → Deletion Log) as
 "refused": nothing is deleted.
