@@ -93,6 +93,30 @@ class RelabelOntoOwnRemake(Relisted):
         heat_1995 = self.db.query(Movie).filter(Movie.tmdb_id == 101).one()
         self.assertIn("/600.", Path(heat_1995.strm_path).read_text())
 
+    def test_a_provider_id_naming_a_film_that_plays_another_stream_goes_to_the_label(self):
+        """A new stream whose provider id names Heat (1986), while Heat (1986)'s
+        .strm plays stream 500 (still listed as Heat (1986)): no rival claim."""
+        self.listing(stream("Heat (1986)", 500), stream("Heat (1995)", 600))
+        self.night()
+        calls = []
+        real = sync._known_title_id
+        self.addCleanup(setattr, sync, "_known_title_id", real)
+
+        def spy(ids, stream, *a, **k):
+            found = real(ids, stream, *a, **k)
+            calls.append((stream["stream_id"], found))
+            return found
+        sync._known_title_id = spy
+        self.listing(stream("Heat (1986)", 500), stream("Heat (1995)", 600), stream("Heat (1995)", 700, 100))
+        self.night()
+        self.night()
+        self.db.expire_all()
+        self.assertNotIn((700, 100), calls)
+        heat_1986 = self.db.query(Movie).filter(Movie.tmdb_id == 100).one()
+        self.assertIn("/500.", Path(heat_1986.strm_path).read_text())
+        heat_1995 = self.db.query(Movie).filter(Movie.tmdb_id == 101).one()
+        self.assertIn("/600.", Path(heat_1995.strm_path).read_text())
+
     def test_a_new_stream_neither_film_plays_goes_to_the_label(self):
         self.listing(stream("Heat (1986)", 500), stream("Heat (1995)", 600))
         self.night()
