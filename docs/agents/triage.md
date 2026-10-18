@@ -2,7 +2,8 @@
 
 The maintainer's sessions follow the workbench's github-triage skill (sort
 every item, reproduce bugs before changing code, never build a feature
-without the `approved` label). Tentacle specifics:
+without the maintainer's go: his "Build it" in the session handling the
+item, or the `approved` label he added). Tentacle specifics:
 
 - Reproduce against what the maintainer's install runs (the server commit
   at `/api/version`, the plugin version Jellyfin reports; how to read them:
