@@ -3986,11 +3986,24 @@ def refresh_jellyfin_guide(db: Session = Depends(get_db)):
 # ─── HDHomeRun Emulation ───────────────────────────────────────────────────
 
 
+def _hdhr_tuner_count(db) -> int:
+    """How many tuners the device reports: at least the stream ceiling, so
+    Jellyfin (which takes this count when it discovers the device, and lists
+    that many tuners) never refuses a stream Tentacle would carry. The real
+    cap is livetv_max_concurrent_streams; hdhr_tuner_count only raises it,
+    or sets it when there is no ceiling (0)."""
+    try:
+        configured = max(1, int(get_setting(db, "hdhr_tuner_count", "3")))
+    except (ValueError, TypeError):
+        configured = 3
+    return max(configured, _max_concurrent_streams(db))
+
+
 @router.get("/discover.json")
 @router.get("/hdhr/discover.json")
 def hdhr_discover(request: Request, db: Session = Depends(get_db)):
     """HDHomeRun device discovery endpoint."""
-    tuner_count = int(get_setting(db, "hdhr_tuner_count", "3"))
+    tuner_count = _hdhr_tuner_count(db)
     device_id = get_setting(db, "hdhr_device_id", "TENTACLE1")
 
     # Use explicit setting if configured, otherwise derive from request
