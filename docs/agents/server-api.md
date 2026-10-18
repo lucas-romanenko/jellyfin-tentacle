@@ -114,14 +114,14 @@ provider names, URLs or logins).
 | POST | `/api/lists/add-to-sonarr` | user | lists.py:add_to_sonarr |
 | GET | `/api/lists/radarr-folders` | user | lists.py:radarr_folders |
 | GET | `/api/lists/radarr-profiles` | user | lists.py:radarr_profiles |
-| POST | `/api/lists/refresh-all` | user | lists.py:refresh_all_lists |
+| POST | `/api/lists/refresh-all` | user | lists.py:refresh_all_lists (then the tag push and playlist refresh in the background: pipelines.md "A list is fetched") |
 | GET | `/api/lists/sonarr-folders` | user | lists.py:sonarr_folders |
 | GET | `/api/lists/sonarr-profiles` | user | lists.py:sonarr_profiles |
-| DELETE | `/api/lists/{list_id}` | user | lists.py:delete_list |
+| DELETE | `/api/lists/{list_id}` | user | lists.py:delete_list (same background follow-up) |
 | POST | `/api/lists/{list_id}/add-missing-to-radarr` | user | lists.py:add_missing_to_radarr |
 | POST | `/api/lists/{list_id}/add-missing-to-sonarr` | user | lists.py:add_missing_to_sonarr |
 | GET | `/api/lists/{list_id}/coverage` | user | lists.py:get_list_coverage |
-| POST | `/api/lists/{list_id}/fetch` | user | lists.py:fetch_list |
+| POST | `/api/lists/{list_id}/fetch` | user | lists.py:fetch_list (same background follow-up) |
 | POST | `/api/lists/{list_id}/playlist-toggle` | user | lists.py:toggle_list_playlist |
 | GET | `/api/live/capacity` | admin | livetv.py:live_capacity |
 | GET | `/api/live/channels` | admin | livetv.py:list_channels |
