@@ -75,6 +75,7 @@ class RequestGuard:
         self.sleep = time.sleep
         self.refusals = 0
         self.refused_status = None   # set once the client stopped asking
+        self.last_refusal = None     # the latest 401/403 since the last success (provider health, #652)
         self._last = None
 
     def before(self) -> None:
@@ -91,6 +92,7 @@ class RequestGuard:
         """Call with each answer's status code."""
         if status in (401, 403):
             self.refusals += 1
+            self.last_refusal = status
             if self.refusals >= PROVIDER_REFUSAL_LIMIT:
                 self.refused_status = status
                 logger.warning(f"The provider refused {self.refusals} requests in a row (HTTP {status}): "
@@ -98,6 +100,16 @@ class RequestGuard:
                 raise ProviderRefusedError(status)
         elif isinstance(status, int) and status < 400:
             self.refusals = 0
+            self.last_refusal = None
+
+    def refused(self, everything_failed: bool):
+        """The 401/403 this run ended on, for provider health: the client
+        stopped asking, or nothing at all was read and the last refusal came
+        after the last success. None otherwise (one category a panel
+        restricts is not the provider refusing this server)."""
+        if self.refused_status is not None:
+            return self.refused_status
+        return self.last_refusal if everything_failed else None
 
 
 def live_stream_url(server: str, username: str, password: str, stream_id, extension: str = "m3u8") -> str:

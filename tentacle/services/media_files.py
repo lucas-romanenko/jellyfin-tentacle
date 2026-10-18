@@ -8,9 +8,17 @@ created — bypassing Sonarr/Radarr's recycle bin. So every delete path removes
 files by extension and only prunes directories that are already empty.
 """
 import logging
+import re
 from pathlib import Path
+from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+# Where Tentacle sees Radarr's and Sonarr's downloads (Settings → Library
+# Paths). Read as media_files.RADARR_MEDIA_ROOT when used, never imported by
+# name: the tests point them at a temp dir.
+RADARR_MEDIA_ROOT = Path("/media/movies")
+SONARR_MEDIA_ROOT = Path("/media/shows")
 
 # Extensions Tentacle writes, and is therefore allowed to delete.
 OWNED_SUFFIXES = {".strm", ".nfo"}
@@ -26,6 +34,53 @@ MEDIA_SUFFIXES = {
     ".ogm", ".ogv", ".asf", ".3gp", ".qt", ".dvr-ms", ".wtv", ".nrg", ".pva", ".nsv", ".ty",
     ".avc", ".vp3", ".svq3", ".nuv", ".viv", ".dv", ".fli", ".bivx",
 }
+
+
+def arr_path_parts(arr_path: Optional[str]) -> list:
+    """The components of a path as Radarr/Sonarr report it, split on both
+    slashes: a Windows Radarr's look like D:\\Movies\\Heat (1995)\\Heat (1995).mkv,
+    and Path() on Linux reads that as one file name in the current directory."""
+    return [p for p in re.split(r"[\\/]", arr_path or "") if p]
+
+
+def arr_parent(arr_path: Optional[str]) -> str:
+    """The folder of a file Radarr/Sonarr reports, in their own path syntax
+    ("" when there is none)."""
+    m = re.match(r"^(.*)[\\/][^\\/]*$", (arr_path or "").rstrip("\\/"))
+    return m.group(1) if m else ""
+
+
+def is_vod_arr_path(arr_path: Optional[str]) -> bool:
+    """A Radarr/Sonarr folder inside a VOD folder (hybrid series, the merged
+    layout): the VOD sync's, not a download Tentacle must find under its mount."""
+    return any(p.lower() == "vod" for p in arr_path_parts(arr_path))
+
+
+def local_arr_folder(arr_folder: Optional[str], root: Path, arr_root: str) -> Optional[Path]:
+    """Tentacle's own path of a folder Radarr/Sonarr calls `arr_folder`, or
+    None when Tentacle can't see it.
+
+    First the documented mapping (Radarr's `arr_root`, /data/movies, is
+    Tentacle's `root`, /media/movies; a path outside `arr_root` as is, for a
+    mount at the same path). Then the folder by NAME under `root`, as the VOD
+    sync finds titles: Radarr's root folder can be called anything
+    (/data/media/movies, D:\\Movies) and Tentacle only mounts the same host
+    folder (#649). Not for a VOD folder: a same-named folder under `root`
+    would be another one.
+    """
+    parts = arr_path_parts(arr_folder)
+    if not parts:
+        return None
+    candidates = []
+    if arr_folder.startswith("/"):
+        arr_root = arr_root.rstrip("/")
+        if arr_folder == arr_root or arr_folder.startswith(arr_root + "/"):
+            candidates.append(Path(str(root) + arr_folder[len(arr_root):]))
+        else:
+            candidates.append(Path(arr_folder))
+    if not is_vod_arr_path(arr_folder):
+        candidates.append(Path(root) / parts[-1])
+    return next((c for c in candidates if c.is_dir()), None)
 
 
 def _prune_empty_dirs(root: Path) -> None:

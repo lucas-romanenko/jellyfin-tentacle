@@ -71,5 +71,45 @@ class AnApiHiccupFallsBackToTheFeed(_Db):
         self.assertTrue(result.get("light"))
 
 
+class AnAnswerThatIsNotJson(_Db):
+    """A 200 that is not the API's JSON (a proxy's or captive portal's page)
+    raised JSONDecodeError, which no YouTube handler catches: the channel
+    failed on every run instead of reading its feed, and "Test key" was a 500."""
+
+    def test_uploads_fall_back_to_the_feed(self):
+        traffic.configure(api_key="AIza-test")
+        ch = self.channel()
+        with mock.patch.object(traffic, "http_client", return_value=_Http(200)):
+            got = feeds.newest_uploads(ch)
+        self.assertEqual("a" * 11, got[0]["id"])
+        self.assertGreater(feeds.api_state()["off_for_seconds"], 0)
+
+    def test_details_fall_back_to_yt_dlp(self):
+        traffic.configure(api_key="AIza-test")
+        with mock.patch.object(traffic, "http_client", return_value=_Http(200)), \
+             mock.patch.object(indexer.client, "video_details",
+                               return_value={"id": "a" * 11, "title": "From yt-dlp"}) as ytdlp:
+            self.assertEqual("From yt-dlp", indexer._details("a" * 11)["title"])
+        ytdlp.assert_called_once()
+
+    def test_json_that_is_not_an_object_falls_back_too(self):
+        traffic.configure(api_key="AIza-test")
+        http = _Http(200)
+        http.get = lambda url, params=None, timeout=None, headers=None: httpx.Response(
+            200, text="null" if "googleapis" in url else FEED.format(a="a" * 11, b="b" * 11),
+            request=httpx.Request("GET", url))
+        with mock.patch.object(traffic, "http_client", return_value=http), \
+             mock.patch.object(indexer.client, "video_details",
+                               return_value={"id": "a" * 11, "title": "From yt-dlp"}):
+            self.assertEqual("From yt-dlp", indexer._details("a" * 11)["title"])
+
+    def test_the_key_check_says_what_happened(self):
+        traffic.configure(api_key="AIza-test")
+        with mock.patch.object(traffic, "http_client", return_value=_Http(200)):
+            ok, message = feeds.check_api_key()
+        self.assertFalse(ok)
+        self.assertIn("not JSON", message)
+
+
 if __name__ == "__main__":
     unittest.main()
