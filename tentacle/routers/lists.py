@@ -9,6 +9,7 @@ import threading
 import requests
 from datetime import datetime
 from typing import Optional
+from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -556,10 +557,15 @@ def fetch_trakt_list(url: str, client_id: str = "") -> list:
             "Not refreshed: no Trakt client ID is configured (Settings → Connections). "
             "The previous items were kept."))
     try:
-        # Convert URL to API endpoint
-        # e.g. https://trakt.tv/users/username/lists/listname
+        # Convert URL to API endpoint: the pasted URL's path on api.trakt.tv,
+        # whatever trakt.tv host it came from (www., app., api.), without its
+        # query or fragment (#681).
+        # e.g. https://app.trakt.tv/users/username/lists/listname?sort=rank,asc
         # → https://api.trakt.tv/users/username/lists/listname/items
-        api_url = url.rstrip('/').replace('trakt.tv', 'api.trakt.tv') + '/items'
+        path = urlparse(url).path.rstrip('/')
+        if path.endswith('/items'):
+            path = path[:-len('/items')]
+        api_url = f"https://api.trakt.tv{path}/items"
         # Checked again post-transform: the request below carries the real
         # trakt-api-key, so it must never be sent to a caller-chosen host.
         if not is_safe_url(api_url, allowed_hosts=LIST_ALLOWED_HOSTS["trakt"]):
