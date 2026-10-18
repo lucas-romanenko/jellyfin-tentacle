@@ -58,9 +58,10 @@ def _setting(db, picks: Optional[dict], key: str) -> str:
 
 
 def _pick(value: Optional[str], saved: str) -> str:
-    """A form value wins unless it is empty or still masked ("abcd1234...wxyz")."""
+    """A form value wins unless it is empty or still masked ("••••wxyz")."""
+    from services.secret_mask import looks_masked
     value = (value or "").strip()
-    return saved if (not value or "..." in value) else value
+    return saved if (not value or looks_masked(value)) else value
 
 
 def _explain_request_error(e: Exception, url: str) -> str:

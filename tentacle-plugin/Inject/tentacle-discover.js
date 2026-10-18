@@ -217,6 +217,28 @@
     return d.innerHTML;
   }
 
+  // Attribute-context escaping (escapes quotes, unlike esc()).
+  function escAttr(str) {
+    if (str == null) return '';
+    return String(str).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  // A trailer address for a link or an embedded player: https on a known
+  // video host only (as tentacle-details.js checks), otherwise null.
+  function safeTrailerUrl(url) {
+    if (!url) return null;
+    var parsed;
+    try { parsed = new URL(url, window.location.href); } catch (e) { return null; }
+    if (parsed.protocol !== 'https:') return null;
+    var host = parsed.hostname.toLowerCase();
+    var allowed = ['www.youtube.com', 'youtube.com', 'youtube-nocookie.com', 'www.youtube-nocookie.com',
+      'youtu.be', 'player.vimeo.com', 'vimeo.com', 'www.dailymotion.com', 'dailymotion.com'];
+    for (var i = 0; i < allowed.length; i++) {
+      if (host === allowed[i] || host.endsWith('.' + allowed[i])) return parsed.href;
+    }
+    return null;
+  }
+
   // ════════════════════════════════════════════════════════════════════
   //  DISCOVER MODULE
   // ════════════════════════════════════════════════════════════════════
@@ -421,7 +443,7 @@
       }
       var pills = '<div class="md-stream-pills">' + provs.map(function (p) {
         var on = p.slug === MD.streamingActive ? ' md-stream-pill-active' : '';
-        return '<button class="md-stream-pill' + on + '" data-prov="' + esc(p.slug) + '">' + esc(p.name) + '</button>';
+        return '<button class="md-stream-pill' + on + '" data-prov="' + escAttr(p.slug) + '">' + esc(p.name) + '</button>';
       }).join('') + '</div>';
       content.innerHTML = pills + '<div id="mdStreamGrid"><div class="md-loading"><div class="md-spinner"></div><br>Loading...</div></div>';
       content.querySelectorAll('.md-stream-pill').forEach(function (btn) {
@@ -471,7 +493,7 @@
     content.innerHTML = '<div class="md-discover-grid">' +
       items.map(function (item) {
         var poster = item.poster_path
-          ? '<img src="' + _imgUrl(item.poster_path, 'w185') + '" loading="lazy" onerror="this.style.display=\'none\'">'
+          ? '<img src="' + escAttr(_imgUrl(item.poster_path, 'w185')) + '" loading="lazy" onerror="this.style.display=\'none\'">'
           : '<div class="md-card-poster-placeholder">&#9707;</div>';
         var dlInfo = getDownloadInfo(item.tmdb_id);
         var ulInfo = !dlInfo ? getUnreleasedInfo(item.tmdb_id) : null;
@@ -726,7 +748,7 @@
     MD._currentItem = item;
 
     var backdrop = item.backdrop_path
-      ? '<img src="' + _imgUrl(item.backdrop_path, 'w780') + '">'
+      ? '<img src="' + escAttr(_imgUrl(item.backdrop_path, 'w780')) + '">'
       : '';
 
     var downloadSection = '';
@@ -806,7 +828,7 @@
                   '<button id="mdArrChooseBtn" class="md-arr-link" type="button">Choose episodes\u2026</button>' +
                   '<div id="mdArrChooseList" class="md-arr-choose-list" style="display:none">' +
                     item.missing_labels.map(function (l) {
-                      return '<label class="md-arr-choose-row"><input type="checkbox" checked value="' + esc(l) + '"> ' + esc(l) + '</label>';
+                      return '<label class="md-arr-choose-row"><input type="checkbox" checked value="' + escAttr(l) + '"> ' + esc(l) + '</label>';
                     }).join('') +
                   '</div>' +
                 '</div>'
@@ -1015,7 +1037,7 @@
               '<div class="md-arr-rel-info">' +
                 '<div class="md-arr-rel-title">' + esc(r.title) + '</div>' +
                 '<div class="md-arr-rel-facts">' + facts + '</div>' +
-                (r.rejected ? '<div class="md-arr-rel-why" title="' + esc((r.raw_reasons || []).join('\n')) + '">' + esc((r.reasons || []).join(', ') || 'rejected') + '</div>' : '') +
+                (r.rejected ? '<div class="md-arr-rel-why" title="' + escAttr((r.raw_reasons || []).join('\n')) + '">' + esc((r.reasons || []).join(', ') || 'rejected') + '</div>' : '') +
               '</div>' +
               '<button class="md-download-btn md-arr-rel-btn" type="button" data-rel="' + i + '">' + (r.rejected ? 'Download anyway' : 'Download') + '</button>' +
             '</div>';
@@ -1563,7 +1585,7 @@
     var overlay = document.createElement('div');
     overlay.className = 'moonfin-trailer-overlay';
     overlay.innerHTML =
-      '<div class="moonfin-trailer-modal" role="dialog" aria-modal="true" aria-label="' + esc(title || 'Trailer') + '">' +
+      '<div class="moonfin-trailer-modal" role="dialog" aria-modal="true" aria-label="' + escAttr(title || 'Trailer') + '">' +
         '<button class="moonfin-trailer-close" aria-label="Close trailer" tabindex="0">' +
           '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M18.3 5.71 12 12l6.3 6.29-1.41 1.42L10.59 13.4 4.29 19.71 2.88 18.3 9.17 12 2.88 5.71 4.29 4.29l6.3 6.3 6.29-6.3z"/></svg>' +
         '</button>' +
@@ -1594,9 +1616,9 @@
       host.innerHTML =
         '<iframe class="moonfin-trailer-iframe visible" src="https://www.youtube.com/embed/' + videoId + '?autoplay=1&rel=0" ' +
         'allow="autoplay; fullscreen; encrypted-media; picture-in-picture" allowfullscreen loading="eager" referrerpolicy="origin"></iframe>';
-    } else {
+    } else if (safeTrailerUrl(url)) {
       host.innerHTML =
-        '<iframe class="moonfin-trailer-iframe visible" src="' + esc(url) + '" ' +
+        '<iframe class="moonfin-trailer-iframe visible" src="' + escAttr(safeTrailerUrl(url)) + '" ' +
         'allow="autoplay; fullscreen; encrypted-media; picture-in-picture" allowfullscreen loading="eager" referrerpolicy="origin"></iframe>';
     }
 
@@ -1802,7 +1824,7 @@
   function actPoster(path, phClass) {
     var src = path ? _imgUrl(path, 'w185') : '';
     if (!src || _badPosters[src]) return '<div class="' + phClass + '">&#9707;</div>';
-    return '<img src="' + src + '" loading="lazy" onerror="__tentacleBadPoster(this,\'' + phClass + '\')">';
+    return '<img src="' + escAttr(src) + '" loading="lazy" onerror="__tentacleBadPoster(this,\'' + phClass + '\')">';
   }
 
   // Patch `from` (live) to match `to` (freshly built) in place, keeping every
@@ -2034,7 +2056,7 @@
               '<div class="md-act-upcoming-title">' + esc(item.title) + '</div>' +
               epLabel +
               (item.check
-                ? '<div class="md-act-upcoming-date md-act-check md-act-check-' + esc(item.check.state) + '" title="' + esc(item.check.summary) + '">' + esc(item.check.short) + '</div>'
+                ? '<div class="md-act-upcoming-date md-act-check md-act-check-' + escAttr(item.check.state) + '" title="' + escAttr(item.check.summary) + '">' + esc(item.check.short) + '</div>'
                 : '<div class="md-act-upcoming-date">Looking for a release</div>') +
               (item.requested_by ? '<div class="md-act-requested-by" style="margin-top:2px">' + esc(item.requested_by) + '</div>' : '') +
             '</div>' +
@@ -2177,7 +2199,7 @@
       ? _imgUrl(item.poster_path, 'w780')
       : '';
     var poster = item.poster_path
-      ? '<img src="' + _imgUrl(item.poster_path, 'w342') + '">'
+      ? '<img src="' + escAttr(_imgUrl(item.poster_path, 'w342')) + '">'
       : '';
 
     // Build release dates list
@@ -2216,8 +2238,9 @@
     }
 
     // Trailer button
-    var trailerBtn = item.trailer_url
-      ? '<a href="' + esc(item.trailer_url) + '" target="_blank" class="md-up-trailer-btn">' +
+    var trailerHref = safeTrailerUrl(item.trailer_url);
+    var trailerBtn = trailerHref
+      ? '<a href="' + escAttr(trailerHref) + '" target="_blank" rel="noopener" class="md-up-trailer-btn">' +
           '<svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>' +
           'Watch Trailer' +
         '</a>'
@@ -2228,7 +2251,7 @@
     overlay.className = 'md-up-overlay';
     overlay.innerHTML =
       '<div class="md-up-modal">' +
-        (backdrop ? '<div class="md-up-backdrop" style="background-image:url(' + backdrop + ')"></div>' : '') +
+        (backdrop ? '<div class="md-up-backdrop"></div>' : '') +
         '<button class="md-up-close">&times;</button>' +
         '<div class="md-up-body">' +
           '<div class="md-up-poster">' + poster + '</div>' +
@@ -2243,6 +2266,9 @@
         '</div>' +
       '</div>';
 
+    var upBackdrop = backdrop && overlay.querySelector('.md-up-backdrop');
+    // Set as a style property: an address is never parsed as markup or CSS text.
+    if (upBackdrop) upBackdrop.style.backgroundImage = 'url("' + String(backdrop).replace(/["\\\n\r\f]/g, encodeURIComponent) + '")';
     document.body.appendChild(overlay);
     requestAnimationFrame(function () { overlay.classList.add('md-visible'); });
 

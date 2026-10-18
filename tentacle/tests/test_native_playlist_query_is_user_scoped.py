@@ -31,7 +31,7 @@ class QueryItems(unittest.TestCase):
         self.assertEqual("owner-id", j.calls[0].get("UserId"))
 
     def test_without_a_user_id_nothing_changes(self):
-        """Other callers (YouTube counts, the rule-builder preview) are untouched."""
+        """Other callers (YouTube counts) are untouched."""
         j = _Jf()
         j.jf.query_items(include_types=["Movie"], tags=["yt:x"])
         self.assertNotIn("UserId", j.calls[0])

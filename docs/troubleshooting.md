@@ -183,9 +183,48 @@ If playlists were recreated during a sync (new Jellyfin playlist IDs), Tentacle 
 
 Click the Categories tab — Tentacle auto-fetches categories on first visit. If nothing loads:
 
-1. Test the provider connection (click Test on the provider card)
+1. Test the provider connection (click Test on the provider's card in Settings → Providers)
 2. Verify credentials are correct
 3. Some providers may be temporarily unavailable
+
+### A red banner says the provider is failing
+
+Every hour Tentacle logs in to each provider and opens a few seconds of
+one stream. When either fails twice in a row (two minutes apart), every
+dashboard page shows a red banner with the reason. It goes away by itself
+once the check passes; **Check now** checks again at once, **Hide** hides it
+until the reason changes. Nothing is checked while live TV or a recording is
+running through Tentacle, so a check never cuts a stream.
+
+What the syncs and live streams see counts too, with no extra connection:
+when the provider refuses a library or channel sync, or a live stream, with
+401/403 twice at least two minutes apart, the banner comes, even while a
+recording runs. It clears by itself once a sync reads the provider again
+(for a refused login) or a live channel plays for 10 seconds (for refused
+streams), without **Check now**. A channel refused while another channel
+of the same provider is playing or recording doesn't count: that channel is
+likely not in your package.
+
+| The banner says | Usually means |
+|---|---|
+| Provider refusing: 403 | The provider blocks your IP, the account has expired, or the server URL has moved. Ask the provider. |
+| Provider refusing streams: 403 (the login still works) | IP block, or the account is over its connection limit (another device is using it). |
+| Provider rejects the login | Wrong username or password, or the account has expired. Check them in Settings → Providers. |
+| Provider address not found (404) / answers with a web page | The server URL has moved, or a block page answers instead of the provider. |
+| Provider server error (HTTP 5xx) | A problem on the provider's side; usually passes. |
+| Provider unreachable | No answer, connection refused, or the name does not resolve: the provider is down or the URL is wrong. |
+| Provider account expired on ... / Provider account is ... | What the provider itself reports about the account. |
+| Provider test streams not found (404) | The titles tried have left the provider; the next sync replaces them. |
+
+**Alerts on your phone:** in Settings → Integrations → Pushover, enter an
+application token (create an application at pushover.net) and your user
+key, Save, then press **Send test**. Tentacle then sends one message when a
+provider starts failing and one when it works again.
+
+**For a monitor** (Uptime Kuma, rmnk, ...): `GET /api/provider-status`
+needs no sign-in and answers 200 `{"status": "ok"}`, or 503 with the
+reasons while a provider is failing. It names no provider and carries no
+URL or login.
 
 ### VOD content missing metadata
 
@@ -203,8 +242,8 @@ If titles appear without posters or proper names:
 
 1. Verify the HDHomeRun tuner is added in Jellyfin (Dashboard → Live TV → Tuner Devices)
 2. Make sure channels are enabled in Tentacle (not just the groups)
-3. Click **Refresh Guide** in Tentacle — this recreates the XMLTV listing provider in Jellyfin, forcing a full channel remap
-4. Simply refreshing guide data alone won't pick up new channels
+3. Save Tentacle's address on the Live TV page's **Jellyfin Setup** tab, then click **Sync EPG** on the Channels tab — when it finishes, Tentacle recreates the XMLTV listing provider in Jellyfin, forcing a full channel remap
+4. Simply refreshing guide data in Jellyfin alone won't pick up new channels
 
 ### No EPG data for channels
 
@@ -239,6 +278,7 @@ source", "Could not read Radarr's root folders…"). The common ones:
 | Could not read Radarr's/Sonarr's root folders | The *arr was busy or down. Nothing was added — retry in a moment. |
 | Sonarr could not find this show in its TVDB metadata source | The show isn't on TheTVDB yet (usually very new). Nothing you can fix in Tentacle. |
 | Pick a default Radarr/Sonarr quality profile in Tentacle's settings | Pick one under Radarr/Sonarr in Settings → Connections. Tentacle won't guess. |
+| Requests aren't set up yet / aren't working right now: an admin has to… | What a non-admin sees for the same problems (they can't open Settings). An admin fixes it as in the rows around this one. |
 | the root folder Tentacle used does not exist | Add a root folder in the *arr (Settings → Media Management), or pick another default root folder in Settings → Connections. |
 | the quality profile Tentacle used no longer exists / Your default quality profile no longer exists | Pick another default in Settings → Connections. |
 | another series/movie is already using that folder | A folder collision in the *arr — rename or remove the existing one. |

@@ -184,9 +184,12 @@
     apiGet('TentacleHome/Sections?userId=' + MH.userId)
       .then(function (data) {
         // Stale check — did user navigate away during the API call?
+        // Remove only this visit's element (already detached once the user left).
+        // cleanupHome() would remove the home of a LATER visit to Home that is
+        // on screen now, and nothing would bring it back.
         if (gen !== MH.generation) {
           console.log('[TH] renderHomePage API callback — STALE gen=' + gen + '/' + MH.generation + ', removing');
-          cleanupHome();
+          mhHome.remove();
           return;
         }
 
@@ -245,6 +248,7 @@
       })
       .catch(function (err) {
         console.error('[Tentacle] Failed to load sections:', err);
+        if (gen !== MH.generation) { mhHome.remove(); return; } // a later visit's home stays
         cleanupHome(); // falls back to native Jellyfin home
       });
   }

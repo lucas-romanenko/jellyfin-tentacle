@@ -6,6 +6,7 @@ Manage per-user Jellyfin SmartList config files.
 import os
 import json
 import logging
+import re
 import time
 import threading
 from pathlib import Path
@@ -16,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from sqlalchemy import func
 from models.database import (
-    get_db, get_setting, Movie, Series, Provider,
+    get_db, get_setting, get_recently_added_days, Movie, Series, Provider,
     ListSubscription, ListItem, AutoPlaylistToggle, TentacleUser, DownloadRequest,
 )
 from routers.auth import get_user_from_request
@@ -545,7 +546,7 @@ class PreviewRequest(BaseModel):
 @router.post("/preview-count")
 def preview_count(body: PreviewRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Return the number of items matching the given conditions (for live preview)."""
-    from services.smartlists import _classify_conditions, _conditions_to_expressions, _build_query_params, _extract_genre_logic
+    from services.smartlists import _rule_expressions, _build_query_params, _extract_genre_logic
     from services.jellyfin import JellyfinService
 
     jf_url = get_setting(db, "jellyfin_url")
@@ -563,24 +564,24 @@ def preview_count(body: PreviewRequest, db: Session = Depends(get_db), user: Ten
     elif body.apply_to == "series":
         media = ["Series"]
 
-    classification = _classify_conditions(conditions)
-
-    # Build a minimal config to reuse _build_query_params
-    expressions = []
-    if classification == "native":
-        expressions = _conditions_to_expressions(conditions)
-    else:
-        # For tentacle/mixed conditions, we can't easily preview without tag data
-        # Just count items with any tag-based conditions as 0
+    # The query the playlist will run. A rule that queries its own tag (list,
+    # runtime, downloaded) can't be counted before the tagger has run.
+    tag, expressions = _rule_expressions(conditions, media, "")
+    if not expressions and not tag:
         return {"count": -1}  # -1 signals "can't preview"
+    if not expressions:
+        expressions = [{"MemberName": "Tags", "Operator": "Contains", "TargetValue": tag}]
 
     config = {
         "MediaTypes": media,
-        "ExpressionSets": [{"Expressions": expressions}] if expressions else [],
+        "ExpressionSets": [{"Expressions": expressions}],
     }
 
     jf = JellyfinService(jf_url, jf_key)
+    # Count as the rule's owner, the same query the playlist runs (#538):
+    # without a user Jellyfin answers for every library, on stale metadata.
     query = _build_query_params(config)
+    query["user_id"] = user.jellyfin_user_id
     try:
         items = jf.query_items(**query)
     except Exception as e:
@@ -925,9 +926,42 @@ def set_row_shape(req: RowShapeRequest, db: Session = Depends(get_db), user: Ten
     return {"success": True, "shape": shape, **notify}
 
 
+_JELLYFIN_ID = re.compile(r"[0-9a-fA-F]{32}|[0-9a-fA-F-]{36}")
+
+
+def _hero_display_name(db: Session, user: TentacleUser, playlist_id: str) -> str:
+    """Name for a picked hero playlist: its home row, else Tentacle's playlist,
+    else what Jellyfin calls it for this user (a playlist made in Jellyfin, #650).
+    Jellyfin is asked as the user, so one they can't see stays unnamed; the id is
+    the last resort. Runs outside home_config_lock: a slow Jellyfin must not hold
+    up other home-config writes (the file is replaced atomically)."""
+    rows = (_read_home_json(user) or {}).get("rows") or []
+    matching = next((r for r in rows if r.get("playlist_id") == playlist_id), None)
+    if matching and matching.get("display_name"):
+        return matching["display_name"]
+    all_playlists = _get_smartlists_with_playlist_ids(db, user_id=user.id)
+    pl = next((p for p in all_playlists if p["playlist_id"] == playlist_id), None)
+    if pl:
+        return pl["name"]
+
+    jellyfin_url = get_setting(db, "jellyfin_url", "")
+    jellyfin_key = get_setting(db, "jellyfin_api_key", "")
+    if jellyfin_url and jellyfin_key and user.jellyfin_user_id and _JELLYFIN_ID.fullmatch(playlist_id):
+        from services.jellyfin import JellyfinService
+        try:
+            jf = JellyfinService(jellyfin_url, jellyfin_key, user.jellyfin_user_id)
+            name = (jf._get(jf._item_path(playlist_id)) or {}).get("Name")
+            if isinstance(name, str) and name.strip():
+                return name
+        except Exception as e:
+            logger.debug(f"Hero playlist name lookup failed for {playlist_id}: {e}")
+    return playlist_id
+
+
 @router.post("/hero")
 def set_hero(req: HeroPickRequest, db: Session = Depends(get_db), user: TentacleUser = Depends(get_user_from_request)):
     """Read JSON, update hero, write JSON back. That's it."""
+    display_name = _hero_display_name(db, user, req.playlist_id) if req.playlist_id else ""
     with home_config_lock:
         config = _read_home_json(user)
         if not config:
@@ -937,14 +971,6 @@ def set_hero(req: HeroPickRequest, db: Session = Depends(get_db), user: Tentacle
 
         existing_hero = config.get("hero", {})
         if req.playlist_id:
-            # Look up display name from rows first, then all playlists
-            matching = next((r for r in config["rows"] if r.get("playlist_id") == req.playlist_id), None)
-            if matching:
-                display_name = matching["display_name"]
-            else:
-                all_playlists = _get_smartlists_with_playlist_ids(db, user_id=user.id)
-                pl = next((p for p in all_playlists if p["playlist_id"] == req.playlist_id), None)
-                display_name = pl["name"] if pl else req.playlist_id
             config["hero"] = {
                 "enabled": True,
                 "playlist_id": req.playlist_id,
@@ -953,6 +979,8 @@ def set_hero(req: HeroPickRequest, db: Session = Depends(get_db), user: Tentacle
                 "sort_order": existing_hero.get("sort_order", "Descending"),
                 "require_logo": existing_hero.get("require_logo", True),
                 "require_trailer": existing_hero.get("require_trailer", False),
+                # Missing means muted, as in the plugin's HeroConfig and write_home_config
+                "trailer_audio": existing_hero.get("trailer_audio", False),
                 "item_count": existing_hero.get("item_count", 10),
             }
         else:
@@ -1131,7 +1159,7 @@ def _compute_auto_playlists(db: Session, user_id: int = None) -> list:
 
     # ── Built-in playlists ──
     from datetime import datetime, timedelta
-    recently_added_days = int(get_setting(db, "recently_added_days", "30"))
+    recently_added_days = get_recently_added_days(db)
     cutoff = datetime.utcnow() - timedelta(days=recently_added_days)
     recent_movies = db.query(func.count(Movie.id)).filter(Movie.date_added >= cutoff).scalar() or 0
     recent_series = db.query(func.count(Series.id)).filter(Series.date_added >= cutoff).scalar() or 0

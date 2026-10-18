@@ -735,7 +735,7 @@ var Details = {
                     '<div class="moonfin-btn-circle">' +
                         '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="M400-120q-66 0-113-47t-47-113q0-66 47-113t113-47q23 0 42.5 5.5T480-418v-422h240v160H560v400q0 66-47 113t-113 47Z"/></svg>' +
                     '</div>' +
-                    '<span class="moonfin-btn-label">' + audioLabel + '</span>' +
+                    '<span class="moonfin-btn-label">' + this.esc(audioLabel) + '</span>' +
                 '</div>'
             );
             this._selectedAudioIndex = defaultAudio;
@@ -757,7 +757,7 @@ var Details = {
                     '<div class="moonfin-btn-circle">' +
                         '<svg viewBox="0 -960 960 960" fill="currentColor"><path d="M200-160q-33 0-56.5-23.5T120-240v-480q0-33 23.5-56.5T200-800h560q33 0 56.5 23.5T840-720v480q0 33-23.5 56.5T760-160H200Zm0-80h560v-480H200v480Zm80-120h120q17 0 28.5-11.5T440-400v-40h-60v20h-80v-120h80v20h60v-40q0-17-11.5-28.5T400-600H280q-17 0-28.5 11.5T240-560v160q0 17 11.5 28.5T280-360Zm280 0h120q17 0 28.5-11.5T720-400v-40h-60v20h-80v-120h80v20h60v-40q0-17-11.5-28.5T680-600H560q-17 0-28.5 11.5T520-560v160q0 17 11.5 28.5T560-360ZM200-240v-480 480Z"/></svg>' +
                     '</div>' +
-                    '<span class="moonfin-btn-label">' + subLabel + '</span>' +
+                    '<span class="moonfin-btn-label">' + this.esc(subLabel) + '</span>' +
                 '</div>'
             );
             this._selectedSubtitleIndex = defaultSub;
@@ -2329,7 +2329,7 @@ var Details = {
                 return;
             }
             list.innerHTML = cands.map(function(c, i) {
-                var poster = c.poster_path ? '<img src="https://image.tmdb.org/t/p/w92' + c.poster_path + '" loading="lazy">' : '<div class="tfm-noposter"></div>';
+                var poster = c.poster_path ? '<img src="https://image.tmdb.org/t/p/w92' + self.escAttr(c.poster_path) + '" loading="lazy">' : '<div class="tfm-noposter"></div>';
                 var meta = [c.year, c.runtime ? c.runtime + ' min' : '', c.language_name || ''].filter(Boolean).join(' · ');
                 return '<button class="moonfin-focusable tfm-cand" data-idx="' + i + '" tabindex="0">' + poster +
                     '<span class="tfm-cand-text"><span class="tfm-cand-title">' + self.esc(c.title) + '</span>' +

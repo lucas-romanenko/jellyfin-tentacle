@@ -46,6 +46,10 @@ monitored. Tentacle never falls back to Lidarr's first profile.
 and a user (an admin can also start rescans). For Jellyfin, tick *Jellyfin as
 a music player* and pick or create its music library.
 
+If an album in Jellyfin shows its folder and file names instead of its tags
+(it came in with an older Tentacle), run *Refresh metadata* on the music
+library (or the album) once in Jellyfin, with *Search for missing metadata*.
+
 **5. Save Connections.** Tentacle then reads your Lidarr library once (about
 ten minutes for a few hundred albums; MusicBrainz allows one request a second).
 **Library → Music → Check library now** runs it again any time.
@@ -103,6 +107,11 @@ When the original is unclear (two tracklists equally common in the first year,
 or an edition with a hidden track), the album goes to **Needs review** and you
 choose. Tentacle never guesses.
 
+Requesting an album Lidarr already has files for (one it has unmonitored, for
+example) monitors it but never re-pins it, since that could change your files:
+the album goes to **Fix library** like any other, and is searched straight
+away only if it is already on its original release, locked, and missing tracks.
+
 ## Spotify playlists
 
 **Discover → Music → From Spotify → Import a playlist.** Either:
@@ -146,7 +155,7 @@ Nothing changes until you press **Apply**, per album or per group. Each album
 is checked again with fresh data first. Extra tracks are only removed when
 Lidarr matched every original track and exactly the expected number is left
 over; anything else stops with nothing deleted. Every deletion goes to the
-Deletion log.
+Deletion Log on the Health page.
 
 !!! tip "Set a recycle bin in Lidarr first"
     Removed tracks go to Lidarr's recycle bin (*Settings → Media Management*).

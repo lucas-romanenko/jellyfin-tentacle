@@ -55,11 +55,14 @@ class ParseMemory(unittest.TestCase):
         tracemalloc.start()
         try:
             kept = xmltv.stream_parse_xmltv(url, {"c1"})  # one channel of fifty is kept
-            _cur, peak = tracemalloc.get_traced_memory()
+            cur, peak = tracemalloc.get_traced_memory()
         finally:
             tracemalloc.stop()
         self.assertEqual(programmes // 50, len(kept))
-        return peak
+        # What the parse held on the way, not the programmes it returns (still
+        # alive in `cur`, and rightly ten times as many): a tree that keeps every
+        # element read is freed by the end, so it shows here.
+        return peak - cur
 
     def test_memory_does_not_grow_with_the_feed(self):
         small = self._peak(4_000)

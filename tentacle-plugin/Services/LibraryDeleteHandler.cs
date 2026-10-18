@@ -3,6 +3,7 @@ using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.Providers;
 using MediaBrowser.Model.Tasks;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -17,6 +18,7 @@ public class LibraryDeleteHandler : IHostedService, IDisposable
 {
     private readonly ILibraryManager _libraryManager;
     private readonly ITaskManager _taskManager;
+    private readonly IProviderManager _providerManager;
     private readonly ILogger<LibraryDeleteHandler> _logger;
     private readonly HttpClient _httpClient;
     private Timer? _debounceTimer;
@@ -41,10 +43,12 @@ public class LibraryDeleteHandler : IHostedService, IDisposable
     public LibraryDeleteHandler(
         ILibraryManager libraryManager,
         ITaskManager taskManager,
+        IProviderManager providerManager,
         ILogger<LibraryDeleteHandler> logger)
     {
         _libraryManager = libraryManager;
         _taskManager = taskManager;
+        _providerManager = providerManager;
         _logger = logger;
         _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
     }
@@ -112,24 +116,24 @@ public class LibraryDeleteHandler : IHostedService, IDisposable
             return;
         }
 
-        // A library scan removes every item whose file it cannot see — a provider
-        // sync that rewrote .strm files, an unreadable mount, a pool branch that
-        // dropped out. Those are not user deletions, and the path check above
-        // cannot tell them apart, because the file really is gone. While a scan
-        // is running, leave the catalogue alone; a deletion made in the UI during
-        // a scan is reconciled by the backend's nightly orphan sweep (downloaded
-        // rows; a VOD row simply comes back through the next sync's .strm repair).
-        if (IsLibraryScanRunning())
-        {
-            _logger.LogInformation("[Tentacle] {Type} '{Name}' removed during a library scan — not forwarding to the backend",
-                mediaType, item.Name);
-            return;
-        }
-
         // Extract TMDB provider ID
         if (!item.ProviderIds.TryGetValue("Tmdb", out var tmdbId) || string.IsNullOrEmpty(tmdbId))
         {
             _logger.LogDebug("[Tentacle] Deleted {Type} '{Name}' has no TMDB ID — skipping", mediaType, item.Name);
+            return;
+        }
+
+        // A library re-read removes every item whose file it cannot see — a provider
+        // sync that rewrote .strm files, an unreadable mount, a pool branch that
+        // dropped out. Those are not user deletions, and the path check above
+        // cannot tell them apart, because the file really is gone. While a re-read
+        // is running, leave the catalogue alone; a deletion made in the UI during
+        // one is reconciled by the backend's nightly orphan sweep (downloaded
+        // rows; a VOD row simply comes back through the next sync's .strm repair).
+        if (IsLibraryScanRunning() || IsParentBeingValidated(e.Parent))
+        {
+            _logger.LogInformation("[Tentacle] {Type} '{Name}' removed during a library scan — not forwarding to the backend",
+                mediaType, item.Name);
             return;
         }
 
@@ -177,6 +181,34 @@ public class LibraryDeleteHandler : IHostedService, IDisposable
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// True while Jellyfin is validating the folder the item was removed from.
+    /// The Scan Media Library task is only one way in: the library monitor
+    /// (real-time monitoring, /Library/Media/Updated from Radarr/Sonarr) and a
+    /// one-library "Scan library" (/Items/{id}/Refresh) validate folders with the
+    /// task idle. Folder.ValidateChildrenInternal registers the folder with
+    /// OnRefreshStart for as long as it runs and passes it as the removal's
+    /// parent. A delete from the UI passes the item's own parent too, which is
+    /// held back only if a re-read of that folder runs at that moment (#448).
+    /// </summary>
+    private bool IsParentBeingValidated(BaseItem? parent)
+    {
+        if (parent == null)
+        {
+            return false;
+        }
+
+        try
+        {
+            return _providerManager.GetRefreshProgress(parent.Id).HasValue;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "[Tentacle] Could not read refresh state of {Parent}", parent.Id);
+            return false;
+        }
     }
 
     private void ProcessPendingDeletes()

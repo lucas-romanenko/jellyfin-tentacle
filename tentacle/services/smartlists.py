@@ -16,6 +16,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from models.database import get_setting, TagRule, TentacleUser, DownloadRequest, Movie, Series
+from services.tagger import downloads_tag
 
 logger = logging.getLogger(__name__)
 
@@ -67,16 +68,6 @@ NATIVE_FIELDS = {"genre", "rating", "year"}
 TENTACLE_FIELDS = {"source", "source_tag", "list", "downloaded", "runtime"}
 
 
-def _extract_source_value(conditions: list) -> str | None:
-    """If the conditions contain a source or source_tag equals condition,
-    return the value. The tagger appends a type suffix (Movies/TV) to these."""
-    for cond in conditions:
-        field = cond.get("field", "")
-        if field in ("source", "source_tag") and cond.get("operator") == "equals":
-            return cond.get("value", "")
-    return None
-
-
 def _extract_genre_logic(conditions: list) -> str:
     """Extract genre_logic from conditions (default 'and')."""
     for c in conditions:
@@ -119,6 +110,34 @@ def _conditions_to_expressions(conditions: list) -> list:
     return expressions
 
 
+def _rule_expressions(conditions: list, media: list, output_tag: str) -> tuple[str, list | None]:
+    """(tag, expressions) for a tag rule's playlist query, the same for the
+    full sync and for saving the rule.
+
+    - Only genre/rating/year: Jellyfin's own fields.
+    - One provider ("source"/"source_tag" equals) plus zero or more of
+      genre/rating/year: the provider's tag(s) ("X Movies" / "X TV", the
+      suffix the tagger writes) AND Jellyfin's fields, so the filters are kept
+      (#540) and the playlist fills on save.
+    - Anything else (list, runtime, downloaded, two providers): the rule's own
+      tag, which the tagger gives only to titles that pass every condition.
+    """
+    conditions = conditions or []
+    if conditions and _classify_conditions(conditions) == "native":
+        return output_tag, _conditions_to_expressions(conditions)
+    sources = [c for c in conditions if c.get("field") in ("source", "source_tag")]
+    rest = [c for c in conditions if c not in sources]
+    if (len(sources) != 1 or sources[0].get("operator") != "equals"
+            or not sources[0].get("value") or any(c.get("field") not in NATIVE_FIELDS for c in rest)):
+        return output_tag, None
+    value = sources[0]["value"]
+    source_tags = [f"{value} {'Movies' if m == 'Movie' else 'TV'}" for m in media]
+    if not rest and len(source_tags) == 1:
+        return source_tags[0], None
+    expressions = [{"MemberName": "Tags", "Operator": "Contains", "TargetValue": t} for t in source_tags]
+    return source_tags[0], expressions + _conditions_to_expressions(rest)
+
+
 # ── Per-user SmartLists paths ────────────────────────────────────────────────
 
 def _user_smartlists_path(db: Session, user_id: int) -> Path:
@@ -128,6 +147,13 @@ def _user_smartlists_path(db: Session, user_id: int) -> Path:
         raise ValueError(f"TentacleUser id={user_id} not found")
     base = Path(get_setting(db, "smartlists_path", "/data/smartlists"))
     return base / user.jellyfin_user_id
+
+
+def _user_display_name(db: Session, user_id: int) -> str:
+    """The user's name as the database has it now. A TentacleUser the session
+    loaded earlier (the nightly loads every user, then works through them for
+    minutes) still has the name from before a sign-in renamed them (#454)."""
+    return db.query(TentacleUser.display_name).filter(TentacleUser.id == user_id).scalar() or ""
 
 
 def _get_jellyfin_user_id(db: Session, user_id: int) -> str:
@@ -469,13 +495,13 @@ def get_desired_smartlists(db: Session, user_id: int = None) -> list:
 
     # Per-user downloads playlist — dynamic tag based on user display name
     if user_id is not None and toggles.get("builtin:my_downloads"):
-        req_user = db.query(TentacleUser).filter(TentacleUser.id == user_id).first()
-        if req_user:
+        user_name = _user_display_name(db, user_id)
+        if user_name:
             has_requests = db.query(DownloadRequest.id).filter(
                 DownloadRequest.user_id == user_id,
             ).first()
             if has_requests:
-                user_tag = f"{req_user.display_name}'s Downloads"
+                user_tag = downloads_tag(user_name)
                 if user_tag not in existing_tags:
                     smartlists.append({
                         "name": user_tag, "tag": user_tag,
@@ -556,37 +582,23 @@ def get_desired_smartlists(db: Session, user_id: int = None) -> list:
             media = ["Movie"]
         elif rule.apply_to == "series":
             media = ["Series"]
-        # Compute the correct tag for Jellyfin queries.
-        # Source/source_tag conditions need the media type suffix because the tagger
-        # writes tags like "Netflix Movies" / "Netflix TV", not just "Netflix".
-        tag = rule.output_tag
-        dual_tag_expressions = None
-        source_value = _extract_source_value(rule.conditions or [])
-        if source_value and len(media) == 1:
-            type_suffix = "Movies" if media == ["Movie"] else "TV"
-            tag = f"{source_value} {type_suffix}"
-        elif source_value and len(media) == 2:
-            # Applies to BOTH movies and series — the tagger never writes the
-            # bare source value, only "X Movies" / "X TV". Emit two OR'd tag
-            # expressions so the query matches either suffixed tag.
-            dual_tag_expressions = [
-                {"MemberName": "Tags", "Operator": "Contains", "TargetValue": f"{source_value} Movies"},
-                {"MemberName": "Tags", "Operator": "Contains", "TargetValue": f"{source_value} TV"},
-            ]
-
+        tag, expressions = _rule_expressions(rule.conditions, media, rule.output_tag)
         gl = _extract_genre_logic(rule.conditions or [])
         sl_entry = {"name": rule.output_tag, "tag": tag, "media_type": media, "enabled": True, "source": "custom", "genre_logic": gl}
-        # If all conditions are Jellyfin-native (genre/rating/year),
-        # query Jellyfin directly instead of going through Tentacle tags
-        classification = _classify_conditions(rule.conditions or [])
-        if classification == "native":
-            sl_entry["expressions"] = _conditions_to_expressions(rule.conditions)
-        elif dual_tag_expressions is not None:
-            sl_entry["expressions"] = dual_tag_expressions
+        if expressions:
+            sl_entry["expressions"] = expressions
         smartlists.append(sl_entry)
         existing_tags.add(rule.output_tag)
 
     return smartlists
+
+
+def _rollback_quietly(db: Session) -> None:
+    """Leave the shared session usable for the next user after a failed one."""
+    try:
+        db.rollback()
+    except Exception:
+        pass
 
 
 def _scan_existing(smartlists_path: Path) -> dict:
@@ -602,45 +614,13 @@ def _scan_existing(smartlists_path: Path) -> dict:
             try:
                 data = json.loads(config_file.read_text(encoding="utf-8"))
                 name = data.get("Name", "")
-                if name:
+                if isinstance(name, str) and name:
                     existing[name] = (folder, data)
+                elif name:
+                    logger.warning(f"[SmartLists] Skipping {config_file}: its Name is not text")
             except Exception:
                 continue
     return existing
-
-
-_BUILTIN_DEFAULT_SORT = {
-    "Recently Added Movies": "DateCreated",
-    "Recently Added TV": "DateCreated",
-    "Downloaded Movies": "DateCreated",
-    "Downloaded TV": "DateCreated",
-}
-
-
-def _migrate_builtin_sort_defaults(existing: dict, smartlists_path: Path):
-    """One-time migration: fix built-in playlists created before default_sort was added.
-    If a built-in playlist has ReleaseDate sort and no _sort_migrated flag, update to DateCreated."""
-    # Also migrate per-user downloads playlists ("{Name}'s Downloads")
-    migrate_targets = dict(_BUILTIN_DEFAULT_SORT)
-    for name in existing:
-        if name.endswith("'s Downloads"):
-            migrate_targets[name] = "DateCreated"
-
-    for name, expected_sort in migrate_targets.items():
-        if name not in existing:
-            continue
-        folder, config = existing[name]
-        if config.get("_sort_migrated"):
-            continue
-        order = config.get("Order", {})
-        sort_opts = order.get("SortOptions", [])
-        current_sort = sort_opts[0].get("SortBy") if sort_opts else None
-        if current_sort == "ReleaseDate":
-            config["Order"] = {"SortOptions": [{"SortBy": expected_sort, "SortOrder": "Descending"}]}
-            logger.info(f"[SmartLists] Migrated sort for '{name}': ReleaseDate → {expected_sort}")
-        config["_sort_migrated"] = True
-        config_file = folder / "config.json"
-        config_file.write_text(json.dumps(config, indent=2), encoding="utf-8")
 
 
 def migrate_global_smartlists_to_user(db: Session, user_id: int):
@@ -710,9 +690,9 @@ def _enabled_toggle_names(db: Session, user_id: int) -> set:
             # Only "desired" while the user has a DownloadRequest (see
             # get_desired_smartlists) — deleting their last request must not
             # delete the enabled playlist.
-            user = db.query(TentacleUser).filter(TentacleUser.id == user_id).first()
-            if user:
-                names.add(f"{user.display_name}'s Downloads")
+            user_name = _user_display_name(db, user_id)
+            if user_name:
+                names.add(downloads_tag(user_name))
         elif key.startswith("source:"):
             parts = key.split(":")
             # source:<tag>:movies — rejoin the middle so a tag containing
@@ -725,6 +705,72 @@ def _enabled_toggle_names(db: Session, user_id: int) -> set:
                 elif kind == "series":
                     names.add(f"{tag} TV")
     return names
+
+
+def _is_downloads_config(name: str, config: dict) -> bool:
+    """Whether a SmartList config is a "<name>'s Downloads" as
+    get_desired_smartlists() builds it: one Tags expression on its own name."""
+    sets = config.get("ExpressionSets") or []
+    return (name.endswith("'s Downloads") and len(sets) == 1
+            and (sets[0] or {}).get("Expressions") == [
+                {"MemberName": "Tags", "Operator": "Contains", "TargetValue": name}])
+
+
+def _follow_downloads_rename(db: Session, user_id: int, wanted: set, existing: dict,
+                             jf_user_id: str, jellyfin_url: str, jellyfin_key: str) -> str:
+    """Rename a renamed user's "<old name>'s Downloads" to their current name
+    in place: same folder, same Jellyfin playlist id and entries, so the home
+    row and the hero stay on it (#454). Updates `existing`. Returns the old
+    name, or "" when there was nothing to rename.
+
+    The old name is one the sign-in that renamed them retired: the orphan
+    sweep used to delete that playlist and create an empty one under the new
+    name. Only Tentacle's own Jellyfin playlist is renamed (#152); a user's
+    own one keeps its name and stays linked."""
+    from services.tagger import retired_tags
+    user_name = _user_display_name(db, user_id)
+    if not user_name:
+        return ""
+    new = downloads_tag(user_name)
+    if new not in wanted or new in existing:
+        return ""
+    retired = retired_tags(db)
+    old_names = [n for n, (_, data) in existing.items()
+                 if n in retired and n not in wanted and _is_downloads_config(n, data)]
+    if len(old_names) != 1:
+        return ""
+    old = old_names[0]
+    folder, config = existing.pop(old)
+    config["Name"] = new
+    config["ExpressionSets"][0]["Expressions"] = [
+        {"MemberName": "Tags", "Operator": "Contains", "TargetValue": new}]
+    _atomic_write_json(folder / "config.json", config)
+    existing[new] = (folder, config)
+    logger.info(f"[SmartLists] User {user_id} was renamed: '{old}' is now '{new}'")
+    if jellyfin_url and jellyfin_key:
+        from services.jellyfin import JellyfinService
+        for entry in (config.get("UserPlaylists") or []):
+            pid = entry.get("JellyfinPlaylistId")
+            if not pid:
+                continue
+            # The config links it by id, so a playlist that keeps its old name
+            # in Jellyfin is still this user's Downloads and still filled.
+            try:
+                if not JellyfinService(jellyfin_url, jellyfin_key, jf_user_id).rename_tentacle_playlist(
+                        pid, new, jf_user_id):
+                    logger.warning(f"[SmartLists] Jellyfin playlist {pid} keeps the name '{old}'")
+            except Exception as e:
+                logger.warning(f"[SmartLists] Could not rename Jellyfin playlist {pid} to '{new}': {e}")
+    return old
+
+
+def playlist_names_still_made(db: Session, user_id: int) -> set:
+    """Names of the playlists something of this user's still makes: what
+    get_desired_smartlists() builds, plus the switched-on ones the orphan
+    sweep in sync_smartlists() protects. One name can have two producers (a
+    list and a rule on one tag, a rule named like a built-in), so a fast path
+    that removes a playlist by name must leave these alone (#382)."""
+    return {s["name"] for s in get_desired_smartlists(db, user_id=user_id)} | _enabled_toggle_names(db, user_id)
 
 
 def sync_smartlists(db: Session, user_id: int = None) -> dict:
@@ -742,7 +788,15 @@ def sync_smartlists(db: Session, user_id: int = None) -> dict:
             return {"created": 0, "updated": 0, "removed": 0, "total": 0}
         combined = {"created": 0, "updated": 0, "removed": 0, "total": 0}
         for u in users:
-            result = sync_smartlists(db, user_id=u.id)
+            # One user's failure (a Jellyfin error, a config file that can't be
+            # read) must not stop the others, as in the nightly loop.
+            try:
+                result = sync_smartlists(db, user_id=u.id)
+            except Exception as e:
+                _rollback_quietly(db)
+                logger.warning(f"[SmartLists] Playlist sync failed for user {u.id}: {e}", exc_info=True)
+                combined["errors"] = combined.get("errors", 0) + 1
+                continue
             for key in ("created", "updated", "removed", "total"):
                 combined[key] += result.get(key, 0)
         # Artwork sync is global (once after all users)
@@ -772,9 +826,11 @@ def sync_smartlists(db: Session, user_id: int = None) -> dict:
     jellyfin_url = get_setting(db, "jellyfin_url", "")
     jellyfin_key = get_setting(db, "jellyfin_api_key", "")
 
-    # One-time migration: fix built-in playlists stuck with ReleaseDate sort
-    # that should default to DateCreated (created before default_sort was added)
-    _migrate_builtin_sort_defaults(existing, smartlists_path)
+    # Playlists the user has explicitly enabled are protected even when they
+    # aren't in `desired` right now (see the orphan cleanup below).
+    protected_names = _enabled_toggle_names(db, user_id)
+    _follow_downloads_rename(db, user_id, {sl["name"] for sl in desired} | protected_names, existing,
+                             jf_user_id, jellyfin_url, jellyfin_key)
 
     # Playlists other users' configs own — never adopt one by name (see
     # _playlist_ids_of_other_users). Read once per sync, not once per playlist.
@@ -860,12 +916,11 @@ def sync_smartlists(db: Session, user_id: int = None) -> dict:
     # Clean up orphaned SmartList folders (deleted tag rules, disabled toggles, removed providers)
     desired_names = {sl["name"] for sl in desired}
 
-    # Playlists the user has explicitly enabled are protected even when they
-    # aren't in `desired` right now. `desired` is derived from current content,
-    # so a source with no rows this run (provider blip, partial sync, orphan
-    # sweep) drops out of it — and deleting the Jellyfin playlist + folder on
-    # that basis is irreversible and takes the user's home row with it.
-    protected_names = _enabled_toggle_names(db, user_id)
+    # Playlists the user has explicitly enabled (protected_names) are kept even
+    # when they aren't in `desired` right now. `desired` is derived from current
+    # content, so a source with no rows this run (provider blip, partial sync,
+    # orphan sweep) drops out of it — and deleting the Jellyfin playlist + folder
+    # on that basis is irreversible and takes the user's home row with it.
     orphaned = {
         name: (folder, data) for name, (folder, data) in existing.items()
         if name not in desired_names and name not in protected_names
@@ -1164,11 +1219,13 @@ def write_home_json(path: Path, config: dict) -> None:
     _atomic_write_json(path, config)
 
 
-def write_home_config(db: Session, user_id: int = None) -> dict:
+def write_home_config(db: Session, user_id: int = None, dropped_ids: frozenset = frozenset()) -> dict:
     """Generate and write per-user home config based on current SmartLists.
 
     Preserves existing row order, hero pick, and built-in Jellyfin sections.
     Only playlist rows are validated against disk (built-in sections are always kept).
+    `dropped_ids` are playlists the user just deleted (a deleted list, #679):
+    their rows go now instead of lingering as unresolvable.
     Returns the config dict that was written.
     """
     home_row_limit = int(get_setting(db, "home_row_limit", "20") or "20")
@@ -1242,6 +1299,7 @@ def write_home_config(db: Session, user_id: int = None) -> dict:
         now_iso = datetime.utcnow().isoformat()
         rows = []
         aged_out = []  # (row, name, since, reason) unresolvable past the grace period
+        dropped = []   # rows of a playlist the user just deleted
         for r in existing_rows:
             if r.get("type") == "builtin":
                 # Always keep built-in sections
@@ -1261,6 +1319,9 @@ def write_home_config(db: Session, user_id: int = None) -> dict:
                 r["type"] = "playlist"
                 r.pop("unresolved_since", None)
                 rows.append(r)
+            elif r.get("playlist_id") in dropped_ids:
+                logger.info(f"Home config: dropping row '{r.get('display_name')}' — its playlist was deleted")
+                dropped.append(r)
             else:
                 # Unresolvable this run. Home rows are hand-configured and are
                 # never re-added automatically, so dropping one on a transient
@@ -1298,7 +1359,10 @@ def write_home_config(db: Session, user_id: int = None) -> dict:
         # (remaps, sort info, hero). Returning the old config here froze the file
         # permanently: aged rows only get older, so the condition held on every run.
         aged_ids = {id(r) for r, *_ in aged_out}
-        existing_playlist_rows = [r for r in existing_rows if r.get("type") != "builtin"]
+        # A dropped row is a delete the user asked for, not a loss to guard.
+        dropped_rows = {id(r) for r in dropped}
+        existing_playlist_rows = [r for r in existing_rows
+                                  if r.get("type") != "builtin" and id(r) not in dropped_rows]
         kept_playlist_rows = [r for r in rows if r.get("type") != "builtin" and id(r) not in aged_ids]
         if aged_out and existing_playlist_rows and len(kept_playlist_rows) < len(existing_playlist_rows) / 2:
             logger.warning(
@@ -1329,6 +1393,8 @@ def write_home_config(db: Session, user_id: int = None) -> dict:
         # Hero: preserve existing pick, remap if playlist was recreated, disable if gone
         if existing_hero and existing_hero.get("playlist_id") in current_ids:
             hero = existing_hero
+            # A playlist renamed in place (a renamed user's Downloads, #454)
+            hero["display_name"] = name_by_id.get(hero["playlist_id"], hero.get("display_name", ""))
         elif existing_hero and existing_hero.get("display_name") and existing_hero["display_name"] in id_by_name:
             # Hero playlist was recreated with a new ID — remap (unambiguous name only)
             new_id = id_by_name[existing_hero["display_name"]]
@@ -1683,8 +1749,14 @@ def _refresh_smartlist_playlists_inner(db: Session, user_id: int = None, only_na
             return {"processed": 0, "created": 0, "updated": 0, "changed": 0, "errors": 0}
         combined = {"processed": 0, "created": 0, "updated": 0, "changed": 0, "errors": 0}
         for u in users:
-            result = _refresh_smartlist_playlists_inner(db, user_id=u.id, only_names=only_names,
-                                                        reorder_names=reorder_names)
+            try:  # one user's failure must not stop the others
+                result = _refresh_smartlist_playlists_inner(db, user_id=u.id, only_names=only_names,
+                                                            reorder_names=reorder_names)
+            except Exception as e:
+                _rollback_quietly(db)
+                logger.warning(f"[SmartLists] Playlist refresh failed for user {u.id}: {e}", exc_info=True)
+                combined["errors"] += 1
+                continue
             for key in ("processed", "created", "updated", "changed", "errors"):
                 combined[key] += result.get(key, 0)
         return combined
@@ -2072,14 +2144,17 @@ def _process_single_playlist_locked(jf, folder: Path, config: dict, user_id: str
 
     # Deduplicate items — Jellyfin can return the same content twice if it exists
     # in multiple libraries (e.g. "TV Shows" + "4K TV"). Keep first occurrence only.
+    # Keyed on the type too: TMDB numbers films and shows separately, so a film
+    # and a show with the same TMDB id are two titles (#384).
     seen_tmdb = set()
     deduped = []
     for item in items:
         tmdb_id = (item.get("ProviderIds") or {}).get("Tmdb")
-        if tmdb_id and tmdb_id in seen_tmdb:
+        key = (item.get("Type"), tmdb_id)
+        if tmdb_id and key in seen_tmdb:
             continue
         if tmdb_id:
-            seen_tmdb.add(tmdb_id)
+            seen_tmdb.add(key)
         deduped.append(item)
     if len(deduped) < len(items):
         logger.info(f"[SmartLists] '{name}': deduplicated {len(items)} → {len(deduped)} items")
@@ -2459,27 +2534,30 @@ def sync_single_custom_playlist(db: Session, user_id: int, rule_name: str, condi
     elif apply_to == "series":
         media_types = ["Series"]
 
-    # Classify conditions and build expressions
-    classification = _classify_conditions(conditions)
-    expressions = _conditions_to_expressions(conditions) if classification == "native" else None
-    gl = _extract_genre_logic(conditions)
-
-    # Compute tag (with source suffix if applicable)
-    tag = output_tag
-    source_value = _extract_source_value(conditions)
-    if source_value and len(media_types) == 1:
-        type_suffix = "Movies" if media_types == ["Movie"] else "TV"
-        tag = f"{source_value} {type_suffix}"
+    # The same query get_desired_smartlists() builds for this rule
+    tag, expressions = _rule_expressions(conditions, media_types, output_tag)
+    gl = _extract_genre_logic(conditions or [])
 
     # Check if config already exists on disk
     existing = _scan_existing(smartlists_path)
     is_new = rule_name not in existing
 
+    # A name this user's list, built-in, source or YouTube playlist already
+    # makes is that one's playlist (get_desired_smartlists skips the rule):
+    # refill it as it is, never rewrite it with the rule's filters (#382).
+    owner = next((s for s in get_desired_smartlists(db, user_id=user_id) if s["name"] == rule_name), None)
+    served_by_other = owner is not None and owner.get("source") != "custom"
+    if served_by_other and is_new:
+        return {"success": True, "name": rule_name, "item_count": 0, "is_new": False}
+
     # Never adopt a playlist another user's SmartList already owns (see
     # _playlist_ids_of_other_users).
     other_playlist_ids = _playlist_ids_of_other_users(db, user_id)
 
-    if is_new:
+    if served_by_other:
+        folder, config = existing[rule_name]
+        logger.info(f"[SmartLists] '{rule_name}' is made by a {owner.get('source')} playlist of the same name — left as it is")
+    elif is_new:
         folder_id = str(uuid.uuid4())
         folder = smartlists_path / folder_id
         folder.mkdir(parents=True, exist_ok=True)
@@ -2512,8 +2590,9 @@ def sync_single_custom_playlist(db: Session, user_id: int, rule_name: str, condi
                 config["UserPlaylists"] = [{"UserId": jf_user_id, "JellyfinPlaylistId": playlist_id}]
 
     # Write config to disk
-    config_file = folder / "config.json"
-    config_file.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    if not served_by_other:
+        config_file = folder / "config.json"
+        config_file.write_text(json.dumps(config, indent=2), encoding="utf-8")
 
     # Populate the Jellyfin playlist with matching items
     jf = JellyfinService(jellyfin_url, jellyfin_key, user_id=jf_user_id)
@@ -2681,9 +2760,14 @@ def toggle_auto_playlist_fast(db: Session, user_id: int, key: str, enabled: bool
 
         logger.info(f"[SmartLists] Fast toggle ON '{name}': {item_count} items")
     else:
-        # Disable: delete Jellyfin playlist + remove config folder
+        # Disable: delete Jellyfin playlist + remove config folder, unless
+        # another producer of this user's still makes a playlist of that name
+        # (a rule on the list's tag, #382): that one keeps it, and the next
+        # full sync gives it that producer's definition.
         item_count = 0
-        if name in existing:
+        if name in existing and name in playlist_names_still_made(db, user_id):
+            logger.info(f"[SmartLists] Fast toggle OFF '{name}': kept, another playlist source of this user makes it")
+        elif name in existing:
             folder, old_data = existing[name]
             # Delete Jellyfin playlist
             for entry in (old_data.get("UserPlaylists") or []):

@@ -84,12 +84,13 @@ class LidarrClient:
                 retryable = True
                 r = None
             except requests.exceptions.ConnectionError as e:
-                reason = f"Can't reach Lidarr at {self.url} ({e.__class__.__name__})"
+                reason = f"Can't reach Lidarr ({e.__class__.__name__})"
                 retryable = True
                 r = None
             except requests.exceptions.RequestException as e:
                 # A malformed URL and the like: retrying won't help.
-                raise LidarrError(f"Can't call Lidarr at {self.url!r}: {e}")
+                logger.warning(f"[Lidarr] Can't call {self.url!r}: {e}")
+                raise LidarrError(f"Can't call Lidarr ({e.__class__.__name__}). Check its address in Settings.")
             else:
                 if r.status_code == 401:
                     raise LidarrError("Lidarr rejected the API key.", 401)
@@ -107,7 +108,7 @@ class LidarrClient:
                         raise LidarrError("Lidarr returned something that isn't JSON. "
                                           "Is a proxy or login page in front of it?", r.status_code)
             if not retryable or attempt >= retries:
-                logger.warning(f"[Lidarr] Giving up on {method} {path} after {attempt + 1} "
+                logger.warning(f"[Lidarr] Giving up on {method} {self.url}{path} after {attempt + 1} "
                                f"attempt{'s' if attempt else ''}: {reason}")
                 raise LidarrError(reason, getattr(r, "status_code", None))
             delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]

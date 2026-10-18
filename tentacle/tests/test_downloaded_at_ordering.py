@@ -15,6 +15,7 @@ from unittest import mock
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from hermetic import no_tmdb
 from tmp_dirs import temp_dir
 
 
@@ -32,6 +33,9 @@ def _db():
 
 
 class TestRadarrScanRecordsTheDownloadDate(unittest.TestCase):
+    def setUp(self):
+        no_tmdb(self)
+
     def _scan(self, db, movies):
         import services.radarr as radarr
 
@@ -73,6 +77,9 @@ class TestRadarrScanRecordsTheDownloadDate(unittest.TestCase):
 
 
 class TestSonarrScanRecordsTheDownloadDate(unittest.TestCase):
+    def setUp(self):
+        no_tmdb(self)
+
     def _scan(self, db, shows):
         import services.sonarr as sonarr
 

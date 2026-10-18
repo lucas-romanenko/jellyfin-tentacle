@@ -22,6 +22,7 @@ check only reads module state.
 import logging
 import threading
 import time
+from contextlib import contextmanager
 from typing import Callable, Optional
 
 from models.database import get_setting
@@ -57,6 +58,28 @@ def recording_protected(db) -> bool:
         return False
 
 
+def jellyfin_playing(db) -> bool:
+    """True while Jellyfin is playing anything, or can't say. A VOD .strm
+    plays straight from the provider, past Tentacle: Tentacle's own stream
+    counters don't see it, and a test stream opened next to it on a
+    one-connection account cuts it (Jellyfin then ends the episode and
+    starts the next one). Without a Jellyfin connection set there is no
+    viewer to protect."""
+    url = (get_setting(db, "jellyfin_url", "") or "").rstrip("/")
+    key = get_setting(db, "jellyfin_api_key", "") or ""
+    if not url or not key:
+        return False
+    import requests
+    try:
+        r = requests.get(f"{url}/Sessions", params={"activeWithinSeconds": 960},
+                         headers={"X-Emby-Token": key}, timeout=10)
+        r.raise_for_status()
+        return any(s.get("NowPlayingItem") for s in r.json())
+    except Exception as e:
+        logger.info(f"[Provider] Jellyfin sessions unknown ({type(e).__name__}): standing aside")
+        return True
+
+
 def refuse_while_recording(db, what: str) -> None:
     """For a button that would contact the provider now: with recording
     protection on and a recording running, answer 503 instead."""
@@ -68,13 +91,13 @@ def refuse_while_recording(db, what: str) -> None:
                                  f"the recording has finished.")
 
 
-# Wall time spent in wait_for_recordings, per sync run (key None = not
-# tied to a run: the nightly EPG wait, discovery), so the sync status route
-# does not take a run that waits for a protected recording for a stuck one
-# (routers.sync). WALL time: while any waiter of a run is active the clock
-# runs once, however many wait at the same moment. key -> {"active": waiters
-# in progress, "since": monotonic start of the current stretch, "seconds":
-# finished stretches}.
+# Wall time spent in wait_for_recordings or booked_wait, per sync run (key
+# None = not tied to a run: the nightly EPG wait, discovery), so the sync
+# status route does not take a run that waits (for a protected recording,
+# for another provider's sync) for a stuck one (routers.sync). WALL time:
+# while any waiter of a run is active the clock runs once, however many wait
+# at the same moment. key -> {"active": waiters in progress, "since":
+# monotonic start of the current stretch, "seconds": finished stretches}.
 _protected_wait: "dict" = {}
 _protected_wait_lock = threading.Lock()
 
@@ -96,6 +119,18 @@ def _wait_leave(key) -> None:
         if e["active"] == 0 and e["since"] is not None:
             e["seconds"] += max(0.0, time.monotonic() - e["since"])
             e["since"] = None
+
+
+@contextmanager
+def booked_wait(run_id):
+    """Book the time inside to sync run `run_id` as waiting, so the status
+    route does not take it for a stuck one (a VOD sync waiting for another
+    provider's sync to finish, services.sync)."""
+    _wait_enter(run_id)
+    try:
+        yield
+    finally:
+        _wait_leave(run_id)
 
 
 def protected_wait_state(run_id=None) -> tuple:

@@ -50,7 +50,7 @@ class SharedUpstream(unittest.TestCase):
             self.db.add(prov)
             self.db.commit()
         ch = LiveChannel(provider_id=prov.id, name=name,
-                         stream_url="http://provider.test/live/u/p/1.m3u8")
+                         stream_url="http://provider.test/live/u/p/1.m3u8", enabled=True)
         self.db.add(ch)
         self.db.commit()
         return ch.id

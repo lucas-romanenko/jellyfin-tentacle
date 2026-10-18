@@ -25,6 +25,25 @@ class TestDownloadsRowWrapsOnPhones(unittest.TestCase):
         self.assertGreaterEqual(width, 540, "titles vanish below ~540 px")
         self.assertRegex(body, r"\.dl-item-title \{[^}]*flex: 1 1 100%")
 
+    def test_rows_wrap_by_their_own_width_at_any_screen_size(self):
+        # Above 600 px the viewport rule no longer applies, but the row can be
+        # narrower still: from 769 px the sidebar takes ~250 px, so a tablet in
+        # portrait (768-834 px) left the title 0 px wide, and so did 601-680 px
+        # with a long status ("import blocked · Bluray-2160p Remux · 2h 15m").
+        # The base rules wrap as soon as the title would get less than its basis.
+        base = re.search(r"\n\.dl-item \{([^}]*)\}", self.html)
+        title = re.search(r"\n\.dl-item-title \{([^}]*)\}", self.html)
+        self.assertIsNotNone(base)
+        self.assertIsNotNone(title)
+        self.assertIn("flex-wrap: wrap", base.group(1))
+        basis = re.search(r"flex: 1 1 (\d+)px", title.group(1))
+        self.assertIsNotNone(basis, "the title has no minimum share of the row")
+        self.assertGreaterEqual(int(basis.group(1)), 160)
+        # The phone block must come after the base rules, or they override it.
+        phone = self.html.index("@media (max-width: 600px) {\n  .dl-item {")
+        self.assertLess(base.start(), phone)
+        self.assertLess(title.start(), phone)
+
 
 if __name__ == "__main__":
     unittest.main()

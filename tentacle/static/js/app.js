@@ -12,6 +12,7 @@ const state = {
   _loginSelectedUser: null,  // Jellyfin user selected on login page
   sessionExpired: false,     // a request came back 401: pollers stop until the page reloads after sign-in
   _arrProblemsTimer: null,
+  _providerProblemsTimer: null,
 };
 
 // ── Init ──────────────────────────────────────────────────────────────────
@@ -43,6 +44,8 @@ async function postLoginInit() {
     checkRunningSyncs();
     loadArrProblems();
     state._arrProblemsTimer = setInterval(loadArrProblems, 120000);
+    loadProviderProblems();
+    state._providerProblemsTimer = setInterval(loadProviderProblems, 120000);
   }
   // Music module: show its tabs and search only when it is on.
   if (typeof loadMusicConfig === 'function') loadMusicConfig();
@@ -75,6 +78,49 @@ function hideArrProblems() {
   el.style.display = 'none';
 }
 
+// ── IPTV provider failing banner (admins) ─────────────────────────────────
+// The hourly provider check (log in, open a test stream). Gone by itself once
+// the check passes again; Hide keeps it away until the failure changes.
+let _providerProblemsHidden = '';
+async function loadProviderProblems(data) {
+  const el = document.getElementById('provider-problems-banner');
+  if (!el) return;
+  let providers = [];
+  try { providers = (data || await api('/api/health/providers')).providers || []; } catch (e) { return; }
+  const failing = providers.filter(p => p.state === 'failing');
+  const sig = failing.map(p => [p.id, p.step, p.kind, p.code, p.since].join(':')).join('|');
+  if (!failing.length || sig === _providerProblemsHidden) { el.style.display = 'none'; return; }
+  const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+  el.innerHTML = `<div class="arr-problems-head">⚠ ${failing.length === 1 ? 'An IPTV provider is failing' : `${failing.length} IPTV providers are failing`}: streams may not play
+      <span class="arr-problems-actions"><button class="btn btn-secondary btn-sm" id="provider-check-btn" onclick="checkProvidersNow()">Check now</button>
+      <button class="btn btn-secondary btn-sm" onclick="hideProviderProblems()">Hide</button></span></div>
+    <ul>${failing.map(p => `<li>⚠ <strong>${esc(p.name)}:</strong> ${esc(p.reason)}</li>`).join('')}</ul>`;
+  el.dataset.sig = sig;
+  el.style.display = '';
+}
+function hideProviderProblems() {
+  const el = document.getElementById('provider-problems-banner');
+  _providerProblemsHidden = el.dataset.sig || '';
+  el.style.display = 'none';
+}
+async function checkProvidersNow() {
+  const btn = document.getElementById('provider-check-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Checking…'; }
+  try {
+    const r = await api('/api/health/providers/check', { method: 'POST' });
+    if (r.skipped && r.checked) toast('Live TV or a recording started during the check, so not every provider was checked.', 'warning', 6000);
+    else if (r.skipped) toast('Live TV or a recording is running, so nothing was checked. Try again when it ends.', 'warning', 6000);
+    else if (r.failing) toast(`Checked: ${r.failing} provider${r.failing === 1 ? '' : 's'} still failing`, 'error');
+    else toast('Checked: every provider works');
+    _providerProblemsHidden = '';
+    await loadProviderProblems(r);
+  } catch (e) {
+    toast(e.message, 'error', 8000);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Check now'; }
+  }
+}
+
 // ── Login ─────────────────────────────────────────────────────────────────
 
 async function showLoginOverlay() {
@@ -96,13 +142,19 @@ async function showLoginOverlay() {
     const resp = await fetch('/api/auth/users');
     if (!resp.ok) {
       if (resp.status === 400) {
-        // Jellyfin URL not configured — go to setup wizard
+        // Jellyfin URL not configured, or (before anyone has signed in) one
+        // that doesn't answer — go to setup wizard to enter or correct it
         overlay.style.display = 'none';
         if (shell) shell.removeAttribute('inert');
         document.getElementById('setup-overlay').style.display = 'flex';
+        const err = await resp.json().catch(() => ({}));
+        if (err.detail && err.detail !== 'Jellyfin URL not configured') {
+          document.getElementById('setup-jellyfin-result').innerHTML = `<span style="color:var(--red)">${escHtml(err.detail)}</span>`;
+        }
       } else {
-        // Connection error (bad API key, unreachable, etc.)
-        grid.innerHTML = '<div style="color:var(--red)">Cannot connect to Jellyfin. Check Settings.</div>';
+        // Connection error (bad API key, unreachable, etc.). Nobody is signed
+        // in here, so nobody can open Settings.
+        grid.innerHTML = '<div style="color:var(--red)">Cannot connect to Jellyfin right now. Check that Jellyfin is running, then try again.</div>';
       }
       return;
     }
@@ -130,7 +182,7 @@ async function showLoginOverlay() {
       </div>`;
     }).join('');
   } catch (e) {
-    grid.innerHTML = `<div style="color:var(--red)">Failed to load users: ${e.message}</div>`;
+    grid.innerHTML = `<div style="color:var(--red)">Failed to load users: ${escHtml(e.message)}</div>`;
   }
 }
 
@@ -253,6 +305,7 @@ async function doLogout() {
 // whatever the page needs afresh.
 function stopAllPolling() {
   if (state._arrProblemsTimer) { clearInterval(state._arrProblemsTimer); state._arrProblemsTimer = null; }
+  if (state._providerProblemsTimer) { clearInterval(state._providerProblemsTimer); state._providerProblemsTimer = null; }
   if (state._syncPollInterval) { clearInterval(state._syncPollInterval); state._syncPollInterval = null; }
   for (const fn of ['stopActivityPolling', 'stopDownloadPolling', 'stopHealthPolling',
                     'stopYouTubePolling', 'stopLivePolling',
@@ -283,6 +336,8 @@ async function checkSetup() {
       if (s.jellyfin_url) document.getElementById('setup-jellyfin-url').value = s.jellyfin_url;
       if (s.radarr_url) document.getElementById('setup-radarr-url').value = s.radarr_url;
       if (s.sonarr_url) document.getElementById('setup-sonarr-url').value = s.sonarr_url;
+      // Signed in already (the page was reloaded after step 2): go on at step 3.
+      if (s.jellyfin_url && s.jellyfin_api_key) setupGoTo(3);
     }
   } catch (e) {}
 }
@@ -429,12 +484,12 @@ async function loadUsers() {
         </div>
         <label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text3);cursor:pointer">
           Admin
-          <input type="checkbox"${toggleChecked}${toggleDisabled} onchange="toggleUserAdmin('${escHtml(u.id)}', this.checked)">
+          <input type="checkbox"${toggleChecked}${toggleDisabled} onchange="toggleUserAdmin('${escapeJS(u.id)}', this.checked)">
         </label>
       </div>`;
     }).join('');
   } catch (e) {
-    el.innerHTML = `<div style="color:var(--red)">Failed to load users: ${e.message}</div>`;
+    el.innerHTML = `<div style="color:var(--red)">Failed to load users: ${escHtml(e.message)}</div>`;
   }
 }
 
@@ -485,7 +540,10 @@ function toast(msg, type = 'success', duration = 3500) {
   const icon = type === 'loading'
     ? '<span class="toast-spinner"></span>'
     : `<span style="color:var(--${colors[type] || 'blue'})">${icons[type] ?? ''}</span>`;
-  el.innerHTML = `${icon} ${msg}`;
+  // The message is text: messages carry titles and other services' error
+  // text, so they are never read as markup (callers pass plain text).
+  el.innerHTML = `${icon} `;
+  el.appendChild(document.createTextNode(msg == null ? '' : String(msg)));
   document.getElementById('toasts').appendChild(el);
   if (duration > 0) setTimeout(() => el.remove(), duration);
   return el;
@@ -520,9 +578,9 @@ async function testSetupJellyfin() {
   el.innerHTML = 'Testing...';
   try {
     const r = await api('/api/settings/test', { method: 'POST', body: { type: 'jellyfin', url, api_key: key } });
-    el.innerHTML = `<span style="color:var(--green)">${r.message}</span>`;
+    el.innerHTML = `<span style="color:var(--green)">${escHtml(r.message)}</span>`;
   } catch (e) {
-    el.innerHTML = `<span style="color:var(--red)">${e.message}</span>`;
+    el.innerHTML = `<span style="color:var(--red)">${escHtml(e.message)}</span>`;
   }
 }
 
@@ -601,9 +659,9 @@ async function testSetupArr(type) {
   el.innerHTML = 'Testing...';
   try {
     const r = await api('/api/settings/test', { method: 'POST', body: { type, url, api_key: key } });
-    el.innerHTML = `<span style="color:var(--green)">${r.message}</span>`;
+    el.innerHTML = `<span style="color:var(--green)">${escHtml(r.message)}</span>`;
   } catch (e) {
-    el.innerHTML = `<span style="color:var(--red)">${e.message}</span>`;
+    el.innerHTML = `<span style="color:var(--red)">${escHtml(e.message)}</span>`;
     return;
   }
   // Connected: offer the default quality profile right here.
@@ -747,11 +805,11 @@ function confirmDeleteStaleFiles() {
   if (!_staleData) return;
   document.getElementById('stale-confirm-strm').textContent = _staleData.strm_count;
   document.getElementById('stale-confirm-nfo').textContent = _staleData.nfo_count;
-  document.getElementById('stale-confirm-modal').style.display = 'flex';
+  showModal('stale-confirm-modal');
 }
 
 async function executeDeleteStaleFiles() {
-  document.getElementById('stale-confirm-modal').style.display = 'none';
+  closeModal('stale-confirm-modal');
   try {
     const res = await api('/api/settings/stale-files/delete', { method: 'POST', body: JSON.stringify({ confirm: true }) });
     document.getElementById('stale-files-banner').style.display = 'none';
@@ -819,7 +877,14 @@ async function loadScheduleInfo() {
     const info = await api('/api/settings/schedule-info');
     const hint = document.getElementById('sync_schedule_hint');
     if (!hint) return;
-    let txt = 'Runs every day at this time';
+    // A cron that isn't "M H * * *" (set before this page showed a time, or
+    // through the API) is kept by Save until the time is changed (#385).
+    const daily = /^\d{1,2}\s+\d{1,2}\s+\*\s+\*\s+\*$/.test((info.cron || '').trim());
+    // One the scheduler can't use runs at the default 03:00 instead (#458).
+    let txt = info.usable === false
+      ? `Stored schedule "${info.cron}" is not a valid cron, so the sync runs every day at 03:00; a time set here replaces it`
+      : daily || !info.cron ? 'Runs every day at this time'
+      : `Custom schedule "${info.cron}", kept as it is; a time set here replaces it with a daily sync`;
     if (info.timezone) {
       txt += ` · timezone ${info.timezone}`;
       if (info.timezone_abbr) txt += ` (${info.timezone_abbr})`;
@@ -873,8 +938,8 @@ function renderProviderCard(p) {
           <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px;flex-wrap:wrap">
             ${capBadges}
           </div>
-          <div class="provider-card-name" style="margin-top:6px">${p.name}</div>
-          <div class="provider-card-url">${(p.provider_type && p.provider_type !== 'xtream') ? ((p.m3u_url || '').split('?')[0] || 'M3U playlist') : p.server_url}</div>
+          <div class="provider-card-name" style="margin-top:6px">${escHtml(p.name)}</div>
+          <div class="provider-card-url">${escHtml((p.provider_type && p.provider_type !== 'xtream') ? ((p.m3u_url || '').split('?')[0] || 'M3U playlist') : p.server_url)}</div>
         </div>
         <div style="display:flex;align-items:center;gap:6px">
           <div class="dot dot-${statusColor}"></div>
@@ -892,7 +957,7 @@ function renderProviderCard(p) {
       <div class="provider-actions">
         <button class="btn btn-secondary btn-sm" onclick="refreshProvider(${p.id})">Test</button>
         <button class="btn btn-secondary btn-sm" onclick="editProvider(${p.id})">Edit</button>
-        <button class="btn btn-danger btn-sm" onclick="confirmDeleteProvider(${p.id}, '${p.name}')">Delete</button>
+        <button class="btn btn-danger btn-sm" onclick="confirmDeleteProvider(${p.id}, '${escapeJS(p.name)}')">Delete</button>
       </div>
     </div>`;
 }
@@ -1108,9 +1173,9 @@ function renderCatList() {
       <input type="checkbox" class="cat-checkbox" id="cat-${c.id}"
         ${c.whitelisted ? 'checked' : ''}
         onchange="toggleCatLocal(${c.id}, this.checked)">
-      <label for="cat-${c.id}" class="cat-name" title="${c.name}">${c.name}</label>
-      <span class="badge ${c.type === 'movie' ? 'badge-accent' : 'badge-pink'}">${c.type}</span>
-      ${c.source_tag ? `<span class="badge badge-gray">${c.source_tag}</span>` : ''}
+      <label for="cat-${c.id}" class="cat-name" title="${escHtml(c.name)}">${escHtml(c.name)}</label>
+      <span class="badge ${c.type === 'movie' ? 'badge-accent' : 'badge-pink'}">${escHtml(c.type)}</span>
+      ${c.source_tag ? `<span class="badge badge-gray">${escHtml(c.source_tag)}</span>` : ''}
       ${c.title_count ? `<span style="font-size:11px;color:var(--text3);font-family:'DM Mono',monospace">${c.title_count}</span>` : ''}
     </div>
   `).join('');
@@ -1182,6 +1247,7 @@ const SETTINGS_TEXT_FIELDS = [
   'jellyfin_url', 'jellyfin_api_key', 'jellyfin_public_url',
   'recently_added_days', 'tmdb_match_threshold',
   'webhook_host', 'sonarr_webhook_host', 'trakt_client_id', 'logodev_api_key',
+  'pushover_app_token', 'pushover_user_key',
   'hybrid_series_layout',
   // Music
   'lidarr_url', 'lidarr_api_key', 'navidrome_url', 'navidrome_public_url', 'navidrome_username', 'navidrome_password',
@@ -1231,8 +1297,10 @@ async function loadSettings() {
     loadServicePickers('sonarr');
     applyMusicVisibility();
     // Sync schedule is stored as cron but shown as a friendly daily time.
+    // What was shown is remembered: Save sends a schedule only when the time
+    // was changed, so it never rewrites a custom cron (#385).
     const _st = document.getElementById('sync_schedule_time');
-    if (_st) _st.value = cronToTime(settings.sync_schedule);
+    if (_st) { _st.value = cronToTime(settings.sync_schedule); _st.dataset.shown = _st.value; }
     loadScheduleInfo();
     // Show current auth user in Jellyfin integration section
     const jfLabel = document.getElementById('jellyfin-logged-in-label');
@@ -1344,10 +1412,10 @@ async function testService(svc) {
   try {
     const r = await api('/api/settings/check', { method: 'POST', body });
     renderChecks(box, r.checks);
-    toast(escHtml(r.message), r.success ? 'success' : 'error', r.success ? 3500 : 7000);
+    toast(r.message, r.success ? 'success' : 'error', r.success ? 3500 : 7000);
   } catch (e) {
     if (box) box.innerHTML = '';
-    toast(escHtml(e.message), 'error');
+    toast(e.message, 'error');
   }
 }
 
@@ -1409,9 +1477,9 @@ async function createMusicLibrary() {
     if (el) el.dataset.saved = lib.id || '';
     await loadJellyfinMusicLibraries();
     document.getElementById('jf-music-create').style.display = 'none';
-    toast(`Created the Jellyfin library "${escHtml(lib.name)}"`);
+    toast(`Created the Jellyfin library "${lib.name}"`);
   } catch (e) {
-    toast(escHtml(e.message), 'error', 8000);
+    toast(e.message, 'error', 8000);
   }
 }
 
@@ -1457,7 +1525,7 @@ async function regenerateMusicWebhookSecret() {
     await loadMusicWebhookInfo();
     toast('New secret made — paste the new URL into Lidarr', 'info', 6000);
   } catch (e) {
-    toast(escHtml(e.message), 'error');
+    toast(e.message, 'error');
   }
 }
 
@@ -1467,11 +1535,11 @@ async function testMusicWebhook() {
   try {
     const r = await api('/api/music/webhook/test', { method: 'POST' });
     renderChecks(box, r.checks);
-    toast(escHtml(r.message), r.success ? 'success' : 'error', r.success ? 3500 : 7000);
+    toast(r.message, r.success ? 'success' : 'error', r.success ? 3500 : 7000);
     loadMusicWebhookInfo();
   } catch (e) {
     if (box) box.innerHTML = '';
-    toast(escHtml(e.message), 'error');
+    toast(e.message, 'error');
   }
 }
 
@@ -1526,8 +1594,8 @@ async function loadPathStatus() {
       html += `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;${key !== 'tv' ? 'border-bottom:1px solid var(--border);' : ''}">
         <span style="width:20px;text-align:center">${icon}</span>
         <div style="flex:1">
-          <div style="font-size:13px;font-weight:500;color:var(--text1)">${info.label}</div>
-          <code style="font-size:11px;color:var(--text3)">${info.path}</code>
+          <div style="font-size:13px;font-weight:500;color:var(--text1)">${escHtml(info.label)}</div>
+          <code style="font-size:11px;color:var(--text3)">${escHtml(info.path)}</code>
         </div>
         <div>${status}</div>
       </div>`;
@@ -1554,11 +1622,14 @@ async function saveSettings() {
     // an unreachable service clear a choice.
     if (el) settings[key] = el.dataset.loaded === '1' ? el.value : (el.dataset.saved || '');
   });
-  // Sync schedule: convert the friendly daily time back to cron for storage.
+  // Sync schedule: a changed time is stored as a daily cron. An unchanged one
+  // is not sent, so the stored schedule stays exactly as it is (#385: a
+  // "0 */6 * * *" or weekdays-only cron became "daily at H:M" on any Save).
   const _st = document.getElementById('sync_schedule_time');
-  if (_st) settings.sync_schedule = timeToCron(_st.value);
+  if (_st && _st.value !== (_st.dataset.shown ?? _st.defaultValue)) settings.sync_schedule = timeToCron(_st.value);
   try {
     await api('/api/settings', { method: 'POST', body: { settings } });
+    if (_st) _st.dataset.shown = _st.value;
     SETTINGS_PICKER_FIELDS.forEach(key => {
       const el = document.getElementById(key);
       if (el) el.dataset.saved = settings[key];
@@ -1632,6 +1703,19 @@ async function testWebhookUrl() {
   }
 }
 
+async function testPushover() {
+  const body = {
+    app_token: document.getElementById('pushover_app_token')?.value.trim(),
+    user_key: document.getElementById('pushover_user_key')?.value.trim(),
+  };
+  try {
+    const r = await api('/api/settings/test-pushover', { method: 'POST', body });
+    toast(r.message);
+  } catch (e) {
+    toast(e.message, 'error', 8000);
+  }
+}
+
 // ── Sonarr Webhook ────────────────────────────────────────────────────────
 function getSonarrWebhookUrl() {
   let host = document.getElementById('sonarr_webhook_host').value.trim();
@@ -1664,38 +1748,102 @@ async function testSonarrWebhookUrl() {
 
 // ── Radarr Root Folders ───────────────────────────────────────────────────
 // ── Modals ─────────────────────────────────────────────────────────────────
+// Dialogs open and close only through showModal()/closeModal(): they take the
+// keyboard focus, keep Tab inside and give the focus back to the opener (#552)
+let _modalTitleSeq = 0;
+
+function _modalShown(o) {
+  return getComputedStyle(o).display !== 'none';
+}
+
+function _modalTabbables(root) {
+  return [...root.querySelectorAll('button, [href], input, select, textarea, [tabindex]')]
+    .filter(el => !el.disabled && el.tabIndex >= 0 && el.getClientRects().length);
+}
+
 function showModal(id) {
-  document.getElementById(id).style.display = 'flex';
+  const m = document.getElementById(id);
+  const wasOpen = _modalShown(m);
+  m.style.display = 'flex';
   // Lock the page behind the sheet on phones (the modal scrolls on its own)
   document.body.classList.add('modal-open');
+  const box = m.querySelector('.modal');
+  if (box) {
+    box.setAttribute('role', 'dialog');
+    box.setAttribute('aria-modal', 'true');
+    const title = box.querySelector('.modal-title');
+    if (title) {
+      if (!title.id) title.id = 'modal-title-' + (++_modalTitleSeq);
+      box.setAttribute('aria-labelledby', title.id);
+    }
+  }
+  if (wasOpen) return;
+  m._opener = document.activeElement;
+  // First control, not ✕ (in a confirmation that is Cancel); ✕ only when there's nothing else yet
+  const tabbables = _modalTabbables(m);
+  const first = tabbables.find(el => !el.classList.contains('modal-close')) || tabbables[0];
+  if (first) first.focus();
 }
 
 function closeModal(id) {
-  document.getElementById(id).style.display = 'none';
+  _hideModal(document.getElementById(id));
   _syncModalLock();
+}
+
+function _hideModal(m) {
+  const active = document.activeElement;
+  const hadFocus = !active || active === document.body || m.contains(active);
+  m.style.display = 'none';
+  const opener = m._opener;
+  m._opener = null;
+  if (hadFocus && opener && opener !== document.body && opener.isConnected) opener.focus();
 }
 
 // Release the page scroll lock once no modal is showing (whatever closed it)
 function _syncModalLock() {
-  const anyOpen = [...document.querySelectorAll('.modal-overlay')].some(o => getComputedStyle(o).display !== 'none');
+  const anyOpen = [...document.querySelectorAll('.modal-overlay')].some(_modalShown);
   document.body.classList.toggle('modal-open', anyOpen);
 }
 
 // Close modal on overlay click
 document.addEventListener('click', e => {
   if (e.target.classList.contains('modal-overlay')) {
-    e.target.style.display = 'none';
+    _hideModal(e.target);
     _syncModalLock();
   }
 });
 
-// Close modal on Escape
 document.addEventListener('keydown', e => {
+  // Close modals on Escape, the top one first so each hands the focus back down the chain
   if (e.key === 'Escape') {
-    document.querySelectorAll('.modal-overlay').forEach(m => {
-      if (m.id !== 'setup-overlay') m.style.display = 'none';
+    [...document.querySelectorAll('.modal-overlay')].reverse().forEach(m => {
+      if (m.id !== 'setup-overlay' && _modalShown(m)) _hideModal(m);
     });
     _syncModalLock();
+    return;
+  }
+  if (e.key !== 'Tab') return;
+  // The sign-in and setup screens cover everything and keep their own Tab order
+  for (const id of ['login-overlay', 'setup-overlay']) {
+    const o = document.getElementById(id);
+    if (o && _modalShown(o)) return;
+  }
+  const open = [...document.querySelectorAll('.modal-overlay')].filter(_modalShown);
+  const m = open[open.length - 1];
+  if (!m) return;
+  const tabbables = _modalTabbables(m);
+  if (!tabbables.length) { e.preventDefault(); return; }
+  const first = tabbables[0], last = tabbables[tabbables.length - 1];
+  const active = document.activeElement;
+  if (!m.contains(active)) {
+    e.preventDefault();
+    (e.shiftKey ? last : first).focus();
+  } else if (!e.shiftKey && active === last) {
+    e.preventDefault();
+    first.focus();
+  } else if (e.shiftKey && active === first) {
+    e.preventDefault();
+    last.focus();
   }
 });
 
@@ -1813,7 +1961,7 @@ function pollSyncProgress() {
             if (s.item_title) line += `: ${s.item_title}`;
             line += ` (${(s.movies_new||0)+(s.series_new||0)} new)`;
           } else if (s.item_title) {
-            line += ` — ${s.item_title}`;
+            line += line ? ` — ${s.item_title}` : s.item_title;
           }
           detail.textContent = line;
         }

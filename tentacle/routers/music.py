@@ -305,7 +305,7 @@ def music_request(body: AlbumRequest, request: Request, db: Session = Depends(ge
     try:
         return request_album(db, body.mbid, user_id=user.id if user else None, via=_via(request), choice=choice)
     except RequestRefused as e:
-        raise HTTPException(e.status, e.message)
+        raise HTTPException(e.status, e.for_user(user))
 
 
 @webhook_router.get("/library")

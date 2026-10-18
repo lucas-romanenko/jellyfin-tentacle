@@ -86,7 +86,7 @@ async function musicDiscoverHome() {
   const tabs = document.getElementById('discover-section-tabs');
   if (tabs) {
     tabs.innerHTML = _MUSIC_TABS.map(([id, label]) =>
-      `<button class="discover-sec-tab" data-mtab="${id}" onclick="musicDiscoverTab('${id}')">${label}</button>`).join('');
+      `<button class="discover-sec-tab" data-mtab="${id}" onclick="musicDiscoverTab('${escapeJS(id)}')">${label}</button>`).join('');
   }
   if (!musicState.discover) {
     document.getElementById('discover-grid').innerHTML =
@@ -170,8 +170,8 @@ function _musicBuilding(d, which, what) {
 
 function _musicArtistCard(a) {
   const pic = a.picture
-    ? `<img class="music-artist-pic" src="${escapeAttr(a.picture)}" loading="lazy" onerror="this.outerHTML='<div class=\\'music-artist-pic\\'>${escapeAttr((a.name || '?').charAt(0))}</div>'">`
-    : `<div class="music-artist-pic">${escapeAttr((a.name || '?').charAt(0))}</div>`;
+    ? `<img class="music-artist-pic" src="${escapeAttr(a.picture)}" loading="lazy" onerror="this.outerHTML='<div class=\\'music-artist-pic\\'>${escapeJS(escapeAttr(Array.from(a.name || '?')[0]))}</div>'">`
+    : `<div class="music-artist-pic">${escapeAttr(Array.from(a.name || '?')[0])}</div>`;
   return `<div class="music-artist-card" onclick="openMusicArtist('${escapeJS(a.mbid)}')">${pic}
       <div class="music-artist-name" title="${escapeAttr(a.name)}">${escapeAttr(a.name)}</div>
       ${a.in_library ? '<span class="badge badge-green" style="font-size:9px;padding:1px 5px">In Lidarr</span>' : ''}
@@ -307,11 +307,11 @@ async function addMusicList(btn) {
   btn.disabled = true;
   try {
     const r = await api('/api/music/lists', { method: 'POST', body: { series: link } });
-    toast(`Adding “${escapeAttr(r.name)}”…`, 'info');
+    toast(`Adding “${r.name}”…`, 'info');
     musicState.dSub.lists = r.id;
     await _loadMusicDiscover();
   } catch (e) {
-    toast(escapeAttr(e.message), 'error', 8000);
+    toast(e.message, 'error', 8000);
   }
   btn.disabled = false;
 }
@@ -325,7 +325,7 @@ async function removeMusicList(sid, btn) {
     musicState.dSub.lists = '';
     await _loadMusicDiscover();
   } catch (e) {
-    toast(escapeAttr(e.message), 'error');
+    toast(e.message, 'error');
     btn.disabled = false;
   }
 }
@@ -404,13 +404,13 @@ async function startMusicImport(btn) {
     const body = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(body.detail || r.statusText);
     closeModal('modal-music');
-    toast(`Importing “${escapeAttr(body.name)}”: finding albums for ${body.total} songs…` +
+    toast(`Importing “${body.name}”: finding albums for ${body.total} songs…` +
       (body.left_out ? ` The file has ${body.total + body.left_out} songs; only the first ${body.total} are imported.` : ''),
       body.left_out ? 'warning' : 'info', body.left_out ? 12000 : 6000);
     musicState.dTab = 'spotify';
     await _loadMusicDiscover();
   } catch (e) {
-    toast(escapeAttr(e.message), 'error', 8000);
+    toast(e.message, 'error', 8000);
     if (btn) btn.disabled = false;
     if (fileInput) fileInput.value = '';
   }
@@ -476,7 +476,7 @@ async function requestMusicImport(id, btn) {
     closeModal('modal-music');
     setTimeout(_loadMusicDiscover, 3000);
   } catch (e) {
-    toast(escapeAttr(e.message), 'error', 8000);
+    toast(e.message, 'error', 8000);
     btn.disabled = false;
   }
 }
@@ -488,7 +488,7 @@ async function refreshMusicImport(id, btn) {
     toast('Reading the playlist again…', 'info');
     await _loadMusicDiscover();
   } catch (e) {
-    toast(escapeAttr(e.message), 'error', 8000);
+    toast(e.message, 'error', 8000);
     if (btn) btn.disabled = false;
   }
 }
@@ -500,7 +500,7 @@ async function retryMusicImport(id, btn) {
     toast('Carrying on finding albums…', 'info');
     await _loadMusicDiscover();
   } catch (e) {
-    toast(escapeAttr(e.message), 'error', 8000);
+    toast(e.message, 'error', 8000);
     if (btn) btn.disabled = false;
   }
 }
@@ -512,7 +512,7 @@ async function deleteMusicImport(id, btn) {
     await api(`/api/music/imports/${id}`, { method: 'DELETE' });
     await _loadMusicDiscover();
   } catch (e) {
-    toast(escapeAttr(e.message), 'error');
+    toast(e.message, 'error');
     if (btn) btn.disabled = false;
   }
 }
@@ -524,15 +524,17 @@ async function musicSearch(query) {
   const tabs = document.getElementById('discover-section-tabs');
   if (tabs) tabs.innerHTML = '';
   const seq = ++musicState.seq;
+  // doDiscoverSearch just bumped it: a switch to Movies/TV or a cleared box moves it on
+  const view = _discoverView;
   grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text3)"><span class="toast-spinner"></span> Searching MusicBrainz…</div>';
   let data;
   try {
     data = await api(`/api/music/search?q=${encodeURIComponent(query)}`);
   } catch (e) {
-    if (seq === musicState.seq) grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Search failed: ${escapeAttr(e.message)}</p></div>`;
+    if (seq === musicState.seq && view === _discoverView) grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Search failed: ${escapeAttr(e.message)}</p></div>`;
     return;
   }
-  if (seq !== musicState.seq || data.stale) return;
+  if (seq !== musicState.seq || view !== _discoverView || data.stale) return;
   const { artists = [], albums = [], songs = [] } = data;
   if (!artists.length && !albums.length && !songs.length) {
     grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>No music found for "${escapeAttr(query)}"</p></div>`;
@@ -718,13 +720,13 @@ async function requestMusicAlbum(mbid, btn, tracks) {
     const body = { mbid };
     if (tracks) body.tracks = tracks;
     const r = await api('/api/music/request', { method: 'POST', body });
-    toast(`Requested ${escapeAttr(r.title || 'the album')} — Tentacle pins the original release, then Lidarr searches`, 'success', 6000);
+    toast(`Requested ${r.title || 'the album'} — Tentacle pins the original release, then Lidarr searches`, 'success', 6000);
     if (btn && btn.classList.contains('lib-card-add-btn')) btn.remove();
     musicState.listCache = {};
     if (_musicDiscoverVisible()) setTimeout(_loadMusicDiscover, 1500);   // the badge turns "Wanted"
     if (document.getElementById('modal-music').style.display === 'flex' && btn && !btn.classList.contains('lib-card-add-btn')) openMusicAlbum(mbid);
   } catch (e) {
-    toast(escapeAttr(e.message), 'error', 8000);
+    toast(e.message, 'error', 8000);
     if (btn) { btn.disabled = false; btn.textContent = btn.dataset.label || 'Request'; }
   }
 }
@@ -736,7 +738,7 @@ async function resolveMusicReview(mbid, tracks, btn) {
     toast(`Keeping the ${tracks}-track tracklist — pinning it in Lidarr`, 'success');
     setTimeout(() => { if (typeof loadMusicLibrary === 'function') loadMusicLibrary(); }, 1500);
   } catch (e) {
-    toast(escapeAttr(e.message), 'error', 8000);
+    toast(e.message, 'error', 8000);
     if (btn) btn.disabled = false;
   }
 }
@@ -816,10 +818,10 @@ async function startMusicReconcile(btn) {
   if (btn) btn.disabled = true;
   try {
     const r = await api('/api/music/reconcile', { method: 'POST' });
-    toast(escapeAttr(r.message), 'info');
+    toast(r.message, 'info');
     loadMusicStatusLine();
   } catch (e) {
-    toast(escapeAttr(e.message), 'error');
+    toast(e.message, 'error');
   } finally {
     if (btn) setTimeout(() => { btn.disabled = false; }, 3000);
   }
@@ -894,7 +896,7 @@ async function loadMusicFix(el) {
       <div class="music-fix-head">
         <span class="music-fix-title">${title} (${items.length})</span>
         ${d.auto && d.auto[key] ? '<span class="badge badge-green" style="font-size:10px">Applied automatically</span>' : ''}
-        <button class="btn btn-primary btn-sm" onclick="applyMusicFixGroup('${key}', ${items.length}, this)">Apply all ${items.length}</button>
+        <button class="btn btn-primary btn-sm" onclick="applyMusicFixGroup('${escapeJS(key)}', ${items.length}, this)">Apply all ${items.length}</button>
         <span class="music-fix-desc">${desc}${key === 'repin_trim' ? _recycleNote(d.recycle_bin) : ''}</span>
       </div>
       ${items.map(a => _fixRow(a, true, key === 'repin_trim')).join('')}
@@ -939,7 +941,7 @@ async function applyMusicFix(mbids, btn, trimCount) {
     toast(`Applying ${r.queued} album${r.queued === 1 ? '' : 's'}…`, 'info');
     setTimeout(loadMusicLibrary, 1200);
   } catch (e) {
-    toast(escapeAttr(e.message), 'error', 8000);
+    toast(e.message, 'error', 8000);
     if (btn) btn.disabled = false;
   }
 }
@@ -953,7 +955,7 @@ async function applyMusicFixGroup(category, n, btn) {
     toast(`Applying ${r.queued} albums, one at a time…`, 'info', 6000);
     setTimeout(loadMusicLibrary, 1500);
   } catch (e) {
-    toast(escapeAttr(e.message), 'error', 8000);
+    toast(e.message, 'error', 8000);
     if (btn) btn.disabled = false;
   }
 }
@@ -965,7 +967,7 @@ async function lockMusicAlbums(btn) {
     toast('Locking albums to their original release…', 'info');
     setTimeout(loadMusicLibrary, 3000);
   } catch (e) {
-    toast(escapeAttr(e.message), 'error');
+    toast(e.message, 'error');
     if (btn) btn.disabled = false;
   }
 }
@@ -977,7 +979,7 @@ async function pickMusicPicture(mbid, deezerId, btn) {
     toast('Setting the picture…', 'info');
     setTimeout(loadMusicLibrary, 2500);
   } catch (e) {
-    toast(escapeAttr(e.message), 'error', 8000);
+    toast(e.message, 'error', 8000);
     if (btn) btn.disabled = false;
   }
 }
@@ -996,6 +998,6 @@ async function uploadMusicPicture(mbid, input) {
     toast('Setting the picture…', 'info');
     setTimeout(loadMusicLibrary, 2500);
   } catch (e) {
-    toast(escapeAttr(e.message), 'error', 8000);
+    toast(e.message, 'error', 8000);
   }
 }

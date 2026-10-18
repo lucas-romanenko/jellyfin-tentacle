@@ -136,7 +136,8 @@ class TestMusicSettingsDefaults(_DB):
         self.set("music_webhook_secret", "s3cr3t-s3cr3t-s3cr3t-s3cr3t")
         shown = rs.get_settings(self.db)
         for k in ("lidarr_api_key", "navidrome_password", "music_webhook_secret"):
-            self.assertIn("...", shown[k], k)
+            self.assertTrue(shown[k].startswith("••••"), k)
+            self.assertLessEqual(len(shown[k]), 8, k)
         rs.update_settings(rs.SettingsUpdate(settings={k: shown[k] for k in
                                                        ("lidarr_api_key", "navidrome_password")}), self.db)
         self.assertEqual(get_setting(self.db, "lidarr_api_key"), "abcdef0123456789abcdef")

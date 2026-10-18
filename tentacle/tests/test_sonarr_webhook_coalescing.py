@@ -29,8 +29,8 @@ def tearDownModule():
     logging.disable(logging.NOTSET)
 
 
-def _event(event_type, tmdb_id, title, episodes=()):
-    return {"eventType": event_type, "series": {"tmdbId": tmdb_id, "title": title},
+def _event(event_type, tmdb_id, title, episodes=(), **extra):
+    return {"eventType": event_type, "series": {"tmdbId": tmdb_id, "title": title}, **extra,
             "episodes": [{"seasonNumber": 1, "episodeNumber": e, "title": f"Ep {e}"} for e in episodes]}
 
 
@@ -41,14 +41,15 @@ class Coalescing(unittest.TestCase):
         self.Session = sessionmaker(bind=engine)
         self.db = self.Session()
         self.addCleanup(self.db.close)
-        self.scans, self.after = [], []
+        self.scans, self.after, self.notify = [], [], []
         patches = [
             mock.patch.object(sonarr, "_check_webhook_auth", lambda request, db: None),
             mock.patch.object(sonarr, "scan_sonarr_library", lambda db: self.scans.append(time.monotonic())),
             mock.patch.object(sonarr, "_after_scan",
-                              lambda db, tmdb_id, title, event_type, first_episode=None, episode_count=1:
-                              self.after.append((tmdb_id, event_type, episode_count,
-                                                 (first_episode or {}).get("episodeNumber")))),
+                              lambda db, tmdb_id, title, event_type, first_episode=None, episode_count=1, notify=True:
+                              (self.after.append((tmdb_id, event_type, episode_count,
+                                                  (first_episode or {}).get("episodeNumber"))),
+                               self.notify.append(notify))),
             mock.patch.object(sonarr, "WEBHOOK_QUIET_SECONDS", 0.2),
             mock.patch.object(sonarr, "WEBHOOK_MAX_WAIT_SECONDS", 2.0),
             mock.patch("models.database.SessionLocal", self.Session),
@@ -134,6 +135,21 @@ class Coalescing(unittest.TestCase):
             self._wait()
         self.assertEqual(1, len(self.scans))
 
+    def test_upgrades_alone_get_the_pass_without_a_notice(self):
+        self._post(_event("Download", 1399, "Friends", [1], isUpgrade=True))
+        self._post(_event("Download", 1399, "Friends", [2], isUpgrade=True))
+        self._wait()
+        self.assertEqual([(1399, "Download", 1, None)], self.after)
+        self.assertEqual([False], self.notify)
+
+    def test_a_new_episode_with_upgrades_is_announced_and_counted_alone(self):
+        self._post(_event("Download", 1399, "Friends", [1], isUpgrade=True))
+        self._post(_event("Download", 1399, "Friends", [7], isUpgrade=False))
+        self._post(_event("Download", 1399, "Friends", [2], isUpgrade=True))
+        self._wait()
+        self.assertEqual([(1399, "Download", 1, 7)], self.after)
+        self.assertEqual([True], self.notify)
+
     def test_upgrade_deletes_are_still_ignored(self):
         payload = _event("EpisodeFileDelete", 1399, "Friends")
         payload["deleteReason"] = "upgrade"
@@ -162,6 +178,37 @@ class NotificationForSeveralEpisodes(unittest.TestCase):
         # With Jellyfin not configured, jf_item was never assigned and the
         # NameError skipped the plugin notify.
         self.assertEqual(1, len(notified))
+
+
+class UpgradeNotice(unittest.TestCase):
+    def setUp(self):
+        engine = create_engine(f"sqlite:///{temp_dir(self)}/t.db")
+        mdb.Base.metadata.create_all(engine)
+        self.db = sessionmaker(bind=engine)()
+        self.addCleanup(self.db.close)
+        user = mdb.TentacleUser(jellyfin_user_id="a" * 32, display_name="A")
+        self.db.add(user)
+        self.db.commit()
+        self.db.add(mdb.Series(tmdb_id=1399, title="Friends", source="sonarr", tags=[]))
+        self.db.add(mdb.DownloadRequest(tmdb_id=1399, media_type="series", user_id=user.id))
+        self.db.commit()
+        p = mock.patch("services.smartlists._notify_jellyfin_plugin", lambda db: None)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def messages(self):
+        return [n.message for n in self.db.query(mdb.Notification).all()]
+
+    def test_quality_upgrade_does_not_tell_the_requester_again(self):
+        sonarr._after_scan(self.db, 1399, "Friends", "Download", None, notify=False)
+        self.assertEqual([], self.messages())
+
+    def test_bad_copy_replacement_still_says_a_new_copy_is_ready(self):
+        from services.bad_copy import mark_replacing
+        mark_replacing(self.db, "series", 1399)
+        sonarr._after_scan(self.db, 1399, "Friends", "Download",
+                           {"seasonNumber": 1, "episodeNumber": 4}, notify=False)
+        self.assertEqual(["A new copy of Friends - S01E04 is ready to watch"], self.messages())
 
 
 if __name__ == "__main__":

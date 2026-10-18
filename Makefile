@@ -1,7 +1,7 @@
 # check: the full unit suite (what the workbench's pre-push hook runs).
 #
-# deploy, verify, deploy-release: run the current main (or a pushed branch:
-# REF=<branch>) on the maintainer's own server without a release, check it,
+# deploy, verify, deploy-release: run the current main (or a release tag:
+# REF=vX.Y.Z) on the maintainer's own server without a release, check it,
 # and switch back to the latest public release. They call a private script
 # that knows the server (nothing about it lives in this public repo); nothing
 # is pushed to a registry or a release.

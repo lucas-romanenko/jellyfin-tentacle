@@ -104,9 +104,11 @@ def sync_artist(db: Session, client: LidarrClient, lidarr_artist: dict) -> list:
         if row is not None:
             out.append((row, a))
             seen.add(row.mbid)
-    # Albums Lidarr no longer has for this artist.
+    # Albums Lidarr no longer has for this artist. Not one still owed its pin and
+    # search: a new artist's album list can come back empty while Lidarr is still
+    # refreshing it (AlbumDelete and finish_pending_requests settle those).
     for gone in db.query(MusicAlbum).filter(MusicAlbum.lidarr_artist_id == lidarr_artist["id"]).all():
-        if gone.mbid not in seen:
+        if gone.mbid not in seen and not gone.request_pending:
             db.delete(gone)
     db.commit()
     return out

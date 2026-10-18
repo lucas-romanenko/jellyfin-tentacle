@@ -24,18 +24,23 @@ def _toast_source():
     return src[start:end]
 
 
-def _render(kind):
+def _render(kind, msg='Saved but check the plugin'):
     script = """
     const made = [];
     const document = {
-      createElement() { const el = { className: '', innerHTML: '', remove() {} }; made.push(el); return el; },
+      createElement() {
+        const el = { className: '', innerHTML: '', text: '', remove() {},
+                     appendChild(n) { this.text += n.textContent; } };
+        made.push(el); return el;
+      },
+      createTextNode(t) { return { textContent: t }; },
       getElementById() { return { appendChild() {} }; },
     };
     const setTimeout = () => {};
     %s
-    toast('Saved but check the plugin', %s, 0);
+    toast(%s, %s, 0);
     process.stdout.write(JSON.stringify(made[0]));
-    """ % (_toast_source(), json.dumps(kind))
+    """ % (_toast_source(), json.dumps(msg), json.dumps(kind))
     out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30)
     if out.returncode:
         raise AssertionError(out.stderr)
@@ -63,6 +68,26 @@ class ToastWarning(unittest.TestCase):
     def test_every_kind_used_has_a_border_style(self):
         html = (APP.parents[1] / "index.html").read_text(encoding="utf-8")
         self.assertRegex(html, r"\.toast\.warning\s*\{")
+
+    def test_the_message_is_shown_as_written(self):
+        """Titles and error text reach the toast as they are: an apostrophe,
+        an ampersand or angle brackets show as themselves."""
+        for msg in ("Can't reach Lidarr", "Tom & Jerry <3", 'Added "Heat" (1995)', "Tom &amp; Jerry"):
+            el = _render("error", msg)
+            self.assertEqual(msg, el["text"])
+            self.assertNotIn(msg, el["innerHTML"])  # not parsed as markup
+
+    def test_no_caller_escapes_its_message_first(self):
+        """A pre-escaped message would now show its entities (Can&#39;t)."""
+        import re
+        bad = []
+        for f in ("app.js", "pages.js", "music.js"):
+            src = (APP.parent / f).read_text(encoding="utf-8")
+            for m in re.finditer(r"\btoast\(", src):
+                call = src[m.start():m.start() + 400].split(");", 1)[0]
+                if re.search(r"\b(escapeAttr|escHtml|escapeHtml)\(", call):
+                    bad.append(f"{f}:{src.count(chr(10), 0, m.start()) + 1}")
+        self.assertEqual([], bad)
 
 
 if __name__ == "__main__":

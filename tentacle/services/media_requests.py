@@ -24,9 +24,10 @@ from datetime import datetime
 from typing import Callable, Iterable, Optional
 
 import requests
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from models.database import DownloadRequest, Series, get_setting
+from models.database import DownloadRequest, Series, TentacleUser, get_setting
 from services import arr_add
 from services.arr_add import ADDED, EXISTS, FAILED, AddReport
 
@@ -36,12 +37,21 @@ _NAMES = {"radarr": "Radarr", "sonarr": "Sonarr"}
 
 
 class RequestRefused(Exception):
-    """Nothing was sent to the *arr. `message` is written for the user."""
+    """Nothing was sent to the *arr. `message` is written for an admin (and the
+    log); `user_message`, when set, for anyone else: the fix is in Settings,
+    which only an admin can open."""
 
-    def __init__(self, message: str, status: int = 400):
+    def __init__(self, message: str, status: int = 400, user_message: Optional[str] = None):
         super().__init__(message)
         self.message = message
         self.status = status
+        self.user_message = user_message
+
+    def for_user(self, user) -> str:
+        """The text to show this user (a TentacleUser, or None)."""
+        if self.user_message and user is not None and not user.is_admin:
+            return self.user_message
+        return self.message
 
 
 @dataclass
@@ -61,6 +71,12 @@ def no_default_message(service: str) -> str:
     name = _NAMES[service]
     return (f"Pick a default {name} quality profile in Tentacle's settings (Settings → Connections). "
             f"Tentacle won't guess one: {name}'s first profile is usually \"Any\".")
+
+
+def no_default_user_message(service: str) -> str:
+    name = _NAMES[service]
+    return (f"Requests aren't set up yet: an admin has to pick a default {name} quality profile "
+            f"in Tentacle before anything can be added.")
 
 
 def default_quality_profile(db: Session, service: str) -> Optional[int]:
@@ -108,7 +124,7 @@ def _choose_profile(db: Session, service: str, url: str, key: str,
                     f"fill it in without the user choosing. Using the default instead.")
     default = default_quality_profile(db, service)
     if override is None and default is None:
-        raise RequestRefused(no_default_message(service))
+        raise RequestRefused(no_default_message(service), user_message=no_default_user_message(service))
     chosen = override if override is not None else default
     names = read_quality_profiles(url, key)
     if names is not None and chosen not in names:
@@ -116,7 +132,10 @@ def _choose_profile(db: Session, service: str, url: str, key: str,
             raise RequestRefused(f"The quality profile you picked (id {chosen}) no longer exists in {name}. "
                                  f"Pick another.")
         raise RequestRefused(f"Your default {name} quality profile (id {chosen}) no longer exists in {name}. "
-                             f"Pick another in Tentacle's settings (Settings → Connections).")
+                             f"Pick another in Tentacle's settings (Settings → Connections).",
+                             user_message=f"Requests aren't working right now: the default {name} quality "
+                                          f"profile no longer exists in {name}, and an admin has to pick "
+                                          f"another in Tentacle.")
     label = (names or {}).get(chosen, f"id {chosen}")
     return chosen, f"{label} ({'chosen for this request' if override is not None else 'default'})"
 
@@ -140,6 +159,9 @@ def _bust_discover_cache():
 
 # ── Movies ────────────────────────────────────────────────────────────────
 
+_NO_ROOT_USER = "{name} isn't ready for requests yet (it has no root folder): an admin has to add one in {name}."
+
+
 def _radarr_root(db: Session, url: str, key: str) -> tuple:
     configured = (get_setting(db, "radarr_root_folder") or "").strip()
     if configured:
@@ -147,7 +169,7 @@ def _radarr_root(db: Session, url: str, key: str) -> tuple:
     try:
         return arr_add.radarr_root_folder(url, key), "automatic"
     except RuntimeError as e:  # Radarr answered, but has no root folders
-        raise RequestRefused(str(e), 503)
+        raise RequestRefused(str(e), 503, user_message=_NO_ROOT_USER.format(name="Radarr"))
     except Exception as e:
         logger.warning(f"Failed to fetch Radarr root folders: {e}")
         raise RequestRefused("Could not read Radarr's root folders (Radarr may be busy or down). "
@@ -229,7 +251,8 @@ def _sonarr_root_folders(sonarr) -> list:
                              "Nothing was added — please retry in a moment.", 503)
     if not folders:
         raise RequestRefused("Sonarr has no root folders configured. Add one in Sonarr → Settings → "
-                             "Media Management, then retry.", 503)
+                             "Media Management, then retry.", 503,
+                             user_message=_NO_ROOT_USER.format(name="Sonarr"))
     return folders
 
 
@@ -247,6 +270,23 @@ _NO_VOD_ROOT = (
     "Root Folder in Sonarr → Settings → Media Management, then retry — or "
     "switch to the shared-library layout in Tentacle Settings → Integrations. "
     "Without one of these, downloads would create a duplicate series in Jellyfin.")
+_NO_VOD_ROOT_USER = (
+    "Sonarr isn't ready to add episodes to shows from the IPTV provider yet "
+    "(it has no root folder for them): an admin has to set that up. Nothing was added.")
+
+
+def _series_added(db: Session, out: RequestOutcome, sonarr, added_id: int, request_id: int,
+                  user_id: Optional[int]):
+    """Bookkeeping for a series that is now in Sonarr. When its picked
+    episodes could not be applied (sonarr.last_error), the request still
+    reads as failed, with that reason."""
+    if sonarr.last_error:
+        out.report.record(FAILED, sonarr.last_error)
+    else:
+        out.report.record(ADDED)
+    out.added.append(added_id)
+    if user_id is not None:
+        record_download_request(db, request_id, "series", user_id)
 
 
 def request_series(db: Session, *, tmdb_ids: Iterable[int] = (), tvdb_ids: Iterable[int] = (),
@@ -278,6 +318,12 @@ def request_series(db: Session, *, tmdb_ids: Iterable[int] = (), tvdb_ids: Itera
         non_vod = [rf for rf in folders if "vod" not in rf["path"].lower()]
         root, root_how = (non_vod or folders)[0]["path"], "automatic"
 
+    def for_requester(refused: RequestRefused) -> str:
+        # A per-show failure goes back to whoever asked: a non-admin can't
+        # open Settings. Looked up only when one happens.
+        requester = db.get(TentacleUser, user_id) if user_id is not None else None
+        return refused.for_user(requester)
+
     out = RequestOutcome()
     tmdb = None
     for tmdb_id in tmdb_ids:
@@ -307,7 +353,7 @@ def request_series(db: Session, *, tmdb_ids: Iterable[int] = (), tvdb_ids: Itera
                     try:
                         folders = _sonarr_root_folders(sonarr)
                     except RequestRefused as e:
-                        out.report.record(FAILED, e.message)
+                        out.report.record(FAILED, for_requester(e))
                         continue
                 vod_root = next((rf["path"].rstrip("/") for rf in folders if "vod" in rf["path"].lower()), None)
                 if vod_root:
@@ -315,7 +361,8 @@ def request_series(db: Session, *, tmdb_ids: Iterable[int] = (), tvdb_ids: Itera
                 elif not existing.sonarr_path:
                     # vod_root layout but no VOD root folder in Sonarr: downloading
                     # to the regular root would show the series TWICE in Jellyfin.
-                    out.report.record(FAILED, _NO_VOD_ROOT)
+                    out.report.record(FAILED, for_requester(
+                        RequestRefused(_NO_VOD_ROOT, user_message=_NO_VOD_ROOT_USER)))
                     logger.warning(f"Blocked hybrid add for tmdb:{tmdb_id} — no VOD root folder in Sonarr")
                     continue
 
@@ -333,10 +380,7 @@ def request_series(db: Session, *, tmdb_ids: Iterable[int] = (), tvdb_ids: Itera
             # Sonarr already has it — the outcome the user wanted, not a failure.
             out.report.record(EXISTS)
         elif result:
-            out.report.record(ADDED)
-            out.added.append(tmdb_id)
-            if user_id is not None:
-                record_download_request(db, tmdb_id, "series", user_id)
+            _series_added(db, out, sonarr, tmdb_id, tmdb_id, user_id)
             # Mark VOD series with sonarr_path so scan skips duplicate detection
             if existing and (existing.source or "").startswith("provider_") and result.get("path"):
                 existing.sonarr_path = result["path"]
@@ -354,11 +398,8 @@ def request_series(db: Session, *, tmdb_ids: Iterable[int] = (), tvdb_ids: Itera
         if result and result.get("alreadyExists"):
             out.report.record(EXISTS)
         elif result:
-            out.report.record(ADDED)
-            out.added.append(-tvdb_id)
-            if user_id is not None:
-                # Sonarr's tmdbId when it has one, else the negative tvdb id
-                record_download_request(db, result.get("tmdbId") or -tvdb_id, "series", user_id)
+            # Sonarr's tmdbId when it has one, else the negative tvdb id
+            _series_added(db, out, sonarr, -tvdb_id, result.get("tmdbId") or -tvdb_id, user_id)
         else:
             out.report.record(FAILED, sonarr.last_error)
 
@@ -377,8 +418,13 @@ def _lidarr_defaults(db: Session) -> dict:
     missing = [name for name, value in (("root folder", root), ("quality profile", quality),
                                         ("metadata profile", metadata)) if not value]
     if missing:
-        raise RequestRefused(f"Pick a Lidarr {', '.join(missing)} in Tentacle's settings (Settings → Connections).")
+        raise RequestRefused(f"Pick a Lidarr {', '.join(missing)} in Tentacle's settings (Settings → Connections).",
+                             user_message=f"Album requests aren't set up yet: an admin has to pick a Lidarr "
+                                          f"{', '.join(missing)} in Tentacle.")
     return {"root": root, "quality": int(quality), "metadata": int(metadata)}
+
+
+_LANDS_LATER = "If Lidarr adds the album after all, Tentacle pins the original and searches for it."
 
 
 def _added_after_all(client, rgid: str) -> Optional[dict]:
@@ -388,6 +434,20 @@ def _added_after_all(client, rgid: str) -> Optional[dict]:
         return client.album_by_mbid(rgid)
     except LidarrError:
         return None
+
+
+def _mark_requested(db: Session, library, album: dict, user_id: Optional[int], choice: Optional[dict]):
+    row = library.upsert_album(db, album)
+    row.monitored = True
+    row.requested_by = user_id
+    row.requested_at = datetime.utcnow()
+    row.category = ""
+    row.verdict = {"state": "Requested: pinning the original release…"}
+    # Owed until finish_request has pinned and searched; picked up again after a
+    # restart and by the daily check (jobs.finish_pending_requests).
+    row.request_pending, row.request_choice = True, choice
+    db.commit()
+    return row
 
 
 def request_album(db: Session, rgid: str, *, user_id: Optional[int], via: str,
@@ -439,27 +499,32 @@ def request_album(db: Session, rgid: str, *, user_id: Optional[int], via: str,
                 # takes Lidarr longer than the timeout, or Lidarr restarts mid-add.
                 album = _added_after_all(client, rgid)
                 if not album:
-                    raise
+                    if e.status and 400 <= e.status < 500:
+                        raise   # Lidarr refused it: nothing was added
+                    # Not listed yet, but the add may still commit (#431): owed for a while.
+                    jobs.owe_add(db, rgid, found, user_id, choice)
+                    logger.info(f"[Request] album {rgid} via {via}: Lidarr's answer failed ({e.message}) "
+                                "and it doesn't list the album yet; will look for it again")
+                    why = e.message if e.message.endswith((".", "?")) else e.message + "."
+                    raise RequestRefused(f"{why} {_LANDS_LATER}", 502)
                 logger.info(f"[Request] album {rgid} via {via}: Lidarr's answer failed ({e.message}), "
                             "but the album is in Lidarr: carrying on")
             if not album or not album.get("id"):
-                raise RequestRefused("Lidarr accepted the album but doesn't list it yet. Try again in a minute.")
+                jobs.owe_add(db, rgid, found, user_id, choice)
+                raise RequestRefused(f"Lidarr accepted the album but doesn't list it yet. {_LANDS_LATER}")
         elif not album.get("monitored"):
             client.set_monitored([album["id"]], True)
             logger.info(f"[Request] album {rgid} via {via}: already in Lidarr, now monitored")
     except LidarrError as e:
         raise RequestRefused(e.message, 502)
 
-    row = library.upsert_album(db, album)
-    row.monitored = True
-    row.requested_by = user_id
-    row.requested_at = datetime.utcnow()
-    row.category = ""
-    row.verdict = {"state": "Requested: pinning the original release…"}
-    # Owed until finish_request has pinned and searched; picked up again after a
-    # restart and by the daily check (jobs.finish_pending_requests).
-    row.request_pending, row.request_choice = True, choice
-    db.commit()
+    try:
+        row = _mark_requested(db, library, album, user_id, choice)
+    except IntegrityError:
+        # The same album requested twice at once (a double click, the dashboard and
+        # Jellyfin, two users): the other request wrote its row first. Use that row.
+        db.rollback()
+        row = _mark_requested(db, library, album, user_id, choice)
     worker.submit(jobs.finish_request(album["id"], rgid, choice), worker.URGENT, f"request {album.get('title')}")
     return {"status": "requested", "added_to_lidarr": added, "title": album.get("title"),
             "artist": (album.get("artist") or {}).get("artistName") or row.artist_name}

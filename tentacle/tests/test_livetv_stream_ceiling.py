@@ -106,7 +106,7 @@ class RefusalIsVisible(_Base):
         from routers import livetv
 
         self.db.add(Provider(id=1, name="p", server_url="http://example.com", username="u", password="p"))
-        self.db.add(LiveChannel(id=7, provider_id=1, name="TSN 4", stream_url="http://example.com/7.ts"))
+        self.db.add(LiveChannel(id=7, provider_id=1, name="TSN 4", stream_url="http://example.com/7.ts", enabled=True))
         set_setting(self.db, "livetv_max_concurrent_streams", "1")
         self.db.commit()
 

@@ -47,7 +47,7 @@ def _login_request():
                     "query_string": b"", "scheme": "http", "server": ("tentacle", 8888)})
 
 
-def _jellyfin_login(ids_by_name, barrier=None):
+def _jellyfin_login(ids_by_name, barrier=None, admin=False):
     """requests.post for /Users/AuthenticateByName, answering by username.
     Patched once around all the threads: patching per thread would race."""
     def post(*args, **kwargs):
@@ -57,7 +57,7 @@ def _jellyfin_login(ids_by_name, barrier=None):
         r = mock.Mock()
         r.raise_for_status.return_value = None
         r.json.return_value = {"User": {"Id": ids_by_name[name], "Name": name,
-                                        "Policy": {"IsAdministrator": False}}}
+                                        "Policy": {"IsAdministrator": admin}}}
         return r
     return post
 
@@ -238,7 +238,7 @@ class TestFreshInstallFirstUser(_Base):
 
         with mock.patch.object(auth_router, "migrate_orphaned_data_to_user", slow_migration), \
                 mock.patch.object(auth_router.requests, "post",
-                                  _jellyfin_login({"Ann": "d" * 32, "Bob": "e" * 32})):
+                                  _jellyfin_login({"Ann": "d" * 32, "Bob": "e" * 32}, admin=True)):
             results, errors = self._all_at_once(login)
         self.assertEqual(errors, [])
         self.assertEqual(len(migrated), 1, "exactly one login inherits the pre-multi-user data")

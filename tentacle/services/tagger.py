@@ -14,7 +14,7 @@ from typing import List, Optional
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from models.database import Movie, Series, ListSubscription, ListItem, TagRule, get_setting
+from models.database import Movie, Series, ListSubscription, ListItem, TagRule, get_setting, get_recently_added_days
 
 logger = logging.getLogger(__name__)
 
@@ -98,9 +98,11 @@ def get_list_tags_for_tmdb_id(
 ) -> List[str]:
     """
     Look up which active list subscriptions contain this TMDB ID
-    via the ListItem table. Returns the corresponding tags.
+    via the ListItem table. Returns the corresponding tags. A film and a
+    show with the same TMDB number are different titles (#365).
     """
-    list_items = db.query(ListItem).filter(ListItem.tmdb_id == tmdb_id).all()
+    list_items = db.query(ListItem).filter(
+        ListItem.tmdb_id == tmdb_id, ListItem.of_type(media_type)).all()
     if not list_items:
         return []
 
@@ -349,7 +351,9 @@ def dynamic_tags(db: Session) -> set:
     tags = {t for (t,) in db.query(ListSubscription.tag).distinct() if t}
     tags |= {t for (t,) in db.query(TagRule.output_tag).distinct() if t}
     tags |= retired_tags(db)
-    return tags - builtin_tags(db)
+    # A renamed user's old "<name>'s Downloads" is retired, but a user who
+    # has that name now still gets it from the Radarr/Sonarr scans (#454).
+    return tags - builtin_tags(db) - current_downloads_tags(db)
 
 
 def paused_tags(db: Session) -> set:
@@ -459,7 +463,7 @@ def tag_conflict(db: Session, tag: str, user_id: Optional[int], list_id: Optiona
     return None
 
 
-def tentacle_owned_tags(db: Session) -> set:
+def tentacle_owned_tags(db: Session, include_retired: bool = True) -> set:
     """Every tag name Tentacle itself can put on a Jellyfin item.
 
     "Refresh Tags" replaces an item's whole tag list with Tentacle's computed
@@ -473,6 +477,9 @@ def tentacle_owned_tags(db: Session) -> set:
     the recency and download built-ins, every list subscription's tag and every
     tag rule's output tag — including inactive ones, so a tag that stops being
     produced is still recognised as ours and removed.
+
+    `include_retired=False` leaves out the deleted / renamed list and rule tags:
+    what something produces now, for deciding whether a tag is taken (#542).
     """
     owned = builtin_tags(db)
     for (tag,) in db.query(ListSubscription.tag).distinct():
@@ -484,14 +491,60 @@ def tentacle_owned_tags(db: Session) -> set:
     # ...and every list / rule tag that has since been deleted or renamed. Once
     # the row is gone nothing above produces the tag any more, so without this
     # it read as somebody else's and stayed on every item for ever.
-    owned |= retired_tags(db)
+    if include_retired:
+        owned |= retired_tags(db)
     # Each requester's "<name>'s Downloads": the Radarr/Sonarr scans keep it
     # on the rows they attribute, so one on an item no row carries is stale.
-    from models.database import TentacleUser
-    for (name,) in db.query(TentacleUser.display_name).distinct():
-        if name:
-            owned.add(f"{name}'s Downloads")
+    # A renamed user's old one is among the retired tags above (#454).
+    owned |= current_downloads_tags(db)
     return owned
+
+
+def downloads_tag(name: str) -> str:
+    """The tag, and the playlist, of one user's downloads ("My Downloads")."""
+    return f"{name}'s Downloads"
+
+
+def current_downloads_tags(db: Session) -> set:
+    """Every user's "<name>'s Downloads" under the name they have now."""
+    from models.database import TentacleUser
+    return {downloads_tag(name) for (name,) in db.query(TentacleUser.display_name).distinct() if name}
+
+
+def move_downloads_tag(db: Session, user_id: int, old_name: str, new_name: str) -> dict:
+    """Give a renamed user's requested titles their new "<name>'s Downloads"
+    in place of the old one, on the rows and in the NFOs (#454).
+
+    The Radarr/Sonarr scans would do the same, but until then the renamed
+    playlist (which queries the new tag) had nothing to match, and a user
+    given the old name next saw these titles in their own "My Downloads".
+    Returns {"Movie": {tmdb_id}, "Series": {tmdb_id}} of the titles changed,
+    for the Jellyfin push. Does not commit."""
+    from models.database import DownloadRequest
+    old, new = downloads_tag(old_name), downloads_tag(new_name)
+    owned = tentacle_owned_tags(db) | {old}
+    changed = {"Movie": set(), "Series": set()}
+    for request_type, media_type, model in (("movie", "Movie", Movie), ("series", "Series", Series)):
+        requested = {tid for (tid,) in db.query(DownloadRequest.tmdb_id).filter(
+            DownloadRequest.user_id == user_id, DownloadRequest.media_type == request_type)}
+        if not requested:
+            continue
+        for row in db.query(model).filter(model.tmdb_id.in_(requested)).all():
+            tags = list(row.tags or [])
+            if old not in tags:
+                continue
+            moved = []
+            for t in tags:
+                t = new if t == old else t
+                if t not in moved:
+                    moved.append(t)
+            try:
+                set_row_tags(row, moved, owned)
+            except Exception as e:
+                # The row is right; the next scan rewrites the NFO.
+                logger.warning(f"Could not rewrite the NFO of '{row.title}': {e}")
+            changed[media_type].add(row.tmdb_id)
+    return changed
 
 
 RETIRED_TAGS_SETTING = "tentacle_retired_tags"
@@ -612,7 +665,7 @@ def refresh_recently_added_tags(db: Session):
       stops tagging titles it no longer covers.
     Rows (and NFOs) are only written when their tags change.
     """
-    days = int(get_setting(db, "recently_added_days", "30") or 30)
+    days = get_recently_added_days(db)
     cutoff = datetime.utcnow() - timedelta(days=days)
 
     dynamic = dynamic_tags(db)

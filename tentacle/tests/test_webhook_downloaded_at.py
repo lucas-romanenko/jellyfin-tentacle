@@ -29,7 +29,7 @@ class TestRadarrWebhookStampsDownloadDate(unittest.TestCase):
 
     def test_download_branch_sets_downloaded_at(self):
         src = pathlib.Path("routers/radarr.py").read_text()
-        i = src.index('if event_type == "Download":')
+        i = src.index('if event_type == "Download":', src.index("def _webhook_pass("))
         block = src[i:i + 400]
         self.assertIn("db_movie.downloaded_at = datetime.utcnow()", block)
 

@@ -67,6 +67,10 @@ class _DetailBase(unittest.TestCase):
             c = dict(discover._jf_server_id_cache)
             c.update({k: v for k, v in (("id", None), ("checked", False), ("retry_at", 0.0)) if k in c or k == "id"})
             patches.append(mock.patch.object(discover, "_jf_server_id_cache", c))
+        # The caller is the configured Jellyfin user (whose view the map is).
+        patches.append(mock.patch.object(
+            discover, "get_user_from_request",
+            lambda request, db: mock.Mock(jellyfin_user_id=self.user_id, is_admin=True, id=1)))
         for p in patches:
             p.start()
             self.addCleanup(p.stop)

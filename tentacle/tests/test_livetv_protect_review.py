@@ -42,9 +42,9 @@ class _Base(unittest.IsolatedAsyncioTestCase):
         from models.database import LiveChannel, Provider, set_setting
         prov = Provider(name="P", server_url="http://provider.test", username="u", password="p")
         self.db.add(prov); self.db.commit()
-        self.a = LiveChannel(provider_id=prov.id, name="A", stream_id="100", stream_url="http://provider.test/live/u/p/100.ts")
-        self.b = LiveChannel(provider_id=prov.id, name="B", stream_id="200", stream_url="http://provider.test/live/u/p/200.ts")
-        self.c = LiveChannel(provider_id=prov.id, name="C", stream_id="300", stream_url="http://provider.test/live/u/p/300.ts")
+        self.a = LiveChannel(provider_id=prov.id, name="A", stream_id="100", stream_url="http://provider.test/live/u/p/100.ts", enabled=True)
+        self.b = LiveChannel(provider_id=prov.id, name="B", stream_id="200", stream_url="http://provider.test/live/u/p/200.ts", enabled=True)
+        self.c = LiveChannel(provider_id=prov.id, name="C", stream_id="300", stream_url="http://provider.test/live/u/p/300.ts", enabled=True)
         self.db.add_all([self.a, self.b, self.c])
         set_setting(self.db, "jellyfin_url", "http://jf.test"); set_setting(self.db, "jellyfin_api_key", "k")
         set_setting(self.db, "livetv_protect_recordings", "true"); self.db.commit()

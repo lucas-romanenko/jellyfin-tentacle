@@ -9,6 +9,7 @@ import threading
 import requests
 from datetime import datetime
 from typing import Optional
+from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -36,8 +37,8 @@ def _via(request: Optional[Request]) -> str:
     return "Tentacle's dashboard"
 
 
-def _refused(e: RequestRefused) -> HTTPException:
-    return HTTPException(e.status, e.message)
+def _refused(e: RequestRefused, user) -> HTTPException:
+    return HTTPException(e.status, e.for_user(user))
 
 
 def _profiles_with_default(db: Session, service: str, url: str, key: str) -> list:
@@ -59,7 +60,8 @@ def radarr_profiles(db: Session = Depends(get_db), user: TentacleUser = Depends(
     try:
         return _profiles_with_default(db, "radarr", radarr_url, radarr_key)
     except Exception as e:
-        raise HTTPException(502, f"Failed to fetch Radarr profiles: {e}")
+        logger.warning(f"Radarr quality profiles: {e}")
+        raise HTTPException(502, f"Failed to fetch Radarr profiles ({type(e).__name__})")
 
 
 @router.get("/sonarr-profiles")
@@ -72,7 +74,8 @@ def sonarr_profiles(db: Session = Depends(get_db), user: TentacleUser = Depends(
     try:
         return _profiles_with_default(db, "sonarr", sonarr_url, sonarr_key)
     except Exception as e:
-        raise HTTPException(502, f"Failed to fetch Sonarr profiles: {e}")
+        logger.warning(f"Sonarr quality profiles: {e}")
+        raise HTTPException(502, f"Failed to fetch Sonarr profiles ({type(e).__name__})")
 
 
 @router.get("/radarr-folders")
@@ -88,7 +91,8 @@ def radarr_folders(db: Session = Depends(get_db), user: TentacleUser = Depends(g
         r.raise_for_status()
         return [{"path": f["path"], "freeSpace": f["freeSpace"]} for f in r.json()]
     except Exception as e:
-        raise HTTPException(502, f"Failed to fetch Radarr folders: {e}")
+        logger.warning(f"Radarr root folders: {e}")
+        raise HTTPException(502, f"Failed to fetch Radarr folders ({type(e).__name__})")
 
 
 @router.get("/sonarr-folders")
@@ -104,7 +108,8 @@ def sonarr_folders(db: Session = Depends(get_db), user: TentacleUser = Depends(g
         r.raise_for_status()
         return [{"path": f["path"], "freeSpace": f["freeSpace"]} for f in r.json()]
     except Exception as e:
-        raise HTTPException(502, f"Failed to fetch Sonarr folders: {e}")
+        logger.warning(f"Sonarr root folders: {e}")
+        raise HTTPException(502, f"Failed to fetch Sonarr folders ({type(e).__name__})")
 
 
 class ListCreate(BaseModel):
@@ -552,10 +557,15 @@ def fetch_trakt_list(url: str, client_id: str = "") -> list:
             "Not refreshed: no Trakt client ID is configured (Settings → Connections). "
             "The previous items were kept."))
     try:
-        # Convert URL to API endpoint
-        # e.g. https://trakt.tv/users/username/lists/listname
+        # Convert URL to API endpoint: the pasted URL's path on api.trakt.tv,
+        # whatever trakt.tv host it came from (www., app., api.), without its
+        # query or fragment (#681).
+        # e.g. https://app.trakt.tv/users/username/lists/listname?sort=rank,asc
         # → https://api.trakt.tv/users/username/lists/listname/items
-        api_url = url.rstrip('/').replace('trakt.tv', 'api.trakt.tv') + '/items'
+        path = urlparse(url).path.rstrip('/')
+        if path.endswith('/items'):
+            path = path[:-len('/items')]
+        api_url = f"https://api.trakt.tv{path}/items"
         # Checked again post-transform: the request below carries the real
         # trakt-api-key, so it must never be sent to a caller-chosen host.
         if not is_safe_url(api_url, allowed_hosts=LIST_ALLOWED_HOSTS["trakt"]):
@@ -589,14 +599,18 @@ def fetch_trakt_list(url: str, client_id: str = "") -> list:
 
 def store_list_items(lst: ListSubscription, items: list, db: Session) -> dict:
     """Store fetched items in ListItem table (replace old entries).
-    Returns stats: {stored, new, removed, skipped_no_tmdb, skipped_duplicate}."""
-    # Snapshot existing TMDB IDs before replacing
-    old_tmdb_ids = {
-        row.tmdb_id for row in
-        db.query(ListItem.tmdb_id).filter(ListItem.list_id == lst.id).all()
+    Returns stats: {stored, new, removed, skipped_no_tmdb, skipped_duplicate}.
+
+    Items are keyed on (tmdb_id, media_type): TMDB numbers films and shows
+    separately, so a film and a show with the same number are two items (#365).
+    An item without a type is a film."""
+    # Snapshot existing items before replacing
+    old_keys = {
+        (row.tmdb_id, row.media_type or "movie") for row in
+        db.query(ListItem.tmdb_id, ListItem.media_type).filter(ListItem.list_id == lst.id).all()
     }
     db.query(ListItem).filter(ListItem.list_id == lst.id).delete()
-    seen_tmdb = set()
+    seen = set()
     stored = 0
     skipped_no_tmdb = 0
     skipped_duplicate = 0
@@ -608,26 +622,27 @@ def store_list_items(lst: ListSubscription, items: list, db: Session) -> dict:
             title = item.get("title", "unknown")
             logger.debug(f"Skipping '{title}' — no TMDB match")
             continue
-        # Skip duplicate TMDB IDs (same movie with different IMDb entries)
-        if tmdb_id in seen_tmdb:
+        media_type = item.get("media_type") or "movie"
+        # Skip duplicates (same title with different IMDb entries)
+        if (tmdb_id, media_type) in seen:
             skipped_duplicate += 1
             continue
-        seen_tmdb.add(tmdb_id)
+        seen.add((tmdb_id, media_type))
         # Clean HTML entities + trailing " (YYYY)" from list-sourced titles
         clean_name, clean_year = clean_list_title(item.get("title"), item.get("year"))
         db.add(ListItem(
             list_id=lst.id,
             tmdb_id=tmdb_id,
             imdb_id=imdb_id,
-            media_type=item.get("media_type", "movie"),
+            media_type=media_type,
             title=clean_name,
             year=clean_year,
             poster_path=item.get("poster_path"),
         ))
         stored += 1
     db.flush()
-    new_count = len(seen_tmdb - old_tmdb_ids)
-    removed_count = len(old_tmdb_ids - seen_tmdb)
+    new_count = len(seen - old_keys)
+    removed_count = len(old_keys - seen)
     if skipped_no_tmdb or skipped_duplicate:
         logger.info(f"List '{lst.name}': stored {stored}, skipped {skipped_no_tmdb} (no TMDB match), {skipped_duplicate} (duplicate)")
     return {"stored": stored, "new": new_count, "removed": removed_count, "skipped_no_tmdb": skipped_no_tmdb, "skipped_duplicate": skipped_duplicate}
@@ -640,7 +655,7 @@ def keep_unread_items(lst: ListSubscription, items: list, db: Session) -> list:
     it, which is only right when the fetch read the whole list. After a page
     failure nothing not re-read can be judged gone, so every stored item stays;
     after a movies-only fallback, the stored TV shows do. Items are matched on
-    tmdb_id, the key store_list_items de-duplicates on.
+    (tmdb_id, media_type), the key store_list_items de-duplicates on.
     """
     missing = getattr(items, "missing_types", set())
     complete = getattr(items, "complete", True)
@@ -649,19 +664,20 @@ def keep_unread_items(lst: ListSubscription, items: list, db: Session) -> list:
     merged = ListFetch(items, source=getattr(items, "source", ""),
                        complete=complete, missing_types=missing,
                        note=getattr(items, "note", ""))
-    have = {i.get("tmdb_id") for i in items if i.get("tmdb_id")}
+    have = {(i.get("tmdb_id"), i.get("media_type") or "movie") for i in items if i.get("tmdb_id")}
     kept = 0
     for row in db.query(ListItem).filter(ListItem.list_id == lst.id).all():
-        if not row.tmdb_id or row.tmdb_id in have:
+        key = (row.tmdb_id, row.media_type or "movie")
+        if not row.tmdb_id or key in have:
             continue
-        if complete and (row.media_type or "movie") not in missing:
+        if complete and key[1] not in missing:
             continue
         merged.append({
             "tmdb_id": row.tmdb_id, "imdb_id": row.imdb_id,
             "media_type": row.media_type, "title": row.title,
             "year": row.year, "poster_path": row.poster_path,
         })
-        have.add(row.tmdb_id)
+        have.add(key)
         kept += 1
     if kept:
         logger.info(f"List '{lst.name}': kept {kept} stored item(s) the partial fetch could not see")
@@ -696,14 +712,16 @@ def refresh_list(lst: ListSubscription, db: Session, bearer_token: str = "",
                                   f"list was kept as it was.")])))
     items = keep_unread_items(lst, items, db)
     store_stats = store_list_items(lst, items, db)
-    store_stats["tagged"] = apply_list_tags_to_library(items, lst.tag, db)
+    changed = {"Movie": set(), "Series": set()}
+    store_stats["tagged"] = apply_list_tags_to_library(items, lst.tag, db, changed=changed)
+    store_stats["changed"] = changed
     lst.last_fetched = datetime.utcnow()
     lst.last_item_count = store_stats["stored"]
     lst.last_fetch_note = getattr(items, "note", "") or None
     return items, store_stats
 
 
-def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
+def apply_list_tags_to_library(items: list, tag: str, db: Session, changed: dict = None) -> int:
     """Match list items to library content and apply/remove tags via NFO update.
 
     Respects media_type from list items to avoid cross-type TMDB ID collisions
@@ -711,8 +729,13 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
 
     Also removes the tag from any library items that are no longer on the list,
     so stale tags get cleaned up on every list refresh.
+
+    `changed` ({"Movie": set(), "Series": set()}), when given, gets the TMDB
+    id of every row whose tags this changed: what the tag push must write.
     """
     from services.tagger import tentacle_owned_tags
+    if changed is None:
+        changed = {"Movie": set(), "Series": set()}
     owned = tentacle_owned_tags(db)   # an NFO's other tags stay (#165)
     # Build set of (tmdb_id, media_type) that should have this tag
     valid_ids = set()
@@ -754,7 +777,8 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
         tags = [t for t in movie.tags if t != tag]
         movie.tags = tags
         if movie.nfo_path:
-            update_nfo_tags(Path(movie.nfo_path), tags)
+            update_nfo_tags(Path(movie.nfo_path), tags, owned)
+        changed["Movie"].add(movie.tmdb_id)
         cleaned += 1
 
     for series in db.query(Series).all():
@@ -767,7 +791,8 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
         tags = [t for t in series.tags if t != tag]
         series.tags = tags
         if series.nfo_path:
-            update_nfo_tags(Path(series.nfo_path), tags)
+            update_nfo_tags(Path(series.nfo_path), tags, owned)
+        changed["Series"].add(series.tmdb_id)
         cleaned += 1
 
     if cleaned:
@@ -790,6 +815,7 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
                     series.tags = tags
                     if series.nfo_path:
                         update_nfo_tags(Path(series.nfo_path), tags, owned)
+                    changed["Series"].add(series.tmdb_id)
                     tagged += 1
         elif media_type == "movie":
             movie = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
@@ -800,6 +826,7 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
                     movie.tags = tags
                     if movie.nfo_path:
                         update_nfo_tags(Path(movie.nfo_path), tags, owned)
+                    changed["Movie"].add(movie.tmdb_id)
                     tagged += 1
         else:
             movie = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
@@ -810,6 +837,7 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
                     movie.tags = tags
                     if movie.nfo_path:
                         update_nfo_tags(Path(movie.nfo_path), tags, owned)
+                    changed["Movie"].add(movie.tmdb_id)
                     tagged += 1
                 continue
 
@@ -821,10 +849,73 @@ def apply_list_tags_to_library(items: list, tag: str, db: Session) -> int:
                     series.tags = tags
                     if series.nfo_path:
                         update_nfo_tags(Path(series.nfo_path), tags, owned)
+                    changed["Series"].add(series.tmdb_id)
                     tagged += 1
 
     db.commit()
     return tagged
+
+
+def _users_on_tags(db: Session, tags: set, owner_id: int) -> set:
+    """The owner plus every other user whose list or tag rule gives one of
+    these tags (shared tags from before the conflict check, #162): their
+    playlists match the same titles."""
+    from models.database import TagRule
+    users = {owner_id}
+    if tags:
+        users |= {u for (u,) in db.query(ListSubscription.user_id).filter(
+            ListSubscription.tag.in_(tags)) if u is not None}
+        users |= {u for (u,) in db.query(TagRule.user_id).filter(
+            TagRule.output_tag.in_(tags)) if u is not None}
+    return users
+
+
+def _follow_list_change(db: Session, user_ids: set, changed: Optional[dict], removed: bool = False) -> None:
+    """Carry a list change to Jellyfin and its users' playlists (#679).
+
+    The rows and NFOs are already right, but Jellyfin keeps tags set through
+    its API: the changed titles' tags are pushed first, then each user's
+    playlists are refreshed (for a deleted list synced, so its playlist goes)
+    and their home config written. Runs in the background, started after the
+    endpoint's last commit; a Jellyfin that fails leaves it to the nightly."""
+    jf_url = get_setting(db, "jellyfin_url")
+    jf_key = get_setting(db, "jellyfin_api_key")
+    if not jf_url or not jf_key:
+        return
+    jf_user_id = get_setting(db, "jellyfin_user_id", "")
+    changed = {k: set(v) for k, v in (changed or {}).items() if v}
+    user_ids = sorted(user_ids)
+
+    def _run():
+        from services.jellyfin import JellyfinService, sync_owned_tags
+        import services.smartlists as sl
+        bg = SessionLocal()
+        try:
+            if changed:
+                # Before the playlists, so they match the new tags.
+                jf = JellyfinService(jf_url, jf_key, jf_user_id)
+                counts = sync_owned_tags(bg, jf, "Lists", only=changed)
+                logger.info(f"[Lists] Pushed the tags of {sum(len(v) for v in changed.values())} title(s) "
+                            f"to Jellyfin: {counts['written']} written, {counts['unchanged']} unchanged, "
+                            f"{counts['not_found']} not in Jellyfin, {counts['errors']} failed")
+            for uid in user_ids:
+                gone = frozenset()
+                if removed:
+                    before = {p["playlist_id"] for p in sl._get_smartlists_with_playlist_ids(bg, user_id=uid)}
+                    sl.sync_smartlists(bg, user_id=uid)
+                    after = {p["playlist_id"] for p in sl._get_smartlists_with_playlist_ids(bg, user_id=uid)}
+                    gone = frozenset(before - after)
+                sl.refresh_smartlist_playlists(bg, user_id=uid)
+                sl.write_home_config(bg, user_id=uid, dropped_ids=gone)
+            sl.bump_playlist_version()
+            sl._notify_jellyfin_plugin(bg)
+        except Exception as e:
+            logger.warning(f"[Lists] Could not carry the list change to Jellyfin's tags and playlists: {e} "
+                           f"(the nightly sync will catch up)")
+        finally:
+            bg.close()
+
+    threading.Thread(target=_run, daemon=True, name="list-change").start()
 
 
 @router.get("")
@@ -872,7 +963,8 @@ def create_list(body: ListCreate, db: Session = Depends(get_db), user: TentacleU
             ListSubscription.user_id == user.id)}
         own |= {t for (t,) in db.query(TagRule.output_tag).filter(TagRule.user_id == user.id)}
         from services.tagger import name_key, youtube_title_taken
-        taken = {name_key(t) for t in tentacle_owned_tags(db) - own}
+        # A deleted list's or rule's tag is free again (#542).
+        taken = {name_key(t) for t in tentacle_owned_tags(db, include_retired=False) - own}
         if name_key(tag) in taken or youtube_title_taken(db, tag):
             raise HTTPException(400, f"The tag '{tag}' is already used by Tentacle or by another "
                                      f"user's list — choose a different tag")
@@ -923,7 +1015,7 @@ def add_to_radarr(body: AddMissingBody, db: Session = Depends(get_db),
             legacy_profile_id=body.quality_profile_id,
             already_owned=downloaded, want_release_date=len(body.tmdb_ids) == 1)
     except RequestRefused as e:
-        raise _refused(e)
+        raise _refused(e, user)
     return outcome.as_response()
 
 
@@ -949,7 +1041,7 @@ def add_to_sonarr(body: AddMissingBody, db: Session = Depends(get_db),
             selected_episodes=body.selected_episodes, monitor_new=body.monitor_new or False,
             already_owned=downloaded)
     except RequestRefused as e:
-        raise _refused(e)
+        raise _refused(e, user)
     return outcome.as_response()
 
 
@@ -962,9 +1054,16 @@ def delete_list(list_id: int, db: Session = Depends(get_db), user: TentacleUser 
     if not lst:
         raise HTTPException(404, "List not found")
     from services.tagger import retire_tag
-    retire_tag(db, lst.tag)
+    tag = lst.tag
+    retire_tag(db, tag)
     db.delete(lst)
     db.commit()
+    # With the list gone, this strips its tag from the titles it gave it,
+    # keeping those another list on the tag or a sharing rule still gives:
+    # left on them, a user who takes the freed tag (#542) got these titles.
+    changed = {"Movie": set(), "Series": set()}
+    apply_list_tags_to_library([], tag, db, changed=changed)
+    _follow_list_change(db, _users_on_tags(db, {tag}, user.id), changed, removed=True)
     return {"success": True}
 
 
@@ -1016,12 +1115,15 @@ def refresh_all_lists(db: Session = Depends(get_db), user: TentacleUser = Depend
     refreshed = 0
     errors = []
     warnings = []
+    changed = {"Movie": set(), "Series": set()}
     for lst in active_lists:
         try:
             items, store_stats = refresh_list(lst, db, bearer, trakt_cid, tmdb)
             if items is None:
                 errors.append(f"{lst.name}: empty or failed")
                 continue
+            for media_type, ids in (store_stats.get("changed") or {}).items():
+                changed.setdefault(media_type, set()).update(ids)
             if lst.last_fetch_note:
                 warnings.append(f"{lst.name}: {lst.last_fetch_note}")
             refreshed += 1
@@ -1032,6 +1134,9 @@ def refresh_all_lists(db: Session = Depends(get_db), user: TentacleUser = Depend
 
     db.commit()
     log_activity(db, "lists_refresh", f"Refreshed {refreshed} lists")
+    if refreshed:
+        # One push and one playlist refresh for every list, not one per list.
+        _follow_list_change(db, _users_on_tags(db, {l.tag for l in active_lists}, user.id), changed)
     return {"success": True, "refreshed": refreshed, "errors": errors, "warnings": warnings}
 
 
@@ -1074,7 +1179,7 @@ def fetch_list(list_id: int, db: Session = Depends(get_db), user: TentacleUser =
             radarr_added = outcome.report.added
             radarr_error = outcome.report.detail
         except RequestRefused as e:
-            radarr_error = e.message
+            radarr_error = e.for_user(user)
             logger.warning(f"Auto-add to Radarr skipped for '{lst.name}': {e.message}")
 
     log_activity(db, "list_fetch", f"Fetched '{lst.name}' — {store_stats['stored']} items stored")
@@ -1085,6 +1190,7 @@ def fetch_list(list_id: int, db: Session = Depends(get_db), user: TentacleUser =
         _notify_jellyfin_plugin(db)
     except Exception:
         pass
+    _follow_list_change(db, _users_on_tags(db, {lst.tag}, user.id), store_stats.get("changed"))
 
     return {
         "success": True,
@@ -1177,8 +1283,11 @@ def get_list_coverage(list_id: int, db: Session = Depends(get_db), user: Tentacl
 
     for item in items:
         tid = item.tmdb_id
-        movie = movie_map.get(tid) if tid else None
-        serie = series_map.get(tid) if tid else None
+        # TMDB numbers movies and shows separately: a list's film is looked up only
+        # among movies, its show only among series, as Add Missing sends them (#264).
+        is_series = item.media_type == "series"
+        movie = movie_map.get(tid) if tid and not is_series else None
+        serie = series_map.get(tid) if tid and is_series else None
 
         if movie:
             entry = {"tmdb_id": tid, "title": movie.title, "year": movie.year, "poster_path": movie.poster_path, "media_type": "movie"}
@@ -1211,9 +1320,10 @@ def get_list_coverage(list_id: int, db: Session = Depends(get_db), user: Tentacl
     sonarr.sort(key=lambda x: (x.get("title") or "").lower())
     missing.sort(key=lambda x: (x.get("title") or "").lower())
 
-    # Count missing by type
-    missing_movies = sum(1 for m in missing if m.get("media_type") != "series")
-    missing_series = sum(1 for m in missing if m.get("media_type") == "series")
+    # Count missing by type: what Add Missing sends (an item without a TMDB id
+    # can't be sent, so it is listed as missing but not counted).
+    missing_movies = sum(1 for m in missing if m.get("tmdb_id") and m.get("media_type") != "series")
+    missing_series = sum(1 for m in missing if m.get("tmdb_id") and m.get("media_type") == "series")
 
     return {
         "list_id": list_id,
@@ -1266,7 +1376,7 @@ def add_missing_to_radarr(list_id: int, body: AddMissingBody = None, db: Session
             legacy_profile_id=body.quality_profile_id if body else None,
             already_owned=lambda tid: db.query(Movie).filter(Movie.tmdb_id == tid).first() is not None)
     except RequestRefused as e:
-        raise _refused(e)
+        raise _refused(e, user)
     return outcome.as_response()
 
 
@@ -1299,5 +1409,5 @@ def add_missing_to_sonarr(list_id: int, body: AddMissingBody = None, db: Session
             season_folder=True if season_folder is None else season_folder,
             already_owned=lambda tid: db.query(Series).filter(Series.tmdb_id == tid).first() is not None)
     except RequestRefused as e:
-        raise _refused(e)
+        raise _refused(e, user)
     return outcome.as_response()

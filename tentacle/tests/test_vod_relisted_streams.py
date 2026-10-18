@@ -229,6 +229,14 @@ class EpisodeRelistedUnderANewId(unittest.TestCase):
         self.write((3299, 1), (3201, 1))
         self.assertTrue(self.ep(1).endswith("/3201.mp4"))
 
+    def test_renumbered_episodes_follow_their_number(self):
+        """#376: the provider inserts a missing E01 and shifts the rest (id 3201
+        E1->E2, 3202 E2->E3). The old ids are still listed, at other numbers."""
+        self.write((3201, 1), (3202, 2))
+        self.write((3200, 1), (3201, 2), (3202, 3))
+        for n, want in ((1, 3200), (2, 3201), (3, 3202)):
+            self.assertTrue(self.ep(n).endswith(f"/{want}.mp4"), (n, self.ep(n)))
+
     def test_another_hosts_link_is_left_alone(self):
         self.write((3201, 1))
         f = self.show / "Season 01" / "Pokemon (1997) S01E01.strm"

@@ -4,7 +4,9 @@ Xtream providers put the account's username and password in the stream path
 (/live/<user>/<pass>/<id>.ts) and in playlist/guide query strings, and the
 Jellyfin plugin and Android TV app authenticate with ?api_key=<access token>,
 the YouTube Data API with ?key=<API key>, and the Radarr/Sonarr/Lidarr
-webhooks with ?secret=<webhook secret>.
+webhooks with ?secret=<webhook secret>. M3U playlists made by Xtream servers
+use the short form host/<user>/<pass>/<id>, and a proxy URL can carry a login
+(http://user:pass@host:port).
 Those URLs reach the log from Tentacle's own messages, from httpx's request
 logging and from uvicorn's access log. Redacting at record creation covers all
 of them, and every handler (console, the dashboard's live log) at once.
@@ -21,6 +23,16 @@ _SECRET_PARAM = re.compile(
     r"((?:^|[?&;\s])(?:[\w.-]*(?:secret|token|password|passwd|api_?key)[\w.-]*|key|pwd|username)=)"
     r"[^&\s\"']+", re.IGNORECASE)
 
+# Xtream-generated M3U playlists use a short stream URL with no /live/ part:
+# http://host:port/<user>/<pass>/<stream id>[.ext]. Only that exact shape
+# (three path segments, the last a number) is matched, so ordinary API paths
+# are left alone.
+_XTREAM_SHORT_PATH = re.compile(
+    r"(\bhttps?://[^/\s?#\"']+/)(?!api/)[^/\s?#\"']+/[^/\s?#\"']+/(\d+(?:\.\w{1,5})?)(?=[\s?#\"',)]|$)",
+    re.IGNORECASE)
+# A login in the URL itself: http://user:pass@host (a proxy, for example).
+_URL_USERINFO = re.compile(r"(\b[a-z][a-z0-9+.-]*://[^/\s:@\"']+:)[^/\s@\"']+@", re.IGNORECASE)
+
 _MARK = "_tentacle_redacting"
 
 
@@ -28,6 +40,8 @@ def redact(text: str) -> str:
     if not text or ("=" not in text and "/" not in text):
         return text
     text = _XTREAM_PATH.sub(r"\1***/***/", text)
+    text = _XTREAM_SHORT_PATH.sub(r"\1***/***/\2", text)
+    text = _URL_USERINFO.sub(r"\1***@", text)
     return _SECRET_PARAM.sub(r"\1***", text)
 
 

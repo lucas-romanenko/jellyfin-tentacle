@@ -156,6 +156,12 @@ When adding a new series to Sonarr:
 | Pilot | Only S01E01 |
 | Pick Episodes | Opens the episode picker for manual selection |
 
+With **Pick Episodes** (and **Download More Episodes**) the add waits until
+Sonarr has set the show up before it monitors and searches the picked
+episodes: a few seconds normally, longer when Sonarr is busy. If Sonarr has
+not finished within 3 minutes, the show stays in Sonarr and the message
+says to pick the episodes in **Manage Episodes**.
+
 ## Manage Episodes
 
 For series already in Sonarr, you can change which episodes are monitored:
@@ -194,6 +200,8 @@ tentacle:
     - /path/to/shows:/media/shows              # Sonarr TV library
     - /path/to/vod/shows:/media/vod/shows      # VOD series (for hybrid detection)
 ```
+
+Sonarr may call its root folder anything (`/data/shows`, `/data/tv`, `/data/media/tv-shows`): Tentacle finds each series by its folder name under `/media/shows`, so mount the same host folder Sonarr's root folder is on. When a scan can't find series there, the log says so ("downloads not found under /media/shows") and no `tvshow.nfo` or tags are written beside them. Series in a VOD folder (hybrid series) are left to the VOD sync.
 
 ## Download Client Prerequisites
 

@@ -138,7 +138,7 @@ class TestCheck(_Db):
         p2.start()
         self.addCleanup(p2.stop)
 
-    def find(self, db, title):
+    def find(self, db, title, strict=False):
         if title.media_type == "movie":
             return None, {"id": 55, "title": "Rare Film"}
         return FakeSonarrSvc(self.eps), {"id": 77, "title": "Show"}

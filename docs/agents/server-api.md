@@ -25,6 +25,13 @@ parameters, or a helper it calls):
   Radarr/Sonarr webhooks (protected only by the optional `webhook_secret`
   query parameter; set it) and the music webhook (secret always required).
 
+Declared on the app in `main.py` (no router, all **none**; listed in
+`tests/test_route_auth_inventory.py` MAIN_PUBLIC): `GET /api/health`
+(liveness), `GET /api/version` (build identity), `GET /api/provider-status`
+(the provider health check for a monitor: 200 `{"status": "ok"}`, or 503
+`{"status": "failing", "since", "checked_at", "problems": [reason]}`; no
+provider names, URLs or logins).
+
 | Method | Path | Auth | Handler |
 |---|---|---|---|
 | GET | `/api/activity` | user | activity.py:get_activity |
@@ -74,6 +81,8 @@ parameters, or a helper it calls):
 | POST | `/api/health/missing/grab` | admin | health.py:grab_missing_release |
 | GET | `/api/health/missing/movies` | admin | health.py:missing_movies |
 | POST | `/api/health/missing/search` | admin | health.py:search_missing_item |
+| GET | `/api/health/providers` | admin | health.py:provider_health |
+| POST | `/api/health/providers/check` | admin | health.py:check_providers_now |
 | GET | `/api/health/streams` | admin | health.py:get_stream_health |
 | POST | `/api/health/streams/check` | admin | health.py:check_stream_now |
 | POST | `/api/health/streams/clear` | admin | health.py:clear_stream_entry |
@@ -105,14 +114,14 @@ parameters, or a helper it calls):
 | POST | `/api/lists/add-to-sonarr` | user | lists.py:add_to_sonarr |
 | GET | `/api/lists/radarr-folders` | user | lists.py:radarr_folders |
 | GET | `/api/lists/radarr-profiles` | user | lists.py:radarr_profiles |
-| POST | `/api/lists/refresh-all` | user | lists.py:refresh_all_lists |
+| POST | `/api/lists/refresh-all` | user | lists.py:refresh_all_lists (then the tag push and playlist refresh in the background: pipelines.md "A list is fetched") |
 | GET | `/api/lists/sonarr-folders` | user | lists.py:sonarr_folders |
 | GET | `/api/lists/sonarr-profiles` | user | lists.py:sonarr_profiles |
-| DELETE | `/api/lists/{list_id}` | user | lists.py:delete_list |
+| DELETE | `/api/lists/{list_id}` | user | lists.py:delete_list (same background follow-up) |
 | POST | `/api/lists/{list_id}/add-missing-to-radarr` | user | lists.py:add_missing_to_radarr |
 | POST | `/api/lists/{list_id}/add-missing-to-sonarr` | user | lists.py:add_missing_to_sonarr |
 | GET | `/api/lists/{list_id}/coverage` | user | lists.py:get_list_coverage |
-| POST | `/api/lists/{list_id}/fetch` | user | lists.py:fetch_list |
+| POST | `/api/lists/{list_id}/fetch` | user | lists.py:fetch_list (same background follow-up) |
 | POST | `/api/lists/{list_id}/playlist-toggle` | user | lists.py:toggle_list_playlist |
 | GET | `/api/live/capacity` | admin | livetv.py:live_capacity |
 | GET | `/api/live/channels` | admin | livetv.py:list_channels |
@@ -211,6 +220,7 @@ parameters, or a helper it calls):
 | POST | `/api/settings/stale-files/delete` | admin | settings.py:delete_stale_files |
 | POST | `/api/settings/stale-files/dismiss` | admin | settings.py:dismiss_stale_files |
 | POST | `/api/settings/test` | admin | settings.py:test_connection |
+| POST | `/api/settings/test-pushover` | admin | settings.py:test_pushover |
 | POST | `/api/settings/test-webhook` | admin | settings.py:test_webhook |
 | GET | `/api/smartlists` | user | smartlists.py:list_smartlists |
 | POST | `/api/smartlists/add-row` | user | smartlists.py:add_row |

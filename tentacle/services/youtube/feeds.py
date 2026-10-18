@@ -149,7 +149,17 @@ def _api_get(path: str, params: dict) -> dict:
         if r.status_code == 429 or r.status_code >= 500:
             _api_off(API_HICCUP_SECONDS, f"HTTP {r.status_code}")
         raise YouTubeUnavailable(f"The YouTube Data API answered HTTP {r.status_code}")
-    return r.json()
+    try:
+        data = r.json()
+        if not isinstance(data, dict):
+            raise ValueError("not a JSON object")
+        return data
+    except ValueError:
+        # A 200 that is not the API's JSON: a proxy's or a captive portal's
+        # page. It escaped every YouTube handler as a JSONDecodeError, so the
+        # channel failed instead of falling back to its feed.
+        _api_off(API_HICCUP_SECONDS, "an answer that is not JSON")
+        raise YouTubeUnavailable("The YouTube Data API answered with something that is not JSON")
 
 
 def uploads_playlist(channel) -> Optional[str]:
@@ -169,6 +179,15 @@ def fetch_api_uploads(channel) -> list:
                                       "maxResults": 25})
     return [{"id": i["contentDetails"]["videoId"], "title": "", "published": "", "short": False}
             for i in data.get("items", []) if i.get("contentDetails", {}).get("videoId")]
+
+
+def api_playlist_size(playlist_id: str) -> Optional[int]:
+    """How many entries a playlist has, from the Data API (1 quota unit); None
+    when the API does not say (a private or removed playlist)."""
+    data = _api_get("playlists", {"part": "contentDetails", "id": playlist_id})
+    items = data.get("items") or []
+    count = (items[0].get("contentDetails") or {}).get("itemCount") if items else None
+    return count if isinstance(count, int) else None
 
 
 _DURATION_RE = re.compile(r"^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$")
