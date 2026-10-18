@@ -1277,7 +1277,8 @@ def _known_title_id(ids, stream: dict, owns, namesake_of=None, rivals=()):
     already imported, a hint that is not a namesake of the one known film is
     ignored (no name search), and a stream the map cannot place gets a real
     lookup. A stream relabelled onto the year of another film of ours with the
-    same title stays with the one whose .strm plays it (#627)."""
+    same title stays with the one whose .strm plays it (#627), also when the
+    provider's id names that other film (#672)."""
     if not ids:
         return None
     hint = _provider_tmdb_hint(stream)
@@ -1297,6 +1298,8 @@ def _known_title_id(ids, stream: dict, owns, namesake_of=None, rivals=()):
         return hint
     if len(ids) == 1 and verdicts[ids[0]] is None:
         return ids[0]  # cannot tell: as before
+    if hint is not None and hint in rivals and owns(hint) is True:
+        return hint  # only the label's year is wrong: the provider's id and our .strm name the rival (#672)
     if len(ids) == 1 and hint is not None and namesake_of is not None and not namesake_of(hint, ids[0]):
         return ids[0]  # another listing of the known film with a wrong id: as before
     return None
