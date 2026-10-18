@@ -46,6 +46,10 @@ monitored. Tentacle never falls back to Lidarr's first profile.
 and a user (an admin can also start rescans). For Jellyfin, tick *Jellyfin as
 a music player* and pick or create its music library.
 
+If an album in Jellyfin shows its folder and file names instead of its tags
+(it came in with an older Tentacle), run *Refresh metadata* on the music
+library (or the album) once in Jellyfin, with *Search for missing metadata*.
+
 **5. Save Connections.** Tentacle then reads your Lidarr library once (about
 ten minutes for a few hundred albums; MusicBrainz allows one request a second).
 **Library → Music → Check library now** runs it again any time.

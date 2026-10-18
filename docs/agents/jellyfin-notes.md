@@ -35,6 +35,15 @@ The code wins where they differ.
   doesn't catch it), #333.
 - **Refreshing metadata** with `ReplaceAllMetadata=true` wipes the tags
   (TMDB has none): always `ReplaceAllMetadata=false`.
+- **`POST /Items/{id}/Refresh`** defaults `MetadataRefreshMode` and
+  `ImageRefreshMode` to `None`: new items under it are created from folder
+  and file names only (no audio tags, no MusicBrainz ids) and still marked
+  refreshed, so later Default scans skip them. Always pass
+  `MetadataRefreshMode=Default&ImageRefreshMode=Default` (#677).
+- **A library created on an empty folder** has no folder item under it
+  until a full `POST /Library/Refresh`: refreshing the library item finds
+  nothing. The music rescan does a full scan while the library lists
+  nothing (#677).
 - **NFO for downloads**: named exactly like the video
   (`Alien (1979) Bluray-1080p.nfo`); Jellyfin reads its metadata, not its tags.
 - **Finding items by TMDB id**: `GET /Items?ProviderIds=Tmdb=…` is ignored
