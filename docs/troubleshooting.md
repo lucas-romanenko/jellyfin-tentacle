@@ -201,7 +201,9 @@ when the provider refuses a library or channel sync, or a live stream, with
 401/403 twice at least two minutes apart, the banner comes, even while a
 recording runs. It clears by itself once a sync reads the provider again
 (for a refused login) or a live channel plays for 10 seconds (for refused
-streams), without **Check now**.
+streams), without **Check now**. A channel refused while another channel
+of the same provider is playing or recording doesn't count: that channel is
+likely not in your package.
 
 | The banner says | Usually means |
 |---|---|
