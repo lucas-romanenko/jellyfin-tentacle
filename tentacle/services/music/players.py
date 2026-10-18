@@ -156,8 +156,23 @@ class JellyfinPlayer(Player):
     def rescan(self) -> None:
         if not self.library_id:
             return
+        # A library created on an empty folder has no folder item under it:
+        # refreshing the library finds nothing, only a full scan does.
+        try:
+            empty = not (self._get("/Items", {"ParentId": self.library_id, "Limit": 1}).get("Items") or [])
+        except (requests.RequestException, ValueError):
+            empty = False
+        if empty:
+            r = requests.post(f"{self.url}/Library/Refresh", headers={"X-Emby-Token": self.key}, timeout=TIMEOUT)
+            r.raise_for_status()
+            logger.info("[Jellyfin] Music library is empty in Jellyfin: full library scan started")
+            return
+        # Refresh defaults both modes to None: new tracks would be created
+        # from file names without reading their tags, and marked refreshed.
         r = requests.post(f"{self.url}/Items/{self.library_id}/Refresh", headers={"X-Emby-Token": self.key},
-                          params={"Recursive": "true"}, timeout=TIMEOUT)
+                          params={"Recursive": "true", "MetadataRefreshMode": "Default",
+                                  "ImageRefreshMode": "Default", "ReplaceAllMetadata": "false",
+                                  "ReplaceAllImages": "false"}, timeout=TIMEOUT)
         r.raise_for_status()
         logger.info("[Jellyfin] Music library refresh started")
 

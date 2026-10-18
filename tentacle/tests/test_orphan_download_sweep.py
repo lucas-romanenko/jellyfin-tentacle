@@ -125,6 +125,19 @@ class TestOrphanDownloadSweep(unittest.TestCase):
         self.assertEqual(removed, 0)
         self.assertEqual(self.db.query(Movie).count(), 300)
 
+    def test_partial_fetch_under_the_cap_deletes_nothing(self):
+        """The completeness check on its own. A failed page that holds only 20 of the
+        300 downloaded titles is under the 50-row cap, so the cap does not stop it:
+        without `if not (movies_complete and series_complete)` those 20 rows and their
+        requests are deleted. The tests above all lose every download at once, which
+        the cap refuses anyway, so they stay green with the check removed."""
+        movies = self.radarr_ids[:280] + list(range(100000, 115000)) + self.radarr_ids[280:]
+        removed = self._run(FakeJellyfinGet(movies, self.jf_series,
+                                            fail_pages={("Movie", 10000)}))
+        self.assertEqual(removed, 0)
+        self.assertEqual(self.db.query(Movie).count(), 300)
+        self.assertEqual(self.db.query(DownloadRequest).count(), 300)
+
     def test_genuinely_removed_download_is_still_swept(self):
         """Must-not-change: a complete fetch that lacks one downloaded title removes it."""
         jf = [t for t in self.jf_movies if t != 7]

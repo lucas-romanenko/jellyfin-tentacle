@@ -25,3 +25,7 @@ Known gaps worth fixing (each is a feature: it waits for the maintainer's go).
   sync writes the suffixed one ("Netflix TV"): `tags.append(...source_tag)`
   in their NFO stage. Check whether the VOD playlist keeps such a title;
   releasing a download (#378, #617) keeps what the scan left.
+- A raw MPEG-TS recording still ends at once on a 404/410 from the channel
+  URL at re-dial, where an HLS recording waits it out for `_GONE_GRACE`
+  (180 s; a panel blip answers 404 for seconds). 401/403 got their own
+  grace (#646, `_DENIED_GRACE`); 404 on raw TS could take the same shape.

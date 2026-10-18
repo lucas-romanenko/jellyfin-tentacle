@@ -58,6 +58,28 @@ def recording_protected(db) -> bool:
         return False
 
 
+def jellyfin_playing(db) -> bool:
+    """True while Jellyfin is playing anything, or can't say. A VOD .strm
+    plays straight from the provider, past Tentacle: Tentacle's own stream
+    counters don't see it, and a test stream opened next to it on a
+    one-connection account cuts it (Jellyfin then ends the episode and
+    starts the next one). Without a Jellyfin connection set there is no
+    viewer to protect."""
+    url = (get_setting(db, "jellyfin_url", "") or "").rstrip("/")
+    key = get_setting(db, "jellyfin_api_key", "") or ""
+    if not url or not key:
+        return False
+    import requests
+    try:
+        r = requests.get(f"{url}/Sessions", params={"activeWithinSeconds": 960},
+                         headers={"X-Emby-Token": key}, timeout=10)
+        r.raise_for_status()
+        return any(s.get("NowPlayingItem") for s in r.json())
+    except Exception as e:
+        logger.info(f"[Provider] Jellyfin sessions unknown ({type(e).__name__}): standing aside")
+        return True
+
+
 def refuse_while_recording(db, what: str) -> None:
     """For a button that would contact the provider now: with recording
     protection on and a recording running, answer 503 instead."""

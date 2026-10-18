@@ -142,7 +142,10 @@ services/               the work: sync (VOD engine), tmdb, nfo, cleaner, tagger,
   answering 200. A series only counts as downloaded when Sonarr lists an
   episode file that is not a `.strm` (`series_has_real_download`): the
   Sonarr scan records no duplicate otherwise and dismisses (keep_both)
-  pending ones like that, and Keep Downloaded on a series checks again
+  pending ones like that; it also treats such a VOD show as no download (no
+  `downloaded_at`, no "Downloaded TV", no tag or NFO write: it skips the
+  tag/NFO step) and releases one an older scan tagged (#682, see
+  pipelines.md), and Keep Downloaded on a series checks again
   before deleting anything (409 when nothing is downloaded, 502 when
   Sonarr can't be asked). Before either Keep deletes a copy,
   `services/duplicates.carry_user_data` merges every Jellyfin user's
@@ -230,7 +233,8 @@ user_id)` computes them every time from source tags, list subscriptions
 
 ```json
 {"hero": {"enabled": true, "playlist_id": "…", "display_name": "…", "sort_by": "random",
-          "sort_order": "Descending", "require_logo": true, "require_trailer": false},
+          "sort_order": "Descending", "require_logo": true, "require_trailer": false,
+          "trailer_audio": false, "item_count": 10},
  "rows": [{"type": "playlist", "playlist_id": "…", "display_name": "…", "order": 1, "max_items": 20},
           {"type": "builtin", "section_id": "resumevideo", "display_name": "Continue Watching", "order": 2}]}
 ```
@@ -238,7 +242,13 @@ user_id)` computes them every time from source tags, list subscriptions
 - Row keys: `playlist:<guid>` or `builtin:<section_id>` (reorder/remove).
 - The hero has its own sort; `require_logo` (default on) keeps only items
   with a backdrop and a logo; `require_trailer` only items with a trailer.
-  The plugin applies both when rendering.
+  The plugin applies both when rendering. `trailer_audio` is off when
+  missing everywhere (plugin `HeroConfig`, `write_home_config`, the
+  dashboard); `set_hero` carries every setting over to a newly picked
+  playlist.
+- `set_hero` names the hero from its row, else Tentacle's playlist, else
+  Jellyfin's item `Name` read as that user (`/Users/{uid}/Items/{id}`, so a
+  playlist they can't see stays unnamed); the id is the last resort.
 - `write_home_config()` checks the hero playlist still exists (else first
   available, or off) and remaps rows and hero by `display_name` when a sync
   recreated playlists with new ids (otherwise rows silently vanish).
@@ -253,6 +263,11 @@ user_id)` computes them every time from source tags, list subscriptions
   (`_running_syncs`): refused (409) while a sync of it runs, and holds the
   slot until its commit so no sync starts meanwhile. A sync writes files
   before it commits their rows, so a delete under it left orphan files.
+  It also removes what is keyed by the provider's id: the Live TV settings
+  (`livetv.PROVIDER_SETTING_KEYS`), its `provider_relink_pending` and
+  `provider_health` entries, blocked streams and match fixes. SQLite gives the
+  next provider the highest deleted id again, so anything new keyed by
+  provider id must go there too (#625).
 - Downloaded content only (never VOD, which is admin-only from the
   dashboard): the TV app or the web plugin calls
   `DELETE /TentacleDiscover/LibraryItem/{type}/{id}?jellyfinItemId=`, the
@@ -285,6 +300,11 @@ user_id)` computes them every time from source tags, list subscriptions
 - Never act on "the first Jellyfin item with this TMDB id": the same film
   can be there twice (VOD + download). Resolve the item from its path or
   its own id.
+- Every `log_deletion()`/`DeletionLog(...)` kind needs a label in
+  `_DELETION_KIND_META` (`static/js/pages.js`), or Health → Deletion Log
+  shows the raw code (`tests/test_deletion_log_kinds.py` enforces it).
+  `*-blocked` kinds record removals a safety limit refused (nothing
+  deleted): label "… refused", gray badge.
 
 ## Provider health (`services/provider_health.py`)
 
@@ -297,16 +317,44 @@ user_id)` computes them every time from source tags, list subscriptions
   no verdict; an API failure skips the stream step.
 - A new failure is checked again 2 minutes later (`RETRY_DELAY_SECONDS`)
   before it counts. "Check now" (`POST /api/health/providers/check`) skips
-  that confirmation. Both look for `live_streams_active()` or
-  `recording_protected()` before every connection (each provider, each test
-  stream, each confirming re-check) and stand aside once either is true: no
+  that confirmation. Both look for `live_streams_active()`,
+  `recording_protected()` or `jellyfin_playing()` (Jellyfin `/Sessions` has
+  a `NowPlayingItem`, or doesn't answer: a VOD .strm plays straight from the
+  provider, and a test stream next to it cuts it) before every connection
+  (each provider, each test stream, each confirming re-check) and stand
+  aside once one is true: no
   verdict, the state kept, `skipped_at` set; the result says `skipped` and
   `checked` counts only the providers that got a verdict. One lock keeps
   them from running at once (409).
 - State: setting `provider_health` (JSON by provider id: `state`
   ok/failing/unknown, `since`, `checked_at`, `skipped_at`, `step`, `code`,
-  `kind`, `reason`, `alerted`, `recovery_due`). Reasons never carry a URL or
-  a login; times are the container's local time (`TZ`).
+  `kind`, `reason`, `alerted`, `recovery_due`, `suspect`). Reasons never
+  carry a URL or a login; times are the container's local time (`TZ`).
+- Syncs and live streams feed the same state through `note(db, provider_id,
+  ok, step, code)` (#652): no connection of its own, commits its own write,
+  never raises, ignores providers not watched. `step` "api": the VOD sync
+  (`sync._tell_provider_health`, xtream and m3u_url) and the Live TV
+  channel sync; "stream": a live stream (`livetv._tell_provider_health`, in
+  the executor on its own session). Refused = 401/403 only: the guard
+  stopped asking, or nothing was read and the last answer was a refusal
+  (`RequestGuard.refused`; one restricted category is nothing); a raw
+  re-dial or HLS channel-URL refusal the stream ended on (`health["_refused"]`);
+  a first open answered 401/403. A stream refusal is not noted while
+  another channel of the same `provider_id` delivers (streaming, heard past
+  `_HEALTHY_AFTER`, marked within `_RIVAL_STREAMING_FRESH`:
+  `_delivering_channels`, read on the loop): a per-channel 401/403, a
+  channel not in the package (#674). A first refusal sets `suspect`; a second
+  one `RETRY_DELAY_SECONDS` to `SUSPECT_SECONDS` (1 h) later is the failure
+  (since the first, API 401 = "login"); older starts again. Worked = a sync
+  that read every category (channel sync: one group), a stream delivering
+  for `_HEALTHY_AFTER` (10 s, once per streaming stretch): it clears
+  `suspect` and a failure of the same step only (the hourly check covers the
+  other). Already failing: a refusal changes nothing. A check verdict
+  clears `suspect`.
+- `_state_lock` covers every read-change-write: `note`, and the check's
+  stand-aside save and final save, which re-read the state fresh
+  (`_load_fresh`, `populate_existing`) so a note during the confirmation
+  wait survives. Notes never take `_run_lock` ("Check now" would 409).
 - Messages through `services/pushover.py` (settings `pushover_app_token`,
   `pushover_user_key`, masked; sent in the POST body): one when a provider
   starts failing, one when it works again (only if the first went out);
@@ -359,7 +407,10 @@ User docs: `docs/features/live-tv.md`.
   the first packet for a start mid-packet, judged on the first 564 bytes
   held by `_decidable_start()` -- and a text type or a `{`/`<` start; never
   proxied). A mid-packet start's partial packet is dropped. 401/403/404 stop
-  at once. A re-dial counts as a reconnect only once it delivers, and as a
+  at once, except 401/403 on a recording: waited out on the refusal cap for
+  `_DENIED_GRACE` (180 s) of unbroken refusal (#646: an IP block, Cloudflare
+  or flood protection refuses everything for a minute or two), then it ends.
+  A re-dial counts as a reconnect only once it delivers, and as a
   recovery (backoff and budget reset) only once it delivered past 10 s.
 - Many panels start every raw connection with their buffer (~20 s already
   sent, byte for byte). `_ReplaySplicer` (#368) joins a re-dialled
@@ -387,7 +438,11 @@ User docs: `docs/features/live-tv.md`.
   (401/403/404/407/410 from a token URL) re-resolves the channel URL, at most
   `_MAX_RERESOLVE` times in a row; a 407 from the channel URL itself (an
   ended session while the token is renewed) does not count for a recording
-  and is waited out on the refusal cap. Viewers keep the three tries.
+  and is waited out on the refusal cap. A 401/403 from the channel URL on a
+  recording does not count either for `_DENIED_GRACE` (180 s) of unbroken
+  refusal (`_denied_grace()`, #646), then counts as before; the token URL's
+  401/403 that starts each re-resolve always counts. Viewers keep the three
+  tries.
 - Channel ids are the provider's `stream_id` (stable across changes), used
   as `GuideNumber`; Jellyfin keys the channel, its timers and favourites on
   `hdhr_<GuideNumber>`, so it must never change. M3U channels have no

@@ -939,10 +939,13 @@ def _rematch_movie(db: Session, tmdb_id: int, new_tmdb_id: int, user_name: Optio
 
     old_strm, old_title, old_jf = row.strm_path, row.title, row.jellyfin_item_id
     try:
-        from services.sync import chown_path
+        from services.sync import _write_strm, chown_path
     except Exception:  # pragma: no cover
         def chown_path(_p):
             return None
+
+        def _write_strm(p, url):
+            p.write_text(url, encoding="utf-8")
     if _folder_is_this_copys(db, row):
         return _rematch_in_place(db, row, key, new, tags, tmdb_id, new_tmdb_id, user_name, chown_path)
     # The copy shares its folder (a download there): it moves.
@@ -956,9 +959,20 @@ def _rematch_movie(db: Session, tmdb_id: int, new_tmdb_id: int, user_name: Optio
         folder = claimed
     new_dir = root / folder
     new_strm, new_nfo = new_dir / f"{folder}.strm", new_dir / f"{folder}.nfo"
+    made_dir = not new_dir.exists()
     new_dir.mkdir(parents=True, exist_ok=True)
     chown_path(new_dir)
-    new_strm.write_text(stream_url, encoding="utf-8")
+    try:
+        _write_strm(new_strm, stream_url)   # temp file + rename: never a cut-short copy (#629)
+    except OSError as e:
+        logger.warning(f"[WrongMatch] Couldn't write {new_strm}: {e}")
+        if made_dir:
+            try:
+                new_dir.rmdir()   # only while empty
+            except OSError:
+                pass
+        raise WrongMatchError(500, "Couldn't write the new .strm file, so nothing was changed. "
+                                   "Check that Tentacle can write to the VOD folder.")
     chown_path(new_strm)
     write_movie_nfo(new_nfo, new, tags)
     chown_path(new_nfo)
