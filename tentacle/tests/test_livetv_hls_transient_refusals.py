@@ -15,7 +15,8 @@ answering again seconds later:
 Now the worker classifies statuses with _raw_retryable, like the open and
 the raw re-dial, and a 407 from the channel url is waited out for a
 recording (not counted toward _MAX_RERESOLVE) on the refusal cap. A viewer
-keeps the three-try rule for 407, and 401/403 still end a recording at once.
+keeps the three-try rule for 407. 401/403 still end a recording, after
+_DENIED_GRACE of them (#646, test_livetv_recording_denied_grace).
 
 TENTACLE_FUZZ_SEEDS (default 200) and TENTACLE_FUZZ_FIRST (default 0) pick the
 property seeds; the PR's scratch run used 2,000. Self-contained: no network.
@@ -23,6 +24,7 @@ property seeds; the PR's scratch run used 2,000. Self-contained: no network.
 import os
 import random
 import unittest
+from unittest.mock import patch
 
 import routers.livetv as livetv
 from test_livetv_token_expiry import CHANNEL, Panel, _r, _stream
@@ -128,8 +130,9 @@ class ChannelUrl407AtRenewal(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_recording_still_ends_when_the_login_is_refused(self):
         for status in (401, 403):
-            panel = _faulty(Panel(ttl=3), [{"target": "channel", "status": status, "count": 50}])
-            got, ended = await _stream(panel, segments=40, recording=True)
+            panel = _faulty(Panel(ttl=3), [{"target": "channel", "status": status, "count": 10 ** 9}])
+            with patch.object(livetv, "_DENIED_GRACE", 0.3):
+                got, ended = await _stream(panel, segments=40, recording=True)
             self.assertTrue(ended, f"{status} from the channel url did not end the recording")
 
     async def test_when_the_timer_ends_the_viewer_rule_applies_again(self):
@@ -193,7 +196,8 @@ class Property(unittest.IsolatedAsyncioTestCase):
        longer than the live window (a segment may repeat after a
        failed segment plus a re-resolve: "better a repeat than a hole", and
        main repeats in the same runs with the statuses it already waited out);
-    P3 a refused login (401/403 from the channel url, for good) still ends it;
+    P3 a refused login (401/403 from the channel url, for good) still ends it
+       (a recording after _DENIED_GRACE, patched short here);
     P4 a viewer ends on transient 5xx/509 only past its budget (never here:
        the fake clock does not advance), so it ends only on P3 or a run of
        _MAX_RERESOLVE 407s from the channel url (with the token url's 407
@@ -227,8 +231,9 @@ class Property(unittest.IsolatedAsyncioTestCase):
             status = rnd.choice(FATAL_LOGIN)
             before = [{"target": rnd.choice(["playlist", "chunk"]), "status": rnd.choice([509, 513, 522]),
                        "count": rnd.randint(1, 3)}]
-            panel = _faulty(Panel(ttl=3), before + [{"target": "channel", "status": status, "count": 99}])
-            got, ended = await _stream(panel, segments=60, recording=rnd.random() < 0.5)
+            panel = _faulty(Panel(ttl=3), before + [{"target": "channel", "status": status, "count": 10 ** 9}])
+            with patch.object(livetv, "_DENIED_GRACE", 0.05):
+                got, ended = await _stream(panel, segments=60, recording=rnd.random() < 0.5)
             self.assertTrue(ended, f"P3 seed={seed} status={status}")
 
 

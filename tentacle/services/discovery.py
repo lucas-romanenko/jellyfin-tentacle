@@ -60,12 +60,12 @@ def discover_new_provider_content(db) -> dict:
             logger.warning(f"[Discovery] VOD category refresh failed for '{p.name}': {e}")
 
     # ── Live TV groups ───────────────────────────────────────────────────
-    live_providers = (
-        db.query(Provider)
-        .filter(Provider.active == True, Provider.live_tv_enabled == True)  # noqa: E712
-        .all()
-    )
-    for p in live_providers:
+    # The guide's selector: `live_tv_enabled` alone. A provider set up on the
+    # Live TV page is active=False, so a filter on `active` skipped the normal
+    # Live TV setup (#623, the same mistake #174 fixed for the guide).
+    from routers.livetv import live_tv_providers
+
+    for p in live_tv_providers(db):
         try:
             new_names = _refresh_live_groups(db, p)
             if new_names:

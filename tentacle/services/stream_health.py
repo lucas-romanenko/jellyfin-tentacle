@@ -86,6 +86,13 @@ def _live_streams_active() -> bool:
     except Exception:
         return False
 
+def _someone_watching(db) -> bool:
+    """Live TV through Tentacle, or anything playing in Jellyfin (a VOD .strm
+    streams straight from the provider, so only Jellyfin knows)."""
+    from services.provider_activity import jellyfin_playing
+    return _live_streams_active() or jellyfin_playing(db)
+
+
 # 4xx codes that mean "not right now", not "not any more": the account's
 # max_connections are already in use, the provider is rate-limiting our own
 # sweep, or the credentials were refused. Marking a title dead on one of these
@@ -379,12 +386,12 @@ def _sweep():
     try:
         stats = {"rechecked": 0, "cleared": 0, "probed": 0, "new_bad": 0, "inconclusive": 0}
         _probe_state["provider_busy"] = False
-        if _live_streams_active():
+        if _someone_watching(db):
             stats["deferred"] = True
             set_setting(db, "stream_health_last_run", json.dumps({
                 "at": datetime.utcnow().isoformat(), **stats,
             }))
-            logger.info("[Stream health] live TV is streaming — sweep deferred, nothing probed")
+            logger.info("[Stream health] someone is watching — sweep deferred, nothing probed")
             return
 
         # 1. Recheck known-bad entries older than the recheck window
@@ -426,7 +433,7 @@ def _sweep():
                 # and stop once the provider says it is over its limit. The
                 # cursor rests on the first title NOT probed, so nothing is
                 # skipped -- the next sweep picks up here.
-                if _live_streams_active():
+                if _someone_watching(db):
                     stats["deferred"] = True
                     break
                 if _probe_state["provider_busy"]:
@@ -456,7 +463,7 @@ def _sweep():
                          f"Stream health sweep: {stats['new_bad']} dead stream(s) found "
                          f"({stats['probed']} probed)")
         if stats.get("deferred"):
-            logger.info(f"[Stream health] live TV started — sweep stopped early: {stats}")
+            logger.info(f"[Stream health] someone started watching — sweep stopped early: {stats}")
         elif stats.get("provider_busy"):
             logger.warning(f"[Stream health] provider answered 429/509 — sweep stopped early: {stats}")
         else:

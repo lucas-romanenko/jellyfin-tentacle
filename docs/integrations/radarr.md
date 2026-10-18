@@ -98,7 +98,7 @@ tentacle:
     - /path/to/movies:/media/movies    # Same folder Radarr downloads to
 ```
 
-Radarr sees this folder at `/data/movies` (inside the Radarr container). Tentacle sees it at `/media/movies`. The path mapping is handled automatically.
+Radarr may call this folder anything (`/data/movies`, `/data/media/movies`, `D:\Movies`): Tentacle finds each download by its folder name under `/media/movies`, so mount the same host folder Radarr's root folder is on. When a scan can't find downloads there, the log says so ("downloads not found under /media/movies") and no NFO or tags are written beside them.
 
 ## Download Client Prerequisites
 

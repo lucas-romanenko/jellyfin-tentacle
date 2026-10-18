@@ -18,6 +18,8 @@ from models.database import get_db, Provider, Movie, ListItem, ListSubscription,
 from services.radarr import (scan_radarr_library, RadarrService, download_loss_looks_like_an_outage, download_kind,
                              downloaded_movie_rows, release_vod_download)
 from services.nfo import update_nfo_tags, write_movie_nfo, make_folder_name, refresh_arr_nfo
+from services import media_files
+from services.media_files import arr_parent
 from services.duplicates import droppable_duplicates
 from services.tagger import tentacle_owned_tags
 from services.migration import migrate_provider, preview_migration
@@ -139,7 +141,7 @@ def write_nfos(db: Session = Depends(get_db)):
 
     _nfo_running = True
     try:
-        radarr_movies_path = "/media/movies"
+        radarr_movies_path = media_files.RADARR_MEDIA_ROOT
         logger.info(f"[NFO] Writing NFOs using base path: {radarr_movies_path}")
 
         movies = db.query(Movie).filter(Movie.source == "radarr").all()
@@ -149,8 +151,10 @@ def write_nfos(db: Session = Depends(get_db)):
 
         for db_movie in movies:
             try:
+                # Radarr's own folder, as the scan finds it (#649); else by title
                 folder_name = make_folder_name(db_movie.title, db_movie.year)
-                movie_folder = Path(radarr_movies_path) / folder_name
+                movie_folder = (media_files.local_arr_folder(arr_parent(db_movie.radarr_path), radarr_movies_path, "/data/movies")
+                                or Path(radarr_movies_path) / folder_name)
                 logger.debug(f"[NFO] {db_movie.title} → {movie_folder}")
 
                 if not movie_folder.exists():
@@ -191,6 +195,7 @@ def write_nfos(db: Session = Depends(get_db)):
                     "genres": db_movie.genres or [],
                     "poster_path": db_movie.poster_path,
                     "backdrop_path": db_movie.backdrop_path,
+                    "date_added": db_movie.downloaded_at or db_movie.date_added,
                 }
 
                 # Match NFO filename to actual video file
