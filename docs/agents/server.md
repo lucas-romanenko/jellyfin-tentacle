@@ -397,6 +397,12 @@ guide at `/api/live/xmltv.xml`, streams through `/api/live/stream/{id}`
 (follows provider redirects with the provider's user agent, HLS → MPEG-TS).
 User docs: `docs/features/live-tv.md`.
 
+- Stream format: Xtream channels open as continuous MPEG-TS (`.ts`) by
+  default, HLS only when the account's `allowed_output_formats` lacks ts or
+  the channel's ts open is refused outright (then remembered per channel
+  until restart). Chosen at open time (`_live_open_urls`), so no channel sync
+  is needed; `livetv_stream_format` = `m3u8`/`ts` overrides. Why: the comment
+  above `_LIVE_STREAM_FORMATS`.
 - Raw MPEG-TS streams re-dial from the channel URL when the provider drops
   them (`stream_generator()` in `_stream_proxy_inner`). Waited out like a
   509 (the viewer budget; no limit while a recording is attached): transport
