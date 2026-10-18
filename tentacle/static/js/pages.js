@@ -5239,20 +5239,31 @@ function _activityWaited(iso) {
 }
 
 // A card opens the title's detail, the same one Discover shows. Movies need a
-// TMDB id; a show without one opens by its TVDB id.
-function _actOpenAttrs(item) {
+// TMDB id; a show without one opens by its TVDB id. '' when there is none.
+function _actOpenKey(item) {
   const tmdb = parseInt(item.tmdb_id) || 0, tvdb = parseInt(item.tvdb_id) || 0;
   const type = item.media_type === 'series' ? 'series' : 'movie';
   if (!tmdb && !(type === 'series' && tvdb)) return '';
-  return ` role="button" tabindex="0" data-open="${type}:${tmdb}:${tvdb}"`;
+  return `${type}:${tmdb}:${tvdb}`;
 }
-// One listener for the whole tab: it re-renders every 3 seconds. The card's
-// own buttons and links keep their clicks.
+function _actOpenAttrs(item) {
+  const key = _actOpenKey(item);
+  return key ? ` data-open="${key}"` : '';
+}
+// The title is the card's button for keyboard and screen readers; the card
+// itself isn't one, as it holds its own buttons (Search again, Remove).
+// `text` is already escaped.
+function _actTitle(item, text) {
+  const key = _actOpenKey(item);
+  return `<div class="activity-title">${key ? `<button type="button" class="activity-open" data-open="${key}">${text}</button>` : text}</div>`;
+}
+// One listener for the whole tab: it re-renders every 3 seconds. A click
+// anywhere on the card opens it; its other buttons and links keep their clicks.
 function _activityCardOpen(e) {
-  if (e.type === 'keydown' && e.key !== 'Enter' && e.key !== ' ') return;
   const card = e.target.closest('.activity-card[data-open]');
   if (!card) return;
-  if (e.type === 'keydown' ? e.target !== card : e.target.closest('button, a, input, label')) return;
+  const ctl = e.target.closest('button, a, input, label');
+  if (ctl && !ctl.classList.contains('activity-open')) return;
   e.preventDefault();
   const [type, tmdb, tvdb] = card.dataset.open.split(':');
   showDiscoverDetail(+tmdb, type, undefined, undefined, undefined, undefined, +tvdb);
@@ -5264,7 +5275,6 @@ function renderActivity(data) {
   if (!content._actOpen) {
     content._actOpen = true;
     content.addEventListener('click', _activityCardOpen);
-    content.addEventListener('keydown', _activityCardOpen);
   }
   if (!data) data = _activityData;
   if (!data) { content.innerHTML = '<div class="activity-empty">Loading…</div>'; return; }
@@ -5301,7 +5311,7 @@ function renderActivity(data) {
       return `<div class="activity-card" data-morph-key="dl:${escapeAttr(String(dl.source || ''))}:${escapeAttr(String(dl.queue_id ?? dl.title ?? ''))}"${_actOpenAttrs(dl)}>
         <div class="activity-poster">${poster}</div>
         <div class="activity-info">
-          <div class="activity-title">${escapeAttr(dl.title)}${epLabel}</div>
+          ${_actTitle(dl, escapeAttr(dl.title) + epLabel)}
           <div class="activity-meta">${dl.year || ''}${metaParts ? ' · ' + metaParts : ''} ${reqByLabel}</div>
           <div class="activity-progress">
             <div class="activity-progress-bar"><div class="activity-progress-fill ${statusClass}" style="width:${pct}%"></div></div>
@@ -5334,7 +5344,7 @@ function renderActivity(data) {
       return `<div class="activity-card" data-morph-key="s:${escapeAttr(key)}"${_actOpenAttrs(item)}>
         <div class="activity-poster">${poster}</div>
         <div class="activity-info">
-          <div class="activity-title">${escapeAttr(item.title)}${item.episode ? ' · ' + escapeAttr(item.episode) : ''}</div>
+          ${_actTitle(item, escapeAttr(item.title) + (item.episode ? ' · ' + escapeAttr(item.episode) : ''))}
           <div class="activity-meta">${escapeAttr(item.year || '')} · Looking for a release ${reqByLabel}</div>
           ${item.check ? `<div class="activity-check ${escapeAttr(item.check.state)}" title="${escapeAttr(item.check.summary)}">${escapeAttr(item.check.short)}</div>` : ''}
           <div class="activity-countdown activity-searching">${waited ? 'Searching for ' + escapeAttr(waited) : 'Searching'}</div>
@@ -5362,7 +5372,7 @@ function renderActivity(data) {
       return `<div class="activity-card" data-morph-key="r:${escapeAttr(item.media_type || '')}:${escapeAttr(String(item.tmdb_id || 0))}:${escapeAttr(item.episode || '')}"${_actOpenAttrs(item)}>
         <div class="activity-poster">${poster}</div>
         <div class="activity-info">
-          <div class="activity-title">${escapeAttr(item.title)}${item.episode ? ' · ' + escapeAttr(item.episode) : ''}</div>
+          ${_actTitle(item, escapeAttr(item.title) + (item.episode ? ' · ' + escapeAttr(item.episode) : ''))}
           <div class="activity-meta">${item.year || ''} · Ready to watch</div>
           ${hrs ? `<div class="activity-countdown" style="color:var(--green)">${hrs}</div>` : ''}
         </div>
@@ -5377,7 +5387,7 @@ function renderActivity(data) {
     html += coming.map(item => `<div class="activity-card" data-morph-key="c:${escapeAttr(String(item.tmdb_id || item.tvdb_id || 0))}:${escapeAttr(item.episode || '')}"${_actOpenAttrs(item)}>
         <div class="activity-poster">${_activityPoster(item.poster_path)}</div>
         <div class="activity-info">
-          <div class="activity-title">${escapeAttr(item.title)} · ${escapeAttr(item.episode)}</div>
+          ${_actTitle(item, escapeAttr(item.title) + ' · ' + escapeAttr(item.episode))}
           <div class="activity-meta">${escapeAttr(item.episode_title || '')}</div>
           <div class="coming-day">${escapeAttr(_airDay(item.air_date_utc))}</div>
         </div>
@@ -5399,7 +5409,7 @@ function renderActivity(data) {
       return `<div class="activity-card" data-morph-key="u:${escapeAttr(item.media_type || '')}:${escapeAttr(String(item.tmdb_id || item.tvdb_id || 0))}"${_actOpenAttrs(item)}>
         <div class="activity-poster">${poster}</div>
         <div class="activity-info">
-          <div class="activity-title">${escapeAttr(item.title)}</div>
+          ${_actTitle(item, escapeAttr(item.title))}
           <div class="activity-meta">${item.year || ''} · ${escapeAttr(item.release_date || '')}</div>
           ${daysUntil ? `<div class="activity-countdown">${escapeAttr(daysUntil)}</div>` : ''}
         </div>

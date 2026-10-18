@@ -1,10 +1,16 @@
-"""Dashboard Activity cards open the title they show (#143).
+"""Dashboard Activity cards open the title they show (#143), without a
+control inside a control (#281).
 
 Run from the tentacle/ directory:  python -m unittest discover -s tests
 
 Every card on the Activity tab (Downloading, Searching, Recently Downloaded,
 Coming up, Upcoming) had a hover border but no handler, so clicking did
-nothing. Runs the real _actOpenAttrs() and _activityCardOpen() under node.
+nothing (#143). The fix made the whole card role="button", which wraps the
+Searching card's own buttons (Search again / Why? / Remove): axe
+nested-interactive, and a screen reader hears one button inside another
+(#281). The card's title is now the real button; a click anywhere else on
+the card still opens it. Runs the real _actOpenKey(), _actOpenAttrs(),
+_actTitle() and _activityCardOpen() under node.
 """
 import json
 import re
@@ -14,6 +20,7 @@ import unittest
 from pathlib import Path
 
 PAGES = (Path(__file__).resolve().parents[1] / "static" / "js" / "pages.js").read_text(encoding="utf-8")
+FUNCS = ("_actOpenKey", "_actOpenAttrs", "_actTitle", "_activityCardOpen")
 
 
 def _fn(name):
@@ -25,7 +32,6 @@ SCRIPT = """
 const opened = [];
 function showDiscoverDetail(...args) { opened.push([args[0], args[1], args[6]]); }
 %s
-%s
 // A card element, built from the attributes the template writes.
 function card(item) {
   const attrs = _actOpenAttrs(item);
@@ -34,25 +40,25 @@ function card(item) {
                closest(sel) { return sel.startsWith('.activity-card') && m ? el : null; } };
   return el;
 }
-function click(target) {
-  let prevented = false;
-  _activityCardOpen({ type: 'click', target, preventDefault() { prevented = true; } });
-  return prevented;
+// A button inside the card: the title's own (activity-open) or Search again / Remove.
+function button(inside, cls) {
+  return { classList: { contains: c => c === cls },
+           closest(sel) { return sel === 'button, a, input, label' ? this : (sel.startsWith('.activity-card') ? inside : null); } };
 }
-function button(inside) {
-  return { closest(sel) { return sel === 'button, a, input, label' ? this : (sel.startsWith('.activity-card') ? inside : null); } };
+function click(target) {
+  _activityCardOpen({ type: 'click', target, preventDefault() {} });
 }
 const out = {};
 const movie = card({ tmdb_id: 603, media_type: 'movie' });
 const show = card({ tmdb_id: 0, tvdb_id: 81189, media_type: 'series' });
 const tvdbMovie = card({ tmdb_id: 0, tvdb_id: 5, media_type: 'movie' });
-out.role = movie.attrs.includes('role="button" tabindex="0"');
+out.attrs = movie.attrs;
 out.tvdb_movie_attrs = tvdbMovie.attrs;
+out.title = _actTitle({ tmdb_id: 603, media_type: 'movie' }, 'The Matrix');
+out.plain_title = _actTitle({ tmdb_id: 0, tvdb_id: 5, media_type: 'movie' }, 'No id');
 click(movie); click(show);
-click(button(movie));   // the card's own Search again / Remove button
-_activityCardOpen({ type: 'keydown', key: 'Enter', target: movie, preventDefault() {} });
-_activityCardOpen({ type: 'keydown', key: 'a', target: movie, preventDefault() {} });
-_activityCardOpen({ type: 'keydown', key: ' ', target: button(movie), preventDefault() {} });
+click(button(movie, 'activity-open'));   // the title button (mouse, or Enter/Space on it)
+click(button(movie, 'activity-act-btn')); // the card's own Search again / Remove button
 out.opened = opened;
 process.stdout.write(JSON.stringify(out));
 """
@@ -63,23 +69,33 @@ class ActivityCardsOpen(unittest.TestCase):
         start = PAGES.index("function renderActivity(data) {")
         self.render = PAGES[start:PAGES.index("// ── DISCOVER PAGE", start)]
 
-    def test_every_card_is_openable(self):
+    def test_every_card_is_openable_by_its_title_button(self):
         cards = re.findall(r'<div class="activity-card"([^>]*)>', self.render)
         self.assertEqual(5, len(cards), "one per section")
         for attrs in cards:
             self.assertRegex(attrs, r"\$\{_actOpenAttrs\((dl|item)\)\}")
+        self.assertEqual(5, len(re.findall(r"\$\{_actTitle\((dl|item), ", self.render)), "one title per section")
+        self.assertNotIn('<div class="activity-title">', self.render, "titles come from _actTitle")
         self.assertIn("content.addEventListener('click', _activityCardOpen);", self.render)
-        self.assertIn("content.addEventListener('keydown', _activityCardOpen);", self.render)
+        # The title is a real button: no key handling of our own.
+        self.assertNotIn("addEventListener('keydown', _activityCardOpen)", self.render)
+
+    def test_card_is_not_a_button_around_buttons(self):
+        self.assertNotIn('role="button"', _fn("_actOpenAttrs"))
+        self.assertNotIn("tabindex", _fn("_actOpenAttrs"))
 
     @unittest.skipUnless(shutil.which("node"), "node is not installed")
-    def test_click_and_keyboard_open_the_title_and_buttons_keep_theirs(self):
-        run = subprocess.run(["node", "-e", SCRIPT % (_fn("_actOpenAttrs"), _fn("_activityCardOpen"))],
+    def test_card_and_title_open_the_title_and_buttons_keep_theirs(self):
+        run = subprocess.run(["node", "-e", SCRIPT % "\n".join(_fn(f) for f in FUNCS)],
                              capture_output=True, text=True, timeout=30)
         if run.returncode:
             raise AssertionError(run.stderr)
         out = json.loads(run.stdout)
-        self.assertTrue(out["role"])
-        # Clicked movie, clicked TVDB-only show, Enter on the movie: nothing else.
+        self.assertEqual(' data-open="movie:603:0"', out["attrs"])
+        self.assertEqual('<div class="activity-title"><button type="button" class="activity-open" '
+                         'data-open="movie:603:0">The Matrix</button></div>', out["title"])
+        self.assertEqual('<div class="activity-title">No id</div>', out["plain_title"])
+        # Clicked movie card, clicked TVDB-only show card, the title button: nothing else.
         self.assertEqual([[603, "movie", 0], [0, "series", 81189], [603, "movie", 0]], out["opened"])
         self.assertEqual("", out["tvdb_movie_attrs"], "a movie has no TVDB detail to open")
 
