@@ -394,6 +394,7 @@ PROBLEMS_TTL = 60
 LOW_DISK_BYTES = 20 * 1024 ** 3
 LOW_DISK_FRACTION = 0.05
 _problems_cache: dict = {"at": 0, "data": None}
+_problems_lock = threading.Lock()
 
 # Health sources that stop downloads from happening.
 _KINDS = [("indexer", "indexer"), ("downloadclient", "download_client"), ("rootfolder", "root_folder"),
@@ -441,11 +442,30 @@ def _disk_problems(url: str, key: str, app: str) -> list:
     return out
 
 
-def problems(db: Session) -> list:
-    """Warnings and errors from Radarr/Sonarr's health list, plus low disk space."""
-    now = time.time()
-    if _problems_cache["data"] is not None and now - _problems_cache["at"] < PROBLEMS_TTL:
+def _fresh_problems() -> Optional[list]:
+    if _problems_cache["data"] is not None and time.time() - _problems_cache["at"] < PROBLEMS_TTL:
         return _problems_cache["data"]
+    return None
+
+
+def problems(db: Session) -> list:
+    """Warnings and errors from Radarr/Sonarr's health list, plus low disk space.
+    Cached for PROBLEMS_TTL; concurrent callers share one pass."""
+    cached = _fresh_problems()
+    if cached is not None:
+        return cached
+    with _problems_lock:
+        cached = _fresh_problems()  # read by the request we waited for
+        if cached is not None:
+            return cached
+        out = _read_problems(db)
+        # Counted from when the apps were read, not from when the pass
+        # started: a pass slower than the TTL was stored already expired.
+        _problems_cache.update(at=time.time(), data=out)
+        return out
+
+
+def _read_problems(db: Session) -> list:
     out, seen_disks = [], set()
     for app_key, app in (("radarr", "Radarr"), ("sonarr", "Sonarr")):
         url, key = _conn(db, app_key)
@@ -473,7 +493,6 @@ def problems(db: Session) -> list:
                     out.append(p)
         except Exception as e:
             logger.debug(f"[Insight] {app} disk space check failed: {e}")
-    _problems_cache.update(at=now, data=out)
     return out
 
 

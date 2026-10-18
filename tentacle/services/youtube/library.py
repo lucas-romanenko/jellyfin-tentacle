@@ -6,7 +6,9 @@ endpoint, plus an NFO. Nothing is downloaded.
 Two rules worth keeping:
   * The .strm content never changes once written. It is a stable Tentacle URL,
     so there is nothing to rewrite — and rewriting would reset the file's mtime,
-    which wipes any media segments Jellyfin has scanned for it.
+    which wipes any media segments Jellyfin has scanned for it. Only a blank
+    or cut-short file (a write cut short, #629) or a changed base URL
+    (rewrite_strm) is written again, always through sync._write_strm.
   * Files live under their own media root, and removal only ever touches a
     single video's own folder. Nothing here recurses over a shared parent.
 """
@@ -231,6 +233,20 @@ def _owned(path) -> None:
     chown_path(path)
 
 
+def _strm_missing_or_cut_short(strm: Path, wanted: str) -> bool:
+    """True when the .strm is missing, blank, or holds only the start of its
+    address: a write cut short (#629). A whole file, or anything else in it
+    (an old base URL is rewrite_strm's job), is left alone, as is one that
+    can't be read."""
+    if not strm.exists():
+        return True
+    try:
+        current = strm.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return False
+    return current != wanted and wanted.startswith(current)
+
+
 def write_video(video, channel, base_url: str, root: Path = None) -> dict:
     """Create the folder, .strm and NFO for one video. Idempotent."""
     folder = video_folder(channel.title, video, root)
@@ -247,8 +263,10 @@ def write_video(video, channel, base_url: str, root: Path = None) -> dict:
     nfo = folder / "movie.nfo"
 
     wrote_strm = False
-    if not strm.exists():
-        strm.write_text(strm_url(base_url, video.video_id), encoding="utf-8")
+    wanted = strm_url(base_url, video.video_id)
+    if _strm_missing_or_cut_short(strm, wanted):
+        from services.sync import _write_strm
+        _write_strm(strm, wanted)
         _owned(strm)
         wrote_strm = True
 
@@ -303,7 +321,8 @@ def rewrite_strm(video, base_url: str) -> bool:
     try:
         if path.read_text(encoding="utf-8").strip() == wanted:
             return False
-        path.write_text(wanted, encoding="utf-8")
+        from services.sync import _write_strm
+        _write_strm(path, wanted)   # temp file + rename: a write cut short keeps the old file (#629)
         return True
     except OSError as e:
         logger.warning(f"[YouTube] Could not rewrite {path}: {e}")

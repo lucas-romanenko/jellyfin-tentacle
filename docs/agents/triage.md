@@ -25,3 +25,13 @@ without the `approved` label). Tentacle specifics:
 - Issue forms: `.github/ISSUE_TEMPLATE/` (bug report, feature request;
   `config.yml` keeps blank issues for questions and links the docs,
   troubleshooting page and Discussions).
+
+## Product direction (check every feature request against it)
+
+Recommend Build it or Not now, and say which of these a request runs into:
+
+- Tentacle is for other people's installs too: a feature has to make sense
+  beyond the maintainer's own setup.
+- Home is the library: only what you have and can watch right away.
+  Discover (TMDB suggestions, things to add) stays on its own Discover page,
+  never as a Home row. A Discover row on Home has been turned down.

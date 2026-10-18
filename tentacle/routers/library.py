@@ -607,7 +607,7 @@ def delete_library_item(
     db.commit()
 
     log_deletion(db, kind="jellyfin-delete", name=title, media_type=media_type, reason="webhook",
-                 detail="Deleted via Jellyfin native UI — Tentacle DB record and playlists cleaned up")
+                 detail="Deleted in Jellyfin — Tentacle DB record and playlists cleaned up")
     emit_library_event(f"{media_type}_removed", {"tmdb_id": tmdb_id, "media_type": media_type})
 
     # Remove the deleted item from all users' playlists in background, by its

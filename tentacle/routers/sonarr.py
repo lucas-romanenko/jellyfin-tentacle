@@ -10,9 +10,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from models.database import get_db, Series, ListItem, ListSubscription, DownloadRequest, Duplicate, get_setting, log_activity
-from services.sonarr import scan_sonarr_library, SonarrService
+from services.sonarr import (scan_sonarr_library, SonarrService, holds_series_download,
+                             release_vod_series_download)
 from services.duplicates import droppable_duplicates
 from services.nfo import update_nfo_tags, write_series_nfo, refresh_arr_nfo
+from services import media_files
 from services.tagger import tentacle_owned_tags
 from services.logstream import emit_library_event
 
@@ -92,7 +94,7 @@ def write_nfos(db: Session = Depends(get_db)):
     from pathlib import Path
     from services.tagger import apply_tag_rules, get_list_tags_for_tmdb_id
 
-    sonarr_series_path = "/media/shows"
+    sonarr_series_path = media_files.SONARR_MEDIA_ROOT
     logger.info(f"[NFO] Writing series NFOs using base path: {sonarr_series_path}")
 
     all_series = db.query(Series).filter(Series.source == "sonarr").all()
@@ -102,15 +104,15 @@ def write_nfos(db: Session = Depends(get_db)):
 
     for db_series in all_series:
         try:
-            # Use sonarr_path if available, otherwise construct from base path
+            # Sonarr's own folder, as the scan finds it (#649); without a path, by title
             if db_series.sonarr_path:
-                series_folder = Path(db_series.sonarr_path)
+                series_folder = media_files.local_arr_folder(db_series.sonarr_path, sonarr_series_path, "/data/shows")
             else:
                 from services.nfo import make_folder_name
                 folder_name = make_folder_name(db_series.title, db_series.year)
                 series_folder = Path(sonarr_series_path) / folder_name
 
-            if not series_folder.exists():
+            if series_folder is None or not series_folder.exists():
                 skipped += 1
                 continue
 
@@ -147,6 +149,7 @@ def write_nfos(db: Session = Depends(get_db)):
                 "poster_path": db_series.poster_path,
                 "backdrop_path": db_series.backdrop_path,
                 "status": db_series.status,
+                "date_added": db_series.downloaded_at or db_series.date_added,
             }
 
             nfo_path = series_folder / "tvshow.nfo"
@@ -223,18 +226,25 @@ def sonarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
     if event_type == "SeriesDelete":
         if tmdb_id:
             try:
-                # Clear following state on any matching series (hybrid VOD+Sonarr)
+                # A VOD show Sonarr held too: it is VOD only again, and one that
+                # held a download stops claiming it (#617). One still searching
+                # only loses its Sonarr state.
+                released = False
                 hybrid = db.query(Series).filter(Series.tmdb_id == tmdb_id, Series.source != "sonarr").first()
                 if hybrid:
                     hybrid.sonarr_monitored = False
-                    hybrid.sonarr_path = None
+                    if holds_series_download(hybrid):
+                        release_vod_series_download(db, hybrid)
+                        released = True
+                    else:
+                        hybrid.sonarr_path = None
                 deleted = db.query(Series).filter(Series.tmdb_id == tmdb_id, Series.source == "sonarr").delete()
                 db.query(DownloadRequest).filter(DownloadRequest.tmdb_id == tmdb_id, DownloadRequest.media_type == "series").delete()
                 # Clear duplicate tombstones — deleting the downloaded copy is a
                 # clean slate; the title may legitimately re-import from VOD later.
                 # Not while Keep VOD (whose delete sent this) holds them, nor
                 # one holding users' saved watched state (#515).
-                if deleted:
+                if deleted or released:
                     droppable_duplicates(db, "series", tmdb_id).delete(synchronize_session=False)
                 db.commit()
             except Exception as e:
@@ -249,6 +259,11 @@ def sonarr_webhook(payload: dict, request: Request, db: Session = Depends(get_db
                 # VOD one "first with this TMDB id" (#296)
                 threading.Thread(target=_cleanup_playlists_all_users, args=(tmdb_id, "series"),
                                  kwargs={"arr_folder": series_data.get("path")}, daemon=True).start()
+            elif released:
+                # No playlist clean-up: Jellyfin usually merges the two folders
+                # into one show, which must stay in its VOD playlists. The tag
+                # push and the next playlist refresh take it out of the rest.
+                log_activity(db, "sonarr_remove", f"Removed the download of '{title}'; the VOD show stays")
             logger.info(f"[Sonarr webhook] SeriesDelete for '{title}' (tmdb:{tmdb_id}) — removed {deleted} from DB")
         return {"status": "deleted", "tmdb_id": tmdb_id}
 

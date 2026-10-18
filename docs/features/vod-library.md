@@ -179,7 +179,8 @@ a storage hiccup must never be able to wipe a library:
   mergerfs, unionfs, NFS, SMB and rclone, where a branch dropping out makes
   every file report as missing while the mount itself stays up.
 
-Blocked removals are recorded in the deletion log (Settings → Deletion Log).
+Blocked removals are recorded in the deletion log (Health → Deletion Log) as
+"refused": nothing is deleted.
 
 ## Opting a Title Out of `.strm` Management
 

@@ -34,8 +34,9 @@ import httpx
 from datetime import datetime, timedelta
 from typing import Optional, List
 
+from services import provider_health
 from services.epg_categories import infer_category
-from services.exceptions import ProviderRefusedError
+from services.exceptions import ProviderDataError, ProviderRefusedError
 from services.youtube import livetv as youtube_livetv
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -99,6 +100,10 @@ async def _send_checked(client, url: str, headers: dict, guard=None):
     Returns the open streaming response (caller closes it) for the first hop
     that is not a redirect.
 
+    A URL that names a provider placeholder (black.ts, ...: _placeholder_name),
+    the first one or a redirect target, is never fetched: it raises
+    _ProviderPlaceholder, and then no response is open (#624).
+
     `guard` validates every hop; callers pass one scoped to the channel's
     provider (#76) so a deliberately-configured LAN re-streamer works while
     everything else is still held to is_safe_url().
@@ -106,6 +111,9 @@ async def _send_checked(client, url: str, headers: dict, guard=None):
     guard = guard or is_safe_url
     current = url
     for _ in range(_MAX_STREAM_REDIRECTS):
+        placeholder = _placeholder_name(current)
+        if placeholder:
+            raise _ProviderPlaceholder(placeholder)
         req = client.build_request("GET", current, headers=headers)
         resp = await client.send(req, stream=True)
         if resp.status_code not in (301, 302, 303, 307, 308):
@@ -184,7 +192,9 @@ def _raw_retryable(status) -> bool:
     has just handed out -- and any 5xx, including the non-standard 513 and
     Cloudflare's 520-524. Both cleared within minutes in production, while
     ending on them cut running recordings for good (#298). 401/403/404 still
-    stop at once: at the channel URL they mean the login or the channel."""
+    stop at once: at the channel URL they mean the login or the channel --
+    except 401/403 on a running recording's re-dial, waited out for
+    _DENIED_GRACE first (#646)."""
     return status is not None and (status in _OPEN_RETRYABLE_STATUS or status == 407
                                    or 500 <= status < 600)
 
@@ -423,7 +433,8 @@ def _raw_media_type(content_type: str) -> str:
 # Except a 407 from the channel URL itself on a RECORDING: this provider
 # family answers 407 for an ended session for a few seconds while the token
 # is renewed, so it is waited out like a refusal, as the raw path does
-# (_raw_retryable). 401/403 there still end it: the login is refused.
+# (_raw_retryable). 401/403 there are waited out for _DENIED_GRACE on a
+# recording (#646), then end it: the login is refused.
 _TOKEN_EXPIRED_STATUS = {401, 403, 404, 407, 410}
 _MAX_RERESOLVE = 3
 # #184: a running HLS stream refused (429/509) for _REVIVE_AFTER s in a row
@@ -455,9 +466,17 @@ _RIVAL_STREAMING_FRESH = 60.0
 _REVIVE_RESET_AFTER = 600.0
 # How often a raw TS stream re-marks itself as delivering (Q1).
 _RAW_MARK_EVERY = 5.0
+# A connection that delivered this long is a stream that works (#335): it
+# ends a raw re-dial's outage, and tells provider health (#652).
+_HEALTHY_AFTER = 10.0
 # For a recording, a 404/410 counts toward _MAX_RERESOLVE only after this long
 # of unbroken 404/410 (a panel blip is seconds); viewers keep the 3-try rule.
 _GONE_GRACE = 180.0
+# For a recording, a 401/403 is waited out on the refusal cap for this long of
+# unbroken 401/403 before it ends the stream (#646: an IP block, Cloudflare or
+# a panel's flood protection refuses everything for a minute or two). Raw TS:
+# the re-dial; HLS: the channel URL's answer to a re-resolve. Viewers end at once.
+_DENIED_GRACE = 180.0
 # An HLS recording whose channel URL keeps answering with a continuous stream
 # instead of a playlist ends after this long, so Jellyfin re-opens on it.
 _STREAM_ANSWER_LIMIT = 120.0
@@ -484,7 +503,7 @@ _REFUSAL_BACKOFF_CAP = 15.0
 # usually black. Proxied as the channel, a scheduled recording "succeeds" with
 # ten minutes of black that Jellyfin never retries, or dies on its own buffer
 # with an error that says nothing about the cause (#140). Recognised by file
-# name, never fetched, and refused with a 503 while the channel is opening, so
+# name, never fetched (redirect targets included: _send_checked), and refused with a 503 while the channel is opening, so
 # Jellyfin fails the timer honestly and tries again a minute later.
 _PLACEHOLDER_STEMS = {
     "black",
@@ -1043,9 +1062,20 @@ def _live_stream_format(db) -> str:
     return raw if raw in _LIVE_STREAM_FORMATS else _DEFAULT_LIVE_STREAM_FORMAT
 
 
+# Settings kept per provider, keyed by its id. Deleted with the provider
+# (providers.delete_provider): SQLite gives the next provider the same id, which
+# would inherit them (#625). A new per-provider key goes in PROVIDER_SETTING_KEYS.
+_OUTPUT_FORMATS_KEY = "livetv_output_formats_{}"
+_EPG_COVERAGE_KEY = "livetv_epg_coverage_{}"
+_EPG_SYNCED_KEY = "livetv_epg_synced_{}"
+_M3U_SWITCHED_OFF_KEY = "livetv_m3u_switched_off_{}"
+PROVIDER_SETTING_KEYS = (_OUTPUT_FORMATS_KEY, _EPG_COVERAGE_KEY, _EPG_SYNCED_KEY,
+                         _M3U_SWITCHED_OFF_KEY)
+
+
 def _remembered_output_formats(db, provider_id: int) -> list:
     import json
-    raw = get_setting(db, f"livetv_output_formats_{provider_id}", "") or ""
+    raw = get_setting(db, _OUTPUT_FORMATS_KEY.format(provider_id), "") or ""
     try:
         val = json.loads(raw) if raw.strip() else []
     except ValueError:
@@ -1058,7 +1088,7 @@ def _remember_output_formats(db, provider_id: int, info: dict) -> None:
     import json
     formats = ((info or {}).get("user_info") or {}).get("allowed_output_formats")
     if isinstance(formats, list) and formats:
-        set_setting(db, f"livetv_output_formats_{provider_id}",
+        set_setting(db, _OUTPUT_FORMATS_KEY.format(provider_id),
                     json.dumps([str(v).lower() for v in formats]))
 
 
@@ -1528,6 +1558,8 @@ def _stream_ended(channel_id: int, entry: dict, recording: bool, hls: bool = Fal
                "replay_bytes_skipped": h.get("replay_bytes_skipped", 0)}
     _recent_streams.append(summary)
     del _recent_streams[:-_RECENT_STREAMS_MAX]
+    if h.get("ended_on_error") and h.get("_refused") in (401, 403):
+        _tell_provider_health(channel_id, False, h["_refused"])
     # A raw TS reconnect is a gap unless it was joined where the stream
     # stopped (#368): then the provider's buffer covered the wait. An HLS
     # "interruption" can be one segment retried in place within the playlist
@@ -1594,8 +1626,78 @@ def _status_set(channel_id: int, state: str, last_error: "str | None" = None):
     if state == "streaming":
         cur["last_ok"] = now          # when it last delivered (#184's rival test)
         cur.pop("waiting_for", None)
+        if now - cur["since"] >= _HEALTHY_AFTER and cur.get("heard_since") != cur["since"]:
+            # Delivering for _HEALTHY_AFTER: once per stretch, so a stream
+            # that recovers mid-recording is heard within seconds (#652).
+            cur["heard_since"] = cur["since"]
+            _tell_provider_health(channel_id, True)
     if last_error is not None:
         cur["last_error"] = last_error
+
+
+def _refusal_heard(health: dict, status) -> None:
+    """The provider's latest answer to this stream's channel URL: a 401/403
+    is kept until something else answers, so a stream that ends on it tells
+    provider health (#652). 407, 404/410 and 429/509 are not refusals."""
+    if status in (401, 403):
+        health["_refused"] = status
+    else:
+        health.pop("_refused", None)
+
+
+def _delivering_channels(except_id: int) -> "list[int]":
+    """Channels other than except_id whose stream delivers now: streaming,
+    this stretch heard past _HEALTHY_AFTER, marked within
+    _RIVAL_STREAMING_FRESH (#674). Reads _stream_status: event loop only."""
+    try:
+        now = asyncio.get_running_loop().time()
+    except RuntimeError:
+        return []
+    out = []
+    for cid, st in list(_stream_status.items()):
+        if cid == except_id or st.get("state") != "streaming":
+            continue
+        if st.get("heard_since") is None or st.get("heard_since") != st.get("since"):
+            continue
+        last = st.get("last_ok")
+        if last is not None and now - last <= _RIVAL_STREAMING_FRESH:
+            out.append(cid)
+    return out
+
+
+def _tell_provider_health(channel_id: int, ok: bool, code=None):
+    """What a live stream learned about its provider, for provider health
+    (#652). In the default executor with a session of its own: the event
+    loop never touches the database. A refusal while another channel of the
+    same provider delivers is about that channel, not the provider: not
+    noted (#674). Never raises; the future (None without a running loop) is
+    only awaited by tests."""
+    delivering = [] if ok else _delivering_channels(channel_id)
+
+    def _write():
+        db = None
+        try:
+            db = SessionLocal()
+            provider_id = (db.query(LiveChannel.provider_id)
+                           .filter(LiveChannel.id == channel_id).scalar())
+            if not isinstance(provider_id, int):
+                return
+            if delivering and db.query(LiveChannel.id).filter(
+                    LiveChannel.id.in_(delivering),
+                    LiveChannel.provider_id == provider_id).first() is not None:
+                logger.info(f"[LiveTV] Channel {channel_id} was refused (HTTP {code}) while another "
+                            f"channel of the same provider delivers: not counted against the provider")
+                return
+            provider_health.note(db, provider_id, ok, "stream", code)
+        except Exception as e:
+            logger.debug(f"[LiveTV] Could not tell provider health about channel {channel_id}: {e}")
+        finally:
+            if db is not None:
+                db.close()
+    try:
+        return asyncio.get_running_loop().run_in_executor(None, _write)
+    except RuntimeError:
+        return None
 
 
 def _account_key(provider) -> "tuple | None":
@@ -2251,7 +2353,7 @@ def epg_coverage(provider_id: Optional[int] = None, db: Session = Depends(get_db
     for p in live_tv_providers(db):
         if provider_id and p.id != provider_id:
             continue
-        raw = get_setting(db, f"livetv_epg_coverage_{p.id}", "")
+        raw = get_setting(db, _EPG_COVERAGE_KEY.format(p.id), "")
         try:
             report = json.loads(raw) if raw else None
         except ValueError:
@@ -2483,6 +2585,7 @@ def _sync_channels_from_xtream(provider_data: dict, db: Session) -> dict:
         user_agent=provider_data["user_agent"],
     )
 
+    all_failed = False
     try:
         # Get enabled groups and their category IDs
         enabled_groups = db.query(LiveChannelGroup).filter(
@@ -2501,6 +2604,8 @@ def _sync_channels_from_xtream(provider_data: dict, db: Session) -> dict:
 
         # Fetch per-category (only enabled ones)
         all_streams = []
+        failed_groups = 0
+        last_error = None
         for i, cat_id in enumerate(category_ids):
             try:
                 streams = client.get_live_streams(category_id=cat_id)
@@ -2508,6 +2613,8 @@ def _sync_channels_from_xtream(provider_data: dict, db: Session) -> dict:
             except ProviderRefusedError:
                 raise   # the provider refuses this server: no more groups, no lineup to save (#149)
             except Exception as e:
+                failed_groups += 1
+                last_error = e
                 logger.warning(f"[LiveTV] {provider_name}: failed to fetch category {cat_id}: {e}")
 
             pct = 5 + int(((i + 1) / len(category_ids)) * 85)
@@ -2517,6 +2624,15 @@ def _sync_channels_from_xtream(provider_data: dict, db: Session) -> dict:
             })
             if (i + 1) % 20 == 0 or (i + 1) == len(category_ids):
                 logger.info(f"[LiveTV] {provider_name}: {i + 1}/{len(category_ids)} groups, {len(all_streams)} channels")
+
+        # Every enabled group failed (fewer refusals than the guard's limit,
+        # or 5xx): an error, not a sync of 0 channels (#630). The requests
+        # error text holds the URL with the login: redact it.
+        if category_ids and failed_groups == len(category_ids):
+            from services.log_redaction import redact
+            all_failed = True
+            raise ProviderDataError(
+                f"none of the {len(category_ids)} enabled group(s) could be read ({redact(str(last_error))})")
 
         logger.info(f"[LiveTV] {provider_name}: {len(all_streams)} channels fetched for enabled groups")
         _set_sync_status(provider_id, {"phase": "running", "progress": 95, "message": f"Saving {len(all_streams)} channels..."})
@@ -2540,10 +2656,20 @@ def _sync_channels_from_xtream(provider_data: dict, db: Session) -> dict:
         db.commit()
 
         log_activity(db, "livetv_sync", f"Live TV channel sync for {provider_name}: {stats['new']} new, {stats['updated']} updated, {stats['total']} total")
+        if category_ids:
+            # At least one group read: the provider answers this server (#652)
+            provider_health.note(db, provider_id, True, "api")
         return stats
 
     except Exception as e:
         logger.error(f"[LiveTV] Channel sync failed for {provider_name}: {e}", exc_info=True)
+        # Refused (the guard stopped, or every group answered 401/403):
+        # provider health hears it, even while its own check stands aside
+        # for a recording (#652). Never one group a panel restricts.
+        guard = getattr(client, "guard", None)
+        refused = guard.refused(all_failed) if guard is not None else None
+        if refused in (401, 403):
+            provider_health.note(db, provider_id, False, "api", refused)
         raise
     finally:
         client.close()
@@ -2885,9 +3011,9 @@ def _dedupe_m3u(parsed_channels: list[dict]) -> list[dict]:
 # Channels the user switched off that the M3U playlist then dropped (#158). An
 # M3U sync deletes a channel that leaves the playlist, and one listed again is
 # a NEW row, which starts with its group's state: a channel switched off in an
-# enabled group came back on. Their names are kept per provider, so one that
-# returns stays off. (Xtream channels are never deleted, so they keep the row.)
-_M3U_SWITCHED_OFF_KEY = "livetv_m3u_switched_off_{}"
+# enabled group came back on. Their names are kept per provider
+# (_M3U_SWITCHED_OFF_KEY), so one that returns stays off. (Xtream channels are
+# never deleted, so they keep the row.)
 _M3U_SWITCHED_OFF_MAX = 2000
 
 
@@ -3172,7 +3298,7 @@ def _epg_resync_useless(db: Session, provider, missing: set) -> bool:
     programmes: running it again can't give those channels a guide (#466)."""
     import json
     try:
-        last = json.loads(get_setting(db, f"livetv_epg_synced_{provider.id}", "") or "null")
+        last = json.loads(get_setting(db, _EPG_SYNCED_KEY.format(provider.id), "") or "null")
     except ValueError:
         return False
     if not isinstance(last, dict) or not missing <= set(last.get("empty") or ()):
@@ -3428,10 +3554,10 @@ def _run_epg_sync_background(provider_data: dict):
                 from services.epg_match import coverage_report, coverage_summary
                 report = coverage_report(chan_info, resolved, kept)
                 report["at"] = datetime.utcnow().isoformat() + "Z"
-                set_setting(db, f"livetv_epg_coverage_{pid}", json.dumps(report))
+                set_setting(db, _EPG_COVERAGE_KEY.format(pid), json.dumps(report))
                 coverage_note = f" — {coverage_summary(report)}"
 
-            set_setting(db, f"livetv_epg_synced_{pid}", synced_record)
+            set_setting(db, _EPG_SYNCED_KEY.format(pid), synced_record)
 
             db.commit()
             log_activity(db, "epg_sync", f"EPG sync: {inserted} programs for {total} channels "
@@ -4312,6 +4438,8 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         raise httpx.ReadTimeout(f"the playlist did not arrive within "
                                                 f"{_OPEN_PLAYLIST_READ:.0f}s", request=resp.request)
                 break
+            except _ProviderPlaceholder as e:
+                await _refuse_placeholder(channel_id, e.segment)
             except httpx.HTTPError as e:
                 if resp is not None:
                     # Retry the server that refused, not the whole chain: that
@@ -4341,6 +4469,8 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     # account (/live/<user>/<pass>/). The log line above is redacted.
                     why = (f"the provider answered {e.response.status_code}"
                            if isinstance(e, httpx.HTTPStatusError) else type(e).__name__)
+                    if isinstance(e, httpx.HTTPStatusError) and e.response.status_code in (401, 403):
+                        _tell_provider_health(channel_id, False, e.response.status_code)
                     raise HTTPException(502, f"Failed to connect to stream: {why}")
                 if (not open_reresolved and open_url != stream_url and rival_delivering is not None
                         and isinstance(e, httpx.HTTPStatusError)
@@ -4366,9 +4496,6 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
 
         tokenized_url = str(resp.url)
         logger.info(f"[LiveTV] Resolved tokenized URL for channel {channel_id}: {tokenized_url}")
-        placeholder = _placeholder_name(tokenized_url)
-        if placeholder:
-            await _refuse_placeholder(channel_id, placeholder)
 
         content_type = resp.headers.get("content-type", "")
         is_hls = "mpegurl" in content_type.lower()
@@ -4387,21 +4514,17 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 variant = _select_hls_variant(playlist_text, playlist_base)
                 if not variant or not await asyncio.to_thread(guard, variant):
                     break
-                placeholder = _placeholder_name(variant)
-                if placeholder:
-                    await _refuse_placeholder(channel_id, placeholder)
                 v_resp = None
                 try:
                     v_resp = await asyncio.wait_for(
                         _send_checked(client, variant, {"User-Agent": user_agent}, guard), 10.0)
                     v_resp.raise_for_status()
-                    placeholder = _placeholder_name(str(v_resp.url))
-                    if placeholder:
-                        await _refuse_placeholder(channel_id, placeholder)
                     variant_text = (await asyncio.wait_for(v_resp.aread(), 10.0)).decode(
                         "utf-8", errors="replace")
                 except _PlaceholderRefusal:
                     raise
+                except _ProviderPlaceholder as e:
+                    await _refuse_placeholder(channel_id, e.segment)
                 except Exception as e:
                     # Anything else (a refusal, a blocked redirect) is the
                     # stream's to handle, on the terms it always had.
@@ -4445,11 +4568,12 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
             # hangs up would be re-dialled once a second for ever.
             nonlocal raw_resp
             FAILURE_BUDGET = failure_budget   # 0 = until the client leaves
-            HEALTHY_AFTER = 10.0
+            HEALTHY_AFTER = _HEALTHY_AFTER
             backoff = 1.0
             backoff_cap = _BACKOFF_CAP        # grows to _REFUSAL_BACKOFF_CAP after a 429/509
             failing_since = None
             slept = 0.0          # the bound must hold even if the clock stands still
+            denied_at = None     # recordings: (clock, slept) at the first 401/403 of this run (#646)
             ua = {"User-Agent": user_agent}
             # MPEG-TS is 188-byte packets. Only whole packets go downstream, so
             # the tail of a packet cut off by a drop never reaches the recording
@@ -4516,6 +4640,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                                 align = align and piece[:1] == b"G"
                             if failing_since is not None and loop.time() - opened_at >= HEALTHY_AFTER:
                                 failing_since, slept, backoff, backoff_cap = None, 0.0, 1.0, _BACKOFF_CAP
+                                denied_at = None
                             pending += splicer.feed(piece, loop.time())
                             if len(pending) >= 131072:
                                 cut = len(pending) - (len(pending) % 188) if align else len(pending)
@@ -4544,6 +4669,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     # is still a failure, or a viewer's budget would never run out.
                     if last_piece is not None and last_piece - opened_at >= HEALTHY_AFTER:
                         failing_since, slept, backoff, backoff_cap = None, 0.0, 1.0, _BACKOFF_CAP
+                        denied_at = None
                     if dropped_at is None:      # else: the outage never ended
                         dropped_at = loop.time()
                     redialled = False
@@ -4569,16 +4695,14 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         new_resp = None
                         try:
                             new_resp = await _send_checked(raw_client, stream_url, ua, guard)
+                            _refusal_heard(health, getattr(new_resp, "status_code", None))
                             new_resp.raise_for_status()
-                            placeholder = _placeholder_name(str(new_resp.url))
-                            if placeholder:
-                                raise _ProviderPlaceholder(placeholder)
                             if "mpegurl" in new_resp.headers.get("content-type", "").lower():
                                 raise httpx.HTTPError("the channel now answers with a playlist")
                         except _ProviderPlaceholder as e:
                             # Not the channel: waited out like a refusal, and
-                            # its bytes never reach the recording (#140).
-                            await new_resp.aclose()
+                            # its bytes never reach the recording (#140), and
+                            # _send_checked never fetched it (#624).
                             reason = str(e)
                             backoff_cap = _REFUSAL_BACKOFF_CAP
                             await _note_placeholder(channel_id, e.segment)
@@ -4597,8 +4721,23 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                                 if status in _REFUSAL_STATUS or status == 407:
                                     backoff_cap = _REFUSAL_BACKOFF_CAP
                                 continue
+                            denied_for = None
+                            if status in (401, 403) and is_recording is not None and is_recording():
+                                # #646: an IP block or flood protection answers
+                                # 403 to everything for a minute or two. A
+                                # recording waits that out on the refusal cap;
+                                # a login refused for longer still ends it.
+                                if denied_at is None:
+                                    denied_at = (loop.time(), slept)
+                                denied_for = max(loop.time() - denied_at[0], slept - denied_at[1])
+                                if denied_for < _DENIED_GRACE:
+                                    reason = str(e)
+                                    health["errors"] += 1
+                                    backoff_cap = _REFUSAL_BACKOFF_CAP
+                                    continue
+                            refused = f" (refused for {denied_for:.0f}s)" if denied_for is not None else ""
                             logger.error(f"[LiveTV] Raw stream for channel {channel_id} cannot be "
-                                         f"re-opened, stopping: {e}")
+                                         f"re-opened{refused}, stopping: {e}")
                             return
                         raw_resp = new_resp
                         redialled = True
@@ -4732,6 +4871,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 # failure budget, run on until a real segment arrives.
                 return
             in_placeholder = False
+            health.pop("_refused", None)
             if failing_since is not None:
                 health["reconnecting_seconds"] += asyncio.get_running_loop().time() - failing_since
                 health["reconnects"] += 1   # an outage recovered from
@@ -4805,6 +4945,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
             refused_since = None       # first 429/509 of the current refresh run (#184)
             revive = {"last": None, "gap": _REVIVE_COOLDOWN, "held": False, "flow_since": None}
             gone_since = None          # first 404/410 of the current run (recordings)
+            denied_since = None        # first channel-URL 401/403 of the current run (recordings, #646)
             stream_answer_since = None # first non-playlist answer of the channel URL
 
             def _token_expired(exc) -> bool:
@@ -4817,10 +4958,8 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 or _NotAPlaylist for a continuous stream -- never read as a
                 playlist: it has no end."""
                 r = await _send_checked(hls_client, stream_url, ua_headers, guard)
+                _refusal_heard(health, getattr(r, "status_code", None))
                 try:
-                    placeholder = _placeholder_name(str(r.url))
-                    if placeholder:
-                        raise _ProviderPlaceholder(placeholder)
                     r.raise_for_status()
                     if "mpegurl" not in r.headers.get("content-type", "").lower():
                         raise _NotAPlaylist("the channel now answers with a stream, not a playlist")
@@ -4952,6 +5091,14 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                             reresolve_run -= 1
                             await _backoff_sleep()
                             return False
+                        if _denied_grace(st):
+                            # The channel URL itself refuses too: an IP block
+                            # or flood protection, for a minute or two (#646).
+                            # Not counted for a recording until _DENIED_GRACE
+                            # of it; waited out on the refusal cap.
+                            reresolve_run -= 1
+                            await _backoff_sleep()
+                            return False
                         if counted and _gone_grace(st):
                             reresolve_run -= 1
                             backoff_cap = _REFUSAL_BACKOFF_CAP
@@ -4997,8 +5144,9 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 404/410 (a channel really removed). Viewers keep the 3-try
                 rule; 401/403/407 are never graced here -- a 407 from the
                 channel URL on a recording is waited out in _reresolve
-                instead (keyed on the channel URL's answer: the token URL's
-                407 that triggers every re-resolve must not be)."""
+                instead, and a 401/403 there by _denied_grace (keyed on the
+                channel URL's answer: the token URL's 401/403/407 that
+                triggers every re-resolve must not be)."""
                 nonlocal gone_since
                 if status not in (404, 410) or not (is_recording is not None and is_recording()):
                     return False
@@ -5006,6 +5154,21 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                 if gone_since is None:
                     gone_since = now
                 return now - gone_since < _GONE_GRACE
+
+            def _denied_grace(status) -> bool:
+                """True while the channel URL's 401/403 on a RECORDING should
+                not yet count toward _MAX_RERESOLVE (#646): an IP block,
+                Cloudflare or a panel's flood protection refuses everything
+                for a minute or two. It counts only after _DENIED_GRACE of
+                unbroken refusal (the login really refused); viewers keep
+                the 3-try rule."""
+                nonlocal denied_since
+                if status not in (401, 403) or not (is_recording is not None and is_recording()):
+                    return False
+                now = asyncio.get_running_loop().time()
+                if denied_since is None:
+                    denied_since = now
+                return now - denied_since < _DENIED_GRACE
 
             while True:
                 # Master playlist? Follow the best variant before treating any
@@ -5034,6 +5197,14 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                                 "utf-8", errors="replace")
                         finally:
                             await v_resp.aclose()
+                    except _ProviderPlaceholder as e:
+                        # The variant points (or redirects) at a stand-in
+                        # clip: never read as a playlist (#624).
+                        if await _placeholder_refusal(e.segment, "Variant playlist fetch"):
+                            return
+                        await _backoff_sleep()
+                        variant_retry = True
+                        break
                     except Exception as e:
                         if _token_expired(e):
                             if await _reresolve("Variant playlist fetch", e):
@@ -5199,12 +5370,6 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                         try:
                             chunk_resp = await _send_checked(hls_client, chunk_url, ua_headers, guard)
                             try:
-                                # A segment URL can redirect to the placeholder: its
-                                # bytes are black, not the channel, and are never
-                                # written (#140). Waited out like one in the playlist.
-                                placeholder = _placeholder_name(str(chunk_resp.url))
-                                if placeholder:
-                                    raise _ProviderPlaceholder(placeholder)
                                 chunk_resp.raise_for_status()
                                 payload = await _aread_within(chunk_resp, _segment_read_limit(target_duration),
                                                               segment_stretch)
@@ -5213,6 +5378,9 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                             break
                         except Exception as e:
                             chunk_error = e
+                            # A segment URL can redirect to the placeholder:
+                            # _send_checked refuses it unfetched (#624), and it is
+                            # waited out like one in the playlist (#140).
                             if isinstance(e, _ProviderPlaceholder):
                                 if not in_placeholder:
                                     in_placeholder = True
@@ -5261,7 +5429,7 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                     got_new = True
                     fatal_chunk_skips = 0
                     yielded_any = True
-                    reresolve_run, after_reresolve, gone_since = 0, False, None
+                    reresolve_run, after_reresolve, gone_since, denied_since = 0, False, None, None
                     refused_since = None
                     # The cooldown resets only after _REVIVE_RESET_AFTER of
                     # unbroken delivery (Q3); a failure run restarts the clock.
@@ -5309,6 +5477,20 @@ async def _stream_proxy_inner(channel_id: int, user_agent: str, stream_url: str,
                             "utf-8", errors="replace")
                     finally:
                         await pl_resp.aclose()
+                except _ProviderPlaceholder as e:
+                    # The playlist URL now redirects to a stand-in clip: not a
+                    # playlist (#624). Keep the one in hand and ask again;
+                    # in_placeholder keeps the failure clock running until a
+                    # real segment arrives.
+                    if not in_placeholder:
+                        in_placeholder = True
+                        await _note_placeholder(channel_id, e.segment)
+                    if _note_failure(e, "Playlist refresh"):
+                        return
+                    backoff_cap = _REFUSAL_BACKOFF_CAP
+                    refused_since = None
+                    await _backoff_sleep()
+                    continue
                 except Exception as e:
                     if _token_expired(e):
                         refused_since = None

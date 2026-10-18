@@ -3588,7 +3588,7 @@ async function loadHomeScreen() {
     }
     const trailerAudioCheckbox = document.getElementById('home-hero-trailer-audio');
     if (trailerAudioCheckbox && config.hero) {
-      trailerAudioCheckbox.checked = config.hero.trailer_audio !== false;
+      trailerAudioCheckbox.checked = config.hero.trailer_audio === true;
     }
 
     // Merge Continue Watching + Next Up toggle
@@ -3844,7 +3844,7 @@ async function updateHeroSort() {
   const sortOrder = dir === 'asc' ? 'Ascending' : 'Descending';
   const requireLogo = document.getElementById('home-hero-require-logo')?.checked ?? true;
   const requireTrailer = document.getElementById('home-hero-require-trailer')?.checked ?? false;
-  const trailerAudio = document.getElementById('home-hero-trailer-audio')?.checked ?? true;
+  const trailerAudio = document.getElementById('home-hero-trailer-audio')?.checked ?? false;
   const itemCount = parseInt(document.getElementById('home-hero-item-count')?.value) || 10;
   try {
     const r = await api('/api/smartlists/hero-sort', {
@@ -5440,6 +5440,7 @@ let _missingLists = { movies: null, series: null };
 let _missingActiveList = 'all';
 
 async function loadDiscover() {
+  const view = ++_discoverView;
   if (_discoverType === 'music' && typeof musicDiscoverHome === 'function') return musicDiscoverHome();
   document.getElementById('discover-streaming-pills').classList.remove('music-pills');
   const grid = document.getElementById('discover-grid');
@@ -5452,6 +5453,7 @@ async function loadDiscover() {
       api(`/api/discover?type=${_discoverType}`),
       _activityData ? Promise.resolve() : loadActivity().catch(() => {}),
     ]);
+    if (view !== _discoverView) return;
     _discoverSections = data.sections || [];
     if (!_discoverSections.length) {
       tabsEl.innerHTML = '';
@@ -5475,12 +5477,13 @@ async function loadDiscover() {
       ? _discoverActiveSection : _discoverSections[0].id;
     switchDiscoverSection(targetId);
   } catch (e) {
+    if (view !== _discoverView) return;
     grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Failed to load discover: ${escapeAttr(e.message)}</p></div>`;
   }
 }
 
 // Bumped whenever the Discover grid is repainted for a different section, pill,
-// list or genre. A loader that answers after the user has moved on must not
+// list or genre, a Movies/TV/Music switch or a search. A loader that answers after the user has moved on must not
 // paint its (now wrong) titles under the tab that is selected.
 let _discoverView = 0;
 
@@ -5833,6 +5836,7 @@ function clearDiscoverSearch() {
 }
 
 async function doDiscoverSearch(query) {
+  const view = ++_discoverView;
   if (_discoverType === 'music' && typeof musicSearch === 'function') return musicSearch(query);
   const grid = document.getElementById('discover-grid');
   const tabsEl = document.getElementById('discover-section-tabs');
@@ -5840,6 +5844,7 @@ async function doDiscoverSearch(query) {
   grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text3)"><span class="toast-spinner"></span> Searching…</div>';
   try {
     const data = await api(`/api/discover/search?q=${encodeURIComponent(query)}&type=${_discoverType}`);
+    if (view !== _discoverView) return;
     const items = data.items || [];
     if (!items.length) {
       grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>No results for "${escapeAttr(query)}"</p></div>`;
@@ -5847,6 +5852,7 @@ async function doDiscoverSearch(query) {
     }
     renderDiscoverGrid(items);
   } catch (e) {
+    if (view !== _discoverView) return;
     grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;padding:40px"><p>Search failed: ${escapeAttr(e.message)}</p></div>`;
   }
 }
@@ -5996,14 +6002,18 @@ function updateSetupUrls() {
   document.getElementById('live-setup-xmltv-preview').textContent = `${base}/hdhr/xmltv.xml`;
 }
 
-function copyLiveSetup(type, btn) {
+async function copyLiveSetup(type, btn) {
   const base = getSetupBase();
   const url = type === 'tuner' ? base : `${base}/hdhr/xmltv.xml`;
-  navigator.clipboard.writeText(url).then(() => {
-    const orig = btn.textContent;
-    btn.textContent = 'Copied!';
-    setTimeout(() => btn.textContent = orig, 1500);
-  });
+  try {
+    await navigator.clipboard.writeText(url);
+  } catch (_) {
+    toast('Copy failed — use HTTPS or copy manually', 'error');
+    return;
+  }
+  const orig = btn.textContent;
+  btn.textContent = 'Copied!';
+  setTimeout(() => btn.textContent = orig, 1500);
 }
 
 function renderLiveStats(data) {
@@ -7222,6 +7232,21 @@ const _DELETION_KIND_META = {
   'stale-cleanup':     { label: 'Stale cleanup', cls: 'badge-amber' },
   'download-fix':      { label: 'Download fix', cls: 'badge-amber' },
   'stream-health':     { label: 'Stream health', cls: 'badge-amber' },
+  'arr-remove':        { label: 'Removed from Radarr/Sonarr', cls: 'badge-red' },
+  'arr-unmonitor':     { label: 'Stopped searching', cls: 'badge-amber' },
+  'bad-copy':          { label: 'Bad copy', cls: 'badge-amber' },
+  'wrong-match':       { label: 'Wrong match', cls: 'badge-amber' },
+  'rematch':           { label: 'Rematch', cls: 'badge-amber' },
+  'strm-optout':       { label: '.strm opt-out', cls: 'badge-amber' },
+  'music-extra-track': { label: 'Extra track', cls: 'badge-amber' },
+  'radarr-scan':       { label: 'Gone from Radarr', cls: 'badge-accent' },
+  'sonarr-scan':       { label: 'Gone from Sonarr', cls: 'badge-accent' },
+  'sync-prune':        { label: 'Gone from provider', cls: 'badge-accent' },
+  'smartlist-orphan':  { label: 'Playlist cleanup', cls: 'badge-accent' },
+  // Removals a safety limit refused: nothing was deleted
+  'sync-prune-blocked':   { label: 'Prune refused', cls: 'badge-gray' },
+  'orphan-sweep-blocked': { label: 'Orphan sweep refused', cls: 'badge-gray' },
+  'vod-sweep-blocked':    { label: 'VOD sweep refused', cls: 'badge-gray' },
 };
 
 async function loadHealthDeletions() {
@@ -7234,13 +7259,15 @@ async function loadHealthDeletions() {
       return;
     }
     const rows = entries.map(e => {
-      const meta = _DELETION_KIND_META[e.kind] || { label: e.kind, cls: 'badge-accent' };
+      const meta = _DELETION_KIND_META[e.kind] || { label: escapeHtml(e.kind || ''), cls: 'badge-accent' };
+      const tip = (e.kind || '').endsWith('-blocked')
+        ? ' title="Nothing was deleted: a safety limit stopped this removal"' : '';
       const d = _healthDate(e.created_at);
       const when = d ? `<span title="${d.toLocaleString()}">${timeAgo(d)}</span>` : '—';
       const who = e.reason === 'manual' && e.user_name ? e.user_name : e.reason;
       return `<tr>
         <td style="white-space:nowrap">${when}</td>
-        <td><span class="badge ${meta.cls}" style="font-size:10px">${meta.label}</span></td>
+        <td><span class="badge ${meta.cls}" style="font-size:10px"${tip}>${meta.label}</span></td>
         <td>${escapeHtml(e.name || '')}</td>
         <td style="white-space:nowrap;color:var(--text3)">${escapeHtml(who || '')}</td>
         <td style="color:var(--text3);font-size:12px">${escapeHtml(e.detail || '')}</td>

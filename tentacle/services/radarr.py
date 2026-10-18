@@ -17,6 +17,8 @@ from datetime import timedelta
 from models.database import Movie, Duplicate, DownloadRequest, TentacleUser, get_setting, DeletionLog, get_recently_added_days
 from services.tmdb import TMDBService
 from services.nfo import write_movie_nfo, make_folder_name, refresh_arr_nfo
+from services import media_files
+from services.media_files import arr_parent, is_vod_arr_path
 from services.tagger import apply_tag_rules, get_list_tags_for_tmdb_id, detect_source_tag_from_studios
 from services.exceptions import RadarrConnectionError
 from services.logstream import emit_library_event
@@ -467,6 +469,8 @@ def _scan_radarr_library(db: Session) -> dict:
     from services.tagger import tentacle_owned_tags
     owned = tentacle_owned_tags(db)
     recently_added_days = get_recently_added_days(db)
+    not_found = 0
+    first_not_found = ""
     for tmdb_id, db_movie in movies_needing_nfo:
         try:
             # Build tag list: built-in + source tag + rule tags + list tags + user attribution
@@ -515,10 +519,13 @@ def _scan_radarr_library(db: Session) -> dict:
             # Write NFO if movie folder exists on disk
             if not db_movie.radarr_path:
                 continue
-            # Remap Radarr's container path to Tentacle's mount
-            local_path = db_movie.radarr_path.replace("/data/movies", "/media/movies", 1)
-            movie_folder = Path(local_path).parent
-            if not movie_folder.exists():
+            # Radarr's folder under Tentacle's mount, by path or by name (#649)
+            arr_folder = arr_parent(db_movie.radarr_path)
+            movie_folder = media_files.local_arr_folder(arr_folder, media_files.RADARR_MEDIA_ROOT, "/data/movies")
+            if movie_folder is None:
+                if not is_vod_arr_path(arr_folder):
+                    not_found += 1
+                    first_not_found = first_not_found or arr_folder
                 continue
 
             nfo_metadata = {
@@ -531,6 +538,8 @@ def _scan_radarr_library(db: Session) -> dict:
                 "genres": db_movie.genres or [],
                 "poster_path": db_movie.poster_path,
                 "backdrop_path": db_movie.backdrop_path,
+                # A new NFO for an old download keeps its date (#266)
+                "date_added": db_movie.downloaded_at or db_movie.date_added,
             }
 
             video_file = None
@@ -548,6 +557,13 @@ def _scan_radarr_library(db: Session) -> dict:
 
         except Exception as e:
             logger.debug(f"NFO/tag processing failed for {db_movie.title}: {e}")
+
+    if not_found:
+        root = media_files.RADARR_MEDIA_ROOT
+        logger.warning(
+            f"Radarr scan: {not_found} downloads not found under {root} (first: Radarr's "
+            f"{first_not_found}); no NFO or tags written beside them. Mount the folder Radarr "
+            f"downloads to at {root} (Settings → Library Paths).")
 
     db.commit()
 
