@@ -139,8 +139,10 @@ function setHealthAlert(key, count, problem) {
 function renderHealthBadge() {
   const badge = document.getElementById('health-badge');
   const items = Object.values(_healthAlerts);
-  const total = items.reduce((n, a) => n + a.count, 0);
   const problem = items.some(a => a.problem);
+  // With real problems the count is theirs alone (red); otherwise it counts
+  // the things that want a decision (grey).
+  const total = items.filter(a => !problem || a.problem).reduce((n, a) => n + a.count, 0);
   if (badge) {
     badge.style.display = total ? '' : 'none';
     badge.textContent = total > 99 ? '99+' : String(total);

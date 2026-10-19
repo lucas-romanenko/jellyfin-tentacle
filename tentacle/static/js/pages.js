@@ -4531,6 +4531,11 @@ function renderDupStats(data) {
   el.textContent = data.total ? `(${data.pending || 0} to decide, ${data.resolved || 0} done)` : '';
 }
 
+function showAllDuplicates() {
+  pages.dup.showAll = true;
+  renderDupList();
+}
+
 function setDupFilter(filter, btn) {
   pages.dup.filter = filter;
   document.querySelectorAll('[data-dupfilter]').forEach(b => b.classList.remove('active'));
@@ -4554,6 +4559,9 @@ function renderDupList() {
     return;
   }
 
+  // Health shows a few at a time; the rest one click away
+  const total = items.length;
+  if (!pages.dup.showAll) items = items.slice(0, 5);
   el.innerHTML = items.map(dup => {
     const sources = dup.sources || [];
     // A series' downloaded copy comes from Sonarr, not Radarr.
@@ -4571,6 +4579,9 @@ function renderDupList() {
           <div style="font-size:11px;color:var(--text3);font-family:'DM Mono',monospace;word-break:break-all">${escapeAttr(s.path || '(path not recorded)')}</div>
         </div>`;
     }).join('');
+  if (items.length < total) {
+    el.insertAdjacentHTML('beforeend', `<div style="text-align:center;padding:10px"><button class="btn btn-secondary btn-sm" onclick="showAllDuplicates()">Show all ${total}</button></div>`);
+  }
 
     const title = dup.title || `TMDB #${dup.tmdb_id}`;
     const poster = dup.poster_path ? `https://image.tmdb.org/t/p/w92${dup.poster_path}` : '';
@@ -6901,7 +6912,14 @@ function _activityIsProblem(e) {
 // Activity and removals in one card: the last 7 days by default, a page at a
 // time, repeats folded into one line, who did it in plain words, and the raw
 // entries (ids and all) behind "Details".
-const healthLog = { kind: 'activity', entries: [], offset: 0, done: true, pageSize: 100, seq: 0 };
+const healthLog = { kind: 'activity', entries: [], offset: 0, done: true, pageSize: 100, seq: 0, shown: 25 };
+
+// "Show more": the next lines already loaded, else the next page from the server
+function showMoreHealthLog() {
+  const groups = _logGroups(healthLog.entries).length;
+  if (healthLog.shown < groups) { healthLog.shown += 25; renderHealthLog(); }
+  else loadHealthLog(true);
+}
 
 function setHealthLogKind(kind, btn) {
   healthLog.kind = kind === 'deletions' ? 'deletions' : 'activity';
@@ -6915,7 +6933,8 @@ async function loadHealthLog(more = false) {
   const el = document.getElementById('health-log');
   if (!el) return;
   const days = parseInt(document.getElementById('health-log-days')?.value || '7', 10) || 0;
-  if (!more) { healthLog.entries = []; healthLog.offset = 0; }
+  if (!more) { healthLog.entries = []; healthLog.offset = 0; healthLog.shown = 25; }
+  else healthLog.shown += 25;
   const seq = ++healthLog.seq;   // only the latest request's answer is shown
   const n = healthLog.pageSize;
   const url = healthLog.kind === 'activity'
@@ -6964,7 +6983,8 @@ function _logActor(e) {
 }
 
 function _logKey(e) {
-  const norm = t => _logClean(t).replace(/\d+/g, '#');
+  // Same words after the ids are taken out; numbers count (1 vs 63 removed)
+  const norm = t => _logClean(t);
   return healthLog.kind === 'activity'
     ? `${e.event}|${norm(e.message)}`
     : `${e.kind}|${e.name}|${e.reason}|${e.user_name || ''}|${norm(e.detail)}`;
@@ -6989,7 +7009,8 @@ function renderHealthLog() {
   const problemsOnly = activity && document.getElementById('health-log-problems')?.checked;
   let entries = healthLog.entries;
   if (problemsOnly) entries = entries.filter(_activityIsProblem);
-  const groups = _logGroups(entries);
+  const allGroups = _logGroups(entries);
+  const groups = allGroups.slice(0, healthLog.shown || allGroups.length);
   const countEl = document.getElementById('health-log-count');
   if (countEl) {
     const problems = activity ? healthLog.entries.filter(_activityIsProblem).length : 0;
@@ -6997,7 +7018,7 @@ function renderHealthLog() {
       ? `(${healthLog.entries.length}${healthLog.done ? '' : '+'} entr${healthLog.entries.length === 1 ? 'y' : 'ies'}${problems ? `, ${problems} to look at` : ''})` : '';
   }
   const more = document.getElementById('health-log-more');
-  if (more) more.style.display = healthLog.done ? 'none' : '';
+  if (more) more.style.display = (healthLog.done && groups.length >= allGroups.length) ? 'none' : '';
   if (!groups.length) {
     const days = document.getElementById('health-log-days');
     const when = days && days.value !== '0' ? days.options[days.selectedIndex].text.toLowerCase() : 'so far';
@@ -7022,7 +7043,9 @@ function renderHealthLog() {
       badge = `<span class="badge ${meta.cls}"${tip}>${escapeHtml(meta.label)}</span>`;
       text = `<strong>${escapeHtml(e.name || '')}</strong>${e.detail ? ' &mdash; ' + escapeHtml(_logClean(e.detail)) : ''}`;
       const actor = _logActor(e);
-      who = actor ? `<span class="health-log-who">${escapeHtml(actor)}</span>` : '';
+      // "Gone from the provider" next to a "Gone from provider" badge says it twice
+      const said = /^gone from/i.test(meta.label) && /^gone from/i.test(actor);
+      who = actor && !said ? `<span class="health-log-who">${escapeHtml(actor)}</span>` : '';
     }
     const raw = g.items.map(x => escapeHtml(
       activity ? `${x.created_at} #${x.id} ${x.event}: ${x.message || ''}`
@@ -7071,7 +7094,7 @@ function renderHealthLog() {
     loadFollowing,
     toggleStrmManaged,
     // Duplicates
-    setDupFilter, resolveDup, resolveAllKeepRadarr,
+    setDupFilter, resolveDup, resolveAllKeepRadarr, showAllDuplicates, showMoreHealthLog,
     // Log viewer
     clearLogPanel, toggleLogScroll,
     // Radarr / Sonarr

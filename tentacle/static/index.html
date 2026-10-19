@@ -664,6 +664,7 @@ td.primary { color: var(--text); font-weight: 500; }
 /* Sources → IPTV providers: one card per provider, its uses as switches */
 .provider-list { display: flex; flex-direction: column; gap: 14px; margin-bottom: 20px; }
 .provider-list .provider-card-url { max-width: min(420px, 60vw); }
+.provider-meta-item + .provider-meta-item::before { content: "·"; margin-right: 4px; color: var(--text3); }
 .provider-offers { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 13px; margin-bottom: 14px; }
 .provider-offers-label { font-size: 10px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text3); margin-right: 4px; }
 .provider-uses { border-top: 1px solid var(--border); margin-bottom: 14px; }
@@ -1470,15 +1471,17 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
 }
 .hero-config-hint:hover { background: var(--accent-dim); color: var(--accent); }
 .hero-config-checkbox:hover .hero-config-tooltip,
-.hero-config-checkbox.show .hero-config-tooltip { opacity: 1; visibility: visible; transform: translateY(0); }
+.hero-config-checkbox.show .hero-config-tooltip { display: block; }
+.hero-config-checkbox:last-of-type .hero-config-tooltip { left: auto; right: 0; }
 .hero-config-tooltip {
   position: absolute; bottom: calc(100% + 8px); left: 0;
   background: var(--bg0); border: 1px solid var(--border);
   border-radius: 8px; padding: 10px 14px;
   font-size: 12px; color: var(--text2); line-height: 1.5;
-  width: 280px; box-shadow: 0 4px 16px rgba(0,0,0,0.25);
-  opacity: 0; visibility: hidden;
-  transform: translateY(4px); transition: all 0.15s ease;
+  width: min(280px, 80vw); box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+  /* Hidden ones take no room: a hidden tooltip near the right edge made
+     the whole page 1835 px wide in a 1440 window */
+  display: none;
   pointer-events: none; z-index: 10;
 }
 
@@ -2736,7 +2739,7 @@ button.live-ch-epg-badge { border: none; font-family: inherit; cursor: pointer; 
           </div>
           <div id="health-log"><div class="empty-state"><p>Loading&hellip;</p></div></div>
           <div id="health-log-more" style="display:none;text-align:center;padding:10px">
-            <button class="btn btn-secondary btn-sm" onclick="loadHealthLog(true)">Show older</button>
+            <button class="btn btn-secondary btn-sm" onclick="showMoreHealthLog()">Show more</button>
           </div>
         </div>
       </div>

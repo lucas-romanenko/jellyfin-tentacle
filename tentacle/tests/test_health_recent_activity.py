@@ -181,7 +181,7 @@ class TheRemovals(unittest.TestCase):
         self.assertNotIn("tmdb:21137", visible)
         self.assertNotIn("188327", visible)
         self.assertIn(">Tentacle<", visible)
-        self.assertIn(">Gone from the provider<", visible)
+        self.assertNotIn(">Gone from the provider<", visible, "the badge already says it")
         self.assertIn(">lucas<", visible)
         # ...and the ids are all there under Details
         self.assertIn("39e9030c25e2b30cad8eece3a1b2c3d4", html)
