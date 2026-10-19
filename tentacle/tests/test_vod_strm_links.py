@@ -471,6 +471,24 @@ class TheLibraryMovesOverWithoutASync(unittest.TestCase):
         self.assertEqual([None], self.scans, "nothing changed: no scan")
         self.assertEqual(1, len(self._activity()), "and no new entry")
 
+    def test_the_providers_host_with_another_port_or_scheme_is_its_own(self):
+        """Matched by host and login, as the sync reads them: a file written
+        with :80 or https is still this provider's."""
+        self.film.write_text("http://cf.panel.test:80/movie/u/p/42.mkv", encoding="utf-8")
+        self.ep.write_text("https://CF.panel.test/series/u/p/701.mp4", encoding="utf-8")
+        with self.assertLogs("services.provider_relink", level="INFO") as logs:
+            self._relink()
+        self.assertIn("/api/vod/movie/", self.film.read_text(encoding="utf-8"))
+        self.assertIn("/api/vod/series/", self.ep.read_text(encoding="utf-8"))
+        self.assertTrue(any("4 .strm files checked, 2 films and 1 episodes rewritten" in line
+                            for line in logs.output), logs.output)
+
+    def test_a_run_that_changes_nothing_still_says_so(self):
+        self._relink()
+        with self.assertLogs("services.provider_relink", level="INFO") as logs:
+            self._relink()
+        self.assertTrue(any("0 films and 0 episodes rewritten" in line for line in logs.output), logs.output)
+
     def test_an_opt_out_puts_them_back_and_opting_in_again_moves_them_again(self):
         self._relink()
         self.assertEqual(1, self._save(False))
