@@ -45,6 +45,27 @@ _sync_subscribers: dict = {}  # provider_id -> [queue.Queue]
 _cancel_flags: dict = {}  # provider_id -> threading.Event (set = cancelled)
 _sync_lock = threading.Lock()
 
+# The whole nightly sync (main.run_scheduled_sync: every provider used for
+# Movies & Series, Radarr, Sonarr, lists, the TV guide, then Jellyfin), on its
+# schedule or from Settings → Schedule's "Sync now". One at a time: the
+# per-provider guards above don't cover its long Jellyfin tail.
+_nightly_run: dict = {"running": False, "trigger": None, "started_at": None, "finished_at": None}
+_nightly_run_lock = threading.Lock()
+
+
+def begin_nightly_run(trigger: str = "schedule") -> bool:
+    """Claim the nightly run; False when one is already running."""
+    with _nightly_run_lock:
+        if _nightly_run["running"]:
+            return False
+        _nightly_run.update(running=True, trigger=trigger, started_at=datetime.utcnow())
+        return True
+
+
+def end_nightly_run() -> None:
+    with _nightly_run_lock:
+        _nightly_run.update(running=False, finished_at=datetime.utcnow())
+
 
 class SyncRequest(BaseModel):
     provider_id: int
@@ -243,6 +264,58 @@ def trigger_sync(body: SyncRequest, db: Session = Depends(get_db)):
     thread.start()
 
     return {"success": True, "message": f"Sync started for {provider.name}"}
+
+
+@router.post("/run-now")
+def run_now():
+    """Settings → Schedule's "Sync now": the nightly sync, started now.
+
+    One button for everything instead of a sync button per page. Refused
+    (started: false) while a run, scheduled or not, is still going."""
+    if not begin_nightly_run("manual"):
+        return {"started": False, "message": "A sync of everything is already running"}
+
+    def _run():
+        from main import run_scheduled_sync
+        try:
+            run_scheduled_sync(claimed=True)
+        except Exception:
+            logger.exception("Sync now failed")
+            end_nightly_run()
+
+    try:
+        threading.Thread(target=_run, daemon=True, name="sync-now").start()
+    except Exception:
+        end_nightly_run()
+        raise
+    return {"started": True}
+
+
+@router.get("/run-now")
+def run_now_status(db: Session = Depends(get_db)):
+    """How far the whole sync is: the provider syncing now, or the step after."""
+    with _nightly_run_lock:
+        run = dict(_nightly_run)
+    out = {
+        "running": run["running"],
+        "trigger": run["trigger"],
+        "started_at": run["started_at"].isoformat() if run["started_at"] else None,
+        "finished_at": run["finished_at"].isoformat() if run["finished_at"] else None,
+        "provider_id": None,
+        "step": None,
+    }
+    if not run["running"]:
+        return out
+    syncing = [pid for pid in list(_running_syncs) if isinstance(pid, int)]
+    if syncing and "nightly" not in _after_sync:
+        p = db.query(Provider).filter(Provider.id == syncing[0]).first()
+        out["provider_id"] = syncing[0]
+        out["step"] = f"Syncing {p.name}" if p else "Syncing a provider"
+    elif "nightly" in _after_sync:
+        out["step"] = "Radarr, Sonarr, the TV guide, then Jellyfin's library, tags and playlists"
+    else:
+        out["step"] = "Refreshing your lists"
+    return out
 
 
 @router.post("/cancel")

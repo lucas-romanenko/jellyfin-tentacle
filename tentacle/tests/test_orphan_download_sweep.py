@@ -190,7 +190,7 @@ class TestNightlyOrder(unittest.TestCase):
         # Jellyfin rewrite its guide, which is when that read timed out.
         import inspect
         import main
-        src = inspect.getsource(main.run_scheduled_sync)
+        src = inspect.getsource(main._run_scheduled_sync)
         self.assertLess(src.index("sweep_orphaned_downloads(db)"), src.index("Syncing Live TV EPG data"))
 
 

@@ -265,6 +265,8 @@ provider names, URLs or logins).
 | GET | `/api/sync/progress/{provider_id}` | admin | sync.py:stream_sync_progress |
 | GET | `/api/sync/progress/{provider_id}/poll` | admin | sync.py:poll_sync_progress |
 | POST | `/api/sync/refresh-tags` | admin | sync.py:refresh_tags |
+| POST | `/api/sync/run-now` | admin | sync.py:run_now (Settings → Sync now: the nightly sync, now; one at a time) |
+| GET | `/api/sync/run-now` | admin | sync.py:run_now_status |
 | GET | `/api/sync/stats` | admin | sync.py:get_library_stats |
 | GET | `/api/sync/status` | admin | sync.py:get_sync_status |
 | GET | `/api/sync/summary` | admin | sync.py:get_sync_summary |
